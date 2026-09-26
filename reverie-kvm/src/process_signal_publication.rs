@@ -4775,7 +4775,7 @@ mod tests {
                 1,
                 "{case}: the dropped run's root was not parked"
             );
-            let root = &parked.roots[0].0;
+            let root = &parked.roots[0];
             assert_eq!(
                 root.pending_processes.keys().copied().collect::<Vec<_>>(),
                 if matches!(awaited, AwaitedChild::Pending) {
@@ -4804,7 +4804,10 @@ mod tests {
 
         // The backend's drop hands the parked root to the reaper without
         // waiting, before any child can exit.
-        super::super::AbandonedRuns::retire(&runs);
+        assert!(super::super::AbandonedRuns::retire(
+            &runs,
+            &Arc::new(crate::vm::GuestThreadGroup::default())
+        ));
         assert!(runs.lock().unwrap().roots.is_empty(), "{case}");
         assert_eq!(
             Arc::strong_count(&lifetime),
@@ -4875,90 +4878,313 @@ mod tests {
         );
         // The refused run never started, so it abandoned nothing.
         assert!(!runs.lock().unwrap().abandoned);
-        super::super::RunAdmission::begin(&runs).unwrap().finish();
+        super::super::RunAdmission::begin(&runs)
+            .unwrap()
+            .finish(&crate::vm::GuestThreadGroup::default());
         assert!(!runs.lock().unwrap().abandoned);
     }
 
     #[test]
-    fn a_panicking_reaper_join_keeps_its_root_and_reaps_the_next() {
-        // A poisoned lock breaks the first root's join.
-        let broken = outside_init_root();
-        let broken_alive = Arc::downgrade(&broken.transferred_processes);
-        let poisoned = broken.transferred_processes.clone();
-        std::thread::spawn(move || {
-            let _held = poisoned.lock().unwrap();
-            panic!("poisoning a dropped run's transfer lock");
-        })
-        .join()
-        .unwrap_err();
+    fn a_run_returning_before_joining_its_workers_leaves_them_to_its_reaper() {
+        let runs = Arc::new(Mutex::new(super::super::AbandonedRuns::default()));
+        let group = Arc::new(crate::vm::GuestThreadGroup::default());
+        let lifetime = Arc::new(());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let worker = {
+            let lifetime = lifetime.clone();
+            std::thread::spawn(move || {
+                let _lifetime = lifetime;
+                let _ = held.recv();
+                Ok((reverie::ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+            })
+        };
+        group.add_worker_handle(4, worker);
 
-        // The next root's child panics after its release.
+        // An error returned the run before it joined worker 4.
+        super::super::RunAdmission::begin(&runs)
+            .unwrap()
+            .finish(&group);
+        assert!(
+            matches!(
+                super::super::AbandonedRuns::admit(&runs),
+                Err(crate::Error::AbandonedRunNotRetired)
+            ),
+            "a backend whose returned run left a worker running admitted another"
+        );
+
+        // The backend's drop hands the worker to the run's reaper and does
+        // not wait for it.
+        let dropping = std::time::Instant::now();
+        assert!(super::super::AbandonedRuns::retire(&runs, &group));
+        assert!(dropping.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(group.has_unjoined_workers());
+        assert_eq!(
+            Arc::strong_count(&lifetime),
+            2,
+            "the worker ended while held"
+        );
+        assert_eq!(
+            Arc::strong_count(&group),
+            2,
+            "the reaper let go of the worker before joining it"
+        );
+
+        release.send(()).unwrap();
+        wait_until("the reaper never joined the worker", || {
+            Arc::strong_count(&group) == 1
+        });
+        assert!(!group.has_unjoined_workers());
+        assert_eq!(Arc::strong_count(&lifetime), 1);
+    }
+
+    #[test]
+    fn a_reaper_retries_a_panicking_retirement_without_dropping_its_root() {
+        let lifetime = Arc::new(());
+        let (root, root_alive, release) = root_with_held_child(&lifetime);
+        // Three root joins panic before the fourth attempt starts waiting.
+        let (reaper, reaping) = retire_roots(vec![root], 3);
+        let assert_root_kept = |when: &str| {
+            assert!(
+                root_alive.upgrade().is_some(),
+                "the reaper dropped its root {when}"
+            );
+            assert_eq!(
+                Arc::strong_count(&lifetime),
+                2,
+                "the root's child was released {when}"
+            );
+            assert!(
+                !reaping.is_finished(),
+                "the reaper stopped holding its root {when}"
+            );
+        };
+        wait_until("the reaper never attempted its retirement", || {
+            assert_root_kept("while its retirement panicked");
+            reaper.lock().attempts >= 1
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Each panic kept the root, which kept its child; nothing detached it.
+        assert_root_kept("after its retirement panicked");
+        release.send(()).unwrap();
+        wait_until("the reaper never retired the root", || {
+            root_alive.upgrade().is_none()
+        });
+        wait_until("the reaper never stopped", || reaping.is_finished());
+        reaping.join().unwrap();
+        // The root was dropped only after its child, and its teardown, ended.
+        assert_eq!(Arc::strong_count(&lifetime), 1);
+        assert_eq!(reaper.lock().attempts, 4);
+    }
+
+    #[test]
+    fn a_reaper_keeps_an_orphan_whose_join_panicked() {
         let lifetime = Arc::new(());
         let mut root = outside_init_root();
-        let _child = root.fork_child(6, false, false).unwrap();
-        let (start, started) = std::sync::mpsc::channel();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        let child_lifetime = lifetime.clone();
-        let handle = super::super::ChildThread::spawn(move || {
-            let _ = started.recv();
-            released.recv().unwrap();
-            drop(child_lifetime);
-            panic!("a dropped run's child panicked");
-        });
-        root.register_child_process_with_gate(
-            6,
-            super::super::ChildStartGate::new(start),
-            Arc::new(super::super::ChildCompletionSlot::default()),
-            handle,
+        let mut parent = root.fork_child(7, false, false).unwrap();
+        let _orphan = parent.fork_child(8, false, false).unwrap();
+        let (gate, slot, mut handle, release) = released_child_thread(None, lifetime.clone());
+        // Two blocking joins of the orphan panic before the third waits.
+        handle.failed_joins = 2;
+        parent.register_child_process_with_gate(8, gate, slot, handle);
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        parent.join_all_child_processes().unwrap();
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        assert_eq!(
+            root.namespace_orphanage
+                .lock()
+                .unwrap()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![8]
         );
         let root_alive = Arc::downgrade(&root.transferred_processes);
 
-        for root in [broken, root] {
-            let runs = Arc::new(Mutex::new(super::super::AbandonedRuns::default()));
-            drop(super::super::RunAdmission::begin(&runs).unwrap().root(root));
-            super::super::AbandonedRuns::retire(&runs);
+        let (reaper, reaping) = retire_roots(vec![root], 0);
+        let assert_orphan_kept = |when: &str| {
+            assert!(
+                root_alive.upgrade().is_some(),
+                "the reaper dropped its root {when}"
+            );
+            assert_eq!(
+                Arc::strong_count(&lifetime),
+                2,
+                "the orphan was released {when}"
+            );
+            assert!(!reaping.is_finished(), "the reaper stopped {when}");
+        };
+        wait_until("the reaper never retried the orphan's join", || {
+            assert_orphan_kept("while the orphan's join panicked");
+            reaper.lock().attempts >= 3
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_orphan_kept("after the orphan's join panicked");
+        release.send(()).unwrap();
+        wait_until("the reaper never retired the root", || {
+            root_alive.upgrade().is_none()
+        });
+        wait_until("the reaper never stopped", || reaping.is_finished());
+        reaping.join().unwrap();
+        assert_eq!(Arc::strong_count(&lifetime), 1);
+        assert_eq!(reaper.lock().attempts, 3);
+    }
+
+    #[test]
+    fn a_reaper_retires_an_orphan_handed_over_through_a_poisoned_orphanage() {
+        let lifetime = Arc::new(());
+        let mut root = outside_init_root();
+        let mut parent = root.fork_child(7, false, false).unwrap();
+        let _orphan = parent.fork_child(8, false, false).unwrap();
+        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        parent.register_child_process_with_gate(8, gate, slot, handle);
+        // An earlier panic poisoned the orphanage the parent's exit hands 8 to.
+        {
+            let orphanage = root.namespace_orphanage.clone();
+            std::thread::spawn(move || {
+                let _held = orphanage.lock().unwrap();
+                panic!("poisoning the namespace orphanage");
+            })
+            .join()
+            .unwrap_err();
         }
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        let handoff = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parent.join_all_child_processes()
+        }));
+        assert!(
+            matches!(handoff, Ok(Ok(()))),
+            "a poisoned orphanage broke the exiting parent's handoff"
+        );
+        drop(parent);
+        assert_eq!(
+            root.namespace_orphanage
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![8]
+        );
+        assert_eq!(Arc::strong_count(&lifetime), 2, "the orphan was released");
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+        let root_alive = Arc::downgrade(&root.transferred_processes);
+
+        let (reaper, reaping) = retire_roots(vec![root], 0);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            root_alive.upgrade().is_some(),
+            "the reaper dropped a root whose orphan was held"
+        );
+        assert_eq!(Arc::strong_count(&lifetime), 2, "the orphan was detached");
+        assert!(!reaping.is_finished());
+        release.send(()).unwrap();
+        wait_until("the reaper never retired the root", || {
+            reaping.is_finished()
+        });
+        reaping.join().unwrap();
+        assert!(root_alive.upgrade().is_none());
+        assert_eq!(Arc::strong_count(&lifetime), 1);
+        assert_eq!(reaper.lock().attempts, 1);
+    }
+
+    #[test]
+    fn a_reaper_retires_a_root_whose_locks_an_earlier_panic_poisoned() {
+        fn poison<T: Send + 'static>(lock: Arc<Mutex<T>>) {
+            std::thread::spawn(move || {
+                let _held = lock.lock().unwrap();
+                panic!("poisoning a dropped run's lock");
+            })
+            .join()
+            .unwrap_err();
+        }
+        let lifetime = Arc::new(());
+        let (root, root_alive, release) = root_with_held_child(&lifetime);
+        poison(root.transferred_processes.clone());
+        poison(root.namespace_orphanage.clone());
+        let (reaper, reaping) = retire_roots(vec![root], 0);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(root_alive.upgrade().is_some());
         assert_eq!(Arc::strong_count(&lifetime), 2);
         release.send(()).unwrap();
-        // The reaper survives the first join's panic and joins the next
-        // root's panicking child before dropping that root.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while root_alive.upgrade().is_some() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the reaper never reaped the root after a broken join"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        wait_until("the reaper never retired the poisoned root", || {
+            reaping.is_finished()
+        });
+        reaping.join().unwrap();
+        assert!(root_alive.upgrade().is_none());
         assert_eq!(Arc::strong_count(&lifetime), 1);
-        // A root whose join broke is kept, so it detaches no child.
-        assert!(broken_alive.upgrade().is_some());
+        // The poisoned locks broke no step.
+        assert_eq!(reaper.lock().attempts, 1);
     }
 
     #[test]
     fn a_reaper_joins_every_adopted_root_before_it_stops() {
-        let reapers = super::super::ReaperSlot::default();
-        let reaper = super::super::DroppedRunReaper::establish_in(&reapers).unwrap();
         let lifetime = Arc::new(());
+        let (first, first_alive, release_first) = root_with_held_child(&lifetime);
+        let (second, second_alive, release_second) = root_with_held_child(&lifetime);
+        // No handle remains, so the reaper stops once it has retired both.
+        let (_, reaping) = retire_roots(vec![first, second], 0);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!reaping.is_finished());
+        assert!(first_alive.upgrade().is_some());
+        assert_eq!(Arc::strong_count(&lifetime), 3);
+        release_second.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        // Roots retire in order: the second waits behind the first's child.
+        assert!(!reaping.is_finished());
+        assert!(first_alive.upgrade().is_some());
+        assert!(second_alive.upgrade().is_some());
+        release_first.send(()).unwrap();
+        wait_until("the reaper never stopped", || reaping.is_finished());
+        reaping.join().unwrap();
+        assert!(first_alive.upgrade().is_none());
+        assert!(second_alive.upgrade().is_none());
+        assert_eq!(Arc::strong_count(&lifetime), 1);
+    }
+
+    /// A root with one child that runs, holding `lifetime`, until the returned
+    /// sender releases it, and holds it through a thread-local teardown after.
+    #[allow(clippy::type_complexity)]
+    fn root_with_held_child(
+        lifetime: &Arc<()>,
+    ) -> (
+        ElfExecutor,
+        std::sync::Weak<
+            Mutex<std::collections::BTreeMap<i32, Vec<super::super::OwnedChildProcesses>>>,
+        >,
+        std::sync::mpsc::Sender<()>,
+    ) {
         let mut root = outside_init_root();
         let _child = root.fork_child(6, false, false).unwrap();
         let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
         root.register_child_process_with_gate(6, gate, slot, handle);
         let root_alive = Arc::downgrade(&root.transferred_processes);
-        reaper.adopt(root);
+        (root, root_alive, release)
+    }
+
+    /// Hands `roots` to a reaper of their own, whose first `inject_panics`
+    /// root joins panic, and releases its only handle.
+    fn retire_roots(
+        roots: Vec<ElfExecutor>,
+        inject_panics: usize,
+    ) -> (Arc<super::super::ReaperShared>, std::thread::JoinHandle<()>) {
+        let (reaper, reaping) = super::super::DroppedRunReaper::spawn().unwrap();
+        let shared = reaper.shared.clone();
+        shared.lock().inject_panics = inject_panics;
+        reaper.adopt(super::super::Retirement {
+            workers: None,
+            roots,
+        });
         drop(reaper);
-        // Dropping every sender ends the reaper only after the root it holds
-        // has joined its child.
-        let (last, reaping) = reapers.into_inner().unwrap().unwrap();
-        drop(last);
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(!reaping.is_finished());
-        assert!(root_alive.upgrade().is_some());
-        assert_eq!(Arc::strong_count(&lifetime), 2);
-        release.send(()).unwrap();
-        reaping.join().unwrap();
-        assert!(root_alive.upgrade().is_none());
-        assert_eq!(Arc::strong_count(&lifetime), 1);
+        (shared, reaping)
+    }
+
+    fn wait_until(failure: &str, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{failure}");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     #[test]

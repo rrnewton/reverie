@@ -431,7 +431,7 @@ fn initial_elf_reinstallation_is_refused_before_modifying_the_image() {
             assert_eq!(backend.run_static_elf_captured().unwrap().0, 0);
         }
         let mut before = [0; 64];
-        backend.memory().read(entry, &mut before).unwrap();
+        backend.memory().unwrap().read(entry, &mut before).unwrap();
         assert!(matches!(
             backend.install_static_elf(&replacement.bytes, "replacement-clock"),
             Err(reverie_kvm::Error::InitialElfReinstallationUnsupported)
@@ -447,7 +447,7 @@ fn initial_elf_reinstallation_is_refused_before_modifying_the_image() {
             Err(reverie_kvm::Error::InitialElfReinstallationUnsupported)
         ));
         let mut after = [0; 64];
-        backend.memory().read(entry, &mut after).unwrap();
+        backend.memory().unwrap().read(entry, &mut after).unwrap();
         assert_eq!(after, before);
     }
 }

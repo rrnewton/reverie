@@ -50,7 +50,6 @@ use crate::bootstrap::TOOL_STACK_SIZE;
 use crate::bootstrap::process_syscall_return_registers;
 use crate::bootstrap::set_user_segment_base;
 use crate::bootstrap::stage_process_syscall_return;
-use crate::executor::AbandonedRuns;
 use crate::executor::ChildStartCancellation;
 #[cfg(test)]
 use crate::executor::ChildStartCommand;
@@ -3948,13 +3947,29 @@ impl KvmBackend {
     pub async fn run_with_tool<T, E>(
         &mut self,
         config: <T::GlobalState as GlobalTool>::Config,
+        executor: E,
+    ) -> Result<T::GlobalState>
+    where
+        T: Tool,
+        E: SyscallExecutor,
+    {
+        // Any return finishes the run. Only a dropped or unwinding run leaves
+        // its backend abandoned.
+        let admission = RunAdmission::begin(&self.abandoned_runs)?;
+        let global_state = self.run_admitted_with_tool::<T, E>(config, executor).await;
+        self.finish_run(admission);
+        global_state
+    }
+
+    async fn run_admitted_with_tool<T, E>(
+        &mut self,
+        config: <T::GlobalState as GlobalTool>::Config,
         mut executor: E,
     ) -> Result<T::GlobalState>
     where
         T: Tool,
         E: SyscallExecutor,
     {
-        AbandonedRuns::admit(&self.abandoned_runs)?;
         // This public non-ELF loop has no instruction consumer. Establish its
         // ownership locally even if the vCPU previously ran a subscribed Tool.
         self.set_rdtsc_interception(false)?;
@@ -4288,7 +4303,7 @@ impl KvmBackend {
         let completion = self
             .run_admitted_static_elf_with_tool::<T>(&admission, config, capture_output)
             .await;
-        admission.finish();
+        self.finish_run(admission);
         completion
     }
 

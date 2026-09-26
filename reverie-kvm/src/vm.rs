@@ -86,6 +86,7 @@ use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
 use crate::executor::ProcessExit;
 use crate::executor::ProcessSignalBindingGuard;
+use crate::executor::RunAdmission;
 use crate::executor::SignalDisposition;
 use crate::executor::conventional_exit_code;
 use crate::runtime::PendingChildCancellation;
@@ -752,7 +753,7 @@ impl GuestThreadGroup {
         let record = {
             self.reported_worker_panics
                 .lock()
-                .expect("KVM reported worker panic lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&tid)
         };
         let mut record = record.unwrap_or_else(|| WorkerPanicRecord {
@@ -764,7 +765,7 @@ impl GuestThreadGroup {
         let error = record.error.clone();
         self.completed_worker_panics
             .lock()
-            .expect("KVM completed worker panic lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(record);
         error
     }
@@ -827,7 +828,10 @@ impl GuestThreadGroup {
         for gate in gates {
             self.cancel_worker_gate(&gate);
         }
-        let workers = self.workers.lock().expect("KVM guest worker lock poisoned");
+        let workers = self
+            .workers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for &worker in workers.iter() {
             // SAFETY: the registry lock keeps each pthread ID live for this call.
             unsafe {
@@ -1197,6 +1201,14 @@ impl ProcessActionContinuation {
 }
 
 /// A single-vCPU KVM backend used to exercise the syscall transport.
+///
+/// A run that does not return, because its future was dropped or it unwound,
+/// abandons the backend. The run's guest threads and child processes are
+/// cancelled only when the backend drops, and until then share its memory,
+/// so it refuses every later run, image, and memory access. Dropping it never
+/// waits for them: each runs to its own exit, as it would had its run
+/// returned, which may need turns from the embedder's scheduler, and a
+/// reaper thread the run started joins it.
 pub struct KvmBackend {
     // Field order ensures the vCPU and VM are dropped before registered memory.
     pub(crate) vcpu: crate::clock::CountedVcpu,
@@ -1516,7 +1528,8 @@ impl KvmBackend {
     ///
     /// Call this once before entering the guest. Enabling creates the collector
     /// that every later fork and `CLONE_THREAD` child inherits; disabling drops
-    /// it, so unmeasured runs allocate and update no statistics state.
+    /// it, so unmeasured runs allocate and update no statistics state. After
+    /// an abandoned run, this configures only later runs, which are refused.
     pub fn set_backend_stats_request(&mut self, request: BackendStatsRequest) {
         self.exit_collector = request
             .is_enabled()
@@ -1547,7 +1560,8 @@ impl KvmBackend {
     /// ownership is resolved from the tool's `Tool::thread_ownership`, whose
     /// default is the safe Tool-owned "follow children" model. Call this only to
     /// force a specific ownership regardless of the tool; the override is sticky
-    /// and survives run-entry resolution. Call it before running.
+    /// and survives run-entry resolution. Call it before running. After an
+    /// abandoned run, this configures only later runs, which are refused.
     pub fn set_thread_ownership(&mut self, thread_ownership: ThreadOwnership) {
         self.thread_ownership_override = Some(thread_ownership);
         self.thread_ownership = thread_ownership;
@@ -1613,6 +1627,7 @@ impl KvmBackend {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-238): Review configurable KVM root process identity.
     pub fn set_root_pid(&mut self, pid: i32) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         let pid = validate_root_pid(pid)?;
         self.root_pid = pid;
         if let Some(loaded) = self.static_elf.as_mut() {
@@ -1659,6 +1674,11 @@ impl KvmBackend {
             .map_or(TOOL_STACK_TOP, thread_tool_stack_top)
     }
 
+    /// Ends a public run that returned; see `RunAdmission::finish`.
+    pub(crate) fn finish_run(&self, admission: RunAdmission) {
+        admission.finish(&self.thread_group);
+    }
+
     /// Releases a guest thread's transport and Tool scratch-page slot.
     ///
     /// Normal exit paths call this before notifying the scheduler or clearing
@@ -1671,14 +1691,18 @@ impl KvmBackend {
         }
     }
 
-    /// Returns the VM's guest memory.
-    pub fn memory(&self) -> &GuestMemory {
-        &self.memory
+    /// Returns the VM's guest memory. A dropped run's guest threads may still
+    /// be using it, so after one this fails until the backend drops.
+    pub fn memory(&self) -> Result<&GuestMemory> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        Ok(&self.memory)
     }
 
-    /// Returns mutable access to the VM's guest memory.
-    pub fn memory_mut(&mut self) -> &mut GuestMemory {
-        &mut self.memory
+    /// Returns mutable access to the VM's guest memory. As for
+    /// [`Self::memory`], this fails after a dropped run.
+    pub fn memory_mut(&mut self) -> Result<&mut GuestMemory> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        Ok(&mut self.memory)
     }
 
     /// Loads a static ELF executable and prepares the vCPU to enter it in long mode.
@@ -1781,6 +1805,7 @@ impl KvmBackend {
     /// Configure the deterministic seed used by getrandom and virtual random devices.
     /// Configuring an installed image starts its getrandom stream at byte zero.
     pub fn set_random_seed(&mut self, seed: u64) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         let loaded = self
             .static_elf
             .as_mut()
@@ -4266,7 +4291,15 @@ impl KvmBackend {
 
     /// Runs the installed static ELF and its forked children until the root exits.
     pub fn run_static_elf(&mut self) -> Result<i32> {
-        AbandonedRuns::admit(&self.abandoned_runs)?;
+        // Any return finishes the run; only an unwinding run leaves its
+        // backend abandoned.
+        let admission = RunAdmission::begin(&self.abandoned_runs)?;
+        let status = self.run_admitted_static_elf();
+        self.finish_run(admission);
+        status
+    }
+
+    fn run_admitted_static_elf(&mut self) -> Result<i32> {
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::with_output(loaded, None);
         let (status, _, _) = self.run_static_elf_process(&mut executor)?;
@@ -4275,7 +4308,13 @@ impl KvmBackend {
 
     /// Runs the installed ELF process tree and captures its standard output streams.
     pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
-        AbandonedRuns::admit(&self.abandoned_runs)?;
+        let admission = RunAdmission::begin(&self.abandoned_runs)?;
+        let captured = self.run_admitted_static_elf_captured();
+        self.finish_run(admission);
+        captured
+    }
+
+    fn run_admitted_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
         // Declared before the executor so its private pipe identities outlive
         // executor/child cleanup, including early-return and unwind paths.
         let capture_owner = self.prepare_captured_output(true)?;
@@ -4928,6 +4967,9 @@ impl KvmBackend {
         frame_address: u64,
         requests: &[SyscallRequest],
     ) -> Result<()> {
+        // Precedes the first frame write into memory a dropped run's guest
+        // threads may still use.
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         if !frame_address.is_multiple_of(SYSCALL_FRAME_STRIDE) {
             return Err(Error::InvalidSyscallFrameAddress(frame_address));
         }
@@ -4971,11 +5013,20 @@ impl KvmBackend {
     /// A private close against a running vCPU can also cause EINTR; this loop
     /// does not distinguish that kick from a foreign interrupt. A production
     /// closer must not use this driver without defining that distinction.
-    pub fn run<F>(&mut self, mut handler: F) -> Result<()>
+    pub fn run<F>(&mut self, handler: F) -> Result<()>
     where
         F: FnMut(Syscall, &GuestMemory) -> i64,
     {
-        AbandonedRuns::admit(&self.abandoned_runs)?;
+        let admission = RunAdmission::begin(&self.abandoned_runs)?;
+        let ran = self.run_admitted(handler);
+        self.finish_run(admission);
+        ran
+    }
+
+    fn run_admitted<F>(&mut self, mut handler: F) -> Result<()>
+    where
+        F: FnMut(Syscall, &GuestMemory) -> i64,
+    {
         self.set_rdtsc_interception(false)?;
         self.set_cpuid_interception(false)?;
         loop {
@@ -5005,9 +5056,13 @@ impl KvmBackend {
         }
     }
 
-    /// Exposes the VM fd for future backend setup without transferring ownership.
-    pub fn vm_fd(&self) -> &VmFd {
-        &self.vm
+    /// Exposes the VM fd for future backend setup without transferring
+    /// ownership. A dropped run's guest threads may still be running, each on
+    /// its own VM sharing this one's memory, so after one this fails until
+    /// the backend drops.
+    pub fn vm_fd(&self) -> Result<&VmFd> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        Ok(&self.vm)
     }
 }
 
@@ -5028,8 +5083,13 @@ impl Drop for KvmBackend {
     fn drop(&mut self) {
         self.release_thread_slot();
         if !self.is_guest_thread {
-            self.cancel_guest_threads();
-            AbandonedRuns::retire(&self.abandoned_runs);
+            self.thread_group.cancel_workers();
+            // An abandoned run's reaper joins its workers. Every public run
+            // owns an admission, so with none abandoned, each run returned
+            // and joined its own workers, and this finds none to wait for.
+            if !AbandonedRuns::retire(&self.abandoned_runs, &self.thread_group) {
+                self.thread_group.join_workers();
+            }
         }
     }
 }

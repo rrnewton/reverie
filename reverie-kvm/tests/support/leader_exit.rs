@@ -443,7 +443,7 @@ fn leader_exit_preserves_pending_worker_start_callback() {
             &directory.0,
         )
         .unwrap();
-    let memory = backend.memory().clone();
+    let memory = backend.memory().unwrap().clone();
     let control = std::sync::Arc::new(PendingStartControl::default());
     *PENDING_START.lock().unwrap() = Some(control.clone());
     let running = std::thread::spawn(move || {

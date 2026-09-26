@@ -1552,6 +1552,10 @@ pub(crate) struct ChildThread {
     id: std::thread::ThreadId,
     #[cfg(test)]
     join_observed: bool,
+    // Blocking joins that report a broken join, as `joined` would for an
+    // impossible status, before one is attempted.
+    #[cfg(test)]
+    failed_joins: usize,
 }
 
 impl ChildThread {
@@ -1585,6 +1589,8 @@ impl ChildThread {
                     id,
                     #[cfg(test)]
                     join_observed: false,
+                    #[cfg(test)]
+                    failed_joins: 0,
                 })
             }
             Err((error, (state, _))) => Err((error, state)),
@@ -1643,6 +1649,11 @@ impl ChildThread {
     fn join_blocking(&mut self) -> std::thread::Result<crate::Result<()>> {
         let pthread = self.pthread.expect("KVM child process thread joined twice");
         self.observe_join(false);
+        #[cfg(test)]
+        if self.failed_joins > 0 {
+            self.failed_joins -= 1;
+            return self.joined(libc::EINVAL);
+        }
         // SAFETY: this handle uniquely owns the joinable pthread, and releases
         // it only once a join reports that the thread terminated.
         let status = unsafe { libc::pthread_join(pthread, std::ptr::null_mut()) };
@@ -3874,6 +3885,30 @@ impl ElfExecutor {
             .await
     }
 
+    /// Takes a pending child a thread of this process handed over as it
+    /// exited. No two live processes share a pid; if two did, the second is
+    /// cancelled and still joined, as a collected child is, rather than
+    /// displacing, and so detaching, either handle.
+    fn adopt_pending_process(
+        &mut self,
+        pid: i32,
+        process: PendingProcess,
+        errors: &mut Vec<crate::Error>,
+    ) {
+        match self.pending_processes.entry(pid) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(process);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {
+                let _ = process.start.cancel_after_failure();
+                errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                    "KVM child pid {pid} transferred twice"
+                )));
+                self.completed_processes.push(process.handle);
+            }
+        }
+    }
+
     async fn finish_child_processes(&mut self, failed: bool, how: ChildJoin) -> crate::Result<()> {
         let mut errors = Vec::new();
         // Every handle stays in this executor's own maps until it is reaped,
@@ -3881,23 +3916,23 @@ impl ElfExecutor {
         // with the executor, as at any other await point. The public run's
         // RunningRoot keeps that executor, and so those children, past the
         // drop of the run's own future, and hands it to the dropped-run
-        // reaper, which finishes this join. Joining the whole map also joins a
-        // child that lost its start gate or returned an error, where
-        // collect_child_process would leave a failed start in the map.
+        // reaper, which finishes this join, retrying it if it panics. Joining
+        // the whole map also joins a child that lost its start gate or
+        // returned an error, where collect_child_process would leave a failed
+        // start in the map. A lock poisoned by an earlier panic still guards
+        // whole maps of handles, which this join must not abandon.
         if self.is_thread_group_leader() {
             let transferred = std::mem::take(
                 &mut *self
                     .transferred_processes
                     .lock()
-                    .expect("KVM transferred child-process lock poisoned"),
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
             // BTreeMap gives virtual TID order, independent of host completion.
-            // Vec entries preserve every transfer, even if a TID is reused.
             for (_, transfers) in transferred {
                 for children in transfers {
                     for (pid, process) in children.pending {
-                        let previous = self.pending_processes.insert(pid, process);
-                        debug_assert!(previous.is_none(), "KVM child pid {pid} transferred twice");
+                        self.adopt_pending_process(pid, process, &mut errors);
                     }
                     self.completed_processes.extend(children.completed);
                 }
@@ -3916,15 +3951,26 @@ impl ElfExecutor {
             let mut orphanage = self
                 .namespace_orphanage
                 .lock()
-                .expect("KVM namespace orphanage lock poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             for (pid, process) in std::mem::take(&mut self.pending_processes) {
                 if process.start.start().is_err() {
                     errors.push(crate::Error::UnexpectedVcpuExit(format!(
                         "KVM child process {pid} lost its parent start gate"
                     )));
                 }
-                let previous = orphanage.insert(pid, process);
-                debug_assert!(previous.is_none(), "KVM orphan pid {pid} transferred twice");
+                match orphanage.entry(pid) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(process);
+                    }
+                    // No two live processes share a pid. If they did, the
+                    // second is still joined, as a collected child is.
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        errors.push(crate::Error::UnexpectedVcpuExit(format!(
+                            "KVM orphan pid {pid} transferred twice"
+                        )));
+                        self.completed_processes.push(process.handle);
+                    }
+                }
             }
         }
         if failed {
@@ -4021,7 +4067,7 @@ impl ElfExecutor {
         let orphanage = || {
             self.namespace_orphanage
                 .lock()
-                .expect("KVM namespace orphanage lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
         };
         loop {
             // Each batch is the orphans present when it starts; any adopted
@@ -4053,7 +4099,18 @@ impl ElfExecutor {
                     // descendant adds its own orphans to it.
                     ChildJoin::Blocking => {
                         let mut process = orphan(&mut orphanage());
-                        (process.handle.thread.join_blocking(), process)
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            process.handle.thread.join_blocking()
+                        })) {
+                            Ok(joined) => (joined, process),
+                            // A failed join still owns the pthread. Return it
+                            // to the orphanage, where a retry finds it, rather
+                            // than detach it.
+                            Err(payload) => {
+                                orphanage().insert(pid, process);
+                                std::panic::resume_unwind(payload);
+                            }
+                        }
                     }
                     ChildJoin::Suspending => {
                         let joined = std::future::poll_fn(|cx| {
@@ -5888,12 +5945,14 @@ impl ElfExecutor {
 /// Public runs a backend admitted that never returned: a run whose future was
 /// dropped, or that unwound, before it finished. Such a run's guest threads
 /// are cancelled only when its backend drops, and until then they share its
-/// memory and run state, so the backend admits no further run or image. Each
-/// such root stays here, with every child it owns, until that drop.
+/// memory and run state, so the backend admits no further run, image, or
+/// memory access. Each such root stays here, with every child it owns, until
+/// that drop hands it, and the run's guest workers, to the run's reaper.
 #[derive(Default)]
 pub(crate) struct AbandonedRuns {
     abandoned: bool,
-    roots: Vec<(ElfExecutor, DroppedRunReaper)>,
+    reaper: Option<DroppedRunReaper>,
+    roots: Vec<ElfExecutor>,
 }
 
 impl AbandonedRuns {
@@ -5908,23 +5967,43 @@ impl AbandonedRuns {
         Ok(())
     }
 
-    /// For the backend's drop, once its guest threads, which hand their forks
-    /// to the root as they exit, have been joined. This never waits for a
-    /// child: the reaper each run established before starting joins them.
-    pub(crate) fn retire(runs: &Mutex<Self>) {
-        let roots = std::mem::take(&mut Self::lock(runs).roots);
-        for (root, reaper) in roots {
-            reaper.adopt(root);
-        }
+    fn abandon(&mut self, reaper: &DroppedRunReaper) {
+        self.abandoned = true;
+        // A backend runs one run at a time, so after its first abandoned run
+        // it admits none; that run's reaper retires everything left here.
+        self.reaper.get_or_insert_with(|| reaper.clone());
+    }
+
+    /// For the backend's drop, once it has cancelled its guest threads. This
+    /// never waits: an abandoned run's workers, like its children, may need
+    /// turns from the embedder's scheduler to exit, so its reaper joins them,
+    /// before its roots, to which exiting workers hand their forks. Returns
+    /// whether a run was abandoned.
+    pub(crate) fn retire(runs: &Mutex<Self>, workers: &Arc<crate::vm::GuestThreadGroup>) -> bool {
+        let (reaper, roots) = {
+            let mut runs = Self::lock(runs);
+            (runs.reaper.take(), std::mem::take(&mut runs.roots))
+        };
+        let Some(reaper) = reaper else {
+            // Only an abandoned run parks a root, and abandoning establishes
+            // a reaper.
+            debug_assert!(roots.is_empty());
+            return false;
+        };
+        reaper.adopt(Retirement {
+            workers: Some(workers.clone()),
+            roots,
+        });
+        true
     }
 }
 
 /// One public run's admission. Unless the run finishes, dropping this marks
-/// its backend abandoned.
+/// its backend abandoned and keeps the run's reaper for the backend's drop.
 pub(crate) struct RunAdmission {
     runs: Arc<Mutex<AbandonedRuns>>,
-    reaper: DroppedRunReaper,
-    finished: bool,
+    reaper: Option<DroppedRunReaper>,
+    reaping: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RunAdmission {
@@ -5933,11 +6012,11 @@ impl RunAdmission {
     /// touched.
     pub(crate) fn begin(runs: &Arc<Mutex<AbandonedRuns>>) -> crate::Result<Self> {
         AbandonedRuns::admit(runs)?;
-        let reaper = DroppedRunReaper::establish()?;
+        let (reaper, reaping) = DroppedRunReaper::spawn()?;
         Ok(Self {
             runs: runs.clone(),
-            reaper,
-            finished: false,
+            reaper: Some(reaper),
+            reaping: Some(reaping),
         })
     }
 
@@ -5945,19 +6024,36 @@ impl RunAdmission {
         RunningRoot {
             executor: Some(executor),
             runs: self.runs.clone(),
-            reaper: self.reaper.clone(),
+            reaper: self.reaper.clone().expect("KVM run admission finished"),
         }
     }
 
-    pub(crate) fn finish(mut self) {
-        self.finished = true;
+    /// A run that returned joined its own children, and on every natural
+    /// path its workers, so its reaper has nothing to retire and stops at
+    /// once; joining it here means no reaper outlives a returned run. An
+    /// error can return before the workers were joined; that run is abandoned
+    /// instead, so its backend admits nothing more and its drop hands them to
+    /// this reaper rather than waiting for them.
+    pub(crate) fn finish(mut self, workers: &crate::vm::GuestThreadGroup) {
+        if workers.has_unjoined_workers() {
+            return;
+        }
+        let reaper = self.reaper.take().expect("KVM run admission finished");
+        let reaping = self.reaping.take().expect("KVM run admission finished");
+        if reaper.release() {
+            // The reaper runs no embedder code, and this released its last
+            // handle with nothing adopted, so this join is bounded.
+            let _ = reaping.join();
+        }
     }
 }
 
 impl Drop for RunAdmission {
     fn drop(&mut self) {
-        if !self.finished {
-            AbandonedRuns::lock(&self.runs).abandoned = true;
+        if let Some(reaper) = self.reaper.take() {
+            // The reaper thread outlives this handle: it exits on its own
+            // once it has retired whatever the backend's drop hands it.
+            AbandonedRuns::lock(&self.runs).abandon(&reaper);
         }
     }
 }
@@ -6005,80 +6101,169 @@ impl Drop for RunningRoot {
         if let Some(mut executor) = self.executor.take() {
             executor.release_files_on_exit();
             let mut runs = AbandonedRuns::lock(&self.runs);
-            runs.abandoned = true;
-            runs.roots.push((executor, self.reaper.clone()));
+            runs.abandon(&self.reaper);
+            runs.roots.push(executor);
         }
     }
 }
 
-type ReaperSlot = Mutex<Option<(DroppedRunReaper, std::thread::JoinHandle<()>)>>;
+/// What a dropped run leaves its reaper: the run's guest workers, then its
+/// roots. Each step leaves what it has not finished in place, so a step that
+/// panics can be retried without dropping, and so detaching, anything.
+pub(crate) struct Retirement {
+    workers: Option<Arc<crate::vm::GuestThreadGroup>>,
+    roots: Vec<ElfExecutor>,
+}
 
-/// The process's one reaper, established by the first public run.
-static DROPPED_RUN_REAPER: ReaperSlot = Mutex::new(None);
+impl Retirement {
+    #[cfg_attr(not(test), allow(unused_variables))]
+    fn advance(&mut self, reaper: &ReaperShared) {
+        if let Some(workers) = &self.workers {
+            workers.join_workers();
+            self.workers = None;
+        }
+        while let Some(root) = self.roots.first_mut() {
+            #[cfg(test)]
+            reaper.injected_panic();
+            // No caller remains to receive a dropped run's result. A child's
+            // panic payload is already retained by its run.
+            let _ = root.join_child_processes_after_failure();
+            drop(self.roots.remove(0));
+        }
+    }
+}
 
-/// Joins the children of dropped public runs. Such a child runs to its own
-/// exit, as it would had its run returned, and may need turns from the
-/// embedder's scheduler to get there, so no thread that may be the embedder's
-/// executor can wait for it; a backend's drop is such a thread. Like the init
-/// process that adopts orphans, the reaper lasts as long as the process. It
-/// holds a root only until it has joined every child that root owns.
-#[derive(Clone)]
+#[derive(Default)]
+struct ReaperState {
+    adopted: Vec<Retirement>,
+    /// Live `DroppedRunReaper`s. Only they can adopt, so with none left and
+    /// nothing adopted, the reaper stops.
+    handles: usize,
+    #[cfg(test)]
+    inject_panics: usize,
+    #[cfg(test)]
+    attempts: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct ReaperShared {
+    state: Mutex<ReaperState>,
+    changed: Condvar,
+}
+
+impl ReaperShared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, ReaperState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[cfg(test)]
+    fn injected_panic(&self) {
+        let mut state = self.lock();
+        if state.inject_panics > 0 {
+            state.inject_panics -= 1;
+            drop(state);
+            panic!("injected dropped-run retirement panic");
+        }
+    }
+}
+
+/// Joins what one dropped public run left running. Such a child, or guest
+/// worker, runs to its own exit, as it would had its run returned, and may
+/// need turns from the embedder's scheduler to get there, so no thread that
+/// may be the embedder's executor can wait for it; a backend's drop is such a
+/// thread. So each public run spawns its own reaper before it starts, and a
+/// run that never exits delays no other run's retirement. Like the init
+/// process that adopts orphans, a reaper holds what it adopted until it has
+/// joined every thread that owns, and never drops it earlier.
 pub(crate) struct DroppedRunReaper {
-    roots: std::sync::mpsc::Sender<ElfExecutor>,
+    shared: Arc<ReaperShared>,
 }
 
 impl DroppedRunReaper {
-    fn establish() -> crate::Result<Self> {
-        // An armed refusal must meet an actual spawn, even when an earlier
-        // test's run already started the process's reaper.
-        #[cfg(test)]
-        if crate::failure::spawn_refusal::is_armed() {
-            return Self::establish_in(&ReaperSlot::default());
-        }
-        Self::establish_in(&DROPPED_RUN_REAPER)
-    }
-
-    fn establish_in(slot: &ReaperSlot) -> crate::Result<Self> {
-        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((reaper, _)) = &*slot {
-            return Ok(reaper.clone());
-        }
-        let (roots, adopted) = std::sync::mpsc::channel();
-        let handle = crate::failure::spawn_owned(
+    fn spawn() -> crate::Result<(Self, std::thread::JoinHandle<()>)> {
+        let shared = Arc::new(ReaperShared::default());
+        shared.lock().handles = 1;
+        let reaping = crate::failure::spawn_owned(
             std::thread::Builder::new().name("reverie-kvm-reaper".into()),
-            adopted,
+            shared.clone(),
             Self::reap,
         )
         .map_err(|(error, _)| crate::Error::from(error).cleanup("dropped-run reaper spawn"))?;
-        let reaper = Self { roots };
-        *slot = Some((reaper.clone(), handle));
-        Ok(reaper)
+        Ok((Self { shared }, reaping))
     }
 
-    fn reap(adopted: std::sync::mpsc::Receiver<ElfExecutor>) {
-        // A root whose join broke an invariant may still own unreaped
-        // children; it is kept, never dropped, so none is detached.
-        let mut broken = Vec::new();
-        for mut root in adopted {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                root.join_child_processes_after_failure()
-            })) {
-                // No caller remains to receive a dropped run's result. A
-                // child's panic payload is already retained by its run.
-                Ok(_) => drop(root),
-                Err(payload) => broken.push((root, payload)),
+    fn reap(shared: Arc<ReaperShared>) {
+        // A retirement step's panic breaks an invariant, but the retirement
+        // still owns every thread it has not joined, so it is retried, never
+        // dropped: a join that cannot finish keeps its threads here rather
+        // than detach them. Each payload is kept until the reaper stops.
+        let mut panics = Vec::new();
+        let mut state = shared.lock();
+        loop {
+            if !state.adopted.is_empty() {
+                let mut retirement = state.adopted.remove(0);
+                drop(state);
+                let mut backoff = std::time::Duration::from_millis(1);
+                loop {
+                    #[cfg(test)]
+                    {
+                        shared.lock().attempts += 1;
+                    }
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        retirement.advance(&shared)
+                    })) {
+                        Ok(()) => break,
+                        Err(payload) => panics.push(payload),
+                    }
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
+                }
+                state = shared.lock();
+            } else if state.handles == 0 {
+                return;
+            } else {
+                state = shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
         }
-        std::mem::forget(broken);
     }
 
-    /// Never blocks. The reaper stops only once every sender is dropped, and
-    /// it survives a panicking join, so the send cannot fail; if it did, the
-    /// root would be kept rather than detach its children.
-    fn adopt(&self, root: ElfExecutor) {
-        if let Err(std::sync::mpsc::SendError(root)) = self.roots.send(root) {
-            std::mem::forget(root);
+    /// Never blocks and cannot fail: the reaper stops only once no handle, so
+    /// no adopter, remains.
+    pub(crate) fn adopt(&self, retirement: Retirement) {
+        self.shared.lock().adopted.push(retirement);
+        self.shared.changed.notify_all();
+    }
+
+    /// Drops this handle, reporting whether it was the last and the reaper
+    /// had adopted nothing, so that the reaper stops at once.
+    fn release(self) -> bool {
+        let idle = {
+            let state = self.shared.lock();
+            state.handles == 1 && state.adopted.is_empty()
+        };
+        drop(self);
+        idle
+    }
+}
+
+impl Clone for DroppedRunReaper {
+    fn clone(&self) -> Self {
+        self.shared.lock().handles += 1;
+        Self {
+            shared: self.shared.clone(),
         }
+    }
+}
+
+impl Drop for DroppedRunReaper {
+    fn drop(&mut self) {
+        self.shared.lock().handles -= 1;
+        self.shared.changed.notify_all();
     }
 }
 
@@ -45446,6 +45631,49 @@ mod tests {
         executor.start_pending_child_processes().unwrap();
         started_receiver.recv().unwrap();
         executor.join_all_child_processes().unwrap();
+    }
+
+    #[test]
+    fn a_duplicate_child_transfer_still_joins_both_handles() {
+        let directory = TestDir::new();
+        let mut owner = ElfExecutor::new(test_state(&directory.0), false);
+        let mut worker = owner.thread_child(2).unwrap();
+        let lifetime = Arc::new(());
+        // No two live processes share a pid. If a worker ever handed its
+        // leader one that did, neither handle may be dropped, and so detached.
+        // The transferred duplicate outlives the leader's own child, so only
+        // a join of the duplicate itself waits for it to end.
+        for (executor, teardown) in [(&mut owner, 0), (&mut worker, 300)] {
+            let (start, wait) = std::sync::mpsc::channel();
+            let child_lifetime = lifetime.clone();
+            let handle = ChildThread::spawn(move || {
+                let _ = wait.recv();
+                // A detached thread is still sleeping when its join returns.
+                std::thread::sleep(std::time::Duration::from_millis(teardown));
+                drop(child_lifetime);
+                Ok(())
+            });
+            executor.register_child_process(
+                6,
+                start,
+                Arc::new(ChildCompletionSlot::default()),
+                handle,
+            );
+        }
+        worker.transfer_child_processes_to_owner();
+        drop(worker);
+        let error = owner.join_all_child_processes().unwrap_err().to_string();
+        assert!(
+            error.contains("KVM child pid 6 transferred twice"),
+            "the collision was not reported: {error}"
+        );
+        assert!(owner.pending_processes.is_empty());
+        assert!(owner.completed_processes.is_empty());
+        assert_eq!(
+            Arc::strong_count(&lifetime),
+            1,
+            "the join returned before both threads ended"
+        );
     }
 
     #[test]

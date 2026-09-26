@@ -1001,3 +1001,63 @@ fn failed_spawn_transfer_guard_preserves_pending_payloads_on_future_drop() {
         assert_eq!(second_drops.load(Ordering::SeqCst), 1);
     }
 }
+
+#[test]
+fn a_reaper_joins_a_worker_whose_handle_lock_was_poisoned() {
+    let runs = Arc::new(std::sync::Mutex::new(
+        crate::executor::AbandonedRuns::default(),
+    ));
+    let group = Arc::new(GuestThreadGroup::default());
+    let lifetime = Arc::new(());
+    let (release, held) = mpsc::channel::<()>();
+    let worker = {
+        let lifetime = lifetime.clone();
+        std::thread::spawn(move || {
+            let _lifetime = lifetime;
+            let _ = held.recv();
+            Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
+        })
+    };
+    group.add_worker_handle(4, worker);
+    // An earlier panic poisoned the handle lock after worker 4 was added.
+    {
+        let group = group.clone();
+        std::thread::spawn(move || {
+            let _held = group.worker_handles.lock().unwrap();
+            panic!("poisoning a dropped run's worker-handle lock");
+        })
+        .join()
+        .unwrap_err();
+    }
+    assert!(group.worker_handles.is_poisoned());
+
+    // The run is dropped, and the backend's drop hands worker 4 to its reaper.
+    drop(crate::executor::RunAdmission::begin(&runs).unwrap());
+    let dropping = std::time::Instant::now();
+    assert!(crate::executor::AbandonedRuns::retire(&runs, &group));
+    assert!(dropping.elapsed() < Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(group.has_unjoined_workers());
+    assert_eq!(
+        Arc::strong_count(&lifetime),
+        2,
+        "the worker ended while held"
+    );
+    assert_eq!(
+        Arc::strong_count(&group),
+        2,
+        "the reaper let go of the worker before joining it"
+    );
+
+    release.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while Arc::strong_count(&group) != 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reaper never joined a worker behind a poisoned handle lock"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!group.has_unjoined_workers());
+    assert_eq!(Arc::strong_count(&lifetime), 1);
+}

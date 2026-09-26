@@ -230,6 +230,7 @@ fn run_terminal(mode: u8, code: &[u8]) -> (reverie_kvm::ToolRunCompletion<Termin
     let mut marker = [0; 16];
     backend
         .memory()
+        .unwrap()
         .read(LOAD_ADDRESS + 0x100, &mut marker)
         .unwrap();
     (completion, marker)
