@@ -35,6 +35,8 @@ use std::cmp::Ordering::Equal;
 use std::cmp::Ordering::Greater;
 use std::cmp::Ordering::Less;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 use reverie::Errno;
 use reverie::Pid;
@@ -90,6 +92,35 @@ pub const SKID_MARGIN_OVERRIDE_ENV: &str = "REVERIE_SKID_MARGIN_OVERRIDE";
 pub const WITNESS_TOKEN_ENV: &str = "HERMIT_SKID_WITNESS_TOKEN";
 
 static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
+
+/// Timer signals taken by [`Timer::consume_signal`] since the last
+/// [`take_consumed_timer_signals`], by the timer's state when each was taken.
+static CONSUMED_WHILE_SCHEDULED: AtomicU64 = AtomicU64::new(0);
+static CONSUMED_WHILE_ARMED: AtomicU64 = AtomicU64::new(0);
+static CONSUMED_WHILE_CANCELLED: AtomicU64 = AtomicU64::new(0);
+
+/// Timer signals that stopped a step the controller made for its own
+/// purposes and were taken rather than delivered, by the timer's state when
+/// each was taken. The counts are process-wide.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ConsumedTimerSignals {
+    /// A request made since the signal was raised had replaced its event.
+    pub scheduled: u64,
+    /// The stop being served was the first observed since the request.
+    pub armed: u64,
+    /// An earlier stop had already cancelled the event.
+    pub cancelled: u64,
+}
+
+/// Reads and resets the process-wide [`ConsumedTimerSignals`] counts, so that
+/// a test can show which of its timer states it reached.
+pub fn take_consumed_timer_signals() -> ConsumedTimerSignals {
+    ConsumedTimerSignals {
+        scheduled: CONSUMED_WHILE_SCHEDULED.swap(0, AtomicOrdering::Relaxed),
+        armed: CONSUMED_WHILE_ARMED.swap(0, AtomicOrdering::Relaxed),
+        cancelled: CONSUMED_WHILE_CANCELLED.swap(0, AtomicOrdering::Relaxed),
+    }
+}
 
 pub(crate) fn get_pmu_config() -> &'static PmuConfig {
     PMU_CONFIG.get_or_init(PmuConfig::new)
@@ -627,6 +658,25 @@ impl Timer {
         }
     }
 
+    /// Take a timer signal that stopped a step the controller made for its
+    /// own purposes, such as the single step that runs an injected syscall,
+    /// so that the caller can resume that step without delivering it.
+    ///
+    /// Returns `false`, leaving everything unchanged, if the signal is not
+    /// this timer's. Otherwise the signal is dropped, as
+    /// [`Timer::handle_signal`] would drop it at the guest's next stop had the
+    /// controller not stepped first: the stop the controller is serving was
+    /// observed before the signal and cancels the event, unless a request made
+    /// since has replaced it. With no request since, the timer is disabled.
+    ///
+    /// Preconditions: task is in signal-delivery-stop for the timer's signal.
+    pub(crate) fn consume_signal(&mut self, task: &Stopped) -> Result<bool, TraceError> {
+        match self.inner_mut_noinit() {
+            Some(t) => t.consume_signal(task),
+            None => Ok(false),
+        }
+    }
+
     /// When a signal is received, this method drives the timer event to
     /// completion via single stepping, after checking that the signal was meant
     /// for this specific timer. This *must* be called when a timer signal is
@@ -1115,6 +1165,35 @@ impl TimerImpl {
             .expect("Timer tgkill error indicates a bug");
             self.artificial_signal_sent = true;
         }
+    }
+
+    fn consume_signal(&mut self, task: &Stopped) -> Result<bool, TraceError> {
+        let signal = task.getsiginfo()?;
+        let controller = self.controller_artificial_signal(&signal)?;
+        if !self.generated_signal(&signal, controller) {
+            return Ok(false);
+        }
+        if controller {
+            self.artificial_signal_sent = false;
+        }
+        let taken = match self.timer_status {
+            // A request made since the signal was raised replaced the event
+            // it was raised for; that request arranges its own signal.
+            EventStatus::Scheduled => &CONSUMED_WHILE_SCHEDULED,
+            // The stop being handled was observed before the signal, so the
+            // event cannot fire: had the signal stopped the guest after that
+            // stop instead, its own stop would find the event cancelled.
+            EventStatus::Armed => {
+                self.disable_timer_before_stepping();
+                &CONSUMED_WHILE_ARMED
+            }
+            EventStatus::Cancelled => {
+                self.disable_timer_before_stepping();
+                &CONSUMED_WHILE_CANCELLED
+            }
+        };
+        taken.fetch_add(1, AtomicOrdering::Relaxed);
+        Ok(true)
     }
 
     async fn handle_signal(
