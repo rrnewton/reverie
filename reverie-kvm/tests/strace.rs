@@ -55,6 +55,7 @@ fn strace_tool_records_write_syscall_name() {
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend
         .memory_mut()
+        .unwrap()
         .write(MESSAGE_ADDRESS, b"hello")
         .unwrap();
     backend
@@ -104,6 +105,7 @@ fn strace_tool_records_real_decoded_arguments() {
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend
         .memory_mut()
+        .unwrap()
         .write(MESSAGE_ADDRESS, b"hello")
         .unwrap();
     backend

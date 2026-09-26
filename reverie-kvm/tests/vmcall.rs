@@ -71,6 +71,7 @@ fn guest_write_syscall_is_intercepted_via_vmcall() {
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend
         .memory_mut()
+        .unwrap()
         .write(MESSAGE_ADDRESS, b"hello")
         .unwrap();
     backend
@@ -264,7 +265,11 @@ fn append_cpuid_probe(program: &mut Vec<u8>, leaf: u32, subleaf: u32, output: u1
 
 fn read_cpuid_result(backend: &KvmBackend, address: u16) -> [u32; 4] {
     let mut bytes = [0; 16];
-    backend.memory().read(address.into(), &mut bytes).unwrap();
+    backend
+        .memory()
+        .unwrap()
+        .read(address.into(), &mut bytes)
+        .unwrap();
     std::array::from_fn(|index| {
         u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
     })
@@ -358,6 +363,7 @@ fn guest_write_syscall_runs_shared_reverie_tool() {
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend
         .memory_mut()
+        .unwrap()
         .write(MESSAGE_ADDRESS, b"hello")
         .unwrap();
     backend
@@ -387,6 +393,7 @@ fn default_tool_handler_tail_injects_through_executor() {
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend
         .memory_mut()
+        .unwrap()
         .write(MESSAGE_ADDRESS, b"hello")
         .unwrap();
     backend

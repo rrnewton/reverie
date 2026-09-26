@@ -66,12 +66,17 @@ impl WorkerJoins {
     }
 
     pub(super) fn subscribe(&self) -> GuestCancellationSubscription {
-        self.wake.lock().unwrap().receiver.clone()
+        self.wake
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .receiver
+            .clone()
     }
 
     pub(super) fn notify(&self) {
         self.changed.notify_all();
-        let previous = { std::mem::take(&mut *self.wake.lock().unwrap()) };
+        let previous =
+            { std::mem::take(&mut *self.wake.lock().unwrap_or_else(|error| error.into_inner())) };
         let _ = previous.sender.send(());
     }
 
@@ -208,7 +213,12 @@ impl GuestThreadGroup {
     #[cfg(test)]
     pub(super) fn has_owned_worker_joins(&self) -> bool {
         let state = self.worker_joins.lock();
-        !state.active.is_empty() || !self.worker_handles.lock().unwrap().is_empty()
+        !state.active.is_empty()
+            || !self
+                .worker_handles
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty()
     }
 
     /// Observe transfer of this exact target to this exact joiner. Unlike the
@@ -221,7 +231,10 @@ impl GuestThreadGroup {
         joiner: ThreadId,
     ) -> bool {
         let state = self.worker_joins.lock();
-        let handles = self.worker_handles.lock().unwrap();
+        let handles = self
+            .worker_handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         state
             .active
             .get(&tid)
@@ -327,7 +340,7 @@ impl GuestThreadGroup {
                 };
                 self.worker_errors
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|error| error.into_inner())
                     .entry(tid)
                     .or_default()
                     .push(error);
@@ -389,7 +402,10 @@ impl GuestThreadGroup {
         if state.draining.is_some() || state.reaping {
             return Ok((false, false));
         }
-        let mut handles = self.worker_handles.lock().unwrap();
+        let mut handles = self
+            .worker_handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if handles.is_empty()
             && state.active.is_empty()
             && state.job.is_none()
@@ -449,7 +465,10 @@ impl GuestThreadGroup {
     pub(super) fn discard_unstarted_worker(&self, tid: i32) -> Result<bool> {
         let worker = {
             let mut state = self.worker_joins.lock();
-            let mut handles = self.worker_handles.lock().unwrap();
+            let mut handles = self
+                .worker_handles
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let Some(index) = handles.iter().position(|worker| {
                 worker.tid == tid
                     && worker
@@ -480,6 +499,22 @@ impl GuestThreadGroup {
         Ok(true)
     }
 
+    /// Whether `join_workers` would still wait for a worker or the join
+    /// helper. A run that returns with this set did not join its workers, so
+    /// it is retired like a dropped run instead of by its backend's drop.
+    pub(crate) fn has_unjoined_workers(&self) -> bool {
+        let state = self.worker_joins.lock();
+        let handles = self
+            .worker_handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        !handles.is_empty()
+            || !state.active.is_empty()
+            || state.job.is_some()
+            || state.launching
+            || state.handle.is_some()
+    }
+
     /// Terminal boundary only: the callback has ended and the caller has
     /// published any failure before waiting for physical worker/helper exit.
     pub(crate) fn join_workers(&self) {
@@ -502,7 +537,10 @@ impl GuestThreadGroup {
         loop {
             self.collect_helper_result();
             let mut state = self.worker_joins.lock();
-            let mut handles = self.worker_handles.lock().unwrap();
+            let mut handles = self
+                .worker_handles
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             // A pre-body failure cannot own a job; a later helper unwind can
             // still leave a queued job untouched. Recover that original before
             // waiting for the failed helper, without dropping its handle.

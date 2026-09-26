@@ -378,7 +378,7 @@ fn check_terminal_contexts(natural_retirement: bool, modes: &[u8]) {
                 &directory.0,
             )
             .unwrap();
-        *TERMINAL_MEMORY.lock().unwrap() = Some(backend.memory().clone());
+        *TERMINAL_MEMORY.lock().unwrap() = Some(backend.memory().unwrap().clone());
         let result = futures::executor::block_on(backend.run_static_elf_with_tool::<TerminalTool>(
             mode | if natural_retirement { 0x80 } else { 0 },
             true,

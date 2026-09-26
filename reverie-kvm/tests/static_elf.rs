@@ -5860,7 +5860,11 @@ fn worker_exit_group_terminates_the_root_with_its_status() {
             backend.run_static_elf().unwrap()
         };
         let mut child_tid = [0; std::mem::size_of::<i32>()];
-        backend.memory().read(CHILD_TID, &mut child_tid).unwrap();
+        backend
+            .memory()
+            .unwrap()
+            .read(CHILD_TID, &mut child_tid)
+            .unwrap();
         let remained_blocked = set_interrupt_signal_blocked(was_blocked);
         assert!(remained_blocked, "with_tool={with_tool}");
         assert_eq!(exit_code, 37, "with_tool={with_tool}");
@@ -5987,6 +5991,7 @@ fn static_elf_executes_syscall_and_exits() {
 
     backend
         .memory_mut()
+        .unwrap()
         .write(LOAD_ADDRESS + 0x1000, &[0xff])
         .unwrap();
 
@@ -6886,7 +6891,11 @@ fn tool_receives_post_exec_with_guest_auxv() {
         .at_random()
         .expect("post-exec hook did not observe AT_RANDOM");
     let mut random = [0; 16];
-    backend.memory().read(address as u64, &mut random).unwrap();
+    backend
+        .memory()
+        .unwrap()
+        .read(address as u64, &mut random)
+        .unwrap();
     assert_eq!(random, POST_EXEC_RANDOM);
 }
 
@@ -7070,6 +7079,7 @@ fn canonical_initial_execveat_does_not_reload_installed_image() {
     const SENTINEL: [u8; 16] = *b"initial-exec-ok!";
     backend
         .memory_mut()
+        .unwrap()
         .write(SENTINEL_ADDRESS, &SENTINEL)
         .unwrap();
 
@@ -7085,6 +7095,7 @@ fn canonical_initial_execveat_does_not_reload_installed_image() {
     let mut observed = [0; SENTINEL.len()];
     backend
         .memory()
+        .unwrap()
         .read(SENTINEL_ADDRESS, &mut observed)
         .unwrap();
     assert_eq!(observed, SENTINEL);
@@ -7156,6 +7167,7 @@ fn successful_exec_discards_bytes_outside_replacement_image() {
             .unwrap();
         backend
             .memory_mut()
+            .unwrap()
             .write(SENTINEL_ADDRESS, &SENTINEL)
             .unwrap();
         let (exit_code, stdout, stderr) = if with_tool {
@@ -7239,7 +7251,11 @@ fn tool_receives_post_exec_after_root_execve() {
         .at_random()
         .expect("replacement post-exec hook did not observe AT_RANDOM");
     let mut random = [0; POST_EXEC_RANDOM.len()];
-    backend.memory().read(address as u64, &mut random).unwrap();
+    backend
+        .memory()
+        .unwrap()
+        .read(address as u64, &mut random)
+        .unwrap();
     assert_eq!(random, POST_EXEC_RANDOM);
 }
 
@@ -7387,9 +7403,10 @@ fn malformed_exec_is_rejected_during_preflight_without_resetting_image() {
             .unwrap();
         backend
             .memory_mut()
+            .unwrap()
             .write(SENTINEL_ADDRESS, &SENTINEL)
             .unwrap();
-        let original_memory = backend.memory().clone();
+        let original_memory = backend.memory().unwrap().clone();
         let (exit_code, stdout, stderr) = if with_tool {
             let (_, exit_code, stdout, stderr) = futures::executor::block_on(
                 backend.run_static_elf_with_tool::<StraceTool>((), true),
@@ -7405,6 +7422,7 @@ fn malformed_exec_is_rejected_during_preflight_without_resetting_image() {
         let mut observed = [0; SENTINEL.len()];
         backend
             .memory()
+            .unwrap()
             .read(SENTINEL_ADDRESS, &mut observed)
             .unwrap();
         assert_eq!(observed, SENTINEL, "with_tool={with_tool}");
@@ -11358,7 +11376,7 @@ int main(void) {
     SIGNAL_EXIT_OBSERVED_TID.store(u64::MAX, Ordering::SeqCst);
     *SIGNAL_EXIT_MEMORY
         .lock()
-        .expect("signal-exit memory lock poisoned") = Some(backend.memory().clone());
+        .expect("signal-exit memory lock poisoned") = Some(backend.memory().unwrap().clone());
 
     let result = futures::executor::block_on(
         backend.run_static_elf_with_tool::<SignalExitOrderTool>((), true),
@@ -18110,6 +18128,8 @@ struct DroppedRunTeardown {
     /// If set, each teardown instead waits for a turn from the test's
     /// scheduler, which only the thread polling the run grants.
     turns: Option<std::sync::mpsc::Sender<DroppedRunTurn>>,
+    /// Each thread whose teardown ran to its end, once per teardown.
+    finished: Mutex<Vec<i32>>,
 }
 
 struct DroppedRunThread {
@@ -18139,6 +18159,7 @@ impl Drop for DroppedRunThread {
         // An owner that joins this thread returns only after its lifetime
         // count is released; one that detached it returns while it sleeps.
         std::thread::sleep(std::time::Duration::from_millis(100));
+        self.teardown.finished.lock().unwrap().push(self.pid);
     }
 }
 
@@ -18198,11 +18219,11 @@ impl GlobalTool for DroppedRunGlobal {
     async fn receive_rpc(&self, _from: Pid, (): ()) {}
 }
 
-/// Every intercepted call waits for a turn from the test's scheduler, and a
-/// child's first one holds its host thread at teardown.
+/// Every intercepted call waits for a turn from the test's scheduler, and the
+/// first one on any thread but the root's holds its host thread at teardown.
+/// Turns are keyed by thread: a CLONE_VM worker shares its process's Tool.
 #[derive(Default)]
 struct DroppedRunTool {
-    pid: i32,
     config: Option<DroppedRunConfig>,
 }
 
@@ -18211,9 +18232,8 @@ impl Tool for DroppedRunTool {
     type GlobalState = DroppedRunGlobal;
     type ThreadState = ();
 
-    fn new(pid: Pid, config: &u64) -> Self {
+    fn new(_pid: Pid, config: &u64) -> Self {
         Self {
-            pid: pid.as_raw(),
             config: DROPPED_RUN_CONFIGS.lock().unwrap().get(config).cloned(),
         }
     }
@@ -18233,6 +18253,7 @@ impl Tool for DroppedRunTool {
             .config
             .as_ref()
             .expect("dropped-run config disappeared");
+        let tid = guest.tid().as_raw();
         let (number, mut args) = syscall.into_parts();
         if number == Sysno::wait4 {
             // As Hermit's scheduler does, poll a blocking wait4 between turns,
@@ -18240,17 +18261,17 @@ impl Tool for DroppedRunTool {
             let blocking = args.arg2 & libc::WNOHANG as usize == 0;
             args.arg2 |= libc::WNOHANG as usize;
             loop {
-                dropped_run_turn(config, self.pid, Some(number)).await;
+                dropped_run_turn(config, tid, Some(number)).await;
                 let result = guest.inject(Syscall::from_raw(number, args)).await?;
                 if result != 0 || !blocking {
                     return Ok(result);
                 }
             }
         }
-        if self.pid != DROPPED_RUN_ROOT {
+        if tid != DROPPED_RUN_ROOT {
             DROPPED_RUN_THREAD.with(|thread| {
                 thread.borrow_mut().get_or_insert_with(|| DroppedRunThread {
-                    pid: self.pid,
+                    pid: tid,
                     teardown: config.teardown.clone(),
                     _lifetime: config
                         .teardown
@@ -18260,22 +18281,14 @@ impl Tool for DroppedRunTool {
                 });
             });
         }
-        dropped_run_turn(config, self.pid, Some(number)).await;
+        dropped_run_turn(config, tid, Some(number)).await;
         if number == Sysno::exit_group {
             let status = args.arg0 as i64;
-            config
-                .calls
-                .lock()
-                .unwrap()
-                .push((self.pid, number, status));
+            config.calls.lock().unwrap().push((tid, number, status));
             guest.tail_inject(syscall).await
         } else {
             let result = guest.inject(syscall).await?;
-            config
-                .calls
-                .lock()
-                .unwrap()
-                .push((self.pid, number, result));
+            config.calls.lock().unwrap().push((tid, number, result));
             Ok(result)
         }
     }
@@ -18302,8 +18315,13 @@ struct SameThreadScheduler {
     /// None for a run that is never dropped, which withholds no turn.
     point: Option<RunDropPoint>,
     held: Vec<(i32, Option<Sysno>)>,
-    waiting: Vec<futures::channel::oneshot::Sender<()>>,
+    waiting: Vec<(i32, Option<Sysno>, futures::channel::oneshot::Sender<()>)>,
     released: bool,
+    /// Withholds every thread's teardown turn, independently of `released`.
+    withhold_teardown: bool,
+    /// Until released, withholds the root's and its CLONE_VM worker's
+    /// getpid turns, for a run with no drop point.
+    withhold_worker: bool,
     /// Every Tool, GlobalState initialization, and config released its turn
     /// sender.
     stopped: bool,
@@ -18313,11 +18331,19 @@ impl SameThreadScheduler {
     const COLLECTED: i32 = 4;
     const PENDING: i32 = 5;
     const ORPHAN: i32 = 6;
+    const WORKER: i32 = 4;
 
     fn withheld(&self, pid: i32, number: Option<Sysno>) -> bool {
+        if self.withhold_teardown && number.is_none() && pid != DROPPED_RUN_SETUP {
+            return true;
+        }
         !self.released
             && match self.point {
-                None => false,
+                None => {
+                    self.withhold_worker
+                        && number == Some(Sysno::getpid)
+                        && [DROPPED_RUN_ROOT, Self::WORKER].contains(&pid)
+                }
                 Some(RunDropPoint::Setup) => pid == DROPPED_RUN_SETUP,
                 Some(RunDropPoint::ExitJoin) => pid == Self::ORPHAN,
                 // The orphan's getpid follows the drop, which closes the
@@ -18333,7 +18359,7 @@ impl SameThreadScheduler {
             match self.requests.try_recv() {
                 Ok((pid, number, turn)) if self.withheld(pid, number) => {
                     self.held.push((pid, number));
-                    self.waiting.push(turn);
+                    self.waiting.push((pid, number, turn));
                 }
                 Ok((_, _, turn)) => {
                     let _ = turn.send(());
@@ -18345,8 +18371,10 @@ impl SameThreadScheduler {
                 }
             }
         }
-        if self.released {
-            for turn in self.waiting.drain(..) {
+        for (pid, number, turn) in std::mem::take(&mut self.waiting) {
+            if self.withheld(pid, number) {
+                self.waiting.push((pid, number, turn));
+            } else {
                 let _ = turn.send(());
             }
         }
@@ -18418,11 +18446,29 @@ int main(int argc, char **argv) {
         dropped_public_run_case(&directory, executable, &image, point, config);
     }
     returned_public_run_case(&directory, executable, &image, 4);
-    let reapers = host_tasks()
-        .into_values()
-        .filter(|name| name.starts_with("reverie-kvm-rea"))
-        .count();
-    assert_eq!(reapers, 1, "every run shares the process's one reaper");
+    // Each run's reaper exits once it has retired what that run left, and a
+    // returned run joins its own before it returns.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let reapers = reaper_tasks(&BTreeMap::new());
+        if reapers.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a reaper outlived every run: {reapers:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Reaper threads started since `baseline`.
+fn reaper_tasks(baseline: &BTreeMap<u32, String>) -> Vec<u32> {
+    host_tasks()
+        .into_iter()
+        .filter(|(tid, name)| !baseline.contains_key(tid) && name.starts_with("reverie-kvm-rea"))
+        .map(|(tid, _)| tid)
+        .collect()
 }
 
 fn dropped_public_run_case(
@@ -18457,6 +18503,7 @@ fn dropped_public_run_case(
         state: Mutex::new((Default::default(), false)),
         changed: Condvar::new(),
         turns: None,
+        finished: Mutex::new(Vec::new()),
     });
     let (turns, requests) = std::sync::mpsc::channel::<DroppedRunTurn>();
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -18474,12 +18521,14 @@ fn dropped_public_run_case(
         held: Vec::new(),
         waiting: Vec::new(),
         released: false,
+        withhold_teardown: false,
+        withhold_worker: false,
         stopped: false,
     };
 
     let case = format!("dropped at {point:?}");
     let reached = || teardown.state.lock().unwrap().0.clone();
-    // The reaper is not yet running for the first case, and is afterwards.
+    // Taken before the run starts its reaper.
     let baseline = host_tasks();
     let mut cx = std::task::Context::from_waker(Waker::noop());
     {
@@ -18623,12 +18672,15 @@ fn dropped_public_run_case(
             "a captured static ELF run",
             backend.run_static_elf_captured().map(drop),
         ),
+        ("guest memory", backend.memory().map(drop)),
+        ("mutable guest memory", backend.memory_mut().map(drop)),
+        ("the VM fd", backend.vm_fd().map(drop)),
+        ("a root pid", backend.set_root_pid(DROPPED_RUN_ROOT)),
+        ("a random seed", backend.set_random_seed(1)),
     ] {
-        assert!(
-            matches!(refused, Err(reverie_kvm::Error::AbandonedRunNotRetired)),
-            "{case}: the backend accepted {entry} while a dropped run was unretired: {refused:?}"
-        );
+        assert_refused(&case, entry, refused);
     }
+    assert_raw_requests_refused(&case, &mut backend);
     {
         let mut reuse =
             Box::pin(backend.run_static_elf_with_tool_completion::<DroppedRunTool>(config, true));
@@ -18669,17 +18721,42 @@ fn dropped_public_run_case(
         dropping.elapsed()
     );
     assert_children_held("before its turn was granted");
+    let children: std::collections::BTreeSet<i32> = match point {
+        RunDropPoint::Setup => [].into(),
+        RunDropPoint::ExitJoin | RunDropPoint::Running => [COLLECTED, PENDING, ORPHAN].into(),
+    };
+    if !matches!(point, RunDropPoint::Setup) {
+        // The run's own reaper holds its children, rather than the drop.
+        assert_eq!(
+            reaper_tasks(&baseline).len(),
+            1,
+            "{case}: the dropped run's reaper exited while its children were held"
+        );
+    }
 
     scheduler.released = true;
     teardown.state.lock().unwrap().1 = true;
     teardown.changed.notify_all();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let finished = || {
+        let mut finished = teardown.finished.lock().unwrap().clone();
+        finished.sort_unstable();
+        finished
+    };
     let retired = |scheduler: &SameThreadScheduler| {
+        // A reaper that joins each child exits only after every child's
+        // teardown, which sleeps before releasing its lifetime, has ended.
+        // One that detached them exits while they sleep.
+        if reaper_tasks(&baseline).is_empty() {
+            assert_eq!(
+                (Arc::strong_count(&lifetime), finished()),
+                (1, children.iter().copied().collect::<Vec<_>>()),
+                "{case}: the reaper exited before its children's teardown ended"
+            );
+        }
         let leftover = host_tasks()
             .into_iter()
-            .filter(|(tid, name)| {
-                !baseline.contains_key(tid) && !name.starts_with("reverie-kvm-rea")
-            })
+            .filter(|(tid, _)| !baseline.contains_key(tid))
             .collect::<BTreeMap<_, _>>();
         let released = DROPPED_RUN_GLOBALS_RELEASED
             .lock()
@@ -18711,14 +18788,15 @@ fn dropped_public_run_case(
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    let children = match point {
-        RunDropPoint::Setup => [].into(),
-        RunDropPoint::ExitJoin | RunDropPoint::Running => [COLLECTED, PENDING, ORPHAN].into(),
-    };
     assert_eq!(
         reached(),
         children,
         "{case}: every child's teardown finished"
+    );
+    assert_eq!(
+        finished(),
+        children.iter().copied().collect::<Vec<_>>(),
+        "{case}: each child's teardown ran exactly once"
     );
     let calls = std::mem::take(&mut *calls.lock().unwrap());
     let exits = calls
@@ -18771,6 +18849,7 @@ fn returned_public_run_case(
         state: Mutex::new((Default::default(), false)),
         changed: Condvar::new(),
         turns: Some(turns.clone()),
+        finished: Mutex::new(Vec::new()),
     });
     let calls = Arc::new(Mutex::new(Vec::new()));
     DROPPED_RUN_CONFIGS.lock().unwrap().insert(
@@ -18787,6 +18866,8 @@ fn returned_public_run_case(
         held: Vec::new(),
         waiting: Vec::new(),
         released: false,
+        withhold_teardown: false,
+        withhold_worker: false,
         stopped: false,
     };
     let mut cx = std::task::Context::from_waker(Waker::noop());
@@ -18842,6 +18923,356 @@ fn returned_public_run_case(
     );
     drop(completion.global_state);
     drop(backend);
+}
+
+/// A dropped run's CLONE_VM worker whose thread-local teardown needs a turn
+/// only the embedder's thread grants: the backend's drop returns without
+/// joining it, and the run's reaper joins it once, after that teardown ends.
+#[test]
+fn dropped_public_run_hands_its_workers_to_the_reaper() {
+    const TEST: &str = "dropped_public_run_hands_its_workers_to_the_reaper";
+    const WORKER: i32 = SameThreadScheduler::WORKER;
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "dropped-worker-run",
+        r#"
+#include <pthread.h>
+#include <unistd.h>
+
+static void *worker(void *argument) {
+  (void)getpid();
+  return argument;
+}
+
+int main(void) {
+  pthread_t thread;
+  if (pthread_create(&thread, 0, worker, 0) != 0) return 10;
+  (void)getpid();
+  if (pthread_join(thread, 0) != 0) return 11;
+  return 7;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.set_root_pid(DROPPED_RUN_ROOT).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+
+    let config = 5;
+    let lifetime = Arc::new(());
+    let (turns, requests) = std::sync::mpsc::channel::<DroppedRunTurn>();
+    let teardown = Arc::new(DroppedRunTeardown {
+        lifetime: Arc::downgrade(&lifetime),
+        state: Mutex::new((Default::default(), false)),
+        changed: Condvar::new(),
+        turns: Some(turns.clone()),
+        finished: Mutex::new(Vec::new()),
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    DROPPED_RUN_CONFIGS.lock().unwrap().insert(
+        config,
+        DroppedRunConfig {
+            turns,
+            calls: calls.clone(),
+            teardown: teardown.clone(),
+        },
+    );
+    let mut scheduler = SameThreadScheduler {
+        requests,
+        point: None,
+        held: Vec::new(),
+        waiting: Vec::new(),
+        released: false,
+        withhold_teardown: true,
+        withhold_worker: true,
+        stopped: false,
+    };
+    let reached = || teardown.state.lock().unwrap().0.clone();
+    let finished = || teardown.finished.lock().unwrap().clone();
+    let released = || {
+        DROPPED_RUN_GLOBALS_RELEASED
+            .lock()
+            .unwrap()
+            .contains(&config)
+    };
+    // Taken before the run starts its reaper.
+    let baseline = host_tasks();
+    let mut cx = std::task::Context::from_waker(Waker::noop());
+    {
+        let mut run =
+            Box::pin(backend.run_static_elf_with_tool_completion::<DroppedRunTool>(config, true));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            assert!(
+                run.as_mut().poll(&mut cx).is_pending(),
+                "the run returned while its worker was held"
+            );
+            scheduler.pump();
+            if scheduler
+                .held
+                .contains(&(DROPPED_RUN_ROOT, Some(Sysno::getpid)))
+                && scheduler.held.contains(&(WORKER, Some(Sysno::getpid)))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never reached the drop point: calls={:?} held={:?}",
+                calls.lock().unwrap(),
+                scheduler.held,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        for _ in 0..10 {
+            assert!(run.as_mut().poll(&mut cx).is_pending());
+            scheduler.pump();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    DROPPED_RUN_CONFIGS.lock().unwrap().remove(&config);
+    let assert_worker_held = |when: &str| {
+        assert_eq!(
+            Arc::strong_count(&lifetime),
+            2,
+            "the worker's thread-local state was released {when}"
+        );
+        assert!(finished().is_empty(), "the worker's teardown ended {when}");
+        assert_eq!(
+            reaper_tasks(&baseline).len(),
+            1,
+            "the dropped run's reaper exited {when}"
+        );
+    };
+    assert_worker_held("with the dropped run");
+    assert!(!released(), "GlobalState was released with the dropped run");
+
+    // The thread that must grant the worker's turns drops the backend first.
+    // A drop that joined the worker would never return.
+    let dropping = std::time::Instant::now();
+    drop(backend);
+    assert!(
+        dropping.elapsed() < std::time::Duration::from_secs(5),
+        "the backend's drop waited {:?}",
+        dropping.elapsed()
+    );
+    assert_worker_held("before its turn was granted");
+    assert!(
+        reached().is_empty(),
+        "the worker began its teardown unprompted"
+    );
+    assert!(
+        !released(),
+        "GlobalState was released before the worker's turn"
+    );
+
+    // Its syscall turn lets the worker finish; its host thread then waits in
+    // thread-local teardown for a turn only this thread grants.
+    scheduler.released = true;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !scheduler.held.contains(&(WORKER, None)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker never reached its teardown: held={:?} reached={:?}",
+            scheduler.held,
+            reached(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        scheduler.pump();
+    }
+    for _ in 0..50 {
+        scheduler.pump();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_worker_held("while its teardown turn was withheld");
+    assert_eq!(reached(), [WORKER].into());
+
+    scheduler.withhold_teardown = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        scheduler.pump();
+        // A reaper that joins the worker exits only after its teardown, which
+        // sleeps before releasing its lifetime, has ended. One that detached
+        // it exits while it sleeps.
+        let reaping = !reaper_tasks(&baseline).is_empty();
+        if !reaping {
+            assert_eq!(
+                (Arc::strong_count(&lifetime), finished()),
+                (1, vec![WORKER]),
+                "the reaper exited before the worker's teardown ended"
+            );
+        }
+        let leftover = host_tasks()
+            .into_iter()
+            .filter(|(tid, _)| !baseline.contains_key(tid))
+            .collect::<BTreeMap<_, _>>();
+        // This test's teardown holds a turn sender, so the scheduler never
+        // stops; each Tool's config and held thread shares the teardown.
+        let state = (
+            Arc::strong_count(&lifetime),
+            released(),
+            Arc::strong_count(&teardown),
+            leftover,
+        );
+        if state.0 == 1 && state.1 && state.2 == 1 && state.3.is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the dropped run's worker was never retired: \
+             (lifetime, GlobalState released, teardown owners, host threads)={state:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(
+        finished(),
+        [WORKER],
+        "the worker's teardown ran exactly once"
+    );
+    let calls = std::mem::take(&mut *calls.lock().unwrap());
+    assert!(
+        !calls
+            .iter()
+            .any(|&(_, number, _)| number == Sysno::exit_group),
+        "the dropped root exited: {calls:?}"
+    );
+}
+
+fn assert_refused(case: &str, entry: &str, refused: reverie_kvm::Result<()>) {
+    assert!(
+        matches!(refused, Err(reverie_kvm::Error::AbandonedRunNotRetired)),
+        "{case}: the backend accepted {entry} while a dropped run was unretired: {refused:?}"
+    );
+}
+
+/// The raw syscall-frame installers write guest memory, which a dropped run's
+/// guest threads may still use, so each is refused before its first write.
+fn assert_raw_requests_refused(case: &str, backend: &mut KvmBackend) {
+    let request = reverie_kvm::SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]);
+    let refused = backend.install_syscall(0x1000, 0x2000, request);
+    assert_refused(case, "a syscall request", refused);
+    let refused = backend.install_syscalls(0x1000, 0x2000, &[request, request]);
+    assert_refused(case, "syscall requests", refused);
+}
+
+/// The public run entries that return a future or may unwind each own their
+/// admission: a Tool run whose future the embedder drops, and a raw run whose
+/// handler panics, each leave the backend abandoned until it drops, and the
+/// run's reaper exits once the backend's drop hands it what the run left.
+#[test]
+fn every_abandoned_public_run_refuses_its_backend() {
+    const TEST: &str = "every_abandoned_public_run_refuses_its_backend";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let request = reverie_kvm::SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]);
+    let config = 6;
+    let (turns, requests) = std::sync::mpsc::channel::<DroppedRunTurn>();
+    DROPPED_RUN_CONFIGS.lock().unwrap().insert(
+        config,
+        DroppedRunConfig {
+            turns,
+            calls: Arc::new(Mutex::new(Vec::new())),
+            teardown: Arc::new(DroppedRunTeardown {
+                lifetime: Weak::new(),
+                state: Mutex::new((Default::default(), false)),
+                changed: Condvar::new(),
+                turns: None,
+                finished: Mutex::new(Vec::new()),
+            }),
+        },
+    );
+    let mut scheduler = SameThreadScheduler {
+        requests,
+        point: Some(RunDropPoint::Setup),
+        held: Vec::new(),
+        waiting: Vec::new(),
+        released: false,
+        withhold_teardown: false,
+        withhold_worker: false,
+        stopped: false,
+    };
+    let baseline = host_tasks();
+    let assert_backend_refused = |case: &str, backend: &mut KvmBackend| {
+        assert_refused(case, "guest memory", backend.memory().map(drop));
+        assert_refused(case, "mutable guest memory", backend.memory_mut().map(drop));
+        assert_refused(
+            case,
+            "a real-mode program",
+            backend.install_real_mode_program(0x1000, &[0xf4]),
+        );
+        assert_raw_requests_refused(case, backend);
+        assert_refused(case, "a raw run", backend.run(|_, _| 0));
+        assert_eq!(
+            reaper_tasks(&baseline).len(),
+            1,
+            "{case}: the abandoned run's reaper exited before its backend dropped"
+        );
+    };
+    let assert_reaper_exits = |case: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !reaper_tasks(&baseline).is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{case}: the reaper outlived its backend's drop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    };
+
+    let case = "a dropped Tool run";
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.install_syscall(0x1000, 0x2000, request).unwrap();
+    {
+        let mut run = Box::pin(backend.run_with_tool::<DroppedRunTool, _>(
+            config,
+            |_: &reverie_kvm::SyscallRequest, _: &reverie_kvm::GuestMemory| 0,
+        ));
+        let mut cx = std::task::Context::from_waker(Waker::noop());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !scheduler.held.contains(&(DROPPED_RUN_SETUP, None)) {
+            assert!(
+                run.as_mut().poll(&mut cx).is_pending(),
+                "{case}: the run returned while its GlobalState was held"
+            );
+            scheduler.pump();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{case}: never reached its GlobalState: held={:?}",
+                scheduler.held
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    assert_backend_refused(case, &mut backend);
+    drop(backend);
+    assert_reaper_exits(case);
+    DROPPED_RUN_CONFIGS.lock().unwrap().remove(&config);
+
+    let case = "an unwound raw run";
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend.install_syscall(0x1000, 0x2000, request).unwrap();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        backend.run(|_, _| panic!("a raw run's handler panicked"))
+    }));
+    assert!(
+        unwound.is_err(),
+        "{case}: the handler's panic was not propagated"
+    );
+    assert_backend_refused(case, &mut backend);
+    drop(backend);
+    assert_reaper_exits(case);
 }
 
 #[path = "support/natural_retirement.rs"]
