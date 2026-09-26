@@ -29,7 +29,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::Sender;
 
 use reverie::SignalEvent;
 use reverie::SignalProcessId;
@@ -40,6 +42,7 @@ use super::LoadedStaticElf;
 use super::set_signalfd_ready;
 use crate::elf::TaskLifecycleTable;
 use crate::signal::ProcessSignalState;
+use crate::vm::CONTAINER_INIT_PID;
 
 type ProcessKey = (i32, u64);
 
@@ -80,6 +83,9 @@ pub(super) struct ProcessBinding {
     transaction: Weak<Mutex<()>>,
     lifecycle: Weak<Mutex<TaskLifecycleTable>>,
     image: Mutex<CurrentImage>,
+    // The process-wide guest-visible parent cell shared by every thread and
+    // exec image; an exiting parent stores the reaper here when it orphans us.
+    reparented_ppid: Arc<AtomicI32>,
 }
 
 impl ProcessBinding {
@@ -111,11 +117,19 @@ pub(crate) enum ProcessFamilyExit {
     Root,
     Child(ChildExitSnapshot),
     Failed,
+    /// No live guest process can reap this exit: its current parent was
+    /// already terminal, so the namespace init outside the guest (or run
+    /// teardown, once the traced root is gone) consumes it without a
+    /// guest-visible SIGCHLD or wait.
     RunTeardownChild {
         status: reverie::ExitStatus,
     },
-    DescendantReparentingUnsupported {
+    /// The exiting process leaves an unreaped zombie child that Linux would
+    /// hand to a live guest init (the traced root at PID 1) together with a
+    /// second SIGCHLD. That re-notification is not implemented.
+    ZombieAdoptionUnsupported {
         child: SignalProcessId,
+        reaper: SignalProcessId,
     },
     ParentGenerationUnavailable {
         parent: SignalProcessId,
@@ -145,13 +159,161 @@ enum ProcessFamilyAncestryError {
     },
 }
 
+/// Collection state of an orphan adopted by a live guest init. Its host
+/// thread and fork-time completion slot stay with the dead fork parent, so the
+/// adopter's wait observes it here instead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdoptedChild {
+    Running,
+    Waitable(reverie::ExitStatus),
+    Failed,
+}
+
+/// What an adopting init's wait observes of its matching adopted orphans.
+/// Observation never removes anything: waitable exits stay in the
+/// process-shared ledger until one wait consumes them through
+/// `take_adopted_child`.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(super) struct AdoptedChildPoll {
+    /// A matching adopted orphan's exit is collectable.
+    pub(super) waitable: bool,
+    /// A matching adopted orphan has not yet published its exit.
+    pub(super) running: bool,
+    /// A matching adopted orphan failed before publishing its exit.
+    pub(super) failed: Option<i32>,
+}
+
+/// One adopted orphan selected by a wait.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct AdoptedWait {
+    pub(super) pid: i32,
+    pub(super) status: reverie::ExitStatus,
+    /// For a consuming wait: whether the adopter's waitable-zombie family
+    /// edge was retired together with the adoption entry.
+    pub(super) ledger_consumed: bool,
+}
+
+/// The executor task blocked in a wait: its tid and task generation. Each
+/// executor owns one wake channel, so this names exactly one registration.
+pub(super) type AdoptionWaiterKey = (i32, u64);
+
+/// A task about to block in a wait, registering its wake channel with the
+/// observation that decides whether it blocks.
+pub(super) struct AdoptionWaiter<'a> {
+    pub(super) key: AdoptionWaiterKey,
+    pub(super) sender: &'a Sender<i32>,
+    /// The task blocks on a running local fork child even if no matching
+    /// adoption is running. A guest init must still register then: an orphan
+    /// adopted while it sleeps can exit first, and Linux wakes the wait.
+    pub(super) awaits_local_child: bool,
+}
+
 #[derive(Default)]
 struct ProcessFamilyState {
     direct_children: BTreeMap<ProcessKey, BTreeMap<ProcessKey, DirectChildState>>,
     terminal: BTreeMap<ProcessKey, ProcessFamilyExit>,
+    // The traced root; when it is PID 1 it is the PID-namespace init.
+    root: Option<ProcessKey>,
+    // Current parent of each orphan adopted by the guest init. Absent means
+    // the immutable fork-time parent. Retained after exit so the Tool's later
+    // publication validates against the adopter.
+    adopted_parent: BTreeMap<ProcessKey, ProcessKey>,
+    // Adopter -> adopted orphan -> collection state.
+    adoptions: BTreeMap<ProcessKey, BTreeMap<ProcessKey, AdoptedChild>>,
+    // Adopter -> blocked executor task -> its wake channel. An orphan's host
+    // thread belongs to its dead fork parent, so its completion cannot use the
+    // adopter's fork-time notifier. A task registers under this lock together
+    // with its observation of `adoptions`, so a wake is never lost; keying by
+    // task makes a re-registration replace the previous one, and the task
+    // unregisters as soon as its blocking receive returns, so this holds only
+    // currently blocked waiters.
+    adoption_waiters: BTreeMap<ProcessKey, BTreeMap<AdoptionWaiterKey, Sender<i32>>>,
+    // Every waiter registration, so a test can prove one happened before it
+    // publishes the completion that must wake it.
+    #[cfg(test)]
+    adoption_registrations: u64,
+}
+
+/// Wake every executor that was blocked on an adopted orphan. Each
+/// registration is one-shot; a woken waiter re-polls and re-registers.
+fn wake_adoption_waiters(waiters: Vec<Sender<i32>>, child_pid: i32) {
+    for waiter in waiters {
+        // A retired executor has dropped its receiver; nothing to wake.
+        let _ = waiter.send(child_pid);
+    }
 }
 
 impl ProcessFamilyState {
+    fn take_adoption_waiters(&mut self, adopter: ProcessKey) -> Vec<Sender<i32>> {
+        self.adoption_waiters
+            .remove(&adopter)
+            .map(|waiters| waiters.into_values().collect())
+            .unwrap_or_default()
+    }
+
+    fn current_parent(
+        &self,
+        process: ProcessKey,
+        fork_parent: Option<SignalProcessId>,
+    ) -> Option<ProcessKey> {
+        self.adopted_parent
+            .get(&process)
+            .copied()
+            .or(fork_parent.map(process_key))
+    }
+
+    /// Linux hands orphans to the nearest child subreaper, else the
+    /// PID-namespace init. KVM has no subreaper (PR_SET_CHILD_SUBREAPER is
+    /// refused), so the reaper is namespace init: the traced root when it is
+    /// PID 1 and still live. Otherwise init is outside the guest (Hermit's
+    /// container init) and `None` is returned.
+    fn guest_reaper(&self, exiting: ProcessKey) -> Option<ProcessKey> {
+        self.root.filter(|root| {
+            root.0 == CONTAINER_INIT_PID && *root != exiting && !self.terminal.contains_key(root)
+        })
+    }
+
+    /// Whether `process` is the live guest init that can still adopt orphans.
+    fn is_guest_reaper(&self, process: ProcessKey) -> bool {
+        self.root == Some(process)
+            && process.0 == CONTAINER_INIT_PID
+            && !self.terminal.contains_key(&process)
+    }
+
+    /// Retire every edge of an exiting parent at its logical exit. Returns the
+    /// orphans still running, whose guest-visible parent becomes namespace
+    /// init. A caller has already refused a zombie that a guest init would
+    /// have to adopt; an external init reaps zombies without guest effect.
+    fn reparent_orphans(&mut self, exiting: ProcessKey) -> Vec<ProcessKey> {
+        let Some(children) = self.direct_children.remove(&exiting) else {
+            return Vec::new();
+        };
+        let reaper = self.guest_reaper(exiting);
+        let mut orphans = Vec::new();
+        for (child, state) in children {
+            match state {
+                DirectChildState::Live => {
+                    if let Some(reaper) = reaper {
+                        self.direct_children
+                            .entry(reaper)
+                            .or_default()
+                            .insert(child, DirectChildState::Live);
+                        self.adopted_parent.insert(child, reaper);
+                        self.adoptions
+                            .entry(reaper)
+                            .or_default()
+                            .insert(child, AdoptedChild::Running);
+                    }
+                    orphans.push(child);
+                }
+                DirectChildState::WaitableZombie => {
+                    debug_assert!(reaper.is_none(), "guest init zombie adoption was refused");
+                }
+            }
+        }
+        orphans
+    }
+
     fn has_terminal_ancestor(
         &self,
         mut ancestor: ProcessKey,
@@ -189,8 +351,8 @@ pub(super) struct ProcessSignalRegistry {
     processes: Mutex<BTreeMap<(i32, u64), Weak<ProcessBinding>>>,
     // Logical process ancestry is independent of host join-handle placement.
     // It is retained by exact generation until a wait consumes a zombie or an
-    // exit-time auto-reap decision removes it. This is the fail-closed boundary
-    // for reparenting, which this change does not claim to implement.
+    // exit-time auto-reap decision removes it. An exiting parent hands its
+    // running children to namespace init here (see `reparent_orphans`).
     family: Mutex<ProcessFamilyState>,
     // Run-scoped at-most-once admission. Standard-signal coalescing is not an
     // operation ledger: after dequeue, the same child could otherwise enqueue
@@ -206,6 +368,15 @@ pub(super) struct ProcessSignalRegistry {
     run_failure: Mutex<Weak<crate::failure::RunFailure>>,
     reported_failure: Mutex<Option<crate::Error>>,
     failure_forwarded: AtomicBool,
+    // Runs once, before the next registering poll takes the family lock, so
+    // a test can change the family between a wait's first observation and
+    // its registration.
+    #[cfg(test)]
+    before_adoption_registration: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    // Blocking receives entered by waits, so a test can act only once a
+    // waiter is asleep.
+    #[cfg(test)]
+    blocked_waits: std::sync::atomic::AtomicU64,
 }
 
 impl ProcessSignalRegistry {
@@ -234,7 +405,12 @@ impl ProcessSignalRegistry {
                 files: Arc::downgrade(files),
                 signals: Arc::downgrade(&state.process_signals),
             }),
+            reparented_ppid: state.reparented_ppid.clone(),
         });
+        if parent.is_none() {
+            let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+            family.root.get_or_insert(process_key(identity));
+        }
         if let Some(parent) = parent {
             let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
             let parent_key = process_key(parent);
@@ -267,7 +443,7 @@ impl ProcessSignalRegistry {
     /// but their completion is teardown rather than a new logical child-exit
     /// publication to the failed parent.
     pub(super) fn record_process_failure(&self, process: SignalProcessId) {
-        let parent = self.lookup(process).and_then(|binding| binding.parent);
+        let fork_parent = self.lookup(process).and_then(|binding| binding.parent);
         let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
         let process_family_key = process_key(process);
         let replace_success = matches!(
@@ -286,15 +462,27 @@ impl ProcessSignalRegistry {
         family
             .terminal
             .insert(process_family_key, ProcessFamilyExit::Failed);
-        if let Some(parent) = parent {
-            let parent_key = process_key(parent);
+        let mut waiters = Vec::new();
+        if let Some(parent_key) = family.current_parent(process_family_key, fork_parent) {
             if let Some(children) = family.direct_children.get_mut(&parent_key) {
                 children.remove(&process_family_key);
                 if children.is_empty() {
                     family.direct_children.remove(&parent_key);
                 }
             }
+            // An adopting init may be blocked waiting for this orphan. Fail
+            // that wait rather than leave it asleep on a status never coming.
+            if let Some(state) = family
+                .adoptions
+                .get_mut(&parent_key)
+                .and_then(|adopted| adopted.get_mut(&process_family_key))
+            {
+                *state = AdoptedChild::Failed;
+                waiters = family.take_adoption_waiters(parent_key);
+            }
         }
+        drop(family);
+        wake_adoption_waiters(waiters, process.tgid.as_raw());
     }
 
     /// Freeze one process's terminal parent/wait policy at the authoritative
@@ -318,55 +506,112 @@ impl ProcessSignalRegistry {
         }
 
         let binding = self.lookup(process);
-        let parent_identity = binding.as_ref().and_then(|binding| binding.parent);
-        let is_root = parent_identity.is_none();
-        let parent_binding = parent_identity.and_then(|parent| self.lookup(parent));
-        let parent_transaction = parent_binding
-            .as_ref()
-            .and_then(|binding| binding.transaction.upgrade());
-        let _parent_transaction = parent_transaction
-            .as_ref()
-            .map(|transaction| transaction.lock().unwrap_or_else(|p| p.into_inner()));
-        let parent_snapshot = parent_binding.as_ref().and_then(|parent_binding| {
-            let parent = parent_identity?;
-            let lifecycle = parent_binding.lifecycle.upgrade()?;
-            let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
-            if !lifecycle.contains_process(parent.tgid.as_raw(), parent.generation) {
-                return None;
-            }
-            let image = parent_binding
-                .image
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone();
-            let signals = image.signals.upgrade()?;
-            let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
-            let action = signals
-                .dispositions
-                .get(&libc::SIGCHLD)
-                .copied()
-                .unwrap_or_default();
-            let disposition = if action.is_ignored() {
-                PublicationDisposition::Ignored
-            } else if action.handler == libc::SIG_DFL as u64 {
-                PublicationDisposition::Default
-            } else {
-                PublicationDisposition::Caught
-            };
-            let waitable = !action.is_ignored() && action.flags & libc::SA_NOCLDWAIT as u64 == 0;
-            let pending_generation = signals.pending_generation(libc::SIGCHLD);
-            Some((parent, disposition, waitable, pending_generation))
-        });
+        let fork_parent = binding.as_ref().and_then(|binding| binding.parent);
+        let is_root = fork_parent.is_none();
+        let key = process_key(process);
+        let mut expected_parent = self
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .current_parent(key, fork_parent);
+        loop {
+            // The current parent's transaction orders this exit against that
+            // parent's own exit. Adoption only moves an edge while the fork
+            // parent holds its transaction, so after it is taken the current
+            // parent is stable unless the adoption committed first; retry then
+            // under the adopter's transaction.
+            let parent_identity = expected_parent.map(process_identity);
+            let parent_binding = parent_identity.and_then(|parent| self.lookup(parent));
+            let parent_transaction = parent_binding
+                .as_ref()
+                .and_then(|binding| binding.transaction.upgrade());
+            let parent_transaction_guard = parent_transaction
+                .as_ref()
+                .map(|transaction| transaction.lock().unwrap_or_else(|p| p.into_inner()));
+            let parent_snapshot = parent_binding.as_ref().and_then(|parent_binding| {
+                let parent = parent_identity?;
+                let lifecycle = parent_binding.lifecycle.upgrade()?;
+                let lifecycle = lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+                if !lifecycle.contains_process(parent.tgid.as_raw(), parent.generation) {
+                    return None;
+                }
+                let image = parent_binding
+                    .image
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                let signals = image.signals.upgrade()?;
+                let signals = signals.lock().unwrap_or_else(|p| p.into_inner());
+                let action = signals
+                    .dispositions
+                    .get(&libc::SIGCHLD)
+                    .copied()
+                    .unwrap_or_default();
+                let disposition = if action.is_ignored() {
+                    PublicationDisposition::Ignored
+                } else if action.handler == libc::SIG_DFL as u64 {
+                    PublicationDisposition::Default
+                } else {
+                    PublicationDisposition::Caught
+                };
+                let waitable =
+                    !action.is_ignored() && action.flags & libc::SA_NOCLDWAIT as u64 == 0;
+                let pending_generation = signals.pending_generation(libc::SIGCHLD);
+                Some((parent, disposition, waitable, pending_generation))
+            });
 
-        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(exit) = family.terminal.get(&process_key(process)).copied() {
+            let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(exit) = family.terminal.get(&key).copied() {
+                return exit;
+            }
+            let current_parent = family.current_parent(key, fork_parent);
+            if current_parent != expected_parent {
+                expected_parent = current_parent;
+                drop(family);
+                drop(parent_transaction_guard);
+                continue;
+            }
+            let (exit, orphans) = self.decide_process_exit(
+                &mut family,
+                process,
+                status,
+                is_root,
+                parent_identity,
+                parent_snapshot,
+            );
+            family.terminal.insert(key, exit);
+            drop(family);
+            // Publish each running orphan's new guest-visible parent while this
+            // process's transaction is still held by `take_exit`, before its
+            // Tool exit callback can release the scheduler turn. A later
+            // getppid in the orphan therefore observes the reaper.
+            for orphan in orphans {
+                if let Some(orphan) = self.lookup(process_identity(orphan)) {
+                    orphan
+                        .reparented_ppid
+                        .store(CONTAINER_INIT_PID, Ordering::Release);
+                }
+            }
             return exit;
         }
-        let blocking_descendant = family
-            .direct_children
-            .get(&process_key(process))
-            .and_then(|children| children.keys().next().copied())
-            .map(process_identity);
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review KVM orphan reparenting
+    // at the logical exit transition.
+    /// Decide one process's terminal family transition under the family lock
+    /// and its current parent's transaction. Returns the exit together with
+    /// the running orphans whose guest-visible parent must become init.
+    fn decide_process_exit(
+        &self,
+        family: &mut ProcessFamilyState,
+        process: SignalProcessId,
+        status: reverie::ExitStatus,
+        is_root: bool,
+        parent_identity: Option<SignalProcessId>,
+        parent_snapshot: Option<(SignalProcessId, PublicationDisposition, bool, u64)>,
+    ) -> (ProcessFamilyExit, Vec<ProcessKey>) {
+        let key = process_key(process);
         let parent_is_terminal = match parent_identity {
             Some(parent) => match family.has_terminal_ancestor(process_key(parent)) {
                 Ok(_) => family.terminal.contains_key(&process_key(parent)),
@@ -374,8 +619,7 @@ impl ProcessSignalRegistry {
                     let exit = ProcessFamilyExit::AncestryCycle {
                         ancestor: process_identity(ancestor),
                     };
-                    family.terminal.insert(process_key(process), exit);
-                    return exit;
+                    return (exit, Vec::new());
                 }
                 Err(ProcessFamilyAncestryError::MultipleParents {
                     child,
@@ -387,12 +631,27 @@ impl ProcessSignalRegistry {
                         first_parent: process_identity(first_parent),
                         second_parent: process_identity(second_parent),
                     };
-                    family.terminal.insert(process_key(process), exit);
-                    return exit;
+                    return (exit, Vec::new());
                 }
             },
             None => false,
         };
+        // A live guest init would adopt an unreaped zombie together with a
+        // second SIGCHLD; refuse that one unimplemented shape before any edge
+        // moves. With init outside the guest the zombie is reaped invisibly.
+        if let Some(reaper) = family.guest_reaper(key)
+            && let Some(child) = family.direct_children.get(&key).and_then(|children| {
+                children.iter().find_map(|(child, state)| {
+                    (*state == DirectChildState::WaitableZombie).then_some(*child)
+                })
+            })
+        {
+            let exit = ProcessFamilyExit::ZombieAdoptionUnsupported {
+                child: process_identity(child),
+                reaper: process_identity(reaper),
+            };
+            return (exit, Vec::new());
+        }
         let exit = if is_root {
             ProcessFamilyExit::Root
         } else if parent_is_terminal {
@@ -405,21 +664,13 @@ impl ProcessSignalRegistry {
             if let Some(parent) = parent_identity {
                 let parent_key = process_key(parent);
                 if let Some(children) = family.direct_children.get_mut(&parent_key) {
-                    children.remove(&process_key(process));
+                    children.remove(&key);
                     if children.is_empty() {
                         family.direct_children.remove(&parent_key);
                     }
                 }
             }
-            // No process that is itself terminal can subsequently reap an
-            // already-published zombie or a still-running direct child. Retire
-            // those exact edges as part of this consuming teardown transition;
-            // each later child still recognizes the terminal direct parent by
-            // generation and takes this same branch.
-            family.direct_children.remove(&process_key(process));
             ProcessFamilyExit::RunTeardownChild { status }
-        } else if let Some(child) = blocking_descendant {
-            ProcessFamilyExit::DescendantReparentingUnsupported { child }
         } else if let Some((parent, disposition, waitable, pending_generation)) = parent_snapshot {
             let completion = reverie::ChildExitCompletion {
                 parent,
@@ -431,21 +682,21 @@ impl ProcessSignalRegistry {
                 system_ticks: 0,
             };
             let parent_key = process_key(parent);
-            let child_key = process_key(process);
             let relation_exists = family
                 .direct_children
                 .get(&parent_key)
-                .is_some_and(|children| children.contains_key(&child_key));
+                .is_some_and(|children| children.contains_key(&key));
             if !relation_exists {
-                let exit = ProcessFamilyExit::ParentChildRelationUnavailable { parent };
-                family.terminal.insert(process_key(process), exit);
-                return exit;
+                return (
+                    ProcessFamilyExit::ParentChildRelationUnavailable { parent },
+                    Vec::new(),
+                );
             }
             if waitable {
                 let relation = family
                     .direct_children
                     .get_mut(&parent_key)
-                    .and_then(|children| children.get_mut(&child_key))
+                    .and_then(|children| children.get_mut(&key))
                     .expect("validated KVM direct-child relation remains present");
                 *relation = DirectChildState::WaitableZombie;
             } else {
@@ -453,7 +704,7 @@ impl ProcessSignalRegistry {
                     .direct_children
                     .get_mut(&parent_key)
                     .expect("validated KVM parent relation remains present");
-                children.remove(&child_key);
+                children.remove(&key);
                 if children.is_empty() {
                     family.direct_children.remove(&parent_key);
                 }
@@ -464,12 +715,25 @@ impl ProcessSignalRegistry {
                 pending_generation,
             })
         } else {
-            ProcessFamilyExit::ParentGenerationUnavailable {
-                parent: parent_identity.expect("non-root KVM process retains a parent identity"),
-            }
+            return (
+                ProcessFamilyExit::ParentGenerationUnavailable {
+                    parent: parent_identity
+                        .expect("non-root KVM process retains a parent identity"),
+                },
+                Vec::new(),
+            );
         };
-        family.terminal.insert(process_key(process), exit);
-        exit
+        // Linux exit_notify: every child of the exiting process is handed to
+        // its reaper at this same transition. No process that is itself
+        // terminal can later reap them, so retire the exact edges here.
+        let orphans = family.reparent_orphans(key);
+        if is_root {
+            // Nothing in the guest remains to collect orphans this root
+            // adopted; they are consumed by run teardown.
+            family.adoptions.remove(&key);
+            family.adoption_waiters.remove(&key);
+        }
+        (exit, orphans)
     }
 
     pub(super) fn process_family_exit(
@@ -482,6 +746,248 @@ impl ProcessSignalRegistry {
             .terminal
             .get(&process_key(process))
             .copied()
+    }
+
+    /// Current logical parent of `process`: the adopting init for an adopted
+    /// orphan, else the immutable fork-time parent.
+    #[cfg(test)]
+    pub(super) fn current_parent(&self, process: SignalProcessId) -> Option<SignalProcessId> {
+        let fork_parent = self.lookup(process).and_then(|binding| binding.parent);
+        self.family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .current_parent(process_key(process), fork_parent)
+            .map(process_identity)
+    }
+
+    /// Waiter registrations made so far, across every adopter.
+    #[cfg(test)]
+    pub(super) fn adoption_registrations(&self) -> u64 {
+        self.family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .adoption_registrations
+    }
+
+    /// Run `hook` at the start of the next registering adopted-child poll.
+    #[cfg(test)]
+    pub(super) fn set_before_adoption_registration(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .before_adoption_registration
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Box::new(hook));
+    }
+
+    /// Count a wait entering its blocking receive.
+    #[cfg(test)]
+    pub(super) fn note_blocked_wait(&self) {
+        self.blocked_waits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Blocking receives entered by waits so far.
+    #[cfg(test)]
+    pub(super) fn blocked_waits(&self) -> u64 {
+        self.blocked_waits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Wake registrations currently held for `adopter`.
+    #[cfg(test)]
+    pub(super) fn adoption_waiter_count(&self, adopter: SignalProcessId) -> usize {
+        self.family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .adoption_waiters
+            .get(&process_key(adopter))
+            .map_or(0, |waiters| waiters.len())
+    }
+
+    /// Process-shared collection state of one adopted orphan.
+    #[cfg(test)]
+    fn adopted_child_state(
+        &self,
+        adopter: SignalProcessId,
+        child: SignalProcessId,
+    ) -> Option<AdoptedChild> {
+        self.family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .adoptions
+            .get(&process_key(adopter))
+            .and_then(|adopted| adopted.get(&process_key(child)).copied())
+    }
+
+    /// Make an adopted orphan's authoritative completion collectable by its
+    /// adopter, at the same post-fence point where a fork child's completion
+    /// becomes collectable by its fork parent. `waitable == None` is an
+    /// auto-reap under the adopter's SIG_IGN/SA_NOCLDWAIT policy. Returns
+    /// false when `child` is not adopted by a live `adopter`.
+    pub(super) fn publish_adopted_child_completion(
+        &self,
+        adopter: SignalProcessId,
+        child: SignalProcessId,
+        waitable: Option<reverie::ExitStatus>,
+    ) -> bool {
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        let adopter_key = process_key(adopter);
+        let child_key = process_key(child);
+        let Some(adopted) = family.adoptions.get_mut(&adopter_key) else {
+            return false;
+        };
+        if adopted.get(&child_key) != Some(&AdoptedChild::Running) {
+            return false;
+        }
+        match waitable {
+            Some(status) => {
+                adopted.insert(child_key, AdoptedChild::Waitable(status));
+            }
+            None => {
+                adopted.remove(&child_key);
+                if adopted.is_empty() {
+                    family.adoptions.remove(&adopter_key);
+                }
+            }
+        }
+        let waiters = family.take_adoption_waiters(adopter_key);
+        drop(family);
+        wake_adoption_waiters(waiters, child.tgid.as_raw());
+        true
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review process-shared adopted-orphan waits.
+    /// Observe the adopted orphans of `adopter` that match a wait's pid
+    /// selector, without removing any: a waitable exit stays process-shared
+    /// until a wait consumes it with `take_adopted_child`.
+    /// A task about to block passes `waiter`. It is registered atomically with
+    /// this observation exactly when the task will block on it: nothing
+    /// matching is waitable or failed, and either a matching adoption is
+    /// running or the task sleeps on a local child as the live guest init
+    /// (which can adopt a new orphan meanwhile). A completion or failure
+    /// published afterwards therefore always wakes it. Registering again
+    /// replaces that task's earlier registration. The returned `running` is
+    /// this observation's, so the caller never blocks on an earlier one.
+    pub(super) fn poll_adopted_children(
+        &self,
+        adopter: SignalProcessId,
+        matches: impl Fn(i32) -> bool,
+        waiter: Option<AdoptionWaiter<'_>>,
+    ) -> AdoptedChildPoll {
+        #[cfg(test)]
+        if waiter.is_some() {
+            let hook = self
+                .before_adoption_registration
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        let adopter_key = process_key(adopter);
+        let mut poll = AdoptedChildPoll::default();
+        if let Some(adopted) = family.adoptions.get(&adopter_key) {
+            for (child, state) in adopted {
+                if !matches(child.0) {
+                    continue;
+                }
+                match *state {
+                    AdoptedChild::Running => poll.running = true,
+                    AdoptedChild::Waitable(_) => poll.waitable = true,
+                    AdoptedChild::Failed => {
+                        poll.failed.get_or_insert(child.0);
+                    }
+                }
+            }
+        }
+        if let Some(waiter) = waiter
+            && !poll.waitable
+            && poll.failed.is_none()
+            && (poll.running || waiter.awaits_local_child && family.is_guest_reaper(adopter_key))
+        {
+            family
+                .adoption_waiters
+                .entry(adopter_key)
+                .or_default()
+                .insert(waiter.key, waiter.sender.clone());
+            #[cfg(test)]
+            {
+                family.adoption_registrations += 1;
+            }
+        }
+        poll
+    }
+
+    /// Withdraw a task's wake registration once its blocking receive returns,
+    /// so a wait that stops blocking leaves nothing behind for a later
+    /// completion to wake.
+    pub(super) fn unregister_adoption_waiter(
+        &self,
+        adopter: SignalProcessId,
+        key: AdoptionWaiterKey,
+    ) {
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        let adopter_key = process_key(adopter);
+        if let Some(waiters) = family.adoption_waiters.get_mut(&adopter_key) {
+            waiters.remove(&key);
+            if waiters.is_empty() {
+                family.adoption_waiters.remove(&adopter_key);
+            }
+        }
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review atomic adopted-orphan selection.
+    /// Select, in one step under the family lock, the smallest-pid matching
+    /// waitable adopted orphan of `adopter` whose pid is below `below` (the
+    /// wait's smallest collectable local child, if any), so a wait picks the
+    /// same child Linux's pid order would regardless of where it is tracked.
+    /// A consuming wait removes the entry and the adopter's waitable-zombie
+    /// edge together, so exactly one wait of any thread of the adopter
+    /// collects it; a WNOWAIT wait (`consume == false`) leaves both in place.
+    /// Competing waits are ordered by the syscall order that reaches this
+    /// lock: under ToolControlled each is its own scheduler turn.
+    pub(super) fn take_adopted_child(
+        &self,
+        adopter: SignalProcessId,
+        matches: impl Fn(i32) -> bool,
+        below: Option<i32>,
+        consume: bool,
+    ) -> Option<AdoptedWait> {
+        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
+        let adopter_key = process_key(adopter);
+        let adopted = family.adoptions.get_mut(&adopter_key)?;
+        let (child, status) = adopted.iter().find_map(|(child, state)| match *state {
+            AdoptedChild::Waitable(status)
+                if matches(child.0) && below.is_none_or(|below| child.0 < below) =>
+            {
+                Some((*child, status))
+            }
+            _ => None,
+        })?;
+        let mut selected = AdoptedWait {
+            pid: child.0,
+            status,
+            ledger_consumed: false,
+        };
+        if !consume {
+            return Some(selected);
+        }
+        adopted.remove(&child);
+        if adopted.is_empty() {
+            family.adoptions.remove(&adopter_key);
+        }
+        if let Some(children) = family.direct_children.get_mut(&adopter_key)
+            && children.get(&child) == Some(&DirectChildState::WaitableZombie)
+        {
+            children.remove(&child);
+            if children.is_empty() {
+                family.direct_children.remove(&adopter_key);
+            }
+            selected.ledger_consumed = true;
+        }
+        Some(selected)
     }
 
     pub(super) fn consume_child_wait(&self, parent: SignalProcessId, child_pid: i32) -> bool {
@@ -752,7 +1258,14 @@ impl ProcessSignalControl {
             let Some(child) = registry.lookup(completion.child) else {
                 return Rejected(InvalidCompletion);
             };
-            if child.parent != Some(target)
+            // An adopted orphan's SIGCHLD belongs to its adopter, frozen at
+            // its exit; the fork-time parent is already terminal.
+            let current_parent = registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .current_parent(process_key(completion.child), child.parent);
+            if current_parent != Some(process_key(target))
                 || lifecycle.process_exit_status(
                     completion.child.tgid.as_raw(),
                     completion.child.generation,
@@ -1311,6 +1824,54 @@ mod tests {
 
     fn identity(executor: &ElfExecutor) -> SignalProcessId {
         executor.signal_task_identity().unwrap().process
+    }
+
+    /// A traced root with an arbitrary PID; Hermit runs its root as PID 3,
+    /// leaving namespace init outside the guest.
+    fn executor_with_root(pid: i32) -> ElfExecutor {
+        executor_with_root_in_group(pid, pid)
+    }
+
+    /// A traced root with an arbitrary PID in process group `pgid`.
+    fn executor_with_root_in_group(pid: i32, pgid: i32) -> ElfExecutor {
+        let mut state = native_loaded_state(std::path::Path::new("/tmp"));
+        state.pid = pid;
+        state.pgid = pgid;
+        state.tid = pid;
+        state.ppid = if pid == CONTAINER_INIT_PID {
+            0
+        } else {
+            CONTAINER_INIT_PID
+        };
+        state.task_lifecycle = Arc::new(Mutex::new(TaskLifecycleTable::with_root(
+            pid,
+            pid,
+            pgid,
+            state.dumpable,
+        )));
+        ElfExecutor::new(state, false)
+    }
+
+    fn getppid(executor: &mut ElfExecutor) -> i64 {
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        executor.execute(
+            &SyscallRequest::new(libc::SYS_getppid as u64, [0; 6]),
+            &memory,
+        )
+    }
+
+    fn family_edge(
+        registry: &ProcessSignalRegistry,
+        parent: SignalProcessId,
+        child: SignalProcessId,
+    ) -> Option<DirectChildState> {
+        registry
+            .family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .direct_children
+            .get(&process_key(parent))
+            .and_then(|children| children.get(&process_key(child)).copied())
     }
 
     fn alarm(target: SignalProcessId) -> SignalEvent {
@@ -2739,37 +3300,1301 @@ mod tests {
     }
 
     #[test]
-    fn process_family_fails_closed_until_direct_children_are_reaped_or_auto_reaped() {
-        let parent = executor();
-        let mut live_owner = parent.fork_child(2, false, false).unwrap();
-        let live_descendant = live_owner.fork_child(3, false, false).unwrap();
-        let live_owner_id = identity(&live_owner);
-        let live_descendant_id = identity(&live_descendant);
-        live_owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+    fn live_orphan_is_adopted_by_guest_init_and_reaped_with_its_status() {
+        const STATUS: u64 = 0x200;
+
+        let mut root = executor_with_root(1);
+        let root_id = identity(&root);
+        let mut owner = root.fork_child(2, false, false).unwrap();
+        let mut orphan = owner.fork_child(3, false, false).unwrap();
+        let owner_id = identity(&owner);
+        let orphan_id = identity(&orphan);
+        assert_eq!(getppid(&mut orphan), 2);
+
+        owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert!(matches!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::Child(snapshot)) if snapshot.completion.parent == root_id
+        ));
+        // Linux exit_notify: the running child now belongs to namespace init.
+        assert_eq!(getppid(&mut orphan), 1);
         assert_eq!(
-            live_owner
-                .signal_registry
-                .process_family_exit(live_owner_id),
-            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
-                child: live_descendant_id,
-            })
+            root.signal_registry.current_parent(orphan_id),
+            Some(root_id)
+        );
+        assert_eq!(
+            family_edge(&root.signal_registry, root_id, orphan_id),
+            Some(DirectChildState::Live)
+        );
+        assert_eq!(
+            family_edge(&root.signal_registry, owner_id, orphan_id),
+            None
         );
 
-        let parent = executor();
-        let mut zombie_owner = parent.fork_child(2, false, false).unwrap();
+        // Collect the exiting owner first so only the orphan remains.
+        root.record_child_completion(
+            2,
+            crate::executor::ChildCompletion::Waitable(reverie::ExitStatus::Exited(7)),
+        )
+        .unwrap();
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        assert_eq!(
+            root.execute(
+                &SyscallRequest::new(libc::SYS_wait4 as u64, [2, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            2
+        );
+        // The adopted orphan is still running: a non-blocking wait reports
+        // "none ready" rather than ECHILD.
+        assert_eq!(
+            root.execute(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [u64::MAX, STATUS, libc::WNOHANG as u64, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
+
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        let completion = match orphan.signal_registry.process_family_exit(orphan_id) {
+            Some(ProcessFamilyExit::Child(snapshot)) => snapshot.completion,
+            other => panic!("adopted orphan lost its waitable exit: {other:?}"),
+        };
+        assert_eq!(completion.parent, root_id);
+        assert_eq!(completion.child, orphan_id);
+        assert_eq!(completion.status, reverie::ExitStatus::Exited(9));
+        assert!(completion.waitable);
+        // Not collectable until the runtime's post-fence delivery.
+        assert_eq!(
+            root.execute(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [u64::MAX, STATUS, libc::WNOHANG as u64, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            0
+        );
+        assert!(orphan.publish_adopted_child_completion(
+            root_id,
+            crate::executor::ChildCompletion::Waitable(completion.status),
+        ));
+        assert!(
+            !orphan.publish_adopted_child_completion(
+                root_id,
+                crate::executor::ChildCompletion::Waitable(completion.status),
+            ),
+            "an adopted completion is delivered at most once",
+        );
+        assert_eq!(
+            root.execute(
+                &SyscallRequest::new(libc::SYS_wait4 as u64, [u64::MAX, STATUS, 0, 0, 0, 0]),
+                &memory,
+            ),
+            3
+        );
+        let mut status = [0; std::mem::size_of::<libc::c_int>()];
+        memory.read(STATUS, &mut status).unwrap();
+        assert_eq!(libc::c_int::from_le_bytes(status), 9 << 8);
+        assert_eq!(family_edge(&root.signal_registry, root_id, orphan_id), None);
+        assert_eq!(
+            root.execute(
+                &SyscallRequest::new(libc::SYS_wait4 as u64, [u64::MAX, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            -i64::from(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn blocked_adopter_wait_wakes_on_adopted_orphan_completion() {
+        const STATUS: u64 = 0x200;
+
+        let root = executor_with_root(1);
+        let root_id = identity(&root);
+        let mut owner = root.fork_child(2, false, false).unwrap();
+        let mut orphan = owner.fork_child(3, false, false).unwrap();
+        owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        let waiter = std::thread::spawn(move || {
+            let mut root = root;
+            let memory = GuestMemory::new(0, 4096).unwrap();
+            // Only the orphan: the owner's own completion is never joined
+            // into this executor, so the pid-specific wait blocks on pid 3.
+            let reaped = root.execute(
+                &SyscallRequest::new(libc::SYS_wait4 as u64, [3, STATUS, 0, 0, 0, 0]),
+                &memory,
+            );
+            let mut status = [0; std::mem::size_of::<libc::c_int>()];
+            memory.read(STATUS, &mut status).unwrap();
+            (reaped, libc::c_int::from_le_bytes(status))
+        });
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        assert!(orphan.publish_adopted_child_completion(
+            root_id,
+            crate::executor::ChildCompletion::Waitable(reverie::ExitStatus::Exited(9)),
+        ));
+        assert_eq!(waiter.join().unwrap(), (3, 9 << 8));
+    }
+
+    /// Guest init (root PID 1) whose fork child 2 forks every `orphan_pids`
+    /// entry and then exits, so init adopts each orphan while it still runs.
+    /// The exited owner is returned so its executor outlives the test body.
+    fn init_with_adopted_orphans(
+        orphan_pids: &[i32],
+    ) -> (ElfExecutor, ElfExecutor, Vec<ElfExecutor>) {
+        let root = executor_with_root(1);
+        let root_id = identity(&root);
+        let mut owner = root.fork_child(2, false, false).unwrap();
+        let owner_id = identity(&owner);
+        let orphans = orphan_pids
+            .iter()
+            .map(|pid| owner.fork_child(*pid, false, false).unwrap())
+            .collect::<Vec<_>>();
+        owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert!(matches!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::Child(snapshot)) if snapshot.completion.parent == root_id
+        ));
+        for orphan in &orphans {
+            assert_eq!(
+                root.signal_registry.current_parent(identity(orphan)),
+                Some(root_id)
+            );
+        }
+        (root, owner, orphans)
+    }
+
+    /// Exit one adopted orphan and make its status collectable by `adopter`,
+    /// as the runtime does after the child-exit fence.
+    fn exit_adopted_orphan(adopter: SignalProcessId, orphan: &mut ElfExecutor, code: i32) {
+        let orphan_id = identity(orphan);
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(code), false);
+        assert!(matches!(
+            orphan.signal_registry.process_family_exit(orphan_id),
+            Some(ProcessFamilyExit::Child(snapshot))
+                if snapshot.completion.parent == adopter && snapshot.completion.waitable
+        ));
+        assert!(orphan.publish_adopted_child_completion(
+            adopter,
+            crate::executor::ChildCompletion::Waitable(reverie::ExitStatus::Exited(code)),
+        ));
+    }
+
+    /// wait4(pid, &status, options) through the executor; returns the result
+    /// and the raw status word.
+    fn wait4(executor: &mut ElfExecutor, pid: i32, options: libc::c_int) -> (i64, libc::c_int) {
+        const STATUS: u64 = 0x200;
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        let result = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_wait4 as u64,
+                [pid as u32 as u64, STATUS, options as u64, 0, 0, 0],
+            ),
+            &memory,
+        );
+        let mut status = [0; std::mem::size_of::<libc::c_int>()];
+        memory.read(STATUS, &mut status).unwrap();
+        (result, libc::c_int::from_le_bytes(status))
+    }
+
+    /// waitid(P_ALL, 0, &info, options) through the executor; returns the
+    /// result, `si_pid` and `si_status`.
+    fn waitid_all(executor: &mut ElfExecutor, options: libc::c_int) -> (i64, i32, i32) {
+        const INFO: u64 = 0x400;
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        let result = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_waitid as u64,
+                [libc::P_ALL as u64, 0, INFO, options as u64, 0, 0],
+            ),
+            &memory,
+        );
+        let mut info = [0; std::mem::size_of::<libc::siginfo_t>()];
+        memory.read(INFO, &mut info).unwrap();
+        let field =
+            |offset: usize| i32::from_ne_bytes(info[offset..offset + 4].try_into().unwrap());
+        // Guest siginfo layout: si_pid at 16 and si_status at 24.
+        (result, field(16), field(24))
+    }
+
+    /// Spin until `condition` holds; a bounded wait so a missing transition
+    /// fails the test instead of hanging it.
+    fn wait_until(what: &str, condition: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// Register a fork child of `parent` that publishes exit `code` and
+    /// notifies the parent only after the returned sender fires. It is
+    /// independent of any adopted orphan.
+    fn gated_local_child(
+        parent: &mut ElfExecutor,
+        pid: i32,
+        code: i32,
+    ) -> std::sync::mpsc::Sender<()> {
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let (exit_sender, exit_receiver) = std::sync::mpsc::channel::<()>();
+        let completion = Arc::new(super::super::ChildCompletionSlot::default());
+        let child_completion = completion.clone();
+        let notifier = parent.child_completion_notifier();
+        let handle = std::thread::spawn(move || {
+            exit_receiver.recv().unwrap();
+            assert!(
+                child_completion.publish(crate::executor::ChildCompletion::Waitable(
+                    reverie::ExitStatus::Exited(code),
+                ))
+            );
+            notifier.send(pid).unwrap();
+            // Hold the start gate open until the parent's wait releases it.
+            let _ = start_receiver.recv();
+            Ok(())
+        });
+        parent.register_child_process(pid, start_sender, completion, handle);
+        exit_sender
+    }
+
+    #[test]
+    fn adopted_zombie_stays_process_shared_under_wnowait() {
+        let (mut root, _owner, mut orphans) = init_with_adopted_orphans(&[3]);
+        let root_id = identity(&root);
+        let orphan_id = identity(&orphans[0]);
+        exit_adopted_orphan(root_id, &mut orphans[0], 9);
+
+        let peek = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
+        assert_eq!(waitid_all(&mut root, peek), (0, 3, 9));
+        // WNOWAIT leaves the zombie waitable in the process-shared ledger,
+        // not copied into this one thread's private wait state.
+        assert_eq!(
+            root.signal_registry.adopted_child_state(root_id, orphan_id),
+            Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(9)))
+        );
+        assert!(!root.state.children.contains_key(&3));
+        assert_eq!(
+            family_edge(&root.signal_registry, root_id, orphan_id),
+            Some(DirectChildState::WaitableZombie)
+        );
+        assert_eq!(waitid_all(&mut root, peek), (0, 3, 9));
+
+        // A consuming wait reaps it exactly once.
+        assert_eq!(wait4(&mut root, -1, 0), (3, 9 << 8));
+        assert_eq!(
+            root.signal_registry.adopted_child_state(root_id, orphan_id),
+            None
+        );
+        assert_eq!(family_edge(&root.signal_registry, root_id, orphan_id), None);
+        assert_eq!(wait4(&mut root, -1, 0).0, -i64::from(libc::ECHILD));
+    }
+
+    #[test]
+    fn adopted_zombie_is_visible_to_every_thread_of_its_adopter() {
+        let (mut root, _owner, mut orphans) = init_with_adopted_orphans(&[3]);
+        let root_id = identity(&root);
+        let mut sibling = root.thread_child(5).unwrap();
+        assert_eq!(identity(&sibling), root_id);
+        exit_adopted_orphan(root_id, &mut orphans[0], 9);
+
+        let peek = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
+        assert_eq!(waitid_all(&mut root, peek), (0, 3, 9));
+        // The leader's WNOWAIT peek must not hide the zombie from a sibling.
+        assert_eq!(waitid_all(&mut sibling, peek), (0, 3, 9));
+        assert_eq!(wait4(&mut sibling, -1, libc::WNOHANG), (3, 9 << 8));
+        // Reaped once, by the sibling; the leader now has no child at all.
+        assert_eq!(
+            wait4(&mut root, -1, libc::WNOHANG).0,
+            -i64::from(libc::ECHILD)
+        );
+        assert!(root.state.children.is_empty());
+    }
+
+    #[test]
+    fn each_wait_consumes_exactly_one_of_several_adopted_zombies() {
+        let (mut root, _owner, mut orphans) = init_with_adopted_orphans(&[3, 4]);
+        let root_id = identity(&root);
+        let mut sibling = root.thread_child(5).unwrap();
+        let second_id = identity(&orphans[1]);
+        exit_adopted_orphan(root_id, &mut orphans[0], 9);
+        exit_adopted_orphan(root_id, &mut orphans[1], 8);
+
+        assert_eq!(wait4(&mut root, -1, libc::WNOHANG), (3, 9 << 8));
+        // One wait selects one child; the other stays shared, not stranded in
+        // the leader's private state.
+        assert!(root.state.children.is_empty());
+        assert_eq!(
+            root.signal_registry.adopted_child_state(root_id, second_id),
+            Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(8)))
+        );
+        assert_eq!(wait4(&mut sibling, -1, libc::WNOHANG), (4, 8 << 8));
+        assert_eq!(
+            wait4(&mut root, -1, libc::WNOHANG).0,
+            -i64::from(libc::ECHILD)
+        );
+        assert_eq!(
+            wait4(&mut sibling, -1, libc::WNOHANG).0,
+            -i64::from(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn unrelated_child_wake_replaces_rather_than_duplicates_the_adoption_waiter() {
+        let (mut root, _owner, mut orphans) = init_with_adopted_orphans(&[3]);
+        let root_id = identity(&root);
+        let registry = root.signal_registry.clone();
+        let release_local = gated_local_child(&mut root, 4, 5);
+        let waiter = std::thread::spawn(move || {
+            // Only the adopted orphan matches; the local child's completion
+            // is an unrelated wake on the same channel.
+            let result = wait4(&mut root, 3, 0);
+            (root, result)
+        });
+        // Barrier: the waiter registered for the orphan before anything is
+        // published.
+        wait_until("the first adoption waiter registration", || {
+            registry.adoption_registrations() == 1
+        });
+        assert_eq!(registry.adoption_waiter_count(root_id), 1);
+
+        release_local.send(()).unwrap();
+        // Barrier: the unrelated wake made the waiter re-poll and register
+        // again while the orphan is still running.
+        wait_until("the re-registration after the unrelated wake", || {
+            registry.adoption_registrations() == 2
+        });
+        assert_eq!(
+            registry.adoption_waiter_count(root_id),
+            1,
+            "a re-poll replaces this waiter's registration instead of appending another",
+        );
+
+        exit_adopted_orphan(root_id, &mut orphans[0], 9);
+        let (mut root, result) = waiter.join().unwrap();
+        assert_eq!(result, (3, 9 << 8));
+        assert_eq!(registry.adoption_waiter_count(root_id), 0);
+        assert!(
+            root.child_completion_receiver
+                .lock()
+                .unwrap()
+                .try_recv()
+                .is_err(),
+            "the orphan's completion woke the waiter exactly once",
+        );
+        assert_eq!(wait4(&mut root, 4, 0), (4, 5 << 8));
+    }
+
+    #[test]
+    fn adoption_waiter_is_unregistered_when_its_wait_stops_blocking() {
+        let (mut root, _owner, mut orphans) = init_with_adopted_orphans(&[3]);
+        let root_id = identity(&root);
+        let registry = root.signal_registry.clone();
+        let release_local = gated_local_child(&mut root, 4, 5);
+        let waiter = std::thread::spawn(move || {
+            let result = wait4(&mut root, -1, 0);
+            (root, result)
+        });
+        // Barrier: blocked with a registration for the running orphan.
+        wait_until("the adoption waiter registration", || {
+            registry.adoption_registrations() == 1
+        });
+        assert_eq!(registry.adoption_waiter_count(root_id), 1);
+
+        // The local child satisfies the wait; the orphan is still running.
+        release_local.send(()).unwrap();
+        let (mut root, result) = waiter.join().unwrap();
+        assert_eq!(result, (4, 5 << 8));
+        assert_eq!(
+            registry.adoption_waiter_count(root_id),
+            0,
+            "a wait that stopped blocking holds no adoption registration",
+        );
+
+        exit_adopted_orphan(root_id, &mut orphans[0], 9);
+        assert!(
+            root.child_completion_receiver
+                .lock()
+                .unwrap()
+                .try_recv()
+                .is_err(),
+            "no stale registration turns the orphan's exit into a stray wake",
+        );
+        assert_eq!(wait4(&mut root, -1, 0), (3, 9 << 8));
+        assert_eq!(wait4(&mut root, -1, 0).0, -i64::from(libc::ECHILD));
+    }
+
+    /// Run `wait` on `executor` in its own thread; the receiver yields the
+    /// executor and the result once the wait returns. A stranded waiter
+    /// thread is leaked rather than hanging the test.
+    fn wait_in_thread<T: Send + 'static>(
+        executor: ElfExecutor,
+        wait: impl FnOnce(&mut ElfExecutor) -> T + Send + 'static,
+    ) -> std::sync::mpsc::Receiver<(ElfExecutor, T)> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut executor = executor;
+            let result = wait(&mut executor);
+            let _ = sender.send((executor, result));
+        });
+        receiver
+    }
+
+    /// Receive a waiter's result, distinguishing a stranded waiter from one
+    /// that panicked.
+    fn waiter_result<T>(receiver: &std::sync::mpsc::Receiver<T>, what: &str) -> T {
+        match receiver.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("{what}: the wait is still blocked after 20 s")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("{what}: the waiter thread panicked")
+            }
+        }
+    }
+
+    #[test]
+    fn wait4_reevaluates_when_its_adopted_child_is_auto_reaped_before_registration() {
+        let (root, _owner, mut orphans) = init_with_adopted_orphans(&[3]);
+        let root_id = identity(&root);
+        let registry = root.signal_registry.clone();
+        root.state
+            .process_signals
+            .lock()
+            .unwrap()
+            .dispositions
+            .insert(
+                libc::SIGCHLD,
+                KernelSigaction {
+                    handler: libc::SIG_IGN as u64,
+                    ..Default::default()
+                },
+            );
+        let mut orphan = orphans.pop().unwrap();
+        let orphan_id = identity(&orphan);
+        let (kept_sender, kept) = std::sync::mpsc::channel();
+        // Between the wait's first observation (orphan running) and its
+        // registering one, the orphan exits and is auto-reaped.
+        registry.set_before_adoption_registration(move || {
+            orphan.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+            assert!(matches!(
+                orphan.signal_registry.process_family_exit(orphan_id),
+                Some(ProcessFamilyExit::Child(snapshot))
+                    if snapshot.completion.parent == root_id && !snapshot.completion.waitable
+            ));
+            assert!(orphan.publish_adopted_child_completion(
+                root_id,
+                crate::executor::ChildCompletion::AutoReaped(reverie::ExitStatus::Exited(9)),
+            ));
+            kept_sender.send(orphan).unwrap();
+        });
+
+        let waiter = wait_in_thread(root, |root| wait4(root, 3, 0));
+        let (_root, result) = waiter_result(
+            &waiter,
+            "wait4 on an adopted child auto-reaped before registration",
+        );
+        let _orphan = kept
+            .try_recv()
+            .expect("the orphan was reaped between the wait's two observations");
+        // No child remains: Linux reports ECHILD rather than sleeping.
+        assert_eq!(result.0, -i64::from(libc::ECHILD));
+        assert_eq!(registry.blocked_waits(), 0);
+        assert_eq!(registry.adoption_waiter_count(root_id), 0);
+    }
+
+    #[test]
+    fn waitid_reevaluates_when_a_sibling_takes_its_adopted_child_before_registration() {
+        let (root, _owner, mut orphans) = init_with_adopted_orphans(&[3]);
+        let root_id = identity(&root);
+        let registry = root.signal_registry.clone();
+        let mut sibling = root.thread_child(5).unwrap();
+        let mut orphan = orphans.pop().unwrap();
+        let orphan_id = identity(&orphan);
+        let (kept_sender, kept) = std::sync::mpsc::channel();
+        // Between the wait's first observation (orphan running) and its
+        // registering one, the orphan exits and a sibling thread reaps it.
+        registry.set_before_adoption_registration(move || {
+            exit_adopted_orphan(root_id, &mut orphan, 9);
+            assert_eq!(wait4(&mut sibling, -1, libc::WNOHANG), (3, 9 << 8));
+            kept_sender.send((orphan, sibling)).unwrap();
+        });
+
+        let waiter = wait_in_thread(root, |root| waitid_all(root, libc::WEXITED));
+        let (_root, result) = waiter_result(
+            &waiter,
+            "waitid on an adopted child a sibling took before registration",
+        );
+        let _kept = kept
+            .try_recv()
+            .expect("the sibling reaped the orphan between the wait's two observations");
+        assert_eq!(result.0, -i64::from(libc::ECHILD));
+        assert_eq!(
+            registry.adopted_child_state(root_id, orphan_id),
+            None,
+            "reaped exactly once, by the sibling",
+        );
+        assert_eq!(registry.blocked_waits(), 0);
+        assert_eq!(registry.adoption_waiter_count(root_id), 0);
+    }
+
+    #[test]
+    fn init_asleep_on_a_local_child_wakes_for_an_orphan_adopted_meanwhile() {
+        let root = executor_with_root(1);
+        let root_id = identity(&root);
+        let registry = root.signal_registry.clone();
+        let mut owner = root.fork_child(2, false, false).unwrap();
+        let mut orphan = owner.fork_child(3, false, false).unwrap();
+        let orphan_id = identity(&orphan);
+        let mut root = root;
+        let release_local = gated_local_child(&mut root, 4, 5);
+        let waiter = wait_in_thread(root, |root| wait4(root, -1, 0));
+        // Barrier: init is asleep on its running local child before any
+        // orphan exists.
+        wait_until("init blocking in wait4", || registry.blocked_waits() == 1);
+
+        owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert_eq!(registry.current_parent(orphan_id), Some(root_id));
+        exit_adopted_orphan(root_id, &mut orphan, 9);
+
+        let early = match waiter.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the waiter thread panicked")
+            }
+        };
+        // Release the local child only now, so it cannot be what woke init.
+        let _ = release_local.send(());
+        let (mut root, result) =
+            early.expect("the adopted orphan's exit did not wake init's blocked wait4(-1)");
+        assert_eq!(result, (3, 9 << 8));
+        assert_eq!(registry.adoption_waiter_count(root_id), 0);
+        assert_eq!(wait4(&mut root, 4, 0), (4, 5 << 8));
+    }
+
+    #[test]
+    fn wait4_process_group_selectors_match_adopted_children() {
+        const GROUP: i32 = 9;
+        for selector in [0, -GROUP] {
+            let root = executor_with_root_in_group(1, GROUP);
+            let root_id = identity(&root);
+            let mut owner = root.fork_child(2, false, false).unwrap();
+            let mut orphan = owner.fork_child(3, false, false).unwrap();
+            assert_eq!(orphan.state.pgid, GROUP);
+            let orphan_id = identity(&orphan);
+            owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+            let mut root = root;
+            assert_eq!(
+                root.signal_registry.current_parent(orphan_id),
+                Some(root_id)
+            );
+
+            // Running in the caller's group: none ready yet, not ECHILD.
+            assert_eq!(
+                wait4(&mut root, selector, libc::WNOHANG),
+                (0, 0),
+                "selector {selector} with a running adopted child",
+            );
+            exit_adopted_orphan(root_id, &mut orphan, 9);
+            assert_eq!(
+                wait4(&mut root, selector, 0),
+                (3, 9 << 8),
+                "selector {selector} with an adopted zombie",
+            );
+            assert_eq!(
+                wait4(&mut root, selector, libc::WNOHANG).0,
+                -i64::from(libc::ECHILD),
+                "selector {selector} after the only child was reaped",
+            );
+        }
+    }
+
+    /// Every check runs and is printed; the test fails at the end listing
+    /// each mismatch, so one run shows the outcome of every check rather
+    /// than only the first failure.
+    #[derive(Default)]
+    struct Checks(Vec<String>);
+
+    impl Checks {
+        fn eq<T: PartialEq + std::fmt::Debug>(&mut self, what: &str, actual: T, expected: T) {
+            let ok = actual == expected;
+            println!(
+                "check {}: {what}: got {actual:?}, expected {expected:?}",
+                if ok { "ok" } else { "FAILED" }
+            );
+            if !ok {
+                self.0
+                    .push(format!("{what}: got {actual:?}, expected {expected:?}"));
+            }
+        }
+
+        fn fail(&mut self, what: String) {
+            println!("check FAILED: {what}");
+            self.0.push(what);
+        }
+
+        fn finish(self) {
+            assert!(
+                self.0.is_empty(),
+                "{} check(s) failed:\n{}",
+                self.0.len(),
+                self.0.join("\n")
+            );
+        }
+    }
+
+    const GROUP: i32 = 9;
+    const OTHER_GROUP: i32 = 10;
+
+    fn errno(code: i32) -> i64 {
+        -i64::from(code)
+    }
+
+    /// waitid(idtype, id, &info, options) through the executor; returns the
+    /// result, `si_pid` and `si_status`.
+    fn waitid_for(
+        executor: &mut ElfExecutor,
+        idtype: libc::idtype_t,
+        id: i32,
+        options: libc::c_int,
+    ) -> (i64, i32, i32) {
+        const INFO: u64 = 0x400;
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        let result = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_waitid as u64,
+                [idtype as u64, id as u32 as u64, INFO, options as u64, 0, 0],
+            ),
+            &memory,
+        );
+        let mut info = [0; std::mem::size_of::<libc::siginfo_t>()];
+        memory.read(INFO, &mut info).unwrap();
+        let field =
+            |offset: usize| i32::from_ne_bytes(info[offset..offset + 4].try_into().unwrap());
+        (result, field(16), field(24))
+    }
+
+    /// Guest init in process group `GROUP` that adopted running orphan 3.
+    /// The exited owner is returned so its executor outlives the test body.
+    fn init_in_group_with_adopted_orphan() -> (ElfExecutor, ElfExecutor, ElfExecutor) {
+        let root = executor_with_root_in_group(1, GROUP);
+        let mut owner = root.fork_child(2, false, false).unwrap();
+        let orphan = owner.fork_child(3, false, false).unwrap();
+        assert_eq!(orphan.state.pgid, GROUP, "fork inherits the process group");
+        owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert_eq!(
+            root.signal_registry.current_parent(identity(&orphan)),
+            Some(identity(&root))
+        );
+        (root, owner, orphan)
+    }
+
+    /// A non-init root in process group `GROUP` with collected (waitable)
+    /// fork children `pids`, each exited with status `pid + 10`.
+    fn root_in_group_with_collected_children(pids: &[i32]) -> ElfExecutor {
+        let mut root = executor_with_root_in_group(5, GROUP);
+        for &pid in pids {
+            root.record_child_completion(
+                pid,
+                crate::executor::ChildCompletion::Waitable(reverie::ExitStatus::Exited(pid + 10)),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    /// Run a blocking wait that must return at once. If it is still asleep
+    /// after 20 s, run `unblock` and report what the stranded waiter did.
+    fn wait_without_sleeping<T: PartialEq + std::fmt::Debug + Send + 'static>(
+        checks: &mut Checks,
+        what: &str,
+        executor: ElfExecutor,
+        expected: T,
+        wait: impl FnOnce(&mut ElfExecutor) -> T + Send + 'static,
+        unblock: impl FnOnce(),
+    ) -> Option<ElfExecutor> {
+        let timeout = std::time::Duration::from_secs(20);
+        let receiver = wait_in_thread(executor, wait);
+        match receiver.recv_timeout(timeout) {
+            Ok((executor, result)) => {
+                checks.eq(what, result, expected);
+                Some(executor)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                unblock();
+                match receiver.recv_timeout(timeout) {
+                    Ok((executor, result)) => {
+                        checks.fail(format!(
+                            "{what}: asleep after 20 s; returned {result:?} only once the \
+                             child exited",
+                        ));
+                        Some(executor)
+                    }
+                    Err(error) => {
+                        checks.fail(format!("{what}: asleep after 20 s, then {error:?}"));
+                        None
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                checks.fail(format!("{what}: the waiter thread panicked"));
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn group_waits_skip_an_adopted_child_outside_the_selected_group() {
+        let mut checks = Checks::default();
+        let (mut root, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+        let root_id = identity(&root);
+        let orphan_id = identity(&orphan);
+        let exited = Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(9)));
+
+        checks.eq(
+            "running orphan: wait4(-10, WNOHANG)",
+            wait4(&mut root, -OTHER_GROUP, libc::WNOHANG).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "running orphan: waitid(P_PGID, 10, WEXITED|WNOHANG)",
+            waitid_for(
+                &mut root,
+                libc::P_PGID,
+                OTHER_GROUP,
+                libc::WEXITED | libc::WNOHANG,
+            )
+            .0,
+            errno(libc::ECHILD),
+        );
+        exit_adopted_orphan(root_id, &mut orphan, 9);
+        checks.eq(
+            "orphan zombie: wait4(-10, 0)",
+            wait4(&mut root, -OTHER_GROUP, 0).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "orphan zombie: waitid(P_PGID, 10, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, OTHER_GROUP, libc::WEXITED).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "the nonmatching waits left the zombie in the ledger",
+            root.signal_registry.adopted_child_state(root_id, orphan_id),
+            exited,
+        );
+        checks.eq(
+            "the nonmatching waits left its family edge",
+            family_edge(&root.signal_registry, root_id, orphan_id),
+            Some(DirectChildState::WaitableZombie),
+        );
+        checks.eq(
+            "orphan zombie: waitid(P_PGID, 0, WEXITED) selects the caller's group",
+            waitid_for(&mut root, libc::P_PGID, 0, libc::WEXITED),
+            (0, 3, 9),
+        );
+        checks.eq(
+            "after the reap: waitid(P_PGID, 9, WEXITED|WNOHANG)",
+            waitid_for(
+                &mut root,
+                libc::P_PGID,
+                GROUP,
+                libc::WEXITED | libc::WNOHANG,
+            )
+            .0,
+            errno(libc::ECHILD),
+        );
+        checks.finish();
+    }
+
+    #[test]
+    fn waitid_process_group_ids_match_adopted_children() {
+        let mut checks = Checks::default();
+        for id in [0, GROUP] {
+            let (mut root, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+            let root_id = identity(&root);
+            checks.eq(
+                &format!("running orphan: waitid(P_PGID, {id}, WEXITED|WNOHANG)"),
+                waitid_for(&mut root, libc::P_PGID, id, libc::WEXITED | libc::WNOHANG),
+                (0, 0, 0),
+            );
+            exit_adopted_orphan(root_id, &mut orphan, 9);
+            checks.eq(
+                &format!("orphan zombie: waitid(P_PGID, {id}, WEXITED)"),
+                waitid_for(&mut root, libc::P_PGID, id, libc::WEXITED),
+                (0, 3, 9),
+            );
+            checks.eq(
+                &format!("after the reap: waitid(P_PGID, {id}, WEXITED|WNOHANG)"),
+                waitid_for(&mut root, libc::P_PGID, id, libc::WEXITED | libc::WNOHANG).0,
+                errno(libc::ECHILD),
+            );
+        }
+        checks.finish();
+    }
+
+    #[test]
+    fn blocking_group_wait_does_not_sleep_on_an_adopted_child_of_another_group() {
+        let mut checks = Checks::default();
+        for api in ["wait4(-10, 0)", "waitid(P_PGID, 10, WEXITED)"] {
+            let (root, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+            let root_id = identity(&root);
+            let orphan_id = identity(&orphan);
+            let wait = move |root: &mut ElfExecutor| match api {
+                "wait4(-10, 0)" => wait4(root, -OTHER_GROUP, 0).0,
+                _ => waitid_for(root, libc::P_PGID, OTHER_GROUP, libc::WEXITED).0,
+            };
+            let root = wait_without_sleeping(
+                &mut checks,
+                &format!("running orphan: blocking {api}"),
+                root,
+                errno(libc::ECHILD),
+                wait,
+                || exit_adopted_orphan(root_id, &mut orphan, 9),
+            );
+            let Some(mut root) = root else {
+                break;
+            };
+            if root.signal_registry.adopted_child_state(root_id, orphan_id)
+                == Some(AdoptedChild::Running)
+            {
+                exit_adopted_orphan(root_id, &mut orphan, 9);
+                checks.eq(
+                    &format!("after {api}: the orphan is still init's child"),
+                    wait4(&mut root, -1, 0),
+                    (3, 9 << 8),
+                );
+            }
+        }
+        checks.finish();
+    }
+
+    #[test]
+    fn group_waits_select_collected_fork_children_by_process_group() {
+        let mut checks = Checks::default();
+        let mut root = root_in_group_with_collected_children(&[2, 4, 6, 8]);
+        checks.eq(
+            "wait4(-10, WNOHANG)",
+            wait4(&mut root, -OTHER_GROUP, libc::WNOHANG).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "wait4(-10, 0)",
+            wait4(&mut root, -OTHER_GROUP, 0).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "waitid(P_PGID, 10, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, OTHER_GROUP, libc::WEXITED).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "the nonmatching waits reaped nothing",
+            root.state.children.keys().copied().collect::<Vec<_>>(),
+            vec![2, 4, 6, 8],
+        );
+
+        // Matching groups, from a fresh parent so no earlier wait decides them.
+        let mut root = root_in_group_with_collected_children(&[2, 4, 6, 8]);
+        checks.eq("wait4(0, 0)", wait4(&mut root, 0, 0), (2, 12 << 8));
+        checks.eq("wait4(-9, 0)", wait4(&mut root, -GROUP, 0), (4, 14 << 8));
+        checks.eq(
+            "waitid(P_PGID, 0, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, 0, libc::WEXITED),
+            (0, 6, 16),
+        );
+        checks.eq(
+            "waitid(P_PGID, 9, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, GROUP, libc::WEXITED),
+            (0, 8, 18),
+        );
+        checks.eq(
+            "all reaped: wait4(-1, WNOHANG)",
+            wait4(&mut root, -1, libc::WNOHANG).0,
+            errno(libc::ECHILD),
+        );
+        checks.finish();
+    }
+
+    #[test]
+    fn group_waits_select_running_fork_children_by_process_group() {
+        let mut checks = Checks::default();
+        let mut root = executor_with_root_in_group(5, GROUP);
+        let release = gated_local_child(&mut root, 2, 5);
+        checks.eq(
+            "running child: wait4(-10, WNOHANG)",
+            wait4(&mut root, -OTHER_GROUP, libc::WNOHANG).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "running child: waitid(P_PGID, 10, WEXITED|WNOHANG)",
+            waitid_for(
+                &mut root,
+                libc::P_PGID,
+                OTHER_GROUP,
+                libc::WEXITED | libc::WNOHANG,
+            )
+            .0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "running child: wait4(-9, WNOHANG)",
+            wait4(&mut root, -GROUP, libc::WNOHANG),
+            (0, 0),
+        );
+        checks.eq(
+            "running child: waitid(P_PGID, 0, WEXITED|WNOHANG)",
+            waitid_for(&mut root, libc::P_PGID, 0, libc::WEXITED | libc::WNOHANG),
+            (0, 0, 0),
+        );
+        let release_on_timeout = release.clone();
+        let root = wait_without_sleeping(
+            &mut checks,
+            "running child: blocking wait4(-10, 0)",
+            root,
+            errno(libc::ECHILD),
+            |root| wait4(root, -OTHER_GROUP, 0).0,
+            move || release_on_timeout.send(()).unwrap(),
+        );
+        // Still unreaped only if the blocking wait returned without sleeping.
+        if let Some(mut root) = root
+            && root.state.children.is_empty()
+            && root.pending_processes.contains_key(&2)
+        {
+            release.send(()).unwrap();
+            checks.eq(
+                "after the exit: wait4(0, 0)",
+                wait4(&mut root, 0, 0),
+                (2, 5 << 8),
+            );
+        }
+        checks.finish();
+    }
+
+    #[test]
+    fn wait4_int_min_is_esrch_after_the_options_check() {
+        let mut checks = Checks::default();
+        let mut root = root_in_group_with_collected_children(&[2]);
+        checks.eq(
+            "fork zombie: wait4(INT_MIN, WNOWAIT) rejects the options first",
+            wait4(&mut root, i32::MIN, libc::WNOWAIT).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "fork zombie: wait4(INT_MIN, 0)",
+            wait4(&mut root, i32::MIN, 0).0,
+            errno(libc::ESRCH),
+        );
+        checks.eq(
+            "fork zombie: wait4(INT_MIN, WNOHANG)",
+            wait4(&mut root, i32::MIN, libc::WNOHANG).0,
+            errno(libc::ESRCH),
+        );
+        checks.eq(
+            "wait4(INT_MIN) reaped nothing",
+            root.state.children.keys().copied().collect::<Vec<_>>(),
+            vec![2],
+        );
+        checks.eq("wait4(-1, 0)", wait4(&mut root, -1, 0), (2, 12 << 8));
+        checks.eq(
+            "no children: wait4(INT_MIN, 0)",
+            wait4(&mut root, i32::MIN, 0).0,
+            errno(libc::ESRCH),
+        );
+
+        let (mut init, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+        let init_id = identity(&init);
+        let orphan_id = identity(&orphan);
+        checks.eq(
+            "running orphan: wait4(INT_MIN, WNOHANG)",
+            wait4(&mut init, i32::MIN, libc::WNOHANG).0,
+            errno(libc::ESRCH),
+        );
+        exit_adopted_orphan(init_id, &mut orphan, 9);
+        checks.eq(
+            "orphan zombie: wait4(INT_MIN, 0)",
+            wait4(&mut init, i32::MIN, 0).0,
+            errno(libc::ESRCH),
+        );
+        checks.eq(
+            "wait4(INT_MIN) left the orphan zombie in the ledger",
+            init.signal_registry.adopted_child_state(init_id, orphan_id),
+            Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(9))),
+        );
+        checks.finish();
+    }
+
+    #[test]
+    fn waitid_rejects_a_negative_group_and_a_nonpositive_pid() {
+        let mut checks = Checks::default();
+        let mut root = root_in_group_with_collected_children(&[2]);
+        checks.eq(
+            "fork zombie: waitid(P_PGID, -9, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, -GROUP, libc::WEXITED).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "fork zombie: waitid(P_PID, 0, WEXITED)",
+            waitid_for(&mut root, libc::P_PID, 0, libc::WEXITED).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "fork zombie: waitid(P_PID, -1, WEXITED)",
+            waitid_for(&mut root, libc::P_PID, -1, libc::WEXITED).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "the rejected waits reaped nothing",
+            root.state.children.keys().copied().collect::<Vec<_>>(),
+            vec![2],
+        );
+
+        let (mut init, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+        let init_id = identity(&init);
+        let orphan_id = identity(&orphan);
+        exit_adopted_orphan(init_id, &mut orphan, 9);
+        checks.eq(
+            "orphan zombie: waitid(P_PGID, -9, WEXITED)",
+            waitid_for(&mut init, libc::P_PGID, -GROUP, libc::WEXITED).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "waitid(P_PGID, -9) left the orphan zombie in the ledger",
+            init.signal_registry.adopted_child_state(init_id, orphan_id),
+            Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(9))),
+        );
+        checks.finish();
+    }
+
+    /// Raw waitid(P_ALL, 0, infop, options) through the executor.
+    fn waitid_raw(executor: &mut ElfExecutor, infop: u64, options: libc::c_int) -> i64 {
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_waitid as u64,
+                [libc::P_ALL as u64, 0, infop, options as u64, 0, 0],
+            ),
+            &memory,
+        )
+    }
+
+    #[test]
+    fn raw_waitid_accepts_a_null_infop_and_validates_options_first() {
+        let (mut root, _owner, mut orphans) = init_with_adopted_orphans(&[3]);
+        let root_id = identity(&root);
+        let orphan_id = identity(&orphans[0]);
+
+        // Options are rejected before the (null) pointer is considered.
+        assert_eq!(waitid_raw(&mut root, 0, 0), -i64::from(libc::EINVAL));
+        assert_eq!(
+            waitid_raw(&mut root, 0, libc::WNOHANG),
+            -i64::from(libc::EINVAL)
+        );
+        assert_eq!(
+            waitid_raw(&mut root, 0, libc::WEXITED | libc::WSTOPPED),
+            -i64::from(libc::EINVAL)
+        );
+
+        // A running adopted child: none ready, and no siginfo to write.
+        assert_eq!(waitid_raw(&mut root, 0, libc::WEXITED | libc::WNOHANG), 0);
+        exit_adopted_orphan(root_id, &mut orphans[0], 9);
+        assert_eq!(waitid_raw(&mut root, 0, libc::WEXITED | libc::WNOWAIT), 0);
+        assert_eq!(
+            root.signal_registry.adopted_child_state(root_id, orphan_id),
+            Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(9)))
+        );
+        // A consuming wait reaps it without a copy-out.
+        assert_eq!(waitid_raw(&mut root, 0, libc::WEXITED), 0);
+        assert_eq!(
+            root.signal_registry.adopted_child_state(root_id, orphan_id),
+            None
+        );
+        assert_eq!(family_edge(&root.signal_registry, root_id, orphan_id), None);
+
+        // The collected fork-child path reaps with a null infop too.
+        root.record_child_completion(
+            2,
+            crate::executor::ChildCompletion::Waitable(reverie::ExitStatus::Exited(7)),
+        )
+        .unwrap();
+        assert_eq!(waitid_raw(&mut root, 0, libc::WEXITED), 0);
+        assert!(!root.state.children.contains_key(&2));
+        assert_eq!(
+            waitid_raw(&mut root, 0, libc::WEXITED),
+            -i64::from(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn adopted_orphan_sigchld_is_published_to_its_adopter() {
+        let root = executor_with_root(1);
+        let root_id = identity(&root);
+        let mut owner = root.fork_child(2, false, false).unwrap();
+        let mut orphan = owner.fork_child(3, false, false).unwrap();
+        let owner_id = identity(&owner);
+        let orphan_id = identity(&orphan);
+        owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        let completion = child_completion(root_id, orphan_id, reverie::ExitStatus::Exited(9), true);
+        assert!(matches!(
+            orphan.signal_registry.process_family_exit(orphan_id),
+            Some(ProcessFamilyExit::Child(snapshot)) if snapshot.completion == completion
+        ));
+        // A publication naming the dead fork parent is not this child's.
+        let stale = child_completion(owner_id, orphan_id, completion.status, true);
+        assert!(!matches!(
+            owner
+                .backend_signal_control()
+                .process
+                .publish_child_exit(stale),
+            reverie::ChildExitPublicationResult::Committed(_)
+        ));
+        let receipt = child_receipt(
+            root.backend_signal_control()
+                .process
+                .publish_child_exit(completion),
+        );
+        assert_eq!(receipt.completion, completion);
+        assert!(
+            root.state
+                .process_signals
+                .lock()
+                .unwrap()
+                .shared_pending
+                .contains(libc::SIGCHLD),
+            "the adopting init receives the orphan's SIGCHLD",
+        );
+    }
+
+    #[test]
+    fn adopted_orphan_auto_reaps_under_adopter_sigchld_policy() {
+        for action in [
+            KernelSigaction {
+                handler: libc::SIG_IGN as u64,
+                ..Default::default()
+            },
+            KernelSigaction {
+                handler: libc::SIG_DFL as u64,
+                flags: libc::SA_NOCLDWAIT as u64,
+                ..Default::default()
+            },
+        ] {
+            let mut root = executor_with_root(1);
+            let root_id = identity(&root);
+            root.state
+                .process_signals
+                .lock()
+                .unwrap()
+                .dispositions
+                .insert(libc::SIGCHLD, action);
+            let mut owner = root.fork_child(2, false, false).unwrap();
+            let mut orphan = owner.fork_child(3, false, false).unwrap();
+            let orphan_id = identity(&orphan);
+            owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+            orphan.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+            assert!(matches!(
+                orphan.signal_registry.process_family_exit(orphan_id),
+                Some(ProcessFamilyExit::Child(snapshot))
+                    if snapshot.completion.parent == root_id && !snapshot.completion.waitable
+            ));
+            assert_eq!(family_edge(&root.signal_registry, root_id, orphan_id), None);
+            assert!(orphan.publish_adopted_child_completion(
+                root_id,
+                crate::executor::ChildCompletion::AutoReaped(reverie::ExitStatus::Exited(9)),
+            ));
+            let memory = GuestMemory::new(0, 4096).unwrap();
+            // The owner itself was auto-reaped too; nothing is left to wait for.
+            assert_eq!(
+                root.execute(
+                    &SyscallRequest::new(libc::SYS_wait4 as u64, [u64::MAX, 0, 0, 0, 0, 0]),
+                    &memory,
+                ),
+                -i64::from(libc::ECHILD)
+            );
+        }
+    }
+
+    #[test]
+    fn orphans_go_to_init_outside_the_guest_when_root_is_not_pid_1() {
+        let root = executor_with_root(3);
+        let root_id = identity(&root);
+        let mut owner = root.fork_child(4, false, false).unwrap();
+        let mut orphan = owner.fork_child(5, false, false).unwrap();
+        let mut zombie = owner.fork_child(6, false, false).unwrap();
+        let owner_id = identity(&owner);
+        let orphan_id = identity(&orphan);
+        let zombie_id = identity(&zombie);
+        zombie.retire_current_thread(reverie::ExitStatus::Exited(8), false);
+        assert_eq!(
+            family_edge(&root.signal_registry, owner_id, zombie_id),
+            Some(DirectChildState::WaitableZombie)
+        );
+        assert_eq!(getppid(&mut orphan), 4);
+
+        owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert!(matches!(
+            owner.signal_registry.process_family_exit(owner_id),
+            Some(ProcessFamilyExit::Child(snapshot)) if snapshot.completion.parent == root_id
+        ));
+        assert_eq!(getppid(&mut orphan), 1);
+        assert!(
+            !root
+                .signal_registry
+                .family
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .direct_children
+                .contains_key(&process_key(owner_id)),
+            "init outside the guest reaps the zombie and takes the running orphan",
+        );
+        orphan.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+        assert_eq!(
+            orphan.signal_registry.process_family_exit(orphan_id),
+            Some(ProcessFamilyExit::RunTeardownChild {
+                status: reverie::ExitStatus::Exited(9),
+            }),
+        );
+    }
+
+    #[test]
+    fn zombie_adoption_by_guest_init_is_an_explicit_refusal() {
+        let root = executor_with_root(1);
+        let root_id = identity(&root);
+        let mut zombie_owner = root.fork_child(2, false, false).unwrap();
         let mut zombie = zombie_owner.fork_child(3, false, false).unwrap();
         let zombie_owner_id = identity(&zombie_owner);
         let zombie_id = identity(&zombie);
         zombie.retire_current_thread(reverie::ExitStatus::Exited(9), false);
         zombie_owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
-        assert!(matches!(
+        assert_eq!(
             zombie_owner
                 .signal_registry
                 .process_family_exit(zombie_owner_id),
-            Some(ProcessFamilyExit::DescendantReparentingUnsupported { child })
-                if child == zombie_id
+            Some(ProcessFamilyExit::ZombieAdoptionUnsupported {
+                child: zombie_id,
+                reaper: root_id,
+            })
+        );
+        assert!(matches!(
+            zombie_owner.process_family_exit(),
+            Err(crate::Error::ZombieAdoptionUnsupported { process, child, reaper })
+                if process == zombie_owner_id && child == zombie_id && reaper == root_id
         ));
+        assert_eq!(
+            family_edge(&root.signal_registry, zombie_owner_id, zombie_id),
+            Some(DirectChildState::WaitableZombie),
+            "the refused transition moves no edge",
+        );
+    }
 
+    #[test]
+    fn process_family_retires_reaped_and_auto_reaped_children() {
         let parent = executor();
         let mut reaping_owner = parent.fork_child(2, false, false).unwrap();
         let mut reaped = reaping_owner.fork_child(3, false, false).unwrap();
@@ -2963,20 +4788,25 @@ mod tests {
     }
 
     #[test]
-    fn live_root_refuses_but_terminal_root_consumes_the_same_unreaped_family_shape() {
+    fn live_root_adopts_but_terminal_root_consumes_the_same_unreaped_family_shape() {
         let root = executor();
+        let root_id = identity(&root);
         let mut child = root.fork_child(2, false, false).unwrap();
         let grandchild = child.fork_child(3, false, false).unwrap();
         let child_id = identity(&child);
         let grandchild_id = identity(&grandchild);
 
         child.retire_current_thread(reverie::ExitStatus::Exited(2), false);
+        assert!(
+            matches!(
+                child.signal_registry.process_family_exit(child_id),
+                Some(ProcessFamilyExit::Child(snapshot)) if snapshot.completion.parent == root_id
+            ),
+            "a middle process that exits under a live PID 1 root hands its child to that root",
+        );
         assert_eq!(
-            child.signal_registry.process_family_exit(child_id),
-            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
-                child: grandchild_id,
-            }),
-            "a middle process that exits under a live root still requires unsupported reparenting",
+            family_edge(&root.signal_registry, root_id, grandchild_id),
+            Some(DirectChildState::Live)
         );
 
         let mut root = executor();
@@ -3315,6 +5145,7 @@ mod tests {
         for action in actions {
             for owner_finishes_first in [false, true] {
                 let parent = executor();
+                let parent_id = identity(&parent);
                 let mut owner = parent.fork_child(2, false, false).unwrap();
                 owner
                     .state
@@ -3329,12 +5160,19 @@ mod tests {
                 let descendant_id = identity(&descendant);
 
                 owner_peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
-                assert_eq!(
-                    owner.signal_registry.process_family_exit(owner_id),
-                    Some(ProcessFamilyExit::DescendantReparentingUnsupported {
-                        child: descendant_id,
-                    }),
+                let owner_exit = owner.signal_registry.process_family_exit(owner_id);
+                assert!(
+                    matches!(
+                        owner_exit,
+                        Some(ProcessFamilyExit::Child(snapshot))
+                            if snapshot.completion.parent == parent_id
+                    ),
                     "the ordered exit_group transition must not wait for peer host cancellation",
+                );
+                assert_eq!(
+                    getppid(&mut descendant),
+                    1,
+                    "the orphan is reparented at the ordered exit_group transition",
                 );
                 assert!(
                     owner.fork_child(6, false, false).is_err(),
@@ -3358,19 +5196,20 @@ mod tests {
                     descendant.retire_current_thread(reverie::ExitStatus::Exited(9), false);
                     owner.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
                 }
-                assert_eq!(
+                // The owner's own SIGCHLD policy no longer governs the
+                // orphan: its adopter's default disposition keeps it waitable.
+                assert!(matches!(
                     descendant
                         .signal_registry
                         .process_family_exit(descendant_id),
-                    Some(ProcessFamilyExit::RunTeardownChild {
-                        status: reverie::ExitStatus::Exited(9),
-                    }),
-                );
+                    Some(ProcessFamilyExit::Child(snapshot))
+                        if snapshot.completion.parent == parent_id
+                            && snapshot.completion.waitable
+                            && snapshot.completion.status == reverie::ExitStatus::Exited(9)
+                ));
                 assert_eq!(
                     owner.signal_registry.process_family_exit(owner_id),
-                    Some(ProcessFamilyExit::DescendantReparentingUnsupported {
-                        child: descendant_id,
-                    }),
+                    owner_exit,
                     "physical peer order cannot replace the ordered family outcome",
                 );
             }
@@ -3539,24 +5378,23 @@ mod tests {
         );
 
         let parent = executor();
+        let parent_id = identity(&parent);
         let mut owner = parent.fork_child(2, false, false).unwrap();
         let mut peer = owner.thread_child(4).unwrap();
-        let descendant = owner.fork_child(3, false, false).unwrap();
+        let mut descendant = owner.fork_child(3, false, false).unwrap();
         let owner_id = identity(&owner);
         let descendant_id = identity(&descendant);
+        descendant.retire_current_thread(reverie::ExitStatus::Exited(9), false);
         peer.retire_current_thread(reverie::ExitStatus::Exited(7), true);
-        assert_eq!(
-            owner.signal_registry.process_family_exit(owner_id),
-            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
-                child: descendant_id,
-            }),
-        );
+        let refusal = Some(ProcessFamilyExit::ZombieAdoptionUnsupported {
+            child: descendant_id,
+            reaper: parent_id,
+        });
+        assert_eq!(owner.signal_registry.process_family_exit(owner_id), refusal);
         owner.retire_failed_thread();
         assert_eq!(
             owner.signal_registry.process_family_exit(owner_id),
-            Some(ProcessFamilyExit::DescendantReparentingUnsupported {
-                child: descendant_id,
-            }),
+            refusal,
             "a generic peer failure must not erase an earlier typed fatal invariant",
         );
     }
