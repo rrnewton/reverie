@@ -11973,9 +11973,8 @@ fn fstat(
     args: &[u64; 6],
     capture: Option<CaptureMetadata>,
 ) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux descriptor lookup consumes only the low 32-bit word.
+    let fd = args[0] as libc::c_int;
     match guest_object_stat(state, fd, capture) {
         Ok(stat) => write_struct(memory, args[1], &stat),
         Err(error) => error,
@@ -12425,9 +12424,8 @@ fn statfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
 }
 
 fn fstatfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux descriptor lookup consumes only the low 32-bit word.
+    let guest_fd = args[0] as libc::c_int;
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -21070,6 +21068,270 @@ mod tests {
         let mut replacement = test_state(&root.0);
         replacement.inherit_process_state(state);
         assert!(Arc::ptr_eq(&snapshot, &replacement.proc_mounts));
+    }
+
+    #[test]
+    fn fstat_and_fstatfs_consume_low_descriptor_words() {
+        const OUTPUT: u64 = 0x1000;
+        let root = TestDir::new();
+        let path = root.0.join("metadata");
+        std::fs::write(&path, b"metadata").unwrap();
+        let expected = std::fs::metadata(&path).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let fd = open_readonly(&mut memory, &mut state, "metadata");
+        assert!(fd >= 3);
+        state
+            .files
+            .get_mut(&(fd as i32))
+            .unwrap()
+            .seek(SeekFrom::Start(2))
+            .unwrap();
+
+        for upper in [
+            0,
+            1_u64 << 32,
+            1_u64 << 63,
+            0x5a5a_5a5a_0000_0000,
+            0xffff_ffff_0000_0000,
+        ] {
+            let raw = upper | fd as u64;
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fstat,
+                    [raw, OUTPUT, 0, 0, 0, 0]
+                ),
+                0,
+                "fstat fd={raw:#x}"
+            );
+            let stat: libc::stat = read_struct(&memory, OUTPUT);
+            assert_eq!((stat.st_dev, stat.st_ino), (expected.dev(), expected.ino()));
+            assert_eq!(stat.st_mode, expected.mode());
+            assert_eq!(stat.st_size, 8);
+            for timestamp in [stat.st_atime, stat.st_mtime, stat.st_ctime] {
+                assert_eq!(timestamp, DETERMINISTIC_METADATA_SECONDS);
+            }
+            assert_eq!(
+                (stat.st_atime_nsec, stat.st_mtime_nsec, stat.st_ctime_nsec),
+                (0, 0, 0)
+            );
+
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fstatfs,
+                    [raw, OUTPUT, 0, 0, 0, 0]
+                ),
+                0,
+                "fstatfs fd={raw:#x}"
+            );
+            let stat: libc::statfs = read_struct(&memory, OUTPUT);
+            assert_eq!(stat.f_bfree, 1_000_000.min(stat.f_blocks));
+            assert_eq!(stat.f_bavail, stat.f_bfree);
+            assert_eq!(stat.f_ffree, 500_000.min(stat.f_files));
+            // SAFETY: fsid_t is two initialized integer words on this x86-64 backend.
+            assert_eq!(
+                unsafe { std::mem::transmute::<libc::fsid_t, [i32; 2]>(stat.f_fsid) },
+                [0, 0]
+            );
+        }
+        assert_eq!(
+            state
+                .files
+                .get_mut(&(fd as i32))
+                .unwrap()
+                .stream_position()
+                .unwrap(),
+            2
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"metadata");
+    }
+
+    #[test]
+    fn fstat_and_fstatfs_low_words_preserve_errors_and_output() {
+        const OUTPUT: u64 = 0x1000;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        // A modeled fd at the largest signed boundary must still be translated
+        // through the guest table, rather than passed raw to the host kernel.
+        for fd in [0, 3, i32::MAX] {
+            state
+                .files
+                .insert(fd, std::fs::File::open(&root.0).unwrap());
+        }
+        state.files.insert(4, std::fs::File::open(&root.0).unwrap());
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_close, [4, 0, 0, 0, 0, 0]),
+            0
+        );
+
+        for (number, size) in [
+            (libc::SYS_fstat, std::mem::size_of::<libc::stat>()),
+            (libc::SYS_fstatfs, std::mem::size_of::<libc::statfs>()),
+        ] {
+            let sentinel = vec![0xa5; size];
+            for upper in [0, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
+                for low in [0, 3, i32::MAX as u64] {
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            number,
+                            [upper | low, OUTPUT, 0, 0, 0, 0]
+                        ),
+                        0,
+                        "valid boundary fd={:#x} syscall={number}",
+                        upper | low
+                    );
+                    assert_eq!(
+                        syscall_result(
+                            &mut memory,
+                            &mut state,
+                            number,
+                            [upper | low, u64::MAX, 0, 0, 0, 0]
+                        ),
+                        negative_errno(libc::EFAULT),
+                        "valid fd must reach output validation"
+                    );
+                }
+                for low in [4, 0x7fff_fffe, 0x8000_0000, 0x8000_0003, 0xffff_ffff] {
+                    memory.write(OUTPUT, &sentinel).unwrap();
+                    for address in [OUTPUT, u64::MAX] {
+                        assert_eq!(
+                            syscall_result(
+                                &mut memory,
+                                &mut state,
+                                number,
+                                [upper | low, address, 0, 0, 0, 0]
+                            ),
+                            negative_errno(libc::EBADF),
+                            "invalid fd={:#x} syscall={number} precedes copyout",
+                            upper | low
+                        );
+                    }
+                    let mut actual = vec![0; size];
+                    memory.read(OUTPUT, &mut actual).unwrap();
+                    assert_eq!(actual, sentinel, "failed metadata call changed output");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fstat_and_fstatfs_low_words_preserve_synthetic_policy() {
+        const OUTPUT: u64 = 0x1000;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let mut output = CapturedOutput::default();
+        let alias = syscall_result_with_output(
+            &mut memory,
+            &mut state,
+            &mut output,
+            libc::SYS_dup,
+            [1, 0, 0, 0, 0, 0],
+        );
+        assert!(alias >= 3);
+        let proc_file = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        let proc_root = open_readonly(&mut memory, &mut state, "/proc");
+        assert!(proc_file >= 3 && proc_root >= 3);
+
+        for upper in [0, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
+            for fd in [1, 2, alias] {
+                assert_eq!(
+                    syscall_result_with_output(
+                        &mut memory,
+                        &mut state,
+                        &mut output,
+                        libc::SYS_fstat,
+                        [upper | fd as u64, OUTPUT, 0, 0, 0, 0]
+                    ),
+                    0
+                );
+                let stat: libc::stat = read_struct(&memory, OUTPUT);
+                let identity = output
+                    .metadata()
+                    .identity(output_alias(&state, fd as i32).unwrap());
+                assert_eq!(
+                    (stat.st_dev, stat.st_ino),
+                    (identity.device, identity.inode)
+                );
+                assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
+                assert_eq!(
+                    (stat.st_size, stat.st_blocks, stat.st_uid, stat.st_gid),
+                    (0, 0, 0, 0)
+                );
+                assert_eq!(stat.st_mtime, DETERMINISTIC_METADATA_SECONDS);
+            }
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fstat,
+                    [upper | proc_file as u64, OUTPUT, 0, 0, 0, 0]
+                ),
+                0
+            );
+            let stat: libc::stat = read_struct(&memory, OUTPUT);
+            assert_eq!(
+                (stat.st_dev, stat.st_ino),
+                (
+                    synthetic_dev(SYNTHETIC_PROC_DEV_MINOR),
+                    synthetic_proc_inode(b"/proc/uptime")
+                )
+            );
+            assert_eq!(stat.st_mode, libc::S_IFREG | 0o444);
+            assert_eq!(
+                (stat.st_size, stat.st_uid, stat.st_gid, stat.st_mtime),
+                (b"0.00 0.00\n".len() as libc::off_t, 0, 0, 0)
+            );
+
+            let sentinel = [0xa5; std::mem::size_of::<libc::statfs>()];
+            memory.write(OUTPUT, &sentinel).unwrap();
+            for address in [OUTPUT, u64::MAX] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_fstatfs,
+                        [upper | proc_root as u64, address, 0, 0, 0, 0]
+                    ),
+                    negative_errno(libc::EACCES),
+                    "synthetic refusal precedes copyout"
+                );
+            }
+            let actual: [u8; std::mem::size_of::<libc::statfs>()] = read_struct(&memory, OUTPUT);
+            assert_eq!(actual, sentinel);
+        }
+    }
+
+    #[test]
+    fn fstat_and_fstatfs_low_words_preserve_private_fdinfo_refusal() {
+        let mut f = FdinfoFixture::new(true);
+        let target = f.open("a", libc::O_RDONLY);
+        assert!(target >= 3);
+        let info = f.info(target);
+        let sentinel = [0xa5; std::mem::size_of::<libc::statfs>()];
+        for upper in [0, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
+            f.memory.write(PAGE_SIZE, &sentinel).unwrap();
+            for address in [PAGE_SIZE, u64::MAX] {
+                assert_eq!(
+                    f.call(
+                        libc::SYS_fstatfs,
+                        [upper | info as u64, address, 0, 0, 0, 0]
+                    ),
+                    negative_errno(libc::ENOSYS),
+                    "private fdinfo refusal precedes copyout"
+                );
+            }
+            let actual: [u8; std::mem::size_of::<libc::statfs>()] =
+                read_struct(&f.memory, PAGE_SIZE);
+            assert_eq!(actual, sentinel);
+        }
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
