@@ -99,7 +99,7 @@ jobs:
       run: reverie-dbt/scripts/test-identity-policy.sh
     - name: Test regular workspace cases
       run: >-
-        cargo test --workspace --all-features --
+        cargo test --workspace --all-features --no-fail-fast --
         --test-threads=1
         --skip container::tests::bind_to_low_port
         --skip container::tests::mount_error_from_child_is_returned
