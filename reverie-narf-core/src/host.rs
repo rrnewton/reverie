@@ -11,6 +11,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::any::TypeId;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
@@ -27,6 +28,7 @@ use reverie::Pid;
 use reverie::ThreadOwnership;
 use reverie::Tool;
 use reverie::syscalls::Errno;
+use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::Sysno;
@@ -35,8 +37,12 @@ use crate::LINUX_MAX_ERRNO;
 use crate::NarfSyscallOutcome;
 use crate::NarfSyscallRequest;
 use crate::SyscallEntry;
+use crate::guest::CallState;
+use crate::guest::Frame;
+use crate::guest::FrameSlot;
 use crate::guest::NarfGuest;
 use crate::guest::Terminal;
+use crate::guest::interrupted;
 use crate::services::CreatedTask;
 use crate::services::CreatedTaskKind;
 use crate::services::KernelServices;
@@ -48,8 +54,10 @@ type Config<T> = <<T as Tool>::GlobalState as GlobalTool>::Config;
 /// Every variant is fatal to the run: the kernel must stop the hosted process
 /// tree rather than resume the task.
 pub enum NarfFatal {
-    /// The Tool's future was still pending after its single poll and had not
-    /// made a terminal transition. The core never polls it again.
+    /// The Tool's future was pending without having made a terminal
+    /// transition and without awaiting a parked inject: it waits for
+    /// something the core will never deliver, so the core never polls it
+    /// again.
     ToolSuspended,
     /// The Tool failed with a non-errno error.
     Tool(Error),
@@ -61,12 +69,22 @@ pub enum NarfFatal {
     /// A Guest method tried to run a syscall after the callback's terminal
     /// transition.
     TransitionAfterTerminal,
-    /// A non-tail `inject` of this wire number parked or redirected the task,
-    /// so the Tool's continuation cannot run.
+    /// A non-tail `inject` of this wire number parked the task where the
+    /// Tool's continuation cannot be kept: in a lifecycle callback, which has
+    /// no guest syscall for the kernel to re-execute, or in a Tool that
+    /// completed without awaiting the parked inject.
     InjectParked {
         /// Wire number of the injected request.
         number: u32,
     },
+    /// A Tool whose parked inject was interrupted (the task left the parked
+    /// syscall for another context, such as a signal handler) tried to run a
+    /// syscall. Its inject returned `ERESTARTSYS`; nothing may run on its
+    /// behalf in the new context.
+    TransitionAfterInterruption,
+    /// A suspended Tool future was resumed by a kernel whose memory accessor
+    /// type differs from the one it was started with.
+    ContinuationKernelMismatch,
     /// The kernel flagged a re-execution for a task with no parked syscall.
     UnexpectedReexecution,
     /// The kernel re-executed a syscall other than the one that parked.
@@ -117,6 +135,8 @@ impl fmt::Debug for NarfFatal {
                 .debug_struct("InjectParked")
                 .field("number", number)
                 .finish(),
+            Self::TransitionAfterInterruption => f.write_str("TransitionAfterInterruption"),
+            Self::ContinuationKernelMismatch => f.write_str("ContinuationKernelMismatch"),
             Self::UnexpectedReexecution => f.write_str("UnexpectedReexecution"),
             Self::ReexecutionMismatch { parked, reexecuted } => f
                 .debug_struct("ReexecutionMismatch")
@@ -205,6 +225,28 @@ pub(crate) struct Parked {
     pub(crate) redo: Redo,
 }
 
+type ToolFuture = Pin<Box<dyn Future<Output = Result<i64, Error>> + Send>>;
+
+/// A Tool future suspended in a non-tail inject whose syscall parked the
+/// task, kept until the kernel re-executes that syscall.
+struct Continuation {
+    future: ToolFuture,
+    slot: Arc<FrameSlot>,
+    /// The callback's bookkeeping; `call.awaiting` names the parked syscall.
+    call: CallState,
+    /// The memory accessor type the future's guest was built for.
+    memory: TypeId,
+}
+
+/// What a task left behind when its last callback parked it.
+enum Suspended {
+    /// A tail transition parked; re-execution re-issues it.
+    Parked(Parked),
+    /// A non-tail inject parked; re-execution re-issues it and resumes the
+    /// Tool with its value.
+    Continuation(Box<Continuation>),
+}
+
 struct ProcessEntry<T> {
     tool: Arc<T>,
     threads: usize,
@@ -214,7 +256,7 @@ struct ThreadEntry<T: Tool> {
     pid: Pid,
     /// `None` while the thread is inside a callback.
     state: Option<T::ThreadState>,
-    parked: Option<Parked>,
+    parked: Option<Suspended>,
 }
 
 /// Per-process Tools and per-thread states, keyed by the kernel's IDs.
@@ -226,8 +268,11 @@ pub struct TaskTable<T: Tool> {
 struct Checkout<T: Tool> {
     tool: Arc<T>,
     state: T::ThreadState,
-    parked: Option<Parked>,
+    parked: Option<Suspended>,
 }
+
+/// A removed thread's process share, its state, and what it left suspended.
+type Removed<T> = (Removal<T>, <T as Tool>::ThreadState, Option<Suspended>);
 
 struct Removal<T> {
     tool: Arc<T>,
@@ -301,7 +346,7 @@ impl<T: Tool> TaskTable<T> {
         &mut self,
         tid: Pid,
         state: T::ThreadState,
-        parked: Option<Parked>,
+        parked: Option<Suspended>,
     ) -> Result<(), NarfFatal> {
         let thread = self
             .threads
@@ -312,7 +357,7 @@ impl<T: Tool> TaskTable<T> {
         Ok(())
     }
 
-    fn remove_thread(&mut self, tid: Pid) -> Result<(Removal<T>, T::ThreadState), NarfFatal> {
+    fn remove_thread(&mut self, tid: Pid) -> Result<Removed<T>, NarfFatal> {
         let thread = self
             .threads
             .get(&tid.as_raw())
@@ -322,6 +367,7 @@ impl<T: Tool> TaskTable<T> {
         }
         let thread = self.threads.remove(&tid.as_raw()).expect("present above");
         let state = thread.state.expect("checked above");
+        let suspended = thread.parked;
         let pid = thread.pid;
         let process = self
             .processes
@@ -342,7 +388,7 @@ impl<T: Tool> TaskTable<T> {
                 last: false,
             }
         };
-        Ok((removal, state))
+        Ok((removal, state, suspended))
     }
 }
 
@@ -511,19 +557,43 @@ where
             }
         }
     }
+}
 
+/// Callback dispatch. A Tool future can outlive one callback, so it and the
+/// guest it owns are `'static`.
+impl<T, L> NarfToolHost<T, L>
+where
+    T: Tool + 'static,
+    L: TaskLock<TaskTable<T>> + 'static,
+{
     /// Handles one interceptor entry for the current task.
     ///
     /// A new subscribed syscall is delivered to the Tool's
-    /// `handle_syscall_event`, polled once. An unsubscribed syscall, or one
-    /// whose number Reverie does not know, runs natively through the core so
-    /// that created tasks are still registered. A park re-execution re-issues
-    /// the parked transition without calling the Tool again.
-    pub fn handle_syscall<K: KernelServices>(
+    /// `handle_syscall_event`. An unsubscribed syscall, or one whose number
+    /// Reverie does not know, runs natively through the core so that created
+    /// tasks are still registered. A park re-execution re-issues the parked
+    /// transition without calling the Tool again.
+    ///
+    /// The Tool's future is polled once per entry and nothing wakes it. It
+    /// may stay pending across entries in exactly one case: a non-tail
+    /// `inject` whose syscall parked the task. The host keeps the future,
+    /// returns [`Disposition::ContextManaged`], and at the kernel's
+    /// re-execution of the parked syscall re-issues it and polls the future
+    /// again with its value. If the task's next entry is not that
+    /// re-execution (a signal handler ran instead), the inject returns
+    /// `ERESTARTSYS` as under ptrace, the future is polled to completion
+    /// without any further syscall, its result is discarded (the kernel
+    /// restarts the guest's syscall after the handler), and the new entry is
+    /// handled normally.
+    pub fn handle_syscall<K>(
         &self,
         kernel: &mut K,
         entry: SyscallEntry,
-    ) -> Result<Disposition, NarfFatal> {
+    ) -> Result<Disposition, NarfFatal>
+    where
+        K: KernelServices,
+        K::Memory: 'static,
+    {
         let tid = kernel.tid();
         let Checkout {
             tool,
@@ -537,16 +607,46 @@ where
         Ok(disposition)
     }
 
-    fn dispatch<K: KernelServices>(
+    fn dispatch<M: MemoryAccess + Send + 'static>(
         &self,
         tool: &Arc<T>,
-        kernel: &mut K,
+        kernel: &mut dyn KernelServices<Memory = M>,
+        entry: SyscallEntry,
+        state: &mut T::ThreadState,
+        suspended: Option<Suspended>,
+    ) -> (Result<Disposition, NarfFatal>, Option<Suspended>) {
+        let parked = match suspended {
+            None => None,
+            Some(Suspended::Parked(parked)) => Some(parked),
+            Some(Suspended::Continuation(continuation)) => {
+                if entry.park_reexecution {
+                    return self.resume(tool, kernel, entry.request, state, *continuation);
+                }
+                if let Err(fatal) = self.interrupt(tool, kernel, state, *continuation) {
+                    return (Err(fatal), None);
+                }
+                None
+            }
+        };
+        self.dispatch_new(tool, kernel, entry, state, parked)
+    }
+
+    fn dispatch_new<M: MemoryAccess + Send + 'static>(
+        &self,
+        tool: &Arc<T>,
+        kernel: &mut dyn KernelServices<Memory = M>,
         entry: SyscallEntry,
         state: &mut T::ThreadState,
         parked: Option<Parked>,
-    ) -> (Result<Disposition, NarfFatal>, Option<Parked>) {
+    ) -> (Result<Disposition, NarfFatal>, Option<Suspended>) {
         let request = entry.request;
-        let mut guest = NarfGuest::new(self, kernel, tool, state, Some(request));
+        let mut frame = Frame {
+            host: self,
+            kernel,
+            tool,
+            thread_state: state,
+            call: CallState::new(Some(request)),
+        };
         if entry.park_reexecution {
             match parked {
                 None => return (Err(NarfFatal::UnexpectedReexecution), None),
@@ -559,15 +659,15 @@ where
                         None,
                     );
                 }
-                Some(parked) => guest.redo(parked),
+                Some(parked) => frame.redo(parked),
             }
-            return settle(guest, Poll::Pending);
+            return settle(frame.call, Poll::Pending);
         }
         let sysno =
             Sysno::new(request.linux_number() as usize).filter(|sysno| self.is_subscribed(*sysno));
         let Some(sysno) = sysno else {
-            guest.tail(request);
-            return settle(guest, Poll::Pending);
+            frame.tail(request);
+            return settle(frame.call, Poll::Pending);
         };
         let args = request.args;
         let syscall = Syscall::from_raw(
@@ -581,19 +681,105 @@ where
                 args[5] as usize,
             ),
         );
-        let poll = {
-            let mut future = tool.handle_syscall_event(&mut guest, syscall);
-            poll_once(future.as_mut())
+        let slot = Arc::new(FrameSlot::default());
+        let guest = NarfGuest::<T, L, M>::new(slot.clone());
+        let tool = tool.clone();
+        let mut future: ToolFuture = Box::pin(async move {
+            let mut guest = guest;
+            tool.handle_syscall_event(&mut guest, syscall).await
+        });
+        let poll = slot.enter(&mut frame, || poll_once(future.as_mut()));
+        finish(frame, poll, future, slot)
+    }
+
+    /// Resumes a Tool suspended in a parked inject at the kernel's
+    /// re-execution of `reexecuted`.
+    fn resume<M: MemoryAccess + Send + 'static>(
+        &self,
+        tool: &Arc<T>,
+        kernel: &mut dyn KernelServices<Memory = M>,
+        reexecuted: NarfSyscallRequest,
+        state: &mut T::ThreadState,
+        continuation: Continuation,
+    ) -> (Result<Disposition, NarfFatal>, Option<Suspended>) {
+        let Continuation {
+            mut future,
+            slot,
+            call,
+            memory,
+        } = continuation;
+        if memory != TypeId::of::<M>() {
+            // No frame of the future's type exists to drop it under.
+            return (Err(NarfFatal::ContinuationKernelMismatch), None);
+        }
+        let mut frame = Frame {
+            host: self,
+            kernel,
+            tool,
+            thread_state: state,
+            call,
         };
-        settle(guest, poll)
+        let poll = if frame.resume_awaited(reexecuted) {
+            slot.enter(&mut frame, || poll_once(future.as_mut()))
+        } else {
+            Poll::Pending
+        };
+        finish(frame, poll, future, slot)
+    }
+
+    /// Ends a Tool suspended in a parked inject that the task left for
+    /// another context: the inject returns `ERESTARTSYS`, and the Tool must
+    /// complete in this one poll without running any syscall.
+    fn interrupt<M: MemoryAccess + Send + 'static>(
+        &self,
+        tool: &Arc<T>,
+        kernel: &mut dyn KernelServices<Memory = M>,
+        state: &mut T::ThreadState,
+        continuation: Continuation,
+    ) -> Result<(), NarfFatal> {
+        let Continuation {
+            mut future,
+            slot,
+            mut call,
+            memory,
+        } = continuation;
+        if memory != TypeId::of::<M>() {
+            return Err(NarfFatal::ContinuationKernelMismatch);
+        }
+        call.awaiting = None;
+        call.interrupted = true;
+        call.resume = Some(interrupted());
+        let mut frame = Frame {
+            host: self,
+            kernel,
+            tool,
+            thread_state: state,
+            call,
+        };
+        let poll = slot.enter(&mut frame, move || {
+            let poll = poll_once(future.as_mut());
+            drop(future);
+            poll
+        });
+        if let Some(fatal) = frame.call.fatal.take() {
+            return Err(fatal);
+        }
+        match poll {
+            // The kernel restarts the guest's syscall after the other
+            // context returns; the Tool sees it then as a new syscall.
+            Poll::Ready(Ok(_)) => Ok(()),
+            Poll::Ready(Err(error)) => error.into_errno().map(|_| ()).map_err(NarfFatal::Tool),
+            Poll::Pending => Err(NarfFatal::ToolSuspended),
+        }
     }
 
     /// Runs the Tool's `handle_thread_start` for the current task, which the
     /// kernel calls before the task first enters user mode.
-    pub fn handle_thread_start<K: KernelServices>(
-        &self,
-        kernel: &mut K,
-    ) -> Result<LifecycleOutcome, NarfFatal> {
+    pub fn handle_thread_start<K>(&self, kernel: &mut K) -> Result<LifecycleOutcome, NarfFatal>
+    where
+        K: KernelServices,
+        K::Memory: 'static,
+    {
         self.lifecycle(kernel, |tool, guest| {
             let mut future = tool.handle_thread_start(guest);
             poll_once(future.as_mut()).map(|result| result.map_err(NarfFatal::Tool))
@@ -602,10 +788,11 @@ where
 
     /// Runs the Tool's `handle_post_exec` for the current task, which the
     /// kernel calls after a successful exec and before the new image runs.
-    pub fn handle_post_exec<K: KernelServices>(
-        &self,
-        kernel: &mut K,
-    ) -> Result<LifecycleOutcome, NarfFatal> {
+    pub fn handle_post_exec<K>(&self, kernel: &mut K) -> Result<LifecycleOutcome, NarfFatal>
+    where
+        K: KernelServices,
+        K::Memory: 'static,
+    {
         self.lifecycle(kernel, |tool, guest| {
             let mut future = tool.handle_post_exec(guest);
             poll_once(future.as_mut()).map(|result| result.map_err(NarfFatal::PostExec))
@@ -615,16 +802,27 @@ where
     fn lifecycle<K, F>(&self, kernel: &mut K, run: F) -> Result<LifecycleOutcome, NarfFatal>
     where
         K: KernelServices,
-        F: FnOnce(&T, &mut NarfGuest<'_, T, K, L>) -> Poll<Result<(), NarfFatal>>,
+        K::Memory: 'static,
+        F: FnOnce(&T, &mut NarfGuest<T, L, K::Memory>) -> Poll<Result<(), NarfFatal>>,
     {
         let tid = kernel.tid();
         let Checkout {
             tool, mut state, ..
         } = self.tasks.with(|table| table.checkout(tid))?;
         let result = {
-            let mut guest = NarfGuest::new(self, kernel, &tool, &mut state, None);
-            let poll = run(&tool, &mut guest);
-            match (guest.fatal.take(), poll, guest.terminal.take()) {
+            let slot = Arc::new(FrameSlot::default());
+            let mut guest = NarfGuest::new(slot.clone());
+            let mut frame = Frame {
+                host: self,
+                kernel: kernel as &mut dyn KernelServices<Memory = K::Memory>,
+                tool: &tool,
+                thread_state: &mut state,
+                call: CallState::new(None),
+            };
+            // The future borrows `guest` and is dropped inside the poll.
+            let poll = slot.enter(&mut frame, || run(&tool, &mut guest));
+            let call = &mut frame.call;
+            match (call.fatal.take(), poll, call.terminal.take()) {
                 (Some(fatal), _, _) => Err(fatal),
                 (None, Poll::Ready(Ok(())), _) => Ok(LifecycleOutcome::Continue),
                 (None, Poll::Ready(Err(fatal)), _) => Err(fatal),
@@ -640,7 +838,13 @@ where
         checkin?;
         Ok(outcome)
     }
+}
 
+impl<T, L> NarfToolHost<T, L>
+where
+    T: Tool,
+    L: TaskLock<TaskTable<T>>,
+{
     /// Tears down thread `tid` after the kernel has finished it.
     ///
     /// Runs `on_exit_thread` with the thread's state, and `on_exit_process`
@@ -648,8 +852,15 @@ where
     /// thread leaves the table before either hook runs, so a repeated exit
     /// reports [`NarfFatal::UnknownTask`] and runs nothing. The teardown
     /// completes even if a hook fails; the first failure is returned.
+    ///
+    /// A Tool future suspended in a parked inject of the exiting thread is
+    /// dropped first, without being polled, so that its share of the
+    /// process's Tool is released before `on_exit_process`. It is dropped
+    /// outside any poll, so a Tool whose drop glue calls a Guest method
+    /// panics.
     pub fn task_exited(&self, tid: Pid, status: ExitStatus) -> Result<TaskExit, NarfFatal> {
-        let (removal, state) = self.tasks.with(|table| table.remove_thread(tid))?;
+        let (removal, state, suspended) = self.tasks.with(|table| table.remove_thread(tid))?;
+        drop(suspended);
         let Removal { tool, pid, last } = removal;
         let rpc = DirectRpc {
             host: self,
@@ -685,21 +896,54 @@ fn exit_result(poll: Poll<Result<(), Error>>) -> Result<(), NarfFatal> {
     }
 }
 
+/// Keeps a Tool future that awaits a parked inject, or drops it under the
+/// frame and settles the callback.
+fn finish<T, L, M>(
+    mut frame: Frame<'_, T, L, M>,
+    poll: Poll<Result<i64, Error>>,
+    future: ToolFuture,
+    slot: Arc<FrameSlot>,
+) -> (Result<Disposition, NarfFatal>, Option<Suspended>)
+where
+    T: Tool,
+    M: 'static,
+{
+    if frame.call.fatal.is_none() && poll.is_pending() && frame.call.awaiting.is_some() {
+        let continuation = Continuation {
+            future,
+            slot,
+            call: frame.call,
+            memory: TypeId::of::<M>(),
+        };
+        return (
+            Ok(Disposition::ContextManaged),
+            Some(Suspended::Continuation(Box::new(continuation))),
+        );
+    }
+    // Drop glue may still reach the guest, so the frame stays published.
+    slot.enter(&mut frame, move || drop(future));
+    settle(frame.call, poll)
+}
+
 /// Turns one polled Tool callback into the kernel's disposition.
 ///
 /// A recorded fatal error wins over anything the Tool returned. A pending
 /// future is accepted only if it made its terminal transition.
-fn settle<T, K, L>(
-    mut guest: NarfGuest<'_, T, K, L>,
+fn settle(
+    mut call: CallState,
     poll: Poll<Result<i64, Error>>,
-) -> (Result<Disposition, NarfFatal>, Option<Parked>)
-where
-    T: Tool,
-    K: KernelServices,
-    L: TaskLock<TaskTable<T>>,
-{
-    if let Some(fatal) = guest.fatal.take() {
+) -> (Result<Disposition, NarfFatal>, Option<Suspended>) {
+    if let Some(fatal) = call.fatal.take() {
         return (Err(fatal), None);
+    }
+    if let Some(parked) = call.awaiting.take() {
+        // The Tool finished (or gave up) without awaiting the inject that
+        // parked the task; the kernel still owns that syscall.
+        let number = match parked.redo {
+            Redo::Injected(request) => request.number,
+            Redo::Original | Redo::Nothing => parked.entry.number,
+        };
+        return (Err(NarfFatal::InjectParked { number }), None);
     }
     match poll {
         Poll::Ready(Ok(value)) => (Ok(Disposition::Complete(value)), None),
@@ -707,7 +951,7 @@ where
             Ok(errno) => (errno_result(errno).map(Disposition::Complete), None),
             Err(error) => (Err(NarfFatal::Tool(error)), None),
         },
-        Poll::Pending => match guest.terminal.take() {
+        Poll::Pending => match call.terminal.take() {
             Some(Terminal {
                 outcome: NarfSyscallOutcome::Returned(value),
                 ..
@@ -715,7 +959,10 @@ where
             Some(Terminal {
                 outcome: NarfSyscallOutcome::ContextManaged,
                 parked,
-            }) => (Ok(Disposition::ContextManaged), parked),
+            }) => (
+                Ok(Disposition::ContextManaged),
+                parked.map(Suspended::Parked),
+            ),
             None => (Err(NarfFatal::ToolSuspended), None),
         },
     }
