@@ -1249,6 +1249,38 @@ fn live_observations(text: &str) -> Result<LiveContext, String> {
     })
 }
 
+const PLT_DECODER_CONTROL: &str = "CONTEXT_READ_PLT_DECODER legacy=1 endbr64=1 signed=1 malformed_rejected=1 truncated_rejected=1 overflow_rejected=1 stability_bytes=1 stability_length=1";
+
+fn read_plt_records(text: &str) -> Result<(), String> {
+    let mut observations = Vec::new();
+    for phase in ["before-read", "after-join"] {
+        let record = one_record(text, &format!("CONTEXT_READ_PLT phase={phase} "))?;
+        let encoded = record_field(record, "plt_hex")?;
+        let (length, prefix) = match encoded.len() {
+            12 => (6, "ff25"),
+            20 => (10, "f30f1efaff25"),
+            _ => return Err("unsupported or incomplete live read PLT bytes".into()),
+        };
+        if encoded.len() != length * 2
+            || !encoded.starts_with(prefix)
+            || !encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("unsupported or incomplete live read PLT bytes".into());
+        }
+        let dispatch = one_record(text, &format!("CONTEXT_READ_DISPATCH phase={phase} "))?;
+        for field in ["callable", "plt_hex"] {
+            field_is(dispatch, field, record_field(record, field)?)?;
+        }
+        observations.push((record_field(record, "callable")?, length, encoded));
+    }
+    if observations[0] != observations[1] {
+        return Err("live read PLT address, length or bytes changed between observations".into());
+    }
+    Ok(())
+}
+
 fn context_completion(text: &str, mode: &str, context_only: bool) -> Result<(), String> {
     let live = live_observations(text)?;
     exact_record(
@@ -1259,6 +1291,8 @@ fn context_completion(text: &str, mode: &str, context_only: bool) -> Result<(), 
         ),
     )?;
     live_decision_records(text, mode, &live)?;
+    exact_record(text, PLT_DECODER_CONTROL)?;
+    read_plt_records(text)?;
     for exact in [
         "CONTEXT_READ_DISPATCH_STABLE callable=1 plt_bytes=1 slot=1 target=1 public_symbol=1 dso=1",
         "CONTEXT_RETIREMENT physical_joins=1 cancel_sends=0 destroyed=1 owner_closed_fd=1",
@@ -2277,6 +2311,72 @@ fn exercise(tree: &PrivateTree) -> Result<(), String> {
     require_retirement_order(&retirement)?;
     print!("{}", String::from_utf8_lossy(&retirement.stdout));
     let transcript = std::str::from_utf8(&protocol.stdout).unwrap();
+    for (name, replacement) in [
+        ("missing", String::new()),
+        (
+            "altered",
+            PLT_DECODER_CONTROL.replace("endbr64=1", "endbr64=0"),
+        ),
+    ] {
+        let altered = transcript.replacen(PLT_DECODER_CONTROL, &replacement, 1);
+        if !complete_protocol(altered.as_bytes()).is_err_and(|error| {
+            error == format!("missing/duplicated context qualification: {PLT_DECODER_CONTROL}")
+        }) {
+            return Err(format!("{name} decoder control record was not rejected"));
+        }
+    }
+    // Mutate the actual successful observation, keeping each phase's two
+    // records coherent. Only the before/after byte-and-length proof can reject
+    // the valid alternate layout or changed displacement below.
+    let after_plt = one_record(transcript, "CONTEXT_READ_PLT phase=after-join ")?;
+    let after_dispatch = one_record(transcript, "CONTEXT_READ_DISPATCH phase=after-join ")?;
+    let encoded = record_field(after_plt, "plt_hex")?;
+    let length = encoded.len() / 2;
+    let mut changed = encoded.as_bytes().to_vec();
+    let last = changed.last_mut().ok_or("missing live PLT bytes")?;
+    *last = if *last == b'0' { b'1' } else { b'0' };
+    let changed = String::from_utf8(changed).unwrap();
+    let other_form = if length == 6 {
+        format!("f30f1efa{encoded}")
+    } else {
+        encoded[8..].to_string()
+    };
+    for (name, new_bytes) in [("changed-byte", changed), ("changed-length", other_form)] {
+        let change_record = |record: &str| {
+            record.replacen(
+                &format!("plt_hex={encoded}"),
+                &format!("plt_hex={new_bytes}"),
+                1,
+            )
+        };
+        let altered = transcript
+            .replacen(after_plt, &change_record(after_plt), 1)
+            .replacen(after_dispatch, &change_record(after_dispatch), 1);
+        if !complete_protocol(altered.as_bytes()).is_err_and(|error| {
+            error == "live read PLT address, length or bytes changed between observations"
+        }) {
+            return Err(format!(
+                "{name} PLT stability control was not rejected by its proof"
+            ));
+        }
+    }
+    let truncated = transcript.replacen(
+        after_plt,
+        &after_plt.replacen(
+            &format!("plt_hex={encoded}"),
+            &format!("plt_hex={}", &encoded[..encoded.len() - 2]),
+            1,
+        ),
+        1,
+    );
+    if !complete_protocol(truncated.as_bytes())
+        .is_err_and(|error| error == "unsupported or incomplete live read PLT bytes")
+    {
+        return Err("truncated live PLT record was not rejected by its proof".into());
+    }
+    println!(
+        "C_PROTOCOL_PLT_CONTROLS missing_decoder=rejected altered_decoder=rejected changed_byte=rejected changed_length=rejected truncated=rejected"
+    );
     let completion = context_pass(live_observations(transcript)?.decision);
     let reordered = transcript
         .replacen(PASS_BEFORE_CONTEXT[0], "WRAPPER_SWAP", 1)
