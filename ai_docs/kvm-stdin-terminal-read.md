@@ -83,12 +83,84 @@ test together with `-DRVK_READ_TEST -std=c11 -pthread -fexceptions`; production
 builds omit the gates. The delayed-sender controls stop immediately before the
 public cancel call and immediately after its return, not inside libc assembly.
 
-The additional context control requires readable LSM current-label attributes.
-Its refusal on a host without that interface is a failed qualification, not
-evidence of equivalent security policy. Credentials, namespaces, masks and
-alternate signal stacks are separately checked. A new thread has a distinct
-TID and a disabled alternate signal stack; arbitrary thread-sensitive host
-policies are not proven equivalent by these controls.
+The fifteenth control holds the helper before cancellation is enabled and
+independently queries both live tasks' `attr/current`, checking each TID and
+start generation through collection. It records the exact open/read/close
+results, failure errnos and bytes. It also reads the active LSM inventory at
+`/sys/kernel/security/lsm` before and after the task queries. Missing,
+unreadable, truncated, malformed, changing or unknown inventories fail.
+
+The only qualified live profile is exactly `capability,bpf,ima` (18 bytes,
+without a newline). Its source-grounded provider rule accepts only two actual
+initial reads returning `-1/EINVAL`, each after a successful open and followed
+by successful close. The result is **unavailable-label**, not equal labels or
+equivalent security policy. The retained kernel hook evidence supports this
+specific rule; kernel release, build and configuration are provenance, not
+fixed acceptance keys. The two retained BPF inspection attempts failed with
+EPERM: attachments remain unknown, and BPF absence is not claimed. The provider
+finding's prose mentions a newline, but the retained 18-byte file is authoritative.
+
+The separate successful-label rule requires complete reads through EOF and
+identical lengths and bytes, including embedded NUL suffixes. A synthetic
+profile exercises that branch; no additional live label-provider profile has
+been qualified. Matching error strings, mixed success/error results, other
+errnos and incomplete reads cannot satisfy either rule. Default qualification
+requires neither a copied kernel image nor privileged BPF inspection. There is
+no fixed-boot gate or ignore option. The default test fails on other active
+profiles and hosts without readable securityfs.
+
+Credentials, groups, capabilities, NoNewPrivs, seccomp state, namespaces, cwd,
+root, masks and alternate signal stacks retain their separate comparisons.
+The expected new-thread differences are a distinct TID and disabled alternate
+signal stack. The positive control also requires zero-byte read completion, one
+physical join, unchanged endpoint identity and flags, ownership release, and
+verified restoration of the creator's mask and alternate signal stack.
+
+The ordinary, unignored Cargo integration test is
+`cargo test -p reverie-kvm --test terminal_read_protocol`. Its required coverage
+compiles the actual C implementation and test once, runs the full fifteen-control
+aggregate without provider arguments, and reuses that executable for all
+`--context-mode` classifier controls through the same bounded process owner:
+
+- `equal-labels` is a clearly labeled synthetic positive, separate from the
+  live unavailable-label result.
+- `mask-mismatch`, `query-asymmetry`, `query-errors`, `query-eperm`,
+  `missing-task`, `truncated-label`, `label-mismatch`, `label-length` and
+  `unqualified-provider` reject the specified context or attribute defect.
+- `inventory-malformed`, `inventory-unknown`, `inventory-changing`,
+  `inventory-missing` and `inventory-truncated` reject the specified inventory
+  defect.
+
+Each mode retains the real task and inventory observations separately from
+its explicitly labeled fixture or fault. Negative modes require their exact
+rejection diagnostic and SIGABRT, with no PASS or unexpected-acceptance marker;
+an unrelated failure cannot qualify them. Mask mismatch alters the actual
+helper's SIGUSR1 mask. Missing-task queries use the invalid task-zero path,
+and label/truncation fixtures use the same bounded collector on real memfd
+bytes. Compile failure, abort, incomplete transcripts, capture overflow and
+timeout/descendant cleanup have separate wrapper controls. Timeout and rescue
+remain failures; expected classifier aborts do not excuse failed retirement.
+
+The read-dispatch diagnostic supports the measured x86-64 non-PIE `ET_EXEC`
+layout whose canonical `read` address begins with `ff 25 disp32`. It distinguishes
+that executable PLT address from the live GOT destination and requires fresh,
+unchanged observations before the helper read and after join, matching public
+`dlsym(RTLD_NEXT, "read")`, with `dladdr` and maps recorded. Unsupported layouts
+fail, including incompatible compiler defaults; there is no decoder fallback
+or silent compiler-flag change. The external qualification additionally binds
+the executed ELF's exact public-read `R_X86_64_JUMP_SLOT` and the destination
+to the mapped libc's public symbol. Ordinary Cargo execution enforces the
+in-process checks; it does not independently perform that external ELF binding.
+
+Historical failures remain failures. Original C15 exited 134 before querying
+the helper's attribute. The first corrected aggregate returned native 0/caller 1
+because the binding diagnostic captured only the executable PLT address, without
+the live GOT destination. The first full Cargo attempt returned 101/caller 1
+before the native aggregate: descendant `children`-file access failed with ENOENT
+without CONFIG_PROC_CHILDREN. Its outer scope retired, but the wrapper did not
+prove its compiler child's status or retirement. Source-bound sealed evidence
+retains these statuses and later executions separately. Sealing the qualification
+report supplies the input to independent reviews and is separate from approval.
 
 Rust tests cover sticky registration, worker/root scope, spurious wakes,
 nonreturning Tool disposition, and actual Tool-observer allocation/panic lifetime.

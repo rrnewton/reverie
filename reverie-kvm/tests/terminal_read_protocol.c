@@ -9,7 +9,15 @@
 /* Standalone, bounded by the caller. Compile the actual terminal_read.c with
  * -DRVK_READ_TEST -std=c11 -pthread -fexceptions, matching production. Gate
  * hooks are C-only and contain no
- * cancellation point, including the public-return/disable interval. */
+ * cancellation point, including the public-return/disable interval.
+ *
+ * Full suite: TMPDIR=/absolute/private/tmp ./terminal_read_protocol
+ * The caller owns CPU/memory/pids/wall/output bounds. The default aggregate
+ * qualifies the actual installed provider inventory before and after both
+ * live task queries. Unknown, malformed, unreadable or changing inventories
+ * fail; no provider directory, fixed deployment key or ignore flag is used.
+ * --context-mode MODE selects one additive C15 control; it does not qualify
+ * the other fourteen controls. Run the full suite as a separate positive. */
 #define _GNU_SOURCE
 #include "../src/terminal_read.h"
 
@@ -25,9 +33,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -40,12 +50,15 @@ static _Atomic bool hold[EVENT_COUNT];
 static _Atomic bool released[EVENT_COUNT];
 static _Atomic int event_tid[EVENT_COUNT];
 static _Atomic bool capture_context;
+static _Atomic bool context_mask_fault;
+static const char *context_mode = "live";
 static struct {
   sigset_t mask;
   stack_t altstack;
   int mask_error;
   int altstack_result;
   int altstack_errno;
+  int mask_fault_error;
 } child_context;
 
 void rvk_read_test_hook(struct rvk_read *op, enum rvk_read_test_event event) {
@@ -55,6 +68,13 @@ void rvk_read_test_hook(struct rvk_read *op, enum rvk_read_test_event event) {
   if (event == RVK_READ_TEST_BEFORE_ENABLE && atomic_load(&capture_context)) {
     /* This hook runs only with child cancellation disabled. The return hook
      * remains atomics/pause only; no context query runs in that interval. */
+    if (atomic_load(&context_mask_fault)) {
+      sigset_t discriminator;
+      assert(sigemptyset(&discriminator) == 0);
+      assert(sigaddset(&discriminator, SIGUSR1) == 0);
+      child_context.mask_fault_error =
+          pthread_sigmask(SIG_UNBLOCK, &discriminator, NULL);
+    }
     child_context.mask_error = pthread_sigmask(SIG_SETMASK, NULL, &child_context.mask);
     child_context.altstack_result = sigaltstack(NULL, &child_context.altstack);
     child_context.altstack_errno = errno;
@@ -68,6 +88,7 @@ void rvk_read_test_hook(struct rvk_read *op, enum rvk_read_test_event event) {
 
 static void reset(void) {
   atomic_store(&capture_context, false);
+  atomic_store(&context_mask_fault, false);
   memset(&child_context, 0, sizeof(child_context));
   for (unsigned i = 0; i < EVENT_COUNT; ++i) {
     atomic_store(&reached[i], 0);
@@ -663,6 +684,428 @@ static uint64_t thread_start(int tid, const char *role) {
   return (uint64_t)start;
 }
 
+enum attribute_kind {
+  ATTRIBUTE_VALUE,
+  ATTRIBUTE_OPEN_ERROR,
+  ATTRIBUTE_READ_ERROR,
+  ATTRIBUTE_CLOSE_ERROR,
+  ATTRIBUTE_TRUNCATED,
+};
+
+struct attribute_query {
+  int tid;
+  uint64_t start;
+  char path[128];
+  enum attribute_kind kind;
+  int open_result, open_errno;
+  ssize_t last_read;
+  int read_errno;
+  unsigned reads;
+  int close_result, close_errno;
+  bool eof;
+  size_t length;
+  unsigned char bytes[4096];
+};
+
+static void print_attribute(const struct attribute_query *query, const char *origin) {
+  printf("CONTEXT_ATTRIBUTE origin=%s tid=%d start=%llu path=%s kind=%u "
+         "open=%d open_errno=%d reads=%u last_read=%zd read_errno=%d "
+         "close=%d close_errno=%d eof=%d length=%zu bytes_hex=",
+         origin, query->tid, (unsigned long long)query->start, query->path,
+         (unsigned)query->kind, query->open_result, query->open_errno, query->reads,
+         query->last_read, query->read_errno, query->close_result,
+         query->close_errno, query->eof, query->length);
+  for (size_t i = 0; i < query->length; ++i) {
+    printf("%02x", query->bytes[i]);
+  }
+  putchar('\n');
+  assert(fflush(stdout) == 0);
+}
+
+/* Both tasks are held alive while these independent queries run. An error
+ * collecting one attribute must not suppress the other attribute query. No
+ * retry, whitespace/NUL normalization, or replacement label is permitted. */
+static struct attribute_query query_attribute_path(int tid, uint64_t start,
+                                                   const char *path,
+                                                   const char *origin) {
+  struct attribute_query query = {
+      .tid = tid, .start = start, .open_result = -1,
+      .last_read = -2, .close_result = -2,
+  };
+  int length = snprintf(query.path, sizeof(query.path), "%s", path);
+  assert(length > 0 && (size_t)length < sizeof(query.path));
+  errno = 0;
+  query.open_result = open(query.path, O_RDONLY | O_CLOEXEC);
+  query.open_errno = errno;
+  if (query.open_result < 0) {
+    query.kind = ATTRIBUTE_OPEN_ERROR;
+    return query;
+  }
+  for (;;) {
+    /* Preserve the original 4096-byte buffer and its exact refusal bound. */
+    if (query.length == sizeof(query.bytes) - 1) {
+      query.kind = ATTRIBUTE_TRUNCATED;
+      break;
+    }
+    errno = 0;
+    query.last_read = read(query.open_result, query.bytes + query.length,
+                           sizeof(query.bytes) - 1 - query.length);
+    query.read_errno = errno;
+    ++query.reads;
+    printf("CONTEXT_ATTRIBUTE_READ origin=%s tid=%d start=%llu path=%s index=%u "
+           "return=%zd errno=%d offset=%zu\n", origin, tid, (unsigned long long)start,
+           query.path, query.reads, query.last_read, query.read_errno, query.length);
+    if (query.last_read < 0) {
+      query.kind = ATTRIBUTE_READ_ERROR;
+      break;
+    }
+    if (query.last_read == 0) {
+      query.eof = true;
+      query.kind = ATTRIBUTE_VALUE;
+      break;
+    }
+    query.length += (size_t)query.last_read;
+  }
+  errno = 0;
+  query.close_result = close(query.open_result);
+  query.close_errno = errno;
+  if (query.close_result != 0 && query.kind == ATTRIBUTE_VALUE) {
+    query.kind = ATTRIBUTE_CLOSE_ERROR;
+  }
+  return query;
+}
+
+static struct attribute_query query_attribute(int tid, uint64_t start) {
+  char path[128];
+  int length = snprintf(path, sizeof(path), "/proc/self/task/%d/attr/current", tid);
+  assert(length > 0 && (size_t)length < sizeof(path));
+  return query_attribute_path(tid, start, path, "actual-task-query");
+}
+
+static struct attribute_query live_attribute(int tid, uint64_t start,
+                                              const char *role) {
+  assert(thread_start(tid, role) == start);
+  struct attribute_query result = query_attribute(tid, start);
+  print_attribute(&result, "actual-live-query");
+  assert(thread_start(tid, role) == start);
+  return result;
+}
+
+enum provider_profile {
+  PROVIDER_UNCLASSIFIED,
+  PROVIDER_CURRENT_LABELS,
+  PROVIDER_CURRENT_UNAVAILABLE,
+};
+
+enum inventory_problem {
+  INVENTORY_RECOGNIZED,
+  INVENTORY_QUERY_ERROR,
+  INVENTORY_MALFORMED,
+  INVENTORY_CHANGING,
+  INVENTORY_UNKNOWN,
+};
+
+struct provider_classification {
+  enum provider_profile profile;
+  enum inventory_problem problem;
+};
+
+static bool complete_attribute(const struct attribute_query *q);
+
+/* Source-grounded seed, not a name-based permission to ignore errors:
+ * Linux include/linux/lsm_hook_defs.h defines getprocattr's default -EINVAL.
+ * The matching kernel ELF's complete capability_hooks and ima_hooks tables
+ * provide no getprocattr; bpf_lsm_hooks registers the generated
+ * bpf_lsm_getprocattr default stub. Exact installed hook tables
+ * and proc_pid_attr_read/security_getprocattr/bpf_lsm_getprocattr were inspected
+ * in CONTEXT-FINDING.md, SHA256
+ * c3db390aad32c95611a75bc78e5dc7f104d5b6b33c9ff58dc45910b46f149c7b.
+ * This profile accepts ONLY both actual initial -1/EINVAL observations. BPF
+ * remains active and attachments are not enumerated: no policy equivalence or
+ * absence of mediation is inferred. Kernel/build/config identify provenance,
+ * not an acceptance key. Extend this table only from actual CI inventories and
+ * primary provider registration/getprocattr contracts; unknown profiles fail.
+ * No live label-provider combination has yet been grounded for this table.
+ * The CURRENT_LABELS branch is separately exercised by explicit fixtures. */
+static const struct {
+  const char *inventory;
+  enum provider_profile profile;
+} provider_profiles[] = {
+    {"capability,bpf,ima", PROVIDER_CURRENT_UNAVAILABLE},
+};
+
+static bool valid_inventory(const struct attribute_query *q) {
+  if (!complete_attribute(q) || q->length == 0) {
+    return false;
+  }
+  size_t start = 0;
+  while (start < q->length) {
+    size_t end = start;
+    while (end < q->length && q->bytes[end] != ',') {
+      unsigned char c = q->bytes[end];
+      if (!((c >= 'a' && c <= 'z') ||
+            (end > start && ((c >= '0' && c <= '9') || c == '_')))) {
+        return false;
+      }
+      ++end;
+    }
+    if (end == start) {
+      return false;
+    }
+    for (size_t prior = 0; prior < start;) {
+      size_t prior_end = prior;
+      while (prior_end < start && q->bytes[prior_end] != ',') {
+        ++prior_end;
+      }
+      if (prior_end - prior == end - start &&
+          memcmp(q->bytes + prior, q->bytes + start, end - start) == 0) {
+        return false;
+      }
+      prior = prior_end + 1;
+    }
+    if (end == q->length) {
+      return true;
+    }
+    start = end + 1;
+  }
+  return false; /* Trailing comma, whitespace/newline and embedded NUL are invalid. */
+}
+
+static struct provider_classification classify_inventory(
+    const struct attribute_query *before, const struct attribute_query *after) {
+  struct provider_classification result = {PROVIDER_UNCLASSIFIED, INVENTORY_QUERY_ERROR};
+  if (!complete_attribute(before) || !complete_attribute(after)) {
+    return result;
+  }
+  if (!valid_inventory(before) || !valid_inventory(after)) {
+    result.problem = INVENTORY_MALFORMED;
+    return result;
+  }
+  if (before->length != after->length ||
+      memcmp(before->bytes, after->bytes, before->length) != 0) {
+    result.problem = INVENTORY_CHANGING;
+    return result;
+  }
+  for (unsigned i = 0; i < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++i) {
+    size_t length = strlen(provider_profiles[i].inventory);
+    if (before->length == length &&
+        memcmp(before->bytes, provider_profiles[i].inventory, length) == 0) {
+      result.profile = provider_profiles[i].profile;
+      result.problem = INVENTORY_RECOGNIZED;
+      return result;
+    }
+  }
+  result.problem = INVENTORY_UNKNOWN;
+  return result;
+}
+
+static enum provider_profile require_inventory(const struct attribute_query *before,
+                                               const struct attribute_query *after,
+                                               const char *origin) {
+  struct provider_classification result = classify_inventory(before, after);
+  const char *problems[] = {"recognized", "query-error", "malformed", "changing", "unknown"};
+  const char *profiles[] = {"unclassified", "current-labels", "observed-unavailable"};
+  printf("CONTEXT_PROVIDER_DECISION origin=%s profile=%s reason=%s mode=%s\n",
+         origin, profiles[result.profile], problems[result.problem], context_mode);
+  assert(fflush(stdout) == 0);
+  if (result.problem != INVENTORY_RECOGNIZED || result.profile == PROVIDER_UNCLASSIFIED) {
+    context_error("provider-inventory-oracle", context_mode, EPROTO);
+  }
+  return result.profile;
+}
+
+static struct attribute_query live_inventory(int tid, uint64_t start, const char *phase) {
+  struct attribute_query result = query_attribute_path(tid, start,
+                                                       "/sys/kernel/security/lsm", phase);
+  print_attribute(&result, phase);
+  return result;
+}
+
+static void provider_provenance(int tid, uint64_t start) {
+  struct utsname kernel;
+  errno = 0;
+  int result = uname(&kernel);
+  int error = errno;
+  printf("CONTEXT_KERNEL_PROVENANCE uname_return=%d errno=%d release=%s acceptance_key=no\n",
+         result, error, result == 0 ? kernel.release : "<unavailable>");
+  /* Optional bounded diagnostics. Their exact failure/truncation records do
+   * not substitute for the mandatory active-provider inventory above. */
+  struct attribute_query notes = query_attribute_path(tid, start, "/sys/kernel/notes",
+                                                       "kernel-notes-provenance");
+  print_attribute(&notes, "kernel-notes-provenance");
+  puts("CONTEXT_PROVIDER_LIMIT runtime_bpf_enumeration=not-performed "
+       "attachments=unknown policy_equivalence=not-claimed "
+       "kernel_config=not-collected");
+}
+
+enum attribute_decision { ATTRIBUTE_REJECT, ATTRIBUTE_EQUAL, ATTRIBUTE_UNAVAILABLE };
+
+static bool initial_einval(const struct attribute_query *q) {
+  /* errno is diagnostic only after successful open/close/read calls. */
+  return q->kind == ATTRIBUTE_READ_ERROR && q->open_result >= 0 &&
+      q->reads == 1 && q->last_read == -1 &&
+      q->read_errno == EINVAL && q->length == 0 && !q->eof &&
+      q->close_result == 0;
+}
+
+static bool complete_attribute(const struct attribute_query *q) {
+  return q->kind == ATTRIBUTE_VALUE && q->open_result >= 0 &&
+      q->reads >= 1 && q->last_read == 0 && q->eof &&
+      q->length < sizeof(q->bytes) - 1 && q->close_result == 0;
+}
+
+static enum attribute_decision classify_attributes(const struct attribute_query *left,
+                                                   const struct attribute_query *right,
+                                                   enum provider_profile profile) {
+  if (left->tid <= 0 || right->tid <= 0 || left->start == 0 || right->start == 0) {
+    return ATTRIBUTE_REJECT;
+  }
+  if (profile == PROVIDER_CURRENT_LABELS && complete_attribute(left) && complete_attribute(right)) {
+    return left->length == right->length &&
+        memcmp(left->bytes, right->bytes, left->length) == 0
+        ? ATTRIBUTE_EQUAL : ATTRIBUTE_REJECT;
+  }
+  if (profile == PROVIDER_CURRENT_UNAVAILABLE && initial_einval(left) && initial_einval(right)) {
+    return ATTRIBUTE_UNAVAILABLE;
+  }
+  return ATTRIBUTE_REJECT;
+}
+
+static enum attribute_decision require_attributes(const struct attribute_query *left,
+                                                  const struct attribute_query *right,
+                                                  enum provider_profile profile,
+                                                  const char *origin) {
+  enum attribute_decision decision = classify_attributes(left, right, profile);
+  printf("CONTEXT_ATTRIBUTE_DECISION origin=%s decision=%s mode=%s\n", origin,
+         decision == ATTRIBUTE_EQUAL ? "exact-label-bytes" :
+         decision == ATTRIBUTE_UNAVAILABLE ? "unavailable-label" : "rejected",
+         context_mode);
+  assert(fflush(stdout) == 0);
+  if (decision == ATTRIBUTE_REJECT) {
+    context_error("attribute-oracle", context_mode, EPROTO);
+  }
+  return decision;
+}
+
+static void fixture_value(struct attribute_query *q, const void *bytes, size_t length) {
+  int fd = memfd_create("context-label-fixture", MFD_CLOEXEC);
+  assert(fd >= 0);
+  assert(write(fd, bytes, length) == (ssize_t)length);
+  assert(lseek(fd, 0, SEEK_SET) == 0);
+  char path[128];
+  int count = snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+  assert(count > 0 && (size_t)count < sizeof(path));
+  *q = query_attribute_path(q->tid, q->start, path, "real-memfd-label-fixture");
+  assert(close(fd) == 0);
+}
+
+static void fixture_error(struct attribute_query *q, int error) {
+  /* Explicit fault record, unlike the real memfd/invalid-task collectors. */
+  q->kind = ATTRIBUTE_READ_ERROR;
+  q->open_result = 100;
+  q->open_errno = 0;
+  q->close_result = q->close_errno = 0;
+  q->last_read = -1;
+  q->read_errno = error;
+  q->reads = 1;
+  q->length = 0;
+  q->eof = false;
+}
+
+static bool inventory_fixture(struct attribute_query before, struct attribute_query after) {
+  if (strncmp(context_mode, "inventory-", 10) != 0) {
+    return false;
+  }
+  printf("CONTEXT_TEST_FAULT mode=%s origin=inventory-fixture\n", context_mode);
+  if (strcmp(context_mode, "inventory-missing") == 0) {
+    fixture_value(&before, "capability,bpf,ima", 18);
+    after = query_attribute_path(0, 0, "/proc/self/task/0/attr/current",
+                                 "inventory-query-fixture-missing-task-zero");
+    assert(after.kind == ATTRIBUTE_OPEN_ERROR && after.open_errno == ENOENT);
+  } else if (strcmp(context_mode, "inventory-truncated") == 0) {
+    fixture_value(&before, "capability,bpf,ima", 18);
+    unsigned char bytes[4095];
+    memset(bytes, 'x', sizeof(bytes));
+    fixture_value(&after, bytes, sizeof(bytes));
+  } else {
+    const char *left;
+    const char *right;
+    if (strcmp(context_mode, "inventory-malformed") == 0) {
+      left = right = "capability,,bpf,ima";
+    } else if (strcmp(context_mode, "inventory-unknown") == 0) {
+      left = right = "capability,bpf,ima,fixture_unknown";
+    } else {
+      assert(strcmp(context_mode, "inventory-changing") == 0);
+      left = "capability,bpf,ima";
+      right = "capability,ima,bpf";
+    }
+    fixture_value(&before, left, strlen(left));
+    fixture_value(&after, right, strlen(right));
+  }
+  print_attribute(&before, "inventory-fixture-before");
+  print_attribute(&after, "inventory-fixture-after");
+  require_inventory(&before, &after, "inventory-fixture");
+  puts("UNEXPECTED_ACCEPTANCE negative inventory fixture");
+  return true;
+}
+
+/* These records exercise the same classifier but never replace or relabel the
+ * actual observations printed above. A rejected fixture aborts (134); accepted
+ * bad fixtures return success, which the caller MUST treat as a failed negative
+ * control. Synthetic equal labels test bytes after an embedded NUL. */
+static void attribute_fixture(struct attribute_query left, struct attribute_query right,
+                              enum provider_profile profile) {
+  if (strcmp(context_mode, "live") == 0 || strcmp(context_mode, "mask-mismatch") == 0) {
+    return;
+  }
+  printf("CONTEXT_TEST_FAULT mode=%s origin=classifier-fixture\n", context_mode);
+  if (strcmp(context_mode, "equal-labels") == 0 ||
+      strcmp(context_mode, "label-mismatch") == 0 ||
+      strcmp(context_mode, "label-length") == 0) {
+    fixture_value(&left, "a\0x", 3);
+    fixture_value(&right, strcmp(context_mode, "label-mismatch") == 0 ? "a\0y" : "a\0x",
+                  strcmp(context_mode, "label-length") == 0 ? 4 : 3);
+    /* Synthetic classifier capability, never an entry in the live inventory
+     * table and never permission to qualify an unknown actual inventory. */
+    profile = PROVIDER_CURRENT_LABELS;
+  } else if (strcmp(context_mode, "query-asymmetry") == 0) {
+    fixture_value(&left, "a\0x", 3);
+    fixture_error(&right, EINVAL);
+    profile = PROVIDER_CURRENT_LABELS;
+  } else if (strcmp(context_mode, "query-errors") == 0) {
+    fixture_error(&left, EINVAL);
+    fixture_error(&right, EACCES);
+  } else if (strcmp(context_mode, "query-eperm") == 0) {
+    fixture_error(&left, EPERM);
+    fixture_error(&right, EPERM);
+  } else if (strcmp(context_mode, "truncated-label") == 0) {
+    fixture_value(&left, "a\0x", 3);
+    unsigned char bytes[4095];
+    memset(bytes, 'x', sizeof(bytes));
+    fixture_value(&right, bytes, sizeof(bytes));
+    profile = PROVIDER_CURRENT_LABELS;
+  } else if (strcmp(context_mode, "missing-task") == 0) {
+    /* Linux task IDs are strictly positive. 0 cannot name a live userspace
+     * thread here; require the actual proc open to reject it, not an old TID. */
+    right = query_attribute(0, 0);
+    print_attribute(&right, "actual-query-of-invalid-task-zero");
+    assert(right.kind == ATTRIBUTE_OPEN_ERROR && right.open_errno == ENOENT);
+  } else {
+    assert(strcmp(context_mode, "unqualified-provider") == 0);
+    fixture_error(&left, EINVAL);
+    fixture_error(&right, EINVAL);
+    profile = PROVIDER_UNCLASSIFIED;
+  }
+  print_attribute(&left, "classifier-fixture-creator");
+  print_attribute(&right, "classifier-fixture-helper");
+  require_attributes(&left, &right, profile, "classifier-fixture");
+  if (strcmp(context_mode, "equal-labels") == 0) {
+    puts("PASS synthetic-label-classifier: equal length and all bytes including NUL suffix");
+  } else {
+    puts("UNEXPECTED_ACCEPTANCE negative context fixture");
+  }
+}
+
 static void compare_link(int creator, int helper, const char *suffix) {
   char paths[2][256], targets[2][4096];
   struct stat identity[2];
@@ -692,57 +1135,7 @@ static void compare_link(int creator, int helper, const char *suffix) {
   assert(identity[0].st_ino == identity[1].st_ino);
 }
 
-static void inherited_context(void) {
-  reset();
-  gate(RVK_READ_TEST_BEFORE_ENABLE);
-  atomic_store(&capture_context, true);
-  int creator = (int)syscall(SYS_gettid);
-  sigset_t original_mask, test_mask;
-  assert(pthread_sigmask(SIG_SETMASK, NULL, &original_mask) == 0);
-  test_mask = original_mask;
-  assert(sigaddset(&test_mask, SIGUSR1) == 0);
-  assert(pthread_sigmask(SIG_SETMASK, &test_mask, NULL) == 0);
-  stack_t original_stack, creator_stack;
-  assert(sigaltstack(NULL, &original_stack) == 0);
-  assert((original_stack.ss_flags & SS_ONSTACK) == 0);
-  size_t stack_size = (size_t)SIGSTKSZ;
-  void *stack_memory = malloc(stack_size);
-  assert(stack_memory != NULL);
-  stack_t test_stack = {.ss_sp = stack_memory, .ss_size = stack_size, .ss_flags = 0};
-  assert(sigaltstack(&test_stack, NULL) == 0);
-  assert(sigaltstack(NULL, &creator_stack) == 0);
-
-  int fd = null_fd();
-  struct rvk_read *op = prepare(fd);
-  assert(rvk_read_start(op) == 0);
-  await_event(RVK_READ_TEST_BEFORE_ENABLE);
-  int helper = atomic_load(&event_tid[RVK_READ_TEST_BEFORE_ENABLE]);
-  assert(helper != creator && helper > 0);
-  assert(atomic_load(&event_tid[RVK_READ_TEST_BEFORE_CREATE]) == creator);
-  uint64_t creator_start = thread_start(creator, "creator");
-  uint64_t helper_start = thread_start(helper, "helper");
-  printf("CONTEXT_IDENTITY creator=%d/%llu helper=%d/%llu\n", creator,
-         (unsigned long long)creator_start, helper, (unsigned long long)helper_start);
-  if (child_context.mask_error != 0) {
-    context_error("pthread_sigmask", "helper", child_context.mask_error);
-  }
-  if (child_context.altstack_result != 0) {
-    context_error("sigaltstack", "helper", child_context.altstack_errno);
-  }
-  for (int signal = 1; signal < NSIG; ++signal) {
-    assert(sigismember(&test_mask, signal) == sigismember(&child_context.mask, signal));
-  }
-  assert(sigismember(&child_context.mask, SIGUSR1) == 1);
-  printf("CONTEXT_ALTSTACK creator_flags=%d creator_sp=%p creator_size=%zu "
-         "helper_flags=%d helper_sp=%p helper_size=%zu\n",
-         creator_stack.ss_flags, creator_stack.ss_sp, creator_stack.ss_size,
-         child_context.altstack.ss_flags, child_context.altstack.ss_sp,
-         child_context.altstack.ss_size);
-  assert(fflush(stdout) == 0);
-  assert((creator_stack.ss_flags & SS_DISABLE) == 0);
-  assert((child_context.altstack.ss_flags & SS_DISABLE) != 0);
-  assert((child_context.altstack.ss_flags & SS_ONSTACK) == 0);
-
+static void compare_context_state(int creator, int helper) {
   char creator_status[32768], helper_status[32768], path[128];
   assert(snprintf(path, sizeof(path), "/proc/self/task/%d/status", creator) > 0);
   context_file(path, creator_status, sizeof(creator_status));
@@ -773,14 +1166,176 @@ static void inherited_context(void) {
   for (unsigned i = 0; i < sizeof(links) / sizeof(links[0]); ++i) {
     compare_link(creator, helper, links[i]);
   }
-  char creator_lsm[4096], helper_lsm[4096];
-  assert(snprintf(path, sizeof(path), "/proc/self/task/%d/attr/current", creator) > 0);
-  context_file(path, creator_lsm, sizeof(creator_lsm));
-  assert(snprintf(path, sizeof(path), "/proc/self/task/%d/attr/current", helper) > 0);
-  context_file(path, helper_lsm, sizeof(helper_lsm));
-  printf("CONTEXT_LSM creator=%s helper=%s\n", creator_lsm, helper_lsm);
+}
+
+struct read_dispatch {
+  uintptr_t callable;
+  unsigned char plt[6];
+  uintptr_t slot;
+  uintptr_t target;
+  void *next_read;
+  Dl_info binding;
+};
+
+/* This diagnostic qualifies the observed x86-64, non-PIE ELF PLT layout only.
+ * A canonical function address can identify read@plt in the executable. Keep
+ * that observation distinct from the live destination. This process asserts
+ * live PLT/GOT/public-dlsym agreement and stability and records dladdr/maps.
+ * The external sealed qualification additionally binds these exact bytes/slot
+ * to the executable's public read R_X86_64_JUMP_SLOT and the destination to the
+ * mapped libc's public read symbol. An ordinary Cargo invocation enforces the
+ * in-process assertions and full aggregate; it does not claim that additional
+ * independent ELF association merely from dlsym agreement or printed maps.
+ * Unsupported instruction layouts fail; there is no guessed decoding path,
+ * private libc lookup, forced binding call, or compiler-flag change. */
+static struct read_dispatch observe_read_dispatch(const char *phase) {
+  _Static_assert(sizeof(uintptr_t) == 8, "dispatch qualification requires x86-64");
+  struct read_dispatch result = {.callable = (uintptr_t)(void *)read};
+  const volatile unsigned char *code = (const volatile unsigned char *)result.callable;
+  for (size_t i = 0; i < sizeof(result.plt); ++i) {
+    result.plt[i] = code[i];
+  }
+  printf("CONTEXT_READ_PLT phase=%s callable=%p plt_hex=", phase, (void *)result.callable);
+  for (size_t i = 0; i < sizeof(result.plt); ++i) {
+    printf("%02x", result.plt[i]);
+  }
+  putchar('\n');
   assert(fflush(stdout) == 0);
-  assert(strcmp(creator_lsm, helper_lsm) == 0);
+  if (result.plt[0] != 0xff || result.plt[1] != 0x25) {
+    context_error("unsupported-read-plt-layout", phase, ENOTSUP);
+  }
+  int32_t displacement;
+  memcpy(&displacement, result.plt + 2, sizeof(displacement));
+  result.slot = result.callable + sizeof(result.plt) + (uintptr_t)(intptr_t)displacement;
+  assert(result.slot % sizeof(uintptr_t) == 0);
+  /* A fresh aligned ABI word load at each observation, even under optimization. */
+  result.target = *(const volatile uintptr_t *)result.slot;
+  assert(result.target != 0);
+  (void)dlerror();
+  result.next_read = dlsym(RTLD_NEXT, "read");
+  const char *error = dlerror();
+  if (error != NULL || result.next_read == NULL) {
+    printf("CONTEXT_READ_DLSYM_ERROR phase=%s error=%s\n", phase,
+           error != NULL ? error : "null-symbol");
+    context_error("public-read-dlsym", phase, ENOENT);
+  }
+  printf("CONTEXT_READ_GOT phase=%s slot=%p target=%p next_read=%p\n", phase,
+         (void *)result.slot, (void *)result.target, result.next_read);
+  assert(fflush(stdout) == 0);
+  assert(result.target == (uintptr_t)result.next_read);
+  assert(dladdr((void *)result.target, &result.binding) != 0);
+  assert(result.binding.dli_fname != NULL && result.binding.dli_fbase != NULL);
+  assert(result.binding.dli_sname != NULL && result.binding.dli_saddr == result.next_read);
+  printf("CONTEXT_READ_DISPATCH phase=%s callable=%p plt_hex=", phase,
+         (void *)result.callable);
+  for (size_t i = 0; i < sizeof(result.plt); ++i) {
+    printf("%02x", result.plt[i]);
+  }
+  printf(" slot=%p target=%p next_read=%p dso=%s base=%p symbol=%s symbol_address=%p\n",
+         (void *)result.slot, (void *)result.target, result.next_read,
+         result.binding.dli_fname, result.binding.dli_fbase, result.binding.dli_sname,
+         result.binding.dli_saddr);
+  assert(fflush(stdout) == 0);
+  return result;
+}
+
+static void compare_read_dispatch(const struct read_dispatch *before,
+                                  const struct read_dispatch *after) {
+  assert(before->callable == after->callable);
+  assert(memcmp(before->plt, after->plt, sizeof(before->plt)) == 0);
+  assert(before->slot == after->slot);
+  assert(before->target == after->target);
+  assert(before->next_read == after->next_read);
+  assert(strcmp(before->binding.dli_fname, after->binding.dli_fname) == 0);
+  assert(before->binding.dli_fbase == after->binding.dli_fbase);
+  assert(strcmp(before->binding.dli_sname, after->binding.dli_sname) == 0);
+  assert(before->binding.dli_saddr == after->binding.dli_saddr);
+  puts("CONTEXT_READ_DISPATCH_STABLE callable=1 plt_bytes=1 slot=1 target=1 public_symbol=1 dso=1");
+}
+
+static void inherited_context(void) {
+  reset();
+  gate(RVK_READ_TEST_BEFORE_ENABLE);
+  atomic_store(&capture_context, true);
+  atomic_store(&context_mask_fault, strcmp(context_mode, "mask-mismatch") == 0);
+  int creator = (int)syscall(SYS_gettid);
+  sigset_t original_mask, test_mask;
+  assert(pthread_sigmask(SIG_SETMASK, NULL, &original_mask) == 0);
+  test_mask = original_mask;
+  assert(sigaddset(&test_mask, SIGUSR1) == 0);
+  assert(pthread_sigmask(SIG_SETMASK, &test_mask, NULL) == 0);
+  stack_t original_stack, creator_stack;
+  assert(sigaltstack(NULL, &original_stack) == 0);
+  assert((original_stack.ss_flags & SS_ONSTACK) == 0);
+  size_t stack_size = (size_t)SIGSTKSZ;
+  void *stack_memory = malloc(stack_size);
+  assert(stack_memory != NULL);
+  stack_t test_stack = {.ss_sp = stack_memory, .ss_size = stack_size, .ss_flags = 0};
+  assert(sigaltstack(&test_stack, NULL) == 0);
+  assert(sigaltstack(NULL, &creator_stack) == 0);
+
+  int fd = null_fd();
+  struct stat endpoint_before, endpoint_after;
+  assert(fstat(fd, &endpoint_before) == 0);
+  int endpoint_flags = fcntl(fd, F_GETFL);
+  int descriptor_flags = fcntl(fd, F_GETFD);
+  assert(endpoint_flags >= 0 && descriptor_flags >= 0);
+  struct rvk_read *op = prepare(fd);
+  assert(rvk_read_start(op) == 0);
+  await_event(RVK_READ_TEST_BEFORE_ENABLE);
+  int helper = atomic_load(&event_tid[RVK_READ_TEST_BEFORE_ENABLE]);
+  assert(helper != creator && helper > 0);
+  assert(atomic_load(&event_tid[RVK_READ_TEST_BEFORE_CREATE]) == creator);
+  uint64_t creator_start = thread_start(creator, "creator");
+  uint64_t helper_start = thread_start(helper, "helper");
+  printf("CONTEXT_IDENTITY creator=%d/%llu helper=%d/%llu\n", creator,
+         (unsigned long long)creator_start, helper, (unsigned long long)helper_start);
+  struct attribute_query providers_before = live_inventory(creator, creator_start,
+                                                           "actual-provider-before");
+  struct attribute_query creator_lsm = live_attribute(creator, creator_start, "creator-query");
+  struct attribute_query helper_lsm = live_attribute(helper, helper_start, "helper-query");
+  struct attribute_query providers_after = live_inventory(creator, creator_start,
+                                                          "actual-provider-after");
+  assert(thread_start(creator, "creator-after-queries") == creator_start);
+  assert(thread_start(helper, "helper-after-queries") == helper_start);
+  if (atomic_load(&context_mask_fault)) {
+    puts("CONTEXT_TEST_FAULT mode=mask-mismatch origin=actual-helper-SIGUSR1-unblock");
+  }
+  assert(child_context.mask_fault_error == 0);
+  if (child_context.mask_error != 0) {
+    context_error("pthread_sigmask", "helper", child_context.mask_error);
+  }
+  if (child_context.altstack_result != 0) {
+    context_error("sigaltstack", "helper", child_context.altstack_errno);
+  }
+  for (int signal = 1; signal < NSIG; ++signal) {
+    if (sigismember(&test_mask, signal) != sigismember(&child_context.mask, signal)) {
+      printf("CONTEXT_REJECT reason=signal-mask signal=%d creator=%d helper=%d\n",
+             signal, sigismember(&test_mask, signal), sigismember(&child_context.mask, signal));
+      assert(fflush(stdout) == 0);
+    }
+    assert(sigismember(&test_mask, signal) == sigismember(&child_context.mask, signal));
+  }
+  assert(sigismember(&child_context.mask, SIGUSR1) == 1);
+  printf("CONTEXT_ALTSTACK creator_flags=%d creator_sp=%p creator_size=%zu "
+         "helper_flags=%d helper_sp=%p helper_size=%zu\n",
+         creator_stack.ss_flags, creator_stack.ss_sp, creator_stack.ss_size,
+         child_context.altstack.ss_flags, child_context.altstack.ss_sp,
+         child_context.altstack.ss_size);
+  assert(fflush(stdout) == 0);
+  assert((creator_stack.ss_flags & SS_DISABLE) == 0);
+  assert((child_context.altstack.ss_flags & SS_DISABLE) != 0);
+  assert((child_context.altstack.ss_flags & SS_ONSTACK) == 0);
+
+  compare_context_state(creator, helper);
+  enum provider_profile profile = require_inventory(&providers_before, &providers_after,
+                                                    "actual-live-inventory");
+  provider_provenance(creator, creator_start);
+  enum attribute_decision actual = require_attributes(&creator_lsm, &helper_lsm,
+                                                       profile, "actual-live-query");
+  if (!inventory_fixture(providers_before, providers_after)) {
+    attribute_fixture(creator_lsm, helper_lsm, profile);
+  }
 
   Dl_info binding;
   assert(dladdr((void *)read, &binding) != 0);
@@ -788,21 +1343,94 @@ static void inherited_context(void) {
   printf("CONTEXT_READ_BINDING address=%p dso=%s base=%p symbol=%s symbol_address=%p\n",
          (void *)read, binding.dli_fname, binding.dli_fbase,
          binding.dli_sname != NULL ? binding.dli_sname : "<unknown>", binding.dli_saddr);
+  struct read_dispatch dispatch_before = observe_read_dispatch("before-read");
   print_proc_file("/proc/self/maps");
+  compare_context_state(creator, helper);
+  assert(thread_start(creator, "creator-before-release") == creator_start);
+  assert(thread_start(helper, "helper-before-release") == helper_start);
   assert(snapshot(op).outcome == RVK_READ_PENDING);
+  assert(!snapshot(op).terminal && snapshot(op).error_number == 0);
   assert(atomic_load(&reached[RVK_READ_TEST_BEFORE_READ]) == 0);
   release(RVK_READ_TEST_BEFORE_ENABLE);
   struct rvk_read_snapshot state = outcome(op);
   assert(state.outcome == RVK_READ_RETURNED && state.result == 0 && !state.terminal);
+  assert(state.error_phase == RVK_READ_ERROR_NONE && state.error_number == 0);
+  printf("CONTEXT_READ_OUTCOME outcome=%u result=%lld read_errno=%d terminal=%u "
+         "error_phase=%u error_number=%d\n", state.outcome, (long long)state.result,
+         state.read_errno, state.terminal, state.error_phase, state.error_number);
+  assert(rvk_read_finish(op) == 0);
+  state = snapshot(op);
+  assert(state.state == RVK_READ_JOINED && state.senders == 0);
+  assert(!state.terminal && state.error_phase == RVK_READ_ERROR_NONE && state.error_number == 0);
+  assert(atomic_load(&reached[RVK_READ_TEST_BEFORE_READ]) == 1);
+  assert(atomic_load(&reached[RVK_READ_TEST_AFTER_READ]) == 1);
+  assert(atomic_load(&reached[RVK_READ_TEST_BEFORE_JOIN]) == 1);
+  assert(atomic_load(&reached[RVK_READ_TEST_AFTER_JOIN]) == 1);
+  assert(atomic_load(&reached[RVK_READ_TEST_BEFORE_CANCEL]) == 0);
+  struct read_dispatch dispatch_after = observe_read_dispatch("after-join");
+  compare_read_dispatch(&dispatch_before, &dispatch_after);
+  print_proc_file("/proc/self/maps");
+  assert(fstat(fd, &endpoint_after) == 0);
+  assert(endpoint_after.st_dev == endpoint_before.st_dev);
+  assert(endpoint_after.st_ino == endpoint_before.st_ino);
+  assert(endpoint_after.st_rdev == endpoint_before.st_rdev);
+  assert(endpoint_after.st_mode == endpoint_before.st_mode);
+  assert(fcntl(fd, F_GETFL) == endpoint_flags);
+  assert(fcntl(fd, F_GETFD) == descriptor_flags);
+  printf("CONTEXT_ENDPOINT fd=%d before_dev=%llu after_dev=%llu before_ino=%llu "
+         "after_ino=%llu before_rdev=%llu after_rdev=%llu before_mode=%u after_mode=%u "
+         "ofd_flags=%d descriptor_flags=%d owner_retained_until_join=1\n", fd,
+         (unsigned long long)endpoint_before.st_dev, (unsigned long long)endpoint_after.st_dev,
+         (unsigned long long)endpoint_before.st_ino, (unsigned long long)endpoint_after.st_ino,
+         (unsigned long long)endpoint_before.st_rdev, (unsigned long long)endpoint_after.st_rdev,
+         (unsigned)endpoint_before.st_mode, (unsigned)endpoint_after.st_mode,
+         endpoint_flags, descriptor_flags);
   finish_and_destroy(op, fd);
+  assert(atomic_load(&reached[RVK_READ_TEST_BEFORE_JOIN]) == 1);
+  assert(atomic_load(&reached[RVK_READ_TEST_AFTER_JOIN]) == 1);
+  errno = 0;
+  assert(fcntl(fd, F_GETFD) == -1 && errno == EBADF);
+  puts("CONTEXT_RETIREMENT physical_joins=1 cancel_sends=0 destroyed=1 owner_closed_fd=1");
   assert(sigaltstack(&original_stack, NULL) == 0);
-  free(stack_memory);
+  stack_t restored_stack;
+  assert(sigaltstack(NULL, &restored_stack) == 0);
+  assert(restored_stack.ss_flags == original_stack.ss_flags);
+  assert(restored_stack.ss_sp == original_stack.ss_sp);
+  assert(restored_stack.ss_size == original_stack.ss_size);
   assert(pthread_sigmask(SIG_SETMASK, &original_mask, NULL) == 0);
+  sigset_t restored_mask;
+  assert(pthread_sigmask(SIG_SETMASK, NULL, &restored_mask) == 0);
+  for (int signal = 1; signal < NSIG; ++signal) {
+    assert(sigismember(&restored_mask, signal) == sigismember(&original_mask, signal));
+  }
+  assert(thread_start(creator, "creator-after-restoration") == creator_start);
+  printf("CONTEXT_RESTORATION mask_exact=1 altstack_exact=1 flags=%d sp=%p size=%zu\n",
+         restored_stack.ss_flags, restored_stack.ss_sp, restored_stack.ss_size);
+  free(stack_memory);
   atomic_store(&capture_context, false);
-  puts("PASS inherited-context: matching credentials/namespaces/mask; new thread has disabled altstack");
+  printf("PASS inherited-context-v2: matching credentials/namespaces/mask; "
+         "new thread has disabled altstack; attribute=%s; read/join/ownership/restoration verified\n",
+         actual == ATTRIBUTE_EQUAL ? "exact-label-bytes" : "unavailable-label");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+  bool context_only = false;
+  for (int i = 1; i < argc; ++i) {
+    assert(i + 1 < argc);
+    assert(strcmp(argv[i], "--context-mode") == 0 && !context_only);
+    context_mode = argv[++i];
+    context_only = true;
+    const char *modes[] = {"live", "equal-labels", "mask-mismatch", "query-asymmetry",
+                           "query-errors", "missing-task", "truncated-label",
+                           "label-mismatch", "label-length", "unqualified-provider",
+                           "query-eperm", "inventory-malformed", "inventory-unknown",
+                           "inventory-changing", "inventory-missing", "inventory-truncated"};
+    bool known = false;
+    for (unsigned j = 0; j < sizeof(modes) / sizeof(modes[0]); ++j) {
+      known |= strcmp(context_mode, modes[j]) == 0;
+    }
+    assert(known);
+  }
   printf("terminal_read_protocol pid=%ld owner_tid=%ld\n", (long)getpid(), syscall(SYS_gettid));
   char executable[4096];
   ssize_t length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
@@ -811,6 +1439,12 @@ int main(void) {
   printf("EXECUTABLE %s\n", executable);
   print_proc_file("/proc/self/stat");
   print_proc_file("/proc/self/maps");
+  printf("CONTEXT_CONTROL mode=%s context_only=%d\n", context_mode, context_only);
+  if (context_only) {
+    inherited_context();
+    assert(fflush(stdout) == 0);
+    return 0;
+  }
   before_start();
   before_create();
   before_publication();
