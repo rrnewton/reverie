@@ -3915,6 +3915,463 @@ mod tests {
         }
     }
 
+    /// Every check runs and is printed; the test fails at the end listing
+    /// each mismatch, so one run shows the outcome of every check rather
+    /// than only the first failure.
+    #[derive(Default)]
+    struct Checks(Vec<String>);
+
+    impl Checks {
+        fn eq<T: PartialEq + std::fmt::Debug>(&mut self, what: &str, actual: T, expected: T) {
+            let ok = actual == expected;
+            println!(
+                "check {}: {what}: got {actual:?}, expected {expected:?}",
+                if ok { "ok" } else { "FAILED" }
+            );
+            if !ok {
+                self.0
+                    .push(format!("{what}: got {actual:?}, expected {expected:?}"));
+            }
+        }
+
+        fn fail(&mut self, what: String) {
+            println!("check FAILED: {what}");
+            self.0.push(what);
+        }
+
+        fn finish(self) {
+            assert!(
+                self.0.is_empty(),
+                "{} check(s) failed:\n{}",
+                self.0.len(),
+                self.0.join("\n")
+            );
+        }
+    }
+
+    const GROUP: i32 = 9;
+    const OTHER_GROUP: i32 = 10;
+
+    fn errno(code: i32) -> i64 {
+        -i64::from(code)
+    }
+
+    /// waitid(idtype, id, &info, options) through the executor; returns the
+    /// result, `si_pid` and `si_status`.
+    fn waitid_for(
+        executor: &mut ElfExecutor,
+        idtype: libc::idtype_t,
+        id: i32,
+        options: libc::c_int,
+    ) -> (i64, i32, i32) {
+        const INFO: u64 = 0x400;
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        let result = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_waitid as u64,
+                [idtype as u64, id as u32 as u64, INFO, options as u64, 0, 0],
+            ),
+            &memory,
+        );
+        let mut info = [0; std::mem::size_of::<libc::siginfo_t>()];
+        memory.read(INFO, &mut info).unwrap();
+        let field =
+            |offset: usize| i32::from_ne_bytes(info[offset..offset + 4].try_into().unwrap());
+        (result, field(16), field(24))
+    }
+
+    /// Guest init in process group `GROUP` that adopted running orphan 3.
+    /// The exited owner is returned so its executor outlives the test body.
+    fn init_in_group_with_adopted_orphan() -> (ElfExecutor, ElfExecutor, ElfExecutor) {
+        let root = executor_with_root_in_group(1, GROUP);
+        let mut owner = root.fork_child(2, false, false).unwrap();
+        let orphan = owner.fork_child(3, false, false).unwrap();
+        assert_eq!(orphan.state.pgid, GROUP, "fork inherits the process group");
+        owner.retire_current_thread(reverie::ExitStatus::Exited(7), false);
+        assert_eq!(
+            root.signal_registry.current_parent(identity(&orphan)),
+            Some(identity(&root))
+        );
+        (root, owner, orphan)
+    }
+
+    /// A non-init root in process group `GROUP` with collected (waitable)
+    /// fork children `pids`, each exited with status `pid + 10`.
+    fn root_in_group_with_collected_children(pids: &[i32]) -> ElfExecutor {
+        let mut root = executor_with_root_in_group(5, GROUP);
+        for &pid in pids {
+            root.record_child_completion(
+                pid,
+                crate::executor::ChildCompletion::Waitable(reverie::ExitStatus::Exited(pid + 10)),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    /// Run a blocking wait that must return at once. If it is still asleep
+    /// after 20 s, run `unblock` and report what the stranded waiter did.
+    fn wait_without_sleeping<T: PartialEq + std::fmt::Debug + Send + 'static>(
+        checks: &mut Checks,
+        what: &str,
+        executor: ElfExecutor,
+        expected: T,
+        wait: impl FnOnce(&mut ElfExecutor) -> T + Send + 'static,
+        unblock: impl FnOnce(),
+    ) -> Option<ElfExecutor> {
+        let timeout = std::time::Duration::from_secs(20);
+        let receiver = wait_in_thread(executor, wait);
+        match receiver.recv_timeout(timeout) {
+            Ok((executor, result)) => {
+                checks.eq(what, result, expected);
+                Some(executor)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                unblock();
+                match receiver.recv_timeout(timeout) {
+                    Ok((executor, result)) => {
+                        checks.fail(format!(
+                            "{what}: asleep after 20 s; returned {result:?} only once the \
+                             child exited",
+                        ));
+                        Some(executor)
+                    }
+                    Err(error) => {
+                        checks.fail(format!("{what}: asleep after 20 s, then {error:?}"));
+                        None
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                checks.fail(format!("{what}: the waiter thread panicked"));
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn group_waits_skip_an_adopted_child_outside_the_selected_group() {
+        let mut checks = Checks::default();
+        let (mut root, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+        let root_id = identity(&root);
+        let orphan_id = identity(&orphan);
+        let exited = Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(9)));
+
+        checks.eq(
+            "running orphan: wait4(-10, WNOHANG)",
+            wait4(&mut root, -OTHER_GROUP, libc::WNOHANG).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "running orphan: waitid(P_PGID, 10, WEXITED|WNOHANG)",
+            waitid_for(
+                &mut root,
+                libc::P_PGID,
+                OTHER_GROUP,
+                libc::WEXITED | libc::WNOHANG,
+            )
+            .0,
+            errno(libc::ECHILD),
+        );
+        exit_adopted_orphan(root_id, &mut orphan, 9);
+        checks.eq(
+            "orphan zombie: wait4(-10, 0)",
+            wait4(&mut root, -OTHER_GROUP, 0).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "orphan zombie: waitid(P_PGID, 10, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, OTHER_GROUP, libc::WEXITED).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "the nonmatching waits left the zombie in the ledger",
+            root.signal_registry.adopted_child_state(root_id, orphan_id),
+            exited,
+        );
+        checks.eq(
+            "the nonmatching waits left its family edge",
+            family_edge(&root.signal_registry, root_id, orphan_id),
+            Some(DirectChildState::WaitableZombie),
+        );
+        checks.eq(
+            "orphan zombie: waitid(P_PGID, 0, WEXITED) selects the caller's group",
+            waitid_for(&mut root, libc::P_PGID, 0, libc::WEXITED),
+            (0, 3, 9),
+        );
+        checks.eq(
+            "after the reap: waitid(P_PGID, 9, WEXITED|WNOHANG)",
+            waitid_for(
+                &mut root,
+                libc::P_PGID,
+                GROUP,
+                libc::WEXITED | libc::WNOHANG,
+            )
+            .0,
+            errno(libc::ECHILD),
+        );
+        checks.finish();
+    }
+
+    #[test]
+    fn waitid_process_group_ids_match_adopted_children() {
+        let mut checks = Checks::default();
+        for id in [0, GROUP] {
+            let (mut root, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+            let root_id = identity(&root);
+            checks.eq(
+                &format!("running orphan: waitid(P_PGID, {id}, WEXITED|WNOHANG)"),
+                waitid_for(&mut root, libc::P_PGID, id, libc::WEXITED | libc::WNOHANG),
+                (0, 0, 0),
+            );
+            exit_adopted_orphan(root_id, &mut orphan, 9);
+            checks.eq(
+                &format!("orphan zombie: waitid(P_PGID, {id}, WEXITED)"),
+                waitid_for(&mut root, libc::P_PGID, id, libc::WEXITED),
+                (0, 3, 9),
+            );
+            checks.eq(
+                &format!("after the reap: waitid(P_PGID, {id}, WEXITED|WNOHANG)"),
+                waitid_for(&mut root, libc::P_PGID, id, libc::WEXITED | libc::WNOHANG).0,
+                errno(libc::ECHILD),
+            );
+        }
+        checks.finish();
+    }
+
+    #[test]
+    fn blocking_group_wait_does_not_sleep_on_an_adopted_child_of_another_group() {
+        let mut checks = Checks::default();
+        for api in ["wait4(-10, 0)", "waitid(P_PGID, 10, WEXITED)"] {
+            let (root, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+            let root_id = identity(&root);
+            let orphan_id = identity(&orphan);
+            let wait = move |root: &mut ElfExecutor| match api {
+                "wait4(-10, 0)" => wait4(root, -OTHER_GROUP, 0).0,
+                _ => waitid_for(root, libc::P_PGID, OTHER_GROUP, libc::WEXITED).0,
+            };
+            let root = wait_without_sleeping(
+                &mut checks,
+                &format!("running orphan: blocking {api}"),
+                root,
+                errno(libc::ECHILD),
+                wait,
+                || exit_adopted_orphan(root_id, &mut orphan, 9),
+            );
+            let Some(mut root) = root else {
+                break;
+            };
+            if root.signal_registry.adopted_child_state(root_id, orphan_id)
+                == Some(AdoptedChild::Running)
+            {
+                exit_adopted_orphan(root_id, &mut orphan, 9);
+                checks.eq(
+                    &format!("after {api}: the orphan is still init's child"),
+                    wait4(&mut root, -1, 0),
+                    (3, 9 << 8),
+                );
+            }
+        }
+        checks.finish();
+    }
+
+    #[test]
+    fn group_waits_select_collected_fork_children_by_process_group() {
+        let mut checks = Checks::default();
+        let mut root = root_in_group_with_collected_children(&[2, 4, 6, 8]);
+        checks.eq(
+            "wait4(-10, WNOHANG)",
+            wait4(&mut root, -OTHER_GROUP, libc::WNOHANG).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "wait4(-10, 0)",
+            wait4(&mut root, -OTHER_GROUP, 0).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "waitid(P_PGID, 10, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, OTHER_GROUP, libc::WEXITED).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "the nonmatching waits reaped nothing",
+            root.state.children.keys().copied().collect::<Vec<_>>(),
+            vec![2, 4, 6, 8],
+        );
+
+        // Matching groups, from a fresh parent so no earlier wait decides them.
+        let mut root = root_in_group_with_collected_children(&[2, 4, 6, 8]);
+        checks.eq("wait4(0, 0)", wait4(&mut root, 0, 0), (2, 12 << 8));
+        checks.eq("wait4(-9, 0)", wait4(&mut root, -GROUP, 0), (4, 14 << 8));
+        checks.eq(
+            "waitid(P_PGID, 0, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, 0, libc::WEXITED),
+            (0, 6, 16),
+        );
+        checks.eq(
+            "waitid(P_PGID, 9, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, GROUP, libc::WEXITED),
+            (0, 8, 18),
+        );
+        checks.eq(
+            "all reaped: wait4(-1, WNOHANG)",
+            wait4(&mut root, -1, libc::WNOHANG).0,
+            errno(libc::ECHILD),
+        );
+        checks.finish();
+    }
+
+    #[test]
+    fn group_waits_select_running_fork_children_by_process_group() {
+        let mut checks = Checks::default();
+        let mut root = executor_with_root_in_group(5, GROUP);
+        let release = gated_local_child(&mut root, 2, 5);
+        checks.eq(
+            "running child: wait4(-10, WNOHANG)",
+            wait4(&mut root, -OTHER_GROUP, libc::WNOHANG).0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "running child: waitid(P_PGID, 10, WEXITED|WNOHANG)",
+            waitid_for(
+                &mut root,
+                libc::P_PGID,
+                OTHER_GROUP,
+                libc::WEXITED | libc::WNOHANG,
+            )
+            .0,
+            errno(libc::ECHILD),
+        );
+        checks.eq(
+            "running child: wait4(-9, WNOHANG)",
+            wait4(&mut root, -GROUP, libc::WNOHANG),
+            (0, 0),
+        );
+        checks.eq(
+            "running child: waitid(P_PGID, 0, WEXITED|WNOHANG)",
+            waitid_for(&mut root, libc::P_PGID, 0, libc::WEXITED | libc::WNOHANG),
+            (0, 0, 0),
+        );
+        let release_on_timeout = release.clone();
+        let root = wait_without_sleeping(
+            &mut checks,
+            "running child: blocking wait4(-10, 0)",
+            root,
+            errno(libc::ECHILD),
+            |root| wait4(root, -OTHER_GROUP, 0).0,
+            move || release_on_timeout.send(()).unwrap(),
+        );
+        // Still unreaped only if the blocking wait returned without sleeping.
+        if let Some(mut root) = root
+            && root.state.children.is_empty()
+            && root.pending_processes.contains_key(&2)
+        {
+            release.send(()).unwrap();
+            checks.eq(
+                "after the exit: wait4(0, 0)",
+                wait4(&mut root, 0, 0),
+                (2, 5 << 8),
+            );
+        }
+        checks.finish();
+    }
+
+    #[test]
+    fn wait4_int_min_is_esrch_after_the_options_check() {
+        let mut checks = Checks::default();
+        let mut root = root_in_group_with_collected_children(&[2]);
+        checks.eq(
+            "fork zombie: wait4(INT_MIN, WNOWAIT) rejects the options first",
+            wait4(&mut root, i32::MIN, libc::WNOWAIT).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "fork zombie: wait4(INT_MIN, 0)",
+            wait4(&mut root, i32::MIN, 0).0,
+            errno(libc::ESRCH),
+        );
+        checks.eq(
+            "fork zombie: wait4(INT_MIN, WNOHANG)",
+            wait4(&mut root, i32::MIN, libc::WNOHANG).0,
+            errno(libc::ESRCH),
+        );
+        checks.eq(
+            "wait4(INT_MIN) reaped nothing",
+            root.state.children.keys().copied().collect::<Vec<_>>(),
+            vec![2],
+        );
+        checks.eq("wait4(-1, 0)", wait4(&mut root, -1, 0), (2, 12 << 8));
+        checks.eq(
+            "no children: wait4(INT_MIN, 0)",
+            wait4(&mut root, i32::MIN, 0).0,
+            errno(libc::ESRCH),
+        );
+
+        let (mut init, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+        let init_id = identity(&init);
+        let orphan_id = identity(&orphan);
+        checks.eq(
+            "running orphan: wait4(INT_MIN, WNOHANG)",
+            wait4(&mut init, i32::MIN, libc::WNOHANG).0,
+            errno(libc::ESRCH),
+        );
+        exit_adopted_orphan(init_id, &mut orphan, 9);
+        checks.eq(
+            "orphan zombie: wait4(INT_MIN, 0)",
+            wait4(&mut init, i32::MIN, 0).0,
+            errno(libc::ESRCH),
+        );
+        checks.eq(
+            "wait4(INT_MIN) left the orphan zombie in the ledger",
+            init.signal_registry.adopted_child_state(init_id, orphan_id),
+            Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(9))),
+        );
+        checks.finish();
+    }
+
+    #[test]
+    fn waitid_rejects_a_negative_group_and_a_nonpositive_pid() {
+        let mut checks = Checks::default();
+        let mut root = root_in_group_with_collected_children(&[2]);
+        checks.eq(
+            "fork zombie: waitid(P_PGID, -9, WEXITED)",
+            waitid_for(&mut root, libc::P_PGID, -GROUP, libc::WEXITED).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "fork zombie: waitid(P_PID, 0, WEXITED)",
+            waitid_for(&mut root, libc::P_PID, 0, libc::WEXITED).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "fork zombie: waitid(P_PID, -1, WEXITED)",
+            waitid_for(&mut root, libc::P_PID, -1, libc::WEXITED).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "the rejected waits reaped nothing",
+            root.state.children.keys().copied().collect::<Vec<_>>(),
+            vec![2],
+        );
+
+        let (mut init, _owner, mut orphan) = init_in_group_with_adopted_orphan();
+        let init_id = identity(&init);
+        let orphan_id = identity(&orphan);
+        exit_adopted_orphan(init_id, &mut orphan, 9);
+        checks.eq(
+            "orphan zombie: waitid(P_PGID, -9, WEXITED)",
+            waitid_for(&mut init, libc::P_PGID, -GROUP, libc::WEXITED).0,
+            errno(libc::EINVAL),
+        );
+        checks.eq(
+            "waitid(P_PGID, -9) left the orphan zombie in the ledger",
+            init.signal_registry.adopted_child_state(init_id, orphan_id),
+            Some(AdoptedChild::Waitable(reverie::ExitStatus::Exited(9))),
+        );
+        checks.finish();
+    }
+
     /// Raw waitid(P_ALL, 0, infop, options) through the executor.
     fn waitid_raw(executor: &mut ElfExecutor, infop: u64, options: libc::c_int) -> i64 {
         let memory = GuestMemory::new(0, 4096).unwrap();

@@ -3587,8 +3587,12 @@ impl ElfExecutor {
             // `wait4()` rejects the options before selecting any child.
             return Ok(None);
         }
-        let requested = args[0] as u32 as libc::pid_t;
-        let matches = |pid: i32| wait4_selects(requested, pid);
+        let Ok(selector) = WaitSelector::for_wait4(args[0], self.state.pgid) else {
+            // `wait4()` reports the selector refusal before selecting.
+            return Ok(None);
+        };
+        let group = child_process_group(&self.state);
+        let matches = |pid: i32| selector.selects(pid, group);
         let nonblocking = args[2] & libc::WNOHANG as u64 != 0;
 
         loop {
@@ -3703,15 +3707,12 @@ impl ElfExecutor {
             return Ok(None);
         }
         // args: [idtype, id, infop, options, rusage, _]
-        let exact = match args[0] as libc::idtype_t {
-            libc::P_PID => match libc::pid_t::try_from(args[1]) {
-                Ok(pid) => Some(pid),
-                Err(_) => return Ok(None),
-            },
-            libc::P_ALL | libc::P_PGID => None,
-            _ => return Ok(None),
+        let Ok(selector) = WaitSelector::for_waitid(args[0], args[1], self.state.pgid) else {
+            // `waitid()` reports the selector refusal before selecting.
+            return Ok(None);
         };
-        let matches = |pid: i32| exact.is_none_or(|expected| pid == expected);
+        let group = child_process_group(&self.state);
+        let matches = |pid: i32| selector.selects(pid, group);
         let nonblocking = args[3] & libc::WNOHANG as u64 != 0;
         let consume = args[3] & libc::WNOWAIT as u64 == 0;
 
@@ -16951,19 +16952,19 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
 }
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    // pid_t is a 32-bit signed value; the guest passes wait4(-1) as 0xFFFFFFFF
-    // in a 64-bit register. Truncate to i32 so the common wait-for-any-child
-    // form (-1), process-group forms (0, <-1), and a specific pid are all
-    // interpreted correctly instead of collapsing to ECHILD.
-    let requested = args[0] as libc::pid_t;
     if args[2] & !(libc::WNOHANG as u64) != 0 {
         return negative_errno(libc::EINVAL);
     }
+    let selector = match WaitSelector::for_wait4(args[0], state.pgid) {
+        Ok(selector) => selector,
+        Err(error) => return error,
+    };
+    let group = child_process_group(state);
     let child_pid = state
         .children
         .keys()
         .copied()
-        .find(|pid| wait4_selects(requested, *pid));
+        .find(|pid| selector.selects(*pid, group));
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
     };
@@ -16976,15 +16977,69 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-653): Review the shared wait4 pid selector.
-/// Whether wait4's `requested` pid selects child `pid`. A positive value names
-/// one child. -1 is any child; 0 and values below -1 name a process group, and
-/// this guest models a single process group (children inherit it and setpgid
-/// is not emulated), so they also select any child. Both the synchronizing
-/// and collecting paths use this, so an adopted child is eligible exactly
-/// when a collected fork child would be.
-fn wait4_selects(requested: libc::pid_t, pid: i32) -> bool {
-    requested <= 0 || pid == requested
+// TODO-HUMAN-REVIEW(PR-653): Review the shared wait4/waitid child selector.
+/// The children one wait4 or waitid call selects, decoded as Linux does.
+/// Both the synchronizing (adopted-orphan) and collecting (fork-child) paths
+/// use it, so an adopted child is eligible exactly when a fork child would be.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WaitSelector {
+    Any,
+    Pid(libc::pid_t),
+    Group(libc::pid_t),
+}
+
+impl WaitSelector {
+    /// wait4's pid argument, as kernel_wait4 decodes it after the options:
+    /// INT_MIN has no negation and is ESRCH; -1 is any child; 0 is the
+    /// caller's process group; below -1 names group `-pid`; above 0 one pid.
+    /// A group with no member selects nothing, so the wait reports ECHILD.
+    fn for_wait4(pid: u64, caller_pgid: libc::pid_t) -> Result<Self, i64> {
+        // pid_t is 32-bit; the guest passes wait4(-1) as 0xFFFFFFFF.
+        match pid as u32 as libc::pid_t {
+            libc::pid_t::MIN => Err(negative_errno(libc::ESRCH)),
+            -1 => Ok(Self::Any),
+            0 => Ok(Self::Group(caller_pgid)),
+            pid if pid < 0 => Ok(Self::Group(-pid)),
+            pid => Ok(Self::Pid(pid)),
+        }
+    }
+
+    /// waitid's (idtype, id), as kernel_waitid decodes them after the
+    /// options: P_PID needs id > 0 and P_PGID id >= 0, where 0 is the
+    /// caller's group (Linux 5.4+). Other id types are EINVAL here.
+    fn for_waitid(idtype: u64, id: u64, caller_pgid: libc::pid_t) -> Result<Self, i64> {
+        let id = id as u32 as libc::pid_t;
+        match idtype as libc::idtype_t {
+            libc::P_ALL => Ok(Self::Any),
+            libc::P_PID if id > 0 => Ok(Self::Pid(id)),
+            libc::P_PGID if id == 0 => Ok(Self::Group(caller_pgid)),
+            libc::P_PGID if id > 0 => Ok(Self::Group(id)),
+            _ => Err(negative_errno(libc::EINVAL)),
+        }
+    }
+
+    /// Whether this selects child `pid`, whose process group is `pgid`.
+    fn selects(self, pid: i32, pgid: libc::pid_t) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Pid(selected) => pid == selected,
+            Self::Group(group) => pgid == group,
+        }
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-653): Review the derived child process group.
+/// The process group of every child `state`'s process can wait for. No
+/// per-child PGID is stored where a wait runs: `children` holds only exit
+/// statuses, `pending_processes` only host handles, and the adoption ledger
+/// only collection states; the task table drops a task's PGID at its exit.
+/// It is nevertheless exact: a fork child copies its parent's PGID, exec
+/// keeps it, and no syscall here changes one (setpgid and setsid are
+/// ENOSYS), so a whole guest shares the root's group. A fork child therefore
+/// has its waiter's group, and so does an orphan, whose adopter is that root.
+fn child_process_group(state: &LoadedStaticElf) -> libc::pid_t {
+    state.pgid
 }
 
 /// Copy a collected child's wait status and zeroed rusage to wait4's
@@ -17031,13 +17086,16 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         return error;
     }
 
-    let child_pid = match args[0] as libc::idtype_t {
-        libc::P_PID => libc::pid_t::try_from(args[1])
-            .ok()
-            .filter(|pid| state.children.contains_key(pid)),
-        libc::P_ALL | libc::P_PGID => state.children.keys().next().copied(),
-        _ => return negative_errno(libc::EINVAL),
+    let selector = match WaitSelector::for_waitid(args[0], args[1], state.pgid) {
+        Ok(selector) => selector,
+        Err(error) => return error,
     };
+    let group = child_process_group(state);
+    let child_pid = state
+        .children
+        .keys()
+        .copied()
+        .find(|pid| selector.selects(*pid, group));
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
     };
