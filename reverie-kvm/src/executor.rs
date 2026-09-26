@@ -1566,24 +1566,35 @@ enum ChildJoin {
 }
 
 impl ChildJoin {
-    async fn join(
-        self,
-        handle: ChildProcessHandle,
-        unowned_panic: impl FnOnce() -> crate::Error,
-    ) -> crate::Result<()> {
+    /// Reaps `thread` in place, so an owner whose future is dropped while this
+    /// waits still holds the unreaped handle, as at any other await point.
+    async fn reap(self, thread: &mut ChildThread) -> std::thread::Result<crate::Result<()>> {
         match self {
-            Self::Blocking => handle.join(unowned_panic),
-            Self::Suspending => handle.join_without_blocking(unowned_panic).await,
+            Self::Blocking => thread.join_blocking(),
+            Self::Suspending => std::future::poll_fn(|cx| thread.poll_reap(cx)).await,
         }
     }
 }
 
-/// A child process's host thread and the exit notice its closure owns. The
-/// notice is dropped when the closure returns or unwinds, so waiting for it
-/// needs neither a blocking join nor another host thread.
+/// What a child's closure leaves for its joiner when it returns or unwinds.
+#[derive(Default)]
+struct ChildThreadExit {
+    result: Mutex<Option<std::thread::Result<crate::Result<()>>>>,
+    waker: futures::task::AtomicWaker,
+}
+
+/// A child process's host thread. Its closure publishes its result and wakes
+/// the joiner, but thread-local destructors and pthread teardown still follow,
+/// and embedder code may run in them. So the joiner reaps the pthread only
+/// once it has terminated, without ever blocking the joining executor.
 pub(crate) struct ChildThread {
-    handle: std::thread::JoinHandle<crate::Result<()>>,
-    exited: futures::channel::oneshot::Receiver<std::convert::Infallible>,
+    // The unique owner of a joinable pthread until it is joined or detached.
+    pthread: Option<libc::pthread_t>,
+    exit: Arc<ChildThreadExit>,
+    #[cfg(test)]
+    id: std::thread::ThreadId,
+    #[cfg(test)]
+    join_observed: bool,
 }
 
 impl ChildThread {
@@ -1598,12 +1609,27 @@ impl ChildThread {
         S: Send + 'static,
         F: FnOnce(S) -> crate::Result<()> + Send + 'static,
     {
-        let (notice, exited) = futures::channel::oneshot::channel();
-        match crate::failure::spawn_owned(builder, (state, notice), |(state, notice)| {
-            let _exit_notice = notice;
-            run(state)
+        let exit = Arc::new(ChildThreadExit::default());
+        match crate::failure::spawn_owned(builder, (state, exit.clone()), |(state, exit)| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(state)));
+            *exit
+                .result
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
+            exit.waker.wake();
         }) {
-            Ok(handle) => Ok(Self { handle, exited }),
+            Ok(handle) => {
+                #[cfg(test)]
+                let id = handle.thread().id();
+                Ok(Self {
+                    pthread: Some(std::os::unix::thread::JoinHandleExt::into_pthread_t(handle)),
+                    exit,
+                    #[cfg(test)]
+                    id,
+                    #[cfg(test)]
+                    join_observed: false,
+                })
+            }
             Err((error, (state, _))) => Err((error, state)),
         }
     }
@@ -1613,6 +1639,98 @@ impl ChildThread {
         match Self::spawn_owned(std::thread::Builder::new(), (), move |()| run()) {
             Ok(thread) => thread,
             Err((error, ())) => panic!("failed to spawn KVM child test thread: {error}"),
+        }
+    }
+
+    fn observe_join(&mut self, returned: bool) {
+        #[cfg(test)]
+        if returned || !std::mem::replace(&mut self.join_observed, true) {
+            crate::entry::driver::test_observation::join(self.id, true, returned);
+        }
+        #[cfg(not(test))]
+        let _ = returned;
+    }
+
+    /// Accounts for one join attempt that did not report EBUSY. Only status 0
+    /// proves the thread terminated and released its pthread. Every other
+    /// status is impossible for this handle: it was created joinable, only
+    /// Drop detaches it, `&mut self` excludes a concurrent join, the pthread is
+    /// released only after status 0 (so never joined twice, ESRCH), and no
+    /// child's host thread joins itself or an ancestor's joiner (EDEADLK;
+    /// joins follow the acyclic process tree toward the traced root, which
+    /// runs on the embedder's thread). So, as std's JoinHandle::join does, a
+    /// failed join is a broken invariant: panic, still owning the pthread.
+    fn joined(&mut self, status: libc::c_int) -> std::thread::Result<crate::Result<()>> {
+        assert_eq!(
+            status,
+            0,
+            "KVM child process thread join failed: {}",
+            std::io::Error::from_raw_os_error(status)
+        );
+        self.pthread = None;
+        self.observe_join(true);
+        self.exit
+            .result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or_else(|| {
+                Ok(Err(crate::Error::UnexpectedVcpuExit(
+                    "KVM child process thread ended without a result".to_owned(),
+                )))
+            })
+    }
+
+    /// Waits for full thread termination. Only owners that no embedder
+    /// scheduler depends on may block here.
+    fn join_blocking(&mut self) -> std::thread::Result<crate::Result<()>> {
+        let pthread = self.pthread.expect("KVM child process thread joined twice");
+        self.observe_join(false);
+        // SAFETY: this handle uniquely owns the joinable pthread, and releases
+        // it only once a join reports that the thread terminated.
+        let status = unsafe { libc::pthread_join(pthread, std::ptr::null_mut()) };
+        self.joined(status)
+    }
+
+    /// Ready once the thread has terminated and been reaped. The closure's
+    /// wake covers the wait for its return; teardown after that is polled,
+    /// yielding to the executor between attempts, because a thread-local
+    /// destructor may itself need a turn from a scheduler this executor runs.
+    fn poll_reap(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::thread::Result<crate::Result<()>>> {
+        let pthread = self.pthread.expect("KVM child process thread joined twice");
+        self.exit.waker.register(cx.waker());
+        if self
+            .exit
+            .result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none()
+        {
+            return std::task::Poll::Pending;
+        }
+        self.observe_join(false);
+        // SAFETY: as in join_blocking. The kernel clears the thread's TID only
+        // after every thread-local and pthread-key destructor has run; until
+        // then this returns EBUSY and leaves the pthread joinable.
+        match unsafe { libc::pthread_tryjoin_np(pthread, std::ptr::null_mut()) } {
+            libc::EBUSY => {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+            status => std::task::Poll::Ready(self.joined(status)),
+        }
+    }
+}
+
+impl Drop for ChildThread {
+    fn drop(&mut self) {
+        if let Some(pthread) = self.pthread {
+            // As dropping a std JoinHandle does.
+            // SAFETY: this handle uniquely owns the joinable pthread.
+            unsafe { libc::pthread_detach(pthread) };
         }
     }
 }
@@ -1632,48 +1750,9 @@ impl From<ChildThread> for ChildProcessHandle {
 }
 
 impl ChildProcessHandle {
-    fn join(self, unowned_panic: impl FnOnce() -> crate::Error) -> crate::Result<()> {
-        let Self {
-            thread,
-            panic_owner,
-        } = self;
-        Self::resolve(
-            Self::join_host_thread(thread.handle),
-            panic_owner,
-            unowned_panic,
-        )
-    }
-
-    /// Joins without blocking the calling executor. An embedder may drive the
-    /// scheduler that grants this child its remaining turns on the same
-    /// single-threaded executor as the exiting owner (Hermit does), so a
-    /// blocking join there starves the child it waits for. This suspends until
-    /// the child's closure has returned or unwound; the join that follows
-    /// waits only for host-thread teardown, which takes no scheduler turn.
-    async fn join_without_blocking(
-        self,
-        unowned_panic: impl FnOnce() -> crate::Error,
-    ) -> crate::Result<()> {
-        let Self {
-            thread: ChildThread { handle, exited },
-            panic_owner,
-        } = self;
-        // Only dropping the notice resolves it; no value exists to send.
-        let Err(futures::channel::oneshot::Canceled) = exited.await;
-        Self::resolve(Self::join_host_thread(handle), panic_owner, unowned_panic)
-    }
-
-    fn join_host_thread(
-        handle: std::thread::JoinHandle<crate::Result<()>>,
-    ) -> std::thread::Result<crate::Result<()>> {
-        #[cfg(test)]
-        let target = handle.thread().id();
-        #[cfg(test)]
-        crate::entry::driver::test_observation::join(target, true, false);
-        let joined = handle.join();
-        #[cfg(test)]
-        crate::entry::driver::test_observation::join(target, true, true);
-        joined
+    fn join(mut self, unowned_panic: impl FnOnce() -> crate::Error) -> crate::Result<()> {
+        let joined = self.thread.join_blocking();
+        Self::resolve(joined, self.panic_owner, unowned_panic)
     }
 
     fn resolve(
@@ -3836,6 +3915,8 @@ impl ElfExecutor {
             .expect("a blocking KVM child join never suspends")
     }
 
+    /// Blocking form, for a child process's own host thread, the dropped-run
+    /// reaper, and tests. On the embedder's executor, use the async form.
     pub(crate) fn join_child_processes_after_failure(&mut self) -> crate::Result<()> {
         self.finish_child_processes(true, ChildJoin::Blocking)
             .now_or_never()
@@ -3856,13 +3937,14 @@ impl ElfExecutor {
 
     async fn finish_child_processes(&mut self, failed: bool, how: ChildJoin) -> crate::Result<()> {
         let mut errors = Vec::new();
-        // Taking ownership first ensures that every handle is joined, even if
-        // an earlier child lost its start gate or returned an error. Reusing
-        // collect_child_process here would leave a failed start in the map.
-        let mut pending: Vec<_> = std::mem::take(&mut self.pending_processes)
-            .into_iter()
-            .collect();
-        let mut completed = std::mem::take(&mut self.completed_processes);
+        // Every handle stays in this executor's own maps until it is reaped,
+        // so dropping this future while it waits leaves each unreaped child
+        // with the executor, as at any other await point. The public run's
+        // RunningRoot keeps that executor, and so those children, past the
+        // drop of the run's own future, and hands it to the dropped-run
+        // reaper, which finishes this join. Joining the whole map also joins a
+        // child that lost its start gate or returned an error, where
+        // collect_child_process would leave a failed start in the map.
         if self.is_thread_group_leader() {
             let transferred = std::mem::take(
                 &mut *self
@@ -3874,12 +3956,14 @@ impl ElfExecutor {
             // Vec entries preserve every transfer, even if a TID is reused.
             for (_, transfers) in transferred {
                 for children in transfers {
-                    pending.extend(children.pending);
-                    completed.extend(children.completed);
+                    for (pid, process) in children.pending {
+                        let previous = self.pending_processes.insert(pid, process);
+                        debug_assert!(previous.is_none(), "KVM child pid {pid} transferred twice");
+                    }
+                    self.completed_processes.extend(children.completed);
                 }
             }
         }
-        pending.sort_by_key(|(pid, _)| *pid);
         if !failed
             && self.is_thread_group_leader()
             && !self.is_traced_tree_root()
@@ -3894,7 +3978,7 @@ impl ElfExecutor {
                 .namespace_orphanage
                 .lock()
                 .expect("KVM namespace orphanage lock poisoned");
-            for (pid, process) in std::mem::take(&mut pending) {
+            for (pid, process) in std::mem::take(&mut self.pending_processes) {
                 if process.start.start().is_err() {
                     errors.push(crate::Error::UnexpectedVcpuExit(format!(
                         "KVM child process {pid} lost its parent start gate"
@@ -3907,7 +3991,7 @@ impl ElfExecutor {
         if failed {
             // Resolve all pending gates before joining the first child: an
             // earlier child may need a later child's consuming cleanup.
-            for (pid, process) in &pending {
+            for (pid, process) in &self.pending_processes {
                 if matches!(
                     process.start.cancel_after_failure(),
                     ChildStartCancellation::NewlyCancelled {
@@ -3920,17 +4004,24 @@ impl ElfExecutor {
                 }
             }
         }
-        for (pid, process) in pending {
+        while let Some(pid) = self.pending_processes.keys().next().copied() {
+            let process = self
+                .pending_processes
+                .get_mut(&pid)
+                .expect("KVM pending child vanished");
             if !failed && process.start.start().is_err() {
                 errors.push(crate::Error::UnexpectedVcpuExit(format!(
                     "KVM child process {pid} lost its parent start gate"
                 )));
             }
-            let result = how
-                .join(process.handle, || {
-                    crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
-                })
-                .await;
+            let joined = how.reap(&mut process.handle.thread).await;
+            let process = self
+                .pending_processes
+                .remove(&pid)
+                .expect("KVM pending child vanished");
+            let result = ChildProcessHandle::resolve(joined, process.handle.panic_owner, || {
+                crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
+            });
             match result {
                 Err(error) => errors.push(error),
                 Ok(()) => {
@@ -3962,14 +4053,12 @@ impl ElfExecutor {
                 }
             }
         }
-        for handle in completed {
-            let result = how
-                .join(handle, || {
-                    crate::Error::UnexpectedVcpuExit(
-                        "completed KVM child process panicked".to_owned(),
-                    )
-                })
-                .await;
+        while let Some(handle) = self.completed_processes.first_mut() {
+            let joined = how.reap(&mut handle.thread).await;
+            let handle = self.completed_processes.remove(0);
+            let result = ChildProcessHandle::resolve(joined, handle.panic_owner, || {
+                crate::Error::UnexpectedVcpuExit("completed KVM child process panicked".to_owned())
+            });
             if let Err(error) = result {
                 errors.push(error);
             }
@@ -3990,18 +4079,20 @@ impl ElfExecutor {
         how: ChildJoin,
         errors: &mut Vec<crate::Error>,
     ) {
+        let orphanage = || {
+            self.namespace_orphanage
+                .lock()
+                .expect("KVM namespace orphanage lock poisoned")
+        };
         loop {
-            let orphans = std::mem::take(
-                &mut *self
-                    .namespace_orphanage
-                    .lock()
-                    .expect("KVM namespace orphanage lock poisoned"),
-            );
-            if orphans.is_empty() {
+            // Each batch is the orphans present when it starts; any adopted
+            // while it is joined form the next. Only this loop removes one.
+            let batch: Vec<i32> = orphanage().keys().copied().collect();
+            if batch.is_empty() {
                 return;
             }
             if failed {
-                for (pid, process) in &orphans {
+                for (pid, process) in orphanage().iter().filter(|(pid, _)| batch.contains(pid)) {
                     if matches!(
                         process.start.cancel_after_failure(),
                         ChildStartCancellation::NewlyCancelled {
@@ -4014,14 +4105,36 @@ impl ElfExecutor {
                     }
                 }
             }
-            for (pid, process) in orphans {
-                let result = how
-                    .join(process.handle, || {
+            for pid in batch {
+                let orphan = |orphans: &mut std::collections::BTreeMap<i32, PendingProcess>| {
+                    orphans.remove(&pid).expect("KVM orphan vanished")
+                };
+                let (joined, process) = match how {
+                    // Never block while holding the orphanage: an exiting
+                    // descendant adds its own orphans to it.
+                    ChildJoin::Blocking => {
+                        let mut process = orphan(&mut orphanage());
+                        (process.handle.thread.join_blocking(), process)
+                    }
+                    ChildJoin::Suspending => {
+                        let joined = std::future::poll_fn(|cx| {
+                            orphanage()
+                                .get_mut(&pid)
+                                .expect("KVM orphan vanished")
+                                .handle
+                                .thread
+                                .poll_reap(cx)
+                        })
+                        .await;
+                        (joined, orphan(&mut orphanage()))
+                    }
+                };
+                let result =
+                    ChildProcessHandle::resolve(joined, process.handle.panic_owner, || {
                         crate::Error::UnexpectedVcpuExit(format!(
                             "KVM orphan process {pid} panicked"
                         ))
-                    })
-                    .await;
+                    });
                 if let Err(error) = result {
                     errors.push(error);
                     continue;
@@ -5829,6 +5942,203 @@ impl ElfExecutor {
                 .unwrap_or_default()
         } else {
             (Vec::new(), Vec::new())
+        }
+    }
+}
+
+/// Public runs a backend admitted that never returned: a run whose future was
+/// dropped, or that unwound, before it finished. Such a run's guest threads
+/// are cancelled only when its backend drops, and until then they share its
+/// memory and run state, so the backend admits no further run or image. Each
+/// such root stays here, with every child it owns, until that drop.
+#[derive(Default)]
+pub(crate) struct AbandonedRuns {
+    abandoned: bool,
+    roots: Vec<(ElfExecutor, DroppedRunReaper)>,
+}
+
+impl AbandonedRuns {
+    fn lock(runs: &Mutex<Self>) -> std::sync::MutexGuard<'_, Self> {
+        runs.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) fn admit(runs: &Mutex<Self>) -> crate::Result<()> {
+        if Self::lock(runs).abandoned {
+            return Err(crate::Error::AbandonedRunNotRetired);
+        }
+        Ok(())
+    }
+
+    /// For the backend's drop, once its guest threads, which hand their forks
+    /// to the root as they exit, have been joined. This never waits for a
+    /// child: the reaper each run established before starting joins them.
+    pub(crate) fn retire(runs: &Mutex<Self>) {
+        let roots = std::mem::take(&mut Self::lock(runs).roots);
+        for (root, reaper) in roots {
+            reaper.adopt(root);
+        }
+    }
+}
+
+/// One public run's admission. Unless the run finishes, dropping this marks
+/// its backend abandoned.
+pub(crate) struct RunAdmission {
+    runs: Arc<Mutex<AbandonedRuns>>,
+    reaper: DroppedRunReaper,
+    finished: bool,
+}
+
+impl RunAdmission {
+    /// Precedes every other step of a run, so a refusal, or a failure to
+    /// start the reaper, returns before any image, Tool, or guest state is
+    /// touched.
+    pub(crate) fn begin(runs: &Arc<Mutex<AbandonedRuns>>) -> crate::Result<Self> {
+        AbandonedRuns::admit(runs)?;
+        let reaper = DroppedRunReaper::establish()?;
+        Ok(Self {
+            runs: runs.clone(),
+            reaper,
+            finished: false,
+        })
+    }
+
+    pub(crate) fn root(&self, executor: ElfExecutor) -> RunningRoot {
+        RunningRoot {
+            executor: Some(executor),
+            runs: self.runs.clone(),
+            reaper: self.reaper.clone(),
+        }
+    }
+
+    pub(crate) fn finish(mut self) {
+        self.finished = true;
+    }
+}
+
+impl Drop for RunAdmission {
+    fn drop(&mut self) {
+        if !self.finished {
+            AbandonedRuns::lock(&self.runs).abandoned = true;
+        }
+    }
+}
+
+/// Owns a public run's root executor while its guest runs. If the run's future
+/// is dropped there, dropping the executor would detach every child host
+/// thread it has not reaped. Instead this releases the root's descriptors, as
+/// its exit would, so no child waits on them, and parks the executor, with
+/// every child it owns, in its backend's `AbandonedRuns`.
+pub(crate) struct RunningRoot {
+    executor: Option<ElfExecutor>,
+    runs: Arc<Mutex<AbandonedRuns>>,
+    reaper: DroppedRunReaper,
+}
+
+impl RunningRoot {
+    /// The run returned, so its root has already joined its children.
+    pub(crate) fn returned(mut self) -> ElfExecutor {
+        self.executor
+            .take()
+            .expect("KVM root executor already returned")
+    }
+}
+
+impl std::ops::Deref for RunningRoot {
+    type Target = ElfExecutor;
+
+    fn deref(&self) -> &ElfExecutor {
+        self.executor
+            .as_ref()
+            .expect("KVM root executor already returned")
+    }
+}
+
+impl std::ops::DerefMut for RunningRoot {
+    fn deref_mut(&mut self) -> &mut ElfExecutor {
+        self.executor
+            .as_mut()
+            .expect("KVM root executor already returned")
+    }
+}
+
+impl Drop for RunningRoot {
+    fn drop(&mut self) {
+        if let Some(mut executor) = self.executor.take() {
+            executor.release_files_on_exit();
+            let mut runs = AbandonedRuns::lock(&self.runs);
+            runs.abandoned = true;
+            runs.roots.push((executor, self.reaper.clone()));
+        }
+    }
+}
+
+type ReaperSlot = Mutex<Option<(DroppedRunReaper, std::thread::JoinHandle<()>)>>;
+
+/// The process's one reaper, established by the first public run.
+static DROPPED_RUN_REAPER: ReaperSlot = Mutex::new(None);
+
+/// Joins the children of dropped public runs. Such a child runs to its own
+/// exit, as it would had its run returned, and may need turns from the
+/// embedder's scheduler to get there, so no thread that may be the embedder's
+/// executor can wait for it; a backend's drop is such a thread. Like the init
+/// process that adopts orphans, the reaper lasts as long as the process. It
+/// holds a root only until it has joined every child that root owns.
+#[derive(Clone)]
+pub(crate) struct DroppedRunReaper {
+    roots: std::sync::mpsc::Sender<ElfExecutor>,
+}
+
+impl DroppedRunReaper {
+    fn establish() -> crate::Result<Self> {
+        // An armed refusal must meet an actual spawn, even when an earlier
+        // test's run already started the process's reaper.
+        #[cfg(test)]
+        if crate::failure::spawn_refusal::is_armed() {
+            return Self::establish_in(&ReaperSlot::default());
+        }
+        Self::establish_in(&DROPPED_RUN_REAPER)
+    }
+
+    fn establish_in(slot: &ReaperSlot) -> crate::Result<Self> {
+        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((reaper, _)) = &*slot {
+            return Ok(reaper.clone());
+        }
+        let (roots, adopted) = std::sync::mpsc::channel();
+        let handle = crate::failure::spawn_owned(
+            std::thread::Builder::new().name("reverie-kvm-reaper".into()),
+            adopted,
+            Self::reap,
+        )
+        .map_err(|(error, _)| crate::Error::from(error).cleanup("dropped-run reaper spawn"))?;
+        let reaper = Self { roots };
+        *slot = Some((reaper.clone(), handle));
+        Ok(reaper)
+    }
+
+    fn reap(adopted: std::sync::mpsc::Receiver<ElfExecutor>) {
+        // A root whose join broke an invariant may still own unreaped
+        // children; it is kept, never dropped, so none is detached.
+        let mut broken = Vec::new();
+        for mut root in adopted {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                root.join_child_processes_after_failure()
+            })) {
+                // No caller remains to receive a dropped run's result. A
+                // child's panic payload is already retained by its run.
+                Ok(_) => drop(root),
+                Err(payload) => broken.push((root, payload)),
+            }
+        }
+        std::mem::forget(broken);
+    }
+
+    /// Never blocks. The reaper stops only once every sender is dropped, and
+    /// it survives a panicking join, so the send cannot fail; if it did, the
+    /// root would be kept rather than detach its children.
+    fn adopt(&self, root: ElfExecutor) {
+        if let Err(std::sync::mpsc::SendError(root)) = self.roots.send(root) {
+            std::mem::forget(root);
         }
     }
 }
@@ -45739,12 +46049,12 @@ mod tests {
         // Release and join fixture workers even when checking an early-return
         // mutation, which can leave pending gates and handles behind.
         release_thread.join().unwrap();
-        for (_, process) in std::mem::take(&mut executor.pending_processes) {
+        for (_, mut process) in std::mem::take(&mut executor.pending_processes) {
             let _ = process.start.start();
-            let _ = process.handle.thread.handle.join();
+            let _ = process.handle.thread.join_blocking();
         }
-        for handle in executor.completed_processes.drain(..) {
-            let _ = handle.thread.handle.join();
+        for mut handle in executor.completed_processes.drain(..) {
+            let _ = handle.thread.join_blocking();
         }
         wait_finished
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -45973,8 +46283,8 @@ mod tests {
         assert!(!sibling_finished.load(Ordering::Acquire));
 
         sibling_release_sender.send(()).unwrap();
-        let sibling = executor.pending_processes.remove(&3).unwrap();
-        sibling.handle.thread.handle.join().unwrap().unwrap();
+        let mut sibling = executor.pending_processes.remove(&3).unwrap();
+        sibling.handle.thread.join_blocking().unwrap().unwrap();
         assert!(sibling_finished.load(Ordering::Acquire));
     }
 

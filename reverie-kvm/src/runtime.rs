@@ -50,6 +50,7 @@ use crate::bootstrap::TOOL_STACK_SIZE;
 use crate::bootstrap::process_syscall_return_registers;
 use crate::bootstrap::set_user_segment_base;
 use crate::bootstrap::stage_process_syscall_return;
+use crate::executor::AbandonedRuns;
 use crate::executor::ChildStartCancellation;
 #[cfg(test)]
 use crate::executor::ChildStartCommand;
@@ -58,6 +59,7 @@ use crate::executor::ElfExecutor;
 use crate::executor::PendingSignal;
 use crate::executor::ProcessAction;
 use crate::executor::ProcessExit;
+use crate::executor::RunAdmission;
 use crate::executor::conventional_exit_code;
 use crate::failure::FailureContext;
 use crate::failure::RunFailure;
@@ -3970,6 +3972,7 @@ impl KvmBackend {
         T: Tool,
         E: SyscallExecutor,
     {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         // This public non-ELF loop has no instruction consumer. Establish its
         // ownership locally even if the vCPU previously ran a subscribed Tool.
         self.set_rdtsc_interception(false)?;
@@ -4297,6 +4300,28 @@ impl KvmBackend {
         T::GlobalState: 'static,
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
+        // Any return, including a setup error, finishes the run. Only a
+        // dropped or unwinding run leaves its backend abandoned.
+        let admission = RunAdmission::begin(&self.abandoned_runs)?;
+        let completion = self
+            .run_admitted_static_elf_with_tool::<T>(&admission, config, capture_output)
+            .await;
+        admission.finish();
+        completion
+    }
+
+    async fn run_admitted_static_elf_with_tool<T>(
+        &mut self,
+        admission: &RunAdmission,
+        config: <T::GlobalState as GlobalTool>::Config,
+        capture_output: bool,
+    ) -> Result<ToolRunCompletion<T::GlobalState>>
+    where
+        T: Tool + 'static,
+        T::ThreadState: 'static,
+        T::GlobalState: 'static,
+        <T::GlobalState as GlobalTool>::Config: 'static,
+    {
         // Resolve thread ownership before any CLONE_THREAD worker is created: an
         // explicit caller override wins, otherwise follow the tool's
         // `Tool::thread_ownership` (default: Tool-owned "follow children"). This
@@ -4324,7 +4349,7 @@ impl KvmBackend {
         let failure = RunFailure::new(&global_state);
         self.set_tool_failure(Some(FailureContext::new(failure.clone(), pid, pid)));
         let entry_scope = self.start_entry_driver();
-        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+        let executor = ElfExecutor::with_output(loaded, capture_owner.clone());
         // Atomic run-level installation precedes Tool/thread construction and
         // the first handle_thread_start. No capability is inferred from a PID.
         let mode = match global_state
@@ -4354,9 +4379,10 @@ impl KvmBackend {
         let tool = Arc::new(T::new(pid, &config));
         let subscriptions = T::subscriptions(&config);
         let thread_state = tool.init_thread_state(pid, None);
+        let mut root = admission.root(executor);
         let result = self
             .run_static_elf_process_with_tool(
-                &mut executor,
+                &mut root,
                 pid,
                 // The root process leader has tid == pid.
                 pid,
@@ -4369,6 +4395,7 @@ impl KvmBackend {
                 None,
             )
             .await;
+        let executor = root.returned();
         let result = match (result, executor.take_process_publication_failure()) {
             (result, None) => result,
             (Ok(_), Some(publication)) => Err(publication),

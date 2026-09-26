@@ -4421,15 +4421,38 @@ mod tests {
     type TurnRequests =
         futures::channel::mpsc::UnboundedSender<futures::channel::oneshot::Sender<()>>;
 
+    /// When a child's teardown needs its turn: in its closure, or in a
+    /// thread-local destructor, which runs after the closure has returned and
+    /// published its result.
+    #[derive(Clone, Copy, Debug)]
+    enum TurnNeeded {
+        Closure,
+        ThreadLocalTeardown,
+    }
+
+    struct TeardownTurn(Option<Box<dyn FnOnce()>>);
+    impl Drop for TeardownTurn {
+        fn drop(&mut self) {
+            if let Some(turn) = self.0.take() {
+                turn();
+            }
+        }
+    }
+    thread_local! {
+        static TEARDOWN_TURN: std::cell::RefCell<Option<TeardownTurn>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
     /// A child whose remaining work, like a Tool exit hook, needs a turn from
     /// a scheduler that only the exiting root's own executor polls, as Hermit's
     /// is. It needs the turn whether its gate starts or cancels it, and before
     /// or after publishing its status.
-    /// The thread holds `lifetime` until it returns.
+    /// The thread holds `lifetime` until its turn is granted.
     fn co_scheduled_child_thread(
         turns: TurnRequests,
         published_first: Option<std::sync::mpsc::Sender<()>>,
         lifetime: Arc<()>,
+        needed: TurnNeeded,
     ) -> (
         super::super::ChildStartGate,
         Arc<super::super::ChildCompletionSlot>,
@@ -4439,7 +4462,6 @@ mod tests {
         let slot = Arc::new(super::super::ChildCompletionSlot::default());
         let published = slot.clone();
         let handle = super::super::ChildThread::spawn(move || {
-            let _lifetime = lifetime;
             started.recv().unwrap();
             let publish = || {
                 assert!(published.publish(super::super::ChildCompletion::AutoReaped(
@@ -4450,9 +4472,19 @@ mod tests {
                 publish();
                 announce.send(()).unwrap();
             }
-            let (turn, granted) = futures::channel::oneshot::channel();
-            turns.unbounded_send(turn).unwrap();
-            futures::executor::block_on(granted).unwrap();
+            let turn = move || {
+                let (turn, granted) = futures::channel::oneshot::channel();
+                turns.unbounded_send(turn).unwrap();
+                drop(turns);
+                futures::executor::block_on(granted).unwrap();
+                drop(lifetime);
+            };
+            match needed {
+                TurnNeeded::Closure => turn(),
+                TurnNeeded::ThreadLocalTeardown => TEARDOWN_TURN.with(|teardown| {
+                    *teardown.borrow_mut() = Some(TeardownTurn(Some(Box::new(turn))));
+                }),
+            }
             if published_first.is_none() {
                 publish();
             }
@@ -4478,13 +4510,22 @@ mod tests {
                 // Host threads can be refused (EAGAIN, ENOMEM). The exit
                 // join must neither need one nor fall back to blocking.
                 for refuse_threads in [false, true] {
-                    root_exit_join_case(direct, failed, refuse_threads);
+                    // A reaped thread has finished even thread-local
+                    // destructors that embedder code may have installed.
+                    for needed in [TurnNeeded::Closure, TurnNeeded::ThreadLocalTeardown] {
+                        root_exit_join_case(direct, failed, refuse_threads, needed);
+                    }
                 }
             }
         }
     }
 
-    fn root_exit_join_case(direct: RootChild, failed: bool, refuse_threads: bool) {
+    fn root_exit_join_case(
+        direct: RootChild,
+        failed: bool,
+        refuse_threads: bool,
+        needed: TurnNeeded,
+    ) {
         let (turns, mut requests) = futures::channel::mpsc::unbounded();
         let lifetime = Arc::new(());
         let mut root = outside_init_root();
@@ -4497,6 +4538,7 @@ mod tests {
                 turns.clone(),
                 collected.then_some(announce),
                 lifetime.clone(),
+                needed,
             );
             root.register_child_process_with_gate(6, gate, slot, handle);
             if collected {
@@ -4508,7 +4550,7 @@ mod tests {
         }
         let mut parent = root.fork_child(7, false, false).unwrap();
         children.push(parent.fork_child(8, false, false).unwrap());
-        let (gate, slot, handle) = co_scheduled_child_thread(turns, None, lifetime.clone());
+        let (gate, slot, handle) = co_scheduled_child_thread(turns, None, lifetime.clone(), needed);
         parent.register_child_process_with_gate(8, gate, slot, handle);
 
         // The reparenting parent hands its child over although no scheduler
@@ -4520,6 +4562,7 @@ mod tests {
         // One thread polls both the root's exit join and the scheduler. A
         // blocking join never lets it grant the turns.
         let (joined, root_joined) = std::sync::mpsc::channel();
+        let joined_owners = Arc::downgrade(&lifetime);
         let root_thread = std::thread::spawn(move || {
             let refusal = refuse_threads.then(|| {
                 let probe = Arc::new(crate::failure::spawn_refusal::Probe::default());
@@ -4536,17 +4579,20 @@ mod tests {
             };
             // The scheduler ends once every child has dropped its turn sender,
             // which it holds until it exits.
-            let (result, granted) = futures::executor::block_on(async {
+            let ((result, owners_at_join), granted) = futures::executor::block_on(async {
                 let join = async {
-                    if failed {
+                    let result = if failed {
                         root.join_child_processes_after_failure_async().await
                     } else {
                         root.join_all_child_processes_async().await
-                    }
+                    };
+                    // Sampled before the scheduler can grant another turn.
+                    (result, joined_owners.strong_count())
                 };
                 futures::future::join(join, scheduler).await
             });
             joined.send(()).unwrap();
+            let result = result.map(|()| owners_at_join);
             let join_spawned = refusal
                 .as_ref()
                 .is_some_and(|_| !crate::failure::spawn_refusal::is_armed());
@@ -4572,17 +4618,346 @@ mod tests {
             root_joined
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .is_ok(),
-            "{direct:?} direct child, failed {failed}, threads refused {refuse_threads}: \
-             the traced root's exit join starved the scheduler its children need",
+            "{direct:?} direct child, failed {failed}, threads refused {refuse_threads}, \
+             turn needed in {needed:?}: the traced root's exit join starved the \
+             scheduler its children need",
         );
         let (root, result, granted, join_spawned) = root_thread.join().unwrap();
         assert!(!join_spawned, "the exit join spawned a host thread");
-        result.unwrap();
+        // Every child's turn and return, including thread-local teardown,
+        // preceded the join's return: only this test still owns `lifetime`.
+        assert_eq!(
+            result.unwrap(),
+            1,
+            "{direct:?} direct child, failed {failed}, threads refused {refuse_threads}, \
+             turn needed in {needed:?}: the join returned before a child's host thread ended",
+        );
         assert_eq!(granted, children.len(), "every child got exactly one turn");
         assert!(root.namespace_orphanage.lock().unwrap().is_empty());
         assert!(root.completed_processes.is_empty());
         assert!(root.pending_processes.is_empty());
-        // Every child thread has returned: no owner outlives the join.
+        assert_eq!(Arc::strong_count(&lifetime), 1);
+    }
+
+    /// A child that runs until `release` fires, whether its gate starts or
+    /// cancels it, holding `lifetime` until then and through the thread-local
+    /// teardown that follows.
+    fn released_child_thread(
+        published_first: Option<std::sync::mpsc::Sender<()>>,
+        lifetime: Arc<()>,
+    ) -> (
+        super::super::ChildStartGate,
+        Arc<super::super::ChildCompletionSlot>,
+        super::super::ChildThread,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (start, started) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let slot = Arc::new(super::super::ChildCompletionSlot::default());
+        let published = slot.clone();
+        let handle = super::super::ChildThread::spawn(move || {
+            started.recv().unwrap();
+            let publish = || {
+                assert!(published.publish(super::super::ChildCompletion::AutoReaped(
+                    reverie::ExitStatus::Exited(3),
+                )));
+            };
+            if let Some(announce) = &published_first {
+                publish();
+                announce.send(()).unwrap();
+            }
+            released.recv().unwrap();
+            // An owner that joins this thread returns only after `lifetime`
+            // is released; one that detached it returns while it sleeps.
+            TEARDOWN_TURN.with(|teardown| {
+                *teardown.borrow_mut() = Some(TeardownTurn(Some(Box::new(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    drop(lifetime);
+                }))));
+            });
+            if published_first.is_none() {
+                publish();
+            }
+            Ok(())
+        });
+        (
+            super::super::ChildStartGate::new(start),
+            slot,
+            handle,
+            release,
+        )
+    }
+
+    /// The kind of child the root's exit join is waiting for when dropped.
+    #[derive(Clone, Copy, Debug)]
+    enum AwaitedChild {
+        Pending,
+        Collected,
+        Orphan,
+    }
+
+    #[test]
+    fn dropped_root_exit_join_keeps_every_child_it_has_not_reaped() {
+        for awaited in [
+            AwaitedChild::Pending,
+            AwaitedChild::Collected,
+            AwaitedChild::Orphan,
+        ] {
+            for failed in [false, true] {
+                dropped_root_exit_join_case(awaited, failed);
+            }
+        }
+    }
+
+    fn dropped_root_exit_join_case(awaited: AwaitedChild, failed: bool) {
+        let lifetime = Arc::new(());
+        let mut releases = Vec::new();
+        let mut root = outside_init_root();
+        let mut children = Vec::new();
+        // The join reaps pending children, then collected ones, then orphans.
+        // It first waits for the `awaited` kind; every later kind also waits.
+        if !matches!(awaited, AwaitedChild::Orphan) {
+            children.push(root.fork_child(9, false, false).unwrap());
+            let (announce, announced) = std::sync::mpsc::channel();
+            let (gate, slot, handle, release) =
+                released_child_thread(Some(announce), lifetime.clone());
+            root.register_child_process_with_gate(9, gate, slot, handle);
+            root.start_pending_child_processes().unwrap();
+            announced.recv().unwrap();
+            assert!(root.collect_child_process(9, false).unwrap());
+            releases.push(release);
+        }
+        if matches!(awaited, AwaitedChild::Pending) {
+            children.push(root.fork_child(6, false, false).unwrap());
+            let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+            root.register_child_process_with_gate(6, gate, slot, handle);
+            releases.push(release);
+        }
+        let mut parent = root.fork_child(7, false, false).unwrap();
+        children.push(parent.fork_child(8, false, false).unwrap());
+        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        parent.register_child_process_with_gate(8, gate, slot, handle);
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
+        parent.join_all_child_processes().unwrap();
+        releases.push(release);
+        root.retire_current_thread(reverie::ExitStatus::Exited(1), false);
+
+        async fn join(root: &mut ElfExecutor, failed: bool) -> crate::Result<()> {
+            if failed {
+                root.join_child_processes_after_failure_async().await
+            } else {
+                root.join_all_child_processes_async().await
+            }
+        }
+        let runs = Arc::new(Mutex::new(super::super::AbandonedRuns::default()));
+        let root_alive = Arc::downgrade(&root.transferred_processes);
+        {
+            // An embedder may drop the run's future, and the root executor it
+            // owns, at any await point.
+            let admission = super::super::RunAdmission::begin(&runs).unwrap();
+            let mut running = admission.root(root);
+            let mut dropped = Box::pin(async move { join(&mut running, failed).await });
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(dropped.as_mut().poll(&mut cx).is_pending());
+        }
+        let case = format!("{awaited:?} child awaited, failed {failed}");
+        assert!(
+            matches!(
+                super::super::AbandonedRuns::admit(&runs),
+                Err(crate::Error::AbandonedRunNotRetired)
+            ),
+            "{case}: a backend with a dropped run admitted another"
+        );
+        {
+            let parked = runs.lock().unwrap();
+            assert_eq!(
+                parked.roots.len(),
+                1,
+                "{case}: the dropped run's root was not parked"
+            );
+            let root = &parked.roots[0].0;
+            assert_eq!(
+                root.pending_processes.keys().copied().collect::<Vec<_>>(),
+                if matches!(awaited, AwaitedChild::Pending) {
+                    vec![6]
+                } else {
+                    vec![]
+                },
+                "{case}: the dropped join lost a pending child",
+            );
+            assert_eq!(
+                root.completed_processes.len(),
+                usize::from(!matches!(awaited, AwaitedChild::Orphan)),
+                "{case}: the dropped join lost a collected child",
+            );
+            assert_eq!(
+                root.namespace_orphanage
+                    .lock()
+                    .unwrap()
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                vec![8],
+                "{case}: the dropped join lost an orphan",
+            );
+        }
+
+        // The backend's drop hands the parked root to the reaper without
+        // waiting, before any child can exit.
+        super::super::AbandonedRuns::retire(&runs);
+        assert!(runs.lock().unwrap().roots.is_empty(), "{case}");
+        assert_eq!(
+            Arc::strong_count(&lifetime),
+            1 + releases.len(),
+            "{case}: a child ended before its release",
+        );
+        assert!(root_alive.upgrade().is_some(), "{case}");
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        // The reaper drops the root only after joining every child it owns.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while root_alive.upgrade().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{case}: the reaper never joined the dropped run's children"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(Arc::strong_count(&lifetime), 1, "{case}");
+    }
+
+    #[test]
+    fn failed_child_thread_join_keeps_the_pthread_it_owns() {
+        // No live joinable pthread with a unique owner can produce these, but
+        // if one were reported, the handle must still own, and so still reap,
+        // the thread.
+        for status in [libc::EINVAL, libc::ESRCH, libc::EDEADLK] {
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let mut thread = super::super::ChildThread::spawn(move || {
+                released.recv().unwrap();
+                Ok(())
+            });
+            let owned = thread.pthread;
+            let reported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = thread.joined(status);
+            }));
+            assert!(reported.is_err(), "status {status} was accepted as a join");
+            assert_eq!(
+                thread.pthread, owned,
+                "status {status} released the pthread"
+            );
+            release.send(()).unwrap();
+            thread.join_blocking().unwrap().unwrap();
+            assert_eq!(thread.pthread, None);
+        }
+    }
+
+    #[test]
+    fn a_refused_reaper_spawn_refuses_the_run_before_it_starts() {
+        use crate::failure::spawn_refusal;
+        let runs = Arc::new(Mutex::new(super::super::AbandonedRuns::default()));
+        let probe = Arc::new(spawn_refusal::Probe::default());
+        let refused = {
+            let _refusal = spawn_refusal::Guard::arm(probe.clone());
+            super::super::RunAdmission::begin(&runs).map(|_| ())
+        };
+        let Err(crate::Error::Cleanup { phase, error }) = refused else {
+            panic!("a run was admitted without a reaper: {refused:?}");
+        };
+        assert_eq!(phase, "dropped-run reaper spawn");
+        let crate::Error::HostIo(error) = &*error else {
+            panic!("the reaper's spawn error was replaced: {error:?}");
+        };
+        assert_eq!(
+            Some(spawn_refusal::ObservedError::read(error)),
+            probe.error()
+        );
+        // The refused run never started, so it abandoned nothing.
+        assert!(!runs.lock().unwrap().abandoned);
+        super::super::RunAdmission::begin(&runs).unwrap().finish();
+        assert!(!runs.lock().unwrap().abandoned);
+    }
+
+    #[test]
+    fn a_panicking_reaper_join_keeps_its_root_and_reaps_the_next() {
+        // A poisoned lock breaks the first root's join.
+        let broken = outside_init_root();
+        let broken_alive = Arc::downgrade(&broken.transferred_processes);
+        let poisoned = broken.transferred_processes.clone();
+        std::thread::spawn(move || {
+            let _held = poisoned.lock().unwrap();
+            panic!("poisoning a dropped run's transfer lock");
+        })
+        .join()
+        .unwrap_err();
+
+        // The next root's child panics after its release.
+        let lifetime = Arc::new(());
+        let mut root = outside_init_root();
+        let _child = root.fork_child(6, false, false).unwrap();
+        let (start, started) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let child_lifetime = lifetime.clone();
+        let handle = super::super::ChildThread::spawn(move || {
+            let _ = started.recv();
+            released.recv().unwrap();
+            drop(child_lifetime);
+            panic!("a dropped run's child panicked");
+        });
+        root.register_child_process_with_gate(
+            6,
+            super::super::ChildStartGate::new(start),
+            Arc::new(super::super::ChildCompletionSlot::default()),
+            handle,
+        );
+        let root_alive = Arc::downgrade(&root.transferred_processes);
+
+        for root in [broken, root] {
+            let runs = Arc::new(Mutex::new(super::super::AbandonedRuns::default()));
+            drop(super::super::RunAdmission::begin(&runs).unwrap().root(root));
+            super::super::AbandonedRuns::retire(&runs);
+        }
+        assert_eq!(Arc::strong_count(&lifetime), 2);
+        release.send(()).unwrap();
+        // The reaper survives the first join's panic and joins the next
+        // root's panicking child before dropping that root.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while root_alive.upgrade().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reaper never reaped the root after a broken join"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(Arc::strong_count(&lifetime), 1);
+        // A root whose join broke is kept, so it detaches no child.
+        assert!(broken_alive.upgrade().is_some());
+    }
+
+    #[test]
+    fn a_reaper_joins_every_adopted_root_before_it_stops() {
+        let reapers = super::super::ReaperSlot::default();
+        let reaper = super::super::DroppedRunReaper::establish_in(&reapers).unwrap();
+        let lifetime = Arc::new(());
+        let mut root = outside_init_root();
+        let _child = root.fork_child(6, false, false).unwrap();
+        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        root.register_child_process_with_gate(6, gate, slot, handle);
+        let root_alive = Arc::downgrade(&root.transferred_processes);
+        reaper.adopt(root);
+        drop(reaper);
+        // Dropping every sender ends the reaper only after the root it holds
+        // has joined its child.
+        let (last, reaping) = reapers.into_inner().unwrap().unwrap();
+        drop(last);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!reaping.is_finished());
+        assert!(root_alive.upgrade().is_some());
+        assert_eq!(Arc::strong_count(&lifetime), 2);
+        release.send(()).unwrap();
+        reaping.join().unwrap();
+        assert!(root_alive.upgrade().is_none());
         assert_eq!(Arc::strong_count(&lifetime), 1);
     }
 

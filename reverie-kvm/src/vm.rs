@@ -74,6 +74,7 @@ use crate::elf::TaskLifecycleTable;
 use crate::elf::initial_thread_name;
 use crate::elf::load_static_elf;
 use crate::elf::load_static_elf_file;
+use crate::executor::AbandonedRuns;
 use crate::executor::CapturedOutput;
 #[cfg(test)]
 use crate::executor::ChildCompletion;
@@ -1250,6 +1251,9 @@ pub struct KvmBackend {
     // One optional collector is shared by every fork and thread backend in the
     // guest tree. `None` is the allocation-free, update-free default.
     pub(crate) exit_collector: Option<Arc<KvmExitCollector>>,
+    // Public runs that never returned, with every child host thread their
+    // roots still own. Once one exists, no run or image is admitted.
+    pub(crate) abandoned_runs: Arc<Mutex<AbandonedRuns>>,
 }
 
 struct CompletedToolPanic {
@@ -1553,6 +1557,7 @@ impl KvmBackend {
             stdin,
             root_pid: 1,
             exit_collector: None,
+            abandoned_runs: Arc::default(),
         })
     }
 
@@ -1676,6 +1681,7 @@ impl KvmBackend {
 
     /// Installs an arbitrary real-mode program and selects it as the vCPU entry point.
     pub fn install_real_mode_program(&mut self, entry_point: u64, code: &[u8]) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         self.memory.write(entry_point, code)?;
         self.static_elf = None;
 
@@ -1765,6 +1771,7 @@ impl KvmBackend {
         envp: &[&str],
         cwd: &Path,
     ) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         self.vcpu.check_initial_elf_install()?;
         let loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
         self.install_loaded_static_elf(loaded)
@@ -1812,6 +1819,7 @@ impl KvmBackend {
         envp: &[&str],
         cwd: &Path,
     ) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         self.vcpu.check_initial_elf_install()?;
         let loaded = load_static_elf_file(&mut self.memory, file, argv, envp, cwd)?;
         self.install_loaded_static_elf(loaded)
@@ -4340,6 +4348,7 @@ impl KvmBackend {
 
     /// Runs the installed static ELF and its forked children until the root exits.
     pub fn run_static_elf(&mut self) -> Result<i32> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::with_output(loaded, None);
         let result = self.run_static_elf_process(&mut executor);
@@ -4349,6 +4358,7 @@ impl KvmBackend {
 
     /// Runs the installed ELF process tree and captures its standard output streams.
     pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         // Declared before the executor so its private pipe identities outlive
         // executor/child cleanup, including early-return and unwind paths.
         let capture_owner = self.prepare_captured_output(true)?;
@@ -5078,6 +5088,7 @@ impl KvmBackend {
     where
         F: FnMut(Syscall, &GuestMemory) -> i64,
     {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
         self.set_rdtsc_interception(false)?;
         self.set_cpuid_interception(false)?;
         loop {
@@ -5131,6 +5142,7 @@ impl Drop for KvmBackend {
         self.release_thread_slot();
         if !self.is_guest_thread {
             self.cancel_guest_threads();
+            AbandonedRuns::retire(&self.abandoned_runs);
         }
     }
 }
