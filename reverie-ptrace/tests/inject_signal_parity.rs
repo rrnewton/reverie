@@ -47,6 +47,9 @@ use reverie_ptrace::testing::test_fn;
 
 /// Which callback the Tool runs (see [`Parity::handle_syscall_event`]).
 static CASE: AtomicU32 = AtomicU32::new(0);
+/// `CASE` is process-wide and the test harness runs tests on parallel
+/// threads, so each run holds this for its whole duration.
+static SERIAL: Mutex<()> = Mutex::new(());
 const CASE_KILL_SIGTERM: u32 = 1;
 const CASE_ALARM_DURING_PAUSE: u32 = 2;
 const CASE_KILL_SIGKILL: u32 = 3;
@@ -138,6 +141,7 @@ impl Tool for Parity {
 }
 
 fn run(case: u32) -> (ExitStatus, Vec<(u32, i64)>, i64) {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     CASE.store(case, Ordering::SeqCst);
     let (output, steps) = test_fn::<Parity, _>(|| unsafe {
         libc::syscall(libc::SYS_getppid);
