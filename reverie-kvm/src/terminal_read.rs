@@ -248,19 +248,37 @@ struct RegistryState {
     root_terminal: Option<Arc<Terminal>>,
     worker_terminal: Option<Arc<Terminal>>,
     operations: BTreeMap<u64, Arc<Operation>>,
-    errors: BTreeMap<u64, RecordedError>,
+    errors: BTreeMap<u64, Arc<Error>>,
     observer_errors: Vec<Arc<Error>>,
-}
-
-struct RecordedError {
-    cause: Arc<Error>,
-    delivered: bool,
 }
 
 /// One registry per actual guest thread group; forks receive a separate one.
 #[derive(Default)]
 pub(crate) struct ReadRegistry {
     state: Mutex<RegistryState>,
+}
+
+// A destructor cannot return a diagnostic. Keep a failed group's exact typed
+// errors and first terminal causes even if no public finalizer collected them.
+// Its still-registered operations also retain their actual endpoint/storage;
+// no destructor, cancel send, or join runs while this ledger is locked.
+static RETAINED_REGISTRIES: OnceLock<Mutex<Vec<RegistryState>>> = OnceLock::new();
+
+impl Drop for ReadRegistry {
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.operations.is_empty()
+            && state.errors.is_empty()
+            && state.observer_errors.is_empty()
+        {
+            return;
+        }
+        let retained = std::mem::take(state);
+        lock(RETAINED_REGISTRIES.get_or_init(Mutex::default)).push(retained);
+    }
 }
 
 impl ReadRegistry {
@@ -327,24 +345,26 @@ impl ReadRegistry {
             state
                 .errors
                 .values()
-                .map(|error| error.cause.clone())
+                .cloned()
                 .chain(state.observer_errors.iter().cloned())
                 .map(Error::SharedFailure)
                 .collect(),
         )
     }
 
-    fn record_error(&self, operation: &Operation, error: Error, delivered: bool) -> Arc<Error> {
-        let mut state = lock(&self.state);
-        let recorded = state
-            .errors
-            .entry(operation.identity.generation)
-            .or_insert_with(|| RecordedError {
-                cause: Arc::new(error),
-                delivered: false,
-            });
-        recorded.delivered |= delivered;
-        recorded.cause.clone()
+    fn record_error(&self, operation: &Operation, error: Error) -> Arc<Error> {
+        let error = Arc::new(error);
+        let recorded = {
+            let mut state = lock(&self.state);
+            state
+                .errors
+                .entry(operation.identity.generation)
+                .or_insert_with(|| error.clone())
+                .clone()
+        };
+        // A discarded later error may own an opaque host-error destructor.
+        // Drop that value only after releasing the registry lock.
+        recorded
     }
 }
 
@@ -636,7 +656,7 @@ impl ReadContext {
                 return Err(owner.retain_unretired("C wait (ownership retained)", error));
             }
         }
-        owner.finish(true)
+        owner.finish()
     }
 }
 
@@ -677,7 +697,7 @@ impl ReadOwner<'_> {
     fn retain_error(&mut self, error: Error) -> Error {
         self.finished = true;
         let cause = self.operation.terminal();
-        let error = Error::SharedFailure(self.registry.record_error(&self.operation, error, true));
+        let error = Error::SharedFailure(self.registry.record_error(&self.operation, error));
         match cause.as_deref() {
             Some(Terminal::Failure(primary)) => {
                 Error::SharedFailure(primary.clone()).with_cleanup(vec![error])
@@ -686,7 +706,7 @@ impl ReadOwner<'_> {
         }
     }
 
-    fn finish(&mut self, deliver_error: bool) -> Result<NativeReturn> {
+    fn finish(&mut self) -> Result<NativeReturn> {
         // SAFETY: this is the sole retirement owner. The C implementation
         // disarms/drains before join, and never holds its locks across join.
         let finish_error = unsafe { rvk_read_finish(self.operation.native.as_ptr()) };
@@ -715,11 +735,7 @@ impl ReadOwner<'_> {
             });
         }
         if let Some(error) = control {
-            let error = Error::SharedFailure(self.registry.record_error(
-                &self.operation,
-                error,
-                deliver_error,
-            ));
+            let error = Error::SharedFailure(self.registry.record_error(&self.operation, error));
             return Err(match cause.as_deref() {
                 Some(Terminal::Failure(primary)) => {
                     Error::SharedFailure(primary.clone()).with_cleanup(vec![error])
@@ -736,11 +752,9 @@ impl ReadOwner<'_> {
                 source: std::io::Error::other("C reader canceled without terminal authority"),
                 terminal_exit: None,
             };
-            return Err(Error::SharedFailure(self.registry.record_error(
-                &self.operation,
-                error,
-                deliver_error,
-            )));
+            return Err(Error::SharedFailure(
+                self.registry.record_error(&self.operation, error),
+            ));
         }
         Ok(NativeReturn {
             count: snapshot.result as isize,
@@ -786,7 +800,7 @@ impl Drop for ReadOwner<'_> {
         }
         // Errors are retained in the registry; never panic a second time or
         // detach an unjoined helper during Rust unwinding.
-        let _ = self.finish(false);
+        let _ = self.finish();
     }
 }
 
@@ -893,6 +907,121 @@ mod tests {
         assert!(unsafe { libc::fcntl(original, libc::F_GETFD) } >= 0);
         assert!(lock(&registry.state).operations.is_empty());
         assert_eq!(lock(&registry.state).next, u64::MAX);
+    }
+
+    #[test]
+    fn failed_registry_drop_retains_exact_diagnostics_causes_and_owned_storage() {
+        let (control, observer, terminal, operation, original) = {
+            let registry = Arc::new(ReadRegistry::default());
+            registry.request_exit_group(ExitStatus::Exited(37));
+            registry.request_exit_group(ExitStatus::Exited(99));
+            let terminal = lock(&registry.state).root_terminal.clone().unwrap();
+            let file = inotify();
+            let original = file.as_raw_fd();
+            let mut bytes = Vec::<u8>::new();
+            let address = bytes.as_mut_ptr() as usize;
+            let mut errno = 0;
+            let native = NonNull::new(unsafe { rvk_read_new(original, address, 0, &mut errno) })
+                .expect("retention control could not allocate C storage");
+            assert_eq!(errno, 0);
+            // Prepared storage only: this test neither starts a helper nor
+            // claims that a real pthread_join returned the controlled error.
+            let operation = Arc::new(Operation {
+                native,
+                identity: Identity {
+                    generation: 1,
+                    image_generation: 0,
+                    task: task(false),
+                    request: SyscallRequest::new(libc::SYS_read as u64, [0, 0x100, 0, 0, 0, 0]),
+                    host_fd: original,
+                    host_address: address,
+                    host_count: 0,
+                    worker: false,
+                },
+                endpoint: Mutex::new(Some(file)),
+                terminal: Mutex::new(Some(terminal.clone())),
+                cancel_requested: AtomicBool::new(false),
+            });
+            let control = Arc::new(Error::TerminalReadControl {
+                operation: "test-controlled retained diagnostic",
+                source: std::io::Error::from_raw_os_error(libc::EDEADLK),
+                terminal_exit: Some(ExitStatus::Exited(37)),
+            });
+            let observer = Arc::new(Error::GuestWorkerPanic);
+            {
+                let mut state = lock(&registry.state);
+                state.next = 1;
+                state.operations.insert(1, operation.clone());
+                state.observer_errors.push(observer.clone());
+            }
+            registry.record_error(&operation, Error::SharedFailure(control.clone()));
+            let returned = registry.teardown_result().unwrap_err();
+            assert!(crate::failure::references_shared_error(&returned, &control));
+            assert!(crate::failure::references_shared_error(
+                &returned, &observer
+            ));
+            drop(returned);
+            let witnesses = (
+                Arc::downgrade(&control),
+                Arc::downgrade(&observer),
+                Arc::downgrade(&terminal),
+                Arc::downgrade(&operation),
+                original,
+            );
+            drop(control);
+            drop(observer);
+            drop(terminal);
+            drop(operation);
+            drop(registry);
+            witnesses
+        };
+        let control = control
+            .upgrade()
+            .expect("registry Drop lost the typed error");
+        assert!(matches!(
+            control.as_ref(),
+            Error::TerminalReadControl {
+                source,
+                terminal_exit: Some(ExitStatus::Exited(37)),
+                ..
+            } if source.raw_os_error() == Some(libc::EDEADLK)
+        ));
+        assert!(matches!(
+            observer.upgrade().unwrap().as_ref(),
+            Error::GuestWorkerPanic
+        ));
+        assert!(matches!(
+            terminal.upgrade().unwrap().as_ref(),
+            Terminal::Exit(ExitStatus::Exited(37))
+        ));
+        let operation = operation
+            .upgrade()
+            .expect("registry Drop lost operation ownership");
+        let snapshot = operation.snapshot();
+        assert_eq!(
+            snapshot.state, 0,
+            "prepared storage unexpectedly changed state"
+        );
+        assert_eq!(snapshot.outcome, PENDING);
+        assert_eq!(snapshot.handle_published, 0);
+        assert_eq!(snapshot.senders, 0);
+        assert_eq!(
+            lock(&operation.endpoint).as_ref().unwrap().as_raw_fd(),
+            original
+        );
+        assert!(unsafe { libc::fcntl(original, libc::F_GETFD) } >= 0);
+    }
+
+    #[test]
+    fn healthy_empty_registry_drop_does_not_retain_a_terminal_cause() {
+        let terminal = {
+            let registry = ReadRegistry::default();
+            registry.request_exit_group(ExitStatus::Exited(37));
+            let terminal = Arc::downgrade(lock(&registry.state).root_terminal.as_ref().unwrap());
+            drop(registry);
+            terminal
+        };
+        assert!(terminal.upgrade().is_none());
     }
 
     #[test]

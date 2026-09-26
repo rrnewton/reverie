@@ -65,6 +65,14 @@ cleanup remain real failures. The merged worker clear_child_tid-before-terminal
 receipt ordering is unchanged. Cancellation of C helpers precedes blocked Rust
 worker joins; exec rearm refuses any still-owned old-image helper.
 
+Direct execution errors collect worker teardown before returning from the public
+run method, while the executor and capture owner remain alive. Inline Direct
+child errors collect that child's teardown before its backend is dropped; Tool
+children keep their existing deferred cleanup path. The original error remains
+primary and reader-control failures are appended. Destructor-only abandonment
+retains failed registry state, including its typed causes and unjoined operation
+ownership, for process lifetime; it cannot return a new error to an absent caller.
+
 ## Focused controls and limits
 
 `tests/terminal_read_protocol.c` uses test-only C gates around creation,
