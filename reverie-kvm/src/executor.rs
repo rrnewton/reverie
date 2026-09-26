@@ -36408,6 +36408,126 @@ mod tests {
     }
 
     #[test]
+    fn read_zero_count_keeps_private_inherited_and_rebound_descriptors_distinct() {
+        let mut state = test_state(&std::env::current_dir().unwrap());
+        let mut memory = read_zero_memory();
+        // SAFETY: each successful creation transfers one new descriptor to File.
+        let event = unsafe { libc::eventfd(9, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        assert!(event > 2);
+        let mut private = unsafe { std::fs::File::from_raw_fd(event) };
+        let regular =
+            unsafe { libc::memfd_create(c"read-zero-routing".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(regular > 2);
+        let mut regular = unsafe { std::fs::File::from_raw_fd(regular) };
+        regular.write_all(b"ABCDEFGH").unwrap();
+        regular.seek(SeekFrom::Start(3)).unwrap();
+        let read = |memory: &mut GuestMemory, state: &mut LoadedStaticElf, fd, address, count| {
+            syscall_result(memory, state, libc::SYS_read, [fd, address, count, 0, 0, 0])
+        };
+        let addresses = [READ_ZERO_BUFFER, READ_ZERO_PROTECTED, u64::MAX];
+        assert!(!state.files.contains_key(&event));
+        for high in [0, READ_ZERO_HIGH_FD] {
+            for address in addresses {
+                let fd = high | event as u64;
+                assert_eq!(
+                    native_read_zero(fd, address),
+                    negative_errno(if address == u64::MAX {
+                        libc::EFAULT
+                    } else {
+                        libc::EINVAL
+                    })
+                );
+                assert_eq!(
+                    read(&mut memory, &mut state, fd, address, 0),
+                    negative_errno(libc::EBADF)
+                );
+                assert_read_zero_canaries(&memory);
+            }
+        }
+
+        // Distinct controlled results check owned-stdin routing without probing
+        // the ambient process stdin, whose endpoint behavior is unknown.
+        let mut controlled_results = Vec::new();
+        for (file, expected) in [(&private, negative_errno(libc::EINVAL)), (&regular, 0)] {
+            state.stdin = Some(file.try_clone().unwrap());
+            assert_ne!(state.stdin.as_ref().unwrap().as_raw_fd(), 0);
+            assert_eq!(
+                native_read_zero(file.as_raw_fd() as u64, READ_ZERO_BUFFER),
+                expected
+            );
+            let observed = read(&mut memory, &mut state, 0, READ_ZERO_BUFFER, 0);
+            assert_eq!(observed, expected);
+            controlled_results.push(observed);
+            for high in [0, READ_ZERO_HIGH_FD] {
+                for address in addresses {
+                    assert_eq!(
+                        read(&mut memory, &mut state, high, address, 0),
+                        native_read_zero(high | file.as_raw_fd() as u64, address)
+                    );
+                    assert_read_zero_canaries(&memory);
+                }
+            }
+        }
+        assert_ne!(controlled_results[0], controlled_results[1]);
+        assert_eq!(regular.stream_position().unwrap(), 3);
+
+        state.files.insert(3, private.try_clone().unwrap());
+        for target in 0..=2 {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_dup2,
+                    [
+                        READ_ZERO_HIGH_FD | 3,
+                        READ_ZERO_HIGH_FD | target,
+                        0,
+                        0,
+                        0,
+                        0
+                    ]
+                ),
+                target as i64
+            );
+            assert!(state.closed_standard_fds.contains(&(target as i32)));
+            assert!(state.files.contains_key(&(target as i32)));
+            for high in [0, READ_ZERO_HIGH_FD] {
+                for address in addresses {
+                    assert_eq!(
+                        read(&mut memory, &mut state, high | target, address, 0),
+                        native_read_zero(high | event as u64, address)
+                    );
+                    assert_read_zero_canaries(&memory);
+                }
+            }
+            assert_eq!(
+                read(&mut memory, &mut state, target, READ_ZERO_BUFFER, 8),
+                8
+            );
+            assert_eq!(
+                read_guest_bytes::<8>(&memory, READ_ZERO_BUFFER).unwrap(),
+                9_u64.to_ne_bytes()
+            );
+            assert_eq!(
+                read_guest_bytes::<8>(&memory, READ_ZERO_BUFFER + 8).unwrap(),
+                [0x5a; 8]
+            );
+            assert_eq!(
+                read(&mut memory, &mut state, target, READ_ZERO_BUFFER, 8),
+                negative_errno(libc::EAGAIN)
+            );
+            private.write_all(&9_u64.to_ne_bytes()).unwrap();
+            memory.write(READ_ZERO_BUFFER, &[0x5a; 16]).unwrap();
+        }
+        assert_eq!(
+            regular.stream_position().unwrap(),
+            3,
+            "rebound stdin must leave the original owned stdin untouched"
+        );
+        assert_read_zero_canaries(&memory);
+    }
+
+    #[test]
     fn read_zero_count_random_and_proc_keep_synthetic_routing_and_position() {
         for path in ["/dev/urandom", "/proc/self/status"] {
             let mut state = test_state(&std::env::current_dir().unwrap());
