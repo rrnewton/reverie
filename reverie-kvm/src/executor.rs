@@ -75,6 +75,7 @@ use capture_identity::CaptureMetadata;
 use capture_identity::CaptureObjectIdentity;
 use capture_identity::CapturedPipeIdentities;
 use process_signal_publication::AdoptedChildPoll;
+use process_signal_publication::AdoptionWaiter;
 use process_signal_publication::ProcessBinding;
 use process_signal_publication::ProcessSignalRegistry;
 
@@ -1580,6 +1581,16 @@ impl ChildProcessHandle {
             }),
         }
     }
+}
+
+/// What a wait does after its pre-block adoption re-observation.
+enum PreBlock {
+    /// Sleep until a registered completion or a local child wakes the task.
+    Block,
+    /// Something changed since the first observation; select again.
+    Reevaluate,
+    /// Finish the syscall with this result.
+    Return(i64),
 }
 
 /// The child a wait selects, in pid order across both places a child can be
@@ -3498,21 +3509,48 @@ impl ElfExecutor {
         Ok(CollectableChild::Adopted(adopted.pid, adopted.status))
     }
 
-    /// Observe this process's matching adopted orphans. With `block`, this
-    /// task's wake channel is registered atomically with the observation,
-    /// replacing any earlier registration of the same task.
-    fn poll_adopted_children(
+    /// Observe this process's matching adopted orphans without registering.
+    fn observe_adopted_children(&self, matches: impl Fn(i32) -> bool) -> AdoptedChildPoll {
+        self.signal_registry.poll_adopted_children(
+            self.admitted_signal_identity().process,
+            matches,
+            None,
+        )
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review the pre-block adoption re-observation.
+    /// Re-observe this process's matching adopted orphans immediately before
+    /// blocking, registering this task's wake channel atomically with that
+    /// observation whenever the task will block on it (replacing any earlier
+    /// registration of the task). Returns whether to block: never on an
+    /// earlier observation, because an adoption can be consumed by another
+    /// thread or auto-reaped in between, leaving no completion to wait for.
+    fn register_before_blocking(
         &self,
         matches: impl Fn(i32) -> bool,
-        block: bool,
-    ) -> AdoptedChildPoll {
+        local_running: bool,
+        syscall: &str,
+    ) -> PreBlock {
         let identity = self.admitted_signal_identity();
-        let key = (identity.tid.as_raw(), identity.task_generation);
-        self.signal_registry.poll_adopted_children(
+        let adopted = self.signal_registry.poll_adopted_children(
             identity.process,
             matches,
-            block.then_some((key, &self.child_completion_sender)),
-        )
+            Some(AdoptionWaiter {
+                key: (identity.tid.as_raw(), identity.task_generation),
+                sender: &self.child_completion_sender,
+                awaits_local_child: local_running,
+            }),
+        );
+        if let Some(pid) = adopted.failed {
+            eprintln!("reverie-kvm adopted child {pid} failed before {syscall}");
+            return PreBlock::Return(negative_errno(libc::EIO));
+        }
+        if adopted.waitable || !(local_running || adopted.running) {
+            // Nothing was registered: re-select, or report no child.
+            return PreBlock::Reevaluate;
+        }
+        PreBlock::Block
     }
 
     /// Block until any child completion or adopted-orphan wake arrives, then
@@ -3520,6 +3558,8 @@ impl ElfExecutor {
     /// task is blocked, and the caller re-polls (and re-registers if it must
     /// block again).
     fn block_for_child_completion(&self) -> bool {
+        #[cfg(test)]
+        self.signal_registry.note_blocked_wait();
         let received = self
             .child_completion_receiver
             .lock()
@@ -3548,7 +3588,7 @@ impl ElfExecutor {
             return Ok(None);
         }
         let requested = args[0] as u32 as libc::pid_t;
-        let matches = |pid: i32| requested == -1 || requested > 0 && pid == requested;
+        let matches = |pid: i32| wait4_selects(requested, pid);
         let nonblocking = args[2] & libc::WNOHANG as u64 != 0;
 
         loop {
@@ -3568,7 +3608,7 @@ impl ElfExecutor {
                 }
                 CollectableChild::None => {}
             }
-            let adopted = self.poll_adopted_children(matches, false);
+            let adopted = self.observe_adopted_children(matches);
             if let Some(pid) = adopted.failed {
                 eprintln!("reverie-kvm adopted child {pid} failed before wait4");
                 return Ok(Some(negative_errno(libc::EIO)));
@@ -3610,7 +3650,8 @@ impl ElfExecutor {
                 continue;
             }
 
-            let running = running.is_some() || adopted.running;
+            let local_running = running.is_some();
+            let running = local_running || adopted.running;
             if nonblocking {
                 if running {
                     return Ok(Some(0));
@@ -3620,15 +3661,10 @@ impl ElfExecutor {
             if !running {
                 continue;
             }
-            if adopted.running {
-                let adopted = self.poll_adopted_children(matches, true);
-                if let Some(pid) = adopted.failed {
-                    eprintln!("reverie-kvm adopted child {pid} failed before wait4");
-                    return Ok(Some(negative_errno(libc::EIO)));
-                }
-                if adopted.waitable {
-                    continue;
-                }
+            match self.register_before_blocking(matches, local_running, "wait4") {
+                PreBlock::Block => {}
+                PreBlock::Reevaluate => continue,
+                PreBlock::Return(result) => return Ok(Some(result)),
             }
             if !self.block_for_child_completion() {
                 eprintln!("reverie-kvm child completion channel disconnected before wait4");
@@ -3690,7 +3726,7 @@ impl ElfExecutor {
                 }
                 CollectableChild::None => {}
             }
-            let adopted = self.poll_adopted_children(matches, false);
+            let adopted = self.observe_adopted_children(matches);
             if let Some(pid) = adopted.failed {
                 eprintln!("reverie-kvm adopted child {pid} failed before waitid");
                 return Ok(Some(negative_errno(libc::EIO)));
@@ -3730,7 +3766,8 @@ impl ElfExecutor {
                 continue;
             }
 
-            let running = running.is_some() || adopted.running;
+            let local_running = running.is_some();
+            let running = local_running || adopted.running;
             if nonblocking && running {
                 if args[2] != 0 {
                     let memory = memory.clone();
@@ -3747,15 +3784,10 @@ impl ElfExecutor {
             if !running {
                 continue;
             }
-            if adopted.running {
-                let adopted = self.poll_adopted_children(matches, true);
-                if let Some(pid) = adopted.failed {
-                    eprintln!("reverie-kvm adopted child {pid} failed before waitid");
-                    return Ok(Some(negative_errno(libc::EIO)));
-                }
-                if adopted.waitable {
-                    continue;
-                }
+            match self.register_before_blocking(matches, local_running, "waitid") {
+                PreBlock::Block => {}
+                PreBlock::Reevaluate => continue,
+                PreBlock::Return(result) => return Ok(Some(result)),
             }
             if !self.block_for_child_completion() {
                 eprintln!("reverie-kvm child completion channel disconnected before waitid");
@@ -16920,22 +16952,18 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     // pid_t is a 32-bit signed value; the guest passes wait4(-1) as 0xFFFFFFFF
-    // in a 64-bit register. Truncate to i32 before sign-extending so the common
-    // wait-for-any-child form (-1), process-group forms (0, <-1), and a specific
-    // pid are all interpreted correctly instead of collapsing to ECHILD.
-    let requested = args[0] as i32 as i64;
+    // in a 64-bit register. Truncate to i32 so the common wait-for-any-child
+    // form (-1), process-group forms (0, <-1), and a specific pid are all
+    // interpreted correctly instead of collapsing to ECHILD.
+    let requested = args[0] as libc::pid_t;
     if args[2] & !(libc::WNOHANG as u64) != 0 {
         return negative_errno(libc::EINVAL);
     }
-    let child_pid = if requested > 0 {
-        i32::try_from(requested)
-            .ok()
-            .filter(|pid| state.children.contains_key(pid))
-    } else {
-        // -1 (any child), 0 and <-1 (any child in a process group): this guest
-        // models a single process group, so reap any recorded child.
-        state.children.keys().next().copied()
-    };
+    let child_pid = state
+        .children
+        .keys()
+        .copied()
+        .find(|pid| wait4_selects(requested, *pid));
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
     };
@@ -16945,6 +16973,18 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     state.children.remove(&child_pid);
     state.consumed_child_wait = Some(child_pid);
     i64::from(child_pid)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-653): Review the shared wait4 pid selector.
+/// Whether wait4's `requested` pid selects child `pid`. A positive value names
+/// one child. -1 is any child; 0 and values below -1 name a process group, and
+/// this guest models a single process group (children inherit it and setpgid
+/// is not emulated), so they also select any child. Both the synchronizing
+/// and collecting paths use this, so an adopted child is eligible exactly
+/// when a collected fork child would be.
+fn wait4_selects(requested: libc::pid_t, pid: i32) -> bool {
+    requested <= 0 || pid == requested
 }
 
 /// Copy a collected child's wait status and zeroed rusage to wait4's
@@ -17012,15 +17052,15 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     0
 }
 
-/// The errors `waitid` reports from its arguments alone, before selecting a
-/// child: a null infop, then unsupported options.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-653): Review raw waitid null-infop semantics.
+/// The error `waitid` reports from its options alone, before selecting a
+/// child. A null infop is not an error: the raw Linux syscall waits and reaps
+/// normally and only skips the siginfo copy-out.
 fn waitid_argument_error(args: &[u64; 6]) -> Option<i64> {
     const EVENT_OPTIONS: u64 = libc::WEXITED as u64;
     const ALLOWED_OPTIONS: u64 = EVENT_OPTIONS | libc::WNOHANG as u64 | libc::WNOWAIT as u64;
 
-    if args[2] == 0 {
-        return Some(negative_errno(libc::EFAULT));
-    }
     if args[3] & EVENT_OPTIONS == 0 || args[3] & !ALLOWED_OPTIONS != 0 {
         return Some(negative_errno(libc::EINVAL));
     }
@@ -17053,9 +17093,12 @@ fn write_waitid_outputs(
         si_stime: 0,
         _padding: [0; std::mem::size_of::<libc::siginfo_t>() - 48],
     };
-    let result = write_struct(memory, args[2], &info);
-    if result != 0 {
-        return result;
+    // Linux skips the siginfo copy-out for a null infop.
+    if args[2] != 0 {
+        let result = write_struct(memory, args[2], &info);
+        if result != 0 {
+            return result;
+        }
     }
     if args[4] != 0 {
         let result = memory
