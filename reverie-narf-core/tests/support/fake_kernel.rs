@@ -173,6 +173,9 @@ struct World {
     natives: Vec<Native>,
     violations: Vec<Violation>,
     pending_exits: Vec<(i32, ExitStatus)>,
+    /// Each process's group exit status (`exit_group`), the first winning.
+    /// With none, Linux reports the last thread's own status.
+    group_status: BTreeMap<i32, ExitStatus>,
     teardowns: Vec<(i32, Result<TaskExit, NarfFatal>)>,
 }
 
@@ -209,6 +212,7 @@ impl FakeKernel {
                 natives: Vec::new(),
                 violations: Vec::new(),
                 pending_exits: Vec::new(),
+                group_status: BTreeMap::new(),
                 teardowns: Vec::new(),
             })),
         }
@@ -322,7 +326,11 @@ impl FakeKernel {
     fn report_exits<T: Tool>(&self, host: &FakeHost<T>) {
         let exits = self.with(|world| core::mem::take(&mut world.pending_exits));
         for (tid, status) in exits {
-            let result = host.task_exited(Pid::from_raw(tid), status);
+            let process_status = self.with(|world| {
+                let pid = world.tasks.get(&tid).map_or(tid, |task| task.pid);
+                world.group_status.get(&pid).copied().unwrap_or(status)
+            });
+            let result = host.task_exited(Pid::from_raw(tid), status, process_status);
             self.with(|world| world.teardowns.push((tid, result)));
         }
     }
@@ -468,12 +476,17 @@ impl FakeServices<'_> {
     }
 }
 
-fn exit_task(world: &mut World, tid: i32, code: i32) {
+fn exit_task(world: &mut World, tid: i32, code: i32, group: bool) {
     if let Some(task) = world.tasks.get_mut(&tid)
         && !task.exited
     {
         task.exited = true;
-        world.pending_exits.push((tid, ExitStatus::Exited(code)));
+        let pid = task.pid;
+        let status = ExitStatus::Exited(code);
+        world.pending_exits.push((tid, status));
+        if group {
+            world.group_status.entry(pid).or_insert(status);
+        }
     }
 }
 
@@ -562,7 +575,7 @@ fn run_native(
             (Returned(child as i64), Some(created))
         }
         Some(Sysno::exit) => {
-            exit_task(world, tid, a0 as i32);
+            exit_task(world, tid, a0 as i32, false);
             (ContextManaged, None)
         }
         Some(Sysno::exit_group) => {
@@ -573,7 +586,7 @@ fn run_native(
                 .map(|(tid, _)| *tid)
                 .collect();
             for thread in threads {
-                exit_task(world, thread, a0 as i32);
+                exit_task(world, thread, a0 as i32, true);
             }
             (ContextManaged, None)
         }
