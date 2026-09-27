@@ -615,7 +615,11 @@ where
             parked,
         } = self.tasks.with(|table| table.checkout(tid))?;
         let (result, parked) = self.dispatch(&tool, kernel, entry, &mut state, parked);
-        let checkin = self.tasks.with(|table| table.checkin(tid, state, parked));
+        // CONTROL: the callback's thread state is discarded.
+        drop(state);
+        let checkin = self
+            .tasks
+            .with(|table| table.checkin(tid, T::ThreadState::default(), parked));
         let disposition = result?;
         checkin?;
         Ok(disposition)
