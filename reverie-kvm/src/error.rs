@@ -49,6 +49,16 @@ pub enum Error {
     #[error("inherited stdin read retired after terminal cancellation")]
     TerminalReadCancelled,
 
+    /// A guest `wait4`/`waitid` was retired by an already committed thread or
+    /// group cancellation (a peer's `exit_group`, exec's or a failure's worker
+    /// cancellation, or the waiting process's recorded family exit or failure)
+    /// instead of producing a syscall result. No child status is consumed on
+    /// this path. Like [`Error::TerminalReadCancelled`], this private
+    /// disposition must be consumed before producing a syscall result or
+    /// resuming a Tool callback: the waiting thread retires without a result.
+    #[error("guest child wait retired after thread or group cancellation")]
+    ChildWaitCancelled,
+
     /// A native reader control operation failed. This is never a guest errno.
     /// An unjoined reader retains its endpoint and storage until process exit.
     #[error(

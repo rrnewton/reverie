@@ -412,27 +412,59 @@ impl ReadRegistry {
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-653): Review sharing the terminal-read cancellation
-// source with blocking wait4/waitid.
-/// A blocking guest child wait's view of this thread group's committed
-/// thread/group cancellation. A cancelled wait is consumed exactly like a
-/// cancelled inherited-stdin read (`Error::TerminalReadCancelled`): it never
-/// produces a syscall result or resumes a Tool callback.
+// source with guest wait4/waitid.
+/// A guest child wait's view of this thread group's committed thread/group
+/// cancellation. A cancelled wait is reported as `Error::ChildWaitCancelled`
+/// and consumed exactly like a cancelled inherited-stdin read
+/// (`Error::TerminalReadCancelled`): it never produces a syscall result or
+/// resumes a Tool callback.
 pub(crate) struct WaitCancellation {
     registry: Arc<ReadRegistry>,
     worker: bool,
 }
 
 impl WaitCancellation {
-    /// Whether a thread or group cancellation applying to this thread has
-    /// been committed. Once true it stays true until an exec rearm, which
-    /// happens only after every old worker has joined.
-    pub(crate) fn is_cancelled(&self) -> bool {
-        let state = lock(&self.registry.state);
+    fn applies(&self, state: &RegistryState) -> bool {
         if self.worker {
             state.worker_terminal.is_some()
         } else {
             state.root_terminal.is_some()
         }
+    }
+
+    /// Whether a thread or group cancellation applying to this thread has
+    /// been committed. Once true it stays true until an exec rearm, which
+    /// happens only after every old worker has joined.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.applies(&lock(&self.registry.state))
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review the atomic cancellation check around a
+    // child-wait take, and the registry -> family lock order it introduces.
+    /// Run `take` only if no cancellation applying to this thread has
+    /// committed, holding the registry lock across both the check and `take`.
+    /// Returns `None`, without running `take`, when one has committed.
+    ///
+    /// `cancel` publishes its terminal cause under this same lock, so a
+    /// cancellation commits either wholly before this check (and `take` never
+    /// runs) or wholly after `take` returns (and the taken status belongs to
+    /// a wait that linearized before the cancellation). A child status can
+    /// therefore never be consumed by a thread whose cancellation already
+    /// committed.
+    ///
+    /// `take` must not block and must not re-enter this registry. The only
+    /// caller's `take` acquires the process-family ledger lock, giving the
+    /// order registry -> family; no family critical section acquires any
+    /// other lock, so this order cannot deadlock.
+    pub(crate) fn unless_cancelled<R>(&self, take: impl FnOnce() -> R) -> Option<R> {
+        let state = lock(&self.registry.state);
+        if self.applies(&state) {
+            return None;
+        }
+        let taken = take();
+        drop(state);
+        Some(taken)
     }
 
     /// Register `wake` to receive one message when a cancellation applying to
@@ -444,12 +476,7 @@ impl WaitCancellation {
         wake: &std::sync::mpsc::Sender<i32>,
     ) -> Option<BlockedWaitRegistration<'_>> {
         let mut state = lock(&self.registry.state);
-        let terminal = if self.worker {
-            &state.worker_terminal
-        } else {
-            &state.root_terminal
-        };
-        if terminal.is_some() {
+        if self.applies(&state) {
             return None;
         }
         state.next_blocked_wait = state
@@ -1634,5 +1661,44 @@ mod tests {
         assert_eq!(lock(&registry.state).blocked_waits.len(), 1);
         drop(root_registration);
         assert!(lock(&registry.state).blocked_waits.is_empty());
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review the atomic child-wait take tests.
+    /// A child-wait take runs while the registry lock that `cancel`
+    /// publishes under is held, and never once a cancellation applying to
+    /// the thread has committed; exec's rearm makes it run again.
+    #[test]
+    fn child_wait_take_runs_under_the_registry_lock_only_before_a_cancellation() {
+        let registry = Arc::new(ReadRegistry::default());
+        let root = registry.wait_cancellation(false);
+        let worker = registry.wait_cancellation(true);
+        for wait in [&root, &worker] {
+            let held = wait.unless_cancelled(|| {
+                matches!(
+                    registry.state.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                )
+            });
+            assert_eq!(
+                held,
+                Some(true),
+                "the take must run under the registry lock"
+            );
+        }
+
+        registry.cancel_workers();
+        let ran = std::cell::Cell::new(false);
+        assert_eq!(worker.unless_cancelled(|| ran.set(true)), None);
+        assert!(!ran.get(), "a cancelled worker's take must not run");
+        assert_eq!(root.unless_cancelled(|| 7), Some(7));
+
+        registry.request_exit_group(ExitStatus::Exited(42));
+        assert_eq!(root.unless_cancelled(|| ran.set(true)), None);
+        assert!(!ran.get(), "a cancelled leader's take must not run");
+
+        registry.rearm_after_exec();
+        assert_eq!(root.unless_cancelled(|| 8), Some(8));
+        assert_eq!(worker.unless_cancelled(|| 9), Some(9));
     }
 }

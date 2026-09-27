@@ -1462,10 +1462,11 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.admit_ordinary_operation().await;
         let raw = match self.executor.execute(&request, &self.memory) {
             Ok(raw) => raw,
-            Err(Error::TerminalReadCancelled) => {
+            Err(Error::TerminalReadCancelled | Error::ChildWaitCancelled) => {
                 // Reuse the existing nonreturning cancellation disposition,
                 // including parked/dequeue ownership. No syscall result or
-                // signal-effect wrapper may be manufactured for this read.
+                // signal-effect wrapper may be manufactured for this read or
+                // child wait.
                 match self.cancel_current_thread().await {}
             }
             Err(error) => {
@@ -5633,7 +5634,7 @@ impl KvmBackend {
                     })?;
                     let raw = match self.execute_static_elf_syscall(executor, &request, &memory) {
                         Ok(raw) => raw,
-                        Err(Error::TerminalReadCancelled) => {
+                        Err(Error::TerminalReadCancelled | Error::ChildWaitCancelled) => {
                             return Ok(self.cancelled_tool_thread_status(executor));
                         }
                         Err(error) => return Err(executor.with_signal_effects(error, None)),

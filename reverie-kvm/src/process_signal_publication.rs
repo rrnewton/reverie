@@ -172,7 +172,7 @@ enum AdoptedChild {
 /// What an adopting init's wait observes of its matching adopted orphans.
 /// Observation never removes anything: waitable exits stay in the
 /// process-shared ledger until one wait consumes them through
-/// `take_adopted_child`.
+/// `take_collectable_child`.
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(super) struct AdoptedChildPoll {
     /// A matching adopted orphan's exit is collectable.
@@ -191,6 +191,24 @@ pub(super) struct AdoptedWait {
     /// For a consuming wait: whether the adopter's waitable-zombie family
     /// edge was retired together with the adoption entry.
     pub(super) ledger_consumed: bool,
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-653): Review the outcomes of the atomic child-wait take.
+/// What one wait takes in its single step under the family lock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ChildWaitTake {
+    /// The waiting process already has a recorded family exit or failure.
+    /// Nothing was taken or consumed.
+    Cancelled,
+    /// The wait selected its own collected fork child `pid`. For a consuming
+    /// wait, `ledger_consumed` says whether that child's exact waitable-zombie
+    /// family edge was retired in the same step.
+    Local { pid: i32, ledger_consumed: bool },
+    /// A process-shared adopted orphan, taken from the ledger.
+    Adopted(AdoptedWait),
+    /// Nothing matching is collectable.
+    None,
 }
 
 /// The executor task blocked in a wait: its tid and task generation. Each
@@ -244,6 +262,74 @@ fn wake_adoption_waiters(waiters: Vec<Sender<i32>>, child_pid: i32) {
 }
 
 impl ProcessFamilyState {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review atomic adopted-orphan selection.
+    /// Select the smallest-pid matching waitable adopted orphan of `adopter`
+    /// whose pid is below `below` (the wait's smallest collectable local
+    /// child, if any), so a wait picks the same child Linux's pid order would
+    /// regardless of where it is tracked. A consuming wait removes the entry
+    /// and the adopter's waitable-zombie edge together, so exactly one wait of
+    /// any thread of the adopter collects it; a WNOWAIT wait
+    /// (`consume == false`) leaves both in place.
+    fn take_adopted(
+        &mut self,
+        adopter: ProcessKey,
+        matches: impl Fn(i32) -> bool,
+        below: Option<i32>,
+        consume: bool,
+    ) -> Option<AdoptedWait> {
+        let adopted = self.adoptions.get_mut(&adopter)?;
+        let (child, status) = adopted.iter().find_map(|(child, state)| match *state {
+            AdoptedChild::Waitable(status)
+                if matches(child.0) && below.is_none_or(|below| child.0 < below) =>
+            {
+                Some((*child, status))
+            }
+            _ => None,
+        })?;
+        let mut selected = AdoptedWait {
+            pid: child.0,
+            status,
+            ledger_consumed: false,
+        };
+        if !consume {
+            return Some(selected);
+        }
+        adopted.remove(&child);
+        if adopted.is_empty() {
+            self.adoptions.remove(&adopter);
+        }
+        if let Some(children) = self.direct_children.get_mut(&adopter)
+            && children.get(&child) == Some(&DirectChildState::WaitableZombie)
+        {
+            children.remove(&child);
+            if children.is_empty() {
+                self.direct_children.remove(&adopter);
+            }
+            selected.ledger_consumed = true;
+        }
+        Some(selected)
+    }
+
+    /// Retire `parent`'s waitable-zombie edge to its numeric child
+    /// `child_pid`. Returns false when no such edge exists.
+    fn consume_waitable_zombie(&mut self, parent: ProcessKey, child_pid: i32) -> bool {
+        let Some(children) = self.direct_children.get_mut(&parent) else {
+            return false;
+        };
+        let child = children.iter().find_map(|(key, state)| {
+            (key.0 == child_pid && *state == DirectChildState::WaitableZombie).then_some(*key)
+        });
+        let Some(child) = child else {
+            return false;
+        };
+        children.remove(&child);
+        if children.is_empty() {
+            self.direct_children.remove(&parent);
+        }
+        true
+    }
+
     fn take_adoption_waiters(&mut self, adopter: ProcessKey) -> Vec<Sender<i32>> {
         self.adoption_waiters
             .remove(&adopter)
@@ -377,6 +463,11 @@ pub(super) struct ProcessSignalRegistry {
     // waiter is asleep.
     #[cfg(test)]
     blocked_waits: std::sync::atomic::AtomicU64,
+    // Runs once, right after the next wait's atomic cancellation check and
+    // child take, so a test can commit a cancellation after a take has
+    // linearized.
+    #[cfg(test)]
+    after_child_wait_take: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl ProcessSignalRegistry {
@@ -805,6 +896,29 @@ impl ProcessSignalRegistry {
         self.blocked_waits.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Run `hook` right after the next wait's atomic child take.
+    #[cfg(test)]
+    pub(super) fn set_after_child_wait_take(&self, hook: impl FnOnce() + Send + 'static) {
+        *self
+            .after_child_wait_take
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Box::new(hook));
+    }
+
+    /// Run the hook set by `set_after_child_wait_take`, once, outside the
+    /// hook's own lock.
+    #[cfg(test)]
+    pub(super) fn run_after_child_wait_take(&self) {
+        let hook = self
+            .after_child_wait_take
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
     /// Wake registrations currently held for `adopter`.
     #[cfg(test)]
     pub(super) fn adoption_waiter_count(&self, adopter: SignalProcessId) -> usize {
@@ -872,7 +986,7 @@ impl ProcessSignalRegistry {
     // TODO-HUMAN-REVIEW(PR-653): Review process-shared adopted-orphan waits.
     /// Observe the adopted orphans of `adopter` that match a wait's pid
     /// selector, without removing any: a waitable exit stays process-shared
-    /// until a wait consumes it with `take_adopted_child`.
+    /// until a wait consumes it with `take_collectable_child`.
     /// A task about to block passes `waiter`. It is registered atomically with
     /// this observation exactly when the task will block on it: nothing
     /// matching is waitable or failed, and either a matching adoption is
@@ -952,75 +1066,53 @@ impl ProcessSignalRegistry {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-653): Review atomic adopted-orphan selection.
-    /// Select, in one step under the family lock, the smallest-pid matching
-    /// waitable adopted orphan of `adopter` whose pid is below `below` (the
-    /// wait's smallest collectable local child, if any), so a wait picks the
-    /// same child Linux's pid order would regardless of where it is tracked.
-    /// A consuming wait removes the entry and the adopter's waitable-zombie
-    /// edge together, so exactly one wait of any thread of the adopter
-    /// collects it; a WNOWAIT wait (`consume == false`) leaves both in place.
+    // TODO-HUMAN-REVIEW(PR-653): Review the atomic family-terminal check and
+    // child take shared by wait4/waitid.
+    /// Take the child one wait of `process` collects, in one step under the
+    /// family lock: the smallest-pid matching waitable adopted orphan whose
+    /// pid is below `local` (the wait's smallest matching collected fork
+    /// child, if any), else `local` itself. A consuming wait retires the
+    /// selected child's exact waitable-zombie edge in the same step; a
+    /// WNOWAIT wait (`consume == false`) leaves every entry in place.
+    ///
+    /// Returns `Cancelled`, taking nothing, when `process` already has a
+    /// recorded family exit or failure. Each of those is committed under this
+    /// same lock, together with retiring the exiting process's child edges
+    /// (`reparent_orphans`) and a root's adoptions, so a wait either takes
+    /// before that transition, with the ledger still intact, or observes it
+    /// and takes nothing. It can never consume a child after its own process
+    /// became terminal, nor find a child whose edge that transition retired.
     /// Competing waits are ordered by the syscall order that reaches this
     /// lock: under ToolControlled each is its own scheduler turn.
-    pub(super) fn take_adopted_child(
+    pub(super) fn take_collectable_child(
         &self,
-        adopter: SignalProcessId,
+        process: SignalProcessId,
         matches: impl Fn(i32) -> bool,
-        below: Option<i32>,
+        local: Option<i32>,
         consume: bool,
-    ) -> Option<AdoptedWait> {
+    ) -> ChildWaitTake {
         let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
-        let adopter_key = process_key(adopter);
-        let adopted = family.adoptions.get_mut(&adopter_key)?;
-        let (child, status) = adopted.iter().find_map(|(child, state)| match *state {
-            AdoptedChild::Waitable(status)
-                if matches(child.0) && below.is_none_or(|below| child.0 < below) =>
-            {
-                Some((*child, status))
-            }
-            _ => None,
-        })?;
-        let mut selected = AdoptedWait {
-            pid: child.0,
-            status,
-            ledger_consumed: false,
-        };
-        if !consume {
-            return Some(selected);
+        let key = process_key(process);
+        if family.terminal.contains_key(&key) {
+            return ChildWaitTake::Cancelled;
         }
-        adopted.remove(&child);
-        if adopted.is_empty() {
-            family.adoptions.remove(&adopter_key);
+        if let Some(adopted) = family.take_adopted(key, matches, local, consume) {
+            return ChildWaitTake::Adopted(adopted);
         }
-        if let Some(children) = family.direct_children.get_mut(&adopter_key)
-            && children.get(&child) == Some(&DirectChildState::WaitableZombie)
-        {
-            children.remove(&child);
-            if children.is_empty() {
-                family.direct_children.remove(&adopter_key);
-            }
-            selected.ledger_consumed = true;
+        match local {
+            Some(pid) => ChildWaitTake::Local {
+                pid,
+                ledger_consumed: consume && family.consume_waitable_zombie(key, pid),
+            },
+            None => ChildWaitTake::None,
         }
-        Some(selected)
     }
 
     pub(super) fn consume_child_wait(&self, parent: SignalProcessId, child_pid: i32) -> bool {
-        let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
-        let parent_key = process_key(parent);
-        let Some(children) = family.direct_children.get_mut(&parent_key) else {
-            return false;
-        };
-        let child = children.iter().find_map(|(key, state)| {
-            (key.0 == child_pid && *state == DirectChildState::WaitableZombie).then_some(*key)
-        });
-        let Some(child) = child else {
-            return false;
-        };
-        children.remove(&child);
-        if children.is_empty() {
-            family.direct_children.remove(&parent_key);
-        }
-        true
+        self.family
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .consume_waitable_zombie(process_key(parent), child_pid)
     }
 
     pub(super) fn control(self: &Arc<Self>) -> ProcessSignalControl {
@@ -5800,5 +5892,1199 @@ mod tests {
         );
         drop(guard);
         assert!(registry.lookup(process).is_none());
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review the executor-level child-wait
+    // cancellation tests.
+    /// Executor-level wait4/waitid of a thread whose terminal-read
+    /// cancellation, or whose process's family exit, has committed. Each
+    /// matrix reports every cell into one `Checks`, so a run shows the
+    /// outcome of each cell rather than only the first failure.
+    mod child_wait_cancellation {
+        use std::sync::mpsc::Receiver;
+        use std::sync::mpsc::RecvTimeoutError;
+        use std::sync::mpsc::Sender;
+        use std::time::Duration;
+
+        use super::*;
+        use crate::executor::ChildCompletion;
+        use crate::terminal_read::ReadRegistry;
+        use crate::terminal_read::WaitCancellation;
+
+        const STATUS: u64 = 0x200;
+        const INFO: u64 = 0x400;
+        /// Outside the one-page test memory, so every copy-out faults.
+        const UNMAPPED: u64 = 0x10000;
+        const PAGE: usize = 4096;
+        const SENTINEL: u8 = 0xa5;
+        const SIGINFO: usize = std::mem::size_of::<libc::siginfo_t>();
+        const TIMEOUT: Duration = Duration::from_secs(20);
+        const WORKER_TID: i32 = 5;
+        const PEER_TID: i32 = 8;
+        const LOCAL_PID: i32 = 4;
+        const LOCAL_CODE: i32 = 5;
+        const WORKER_CHILD_PID: i32 = 6;
+        const WORKER_CHILD_CODE: i32 = 7;
+        const ORPHAN_PID: i32 = 3;
+        const ORPHAN_CODE: i32 = 9;
+
+        /// How one executor-level wait ended.
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        enum Outcome {
+            Returned(i64),
+            Cancelled,
+            LedgerMismatch(i32),
+            Failed(String),
+        }
+
+        fn outcome(result: crate::Result<i64>) -> Outcome {
+            match result {
+                Ok(value) => Outcome::Returned(value),
+                Err(crate::Error::ChildWaitCancelled) => Outcome::Cancelled,
+                Err(crate::Error::FamilyWaitLedgerMismatch { child_pid, .. }) => {
+                    Outcome::LedgerMismatch(child_pid)
+                }
+                Err(error) => Outcome::Failed(error.to_string()),
+            }
+        }
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Wait {
+            Wait4 { nohang: bool },
+            Waitid { nohang: bool, nowait: bool },
+        }
+
+        /// Every blocking, polling and peeking form of both syscalls.
+        const WAITS: [Wait; 6] = [
+            Wait::Wait4 { nohang: false },
+            Wait::Wait4 { nohang: true },
+            Wait::Waitid {
+                nohang: false,
+                nowait: false,
+            },
+            Wait::Waitid {
+                nohang: true,
+                nowait: false,
+            },
+            Wait::Waitid {
+                nohang: false,
+                nowait: true,
+            },
+            Wait::Waitid {
+                nohang: true,
+                nowait: true,
+            },
+        ];
+
+        impl Wait {
+            fn nohang(self) -> bool {
+                match self {
+                    Wait::Wait4 { nohang } | Wait::Waitid { nohang, .. } => nohang,
+                }
+            }
+
+            /// Whether a collected child is reaped: everything but WNOWAIT.
+            fn consumes(self) -> bool {
+                !matches!(self, Wait::Waitid { nowait: true, .. })
+            }
+
+            /// Where this wait's status or siginfo goes in the test page.
+            fn output(self) -> u64 {
+                match self {
+                    Wait::Wait4 { .. } => STATUS,
+                    Wait::Waitid { .. } => INFO,
+                }
+            }
+
+            /// wait4(-1, output, options, NULL), or
+            /// waitid(P_ALL, 0, output, WEXITED | options, NULL).
+            fn request(self, output: u64) -> SyscallRequest {
+                match self {
+                    Wait::Wait4 { nohang } => {
+                        let options = if nohang { libc::WNOHANG } else { 0 };
+                        SyscallRequest::new(
+                            libc::SYS_wait4 as u64,
+                            [u64::from(u32::MAX), output, options as u64, 0, 0, 0],
+                        )
+                    }
+                    Wait::Waitid { nohang, nowait } => {
+                        let mut options = libc::WEXITED;
+                        if nohang {
+                            options |= libc::WNOHANG;
+                        }
+                        if nowait {
+                            options |= libc::WNOWAIT;
+                        }
+                        SyscallRequest::new(
+                            libc::SYS_waitid as u64,
+                            [libc::P_ALL as u64, 0, output, options as u64, 0, 0],
+                        )
+                    }
+                }
+            }
+
+            /// The syscall result of a wait that collected `pid`.
+            fn collected_result(self, pid: i32) -> i64 {
+                match self {
+                    Wait::Wait4 { .. } => i64::from(pid),
+                    Wait::Waitid { .. } => 0,
+                }
+            }
+        }
+
+        /// What a wait may have written to the sentinel-filled test page.
+        #[derive(Clone, Copy, Debug)]
+        enum Written {
+            /// Nothing at all.
+            Nothing,
+            /// The status of child `pid`, exited with `code`.
+            Collected { pid: i32, code: i32 },
+            /// A WNOHANG "no child ready yet" result.
+            NotReady,
+        }
+
+        /// The (start, length) of a wait's output struct in the test page.
+        type Span = (usize, usize);
+        /// A checked i32 field of an output struct, as (offset, value).
+        type Field = (usize, i32);
+
+        /// How `page` differs from what a wait that wrote `written` leaves:
+        /// every field Linux writes has its value, and every byte outside the
+        /// output struct is untouched.
+        fn page_differences(page: &[u8], wait: Wait, written: Written) -> Vec<String> {
+            let status = STATUS as usize;
+            let info = INFO as usize;
+            let (output, fields): (Option<Span>, Vec<Field>) = match (wait, written) {
+                (_, Written::Nothing) | (Wait::Wait4 { .. }, Written::NotReady) => {
+                    (None, Vec::new())
+                }
+                (Wait::Wait4 { .. }, Written::Collected { code, .. }) => {
+                    (Some((status, 4)), vec![(0, code << 8)])
+                }
+                // si_signo, si_errno, si_code, si_pid, si_uid, si_status.
+                (Wait::Waitid { .. }, Written::Collected { pid, code }) => (
+                    Some((info, SIGINFO)),
+                    vec![
+                        (0, libc::SIGCHLD),
+                        (4, 0),
+                        (8, libc::CLD_EXITED),
+                        (16, pid),
+                        (20, 0),
+                        (24, code),
+                    ],
+                ),
+                (Wait::Waitid { .. }, Written::NotReady) => (
+                    Some((info, SIGINFO)),
+                    vec![(0, 0), (4, 0), (8, 0), (16, 0), (20, 0), (24, 0)],
+                ),
+            };
+            let mut differences = Vec::new();
+            if let Some((start, _)) = output {
+                for (offset, expected) in fields {
+                    let at = start + offset;
+                    let actual = i32::from_le_bytes(page[at..at + 4].try_into().unwrap());
+                    if actual != expected {
+                        differences
+                            .push(format!("i32 at {at:#x} is {actual:#x}, not {expected:#x}"));
+                    }
+                }
+            }
+            let inside = |at: usize| {
+                output.is_some_and(|(start, length)| (start..start + length).contains(&at))
+            };
+            let outside = page
+                .iter()
+                .enumerate()
+                .filter(|&(at, byte)| !inside(at) && *byte != SENTINEL)
+                .map(|(at, _)| at)
+                .collect::<Vec<_>>();
+            if let (Some(first), Some(last)) = (outside.first(), outside.last()) {
+                differences.push(format!(
+                    "{} byte(s) written outside the output struct, {first:#x}..={last:#x}",
+                    outside.len()
+                ));
+            }
+            differences
+        }
+
+        /// Run one wait in a fresh page filled with `SENTINEL`, with its
+        /// output pointer at `output`; returns its outcome and the page.
+        fn run_wait(
+            executor: &mut ElfExecutor,
+            wait: Wait,
+            output: u64,
+            cancellation: &WaitCancellation,
+        ) -> (Outcome, Vec<u8>) {
+            let mut memory = GuestMemory::new(0, PAGE).unwrap();
+            memory.write(0, &[SENTINEL; PAGE]).unwrap();
+            let result = executor.execute_checked_with_wait_cancellation(
+                &wait.request(output),
+                &memory,
+                cancellation,
+            );
+            let mut page = vec![0; PAGE];
+            memory.read(0, &mut page).unwrap();
+            (outcome(result), page)
+        }
+
+        type WaitResult = (ElfExecutor, (Outcome, Vec<u8>));
+
+        fn start_wait(
+            executor: ElfExecutor,
+            wait: Wait,
+            output: u64,
+            cancellation: WaitCancellation,
+        ) -> Receiver<WaitResult> {
+            wait_in_thread(executor, move |executor| {
+                run_wait(executor, wait, output, &cancellation)
+            })
+        }
+
+        /// Receive a started wait's result. A wait still asleep after
+        /// `TIMEOUT` is released with `unblock` and recorded as a failure, so
+        /// one stranded cell cannot hang the whole matrix.
+        fn finish(
+            checks: &mut Checks,
+            what: &str,
+            receiver: Receiver<WaitResult>,
+            unblock: impl FnOnce(),
+        ) -> Option<(ElfExecutor, Outcome, Vec<u8>)> {
+            match receiver.recv_timeout(TIMEOUT) {
+                Ok((executor, (outcome, page))) => Some((executor, outcome, page)),
+                Err(RecvTimeoutError::Timeout) => {
+                    unblock();
+                    match receiver.recv_timeout(TIMEOUT) {
+                        Ok((_, (outcome, _))) => checks.fail(format!(
+                            "{what}: asleep after {TIMEOUT:?}; returned {outcome:?} only once \
+                             its child was released"
+                        )),
+                        Err(error) => {
+                            checks.fail(format!("{what}: asleep after {TIMEOUT:?}, then {error:?}"))
+                        }
+                    }
+                    None
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    checks.fail(format!("{what}: the waiter thread panicked"));
+                    None
+                }
+            }
+        }
+
+        /// Poll `condition` for up to `TIMEOUT`. Unlike `wait_until` it
+        /// reports instead of panicking, so a matrix records every cell.
+        fn eventually(condition: impl Fn() -> bool) -> bool {
+            let deadline = std::time::Instant::now() + TIMEOUT;
+            while !condition() {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            true
+        }
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Child {
+            /// The waiting thread's own fork child, exited and collected by
+            /// the host.
+            LocalZombie,
+            /// The waiting thread's own fork child, still running.
+            LocalRunning,
+            /// An orphan adopted by guest init, exited and collectable.
+            AdoptedZombie,
+            /// An orphan adopted by guest init, still running.
+            AdoptedRunning,
+        }
+
+        const CHILDREN: [Child; 4] = [
+            Child::LocalZombie,
+            Child::LocalRunning,
+            Child::AdoptedZombie,
+            Child::AdoptedRunning,
+        ];
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Waiter {
+            Leader,
+            Worker,
+        }
+
+        /// A thread-group cancellation of the terminal-read registry.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Cause {
+            /// exit_group: cancels the leader and every worker.
+            ExitGroup,
+            /// execve's worker cancellation: cancels workers only.
+            CancelWorkers,
+        }
+
+        impl Cause {
+            fn commit(self, reads: &ReadRegistry) {
+                match self {
+                    Cause::ExitGroup => reads.request_exit_group(reverie::ExitStatus::Exited(42)),
+                    Cause::CancelWorkers => reads.cancel_workers(),
+                }
+            }
+
+            fn cancels(self, waiter: Waiter) -> bool {
+                self == Cause::ExitGroup || waiter == Waiter::Worker
+            }
+        }
+
+        /// A peer thread's transition that makes the process terminal.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum PeerExit {
+            ExitGroup,
+            Failure,
+        }
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Held {
+            /// Still running: a pending local child or a running adoption.
+            Running,
+            /// Exited and still collectable.
+            Zombie,
+            /// Collected: nothing of it remains.
+            Gone,
+        }
+
+        /// Everything that records a child for its collector: the waiting
+        /// thread's numeric status and pending host child, the process's
+        /// family edge, and the adoption entry.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        struct ChildRecords {
+            status: Option<reverie::ExitStatus>,
+            pending: bool,
+            edge: Option<DirectChildState>,
+            adoption: Option<AdoptedChild>,
+        }
+
+        fn observed_records(
+            waiter: &ElfExecutor,
+            registry: &ProcessSignalRegistry,
+            process: SignalProcessId,
+            pid: i32,
+            child: Option<SignalProcessId>,
+        ) -> ChildRecords {
+            ChildRecords {
+                status: waiter.state.children.get(&pid).copied(),
+                pending: waiter.has_pending_child_process(pid),
+                edge: child.and_then(|child| family_edge(registry, process, child)),
+                adoption: child.and_then(|child| registry.adopted_child_state(process, child)),
+            }
+        }
+
+        /// The records of a child exiting with `code` that is `held`. A
+        /// gated local child has no process identity and so no family edge.
+        fn held_records(held: Held, adopted: bool, code: i32, identified: bool) -> ChildRecords {
+            let status = reverie::ExitStatus::Exited(code);
+            let none = ChildRecords {
+                status: None,
+                pending: false,
+                edge: None,
+                adoption: None,
+            };
+            match (held, adopted) {
+                (Held::Gone, _) => none,
+                (Held::Running, false) => ChildRecords {
+                    pending: true,
+                    ..none
+                },
+                (Held::Zombie, false) => ChildRecords {
+                    status: Some(status),
+                    edge: identified.then_some(DirectChildState::WaitableZombie),
+                    ..none
+                },
+                (Held::Running, true) => ChildRecords {
+                    edge: Some(DirectChildState::Live),
+                    adoption: Some(AdoptedChild::Running),
+                    ..none
+                },
+                (Held::Zombie, true) => ChildRecords {
+                    edge: Some(DirectChildState::WaitableZombie),
+                    adoption: Some(AdoptedChild::Waitable(status)),
+                    ..none
+                },
+            }
+        }
+
+        /// One guest process with one child of kind `kind`, and the thread
+        /// whose wait is under test.
+        struct Family {
+            kind: Child,
+            /// The thread whose wait is under test; taken while it waits.
+            waiter: Option<ElfExecutor>,
+            /// The thread-group leader when a worker waits.
+            leader: Option<ElfExecutor>,
+            registry: Arc<ProcessSignalRegistry>,
+            process: SignalProcessId,
+            pid: i32,
+            code: i32,
+            /// The child's process identity; a gated local child has none.
+            child: Option<SignalProcessId>,
+            /// Opens a running local child's exit.
+            gate: Option<Sender<()>>,
+            /// A running adopted orphan, exited by `release`.
+            orphan: Option<ElfExecutor>,
+            /// Executors that must outlive the cell.
+            keep: Vec<ElfExecutor>,
+        }
+
+        impl Family {
+            fn new(kind: Child, waiter: Waiter) -> Self {
+                let mut keep = Vec::new();
+                let mut orphans = Vec::new();
+                let root = match kind {
+                    Child::AdoptedZombie | Child::AdoptedRunning => {
+                        let (root, owner, adopted) = init_with_adopted_orphans(&[ORPHAN_PID]);
+                        keep.push(owner);
+                        orphans = adopted;
+                        root
+                    }
+                    Child::LocalZombie | Child::LocalRunning => executor_with_root(1),
+                };
+                let process = identity(&root);
+                let registry = root.signal_registry.clone();
+                let (leader, mut waiting) = match waiter {
+                    Waiter::Leader => (None, root),
+                    Waiter::Worker => {
+                        let worker = root.thread_child(WORKER_TID).unwrap();
+                        (Some(root), worker)
+                    }
+                };
+                let mut family = Family {
+                    kind,
+                    waiter: None,
+                    leader,
+                    registry,
+                    process,
+                    pid: LOCAL_PID,
+                    code: LOCAL_CODE,
+                    child: None,
+                    gate: None,
+                    orphan: None,
+                    keep,
+                };
+                match kind {
+                    Child::LocalZombie => {
+                        let mut child = waiting.fork_child(LOCAL_PID, false, false).unwrap();
+                        family.child = Some(identity(&child));
+                        child.retire_current_thread(reverie::ExitStatus::Exited(LOCAL_CODE), false);
+                        waiting
+                            .record_child_completion(
+                                LOCAL_PID,
+                                ChildCompletion::Waitable(reverie::ExitStatus::Exited(LOCAL_CODE)),
+                            )
+                            .unwrap();
+                        family.keep.push(child);
+                    }
+                    Child::LocalRunning => {
+                        family.gate = Some(gated_local_child(&mut waiting, LOCAL_PID, LOCAL_CODE));
+                    }
+                    Child::AdoptedZombie | Child::AdoptedRunning => {
+                        let mut orphan = orphans.pop().expect("one adopted orphan");
+                        family.pid = ORPHAN_PID;
+                        family.code = ORPHAN_CODE;
+                        family.child = Some(identity(&orphan));
+                        if kind == Child::AdoptedZombie {
+                            exit_adopted_orphan(process, &mut orphan, ORPHAN_CODE);
+                            family.keep.push(orphan);
+                        } else {
+                            family.orphan = Some(orphan);
+                        }
+                    }
+                }
+                family.waiter = Some(waiting);
+                family
+            }
+
+            fn adopted(&self) -> bool {
+                matches!(self.kind, Child::AdoptedZombie | Child::AdoptedRunning)
+            }
+
+            fn running(&self) -> bool {
+                matches!(self.kind, Child::LocalRunning | Child::AdoptedRunning)
+            }
+
+            fn leader(&self) -> &ElfExecutor {
+                self.leader
+                    .as_ref()
+                    .or(self.waiter.as_ref())
+                    .expect("the leader is present")
+            }
+
+            /// Let a running child exit: open a local child's exit gate, or
+            /// exit the orphan and publish its status to its adopter.
+            fn release(&mut self) {
+                if let Some(gate) = self.gate.take() {
+                    let _ = gate.send(());
+                }
+                if let Some(mut orphan) = self.orphan.take() {
+                    exit_adopted_orphan(self.process, &mut orphan, self.code);
+                    self.keep.push(orphan);
+                }
+            }
+
+            fn records(&self) -> ChildRecords {
+                observed_records(
+                    self.waiter.as_ref().expect("the wait has returned"),
+                    &self.registry,
+                    self.process,
+                    self.pid,
+                    self.child,
+                )
+            }
+
+            fn expected_records(&self, held: Held) -> ChildRecords {
+                held_records(held, self.adopted(), self.code, self.child.is_some())
+            }
+
+            /// The waiter, the child's legitimate collector, collects its
+            /// status with a plain blocking wait4.
+            fn collect(&mut self, checks: &mut Checks, what: &str) {
+                let Some(waiter) = self.waiter.take() else {
+                    return;
+                };
+                self.waiter = wait_without_sleeping(
+                    checks,
+                    &format!("{what}: plain wait4 by the collector"),
+                    waiter,
+                    (i64::from(self.pid), self.code << 8),
+                    |executor| wait4(executor, -1, 0),
+                    || {},
+                );
+            }
+
+            /// Nothing of the child remains, and the waiter has no child left.
+            fn check_nothing_left(&mut self, checks: &mut Checks, what: &str) {
+                if self.waiter.is_none() {
+                    return;
+                }
+                checks.eq(
+                    &format!("{what}: child records at the end"),
+                    self.records(),
+                    self.expected_records(Held::Gone),
+                );
+                let waiter = self.waiter.as_mut().unwrap();
+                checks.eq(
+                    &format!("{what}: WNOHANG wait4 at the end"),
+                    wait4(waiter, -1, libc::WNOHANG),
+                    (errno(libc::ECHILD), 0),
+                );
+            }
+        }
+
+        impl Drop for Family {
+            fn drop(&mut self) {
+                // Never strand a gated child thread on its exit gate.
+                if let Some(gate) = self.gate.take() {
+                    let _ = gate.send(());
+                    if let Some(waiter) = self.waiter.as_mut() {
+                        let _ = waiter.collect_child_process(self.pid, true);
+                    }
+                }
+            }
+        }
+
+        fn cancelled_thread_cell(
+            checks: &mut Checks,
+            kind: Child,
+            wait: Wait,
+            waiter: Waiter,
+            cause: Cause,
+        ) {
+            let what = format!("{kind:?} {wait:?} {waiter:?} {cause:?}");
+            let mut family = Family::new(kind, waiter);
+            let reads = Arc::new(ReadRegistry::default());
+            cause.commit(&reads);
+            let cancelled = cause.cancels(waiter);
+            // Only a live thread's blocking wait on a running child sleeps.
+            let sleeps = !cancelled && family.running() && !wait.nohang();
+            let registry = family.registry.clone();
+            let receiver = start_wait(
+                family.waiter.take().unwrap(),
+                wait,
+                wait.output(),
+                reads.wait_cancellation(waiter == Waiter::Worker),
+            );
+            if sleeps {
+                if !eventually(|| registry.blocked_waits() == 1) {
+                    checks.fail(format!(
+                        "{what}: the wait never reached its blocking receive"
+                    ));
+                }
+                family.release();
+            }
+            let Some((executor, outcome, page)) =
+                finish(checks, &what, receiver, || family.release())
+            else {
+                return;
+            };
+            family.waiter = Some(executor);
+            let exited = !family.running() || sleeps;
+            let (expected, written) = if cancelled {
+                (Outcome::Cancelled, Written::Nothing)
+            } else if exited {
+                (
+                    Outcome::Returned(wait.collected_result(family.pid)),
+                    Written::Collected {
+                        pid: family.pid,
+                        code: family.code,
+                    },
+                )
+            } else {
+                (Outcome::Returned(0), Written::NotReady)
+            };
+            checks.eq(&format!("{what}: outcome"), outcome, expected);
+            checks.eq(
+                &format!("{what}: page"),
+                page_differences(&page, wait, written),
+                Vec::new(),
+            );
+            checks.eq(
+                &format!("{what}: wake registrations left"),
+                registry.adoption_waiter_count(family.process),
+                0,
+            );
+            let taken = !cancelled && exited && wait.consumes();
+            let held = if taken {
+                Held::Gone
+            } else if exited {
+                Held::Zombie
+            } else {
+                Held::Running
+            };
+            checks.eq(
+                &format!("{what}: child records after the wait"),
+                family.records(),
+                family.expected_records(held),
+            );
+            if !taken {
+                family.release();
+                family.collect(checks, &what);
+            }
+            family.check_nothing_left(checks, &what);
+        }
+
+        /// A wait of a thread whose terminal-read cancellation committed (the
+        /// leader's by exit_group; a worker's by exit_group or by execve's
+        /// worker cancellation) takes nothing and writes nothing, whether it
+        /// would have collected, polled, peeked or blocked, for the thread's
+        /// own fork child and for a process-shared adopted orphan; the status
+        /// stays collectable. The leader's waits after worker cancellation
+        /// are the controls: they collect, poll and block normally.
+        #[test]
+        fn child_waits_of_a_cancelled_thread_take_nothing_and_write_nothing() {
+            let mut checks = Checks::default();
+            for kind in CHILDREN {
+                for wait in WAITS {
+                    for waiter in [Waiter::Leader, Waiter::Worker] {
+                        for cause in [Cause::ExitGroup, Cause::CancelWorkers] {
+                            cancelled_thread_cell(&mut checks, kind, wait, waiter, cause);
+                        }
+                    }
+                }
+            }
+            checks.finish();
+        }
+
+        fn terminal_process_cell(
+            checks: &mut Checks,
+            kind: Child,
+            wait: Wait,
+            controlled: bool,
+            waiter: Waiter,
+            exit: PeerExit,
+        ) {
+            let what = format!("{kind:?} {wait:?} controlled={controlled} {waiter:?} {exit:?}");
+            let mut family = Family::new(kind, waiter);
+            family
+                .registry
+                .controlled
+                .store(controlled, std::sync::atomic::Ordering::Release);
+            let mut peer = family.leader().thread_child(PEER_TID).unwrap();
+            let expected_exit = match exit {
+                PeerExit::ExitGroup => {
+                    peer.retire_current_thread(reverie::ExitStatus::Exited(3), true);
+                    ProcessFamilyExit::Root
+                }
+                PeerExit::Failure => {
+                    peer.retire_failed_thread();
+                    ProcessFamilyExit::Failed
+                }
+            };
+            family.keep.push(peer);
+            checks.eq(
+                &format!("{what}: family exit"),
+                family.registry.process_family_exit(family.process),
+                Some(expected_exit),
+            );
+            // The thread group's terminal-read cancellation never commits.
+            let reads = Arc::new(ReadRegistry::default());
+            let receiver = start_wait(
+                family.waiter.take().unwrap(),
+                wait,
+                wait.output(),
+                reads.wait_cancellation(waiter == Waiter::Worker),
+            );
+            let Some((executor, outcome, page)) =
+                finish(checks, &what, receiver, || family.release())
+            else {
+                return;
+            };
+            family.waiter = Some(executor);
+            checks.eq(&format!("{what}: outcome"), outcome, Outcome::Cancelled);
+            checks.eq(
+                &format!("{what}: page"),
+                page_differences(&page, wait, Written::Nothing),
+                Vec::new(),
+            );
+            // The family exit retires the process's edges itself; the
+            // thread's numeric child is neither reaped nor joined.
+            let records = family.records();
+            let expected = family.expected_records(if family.running() {
+                Held::Running
+            } else {
+                Held::Zombie
+            });
+            checks.eq(
+                &format!("{what}: numeric child after the wait"),
+                (records.status, records.pending),
+                (expected.status, expected.pending),
+            );
+        }
+
+        /// A wait of a thread whose process already has a recorded family
+        /// exit (a peer's exit_group) or failure takes nothing and writes
+        /// nothing, in controlled and uncontrolled mode, although the thread
+        /// group's terminal-read cancellation never committed.
+        #[test]
+        fn child_waits_of_a_terminal_process_take_nothing_and_write_nothing() {
+            let mut checks = Checks::default();
+            for kind in [Child::LocalZombie, Child::LocalRunning] {
+                for wait in WAITS {
+                    for controlled in [false, true] {
+                        for waiter in [Waiter::Leader, Waiter::Worker] {
+                            for exit in [PeerExit::ExitGroup, PeerExit::Failure] {
+                                terminal_process_cell(
+                                    &mut checks,
+                                    kind,
+                                    wait,
+                                    controlled,
+                                    waiter,
+                                    exit,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            checks.finish();
+        }
+
+        /// The children two threads of one process sleep on.
+        struct Pair {
+            process: SignalProcessId,
+            leader_gate: Option<Sender<()>>,
+            worker_gate: Option<Sender<()>>,
+            orphan: Option<ElfExecutor>,
+            keep: Vec<ElfExecutor>,
+        }
+
+        impl Pair {
+            fn release_orphan(&mut self) {
+                if let Some(mut orphan) = self.orphan.take() {
+                    exit_adopted_orphan(self.process, &mut orphan, ORPHAN_CODE);
+                    self.keep.push(orphan);
+                }
+            }
+
+            fn release_leader_child(&mut self) {
+                if let Some(gate) = self.leader_gate.take() {
+                    let _ = gate.send(());
+                }
+                self.release_orphan();
+            }
+
+            fn release_all(&mut self) {
+                self.release_leader_child();
+                if let Some(gate) = self.worker_gate.take() {
+                    let _ = gate.send(());
+                }
+            }
+        }
+
+        fn blocked_pair_cell(checks: &mut Checks, wait: Wait, shared_orphan: bool, cause: Cause) {
+            let what = format!("{wait:?} shared_orphan={shared_orphan} {cause:?}");
+            let mut keep = Vec::new();
+            let mut orphans = Vec::new();
+            let (mut leader, mut worker) = if shared_orphan {
+                let (root, owner, adopted) = init_with_adopted_orphans(&[ORPHAN_PID]);
+                keep.push(owner);
+                orphans = adopted;
+                let worker = root.thread_child(WORKER_TID).unwrap();
+                (root, worker)
+            } else {
+                let root = executor_with_root(1);
+                let worker = root.thread_child(WORKER_TID).unwrap();
+                (root, worker)
+            };
+            let process = identity(&leader);
+            let registry = leader.signal_registry.clone();
+            let mut pair = Pair {
+                process,
+                leader_gate: None,
+                worker_gate: None,
+                orphan: orphans.pop(),
+                keep,
+            };
+            let (leader_pid, leader_code) = if shared_orphan {
+                (ORPHAN_PID, ORPHAN_CODE)
+            } else {
+                pair.leader_gate = Some(gated_local_child(&mut leader, LOCAL_PID, LOCAL_CODE));
+                pair.worker_gate = Some(gated_local_child(
+                    &mut worker,
+                    WORKER_CHILD_PID,
+                    WORKER_CHILD_CODE,
+                ));
+                (LOCAL_PID, LOCAL_CODE)
+            };
+            let reads = Arc::new(ReadRegistry::default());
+            let leader_wait =
+                start_wait(leader, wait, wait.output(), reads.wait_cancellation(false));
+            let worker_wait =
+                start_wait(worker, wait, wait.output(), reads.wait_cancellation(true));
+            if !eventually(|| registry.blocked_waits() == 2) {
+                checks.fail(format!(
+                    "{what}: the two waits never both reached their blocking receive"
+                ));
+            }
+            if shared_orphan {
+                checks.eq(
+                    &format!("{what}: wake registrations while both sleep"),
+                    registry.adoption_waiter_count(process),
+                    2,
+                );
+            }
+            cause.commit(&reads);
+
+            let worker = finish(checks, &format!("{what}: worker"), worker_wait, || {
+                pair.release_all()
+            })
+            .map(|(worker, outcome, page)| {
+                checks.eq(
+                    &format!("{what}: worker outcome"),
+                    outcome,
+                    Outcome::Cancelled,
+                );
+                checks.eq(
+                    &format!("{what}: worker page"),
+                    page_differences(&page, wait, Written::Nothing),
+                    Vec::new(),
+                );
+                worker
+            });
+            let leader = match cause {
+                Cause::CancelWorkers => {
+                    if shared_orphan {
+                        checks.eq(
+                            &format!("{what}: wake registrations after the worker's wait"),
+                            registry.adoption_waiter_count(process),
+                            1,
+                        );
+                    }
+                    pair.release_leader_child();
+                    finish(checks, &format!("{what}: leader"), leader_wait, || {})
+                }
+                Cause::ExitGroup => finish(checks, &format!("{what}: leader"), leader_wait, || {
+                    pair.release_all()
+                }),
+            };
+            let Some((mut leader, outcome, page)) = leader else {
+                pair.release_all();
+                return;
+            };
+            match cause {
+                Cause::CancelWorkers => {
+                    checks.eq(
+                        &format!("{what}: leader outcome"),
+                        outcome,
+                        Outcome::Returned(wait.collected_result(leader_pid)),
+                    );
+                    checks.eq(
+                        &format!("{what}: leader page"),
+                        page_differences(
+                            &page,
+                            wait,
+                            Written::Collected {
+                                pid: leader_pid,
+                                code: leader_code,
+                            },
+                        ),
+                        Vec::new(),
+                    );
+                }
+                Cause::ExitGroup => {
+                    checks.eq(
+                        &format!("{what}: leader outcome"),
+                        outcome,
+                        Outcome::Cancelled,
+                    );
+                    checks.eq(
+                        &format!("{what}: leader page"),
+                        page_differences(&page, wait, Written::Nothing),
+                        Vec::new(),
+                    );
+                    pair.release_all();
+                    let Some(collector) = wait_without_sleeping(
+                        checks,
+                        &format!("{what}: plain wait4 by the leader"),
+                        leader,
+                        (i64::from(leader_pid), leader_code << 8),
+                        |executor| wait4(executor, -1, 0),
+                        || {},
+                    ) else {
+                        return;
+                    };
+                    leader = collector;
+                }
+            }
+            if !shared_orphan {
+                // The worker's own child stays collectable by the worker.
+                pair.release_all();
+                if let Some(worker) = worker {
+                    wait_without_sleeping(
+                        checks,
+                        &format!("{what}: plain wait4 by the worker"),
+                        worker,
+                        (i64::from(WORKER_CHILD_PID), WORKER_CHILD_CODE << 8),
+                        |executor| wait4(executor, -1, 0),
+                        || {},
+                    );
+                }
+            }
+            checks.eq(
+                &format!("{what}: wake registrations left"),
+                registry.adoption_waiter_count(process),
+                0,
+            );
+            checks.eq(
+                &format!("{what}: WNOHANG wait4 by the leader at the end"),
+                wait4(&mut leader, -1, libc::WNOHANG),
+                (errno(libc::ECHILD), 0),
+            );
+        }
+
+        /// Both threads of one process asleep in the same wait, on their own
+        /// running fork children or on one shared running orphan, when a
+        /// cancellation commits: execve's worker cancellation wakes and
+        /// retires only the worker's wait, exit_group both, and each status
+        /// stays collectable by its legitimate collector.
+        #[test]
+        fn blocked_child_waits_are_cancelled_only_for_the_threads_they_apply_to() {
+            let mut checks = Checks::default();
+            for wait in [
+                Wait::Wait4 { nohang: false },
+                Wait::Waitid {
+                    nohang: false,
+                    nowait: false,
+                },
+            ] {
+                for shared_orphan in [false, true] {
+                    for cause in [Cause::CancelWorkers, Cause::ExitGroup] {
+                        blocked_pair_cell(&mut checks, wait, shared_orphan, cause);
+                    }
+                }
+            }
+            checks.finish();
+        }
+
+        fn take_then_cancel_cell(checks: &mut Checks, wait: Wait, adopted: bool, waiter: Waiter) {
+            let what = format!("{wait:?} adopted={adopted} {waiter:?}");
+            let mut keep = Vec::new();
+            let mut orphans = Vec::new();
+            let root = if adopted {
+                let (root, owner, adopted_orphans) =
+                    init_with_adopted_orphans(&[ORPHAN_PID, ORPHAN_PID + 1]);
+                keep.push(owner);
+                orphans = adopted_orphans;
+                root
+            } else {
+                executor_with_root(1)
+            };
+            let process = identity(&root);
+            let registry = root.signal_registry.clone();
+            let mut waiting = match waiter {
+                Waiter::Leader => root,
+                Waiter::Worker => {
+                    let worker = root.thread_child(WORKER_TID).unwrap();
+                    keep.push(root);
+                    worker
+                }
+            };
+            // (pid, exit code, identity) of each zombie, in pid order.
+            let mut zombies = Vec::new();
+            if adopted {
+                for mut orphan in orphans {
+                    let pid = orphan.state.pid;
+                    // A retired thread has no signal identity left to read.
+                    zombies.push((pid, pid + 10, identity(&orphan)));
+                    exit_adopted_orphan(process, &mut orphan, pid + 10);
+                    keep.push(orphan);
+                }
+            } else {
+                for pid in [LOCAL_PID, WORKER_CHILD_PID] {
+                    let mut child = waiting.fork_child(pid, false, false).unwrap();
+                    zombies.push((pid, pid + 10, identity(&child)));
+                    child.retire_current_thread(reverie::ExitStatus::Exited(pid + 10), false);
+                    waiting
+                        .record_child_completion(
+                            pid,
+                            ChildCompletion::Waitable(reverie::ExitStatus::Exited(pid + 10)),
+                        )
+                        .unwrap();
+                    keep.push(child);
+                }
+            }
+            let records = |waiting: &ElfExecutor| {
+                zombies
+                    .iter()
+                    .map(|&(pid, _, child)| {
+                        observed_records(waiting, &registry, process, pid, Some(child))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let reads = Arc::new(ReadRegistry::default());
+            let cancel = reads.clone();
+            registry.set_after_child_wait_take(move || {
+                cancel.request_exit_group(reverie::ExitStatus::Exited(42))
+            });
+            let cancellation = reads.wait_cancellation(waiter == Waiter::Worker);
+            let (first_pid, first_code, _) = zombies[0];
+
+            let (outcome, page) = run_wait(&mut waiting, wait, wait.output(), &cancellation);
+            checks.eq(
+                &format!("{what}: first wait"),
+                outcome,
+                Outcome::Returned(wait.collected_result(first_pid)),
+            );
+            checks.eq(
+                &format!("{what}: first page"),
+                page_differences(
+                    &page,
+                    wait,
+                    Written::Collected {
+                        pid: first_pid,
+                        code: first_code,
+                    },
+                ),
+                Vec::new(),
+            );
+            checks.eq(
+                &format!("{what}: cancellation committed right after the take"),
+                cancellation.is_cancelled(),
+                true,
+            );
+            let expected = zombies
+                .iter()
+                .enumerate()
+                .map(|(index, &(_, code, _))| {
+                    let held = if index == 0 && wait.consumes() {
+                        Held::Gone
+                    } else {
+                        Held::Zombie
+                    };
+                    held_records(held, adopted, code, true)
+                })
+                .collect::<Vec<_>>();
+            checks.eq(
+                &format!("{what}: children after the first wait"),
+                records(&waiting),
+                expected.clone(),
+            );
+
+            let (outcome, page) = run_wait(&mut waiting, wait, wait.output(), &cancellation);
+            checks.eq(&format!("{what}: second wait"), outcome, Outcome::Cancelled);
+            checks.eq(
+                &format!("{what}: second page"),
+                page_differences(&page, wait, Written::Nothing),
+                Vec::new(),
+            );
+            checks.eq(
+                &format!("{what}: children after the second wait"),
+                records(&waiting),
+                expected,
+            );
+        }
+
+        /// A wait whose atomic take linearized before a cancellation commits
+        /// returns that child, which was consumed for it (or peeked, under
+        /// WNOWAIT); the thread's next wait is cancelled and takes nothing.
+        /// The hook commits exit_group right after the first wait's take.
+        #[test]
+        fn a_take_before_a_cancellation_returns_and_the_next_wait_is_cancelled() {
+            let mut checks = Checks::default();
+            for wait in WAITS {
+                for adopted in [false, true] {
+                    for waiter in [Waiter::Leader, Waiter::Worker] {
+                        take_then_cancel_cell(&mut checks, wait, adopted, waiter);
+                    }
+                }
+            }
+            checks.finish();
+        }
+
+        fn faulting_output_cell(checks: &mut Checks, kind: Child, wait: Wait) {
+            let what = format!("{kind:?} {wait:?}");
+            let mut family = Family::new(kind, Waiter::Leader);
+            let reads = Arc::new(ReadRegistry::default());
+            let (outcome, page) = run_wait(
+                family.waiter.as_mut().unwrap(),
+                wait,
+                UNMAPPED,
+                &reads.wait_cancellation(false),
+            );
+            checks.eq(
+                &format!("{what}: outcome"),
+                outcome,
+                Outcome::Returned(errno(libc::EFAULT)),
+            );
+            checks.eq(
+                &format!("{what}: page"),
+                page_differences(&page, wait, Written::Nothing),
+                Vec::new(),
+            );
+            let held = if wait.consumes() {
+                Held::Gone
+            } else {
+                Held::Zombie
+            };
+            checks.eq(
+                &format!("{what}: child records after the wait"),
+                family.records(),
+                family.expected_records(held),
+            );
+            if !wait.consumes() {
+                family.collect(checks, &what);
+            }
+            family.check_nothing_left(checks, &what);
+        }
+
+        /// Linux's wait4 and waitid reap a collected child before copying
+        /// out its status, so a faulting output pointer is EFAULT with the
+        /// child already gone; WNOWAIT reaps nothing. Both for the thread's
+        /// own fork child and for an adopted orphan.
+        #[test]
+        fn a_faulting_wait_output_is_efault_after_the_reap() {
+            let mut checks = Checks::default();
+            for kind in [Child::LocalZombie, Child::AdoptedZombie] {
+                for wait in WAITS {
+                    faulting_output_cell(&mut checks, kind, wait);
+                }
+            }
+            checks.finish();
+        }
     }
 }

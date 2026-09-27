@@ -17766,7 +17766,9 @@ int main(int argc, char **argv) {
 // TODO-HUMAN-REVIEW(PR-653): Review the peer-exit_group child-wait regressions.
 /// Run `test` again in a child test process bounded by `timeout`, so a hang
 /// fails the test instead of stalling CI. Returns true inside that child.
-fn bounded_child_wait_test(test: &str, seconds: u32) -> bool {
+/// The child must pass exactly this one test and report `cells` cells that
+/// exited 42: a child that ran no cell would also exit 0.
+fn bounded_child_wait_test(test: &str, seconds: u32, cells: usize) -> bool {
     if !kvm_available(test) {
         return false;
     }
@@ -17781,14 +17783,27 @@ fn bounded_child_wait_test(test: &str, seconds: u32) -> bool {
         .env("REVERIE_BOUNDED_CHILD_WAIT_TEST", test)
         .output()
         .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
         "{test}: status={:?} (124 = timed out after {seconds}s, i.e. a blocked wait hung) \
-         after {:?} stdout={} stderr={}",
+         after {:?} stdout={stdout} stderr={stderr}",
         output.status.code(),
         started.elapsed(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed;"),
+        "{test}: the bounded child did not pass exactly this test; stdout={stdout}"
+    );
+    let prefix = format!("{test}: runner=");
+    let exited_42 = stderr
+        .lines()
+        .filter(|line| line.starts_with(&prefix) && line.contains(" code=42 in "))
+        .count();
+    assert_eq!(
+        exited_42, cells,
+        "{test}: cells reported with code=42; stderr={stderr}"
     );
     false
 }
@@ -17796,8 +17811,24 @@ fn bounded_child_wait_test(test: &str, seconds: u32) -> bool {
 /// A thread of a guest PID-namespace init blocks in wait4/waitid on a child
 /// that is still running (an adopted orphan, or its own fork child), while a
 /// sibling thread calls exit_group(42). Linux kills the waiting thread, so
-/// its wait never returns and the process exits 42. Any wait that returns
-/// instead exits with 90 + variant before or after the exit_group.
+/// its wait never returns and the process exits 42.
+///
+/// The awaited child cannot finish first. It blocks reading a gate pipe
+/// whose only other write end belongs to the root process, so it reads EOF
+/// only after the root has exited and released its descriptors. No wait can
+/// therefore collect it: a wait that is never cancelled keeps the root alive
+/// and the gate shut, and the bounded runner reports that deadlock as a
+/// timeout (status 124).
+///
+/// The exit code alone cannot see a wait that returns (with an error, say)
+/// after the peer's exit_group: the first exit_group sets the status, so the
+/// late exit_group(90 + variant) changes nothing. Only a return before the
+/// exit_group shows up as 90 + variant. StraceTool logs a syscall only after
+/// it returns, so under that runner the harness also requires the log to
+/// hold exactly the waits that must return: one wait4, the leader's waitpid
+/// for the intermediate child in variants 0-7, and no waitid at all. The
+/// unsubscribed runner takes the executor's direct path, which no Tool logs;
+/// the executor unit tests in `child_wait_cancellation` cover that path.
 const PEER_EXIT_GROUP_WAIT_PROGRAM: &str = r#"
 #define _GNU_SOURCE
 #include <errno.h>
@@ -17810,6 +17841,7 @@ const PEER_EXIT_GROUP_WAIT_PROGRAM: &str = r#"
 
 static int variant;
 static pid_t target;
+static int gate[2];
 
 static void spin(unsigned long rounds) {
   /* Guest sleeps are virtual and return at once, so burn real CPU instead. */
@@ -17817,12 +17849,22 @@ static void spin(unsigned long rounds) {
   }
 }
 
-/* The exiter spins long enough for the waiter to be asleep in the host. */
+/* The exiter spins long enough for the waiter to be asleep in the host. A
+   shorter spin only makes the wait start after the exit_group, which must be
+   cancelled just the same. */
 #define EXITER_ROUNDS 150000000UL
-/* The awaited child outlives the exiter by a wide margin. If it ever
-   finished first the wait would return and the guest would exit 90 + variant,
-   a red result rather than a masked one. The root's exit joins it. */
-#define CHILD_ROUNDS (6 * EXITER_ROUNDS)
+
+/* The awaited child returns from here only after the root has exited: the
+   root holds the last other write end of the gate. */
+static void await_root_exit(void) {
+  char byte;
+  ssize_t n;
+  close(gate[1]);
+  do {
+    n = read(gate[0], &byte, 1);
+  } while (n < 0 && errno == EINTR);
+  if (n != 0) _exit(20);
+}
 
 static void wait_once(void) {
   int status = 0;
@@ -17860,12 +17902,13 @@ int main(int argc, char **argv) {
   if (getpid() != 1) return 11;
   int report[2];
   if (pipe(report) != 0) return 12;
+  if (pipe(gate) != 0) return 21;
   pid_t child = fork();
   if (child < 0) return 13;
   if (child == 0) {
     if (variant >= 8) {
       /* A local child that is still running when the wait blocks. */
-      spin(CHILD_ROUNDS);
+      await_root_exit();
       _exit(7);
     }
     pid_t self = getpid();
@@ -17878,7 +17921,7 @@ int main(int argc, char **argv) {
       }
       pid_t me = getpid();
       if (getppid() != 1 || write(report[1], &me, sizeof me) != sizeof me) _exit(15);
-      spin(CHILD_ROUNDS);
+      await_root_exit();
       _exit(9);
     }
     _exit(7);
@@ -17966,25 +18009,29 @@ fn run_peer_exit_group_wait_matrix(
                         &directory.0,
                     )
                     .unwrap();
-                let (code, stderr) = match runner {
+                // `logged_waits` is (wait4, waitid) entries in the Tool's log,
+                // which only StraceTool keeps.
+                let (code, stderr, logged_waits) = match runner {
                     PeerExitGroupRunner::StraceInject => {
-                        let (_, code, _stdout, stderr) = futures::executor::block_on(
+                        let (log, code, _stdout, stderr) = futures::executor::block_on(
                             backend.run_static_elf_with_tool::<StraceTool>((), true),
                         )
                         .unwrap();
-                        (code, stderr)
+                        let syscalls = log.syscalls();
+                        let logged = |name: &str| syscalls.iter().filter(|s| *s == name).count();
+                        (code, stderr, Some((logged("wait4"), logged("waitid"))))
                     }
                     PeerExitGroupRunner::UnsubscribedTool => {
                         let (_, code, _stdout, stderr) = futures::executor::block_on(
                             backend.run_static_elf_with_tool::<UnsubscribedWaitTool>((), true),
                         )
                         .unwrap();
-                        (code, stderr)
+                        (code, stderr, None)
                     }
                 };
                 eprintln!(
                     "{test}: runner={runner:?} variant={variant} leader_waits={leader_waits} \
-                     code={code} in {:?}",
+                     code={code} in {:?} logged_waits={logged_waits:?}",
                     started.elapsed()
                 );
                 let stderr = String::from_utf8_lossy(&stderr);
@@ -17995,15 +18042,28 @@ fn run_peer_exit_group_wait_matrix(
                      must be killed by the peer's exit_group, never return; stderr tail={}",
                     &stderr[stderr.len().saturating_sub(4000)..]
                 );
+                if let Some(logged_waits) = logged_waits {
+                    // Only the leader's waitpid for the intermediate child
+                    // returns. Any other entry is a wait that returned after
+                    // the exit_group, which the exit code cannot show.
+                    assert_eq!(
+                        logged_waits,
+                        (usize::from(variant < 8), 0),
+                        "runner={runner:?} variant={variant} leader_waits={leader_waits}: \
+                         (wait4, waitid) entries in StraceTool's log; stderr tail={}",
+                        &stderr[stderr.len().saturating_sub(4000)..]
+                    );
+                }
             }
         }
     }
 }
 
+// Each matrix runs 2 runners x its variants x its `leader_waits` entries.
 #[test]
 fn adopted_orphan_wait4_is_cancelled_by_peer_exit_group() {
     let test = "adopted_orphan_wait4_is_cancelled_by_peer_exit_group";
-    if bounded_child_wait_test(test, 120) {
+    if bounded_child_wait_test(test, 120, 16) {
         run_peer_exit_group_wait_matrix(test, 0..=3, &["1", "0"]);
     }
 }
@@ -18011,7 +18071,7 @@ fn adopted_orphan_wait4_is_cancelled_by_peer_exit_group() {
 #[test]
 fn adopted_orphan_waitid_is_cancelled_by_peer_exit_group() {
     let test = "adopted_orphan_waitid_is_cancelled_by_peer_exit_group";
-    if bounded_child_wait_test(test, 120) {
+    if bounded_child_wait_test(test, 120, 16) {
         run_peer_exit_group_wait_matrix(test, 4..=7, &["1", "0"]);
     }
 }
@@ -18019,7 +18079,7 @@ fn adopted_orphan_waitid_is_cancelled_by_peer_exit_group() {
 #[test]
 fn local_child_wait_is_cancelled_by_peer_exit_group() {
     let test = "local_child_wait_is_cancelled_by_peer_exit_group";
-    if bounded_child_wait_test(test, 120) {
+    if bounded_child_wait_test(test, 120, 4) {
         // Only the forking leader waits here: a local fork child is recorded
         // on the leader's executor, and a worker's wait for it already
         // returns ECHILD at once, independent of the exit_group.

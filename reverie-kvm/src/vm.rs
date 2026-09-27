@@ -1405,11 +1405,13 @@ impl KvmBackend {
             || request.number() == libc::SYS_waitid as u64
         {
             // AUTONOMOUS-BOT-IMPLEMENTED
-            // TODO-HUMAN-REVIEW(PR-653): Review routing blocking waits through
+            // TODO-HUMAN-REVIEW(PR-653): Review routing child waits through
             // the terminal-read cancellation source.
-            // A blocking child wait is retired by the same committed
-            // thread/group cancellation as an inherited-stdin read, and every
-            // caller consumes its `TerminalReadCancelled` identically.
+            // A child wait, whether it would block, poll or collect a child,
+            // is retired by the same committed thread/group cancellation as
+            // an inherited-stdin read, and every caller consumes its
+            // `ChildWaitCancelled` exactly like a cancelled read's
+            // `TerminalReadCancelled`.
             let cancellation = self
                 .thread_group
                 .terminal_reads
@@ -4507,7 +4509,7 @@ impl KvmBackend {
                             match self.execute_static_elf_syscall(executor, &request, &self.memory)
                             {
                                 Ok(result) => result,
-                                Err(Error::TerminalReadCancelled) => {
+                                Err(Error::TerminalReadCancelled | Error::ChildWaitCancelled) => {
                                     let exit = match self.guest_thread_group_exit_status() {
                                         Some(status) => {
                                             executor.retire_current_thread(status, true)

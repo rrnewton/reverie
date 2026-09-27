@@ -76,6 +76,7 @@ use capture_identity::CaptureObjectIdentity;
 use capture_identity::CapturedPipeIdentities;
 use process_signal_publication::AdoptedChildPoll;
 use process_signal_publication::AdoptionWaiter;
+use process_signal_publication::ChildWaitTake;
 use process_signal_publication::ProcessBinding;
 use process_signal_publication::ProcessSignalRegistry;
 
@@ -1604,18 +1605,6 @@ enum ChildWaitBlock {
     Cancelled,
     /// Every sender is gone.
     Disconnected,
-}
-
-/// The child a wait selects, in pid order across both places a child can be
-/// collected from.
-enum CollectableChild {
-    /// A fork child in this thread's `state.children`; `wait4()`/`waitid()`
-    /// reap it.
-    Local,
-    /// A process-shared adopted orphan, already taken by the wait.
-    Adopted(i32, ExitStatus),
-    /// Nothing matching is collectable yet.
-    None,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3486,40 +3475,105 @@ impl ElfExecutor {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-653): Review adopted-orphan waits.
-    /// Select the child a wait collects: the smallest matching pid among
-    /// this thread's collected fork children and the process-shared waitable
-    /// adopted orphans. An adopted orphan is taken from the shared ledger
-    /// atomically (consumed unless `consume` is false for WNOWAIT), so it is
-    /// never copied into one thread's private `state.children`.
-    fn select_collectable_child(
+    // TODO-HUMAN-REVIEW(PR-653): Review the atomic cancellation check and child
+    // take shared by wait4/waitid.
+    /// Take the child a wait collects: the smallest matching pid among this
+    /// thread's collected fork children and the process-shared waitable
+    /// adopted orphans, consumed unless `consume` is false (WNOWAIT). An
+    /// adopted orphan is taken from the shared ledger and never copied into
+    /// one thread's private `state.children`.
+    ///
+    /// Checking that no cancellation applying to this task has committed and
+    /// taking the child are one atomic step with respect to every committing
+    /// transition. `WaitCancellation::unless_cancelled` holds the registry
+    /// lock under which exit_group and exec/failure worker cancellation are
+    /// published, and the family take holds the family lock under which this
+    /// process's exit or failure is recorded together with retiring its
+    /// child edges and a root's adoptions. So a cancelled task never takes or
+    /// consumes a child, and a taken child belongs to a wait that linearized
+    /// before any such cancellation: its result is returned even if a
+    /// cancellation commits afterwards, so no status is lost for a
+    /// legitimate waiter. The selected child's exact family edge is retired
+    /// in the same family step as the take, so no ledger effect is left
+    /// pending for after the syscall.
+    ///
+    /// Returns `Err(ChildWaitCancelled)` when a cancellation had committed,
+    /// and `Ok(None)` when nothing matching is collectable.
+    fn take_collectable_child(
         &mut self,
         matches: impl Fn(i32) -> bool,
         consume: bool,
-    ) -> crate::Result<CollectableChild> {
+        cancellation: Option<&WaitCancellation>,
+    ) -> crate::Result<Option<(i32, ExitStatus)>> {
         let local = self
             .state
             .children
-            .keys()
-            .copied()
-            .find(|pid| matches(*pid));
-        let adopter = self.admitted_signal_identity().process;
-        let Some(adopted) = self
-            .signal_registry
-            .take_adopted_child(adopter, &matches, local, consume)
-        else {
-            return Ok(match local {
-                Some(_) => CollectableChild::Local,
-                None => CollectableChild::None,
-            });
+            .iter()
+            .find(|(pid, _)| matches(**pid))
+            .map(|(pid, status)| (*pid, *status));
+        let process = self.admitted_signal_identity().process;
+        let registry = &self.signal_registry;
+        let take = || {
+            registry.take_collectable_child(process, &matches, local.map(|(pid, _)| pid), consume)
         };
-        if consume && !adopted.ledger_consumed && self.signal_registry.controlled() {
+        let taken = match cancellation {
+            Some(cancellation) => cancellation
+                .unless_cancelled(take)
+                .unwrap_or(ChildWaitTake::Cancelled),
+            None => take(),
+        };
+        #[cfg(test)]
+        self.signal_registry.run_after_child_wait_take();
+        let (pid, status, ledger_consumed) = match taken {
+            ChildWaitTake::Cancelled => return Err(crate::Error::ChildWaitCancelled),
+            ChildWaitTake::None => return Ok(None),
+            ChildWaitTake::Adopted(adopted) => {
+                (adopted.pid, adopted.status, adopted.ledger_consumed)
+            }
+            ChildWaitTake::Local {
+                pid,
+                ledger_consumed,
+            } => {
+                let (_, status) = local.expect("a local take selected this wait's local child");
+                if consume {
+                    self.state.children.remove(&pid);
+                }
+                (pid, status, ledger_consumed)
+            }
+        };
+        if consume && !ledger_consumed && self.signal_registry.controlled() {
+            // The numeric child stays reaped: the typed failure records what
+            // the wait already did instead of resurrecting it.
             return Err(crate::Error::FamilyWaitLedgerMismatch {
-                parent: adopter,
-                child_pid: adopted.pid,
+                parent: process,
+                child_pid: pid,
             });
         }
-        Ok(CollectableChild::Adopted(adopted.pid, adopted.status))
+        Ok(Some((pid, status)))
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review retiring a wait whose non-consuming
+    // result follows a committed cancellation.
+    /// Refuse to finish a wait with a result that consumed nothing ("no child
+    /// ready yet", ECHILD, or EIO for a failed child) once a cancellation
+    /// applying to this task has committed. Such a result is decided by an
+    /// observation that can follow the cancellation, for example of adoptions
+    /// a peer's exit_group already retired, and must then not reach the Tool
+    /// or the guest. Cancellation stays committed until an exec rearm, which
+    /// happens only after every cancelled worker has joined, so this check,
+    /// made after the observation, sees every cancellation that preceded it.
+    /// Retiring the wait is also correct for a cancellation that committed
+    /// after the observation: Linux never returns the syscall result of a
+    /// task it is killing to userspace either.
+    fn check_child_wait_cancelled(
+        &self,
+        cancellation: Option<&WaitCancellation>,
+    ) -> crate::Result<()> {
+        if self.child_wait_cancelled(cancellation) {
+            return Err(crate::Error::ChildWaitCancelled);
+        }
+        Ok(())
     }
 
     /// Observe this process's matching adopted orphans without registering.
@@ -3575,6 +3629,16 @@ impl ElfExecutor {
     /// logical family exit, which a peer's exit_group records together with
     /// retiring every adoption before any peer is interrupted. Linux kills
     /// such a task with SIGKILL, so its wait never returns to userspace.
+    ///
+    /// Every recorded family exit counts, including `Failed` and the typed
+    /// fatal exits (for example `ZombieAdoptionUnsupported`): each is a
+    /// terminal state of this process in which no thread's wait result may
+    /// reach the Tool or the guest. Retiring the wait swallows neither. A
+    /// failure is the failing thread's own error, which becomes this
+    /// process's worker or run outcome. A typed fatal exit is recorded by a
+    /// committing exit, and this process's finish maps it through
+    /// `ElfExecutor::process_family_exit` to its typed error (and `Failed` to
+    /// `RunAborted`), whichever thread happened to be waiting.
     fn child_wait_cancelled(&self, cancellation: Option<&WaitCancellation>) -> bool {
         cancellation.is_some_and(WaitCancellation::is_cancelled)
             || self
@@ -3664,25 +3728,22 @@ impl ElfExecutor {
         let nonblocking = args[2] & libc::WNOHANG as u64 != 0;
 
         loop {
-            match self.select_collectable_child(matches, true)? {
-                CollectableChild::Local => return Ok(None),
-                CollectableChild::Adopted(pid, status) => {
-                    let mut memory = memory.clone();
-                    // Linux kernel_wait4 reaps before copying out the status
-                    // and rusage, so a fault after the take is EFAULT with
-                    // the child already collected, exactly as here.
-                    return Ok(Some(
-                        match write_wait4_outputs(&mut memory, &args, status) {
-                            Ok(()) => i64::from(pid),
-                            Err(error) => error,
-                        },
-                    ));
-                }
-                CollectableChild::None => {}
+            if let Some((pid, status)) = self.take_collectable_child(matches, true, cancellation)? {
+                let mut memory = memory.clone();
+                // Linux kernel_wait4 reaps before copying out the status and
+                // rusage, so a fault after the take is EFAULT with the child
+                // already collected, exactly as here.
+                return Ok(Some(
+                    match write_wait4_outputs(&mut memory, &args, status) {
+                        Ok(()) => i64::from(pid),
+                        Err(error) => error,
+                    },
+                ));
             }
             let adopted = self.observe_adopted_children(matches);
             if let Some(pid) = adopted.failed {
                 eprintln!("reverie-kvm adopted child {pid} failed before wait4");
+                self.check_child_wait_cancelled(cancellation)?;
                 return Ok(Some(negative_errno(libc::EIO)));
             }
             if adopted.waitable {
@@ -3697,10 +3758,9 @@ impl ElfExecutor {
             if pids.is_empty() && !adopted.running {
                 // A peer's exit_group retires this process's adoptions in
                 // the same family transition that makes it terminal; never
-                // turn that vanished adoption into ECHILD.
-                if self.child_wait_cancelled(cancellation) {
-                    return Err(crate::Error::TerminalReadCancelled);
-                }
+                // turn that vanished adoption into ECHILD. Otherwise the
+                // free wait4 reports ECHILD: nothing matching is collected.
+                self.check_child_wait_cancelled(cancellation)?;
                 return Ok(None);
             }
 
@@ -3718,13 +3778,14 @@ impl ElfExecutor {
                     }
                     Err(error) => {
                         eprintln!("reverie-kvm child {pid} failed before wait4: {error}");
+                        self.check_child_wait_cancelled(cancellation)?;
                         return Ok(Some(negative_errno(libc::EIO)));
                     }
                 }
             }
             if collected {
-                // Re-select: an adopted orphan with a smaller pid may also be
-                // collectable.
+                // Take it at the top of the loop, where an adopted orphan
+                // with a smaller pid may also be collectable.
                 continue;
             }
 
@@ -3732,6 +3793,7 @@ impl ElfExecutor {
             let running = local_running || adopted.running;
             if nonblocking {
                 if running {
+                    self.check_child_wait_cancelled(cancellation)?;
                     return Ok(Some(0));
                 }
                 continue;
@@ -3742,12 +3804,15 @@ impl ElfExecutor {
             match self.register_before_blocking(matches, local_running, "wait4") {
                 PreBlock::Block => {}
                 PreBlock::Reevaluate => continue,
-                PreBlock::Return(result) => return Ok(Some(result)),
+                PreBlock::Return(result) => {
+                    self.check_child_wait_cancelled(cancellation)?;
+                    return Ok(Some(result));
+                }
             }
             match self.block_for_child_completion(cancellation) {
                 ChildWaitBlock::Woken => {}
                 // Consumed like a cancelled stdin read: no syscall result.
-                ChildWaitBlock::Cancelled => return Err(crate::Error::TerminalReadCancelled),
+                ChildWaitBlock::Cancelled => return Err(crate::Error::ChildWaitCancelled),
                 ChildWaitBlock::Disconnected => {
                     eprintln!("reverie-kvm child completion channel disconnected before wait4");
                     return Ok(Some(negative_errno(libc::EIO)));
@@ -3769,9 +3834,10 @@ impl ElfExecutor {
     // While a target child is still running under a `WNOHANG` poll, report the
     // POSIX "no child ready yet" result by zeroing the siginfo at `infop` so
     // `si_pid == 0`; the tool's poll loop then retries instead of erroring.
-    // Once the child has finished (or for a blocking wait), join it so its exit
-    // is recorded, then fall through to `waitid()` which reaps it normally.
-    // A process-shared adopted orphan is instead selected and written here.
+    // Once the child has finished (or for a blocking wait), collect its exit,
+    // then take and report it here exactly like a process-shared adopted
+    // orphan, atomically with the cancellation check. The free `waitid()`
+    // only reports argument errors and ECHILD.
     fn synchronize_waitid(
         &mut self,
         request: &SyscallRequest,
@@ -3797,19 +3863,18 @@ impl ElfExecutor {
         let consume = args[3] & libc::WNOWAIT as u64 == 0;
 
         loop {
-            match self.select_collectable_child(matches, consume)? {
-                CollectableChild::Local => return Ok(None),
-                CollectableChild::Adopted(pid, status) => {
-                    let mut memory = memory.clone();
-                    // As for wait4, Linux copies the siginfo out after the
-                    // child is reaped; a fault there is EFAULT after the take.
-                    return Ok(Some(write_waitid_outputs(&mut memory, &args, pid, status)));
-                }
-                CollectableChild::None => {}
+            if let Some((pid, status)) =
+                self.take_collectable_child(matches, consume, cancellation)?
+            {
+                let mut memory = memory.clone();
+                // As for wait4, Linux copies the rusage and siginfo out after
+                // the child is reaped; a fault there is EFAULT after the take.
+                return Ok(Some(write_waitid_outputs(&mut memory, &args, pid, status)));
             }
             let adopted = self.observe_adopted_children(matches);
             if let Some(pid) = adopted.failed {
                 eprintln!("reverie-kvm adopted child {pid} failed before waitid");
+                self.check_child_wait_cancelled(cancellation)?;
                 return Ok(Some(negative_errno(libc::EIO)));
             }
             if adopted.waitable {
@@ -3824,10 +3889,9 @@ impl ElfExecutor {
             if pids.is_empty() && !adopted.running {
                 // A peer's exit_group retires this process's adoptions in
                 // the same family transition that makes it terminal; never
-                // turn that vanished adoption into ECHILD.
-                if self.child_wait_cancelled(cancellation) {
-                    return Err(crate::Error::TerminalReadCancelled);
-                }
+                // turn that vanished adoption into ECHILD. Otherwise the
+                // free waitid reports ECHILD: nothing matching is collected.
+                self.check_child_wait_cancelled(cancellation)?;
                 return Ok(None);
             }
 
@@ -3845,6 +3909,7 @@ impl ElfExecutor {
                     }
                     Err(error) => {
                         eprintln!("reverie-kvm child {pid} failed before waitid: {error}");
+                        self.check_child_wait_cancelled(cancellation)?;
                         return Ok(Some(negative_errno(libc::EIO)));
                     }
                 }
@@ -3856,6 +3921,9 @@ impl ElfExecutor {
             let local_running = running.is_some();
             let running = local_running || adopted.running;
             if nonblocking && running {
+                // Check before the "no child ready yet" siginfo is written:
+                // a cancelled wait leaves guest memory untouched.
+                self.check_child_wait_cancelled(cancellation)?;
                 if args[2] != 0 {
                     let memory = memory.clone();
                     if memory
@@ -3874,12 +3942,15 @@ impl ElfExecutor {
             match self.register_before_blocking(matches, local_running, "waitid") {
                 PreBlock::Block => {}
                 PreBlock::Reevaluate => continue,
-                PreBlock::Return(result) => return Ok(Some(result)),
+                PreBlock::Return(result) => {
+                    self.check_child_wait_cancelled(cancellation)?;
+                    return Ok(Some(result));
+                }
             }
             match self.block_for_child_completion(cancellation) {
                 ChildWaitBlock::Woken => {}
                 // Consumed like a cancelled stdin read: no syscall result.
-                ChildWaitBlock::Cancelled => return Err(crate::Error::TerminalReadCancelled),
+                ChildWaitBlock::Cancelled => return Err(crate::Error::ChildWaitCancelled),
                 ChildWaitBlock::Disconnected => {
                     eprintln!("reverie-kvm child completion channel disconnected before waitid");
                     return Ok(Some(negative_errno(libc::EIO)));
@@ -5560,9 +5631,10 @@ impl ElfExecutor {
         self.execute_checked_inner(request, memory, Some(terminal_read), None)
     }
 
-    /// Execute a wait4/waitid whose blocking host wait is retired, with
-    /// `Error::TerminalReadCancelled`, by a committed thread/group
-    /// cancellation instead of producing a syscall result.
+    /// Execute a wait4/waitid that is retired, with
+    /// `Error::ChildWaitCancelled`, by a committed thread/group cancellation
+    /// instead of producing a syscall result, whether it would have blocked,
+    /// polled, or collected a child.
     pub(crate) fn execute_checked_with_wait_cancellation(
         &mut self,
         request: &SyscallRequest,
