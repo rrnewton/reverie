@@ -79,6 +79,8 @@ use process_signal_publication::AdoptionWaiter;
 use process_signal_publication::ProcessBinding;
 use process_signal_publication::ProcessSignalRegistry;
 
+use crate::terminal_read::WaitCancellation;
+
 const MAX_HOST_IO: usize = 16 * 1024 * 1024;
 const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
@@ -1591,6 +1593,17 @@ enum PreBlock {
     Reevaluate,
     /// Finish the syscall with this result.
     Return(i64),
+}
+
+/// How a wait's blocking receive ended.
+enum ChildWaitBlock {
+    /// A child completion or adopted-orphan wake arrived; select again.
+    Woken,
+    /// A thread or group cancellation applying to this task has committed.
+    /// The wait must not produce a syscall result.
+    Cancelled,
+    /// Every sender is gone.
+    Disconnected,
 }
 
 /// The child a wait selects, in pid order across both places a child can be
@@ -3553,11 +3566,62 @@ impl ElfExecutor {
         PreBlock::Block
     }
 
-    /// Block until any child completion or adopted-orphan wake arrives, then
-    /// withdraw this task's adoption registration: it is only valid while the
-    /// task is blocked, and the caller re-polls (and re-registers if it must
-    /// block again).
-    fn block_for_child_completion(&self) -> bool {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review the committed-cancellation predicate
+    // shared by blocking wait4/waitid.
+    /// Whether a thread or group cancellation applying to this task has been
+    /// committed: the thread group's terminal-read cancellation (an
+    /// exit_group, or worker cancellation for a worker), or this process's
+    /// logical family exit, which a peer's exit_group records together with
+    /// retiring every adoption before any peer is interrupted. Linux kills
+    /// such a task with SIGKILL, so its wait never returns to userspace.
+    fn child_wait_cancelled(&self, cancellation: Option<&WaitCancellation>) -> bool {
+        cancellation.is_some_and(WaitCancellation::is_cancelled)
+            || self
+                .signal_registry
+                .process_family_exit(self.admitted_signal_identity().process)
+                .is_some()
+    }
+
+    /// Block until any child completion, adopted-orphan wake or committed
+    /// cancellation arrives, then withdraw this task's adoption registration:
+    /// it is only valid while the task is blocked, and the caller re-polls
+    /// (and re-registers if it must block again).
+    ///
+    /// A cancellation committed before the task sleeps is observed by the
+    /// registration itself (or by the family re-check just after it), and one
+    /// committed while it sleeps sends it a wake. Either way it is checked
+    /// again after waking, before any re-poll can produce a result, so a
+    /// cancelled wait never reports a child or ECHILD, whatever woke it.
+    fn block_for_child_completion(
+        &self,
+        cancellation: Option<&WaitCancellation>,
+    ) -> ChildWaitBlock {
+        let identity = self.admitted_signal_identity();
+        let unregister = || {
+            self.signal_registry.unregister_adoption_waiter(
+                identity.process,
+                (identity.tid.as_raw(), identity.task_generation),
+            )
+        };
+        let registration = match cancellation {
+            Some(cancellation) => match cancellation.register(&self.child_completion_sender) {
+                Some(registration) => Some(registration),
+                None => {
+                    unregister();
+                    return ChildWaitBlock::Cancelled;
+                }
+            },
+            None => None,
+        };
+        // The family exit that retires this process's adoptions wakes its
+        // registered adoption waiters after publishing, so a transition
+        // before this check is seen here and one after it sends a wake.
+        if self.child_wait_cancelled(None) {
+            drop(registration);
+            unregister();
+            return ChildWaitBlock::Cancelled;
+        }
         #[cfg(test)]
         self.signal_registry.note_blocked_wait();
         let received = self
@@ -3566,18 +3630,22 @@ impl ElfExecutor {
             .expect("KVM child completion receiver poisoned")
             .recv()
             .is_ok();
-        let identity = self.admitted_signal_identity();
-        self.signal_registry.unregister_adoption_waiter(
-            identity.process,
-            (identity.tid.as_raw(), identity.task_generation),
-        );
-        received
+        drop(registration);
+        unregister();
+        if self.child_wait_cancelled(cancellation) {
+            ChildWaitBlock::Cancelled
+        } else if received {
+            ChildWaitBlock::Woken
+        } else {
+            ChildWaitBlock::Disconnected
+        }
     }
 
     fn synchronize_wait4(
         &mut self,
         request: &SyscallRequest,
         memory: &GuestMemory,
+        cancellation: Option<&WaitCancellation>,
     ) -> crate::Result<Option<i64>> {
         if request.number() != libc::SYS_wait4 as u64 {
             return Ok(None);
@@ -3627,6 +3695,12 @@ impl ElfExecutor {
                 .filter(|pid| matches(*pid))
                 .collect::<Vec<_>>();
             if pids.is_empty() && !adopted.running {
+                // A peer's exit_group retires this process's adoptions in
+                // the same family transition that makes it terminal; never
+                // turn that vanished adoption into ECHILD.
+                if self.child_wait_cancelled(cancellation) {
+                    return Err(crate::Error::TerminalReadCancelled);
+                }
                 return Ok(None);
             }
 
@@ -3670,9 +3744,14 @@ impl ElfExecutor {
                 PreBlock::Reevaluate => continue,
                 PreBlock::Return(result) => return Ok(Some(result)),
             }
-            if !self.block_for_child_completion() {
-                eprintln!("reverie-kvm child completion channel disconnected before wait4");
-                return Ok(Some(negative_errno(libc::EIO)));
+            match self.block_for_child_completion(cancellation) {
+                ChildWaitBlock::Woken => {}
+                // Consumed like a cancelled stdin read: no syscall result.
+                ChildWaitBlock::Cancelled => return Err(crate::Error::TerminalReadCancelled),
+                ChildWaitBlock::Disconnected => {
+                    eprintln!("reverie-kvm child completion channel disconnected before wait4");
+                    return Ok(Some(negative_errno(libc::EIO)));
+                }
             }
         }
     }
@@ -3697,6 +3776,7 @@ impl ElfExecutor {
         &mut self,
         request: &SyscallRequest,
         memory: &GuestMemory,
+        cancellation: Option<&WaitCancellation>,
     ) -> crate::Result<Option<i64>> {
         if request.number() != libc::SYS_waitid as u64 {
             return Ok(None);
@@ -3742,6 +3822,12 @@ impl ElfExecutor {
                 .filter(|pid| matches(*pid))
                 .collect::<Vec<_>>();
             if pids.is_empty() && !adopted.running {
+                // A peer's exit_group retires this process's adoptions in
+                // the same family transition that makes it terminal; never
+                // turn that vanished adoption into ECHILD.
+                if self.child_wait_cancelled(cancellation) {
+                    return Err(crate::Error::TerminalReadCancelled);
+                }
                 return Ok(None);
             }
 
@@ -3790,9 +3876,14 @@ impl ElfExecutor {
                 PreBlock::Reevaluate => continue,
                 PreBlock::Return(result) => return Ok(Some(result)),
             }
-            if !self.block_for_child_completion() {
-                eprintln!("reverie-kvm child completion channel disconnected before waitid");
-                return Ok(Some(negative_errno(libc::EIO)));
+            match self.block_for_child_completion(cancellation) {
+                ChildWaitBlock::Woken => {}
+                // Consumed like a cancelled stdin read: no syscall result.
+                ChildWaitBlock::Cancelled => return Err(crate::Error::TerminalReadCancelled),
+                ChildWaitBlock::Disconnected => {
+                    eprintln!("reverie-kvm child completion channel disconnected before waitid");
+                    return Ok(Some(negative_errno(libc::EIO)));
+                }
             }
         }
     }
@@ -5457,7 +5548,7 @@ impl ElfExecutor {
         request: &SyscallRequest,
         memory: &GuestMemory,
     ) -> crate::Result<i64> {
-        self.execute_checked_inner(request, memory, None)
+        self.execute_checked_inner(request, memory, None, None)
     }
 
     pub(crate) fn execute_checked_with_read_context(
@@ -5466,7 +5557,19 @@ impl ElfExecutor {
         memory: &GuestMemory,
         terminal_read: &mut crate::terminal_read::ReadContext,
     ) -> crate::Result<i64> {
-        self.execute_checked_inner(request, memory, Some(terminal_read))
+        self.execute_checked_inner(request, memory, Some(terminal_read), None)
+    }
+
+    /// Execute a wait4/waitid whose blocking host wait is retired, with
+    /// `Error::TerminalReadCancelled`, by a committed thread/group
+    /// cancellation instead of producing a syscall result.
+    pub(crate) fn execute_checked_with_wait_cancellation(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+        cancellation: &WaitCancellation,
+    ) -> crate::Result<i64> {
+        self.execute_checked_inner(request, memory, None, Some(cancellation))
     }
 
     fn execute_checked_inner(
@@ -5474,6 +5577,7 @@ impl ElfExecutor {
         request: &SyscallRequest,
         memory: &GuestMemory,
         terminal_read: Option<&mut crate::terminal_read::ReadContext>,
+        wait_cancellation: Option<&WaitCancellation>,
     ) -> crate::Result<i64> {
         #[cfg(test)]
         memory.observe_test_syscall_dispatch(request);
@@ -5485,10 +5589,10 @@ impl ElfExecutor {
         }
         self.bind_address_space(memory);
         let _retirement = self.state.file_retirement.hold();
-        if let Some(result) = self.synchronize_wait4(request, memory)? {
+        if let Some(result) = self.synchronize_wait4(request, memory, wait_cancellation)? {
             return Ok(result);
         }
-        if let Some(result) = self.synchronize_waitid(request, memory)? {
+        if let Some(result) = self.synchronize_waitid(request, memory, wait_cancellation)? {
             return Ok(result);
         }
         if let Some(result) = self.execute_accept(request, memory) {
