@@ -30,7 +30,7 @@ static void *worker(void *unused) {
 int main(int argc, char **argv) {
     if (argc != 2 && argc != 3) return 90;
     int mode = argc == 3 ? argv[2][0] - '0' : 0;
-    if (mode < 0 || mode > 7) return 105;
+    if (mode < 0 || mode > 9) return 105;
     unsigned long options = WUNTRACED;
     if (mode == 2 || mode == 3) options |= WNOHANG;
     if (mode == 3) options |= 0xdeadbeefUL << 32;
@@ -67,7 +67,36 @@ int main(int argc, char **argv) {
         if (waitid(P_PID, child, &info, WEXITED | WNOWAIT) || info.si_pid != child ||
             info.si_code != CLD_EXITED || info.si_status != 73) return 101;
     }
-    if (!mode) {
+    if (mode == 8 || mode == 9) {
+        // Raw waitid's rusage precedes its six scalar siginfo stores. These
+        // protected-output cases need no stable native accounting reference.
+        unsigned char *protected_output = mmap(0, 4096, PROT_READ | PROT_WRITE,
+                                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (protected_output == MAP_FAILED) return 117;
+        memset(protected_output, 0xa5, 4096);
+        if (mprotect(protected_output, 4096, PROT_READ)) return 118;
+        unsigned char info_canaries[sizeof(siginfo_t) + 32];
+        memset(info_canaries, 0xa5, sizeof info_canaries);
+        void *info_output = mode == 8 ? protected_output + 16 : info_canaries + 16;
+        void *usage_output = mode == 9 ? protected_output + 16 : 0;
+        for (int keep = 1; keep >= 0; keep--) {
+            errno = 0;
+            if (syscall(SYS_waitid, P_PID, child, info_output,
+                        WEXITED | (keep ? WNOWAIT : 0), usage_output) != -1 ||
+                errno != EFAULT) return 119;
+            for (int i = 0; i < 4096; i++) {
+                if (protected_output[i] != 0xa5) return 120;
+            }
+            for (unsigned int i = 0; i < sizeof info_canaries; i++) {
+                if (info_canaries[i] != 0xa5) return 121;
+            }
+            // EFAULT with a protected info can mask ECHILD. Prove WNOWAIT
+            // retention using an independent successful NULL-output call.
+            if (keep && syscall(SYS_waitid, P_PID, child, 0,
+                                WEXITED | WNOWAIT, 0) != 0) return 122;
+        }
+        if (munmap(protected_output, 4096)) return 123;
+    } else if (!mode) {
         if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 73) return 102;
     } else {
         struct rusage usage;

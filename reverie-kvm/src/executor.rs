@@ -4292,8 +4292,8 @@ impl ElfExecutor {
     // determinism engine must not produce.
     //
     // While a target child is still running under a `WNOHANG` poll, report the
-    // POSIX "no child ready yet" result by zeroing the siginfo at `infop` so
-    // `si_pid == 0`; the tool's poll loop then retries instead of erroring.
+    // POSIX "no child ready yet" result by writing the six zero waitid fields,
+    // including `si_pid`; the tool's poll loop then retries instead of erroring.
     // Once the child has finished (or for a blocking wait), join it so its exit
     // is recorded, then fall through to `waitid()` which reaps it normally.
     fn synchronize_waitid(
@@ -4306,6 +4306,15 @@ impl ElfExecutor {
         }
         let args = request.args();
         // args: [idtype, id, infop, options, rusage, _]
+        // Invalid options must not release a pending child's start gate.
+        if !waitid_options_supported(args[3]) {
+            return Some(finish_waitid(
+                memory,
+                args,
+                None,
+                negative_errno(libc::EINVAL),
+            ));
+        }
         let exact = match args[0] as libc::idtype_t {
             libc::P_PID => match libc::pid_t::try_from(args[1]) {
                 Ok(pid) => Some(pid),
@@ -4318,7 +4327,7 @@ impl ElfExecutor {
         if self.state.children.keys().copied().any(matches) {
             return None;
         }
-        let nonblocking = args[3] & libc::WNOHANG as u64 != 0;
+        let nonblocking = (args[3] as libc::c_int) & libc::WNOHANG != 0;
 
         loop {
             let pids = self
@@ -4347,17 +4356,7 @@ impl ElfExecutor {
             }
 
             if nonblocking && running.is_some() {
-                if args[2] != 0 {
-                    let memory = memory.clone();
-                    if memory
-                        .user()
-                        .zero(args[2], std::mem::size_of::<libc::siginfo_t>())
-                        .is_err()
-                    {
-                        return Some(negative_errno(libc::EFAULT));
-                    }
-                }
-                return Some(0);
+                return Some(finish_waitid(memory, args, None, 0));
             }
             if running.is_none() {
                 continue;
@@ -17978,22 +17977,76 @@ struct GuestWaitidSiginfo {
     si_uid: libc::uid_t,
     si_status: libc::c_int,
     _clock_alignment: libc::c_int,
-    si_utime: libc::c_long,
-    si_stime: libc::c_long,
+    _si_utime: libc::c_long,
+    _si_stime: libc::c_long,
     _padding: [u8; std::mem::size_of::<libc::siginfo_t>() - 48],
+}
+
+fn waitid_options_supported(raw: u64) -> bool {
+    // Linux decodes options as int. Retain the existing terminal-only subset;
+    // accepting stopped/continued events needs separate backend support.
+    let options = raw as libc::c_int;
+    let allowed = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    options & libc::WEXITED != 0 && options & !allowed == 0
+}
+
+fn finish_waitid(
+    memory: &GuestMemory,
+    args: &[u64; 6],
+    event: Option<&GuestWaitidSiginfo>,
+    result: i64,
+) -> i64 {
+    // Only a positive event writes rusage, before any siginfo field. Preserve
+    // the backend's existing zero accounting and the writable-prefix copy.
+    if event.is_some() && args[4] != 0 {
+        let size = std::mem::size_of::<libc::rusage>();
+        if validate_guest_iovec_address(args[4], size).is_err()
+            || memory
+                .user()
+                .copy_to_user(args[4], &[0; std::mem::size_of::<libc::rusage>()])
+                .is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+    if args[2] == 0 {
+        return result;
+    }
+    // x86-64 Linux's constant-size access_ok does not validate a full siginfo
+    // span. Only the six scalar fields are accessed. The architectural guard
+    // page still faults even if a synthetic GuestMemory arena maps beyond it.
+    if args[2] >= X86_64_GUEST_USER_LIMIT {
+        return negative_errno(libc::EFAULT);
+    }
+    let fields = event.map_or([0; 6], |info| {
+        [
+            info.si_signo,
+            info.si_errno,
+            info.si_code,
+            info.si_pid,
+            info.si_uid as libc::c_int,
+            info.si_status,
+        ]
+    });
+    for (offset, value) in [0_u64, 4, 8, 16, 20, 24].into_iter().zip(fields) {
+        // The bounded starting address makes this addition nonoverflowing.
+        // Stop before a scalar crosses the architectural guard: earlier fields
+        // remain, and the failing scalar, padding and tail stay untouched.
+        let address = args[2] + offset;
+        if address + 4 > X86_64_GUEST_USER_LIMIT
+            || memory.user().put_user_i32(address, value).is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+    result
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-227): Review serialized-child waitid ABI emulation.
 fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    const EVENT_OPTIONS: u64 = libc::WEXITED as u64;
-    const ALLOWED_OPTIONS: u64 = EVENT_OPTIONS | libc::WNOHANG as u64 | libc::WNOWAIT as u64;
-
-    if args[2] == 0 {
-        return negative_errno(libc::EFAULT);
-    }
-    if args[3] & EVENT_OPTIONS == 0 || args[3] & !ALLOWED_OPTIONS != 0 {
-        return negative_errno(libc::EINVAL);
+    if !waitid_options_supported(args[3]) {
+        return finish_waitid(memory, args, None, negative_errno(libc::EINVAL));
     }
 
     let child_pid = match args[0] as libc::idtype_t {
@@ -18001,12 +18054,18 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
             .ok()
             .filter(|pid| state.children.contains_key(pid)),
         libc::P_ALL | libc::P_PGID => state.children.keys().next().copied(),
-        _ => return negative_errno(libc::EINVAL),
+        _ => return finish_waitid(memory, args, None, negative_errno(libc::EINVAL)),
     };
     let Some(child_pid) = child_pid else {
-        return negative_errno(libc::ECHILD);
+        return finish_waitid(memory, args, None, negative_errno(libc::ECHILD));
     };
     let status = state.children[&child_pid];
+    if (args[3] as libc::c_int) & libc::WNOWAIT == 0 {
+        // Linux consumes the selected zombie before either copyout. The
+        // checked executor must drain this exact effect even after EFAULT.
+        state.children.remove(&child_pid);
+        state.consumed_child_wait = Some(child_pid);
+    }
     let (si_code, si_status) = match status {
         ExitStatus::Exited(code) => (libc::CLD_EXITED, code),
         ExitStatus::Signaled(signal, true) => (libc::CLD_DUMPED, signal as libc::c_int),
@@ -18021,29 +18080,11 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         si_uid: 0,
         si_status,
         _clock_alignment: 0,
-        si_utime: 0,
-        si_stime: 0,
+        _si_utime: 0,
+        _si_stime: 0,
         _padding: [0; std::mem::size_of::<libc::siginfo_t>() - 48],
     };
-    let result = write_struct(memory, args[2], &info);
-    if result != 0 {
-        return result;
-    }
-    if args[4] != 0 {
-        let result = memory
-            .user()
-            .zero(args[4], std::mem::size_of::<libc::rusage>())
-            .map(|()| 0)
-            .unwrap_or_else(|_| negative_errno(libc::EFAULT));
-        if result != 0 {
-            return result;
-        }
-    }
-    if args[3] & libc::WNOWAIT as u64 == 0 {
-        state.children.remove(&child_pid);
-        state.consumed_child_wait = Some(child_pid);
-    }
-    0
+    finish_waitid(memory, args, Some(&info), 0)
 }
 
 fn write_u64(memory: &mut GuestMemory, address: u64, value: u64) -> i64 {
@@ -44795,6 +44836,7 @@ mod tests {
     }
 
     include!("wait4_copyout_tests.rs");
+    include!("waitid_copyout_tests.rs");
 
     #[test]
     fn wait4_wuntraced_reaps_terminal_statuses_with_linux_int_options() {
@@ -45284,7 +45326,7 @@ mod tests {
         );
         assert_eq!(poll, 0);
         let info: libc::siginfo_t = read_struct(&memory, INFO);
-        // SAFETY: the WNOHANG no-event result is a zeroed siginfo_t.
+        // SAFETY: WNOHANG without an event writes zero to the si_pid field.
         unsafe {
             assert_eq!(info.si_pid(), 0);
         }
