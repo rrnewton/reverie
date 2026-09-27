@@ -590,6 +590,24 @@ fn parent_wait_wuntraced_terminal_modes_tool() {
     );
 }
 
+#[test]
+fn parent_wait_read_only_outputs_direct() {
+    run_wait_status(
+        "leader_exit::parent_wait_read_only_outputs_direct",
+        false,
+        &[Some("6"), Some("7")],
+    );
+}
+
+#[test]
+fn parent_wait_read_only_outputs_tool() {
+    run_wait_status(
+        "leader_exit::parent_wait_read_only_outputs_tool",
+        true,
+        &[Some("6"), Some("7")],
+    );
+}
+
 #[derive(Debug, Default)]
 struct WorkerErrorControl {
     events: Mutex<Vec<(u8, i32, ExitStatus)>>,
