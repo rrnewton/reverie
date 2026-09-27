@@ -212,6 +212,23 @@ fn a_trap_before_the_target_cancels_the_timer(between: Between, rcbs: u64) {
     );
 }
 
+// Each guest traps one conditional branch after the request, 29,999 before
+// the target, which is further than any skid margin reaches. The trap's stop
+// therefore comes before the PMU signal on every host, and it must cancel the
+// event there too, or whether the event fires would depend on which side of
+// the trap the signal came.
+#[test_case(Between::Int3; "int3")]
+#[test_case(Between::Icebp; "icebp")]
+#[test_case(Between::Tgkill; "tgkill")]
+fn a_trap_before_the_perf_signal_cancels_the_timer(between: Between) {
+    ret_without_perf!();
+    assert_eq!(
+        timer_events(between, PERF_RCBS, 1),
+        0,
+        "the trap's stop must cancel the timer"
+    );
+}
+
 // The same guests without a trap, where the timer fires one branch after the
 // `nop`.
 #[test_case(LESS_RCBS; "artificial signal")]
