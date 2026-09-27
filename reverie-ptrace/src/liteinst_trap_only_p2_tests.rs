@@ -565,8 +565,8 @@ async fn trap_only_p2_t1a_signal_pending_at_a_patched_stop() {
         &ptrace,
         &[
             "getpid returned pid=1",
-            "sig_pending 0: sig=10 code=-6 value=-1 rip=tp_site_end rax=<pid> rcx=tp_site_end r11=0x212 ",
-            "sig_pending_tail 0: sig=10 code=-6 value=-1 rip=tp_site_end rax=<pid> rcx=tp_site_end r11=0x212 ",
+            "sig_pending 0: sig=10 code=-6 value=-1 rip=tp_site_end rax=<pid> rcx=tp_site_end r11=0x246 ",
+            "sig_pending_tail 0: sig=10 code=-6 value=-1 rip=tp_site_end rax=<pid> rcx=tp_site_end r11=0x246 ",
         ],
     );
     assert_events_have(
@@ -607,9 +607,9 @@ async fn trap_only_p2_t1f_self_raised_signals() {
     assert_report_has(
         &ptrace,
         &[
-            "kill 0: sig=10 code=0 value=-1 rip=tp_site_end rax=0 rcx=tp_site_end r11=0x216 ",
-            "sigpipe 0: sig=13 code=0 value=-1 rip=tp_site_end rax=-32 rcx=tp_site_end r11=0x216 ",
-            "unblock 0: sig=12 code=-6 value=-1 rip=tp_site_end rax=0 rcx=tp_site_end r11=0x216 ",
+            "kill 0: sig=10 code=0 value=-1 rip=tp_site_end rax=0 rcx=tp_site_end r11=0x246 ",
+            "sigpipe 0: sig=13 code=0 value=-1 rip=tp_site_end rax=-32 rcx=tp_site_end r11=0x246 ",
+            "unblock 0: sig=12 code=-6 value=-1 rip=tp_site_end rax=0 rcx=tp_site_end r11=0x246 ",
         ],
     );
 }
@@ -667,14 +667,14 @@ async fn trap_only_p2_t3_restart_matrix() {
     assert_report_has(
         &ptrace,
         &[
-            "nanosleep-suppressed ret=0 errno=0 rcx=tp_site_end r11=0x216",
-            "read-eintr ret=-4 errno=4 rcx=tp_site_end r11=0x216",
-            "read-restart ret=1 errno=0 rcx=tp_site_end r11=0x216",
-            "futex-restart ret=-11 errno=11 rcx=tp_site_end r11=0x216",
-            "futex-eintr ret=-4 errno=4 rcx=tp_site_end r11=0x216",
-            "ppoll ret=-4 errno=4 rcx=tp_site_end r11=0x216",
-            "epoll_pwait ret=-4 errno=4 rcx=tp_site_end r11=0x216",
-            "pause ret=-4 errno=4 rcx=tp_site_end r11=0x216",
+            "nanosleep-suppressed ret=0 errno=0 rcx=tp_site_end r11=0x246",
+            "read-eintr ret=-4 errno=4 rcx=tp_site_end r11=0x246",
+            "read-restart ret=1 errno=0 rcx=tp_site_end r11=0x246",
+            "futex-restart ret=-11 errno=11 rcx=tp_site_end r11=0x246",
+            "futex-eintr ret=-4 errno=4 rcx=tp_site_end r11=0x246",
+            "ppoll ret=-4 errno=4 rcx=tp_site_end r11=0x246",
+            "epoll_pwait ret=-4 errno=4 rcx=tp_site_end r11=0x246",
+            "pause ret=-4 errno=4 rcx=tp_site_end r11=0x246",
         ],
     );
     assert!(
@@ -715,7 +715,7 @@ async fn trap_only_p2_t6a_fork_family_through_a_patched_site() {
         assert_report_has(
             ptrace,
             &[
-                "fork child rcx=tp_site_end r11=0x216",
+                "fork child rcx=tp_site_end r11=0x246",
                 "fork child status exited=1 code=7",
                 "vfork child status exited=1 code=7",
                 "clone3 child status exited=1 code=7",
@@ -835,7 +835,7 @@ async fn trap_only_p2_t8_rcx_r11_view() {
             "t8 3 pid=1 rcx=t8_site_end r11=0x293",
             "t8 df pid=1 rcx=t8_site_end r11=0x697",
             "t8 ac pid=1 rcx=t8_site_end r11=0x40246",
-            "fork child rcx=tp_site_end r11=0x216",
+            "fork child rcx=tp_site_end r11=0x246",
         ],
     );
     assert!(

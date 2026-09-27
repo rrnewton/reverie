@@ -74,6 +74,10 @@ __asm__(".pushsection .text\n"
         "  mov %r8, %r10\n"
         "  mov %r9, %r8\n"
         "  mov 8(%rsp), %r9\n"
+        /* Fix the arithmetic flags, so that r11 (rflags at the syscall) does
+         * not inherit the caller's `sub $8, %rsp`, whose parity follows the
+         * randomized stack address. */
+        "  cmp %rax, %rax\n"
         ".globl tp_site\n"
         "tp_site:\n"
         "  syscall\n"
