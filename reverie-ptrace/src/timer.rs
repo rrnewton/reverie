@@ -1581,12 +1581,21 @@ impl TimerImpl {
             observe(&wait)?;
             task = match wait {
                 // a successful single step results in SIGTRAP stop
+                #[cfg(target_arch = "x86_64")]
+                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP))
+                    if is_step_report(&new_task, &start)? =>
+                {
+                    new_task
+                }
+                #[cfg(not(target_arch = "x86_64"))]
                 Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
-                // Any other stop ends the stepping. The step's instruction may
-                // still have run: a `syscall` stops at its seccomp stop after
-                // loading r11, for example. The stop is passed on even if the
-                // cleanup fails, because it can be an event, such as a new
-                // child, that must be handled.
+                // Any other stop ends the stepping, and so does a SIGTRAP that
+                // the step did not report, such as an `int3`'s. The step's
+                // instruction may still have run: a `syscall` stops at its
+                // seccomp stop after loading r11, for example. The stop is
+                // passed on even if the cleanup fails, because it can be an
+                // event, such as a new child or a trap that Reverie handles,
+                // that must be handled.
                 #[cfg(target_arch = "x86_64")]
                 Wait::Stopped(mut new_task, event) => {
                     if let Err(err) =
@@ -1925,6 +1934,28 @@ fn remove_stepping_trap_flag(
         task.setregs(&regs)?;
     }
     Ok((false, regs))
+}
+
+/// Whether a SIGTRAP stop that ends a single step from `start` is the step's
+/// own report, rather than a trap that the guest raised in the step and would
+/// have raised without it, such as an `int3`'s.
+///
+/// Linux reports a step with TRAP_TRACE, except that a stepped `syscall` that
+/// no seccomp stop interrupts reports it as the syscall returns, with
+/// TRAP_BRKPT (user_single_step_report, in arch/x86/kernel/ptrace.c). `int3`
+/// raises SI_KERNEL, and kill and tgkill SI_USER and SI_TKILL. `icebp` raises
+/// TRAP_BRKPT as long as the processor sets no DR6 status bit for it. seccomp
+/// kills the other ways into the kernel, `int 0x80` and `sysenter`, so
+/// `syscall` is the only instruction that a step reports with TRAP_BRKPT. A
+/// guest that has set TF itself raises TRAP_TRACE too, and that trap counts as
+/// the step.
+#[cfg(target_arch = "x86_64")]
+fn is_step_report(task: &Stopped, start: &StepStart) -> Result<bool, TraceError> {
+    Ok(match task.getsiginfo()?.si_code {
+        libc::TRAP_TRACE => true,
+        libc::TRAP_BRKPT => matches!(start.instruction, FlagsInstruction::Syscall { .. }),
+        _ => false,
+    })
 }
 
 /// Whether a step from `start` ran the instruction at `at`, which loads rip
