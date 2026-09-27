@@ -135,6 +135,12 @@ impl Filter {
         self.filter.is_empty()
     }
 
+    /// Returns the program's instructions, in order, exactly as they would be
+    /// loaded.
+    pub fn instructions(&self) -> &[sock_filter] {
+        &self.filter
+    }
+
     fn install(&self, flags: FilterFlags) -> Result<i32, Errno> {
         let len = self.filter.len();
 
@@ -378,6 +384,23 @@ instruction! {
         BPF_STMT(BPF_RET + BPF_K, libc::SECCOMP_RET_KILL_PROCESS);
     }
 
+    /// Like [`VALIDATE_ARCH`], except that a syscall of `alternate_arch` takes
+    /// `action` (which should be a `BPF_RET`) instead of killing the process.
+    /// A syscall of `target_arch` continues with the next instruction, and any
+    /// other architecture still kills the process.
+    pub fn VALIDATE_ARCH_OR_ALTERNATE(target_arch: u32, alternate_arch: u32, action: sock_filter) {
+        // Load `seccomp_data.arch`
+        BPF_STMT(BPF_LD + BPF_W + BPF_ABS, SECCOMP_DATA_OFFSET_ARCH);
+        // if (arch == target_arch) goto CONTINUE;
+        BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, target_arch, 3, 0);
+        // if (arch != alternate_arch) goto KILL;
+        BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, alternate_arch, 0, 1);
+        action;
+        // KILL:
+        BPF_STMT(BPF_RET + BPF_K, libc::SECCOMP_RET_KILL_PROCESS);
+        // CONTINUE: the next instruction.
+    }
+
     pub fn LOAD_SYSCALL_IP() {
         BPF_STMT(BPF_LD + BPF_W + BPF_ABS, SECCOMP_DATA_OFFSET_IP_LO);
         // M[0] = lo
@@ -437,11 +460,42 @@ instruction! {
     }
 }
 
+/// Checks if the instruction pointer equals `ip`. If so, executes `action`.
+/// Otherwise, falls through with the high 32 bits of the instruction pointer
+/// in the accumulator again.
+///
+/// Precondition: The instruction pointer must be loaded with [`LOAD_SYSCALL_IP`]
+/// first (so the accumulator holds its high 32 bits).
+pub fn IP_EQ(ip: u64, action: sock_filter) -> impl ByteCode {
+    IP_EQ64(ip as u32, (ip >> 32) as u32, action)
+}
+
+instruction! {
+    fn IP_EQ64(lo: u32, hi: u32, action: sock_filter) {
+        // if (arg.hi != hi) goto NOMATCH;
+        BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, hi, 0, 3 /* goto NOMATCH */);
+        // Load M[0] to operate on the low bits of the IP.
+        BPF_STMT(BPF_LD + BPF_MEM, 0);
+        // if (arg.lo != lo) goto NOMATCH;
+        BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, lo, 0, 1 /* goto NOMATCH */);
+        // MATCH: Take the action.
+        action;
+        // NOMATCH: Load M[1], the high bits of the IP, for the next rule.
+        BPF_STMT(BPF_LD + BPF_MEM, 1);
+    }
+}
+
 /// Checks if the instruction pointer is between a certain range. If so, executes
 /// `action`. Otherwise, fall through.
 ///
 /// Note that if `ip == end`, this will not match. That is, the interval closed
 /// at the end.
+///
+/// **Known defect:** the end bound is only honoured when the high 32 bits of
+/// `ip` exceed those of `end`. STEP2 above tests `ip.hi > end.hi` (`BPF_JGT`)
+/// where `ip.hi >= end.hi` (`BPF_JGE`) is needed, so every `ip` in
+/// `[begin, (end.hi << 32) | 0xffff_ffff]` matches. The ptrace backend's
+/// filter depends on the current bytes; see `FilterBuilder::ip_range`.
 ///
 /// Precondition: The instruction pointer must be loaded with [`LOAD_SYSCALL_IP`]
 /// first.
