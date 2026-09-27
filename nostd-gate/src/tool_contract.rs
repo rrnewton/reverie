@@ -14,8 +14,9 @@
 //! `handle_syscall` runs a tool's `handle_syscall_event` to completion or to
 //! its tail injection.
 //!
-//! The tool driven here is reverie-examples' existing counter1 tool, compiled
-//! from its own source file, not a copy.
+//! The tools here are reverie-examples' existing counter1 and counter2 tools,
+//! compiled from their own source files, not copies. The tests below drive
+//! counter1; `narf_core` drives both through the Narf execution core.
 
 use alloc::boxed::Box;
 use core::future::Future;
@@ -47,6 +48,8 @@ use crate::SameAddressSpace;
 
 #[path = "../../reverie-examples/counter1_tool.rs"]
 pub mod counter1_tool;
+#[path = "../../reverie-examples/counter2_tool.rs"]
+pub mod counter2_tool;
 
 /// Compiles only while reverie is built without `std`: with it, `Error` has
 /// an `Io` variant and this match is not exhaustive.
