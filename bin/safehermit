@@ -289,6 +289,9 @@ detached_log_cap_hit=0
 detached_log_cap_killed=0
 detached_cleanup_armed=0
 detached_binary_identity_accepted=0
+detached_reference_pid=""
+detached_reference_read=""
+detached_reference_write=""
 detached_limit_cpu_cores_micros=""
 detached_limit_cpu_time_nsec=""
 detached_limit_wall_time_usec=""
@@ -749,6 +752,48 @@ reap_detached_helper() {
     wait "$helper_pid" 2>/dev/null || true
 }
 
+start_detached_reference() {
+    # An IPC reference, not the payload holder, preserves completed accounting.
+    # The extra 15s bounds this small control helper's teardown only; it never
+    # changes the service RuntimeMaxSec or any payload resource limit.
+    coproc DETACHED_REFERENCE {
+        exec /usr/bin/python3 "$ROOT/bin/safehermit-unit-reference.py" \
+            "$unit.service" "$$" "$((deadline + 15))"
+    } 2>"$log_dir/.resource-unit-reference.stderr"
+    detached_reference_pid=$DETACHED_REFERENCE_PID
+    detached_reference_read=${DETACHED_REFERENCE[0]}
+    detached_reference_write=${DETACHED_REFERENCE[1]}
+    local response
+    IFS= read -r -t 5 -u "$detached_reference_read" response \
+        && [ "$response" = held ]
+}
+
+check_detached_reference() {
+    local response
+    [ -n "$detached_reference_pid" ] \
+        && kill -0 "$detached_reference_pid" 2>/dev/null \
+        && printf c >&"$detached_reference_write" \
+        && IFS= read -r -t 5 -u "$detached_reference_read" response \
+        && [ "$response" = held ]
+}
+
+release_detached_reference() {
+    [ -n "$detached_reference_pid" ] || return 0
+    local response released=0
+    if kill -0 "$detached_reference_pid" 2>/dev/null \
+        && printf r >&"$detached_reference_write" \
+        && IFS= read -r -t 5 -u "$detached_reference_read" response \
+        && [ "$response" = released ]; then
+        released=1
+    else
+        kill -TERM "$detached_reference_pid" 2>/dev/null || true
+    fi
+    reap_detached_helper "$detached_reference_pid"
+    detached_reference_pid=""
+    exec {detached_reference_read}<&- {detached_reference_write}>&-
+    [ "$released" -eq 1 ]
+}
+
 cleanup_detached_on_exit() {
     local original_rc=$?
     trap - EXIT INT TERM HUP
@@ -756,6 +801,7 @@ cleanup_detached_on_exit() {
         terminate_detached_unit >/dev/null 2>&1 || true
         reap_detached_helper "${runner_pid:-}"
         reap_detached_helper "${capper_pid:-}"
+        release_detached_reference >/dev/null 2>&1 || true
         timeout 5 systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
         systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
     fi
@@ -1027,11 +1073,11 @@ started=$(date +%s)
 started_monotonic_usec="$(python3 -c 'import time; print(time.monotonic_ns() // 1000)' 2>/dev/null)"
 if [ "$runner_state" = APPLIED ] && [ -n "$detached_report_file" ]; then
     # Keep one inert process in the service after the payload exits. Without it,
-    # a successful transient service can disappear between systemd-run returning
-    # and the first accounting query. The payload writes its status atomically,
-    # then blocks on this FIFO while we read the still-live unit's counters and
-    # publish the complete report. RuntimeMaxSec and the lethal log cap still
-    # kill the whole cgroup, including this holder.
+    # a successful transient service can disappear before terminal accounting.
+    # This holder gates launch until a separate persistent IPC reference is held,
+    # then waits for payload-tree quiescence. The reference remains through actual
+    # service exit and final report publication. RuntimeMaxSec and the lethal log
+    # cap still kill the whole cgroup, including this holder.
     payload_status_file="$log_dir/.resource-payload-status"
     payload_binary_identity_file="$log_dir/.resource-binary-sha256"
     payload_release_fifo="$log_dir/.resource-payload-release"
@@ -1128,7 +1174,10 @@ raise SystemExit(completed.returncode)
         sleep 0.02
     done
     if [ -n "$detached_cgroup_path" ] && verify_detached_limits; then
-        if ! sample_detached_cgroup; then
+        if ! start_detached_reference || ! check_detached_reference; then
+            detached_metrics_error="could not retain the owned unit before payload launch"
+            kill_detached_unit || true
+        elif ! sample_detached_cgroup; then
             detached_metrics_error="could not sample verified cgroup before payload launch"
             kill_detached_unit || true
         else
@@ -1152,6 +1201,11 @@ raise SystemExit(completed.returncode)
     detached_empty_polls=0
     detached_sample_failures=0
     while [ ! -f "$payload_status_file" ]; do
+        if [ -z "$detached_metrics_error" ] && ! kill -0 "$detached_reference_pid" 2>/dev/null; then
+            detached_metrics_error="owned unit reference ended before terminal accounting"
+            kill_detached_unit || true
+            break
+        fi
         if sample_detached_cgroup; then
             detached_sample_failures=0
         else
@@ -1254,6 +1308,9 @@ raise SystemExit(completed.returncode)
     # status, but the retained unit properties remain queryable until cleanup.
     # For ordinary completion, status proves the subreaper had no descendants
     # before the holder exited. In both cases publication happens only now.
+    if [ -z "$detached_metrics_error" ] && ! check_detached_reference; then
+        detached_metrics_error="owned unit reference was lost before terminal accounting"
+    fi
     if [ "$detached_metrics_written" -eq 0 ] && [ -z "$detached_metrics_error" ]; then
         detached_metrics="$(collect_detached_metrics)"
         metrics_rc=$?
@@ -1267,7 +1324,9 @@ raise SystemExit(completed.returncode)
             if unsigned_decimal_gt "$detached_cpu_usage" "$detached_limit_cpu_time_nsec"; then
                 detached_cpu_time_limit_hit=1
             fi
-            if finish_detached_report "$detached_memory_peak" "$detached_cpu_usage" "$detached_tasks_peak"; then
+            if ! check_detached_reference; then
+                detached_metrics_error="owned unit reference was lost before report publication"
+            elif finish_detached_report "$detached_memory_peak" "$detached_cpu_usage" "$detached_tasks_peak"; then
                 detached_metrics_written=1
             else
                 detached_metrics_error="atomic post-termination resource report completion failed"
@@ -1299,7 +1358,9 @@ rm -f "$fifo"
 if [ -n "${payload_release_fifo:-}" ]; then
     rm -f "$payload_start_fifo" "$payload_release_fifo" "$payload_status_file" "$payload_status_file.tmp" \
         "$payload_binary_identity_file" "$payload_binary_identity_file.tmp" \
-        "$log_dir/.resource-unit-location" "$log_dir/.resource-unit-properties"
+        "$log_dir/.resource-unit-location"
+    # Retain the actual final query, especially rejected properties. Removing it
+    # made missing-accounting failures impossible to diagnose after unit cleanup.
 fi
 rm -f "$log_file.cap-fired" "$log_file.cap-fired.tmp"
 elapsed=$(( $(date +%s) - started ))
@@ -1315,13 +1376,6 @@ field elapsed_secs  "$elapsed"
 field bytes_written "$wrote"
 field truncated     "$trunc"
 field runner_exit_code "$runner_rc"
-if [ -n "$detached_report_file" ]; then
-    if [ "$detached_metrics_written" -eq 1 ]; then
-        field resource_report_state "COMPLETE"
-    else
-        field resource_report_state "INCOMPLETE:${detached_metrics_error:-payload ended before accounting could complete}"
-    fi
-fi
 if [ "$trunc" = true ]; then
     if [ "$detached_log_cap_killed" -eq 1 ] && [ "${killed:-}" != cgroup-killed ]; then
         killed="parent-cgroup-killed"
@@ -1415,9 +1469,20 @@ if [ "$runner_state" = APPLIED ] && [ "$unit" != none ]; then
     # is left in the failed state otherwise, and its name stays taken.
     systemctl --user stop "$unit.service" >/dev/null 2>&1 || true
     systemctl --user reset-failed "$unit.service" >/dev/null 2>&1 || true
+    if ! release_detached_reference; then
+        detached_metrics_error="${detached_metrics_error:-owned unit reference release did not complete}"
+        detached_metrics_written=0
+    fi
     if [ -n "$detached_report_file" ] && detached_unit_is_quiescent; then
         detached_cleanup_armed=0
         trap - EXIT INT TERM HUP
+    fi
+fi
+if [ -n "$detached_report_file" ]; then
+    if [ "$detached_metrics_written" -eq 1 ]; then
+        field resource_report_state "COMPLETE"
+    else
+        field resource_report_state "INCOMPLETE:${detached_metrics_error:-payload ended before accounting could complete}"
     fi
 fi
 if [ "$unit_result" = timeout ]; then

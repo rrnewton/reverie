@@ -115,6 +115,15 @@ it is atomically completed with `memory_peak_bytes`, `cpu_usage_nsec`, and
 and a hash of the exact argv. A missing or malformed resource property fails
 closed instead of manufacturing a zero measurement.
 
+The metric file alone is not a run or qualification verdict. Callers must also
+inspect the wrapper's actual exit status, its diagnostic
+`resource_report_state`, and the report's breach fields. A unit-reference release
+failure returns a nonzero status and reports `INCOMPLETE`, even when genuine
+terminal metrics have already been published. Cancellation can also leave those
+metrics available without any terminal diagnostic; an absent completion verdict
+must not qualify. Do not interpret retained counters as successful completion or
+substitute them for those status checks.
+
 Detached accounting also requires positive integer values for
 `--sh-memory-max-bytes`, `--sh-tasks-max`, `--sh-cpu-cores`,
 `--sh-cpu-timeout`, and `--sh-deadline`. The payload remains behind a start gate

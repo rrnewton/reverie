@@ -141,6 +141,16 @@ def _fake_tools(directory: Path) -> Path:
         if "--value" in args or set(requested) == {"Id", "LoadState", "ControlGroup"}:
             completed = subprocess.run(["/usr/bin/systemctl", *args], check=False)
             raise SystemExit(completed.returncode)
+        if os.environ.get("FAKE_METRICS_MODE") == "real":
+            completed = subprocess.run(
+                ["/usr/bin/systemctl", *args], check=False, capture_output=True, text=True,
+            )
+            Path(os.environ["REAL_FINAL_PROPERTIES"]).write_text(completed.stdout, encoding="utf-8")
+            if completed.returncode == 0 and {"MemoryPeak", "CPUUsageNSec"} <= set(requested):
+                Path(os.environ["REAL_FINAL_QUERY_COMPLETE"]).touch()
+            sys.stdout.write(completed.stdout)
+            sys.stderr.write(completed.stderr)
+            raise SystemExit(completed.returncode)
         values = {
             "Id": unit,
             "LoadState": "loaded",
@@ -212,6 +222,7 @@ def _run(
     max_log_bytes: int | None = None,
     sample_failure: str = "",
     sample_counter: str = "",
+    reference_failure: str = "",
     post_run_sleep: float = 0,
     replacement_source: Path | None = None,
     replacement_target: Path | None = None,
@@ -230,6 +241,10 @@ def _run(
             "FAKE_CALL_LOG": str(temporary / "calls.jsonl"),
             "CLEANUP_OBSERVATIONS": str(temporary / "cleanup-observations.txt"),
             "FAKE_METRICS_MODE": metrics_mode,
+            "REAL_FINAL_PROPERTIES": str(temporary / "real-final-properties.txt"),
+            "REAL_FINAL_QUERY_COMPLETE": str(temporary / "real-final-query-complete"),
+            "REFERENCE_LOSS_MARKER": str(temporary / "payload-started"),
+            "REFERENCE_PROXY_EVENTS": str(temporary / "reference-proxy-events.jsonl"),
             "FAKE_APPLIED_MISMATCH": applied_mismatch,
             "FAKE_SAMPLE_FAILURE": sample_failure,
             "FAKE_SAMPLE_STATE": str(temporary / "sample-state"),
@@ -239,8 +254,88 @@ def _run(
             "FAKE_REPLACEMENT_TARGET": str(replacement_target or ""),
         }
     )
+    safehermit = SAFEHERMIT
+    if reference_failure:
+        # Fault injection is confined to a test-only helper copy. Production
+        # deliberately has no environment switch for bypassing unit retention.
+        local_bin = temporary / "bin"
+        local_bin.mkdir()
+        safehermit = local_bin / "safehermit"
+        safehermit.write_bytes(SAFEHERMIT.read_bytes())
+        safehermit.chmod(0o755)
+        helper = local_bin / "safehermit-unit-reference.py"
+        if reference_failure == "acquire":
+            helper.write_text('raise RuntimeError("injected reference startup failure")\n')
+        elif reference_failure == "loss":
+            helper.write_text(textwrap.dedent("""\
+                import os, pathlib, subprocess, sys, time
+                child = subprocess.Popen(["/usr/bin/python3", ORIGINAL, *sys.argv[1:]])
+                try:
+                    deadline = time.monotonic() + 5
+                    while not pathlib.Path(os.environ["REFERENCE_LOSS_MARKER"]).exists():
+                        if child.poll() is not None:
+                            raise SystemExit(child.returncode)
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("payload did not reach reference-loss control")
+                        time.sleep(0.01)
+                    child.kill()
+                    raise SystemExit(child.wait())
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait()
+                """).replace("ORIGINAL", repr(str(ROOT / "bin/safehermit-unit-reference.py"))))
+        else:
+            assert reference_failure in {"publication-loss", "release"}
+            helper.write_text(textwrap.dedent("""\
+                import json, os, pathlib, subprocess, sys
+                child = subprocess.Popen(
+                    ["/usr/bin/python3", ORIGINAL, *sys.argv[1:]],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                )
+                def event(value):
+                    with pathlib.Path(os.environ["REFERENCE_PROXY_EVENTS"]).open("a") as stream:
+                        stream.write(json.dumps(value) + "\\n")
+                def response():
+                    line = child.stdout.readline()
+                    if not line:
+                        raise RuntimeError("real reference helper stopped responding")
+                    return line
+                try:
+                    sys.stdout.buffer.write(response())
+                    sys.stdout.buffer.flush()
+                    while True:
+                        command = sys.stdin.buffer.read(1)
+                        if not command:
+                            raise RuntimeError("reference proxy owner closed its pipe")
+                        if MODE == "publication-loss" and command == b"c" \\
+                                and pathlib.Path(os.environ["REAL_FINAL_QUERY_COMPLETE"]).exists():
+                            child.kill()
+                            child.wait()
+                            event({"injection": "loss-after-real-final-query", "helper_exit": child.returncode})
+                            raise SystemExit(89)
+                        child.stdin.write(command)
+                        child.stdin.flush()
+                        reply = response()
+                        if MODE == "release" and command == b"r":
+                            assert reply == b"released\\n", reply
+                            assert child.wait() == 0
+                            event({"injection": "release-acknowledgement-failure", "real_reply": reply.decode().strip()})
+                            sys.stdout.buffer.write(b"injected-release-failure\\n")
+                            sys.stdout.buffer.flush()
+                            break
+                        sys.stdout.buffer.write(reply)
+                        sys.stdout.buffer.flush()
+                        if command == b"r":
+                            raise SystemExit(child.wait())
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait()
+                """).replace("ORIGINAL", repr(str(ROOT / "bin/safehermit-unit-reference.py")))
+                    .replace("MODE", repr(reference_failure)))
     argv = [
-        str(SAFEHERMIT),
+        str(safehermit),
         "--sh-resource-report",
         str(report),
         "--sh-deadline",
@@ -281,6 +376,12 @@ def _run(
                 f"safehermit resource fixture exceeded independent 15s test bound: {argv}"
             ) from error
         completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+        (temporary / "wrapper.stdout").write_text(stdout, encoding="utf-8")
+        (temporary / "wrapper.stderr").write_text(stderr, encoding="utf-8")
+        (temporary / "wrapper-result.json").write_text(
+            json.dumps({"argv": argv, "returncode": process.returncode}, indent=2) + "\n",
+            encoding="utf-8",
+        )
         try:
             _assert_owned_unit_gone(report, operation_deadline)
         except BaseException:
@@ -595,6 +696,141 @@ def test_payload_cannot_forge_executed_binary_digest() -> None:
         assert _fields(report)["binary_sha256"] == expected
 
 
+def test_short_success_keeps_real_terminal_accounting() -> None:
+    # Do not manufacture loaded/active properties: a short exit0 must retain
+    # genuine post-termination counters, even after systemd-run has returned.
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        completed = _run(temporary, report, metrics_mode="real", command="exit 0")
+        assert completed.returncode == 0, completed
+        assert completed.stdout == ""
+        assert _fields(report)["cpu_usage_nsec"].isdigit()
+        raw_properties = (temporary / "real-final-properties.txt").read_text()
+        properties = dict(line.split("=", 1) for line in raw_properties.splitlines())
+        fields = _fields(report)
+        assert properties["Id"] == fields["unit"] + ".service"
+        assert properties["LoadState"] == "loaded"
+        assert properties["ActiveState"] == "inactive"
+        assert properties["SubState"] == "dead"
+        assert properties["Result"] == "success"
+        assert 0 < int(properties["MemoryPeak"]) < 2**64 - 1
+        assert 0 < int(properties["CPUUsageNSec"]) < 2**64 - 1
+        assert fields["memory_peak_bytes"] == properties["MemoryPeak"]
+        assert fields["cpu_usage_nsec"] == properties["CPUUsageNSec"]
+        assert int(fields["tasks_peak"]) > 0
+        assert (temporary / "runner-rc.txt").read_text() == "0"
+        # _run also requires the exact owned unit and cgroup to be gone.
+
+
+def test_reference_acquisition_failure_prevents_payload() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        marker = temporary / "payload-started"
+        completed = _run(
+            temporary, report, reference_failure="acquire",
+            command=f'printf started >"{marker}"',
+        )
+        assert completed.returncode == 2, completed
+        assert not marker.exists()
+        assert "could not retain the owned unit before payload launch" in completed.stderr
+        assert "memory_peak_bytes" not in _fields(report)
+
+
+def test_reference_loss_refuses_and_retires_payload() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        marker = temporary / "payload-started"
+        completed = _run(
+            temporary, report, reference_failure="loss",
+            command=f'printf started >"{marker}"; while :; do :; done',
+        )
+        assert completed.returncode == 2, completed
+        assert marker.read_text() == "started"
+        assert "owned unit reference ended before terminal accounting" in completed.stderr
+        assert "memory_peak_bytes" not in _fields(report)
+
+
+def test_reference_loss_after_real_metrics_refuses_publication() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        completed = _run(
+            temporary, report, metrics_mode="real", reference_failure="publication-loss",
+            command="exit 0",
+        )
+        assert completed.returncode == 2, completed
+        reason = "owned unit reference was lost before report publication"
+        assert f"resource_report_state=INCOMPLETE:{reason}" in completed.stderr
+        assert (temporary / "runner-rc.txt").read_text() == "0"
+        properties = dict(line.split("=", 1) for line in
+                          (temporary / "real-final-properties.txt").read_text().splitlines())
+        assert properties["LoadState"] == "loaded"
+        assert properties["ActiveState"] == "inactive"
+        assert properties["SubState"] == "dead"
+        assert properties["Result"] == "success"
+        assert 0 < int(properties["MemoryPeak"]) < 2**64 - 1
+        assert 0 < int(properties["CPUUsageNSec"]) < 2**64 - 1
+        assert json.loads((temporary / "reference-proxy-events.jsonl").read_text()) == {
+            "injection": "loss-after-real-final-query", "helper_exit": -signal.SIGKILL,
+        }
+        assert not {"memory_peak_bytes", "cpu_usage_nsec", "tasks_peak"} & _fields(report).keys()
+
+
+def test_reference_release_failure_preserves_genuine_metrics() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        completed = _run(
+            temporary, report, metrics_mode="real", reference_failure="release",
+            command="exit 0",
+        )
+        assert completed.returncode == 2, completed
+        assert "resource_report_state=INCOMPLETE:owned unit reference release did not complete" in completed.stderr
+        assert (temporary / "runner-rc.txt").read_text() == "0"
+        properties = dict(line.split("=", 1) for line in
+                          (temporary / "real-final-properties.txt").read_text().splitlines())
+        fields = _fields(report)
+        assert properties["Id"] == fields["unit"] + ".service"
+        assert properties["LoadState"] == "loaded"
+        assert properties["ActiveState"] == "inactive"
+        assert properties["SubState"] == "dead"
+        assert properties["Result"] == "success"
+        assert 0 < int(properties["MemoryPeak"]) < 2**64 - 1
+        assert 0 < int(properties["CPUUsageNSec"]) < 2**64 - 1
+        assert fields["memory_peak_bytes"] == properties["MemoryPeak"]
+        assert fields["cpu_usage_nsec"] == properties["CPUUsageNSec"]
+        assert int(fields["tasks_peak"]) > 0
+        assert json.loads((temporary / "reference-proxy-events.jsonl").read_text()) == {
+            "injection": "release-acknowledgement-failure", "real_reply": "released",
+        }
+
+
+def test_first_accounting_refusal_survives_release_failure() -> None:
+    with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
+        temporary = Path(raw)
+        report = temporary / "resource.txt"
+        completed = _run(
+            temporary, report, metrics_mode="missing-cpu", reference_failure="release",
+            command="exit 0",
+        )
+        assert completed.returncode == 2, completed
+        reason = "required post-termination resource property is missing or malformed"
+        assert f"resource_report_state=INCOMPLETE:{reason}" in completed.stderr
+        assert "owned unit reference release did not complete" not in completed.stderr
+        assert not {"memory_peak_bytes", "cpu_usage_nsec", "tasks_peak"} & _fields(report).keys()
+        assert (temporary / "runner-rc.txt").read_text() == "0"
+        assert json.loads((temporary / "reference-proxy-events.jsonl").read_text()) == {
+            "injection": "release-acknowledgement-failure", "real_reply": "released",
+        }
+        properties = tuple((temporary / "logs").glob("*/.resource-unit-properties"))
+        assert len(properties) == 1
+        assert "MemoryPeak=123456789" in properties[0].read_text()
+        assert "CPUUsageNSec=" not in properties[0].read_text()
+
+
 def test_missing_property_fails_closed_and_keeps_owned_unit_stub() -> None:
     with tempfile.TemporaryDirectory(prefix="safehermit-resource-test-") as raw:
         temporary = Path(raw)
@@ -612,6 +848,11 @@ def test_missing_property_fails_closed_and_keeps_owned_unit_stub() -> None:
         assert (temporary / "runner-rc.txt").read_text(encoding="ascii") == "0"
         assert (temporary / "initial.txt").exists()
         assert "RESOURCE REPORT REFUSAL" in completed.stderr
+        properties = tuple((temporary / "logs").glob("*/.resource-unit-properties"))
+        assert len(properties) == 1
+        raw_properties = properties[0].read_text()
+        assert "MemoryPeak=123456789" in raw_properties
+        assert "CPUUsageNSec=" not in raw_properties
 
 
 def test_limit_mismatch_is_refused_before_payload_launch() -> None:
@@ -934,6 +1175,12 @@ def main() -> int:
     for handled_signal in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(handled_signal, _handle_suite_signal)
     tests = (
+        test_short_success_keeps_real_terminal_accounting,
+        test_reference_acquisition_failure_prevents_payload,
+        test_reference_loss_refuses_and_retires_payload,
+        test_reference_loss_after_real_metrics_refuses_publication,
+        test_reference_release_failure_preserves_genuine_metrics,
+        test_first_accounting_refusal_survives_release_failure,
         test_complete_report_is_published_before_cleanup,
         test_pinned_binary_preserves_argv0_and_reports_executed_inode,
         test_payload_cannot_forge_executed_binary_digest,

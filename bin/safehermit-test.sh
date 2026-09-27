@@ -18,8 +18,9 @@
 #
 # A NOTE ON THE HANG FIXTURE. `sleep 300` is NOT a hang under hermit: hermit
 # virtualizes time, so it returns almost immediately and an earlier version of T5
-# passed in 1 second while testing nothing. The fixture must burn real CPU, and
-# the test asserts the fixture genuinely hangs bare before trusting the result.
+# passed in 1 second while testing nothing. The fixture must burn real CPU. The test requires an entered-loop marker
+# from a longer-bound reference still running at independent eight-second
+# containment before trusting the original fifteen-second subject deadline.
 set -uo pipefail
 SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/safehermit"
 HB="${SAFEHERMIT_TEST_BIN:-$(dirname "$SH")/hermit}"
@@ -28,7 +29,15 @@ ok(){ printf '  PASS  %s\n' "$1"; pass=$((pass+1)); }
 no(){ printf '  FAIL  %s -- %s\n' "$1" "$2"; fail=$((fail+1)); }
 [ -x "$HB" ] || { echo "no hermit binary at $HB (set SAFEHERMIT_TEST_BIN)"; exit 2; }
 
-t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+t=$(mktemp -d)
+cleanup() {
+    if [ "${SAFEHERMIT_TEST_KEEP_TMP:-0}" = 1 ]; then
+        printf 'safehermit-test: retained fixture directory=%s\n' "$t"
+    else
+        rm -rf "$t"
+    fi
+}
+trap cleanup EXIT
 
 # T1 arbitrary binary at an ABSOLUTE PATH -- the case that caused the incident.
 cp "$HB" "$t/hermit-arbitrary"; chmod +x "$t/hermit-arbitrary"
@@ -99,13 +108,34 @@ else
     no "degraded byte cap" "rc=$rc truncated='$tr_val' killed_at_cap='$killed_val'; expected true/no-cgroup-available/42"
 fi
 
-# T5 an ad-hoc Hermit binary copied under /tmp is bounded by the wrapper while
-# the exact same invocation is not self-bounded when run bare. The outer
-# eight-second `timeout` is test containment, not the property being credited to
-# the bare run: exit 124 proves the fixture was still running when containment
-# stopped it.
-timeout 8 "$t/hermit-arbitrary" run -- /bin/sh -c 'while :; do :; done' >/dev/null 2>&1
-[ $? -eq 124 ] || { no "hang fixture" "fixture does not actually hang bare; test would be vacuous"; }
+# T5 prove this fixture really enters its infinite loop, using a longer-bound
+# reference through safehermit. The external eight-second timeout is independent
+# test containment, not the reference's longer 57-second deadline. The separate
+# subject below retains its original fifteen-second deadline.
+# Resource-report mode gives cancellation an exact owned-unit cleanup trap.
+timeout --signal=TERM --kill-after=5s 8 "$SH" \
+    --sh-resource-report "$t/5.reference.resources" --sh-report "$t/5.reference.report" \
+    --sh-memory-max-bytes 17179869184 --sh-tasks-max 128 --sh-cpu-cores 2 \
+    --sh-cpu-timeout 30 --sh-deadline 57 \
+    "$t/hermit-arbitrary" run -- /bin/sh -c 'printf "hang-reference-entered\n" >&2; while :; do :; done' \
+    >"$t/5.reference.out" 2>"$t/5.reference.err"
+reference_rc=$?
+[ "$reference_rc" -eq 124 ] && grep -Fxq hang-reference-entered "$t/5.reference.err" \
+    || { no "hang fixture" "longer-bound reference did not enter the loop before external timeout; rc=$reference_rc"; }
+reference_unit=$(sed -n 's/^safehermit: unit=//p' "$t/5.reference.resources")
+if [[ "$reference_unit" =~ ^safehermit-[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]]; then
+    timeout 5 bash -c '
+        for _ in {1..50}; do
+            state=$(systemctl --user show "$1.service" -p LoadState --value)
+            [ "$state" != not-found ] || exit 0
+            sleep 0.05
+        done
+        exit 1
+    ' bash "$reference_unit" >"$t/5.reference.retirement.out" 2>"$t/5.reference.retirement.err"
+    [ "$?" -eq 0 ] || { no "reference retirement" "owned reference unit did not retire"; exit 1; }
+else
+    no "reference retirement" "reference did not publish an exact owned unit"; exit 1
+fi
 s=$(date +%s)
 "$SH" --sh-deadline 15 "$t/hermit-arbitrary" run -- /bin/sh -c 'while :; do :; done' >/dev/null 2>"$t/5.err"
 rc=$?; e=$(( $(date +%s) - s ))
@@ -143,24 +173,32 @@ grep -q 'bound.bytes=APPLIED:.*(TRUNCATION ONLY:' "$t/6.err" \
 # bytes loud against 52 bytes quiet on this box.
 T7_FILTER='warn,detcore=info,reverie_ptrace::task=info'
 T7_GUEST=(/bin/sh -c 'i=0; while [ $i -lt 300 ]; do echo $i; i=$((i+1)); done')
-RUST_LOG=error      "$HB" run -- "${T7_GUEST[@]}" >/dev/null 2>"$t/7.bare-quiet"
-RUST_LOG="$T7_FILTER" "$HB" run -- "${T7_GUEST[@]}" >/dev/null 2>"$t/7.bare-loud"
-q=$(stat -c%s "$t/7.bare-quiet"); l=$(stat -c%s "$t/7.bare-loud")
+# Both logging references use the same candidate wrapper. Separate reports keep
+# wrapper diagnostics out of the exact quiet/loud byte comparisons.
+RUST_LOG=error "$SH" --sh-report "$t/7.quiet.report" --sh-deadline 57 \
+    "$HB" run -- "${T7_GUEST[@]}" >/dev/null 2>"$t/7.reference-quiet"
+quiet_rc=$?
+RUST_LOG="$T7_FILTER" "$SH" --sh-report "$t/7.loud.report" --sh-deadline 57 \
+    "$HB" run -- "${T7_GUEST[@]}" >/dev/null 2>"$t/7.reference-loud"
+loud_rc=$?
+[ "$quiet_rc" -eq 0 ] && [ "$loud_rc" -eq 0 ] \
+    || no "env fixture status" "quiet rc=$quiet_rc, loud rc=$loud_rc; both must complete normally"
+q=$(stat -c%s "$t/7.reference-quiet"); l=$(stat -c%s "$t/7.reference-loud")
 if [ "$l" -lt 10000 ] || [ "$l" -le $(( q * 10 )) ]; then
-    no "env fixture" "the demo log filter ($l bytes) is not both substantial and an order of magnitude louder than RUST_LOG=error ($q bytes) bare; T7 would be vacuous"
+    no "env fixture" "the demo log filter ($l bytes) is not both substantial and an order of magnitude louder than RUST_LOG=error ($q bytes) in the reference; T7 would be vacuous"
 else
     RUST_LOG="$T7_FILTER" "$SH" --sh-report "$t/7.report" "$t/hermit-arbitrary" run -- "${T7_GUEST[@]}" \
         >/dev/null 2>"$t/7.err"
     w=$(stat -c%s "$t/7.err")
-    # COMPARE AGAINST THE LOUD BASELINE, NOT THE QUIET ONE. An earlier version of
+    # COMPARE AGAINST THE LOUD REFERENCE, NOT THE QUIET ONE. An earlier version of
     # this line asserted w > q*10, and it PASSED against the unfixed script: the
     # quiet baseline measured 0 bytes, so q*10 was 0 and the 1,370 bytes an
     # environment-stripped run still emits cleared it easily, against 207,067 for a
     # bare loud run. A threshold anchored to zero is not a threshold. The wrapped
-    # run must be within the same order of magnitude as a bare LOUD run.
+    # run must be within the same order of magnitude as the loud reference.
     [ "$w" -gt $(( l / 2 )) ] \
-      && ok "the caller's RUST_LOG reaches hermit through the transient unit ($w bytes wrapped vs $q quiet, $l bare loud)" \
-      || no "env forwarding" "wrapped run emitted $w bytes against $l for a bare loud run (quiet baseline $q) -- the caller's environment is being dropped"
+      && ok "the caller's RUST_LOG reaches hermit through the transient unit ($w bytes wrapped vs $q quiet, $l longer-bound loud)" \
+      || no "env forwarding" "wrapped run emitted $w bytes against $l for the loud reference (quiet baseline $q) -- the caller's environment is being dropped"
     grep -q 'env.forwarded=APPLIED' "$t/7.report" \
       && ok "environment forwarding is REPORTED, not assumed" \
       || no "env reported" "no env.forwarded=APPLIED line in the report"
