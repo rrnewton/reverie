@@ -748,6 +748,71 @@ fn stepped_pushf_after_a_load_of_ss_does_not_leak_the_trap_flag() {
     );
 }
 
+/// Makes the `clock_getres` at which the Tool requests the timer, and then a
+/// `getpid` just after two loads of SS. Of consecutive loads of SS, Intel
+/// documents only the first as sure to hold the debug trap back, but an AMD
+/// EPYC 9D85 runs both and the `syscall` in one step. Then it runs `after`
+/// rounds of a loop with one conditional branch each. Returns what `getpid`
+/// returned and the value the kernel left in r11, which the `syscall`
+/// instruction loads with RFLAGS.
+#[inline(always)]
+fn two_mov_ss_syscall_before_loop(after: u64) -> (u64, u64) {
+    let pid: u64;
+    let r11: u64;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            "mov {ss:e}, ss",
+            "mov eax, {getpid}",
+            "mov ss, {ss:e}",
+            "mov ss, {ss:e}",
+            "syscall",
+            "2:",
+            "dec {n}",
+            "jnz 2b",
+            getpid = const libc::SYS_getpid,
+            inlateout("rax") Sysno::clock_getres as usize => pid,
+            in("rdi") 0usize,
+            in("rsi") 0usize,
+            out("rcx") _,
+            lateout("r11") r11,
+            n = inout(reg) after => _,
+            ss = out(reg) _,
+        );
+    }
+    (pid, r11)
+}
+
+// One step runs both loads of SS and the `getpid` after them, where the
+// processor holds the trap back for both, and the target is in the loop after
+// them. The step must be taken for the step of a `syscall`, whose TF in r11 is
+// removed. A processor that holds the trap back only for the first load stops
+// at the `syscall`, and steps it on its own.
+#[test]
+fn stepped_syscall_after_two_loads_of_ss_does_not_leak_the_trap_flag() {
+    ret_without_perf!();
+
+    let log = check_fn_with_config::<PreciseTimerTool, _>(
+        move || {
+            let expected = unsafe { libc::getpid() } as u64;
+            let (pid, r11) = two_mov_ss_syscall_before_loop(2 * LESS_RCBS);
+            assert_eq!(pid, expected, "getpid returned {pid:#x}");
+            assert_eq!(r11 & TRAP_FLAG, 0, "the syscall saved TF in r11: {r11:#x}");
+        },
+        Schedule {
+            rcbs: LESS_RCBS,
+            instructions: None,
+        },
+        true,
+    );
+
+    assert_eq!(
+        log.timer_events.load(Ordering::SeqCst),
+        1,
+        "the timer must fire inside the loop"
+    );
+}
+
 /// Makes the `clock_getres` at which the Tool requests the timer, and then
 /// loads `flags` with a `popfq` just after a load of SS, so a single step runs
 /// both. It pushes the flags it now has, loads flags without TF, and runs
