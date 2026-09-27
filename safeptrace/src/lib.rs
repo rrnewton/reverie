@@ -895,6 +895,43 @@ impl Stopped {
         ptrace::getevent(self.0.into()).map_err(|err| self.map_nix_err(err))
     }
 
+    /// Gets the stopped thread's blocked-signal mask (`PTRACE_GETSIGMASK`).
+    ///
+    /// The mask is the kernel's 64-bit signal set: bit `n - 1` is set when
+    /// signal `n` is blocked.
+    pub fn getsigmask(&self) -> Result<u64, Error> {
+        let mut mask: u64 = 0;
+        Errno::result(unsafe {
+            libc::ptrace(
+                libc::PTRACE_GETSIGMASK,
+                self.0.as_raw(),
+                core::mem::size_of::<u64>(),
+                &mut mask as *mut u64,
+            )
+        })
+        .map_err(|err| self.map_err(err))?;
+        Ok(mask)
+    }
+
+    /// Sets the stopped thread's blocked-signal mask (`PTRACE_SETSIGMASK`),
+    /// in the same format as [`Stopped::getsigmask`].
+    ///
+    /// As with `rt_sigprocmask`, the kernel never blocks `SIGKILL` or
+    /// `SIGSTOP`: their bits are cleared. A signal that the new mask unblocks
+    /// and that is already pending is delivered after the thread resumes.
+    pub fn setsigmask(&self, mask: u64) -> Result<(), Error> {
+        Errno::result(unsafe {
+            libc::ptrace(
+                libc::PTRACE_SETSIGMASK,
+                self.0.as_raw(),
+                core::mem::size_of::<u64>(),
+                &mask as *const u64,
+            )
+        })
+        .map_err(|err| self.map_err(err))?;
+        Ok(())
+    }
+
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
@@ -1921,6 +1958,122 @@ mod test {
                 Ok(KernelSigset(oldset.assume_init()))
             }
         }
+    }
+
+    /// The calling thread's blocked-signal mask, as the kernel reports it.
+    fn own_sigmask() -> u64 {
+        let mut mask = 0u64;
+        let ret = unsafe {
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                libc::SIG_BLOCK,
+                std::ptr::null::<u64>(),
+                &mut mask as *mut u64,
+                8,
+            )
+        };
+        assert_eq!(ret, 0);
+        mask
+    }
+
+    /// Waits for the tracee's next stop, which must be a signal-delivery stop
+    /// for `signal`.
+    fn expect_signal_stop(running: Running, signal: Signal) -> Stopped {
+        match running.wait().unwrap() {
+            Wait::Stopped(stopped, Event::Signal(got)) if got == signal => stopped,
+            other => panic!("expected a {signal:?} delivery stop, got {other:?}"),
+        }
+    }
+
+    /// PTRACE_GETSIGMASK reads the mask the tracee set itself, and
+    /// PTRACE_SETSIGMASK replaces it (minus SIGKILL and SIGSTOP, which the
+    /// kernel never blocks) as the tracee then observes.
+    #[cfg(not(sanitized))]
+    #[test]
+    fn getsigmask_and_setsigmask_read_and_replace_the_tracee_mask()
+    -> Result<(), Box<dyn std::error::Error + 'static>> {
+        let replacement = KernelSigset::from(&[Signal::SIGUSR1, Signal::SIGALRM][..]).0;
+        let unblockable = KernelSigset::from(&[Signal::SIGKILL, Signal::SIGSTOP][..]).0;
+        let (pid, tracee) = trace(
+            move || {
+                unsafe { block_signals(&[Signal::SIGUSR1, Signal::SIGUSR2]) }.unwrap();
+                signal::raise(Signal::SIGSTOP).unwrap();
+                if own_sigmask() == replacement { 0 } else { 1 }
+            },
+            Options::PTRACE_O_EXITKILL,
+        )?;
+        let stopped = expect_signal_stop(tracee.resume(None)?, Signal::SIGSTOP);
+        let blocked = KernelSigset::from(&[Signal::SIGUSR1, Signal::SIGUSR2][..]).0;
+        let mask = stopped.getsigmask()?;
+        assert_eq!(mask & blocked, blocked, "mask {mask:#x}");
+        stopped.setsigmask(replacement | unblockable)?;
+        assert_eq!(stopped.getsigmask()?, replacement);
+        // Suppress the SIGSTOP; the tracee checks its own mask and exits.
+        assert_eq!(
+            stopped.resume(None)?.wait()?,
+            Wait::Exited(pid, ExitStatus::Exited(0))
+        );
+        Ok(())
+    }
+
+    static SIGUSR1_HANDLED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    extern "C" fn note_sigusr1(_signal: libc::c_int) {
+        SIGUSR1_HANDLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A mask set by the tracer holds a signal sent meanwhile pending (no
+    /// delivery stop, no handler), and restoring the saved mask releases it
+    /// to an ordinary delivery stop and the handler.
+    #[cfg(not(sanitized))]
+    #[test]
+    fn setsigmask_holds_a_signal_pending_until_the_mask_is_restored()
+    -> Result<(), Box<dyn std::error::Error + 'static>> {
+        let (pid, tracee) = trace(
+            || {
+                let mut action: libc::sigaction = unsafe { MaybeUninit::zeroed().assume_init() };
+                action.sa_sigaction = note_sigusr1 as *const () as usize;
+                assert_eq!(
+                    unsafe { libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()) },
+                    0
+                );
+                unsafe { unblock_signals(&[Signal::SIGUSR1]) }.unwrap();
+                signal::raise(Signal::SIGSTOP).unwrap();
+                // The tracer blocked everything and sent SIGUSR1.
+                let mut pending = 0u64;
+                unsafe { libc::syscall(libc::SYS_rt_sigpending, &mut pending as *mut u64, 8) };
+                let usr1 = KernelSigset::from(&[Signal::SIGUSR1][..]).0;
+                if pending & usr1 == 0 {
+                    return 2;
+                }
+                if SIGUSR1_HANDLED.load(std::sync::atomic::Ordering::SeqCst) {
+                    return 3;
+                }
+                signal::raise(Signal::SIGSTOP).unwrap();
+                // The tracer restored the mask: SIGUSR1 has been handled.
+                if SIGUSR1_HANDLED.load(std::sync::atomic::Ordering::SeqCst) {
+                    0
+                } else {
+                    4
+                }
+            },
+            Options::PTRACE_O_EXITKILL,
+        )?;
+        let stopped = expect_signal_stop(tracee.resume(None)?, Signal::SIGSTOP);
+        let saved = stopped.getsigmask()?;
+        stopped.setsigmask(!0)?;
+        signal::kill(pid.into(), Signal::SIGUSR1)?;
+        // SIGUSR1 is blocked: the next stop is the second SIGSTOP.
+        let stopped = expect_signal_stop(stopped.resume(None)?, Signal::SIGSTOP);
+        stopped.setsigmask(saved)?;
+        assert_eq!(stopped.getsigmask()?, saved);
+        let stopped = expect_signal_stop(stopped.resume(None)?, Signal::SIGUSR1);
+        assert_eq!(
+            stopped.resume(Some(Signal::SIGUSR1))?.wait()?,
+            Wait::Exited(pid, ExitStatus::Exited(0))
+        );
+        Ok(())
     }
 
     #[cfg(not(sanitized))]

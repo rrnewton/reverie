@@ -563,6 +563,42 @@ async fn trap_only_and_the_preload_runtime_are_mutually_exclusive() {
     assert!(!marker.exists(), "the guest ran despite the refusal");
 }
 
+/// `SitePatching::On` exists only for tests in this increment, and nothing
+/// handles the IA-32 and slot stops its filter produces, so a launch with it
+/// is refused before the probe runs and before the guest is spawned.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_refuses_launch_with_site_patching_on() {
+    let marker = tempfile_path("trap-only-patching-on");
+    let mut command = Command::new(parity_guest());
+    command.arg("touch").arg(&marker);
+    let result = TracerBuilder::<RecordTool>::new(command)
+        .liteinst_trap_only(SitePatching::On)
+        .liteinst_trap_only_ia32_probe_for_test(Ia32EmulationProbe::Available)
+        .spawn()
+        .await;
+    let error = match result {
+        Ok(_) => panic!("trap-only launched with site patching on"),
+        Err(error) => error,
+    };
+    let Error::Tool(tool_error) = &error else {
+        panic!("refusal must be a named Tool error, got {error:?}");
+    };
+    let refusal = tool_error
+        .downcast_ref::<crate::liteinst_trap_only::SitePatchingUnsupported>()
+        .unwrap_or_else(|| panic!("refusal is not SitePatchingUnsupported: {error}"));
+    assert_eq!(refusal.patching, SitePatching::On);
+    assert!(
+        error
+            .to_string()
+            .contains("LiteInst trap-only launch refused: site patching on is not supported yet"),
+        "{error}"
+    );
+    assert!(
+        !marker.exists(),
+        "the guest ran even though the launch was refused"
+    );
+}
+
 #[test]
 fn host_services_int_0x80() {
     // Trap-only parity depends on the real probe. A host without the IA-32
