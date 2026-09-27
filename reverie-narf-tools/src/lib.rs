@@ -28,6 +28,12 @@ pub mod probe;
 #[path = "../../reverie-examples/counter1_tool.rs"]
 pub mod counter1;
 
+/// counter2, compiled unmodified from `reverie-examples`. Without `std` it
+/// prints its thread-exit line only through a reporter the backend sets.
+#[allow(dead_code)]
+#[path = "../../reverie-examples/counter2_tool.rs"]
+pub mod counter2;
+
 /// Where a printing Tool delivers each finished line.
 ///
 /// `emit` receives one complete line without its terminating newline. The
