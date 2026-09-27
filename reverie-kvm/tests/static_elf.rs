@@ -19277,3 +19277,6 @@ fn every_abandoned_public_run_refuses_its_backend() {
 
 #[path = "support/natural_retirement.rs"]
 mod natural_retirement;
+
+#[path = "support/exit_descriptor_ordering.rs"]
+mod exit_descriptor_ordering;
