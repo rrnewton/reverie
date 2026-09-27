@@ -620,21 +620,31 @@ async fn trap_only_p2_t1f_self_raised_signals() {
 async fn trap_only_p2_t2_forced_sigtrap_profile_per_shape() {
     let [ptrace, trap_only, _, _] = compare_mode("sigtrap_profile").await;
     assert_patched(&trap_only, SiteState::Live);
-    // Steps taken by each tagged call: the cumulative count at the next
-    // syscall entry minus the count at the call's entry.
-    let root = &ptrace.tool_events["task#0"];
+    // Order of the fixture's shapes: tail, exact inject, emulate, private
+    // inject, two injects, two private injects.
+    let expected = [0, 0, 1, 2, 1, 3];
+    let ptrace_steps = steps_per_shape(&ptrace);
+    eprintln!("ptrace steps per shape: {ptrace_steps:?}");
+    assert_eq!(ptrace_steps, expected, "ptrace step profile");
+    assert_eq!(steps_per_shape(&trap_only), expected, "trap-only step profile");
+}
+
+/// Steps taken by each tagged call: the cumulative count at the next
+/// syscall entry minus the count at the call's entry.
+fn steps_per_shape(run: &P2Run) -> Vec<u64> {
+    let root = &run.tool_events["task#0"];
+    let entry_steps = |event: &String| -> u64 {
+        event
+            .split_once(" steps=")
+            .and_then(|(_, rest)| rest.split(' ').next())
+            .and_then(|value| value.parse().ok())
+            .unwrap()
+    };
     let mut per_shape = Vec::new();
     for (index, event) in root.iter().enumerate() {
         if !event.starts_with("tagged getppid") {
             continue;
         }
-        let entry_steps = |event: &String| -> u64 {
-            event
-                .split_once(" steps=")
-                .and_then(|(_, rest)| rest.split(' ').next())
-                .and_then(|value| value.parse().ok())
-                .unwrap()
-        };
         let before = entry_steps(&root[index - 1]);
         let after = root[index + 1..]
             .iter()
@@ -643,13 +653,7 @@ async fn trap_only_p2_t2_forced_sigtrap_profile_per_shape() {
             .unwrap();
         per_shape.push(after - before);
     }
-    eprintln!("ptrace steps per shape: {per_shape:?}");
-    assert_eq!(per_shape.len(), 6, "{root:#?}");
-    assert_eq!(per_shape[0], 0, "an exact in-place inject takes no step");
-    assert!(
-        per_shape[2] > 0 && per_shape[3] > 0,
-        "emulate and private inject step under ptrace: {per_shape:?}"
-    );
+    per_shape
 }
 
 /// T3: interrupted and restarted calls at patched sites return the same
