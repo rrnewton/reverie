@@ -316,6 +316,27 @@ fn assert_baseline_is_not_vacuous(
         seccomp_stops > 50,
         "baseline has only {seccomp_stops} seccomp stops"
     );
+    // The fixture keeps SIGCHLD blocked from before each fork and vfork until
+    // after the matching waitpid, so each child's SIGCHLD is delivered at a
+    // fixed point: when the rt_sigprocmask that follows the parent's wait4
+    // restores the old mask, never before the wait4.
+    let root_stops = ptrace
+        .stops
+        .get(root)
+        .unwrap_or_else(|| panic!("no stop sequence for root {root}"));
+    let sigchld_stops = root_stops
+        .iter()
+        .filter(|stop| *stop == "Signal(SIGCHLD)")
+        .count();
+    let sigchld_after_wait4 = root_stops
+        .windows(3)
+        .filter(|stops| stops == &["seccomp 61", "seccomp 14", "Signal(SIGCHLD)"])
+        .count();
+    assert_eq!(
+        (sigchld_stops, sigchld_after_wait4),
+        (2, 2),
+        "root's two SIGCHLD stops must each follow its wait4 and unblock stops: {root_stops:?}"
+    );
     let mut expected_tasks = vec![root.to_owned(), fork.to_owned(), vfork.to_owned()];
     expected_tasks.sort();
     assert_eq!(
@@ -586,34 +607,35 @@ async fn trap_only_and_the_preload_runtime_are_mutually_exclusive() {
     assert!(!marker.exists(), "the guest ran despite the refusal");
 }
 
-/// `SitePatching::On` exists only for tests in this increment, and nothing
-/// handles the IA-32 and slot stops its filter produces, so a launch with it
-/// is refused before the probe runs and before the guest is spawned.
+/// Site patching rewrites `syscall` into `int 0x80`, so a launch with it on
+/// is refused when the IA-32 entry changes registers the x86_64 view needs,
+/// before the guest is spawned.
 #[tokio::test(flavor = "current_thread")]
-async fn trap_only_refuses_launch_with_site_patching_on() {
-    let marker = tempfile_path("trap-only-patching-on");
+async fn trap_only_refuses_site_patching_on_a_register_clobbering_entry() {
+    let marker = tempfile_path("trap-only-patching-clobber");
     let mut command = Command::new(parity_guest());
     command.arg("touch").arg(&marker);
     let result = TracerBuilder::<RecordTool>::new(command)
         .liteinst_trap_only(SitePatching::On)
-        .liteinst_trap_only_ia32_probe_for_test(Ia32EmulationProbe::Available)
+        .liteinst_trap_only_ia32_probe_for_test(Ia32EmulationProbe::ClobbersRegisters(
+            "int 0x80 changed r8 (test)".into(),
+        ))
         .spawn()
         .await;
     let error = match result {
-        Ok(_) => panic!("trap-only launched with site patching on"),
+        Ok(_) => panic!("site patching launched on a register-clobbering entry"),
         Err(error) => error,
     };
     let Error::Tool(tool_error) = &error else {
         panic!("refusal must be a named Tool error, got {error:?}");
     };
     let refusal = tool_error
-        .downcast_ref::<crate::liteinst_trap_only::SitePatchingUnsupported>()
-        .unwrap_or_else(|| panic!("refusal is not SitePatchingUnsupported: {error}"));
+        .downcast_ref::<crate::liteinst_trap_only::Ia32EntryClobbersRegisters>()
+        .unwrap_or_else(|| panic!("refusal is not Ia32EntryClobbersRegisters: {error}"));
     assert_eq!(refusal.patching, SitePatching::On);
     assert_eq!(
         error.to_string(),
-        "LiteInst trap-only launch refused: site patching on is not supported yet (nothing \
-         handles the IA-32 and slot seccomp stops it would produce)"
+        "LiteInst trap-only launch with site patching on refused: int 0x80 changed r8 (test)"
     );
     assert!(
         !marker.exists(),
@@ -636,3 +658,6 @@ fn tempfile_path(label: &str) -> PathBuf {
     let _ = std::fs::remove_file(&path);
     path
 }
+
+#[path = "liteinst_trap_only_p2_tests.rs"]
+mod p2;
