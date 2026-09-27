@@ -20,7 +20,7 @@ use reverie::process::Command;
 use reverie_liteinst::LiteinstBackend;
 
 #[allow(dead_code)]
-#[path = "../chaos.rs"]
+#[path = "../chaos_tool.rs"]
 mod chaos;
 
 // TODO-HUMAN-REVIEW(PR-157): Review the narrow chaos config re-export.
