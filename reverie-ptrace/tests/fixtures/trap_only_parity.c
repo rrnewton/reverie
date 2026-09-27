@@ -15,6 +15,13 @@
  *   trap_only_parity            run the scenario, then exec itself as "exec"
  *   trap_only_parity exec       the post-exec image; exit 0
  *   trap_only_parity touch PATH create PATH and exit 0 (launch witness)
+ *
+ * The two runs of a comparison are independent, so host scheduling inside the
+ * guest must not reach the stop trace. SIGCHLD is therefore kept blocked from
+ * before each fork and vfork until after the matching waitpid, and is then
+ * delivered when the old mask is restored. Unblocked, a child's exit could
+ * overtake its parent's wait4 or not, and the parent's wait4 seccomp stop and
+ * its SIGCHLD signal-delivery stop swapped order from run to run.
  */
 
 #define _GNU_SOURCE
@@ -66,7 +73,15 @@ int main(int argc, char** argv) {
     return 5;
   }
 
+  sigset_t chld;
+  sigset_t unblocked;
+  sigemptyset(&chld);
+  sigaddset(&chld, SIGCHLD);
+
   int status = 0;
+  if (sigprocmask(SIG_BLOCK, &chld, &unblocked) != 0) {
+    return 11;
+  }
   pid_t child = fork();
   if (child == 0) {
     _exit(7);
@@ -75,7 +90,13 @@ int main(int argc, char** argv) {
       WEXITSTATUS(status) != 7) {
     return 6;
   }
+  if (sigprocmask(SIG_SETMASK, &unblocked, NULL) != 0) {
+    return 12;
+  }
 
+  if (sigprocmask(SIG_BLOCK, &chld, &unblocked) != 0) {
+    return 13;
+  }
   child = vfork();
   if (child == 0) {
     _exit(9);
@@ -83,6 +104,9 @@ int main(int argc, char** argv) {
   if (child < 0 || waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
       WEXITSTATUS(status) != 9) {
     return 8;
+  }
+  if (sigprocmask(SIG_SETMASK, &unblocked, NULL) != 0) {
+    return 14;
   }
 
   char* const next[] = {argv[0], "exec", NULL};
