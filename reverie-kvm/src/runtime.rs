@@ -3182,9 +3182,10 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
         && process_status.is_ok()
         && child_wait.is_ok()
     {
-        // The terminal receipt already cancelled peer RPCs. The leader has
-        // now joined their cleanup, so a Tool's process-retirement fence can
-        // open before independent children need further deterministic turns.
+        // The leader has joined every peer's cleanup. If a controlled terminal
+        // receipt established a Tool fence, it can now open before independent
+        // children need further deterministic turns. A synchronous hardware
+        // fault can reach this callback without such a receipt or fence.
         let event = reverie::BackendProcessRetirement {
             process: executor.retired_process_identity(),
             status,

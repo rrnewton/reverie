@@ -162,9 +162,18 @@ pub trait GlobalTool: Send + Sync + Default {
 
     /// Reports final process cleanup after the leader has joined every guest
     /// thread and released their descriptor references, including its own.
-    /// This follows the terminal boundary receipt, which must remain able to
-    /// cancel peer RPCs. A scheduler may retain a second fence between those
-    /// two events so other processes cannot observe host-timed descriptor EOF.
+    /// Only a backend offering `BackendSignalControl` sends this callback. A
+    /// Tool may retain a fence awaiting it only with that capability installed
+    /// in `ToolControlled` mode; a backend offering that mode must complete the
+    /// callback after successful process retirement. A terminal boundary receipt
+    /// can establish this fence and must remain able to cancel peer RPCs.
+    /// The fence then keeps other processes from observing host-timed EOF.
+    ///
+    /// There need not be a preceding terminal boundary receipt: synchronous
+    /// hardware faults can terminate a process without a delivery permit.
+    /// Consumers must distinguish an exact known process with no outstanding
+    /// controlled boundary from an early callback for a still-pending boundary.
+    /// This notification alone does not order an otherwise unfenced exit.
     ///
     /// KVM emits this once from a successfully retired process leader, before
     /// its consuming hooks or joins of independent child processes. It is not

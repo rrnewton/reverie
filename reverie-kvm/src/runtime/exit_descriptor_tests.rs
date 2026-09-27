@@ -384,3 +384,249 @@ fn thread_exit_receipt_preserves_the_live_shared_files_owner() {
         PipeObservation::Eof,
     );
 }
+
+mod unpermitted_retirement {
+    use super::*;
+
+    #[derive(Default)]
+    struct FaultGlobal {
+        boundaries: ExitDescriptorGlobal,
+        expected: Mutex<Option<(reverie::BackendProcessRetirement, usize)>>,
+        retirements: Mutex<Vec<reverie::BackendProcessRetirement>>,
+    }
+
+    #[reverie::global_tool]
+    impl GlobalTool for FaultGlobal {
+        type Request = ();
+        type Response = ();
+        type Config = ();
+
+        async fn receive_rpc(&self, _: Pid, _: ()) {}
+
+        async fn on_backend_signal_boundary(
+            &self,
+            receipt: reverie::SignalBoundaryReceipt,
+        ) -> std::result::Result<(), reverie::Error> {
+            self.boundaries.on_backend_signal_boundary(receipt).await
+        }
+
+        fn on_backend_process_retired(
+            &self,
+            event: reverie::BackendProcessRetirement,
+        ) -> std::result::Result<(), reverie::Error> {
+            let (expected, receipts) = self.expected.lock().unwrap().take().unwrap();
+            assert_eq!(
+                event, expected,
+                "retirement must name the exact process and status"
+            );
+            assert_eq!(self.boundaries.receipts.lock().unwrap().len(), receipts);
+            assert_eq!(
+                observe_pipe(self.boundaries.reader.as_ref().unwrap()),
+                PipeObservation::Eof,
+                "an unpermitted fault still retires descriptors before notification"
+            );
+            self.retirements.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FaultTool;
+
+    #[reverie::tool]
+    impl Tool for FaultTool {
+        type GlobalState = FaultGlobal;
+        type ThreadState = ();
+    }
+
+    struct FaultFixture {
+        backend: KvmBackend,
+        executor: ElfExecutor,
+        memory: GuestMemory,
+        global: Arc<FaultGlobal>,
+        _failure: Arc<RunFailure>,
+    }
+
+    impl FaultFixture {
+        fn new() -> Self {
+            let (reader, writer) = nonblocking_pipe();
+            let mut state = crate::executor::native_loaded_state(&std::env::current_dir().unwrap());
+            // Model a traced root beneath an outside namespace init, so a
+            // fork orphan follows the actual ReapedByNamespaceInit branch.
+            state.pid = 3;
+            state.pgid = 3;
+            state.tid = 3;
+            state.ppid = 1;
+            state.task_lifecycle = Arc::new(Mutex::new(crate::elf::TaskLifecycleTable::with_root(
+                3, 3, 3, true,
+            )));
+            assert!(state.insert_file(3, writer).is_empty());
+            let executor = ElfExecutor::new(state, false);
+            let global = Arc::new(FaultGlobal {
+                boundaries: ExitDescriptorGlobal {
+                    reader: Some(reader),
+                    ..ExitDescriptorGlobal::default()
+                },
+                ..FaultGlobal::default()
+            });
+            let failure = RunFailure::new(&global);
+            executor.install_signal_control(
+                reverie::BackendSignalControlMode::ToolControlled,
+                &failure,
+            );
+            Self {
+                backend: KvmBackend::new_with_stdin(0x10000, None)
+                    .expect("fault retirement controls require /dev/kvm"),
+                executor,
+                memory: GuestMemory::new(0, 4096).unwrap(),
+                global,
+                _failure: failure,
+            }
+        }
+
+        fn finish_fault(
+            &mut self,
+            child_exit: Option<crate::vm::OwnChildExitContext>,
+            earlier_receipts: usize,
+        ) -> ExitStatus {
+            assert!(self.executor.signal_controlled());
+            assert_eq!(self.executor.owned_delivery_permit(), None);
+            let process = self.executor.retired_process_identity();
+            // Captured synchronous SIGSEGV uses this exact terminal operation
+            // without reserving a delivery permit. Exercise real final cleanup,
+            // not guest fault admission or a determinism claim for that path.
+            self.executor.force_signal_exit(libc::SIGSEGV);
+            let exit = self.executor.take_exit().unwrap();
+            let status = ExitStatus::from_raw(libc::SIGSEGV | 0x80);
+            assert_eq!(exit.status, status);
+            assert!(exit.group);
+            self.backend.request_guest_thread_group_exit(exit.status);
+            assert_eq!(self.executor.owned_delivery_permit(), None);
+            assert_eq!(
+                observe_pipe(self.global.boundaries.reader.as_ref().unwrap()),
+                PipeObservation::WouldBlock
+            );
+            if child_exit.is_some() {
+                assert!(matches!(
+                    self.executor.process_family_exit().unwrap(),
+                    crate::executor::ProcessFamilyExit::ReapedByNamespaceInit { status: actual }
+                        if actual == status
+                ));
+            } else {
+                assert!(matches!(
+                    self.executor.process_family_exit().unwrap(),
+                    crate::executor::ProcessFamilyExit::Root
+                ));
+            }
+            let expected = reverie::BackendProcessRetirement { process, status };
+            assert!(
+                self.global
+                    .expected
+                    .lock()
+                    .unwrap()
+                    .replace((expected, earlier_receipts))
+                    .is_none()
+            );
+            let (actual, stdout, stderr) =
+                futures::executor::block_on(self.backend.finish_tool_process(
+                    &mut self.executor,
+                    Arc::new(FaultTool),
+                    (process.tgid, process.tgid),
+                    self.global.as_ref(),
+                    &(),
+                    (),
+                    Ok(exit.into()),
+                    true,
+                    child_exit,
+                ))
+                .unwrap();
+            assert_eq!(actual, status);
+            assert!(stdout.is_empty() && stderr.is_empty());
+            assert!(self.global.expected.lock().unwrap().is_none());
+            assert_eq!(*self.global.retirements.lock().unwrap(), vec![expected]);
+            assert_eq!(
+                self.global.boundaries.receipts.lock().unwrap().len(),
+                earlier_receipts,
+                "fault cleanup must not invent a terminal boundary receipt"
+            );
+            status
+        }
+    }
+
+    #[test]
+    fn root_fault_without_permit_still_reports_retirement_after_eof() {
+        if run_isolated(
+            "unpermitted_retirement::root_fault_without_permit_still_reports_retirement_after_eof",
+        ) {
+            return;
+        }
+        FaultFixture::new().finish_fault(None, 0);
+    }
+
+    #[test]
+    fn orphan_fault_without_permit_still_reports_retirement_after_eof() {
+        if run_isolated(
+            "unpermitted_retirement::orphan_fault_without_permit_still_reports_retirement_after_eof",
+        ) {
+            return;
+        }
+        let mut f = FaultFixture::new();
+        let orphan = f.executor.fork_child(4, false, false).unwrap();
+        let child = orphan.retired_process_identity();
+        let completion = Arc::new(crate::executor::ChildCompletionSlot::default());
+        let (notifier, notified) = std::sync::mpsc::channel();
+        let context = crate::vm::OwnChildExitContext {
+            child,
+            _parent_binding: f.executor.retain_signal_process_binding(),
+            completion: completion.clone(),
+            completion_notifier: notifier,
+            raw_child_pid: child.tgid.as_raw(),
+        };
+        exit_syscall(&mut f.executor, &f.memory, true);
+        f.executor.release_files_on_exit();
+        f.executor = orphan;
+        let status = f.finish_fault(Some(context), 0);
+        assert_eq!(notified.try_recv().unwrap(), child.tgid.as_raw());
+        assert!(
+            !completion.publish(crate::executor::ChildCompletion::AutoReaped(status)),
+            "orphan completion must already be published"
+        );
+    }
+
+    #[test]
+    fn final_fault_after_nonfinal_thread_receipt_still_reports_retirement() {
+        if run_isolated(
+            "unpermitted_retirement::final_fault_after_nonfinal_thread_receipt_still_reports_retirement",
+        ) {
+            return;
+        }
+        let mut f = FaultFixture::new();
+        let mut worker = f.executor.thread_child(4).unwrap();
+        let permit = reserve_boundary(&worker, 7);
+        let exit = exit_syscall(&mut worker, &f.memory, false);
+        let receipt = reverie::SignalBoundaryReceipt {
+            permit,
+            outcome: exit.signal_boundary_outcome(),
+        };
+        assert!(f.executor.process_exit_status().is_none());
+        assert!(
+            f.global
+                .boundaries
+                .expected
+                .lock()
+                .unwrap()
+                .replace((receipt, PipeObservation::WouldBlock))
+                .is_none()
+        );
+        futures::executor::block_on(f.backend.finish_signal_boundary(
+            &mut worker,
+            f.global.as_ref(),
+            receipt.outcome,
+        ))
+        .unwrap();
+        assert_eq!(worker.owned_delivery_permit(), None);
+        assert_eq!(*f.global.boundaries.receipts.lock().unwrap(), vec![receipt]);
+        drop(worker);
+        f.finish_fault(None, 1);
+    }
+}

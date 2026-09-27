@@ -1,7 +1,10 @@
 # KVM exit descriptor ordering
 
-The controlled KVM backend must finish descriptor retirement before another
-scheduled process can observe pipe EOF. A terminal task's receipt is not enough
+For exits through the signal-permit protocol, the controlled KVM backend must
+finish descriptor retirement before another scheduled process can observe pipe
+EOF. This covers exit syscalls and permit-protocol fatal signals. Synchronous
+hardware faults such as SIGSEGV, SIGBUS and SIGILL bypass that protocol; their
+EOF visibility remains host-timed. A terminal task's receipt is not enough
 for a process with several threads: each executor owns duplicated host files,
 and each CLONE_FILES executor owns the shared table as well.
 
@@ -37,7 +40,11 @@ SignalProcessId (numeric TGID and generation) and authoritative exit status.
 It runs after existing family/child publication, but before leader consuming
 hooks and joins of independent child processes. Those children may need later
 scheduler turns, so waiting for them while the fence remains held would be a
-cycle. Unstarted processes do not emit a retirement notification.
+cycle. Unstarted processes do not emit a retirement notification. A started
+process that terminates through a synchronous hardware fault still emits this
+physical-cleanup notification, even though it had no controlled terminal
+receipt. Offering this callback requires BackendSignalControl; a Tool may
+hold a fence for it only after installing ToolControlled mode.
 
 Detcore validates the event against its exact recorded terminal process and
 pending reservation. It removes only that reservation and records an exact
@@ -46,6 +53,26 @@ conflicting events fail the run before any barrier is removed. A live parent's
 notification must follow its existing successful child publication and cannot
 replace that publication. Cleanup errors and panics use the existing fatal
 backend failure path; they never masquerade as successful retirement.
+
+When there is no recorded controlled terminal transition, Detcore authenticates
+the exact current process generation, including after its last task's consuming
+hook. It rejects an event if that process still owns a delivery permit, exit
+fence, child-publication reservation or process-retirement reservation. Otherwise
+it records the completed notification without releasing a barrier, waking the
+scheduler, changing membership or publishing a child event. Exact duplicates
+remain idempotent and conflicting statuses remain errors. This preserves the
+normal disposition of root and orphan hardware faults without treating an
+early receipt for a controlled boundary as successful cleanup.
+
+This distinction belongs in the consumer because its reservations say whether
+it actually fenced the exit. A backend bit recording any earlier Terminated
+receipt would be insufficient: a leader may exit individually through the
+protocol before its last worker faults without a permit. Selecting callback
+emission from the backend's initiating task would also have to account for
+every peer's pending permit. Keeping the consumer's existing terminal records
+authoritative avoids that independent inference. The cleanup notification
+reports what finished; it does not manufacture a terminal boundary or a
+determinism claim.
 
 The companion must accompany the Reverie pin: the default GlobalTool hook is a
 no-op for tools without this scheduler protocol. Adding only the backend hook
@@ -66,8 +93,8 @@ the terminal receipt:
 In either order, no unrelated guest read can be granted before the final
 retirement receipt. The last host pipe-writer reference is gone when close
 returns, so the next granted read observes EOF. The same argument applies when
-a worker, rather than the leader, issued exit_group or received the fatal
-signal. The leader still owns the final joins and retirement notification.
+a worker, rather than the leader, issued exit_group or received a permit-protocol
+fatal signal. The leader still owns the final joins and retirement notification.
 
 A live sibling after individual SYS_exit remains an owner and can still write.
 An independently forked process is also a legitimate owner and is not included
@@ -136,13 +163,18 @@ preserve usable descriptors on all non-Terminated outcomes. The executor
 control holds both shared locks across issuer retirement. The guest regression
 executes real multithreaded group exits and checks the process-retirement hook
 before the backend is destroyed. Hermit scheduler tests cover Root and
-DirectParentTerminal, exit_group and fatal termination, leader and worker
-issuers, pending peer RPC cancellation, exact receipt validation, live-parent
+DirectParentTerminal, exit_group and permit-protocol fatal termination, leader
+and worker issuers, pending peer RPC cancellation, exact receipt validation, live-parent
 publication preservation, and empty-run completion.
 
 Strict Hermit verification uses INFO records and I/O buffer comparison; the
 only permitted failure allowance in the original matrix is the intentional
-exit 7 of root-exits. Repeated multithreaded root exit_group verification and
-mutation results are recorded with the signed candidate's implementation
-handoff. Review approvals must refer to that new exact head and the Hermit
-companion, not the preceding single-task fix.
+exit 7 of root-exits. Repeated multithreaded root exit_group verification is a
+compatibility check: those Root-class cells did not distinguish the retirement
+barrier mutant in 11 pairs. The Detcore retirement unit tests and the Reverie
+six-mode real-guest regression establish the barrier's necessity. Hardware-fault
+regressions cover root and orphan SIGSEGV disposition and strict verification;
+they do not establish deterministic EOF ordering for synchronous faults.
+Exact results and mutation evidence are recorded with the signed candidate's
+implementation handoff. Review approvals must refer to that new exact head and
+the Hermit companion, not the preceding single-task fix.
