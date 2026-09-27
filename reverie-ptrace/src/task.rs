@@ -7314,6 +7314,22 @@ impl<L: Tool + 'static> TracedTask<L> {
                             // leaving even a callee-saved register (notably R12,
                             // used by LiteInst as its HookContext base) would
                             // corrupt the callback that resumes after injection.
+                            //
+                            // The segment state is the exception. The
+                            // controller and the guest are the same thread, so
+                            // they share FS and GS, and a syscall such as
+                            // arch_prctl(ARCH_SET_FS) changes them for the
+                            // guest. Keep the kernel's post-syscall values;
+                            // restoring the pre-syscall ones would silently
+                            // undo the guest's change. Neither the LiteInst hook
+                            // nor the E9patch trap reads FS or GS between here
+                            // and the guest's continuation. A Tool still cannot
+                            // change them: `write_guest_registers` refuses that.
+                            let mut context = context;
+                            context.fs_base = regs.fs_base;
+                            context.gs_base = regs.gs_base;
+                            context.fs = regs.fs;
+                            context.gs = regs.gs;
                             stopped.setregs(&context)?;
                         } else {
                             // Restore syscall args to original values. This is

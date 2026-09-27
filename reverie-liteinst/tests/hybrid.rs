@@ -1620,6 +1620,160 @@ async fn first_discovery_event_can_inject_more_than_once() {
     assert!(output.status.success(), "{output:?}");
 }
 
+/// Passes every `arch_prctl` through `Guest::inject`, so the fixture's calls
+/// take the subscribed injection path instead of the unsubscribed one.
+#[derive(Default)]
+struct InjectArchPrctl;
+
+#[reverie::tool]
+impl Tool for InjectArchPrctl {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [Sysno::arch_prctl].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::arch_prctl);
+        guest.send_rpc(1).await;
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+const FSGS_SITES: [&str; 3] = ["raw", "libc_arch_prctl", "libc_syscall"];
+// Per round and site: set FS, get FS, restore FS, get FS, and the same four
+// calls for GS.
+const FSGS_CALLS_PER_SITE: i64 = 8 * 8;
+
+/// Parses the fixture's success line into `(calls, hooks)` per site. A hook
+/// count of -1 means the LiteInst runtime is not loaded.
+fn parse_fsgs_output(stdout: &[u8]) -> Vec<(i64, i64)> {
+    let text = String::from_utf8_lossy(stdout);
+    let line = text.trim_end();
+    assert!(
+        line.starts_with("fsgs ok rounds=8 "),
+        "FS/GS did not persist through arch_prctl: {line:?}"
+    );
+    let field = |key: String| -> i64 {
+        line.split(' ')
+            .find_map(|token| token.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("missing {key} in {line:?}"))
+            .parse()
+            .unwrap()
+    };
+    FSGS_SITES
+        .iter()
+        .map(|site| {
+            (
+                field(format!("{site}_calls")),
+                field(format!("{site}_hooks")),
+            )
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HookCount {
+    Exactly(i64),
+    AtLeast(i64),
+}
+
+// A kernel-made FS/GS base change must survive the injected-frame restore on
+// every warmed (patched) arch_prctl site, whether or not the Tool subscribes
+// arch_prctl.
+async fn assert_fsgs_persist_under_liteinst<T>(expected_hooks: [HookCount; 3]) -> EventCounter
+where
+    T: Tool<GlobalState = EventCounter> + 'static,
+{
+    let (_directory, guest) = compile_fixture("hybrid_fsgs_persist.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<T>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let sites = parse_fsgs_output(&output.stdout);
+    for ((site, (calls, hooks)), expected) in FSGS_SITES.iter().zip(sites).zip(expected_hooks) {
+        assert_eq!(calls, FSGS_CALLS_PER_SITE, "{site}: {output:?}");
+        let matches = match expected {
+            HookCount::Exactly(count) => hooks == count,
+            HookCount::AtLeast(count) => hooks >= count,
+        };
+        assert!(matches, "{site}: expected {expected:?} hooks: {output:?}");
+    }
+    global
+}
+
+// arch_prctl is not subscribed, so only the two generic sites, installed by
+// their getpid warm-up (one trap, three hooks), are patched; every arch_prctl
+// there reaches the unsubscribed injected-frame path. The arch_prctl wrapper
+// is never trapped and runs natively.
+#[tokio::test(flavor = "current_thread")]
+async fn fsgs_changes_persist_through_warmed_unsubscribed_arch_prctl_sites() {
+    assert_fsgs_persist_under_liteinst::<CountSyscalls>([
+        HookCount::Exactly(3 + FSGS_CALLS_PER_SITE),
+        HookCount::Exactly(0),
+        HookCount::AtLeast(3 + FSGS_CALLS_PER_SITE),
+    ])
+    .await;
+}
+
+// Every site is installed by its first arch_prctl, and the remaining calls go
+// through Guest::inject from the injected frame.
+#[tokio::test(flavor = "current_thread")]
+async fn fsgs_changes_persist_through_warmed_injected_arch_prctl_sites() {
+    let global = assert_fsgs_persist_under_liteinst::<InjectArchPrctl>([
+        HookCount::Exactly(FSGS_CALLS_PER_SITE - 1),
+        HookCount::AtLeast(FSGS_CALLS_PER_SITE - 1),
+        HookCount::AtLeast(FSGS_CALLS_PER_SITE - 1),
+    ])
+    .await;
+    assert!(
+        global.delivered.load(Ordering::SeqCst) >= 3 * FSGS_CALLS_PER_SITE as u64,
+        "every fixture arch_prctl must reach the Tool"
+    );
+}
+
+// The same fixture passes natively and under plain ptrace, which have no
+// injected frame. This keeps the fixture honest as an oracle.
+#[tokio::test(flavor = "current_thread")]
+async fn fsgs_fixture_passes_natively_and_under_plain_ptrace() {
+    let (_directory, guest) = compile_fixture("hybrid_fsgs_persist.c");
+
+    let native = ProcessCommand::new(&guest).output().unwrap();
+    assert!(native.status.success(), "{native:?}");
+    for (calls, hooks) in parse_fsgs_output(&native.stdout) {
+        assert_eq!((calls, hooks), (FSGS_CALLS_PER_SITE, -1), "{native:?}");
+    }
+
+    let mut command = Command::new(&guest);
+    command
+        .stdout(reverie::process::Stdio::piped())
+        .stderr(reverie::process::Stdio::piped());
+    let (output, global) = reverie_ptrace::TracerBuilder::<InjectArchPrctl>::new(command)
+        .spawn()
+        .await
+        .unwrap()
+        .wait_with_output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    for (calls, hooks) in parse_fsgs_output(&output.stdout) {
+        assert_eq!((calls, hooks), (FSGS_CALLS_PER_SITE, -1), "{output:?}");
+    }
+    assert!(
+        global.delivered.load(Ordering::SeqCst) >= 3 * FSGS_CALLS_PER_SITE as u64,
+        "every fixture arch_prctl must reach the ptrace Tool"
+    );
+}
+
 /// Runs a multi-task fixture that is expected to complete, and requires the
 /// guest's own end-of-run marker.
 ///
