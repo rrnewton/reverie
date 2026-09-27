@@ -188,15 +188,18 @@ impl PtraceBackendStatsSource {
 
     /// Appends one run-loop wait to the test-only stop sequence.
     ///
-    /// Seccomp stops carry the syscall number so that two runs of the same
-    /// guest can be compared stop by stop.
+    /// Seccomp stops carry the syscall number, and new-child stops carry the
+    /// child's PID, so that two runs of the same guest can be compared stop by
+    /// stop and task by task.
     #[cfg(test)]
     fn record_stop_trace(&self, wait: &Wait) {
         let (pid, description) = match wait {
             Wait::Exited(pid, status) => (*pid, format!("exited {status:?}")),
             Wait::Stopped(stopped, event) => {
                 let description = match event {
-                    Event::NewChild(operation, _) => format!("new-child {operation:?}"),
+                    Event::NewChild(operation, child) => {
+                        format!("new-child {operation:?} {}", child.pid())
+                    }
                     Event::Exec(_) => "exec".to_owned(),
                     Event::Seccomp => match stopped.getregs() {
                         #[cfg(target_arch = "x86_64")]
