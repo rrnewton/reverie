@@ -68,6 +68,13 @@ pub(crate) enum LiteinstActivationFailureReason {
     NewbornIdentity,
     VforkUnsupported,
     TerminatedBeforeHandshake,
+    /// A host-hybrid syscall restart would deliver a signal to a guest
+    /// handler, where Linux's restart result depends on state the tracer
+    /// cannot observe.
+    SyscallRestartWithGuestHandler,
+    /// A host-hybrid syscall restart found the controller or private-page
+    /// step in a state the rewind cannot serve.
+    SyscallRestartInvariant,
 }
 
 impl LiteinstActivationFailureReason {
