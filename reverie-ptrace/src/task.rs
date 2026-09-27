@@ -98,6 +98,15 @@ use crate::gdbstub::StopReason;
 use crate::gdbstub::StoppedInferior;
 use crate::injected_syscall::InjectedSyscallFrame;
 use crate::liteinst_stats::LiteinstPatchOutcome;
+use crate::liteinst_trap_only::TrapOnlyTask;
+
+#[path = "task_trap_only.rs"]
+mod trap_only;
+use trap_only::TrapOnlyRoute;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use trap_only::step_count_for_test;
+
 use crate::regs::Reg;
 use crate::regs::RegAccess;
 use crate::stack::GuestStack;
@@ -1707,7 +1716,18 @@ struct GlobalState<G: GlobalTool> {
 
     /// Optional collector for general ptrace lifecycle activity.
     backend_stats: Option<PtraceBackendStatsSource>,
+
+    #[cfg(test)]
+    final_resume_signal_for_test: Option<FinalResumeSignalForTest>,
 }
+
+/// Test-only: picks a signal to leave pending for the final resume of a
+/// seccomp stop, from the stopped thread and its registers. It stands in for
+/// a signal an earlier injection deferred, which no current path leaves
+/// pending while a trap-only live entry survives.
+#[cfg(test)]
+pub(crate) type FinalResumeSignalForTest =
+    Arc<dyn Fn(Pid, &libc::user_regs_struct) -> Option<Signal> + Send + Sync>;
 
 impl<G: GlobalTool> Clone for GlobalState<G> {
     fn clone(&self) -> Self {
@@ -1720,6 +1740,8 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             liteinst_runtime: self.liteinst_runtime.clone(),
             fatal_session: self.fatal_session.clone(),
             backend_stats: self.backend_stats.clone(),
+            #[cfg(test)]
+            final_resume_signal_for_test: self.final_resume_signal_for_test.clone(),
         }
     }
 }
@@ -1767,7 +1789,11 @@ pub(crate) struct TracedTaskOptions<'a> {
     pub(crate) events: &'a Subscription,
     pub(crate) injected_syscall_trap: Option<InjectedSyscallTrap>,
     pub(crate) liteinst_runtime: Option<LiteinstRuntimeConfig>,
+    /// The root task's trap-only state; `Some` only when sites are patched.
+    pub(crate) liteinst_trap_only: Option<TrapOnlyTask>,
     pub(crate) backend_stats: Option<PtraceBackendStatsSource>,
+    #[cfg(test)]
+    pub(crate) final_resume_signal_for_test: Option<FinalResumeSignalForTest>,
 }
 
 /// Our runtime representation of what Reverie knows about a guest thread. Its
@@ -1825,6 +1851,10 @@ pub struct TracedTask<L: Tool> {
 
     /// Original typed fail-closed error retained while the exit waiter reaps root.
     liteinst_failure: Option<LiteinstActivationFailure>,
+
+    /// Trap-only LiteInst site-patching state; `None` unless sites are
+    /// patched.
+    trap_only: Option<TrapOnlyTask>,
 
     /// pending signal to deliver. This can happen when
     /// syscall got interrupted (by signal)
@@ -1978,6 +2008,8 @@ impl<L: Tool> TracedTask<L> {
             liteinst_runtime: options.liteinst_runtime,
             fatal_session,
             backend_stats: options.backend_stats,
+            #[cfg(test)]
+            final_resume_signal_for_test: options.final_resume_signal_for_test,
         };
         let thread_state = process_state.init_thread_state(tid, None);
         let (next_state, next_state_rx) = mpsc::channel(1);
@@ -2003,6 +2035,7 @@ impl<L: Tool> TracedTask<L> {
             liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
             liteinst_entry_guard: None,
             liteinst_failure: None,
+            trap_only: options.liteinst_trap_only,
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: if options.command_bootstrap {
@@ -2071,6 +2104,8 @@ impl<L: Tool> TracedTask<L> {
             liteinst_runtime: self.liteinst_runtime.clone(),
             liteinst_entry_guard: None,
             liteinst_failure: None,
+            // Set by `handle_new_task`, which knows the clone flags.
+            trap_only: None,
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(self.pid, child),
@@ -2134,6 +2169,8 @@ impl<L: Tool> TracedTask<L> {
             )),
             liteinst_entry_guard: None,
             liteinst_failure: None,
+            // Set by `handle_new_task`, which knows the clone flags.
+            trap_only: None,
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(child, child),
@@ -3027,10 +3064,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await
                 .tracee_context(tid, "handle exec stop"),
             Event::Seccomp => self.handle_seccomp(stopped).await,
-            Event::NewChild(op, child) => self
-                .dispatch_new_task(op, stopped, child, None, None)
-                .await
-                .tracee_context(tid, "handle new tracee stop"),
+            Event::NewChild(op, child) => {
+                // A trap-only tail hop that ended at this stop restores both
+                // tasks from the patched site's view.
+                let context = self.trap_only_take_new_child_view();
+                self.dispatch_new_task(op, stopped, child, context, None)
+                    .await
+                    .tracee_context(tid, "handle new tracee stop")
+            }
             Event::VforkDone => self
                 .handle_vfork_done_event(stopped)
                 .await
@@ -3769,6 +3810,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.timer.begin_initial_exec();
         }
         self.command_bootstrap = false;
+        self.trap_only_exec(initial_command);
         if self.global_state.liteinst_runtime.is_some() {
             if former_tid != self.tid() {
                 return Err(self.reject_liteinst_nonleader_exec(former_tid));
@@ -4966,6 +5008,28 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
+        // Trap-only routing (H0) runs before anything reads the syscall: a
+        // patched site's stop carries an ia32 entry that must first be
+        // normalized, and must never reach the mapping shortcut below.
+        let mut trap_only_patch_site = None;
+        let mut trap_only_patched = false;
+        if self.trap_only.is_some() {
+            match self.trap_only_route(task).await {
+                Ok(TrapOnlyRoute::Ordinary {
+                    task: ordinary,
+                    patch_site,
+                }) => {
+                    task = ordinary;
+                    trap_only_patch_site = Some(patch_site);
+                }
+                Ok(TrapOnlyRoute::Patched(patched)) => {
+                    task = patched;
+                    trap_only_patched = true;
+                }
+                Ok(TrapOnlyRoute::Done(wait)) => return Ok(wait),
+                Err(error) => return Err(self.trap_only_error(tid, error, "trap-only routing")),
+            }
+        }
         let syscall = self
             .get_syscall(&task)
             .tracee_context(tid, "read registers at seccomp stop")?;
@@ -4975,13 +5039,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             .subscriptions
             .iter_syscalls()
             .any(|subscribed| subscribed == nr);
-        if is_liteinst_mapping_syscall(nr) && !tool_subscribed {
+        if !trap_only_patched && is_liteinst_mapping_syscall(nr) && !tool_subscribed {
             return self.handle_liteinst_mapping_syscall(task, nr, args).await;
         }
-        self.record_retained_liteinst_fallback_hit(&task);
-        let (installed_task, syscall_already_skipped, liteinst_resume_rip) =
-            self.maybe_install_liteinst_site(task, nr).await?;
-        task = installed_task;
+        let (syscall_already_skipped, liteinst_resume_rip) = if self.trap_only.is_some() {
+            (false, None)
+        } else {
+            self.record_retained_liteinst_fallback_hit(&task);
+            let (installed_task, syscall_already_skipped, liteinst_resume_rip) =
+                self.maybe_install_liteinst_site(task, nr).await?;
+            task = installed_task;
+            (syscall_already_skipped, liteinst_resume_rip)
+        };
         #[cfg(target_arch = "x86_64")]
         let is_legacy_vsyscall = !syscall_already_skipped
             && is_legacy_vsyscall_ip(
@@ -5095,9 +5164,34 @@ impl<L: Tool + 'static> TracedTask<L> {
             {
                 self.pending_signal = Some(Signal::SIGUSR1);
             }
+            if let Some(site) = trap_only_patch_site
+                && let Err(error) = self.trap_only_maybe_patch(site, nr)
+            {
+                return Err(self.trap_only_error(tid, error, "trap-only site patch"));
+            }
+            #[cfg(test)]
+            if let Some(hook) = self.global_state.final_resume_signal_for_test.clone() {
+                let regs = task
+                    .getregs()
+                    .tracee_context(tid, "read registers for a test resume signal")?;
+                if let Some(sig) = hook(self.tid, &regs) {
+                    self.pending_signal = Some(sig);
+                }
+            }
             let sig = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeAfterSeccompStop,
             )?;
+            if let Some(view) = self.trap_only_take_live_entry() {
+                // The patched site's syscall is still live: run it through the
+                // masked hop instead of resuming the ia32 stop. `sig` is
+                // dropped, as the kernel drops a signal passed on resume from
+                // ptrace's seccomp event stop.
+                let _ = sig;
+                return self
+                    .trap_only_tail_hop(task, view)
+                    .await
+                    .map_err(|error| self.trap_only_error(tid, error, "trap-only tail hop"));
+            }
             let running = self
                 .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;
@@ -5234,6 +5328,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
+        trap_only::assert_not_in_hop(self.trap_only.as_ref());
+        #[cfg(test)]
+        trap_only::record_step_for_test(task.pid());
         self.lease_liteinst_root_stop(task).step(signal)
     }
 
@@ -5437,6 +5534,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             ChildOp::Fork => self.forked(child.pid()),
             ChildOp::Vfork => self.forked(child.pid()),
         };
+        child_task.trap_only = self.trap_only_new_child(&parent, op)?;
 
         let (child_stop_tx, child_stop_rx) = mpsc::channel(1);
         child_task.gdb_stop_tx = Some(child_stop_tx);
@@ -6988,6 +7086,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///  Set tracee state to Stopped/SIGTRP.
     ///  Restore the registers to the state specified by the regs arg.
     async fn skip_seccomp_syscall(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        // Skipping consumes a patched site's live syscall (orig_rax = -1).
+        let _ = self.trap_only_take_live_entry();
         // So here we are, at ptrace seccomp stop, if we simply resume, the kernel
         // would do the syscall, without our patch. we change to syscall number to
         // -1, so that kernel would simply skip the syscall, so that we can jump to
@@ -7294,6 +7394,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         } else {
             match self.pending_syscall.take() {
                 Some(original) if original == (nr, args) => {
+                    if let Some(view) = self.trap_only_take_live_entry() {
+                        // A patched site: the masked hop replaces the
+                        // in-place resume of the ia32 stop.
+                        return self.trap_only_inject_hop(task, view).await;
+                    }
                     // Run the exact pending syscall and stop at its exit.
                     self.validate_liteinst_mapping_execution(nr, args)?;
                     let wait = self.syscall_stopped(task, None)?.next_state().await?;
