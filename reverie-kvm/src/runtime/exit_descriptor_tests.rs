@@ -12,6 +12,32 @@ use std::os::fd::FromRawFd;
 
 use super::*;
 
+fn run_isolated(test: &str) -> bool {
+    const CHILD_ENV: &str = "REVERIE_EXIT_DESCRIPTOR_TEST";
+    let test = format!("runtime::exit_descriptor_tests::{test}");
+    if std::env::var(CHILD_ENV).as_deref() == Ok(test.as_str()) {
+        return false;
+    }
+    // Concurrent library tests fork host processes. CLOEXEC endpoints remain
+    // inherited until those processes exec, so create our pipe only after
+    // entering this exact-test subprocess. Keep the immediate EOF assertions.
+    let output = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", &test, "--nocapture"])
+        .env(CHILD_ENV, &test)
+        .output()
+        .expect("failed to run isolated exit descriptor control");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed; 0 failed;"),
+        "isolated exit descriptor control {test} failed with {}\nstdout:\n{stdout}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PipeObservation {
     WouldBlock,
@@ -189,6 +215,9 @@ fn exit_syscall(executor: &mut ElfExecutor, memory: &GuestMemory, group: bool) -
 
 #[test]
 fn exit_and_exit_group_receipts_observe_descriptor_eof() {
+    if run_isolated("exit_and_exit_group_receipts_observe_descriptor_eof") {
+        return;
+    }
     for group in [false, true] {
         let mut f = Fixture::new(false);
         let permit = reserve_boundary(&f.executor, 7);
@@ -206,6 +235,9 @@ fn exit_and_exit_group_receipts_observe_descriptor_eof() {
 
 #[test]
 fn fatal_terminal_receipt_observes_descriptor_eof() {
+    if run_isolated("fatal_terminal_receipt_observes_descriptor_eof") {
+        return;
+    }
     let mut f = Fixture::new(false);
     let permit = reserve_boundary(&f.executor, 7);
     f.executor.force_signal_exit(libc::SIGTERM);
@@ -224,6 +256,9 @@ fn fatal_terminal_receipt_observes_descriptor_eof() {
 
 #[test]
 fn terminal_receipt_releases_executor_and_backend_stdin_owners() {
+    if run_isolated("terminal_receipt_releases_executor_and_backend_stdin_owners") {
+        return;
+    }
     let mut f = Fixture::new(true);
     let permit = reserve_boundary(&f.executor, 7);
     let exit = exit_syscall(&mut f.executor, &f.memory, true);
@@ -239,6 +274,9 @@ fn terminal_receipt_releases_executor_and_backend_stdin_owners() {
 
 #[test]
 fn returning_signal_receipts_preserve_open_descriptors() {
+    if run_isolated("returning_signal_receipts_preserve_open_descriptors") {
+        return;
+    }
     for outcome in [
         reverie::SignalBoundaryOutcome::Caught,
         reverie::SignalBoundaryOutcome::NoHandler,
@@ -271,6 +309,9 @@ fn returning_signal_receipts_preserve_open_descriptors() {
 
 #[test]
 fn thread_exit_receipt_preserves_the_live_shared_files_owner() {
+    if run_isolated("thread_exit_receipt_preserves_the_live_shared_files_owner") {
+        return;
+    }
     let mut f = Fixture::new(false);
     let mut sibling = f.executor.thread_child(2).unwrap();
     let permit = reserve_boundary(&f.executor, 7);
