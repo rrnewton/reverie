@@ -283,6 +283,73 @@ impl LiteinstBackend {
         ))
     }
 
+    /// Runs a Tool under runtime-free ("trap-only") LiteInst.
+    ///
+    /// Nothing is loaded into the guest: the command receives no
+    /// `LD_PRELOAD`, no runtime, and no handshake, and the launch uses the
+    /// ordinary ptrace environment and lifecycle. Every class plain ptrace runs
+    /// (vfork, exec by any thread, static images, multi-task programs) runs
+    /// here too.
+    ///
+    /// The launch fails closed with [`reverie_ptrace::Ia32EmulationUnavailable`]
+    /// when the host does not service `int 0x80`; it never degrades to plain
+    /// ptrace under the LiteInst label. Site patching is currently
+    /// [`reverie_ptrace::SitePatching::Off`], so no guest byte is written and
+    /// the run is observably the ptrace run.
+    // TODO-HUMAN-REVIEW(liteinst-trap-only-P1): Review the trap-only launch API.
+    pub async fn run_host_trap_only<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(ExitStatus, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        TracerBuilder::<T>::new(command)
+            .config(config)
+            .liteinst_trap_only(reverie_ptrace::SitePatching::Off)
+            .spawn()
+            .await?
+            .wait()
+            .await
+    }
+
+    /// Runs trap-only LiteInst and returns typed backend statistics.
+    ///
+    /// With patching off no site is ever patched, so every patch and dispatch
+    /// counter is zero: all syscalls took the ordinary ptrace seccomp path.
+    pub async fn run_host_trap_only_and_stats<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<
+        (
+            ExitStatus,
+            T::GlobalState,
+            crate::LiteinstBackendStatsSource,
+        ),
+        Error,
+    >
+    where
+        T: Tool + 'static,
+    {
+        let tracer = TracerBuilder::<T>::new(command)
+            .config(config)
+            .liteinst_trap_only_with_stats(
+                reverie_ptrace::SitePatching::Off,
+                BackendStatsRequest::ENABLED,
+            )
+            .spawn()
+            .await?;
+        let stats = tracer
+            .liteinst_instrumentation_stats()
+            .expect("trap-only LiteInst tracer must expose instrumentation statistics");
+        let (status, global) = tracer.wait().await?;
+        Ok((
+            status,
+            global,
+            crate::LiteinstBackendStatsSource::from_trap_only(stats.snapshot()),
+        ))
+    }
+
     /// Runs a Tool under the ptrace-owned LiteInst hybrid and captures output.
     ///
     /// The same single-process/single-thread and non-security-boundary contract

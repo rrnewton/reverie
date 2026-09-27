@@ -74,6 +74,10 @@ use crate::LiteinstInstrumentationStatsHandle;
 use crate::PtraceBackendStatsSource;
 use crate::cp;
 use crate::gdbstub::GdbServer;
+use crate::liteinst_trap_only::LiteinstTrapOnlyConfig;
+use crate::liteinst_trap_only::LiteinstTrapOnlyHandle;
+use crate::liteinst_trap_only::SitePatching;
+use crate::liteinst_trap_only::require_ia32_emulation;
 use crate::task::Child;
 use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
@@ -112,6 +116,8 @@ pub struct Tracer<G> {
     // completion API remains explicitly unsupported.
     liteinst_cleanup: Option<LiteinstTraceeCleanup>,
     liteinst_instrumentation_stats: Option<Arc<StdMutex<LiteinstInstrumentationStats>>>,
+    // Present only for a runtime-free (trap-only) LiteInst launch.
+    liteinst_trap_only: Option<LiteinstTrapOnlyHandle>,
 
     // Present only when the caller requested general ptrace activity stats.
     backend_stats: Option<PtraceBackendStatsSource>,
@@ -3248,6 +3254,11 @@ impl<G: Default + 'static> Tracer<G> {
             .map(|stats| LiteinstInstrumentationStatsHandle::from_shared(Arc::clone(stats)))
     }
 
+    /// Returns the trap-only LiteInst state when this tracer was launched in that mode.
+    pub fn liteinst_trap_only(&self) -> Option<LiteinstTrapOnlyHandle> {
+        self.liteinst_trap_only.clone()
+    }
+
     /// Returns the live ptrace activity-statistics source when collection was enabled.
     pub fn backend_stats(&self) -> Option<PtraceBackendStatsSource> {
         self.backend_stats.clone()
@@ -3956,6 +3967,10 @@ pub struct TracerBuilder<T: Tool + 'static> {
     /// Dynamic LiteInst runtime handshake and hot-site configuration.
     liteinst_runtime: Option<LiteinstRuntimeConfig>,
 
+    /// Runtime-free LiteInst launch configuration. It never sets
+    /// `liteinst_runtime`, so every runtime branch keeps its ptrace arm.
+    liteinst_trap_only: Option<LiteinstTrapOnlyConfig>,
+
     /// Whether to collect general ptrace activity statistics.
     backend_stats_request: BackendStatsRequest,
 
@@ -3973,6 +3988,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             sequentialized_guest: false,
             injected_syscall_trap: None,
             liteinst_runtime: None,
+            liteinst_trap_only: None,
             backend_stats_request: BackendStatsRequest::DISABLED,
             #[cfg(all(test, target_arch = "x86_64"))]
             clock_test_launcher_branches: 0,
@@ -4123,6 +4139,51 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             #[cfg(test)]
             force_private_stub_mutation_once: None,
         });
+        self
+    }
+
+    /// Selects the runtime-free ("trap-only") LiteInst launch.
+    ///
+    /// Nothing is loaded into the guest: no preload, no runtime, and no
+    /// handshake. The launch uses the ordinary ptrace environment and
+    /// lifecycle, and the dynamic runtime configuration stays absent, so vfork,
+    /// exec by any thread, static images, and multi-task programs behave as
+    /// they do under plain ptrace. Patching state lives in a separate
+    /// per-address-space [`crate::SiteTable`].
+    ///
+    /// Trap-only patching needs the kernel's IA-32 syscall entry. `spawn`
+    /// probes whether `int 0x80` is serviced and fails closed with
+    /// [`crate::Ia32EmulationUnavailable`] when it is not. The mode cannot be
+    /// combined with [`Self::liteinst_runtime`].
+    ///
+    /// With [`SitePatching::Off`] no guest byte is ever written and the run is
+    /// the ordinary ptrace run.
+    // TODO-HUMAN-REVIEW(liteinst-trap-only-P1): Review the trap-only launch API.
+    pub fn liteinst_trap_only(self, patching: SitePatching) -> Self {
+        self.liteinst_trap_only_with_stats(patching, BackendStatsRequest::DISABLED)
+    }
+
+    /// Selects the trap-only LiteInst launch and optionally collects patch statistics.
+    ///
+    /// With [`SitePatching::Off`] the collected statistics stay empty.
+    pub fn liteinst_trap_only_with_stats(
+        mut self,
+        patching: SitePatching,
+        stats_request: BackendStatsRequest,
+    ) -> Self {
+        self.liteinst_trap_only = Some(LiteinstTrapOnlyConfig::new(
+            patching,
+            stats_request.is_enabled(),
+        ));
+        self
+    }
+
+    #[cfg(test)]
+    fn liteinst_trap_only_ia32_probe_for_test(mut self, probe: crate::Ia32EmulationProbe) -> Self {
+        self.liteinst_trap_only
+            .as_mut()
+            .expect("trap-only mode must be selected before overriding its probe")
+            .ia32_probe_override = Some(probe);
         self
     }
 
@@ -4372,6 +4433,21 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 Errno::ENOTSUPP
             )));
         }
+        if self.liteinst_runtime.is_some() && self.liteinst_trap_only.is_some() {
+            return Err(Error::Tool(anyhow::anyhow!(
+                "LiteInst runtime activation and trap-only LiteInst are mutually exclusive ({})",
+                Errno::EINVAL
+            )));
+        }
+        if let Some(trap_only) = self.liteinst_trap_only.as_ref() {
+            // Refuse before anything is spawned. A trap-only run must never
+            // degrade to plain ptrace under the LiteInst label.
+            require_ia32_emulation(trap_only.ia32_probe()).map_err(anyhow::Error::new)?;
+        }
+        let liteinst_trap_only = self
+            .liteinst_trap_only
+            .as_ref()
+            .map(LiteinstTrapOnlyHandle::from_config);
         let backend_stats = PtraceBackendStatsSource::from_request(self.backend_stats_request);
         let mut command = self.command;
         let config = self.config.unwrap_or_default();
@@ -4458,7 +4534,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         let liteinst_instrumentation_stats = self
             .liteinst_runtime
             .as_ref()
-            .and_then(|runtime| runtime.instrumentation_stats.as_ref().map(Arc::clone));
+            .and_then(|runtime| runtime.instrumentation_stats.as_ref().map(Arc::clone))
+            .or_else(|| {
+                self.liteinst_trap_only
+                    .as_ref()
+                    .and_then(|trap_only| trap_only.instrumentation_stats.as_ref().map(Arc::clone))
+            });
         #[cfg(test)]
         let fail_discovery_once = self
             .liteinst_runtime
@@ -4594,6 +4675,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             stderr,
             liteinst_cleanup,
             liteinst_instrumentation_stats,
+            liteinst_trap_only,
             backend_stats,
         })
     }
@@ -4728,6 +4810,7 @@ where
                 stderr: Some(stderr),
                 liteinst_cleanup: None,
                 liteinst_instrumentation_stats: None,
+                liteinst_trap_only: None,
                 backend_stats: None,
             })
         }
@@ -4745,6 +4828,10 @@ mod injection_stop_tests;
 #[cfg(all(test, target_arch = "x86_64"))]
 #[path = "injected_error_tests.rs"]
 mod injected_error_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "liteinst_trap_only_tests.rs"]
+mod liteinst_trap_only_tests;
 
 #[cfg(test)]
 mod tests {
