@@ -160,6 +160,22 @@ pub trait GlobalTool: Send + Sync + Default {
         Ok(())
     }
 
+    /// Reports final process cleanup after the leader has joined every guest
+    /// thread and released their descriptor references, including its own.
+    /// This follows the terminal boundary receipt, which must remain able to
+    /// cancel peer RPCs. A scheduler may retain a second fence between those
+    /// two events so other processes cannot observe host-timed descriptor EOF.
+    ///
+    /// KVM emits this once from a successfully retired process leader, before
+    /// its consuming hooks or joins of independent child processes. It is not
+    /// a child-wait publication or an ordinary scheduling request. The callback
+    /// must settle its exact process generation synchronously and must not wait
+    /// for guest progress. A backend failure ends the run instead of emitting
+    /// a successful retirement notification.
+    fn on_backend_process_retired(&self, _event: BackendProcessRetirement) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Receive a (potentially) inter-process upcall on the global state object.
     /// This intended to be IPC, inter-process communication, in some backends,
     /// and a local method call in others, but never truly a communication
@@ -231,6 +247,15 @@ pub trait GlobalTool: Send + Sync + Default {
     ) -> Result<(), Error> {
         Ok(())
     }
+}
+
+/// Final descriptor cleanup and worker joins for one exact process lifetime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendProcessRetirement {
+    /// Process identity retained after its last live task has retired.
+    pub process: crate::SignalProcessId,
+    /// Authoritative process status after all guest threads have exited.
+    pub status: ExitStatus,
 }
 
 /// The location of a fatal backend failure. The backend retains its typed cause;

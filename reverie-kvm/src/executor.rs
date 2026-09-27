@@ -3876,17 +3876,14 @@ impl ElfExecutor {
     /// that sibling's descriptors too.
     pub(crate) fn release_files_on_exit(&mut self) {
         let _retirement = self.state.file_retirement.hold();
-        let files = self.file_table.clone();
-        let _files = files.lock().unwrap_or_else(|p| p.into_inner());
-        let transaction = self.state.signal_transaction.clone();
-        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        // Only task-private fields and our Arc owner change. A surviving shared
+        // table is untouched, so waiting on its locks would add a dependency on
+        // a peer's host syscall (and its interrupt) during terminal cleanup.
         let stdin = self.state.take_stdin();
         let retired = std::mem::take(&mut self.state.files);
         self.state.fd_entry_ids.clear();
         self.file_table = Arc::new(Mutex::new(FileTableState::default()));
         let action = self.process_action.take();
-        drop(_transaction);
-        drop(_files);
         self.state
             .file_retirement
             .retire(retired.into_values().chain(stdin));
@@ -5482,6 +5479,11 @@ impl ElfExecutor {
     pub(crate) fn process_family_exit(&self) -> crate::Result<ProcessFamilyExit> {
         let process = self.admitted_signal_identity().process;
         Self::family_exit_result(process, self.signal_registry.process_family_exit(process))
+    }
+
+    /// Stable identity for cleanup after the final live task left the table.
+    pub(crate) fn retired_process_identity(&self) -> reverie::SignalProcessId {
+        self.admitted_signal_identity().process
     }
 
     /// Like [`Self::process_family_exit`], but claims a `Child` result for this
@@ -50404,3 +50406,7 @@ mod child_panic_owner_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "executor/exit_descriptor_tests.rs"]
+mod exit_descriptor_tests;

@@ -308,6 +308,42 @@ fn returning_signal_receipts_preserve_open_descriptors() {
 }
 
 #[test]
+fn image_replaced_cancelled_and_failed_receipts_preserve_open_descriptors() {
+    if run_isolated("image_replaced_cancelled_and_failed_receipts_preserve_open_descriptors") {
+        return;
+    }
+    for outcome in [
+        reverie::SignalBoundaryOutcome::ImageReplaced,
+        reverie::SignalBoundaryOutcome::Cancelled,
+        reverie::SignalBoundaryOutcome::Failed,
+    ] {
+        let mut f = Fixture::new(false);
+        let permit = reserve_boundary(&f.executor, 7);
+        settle_boundary(
+            &mut f.backend,
+            &mut f.executor,
+            &f.global,
+            permit,
+            outcome,
+            PipeObservation::WouldBlock,
+        );
+        f.memory.write(0x100, b"n").unwrap();
+        assert_eq!(
+            f.executor.execute(
+                &SyscallRequest::new(libc::SYS_write as u64, [3, 0x100, 1, 0, 0, 0]),
+                &f.memory,
+            ),
+            1,
+            "this boundary must preserve the usable guest descriptor"
+        );
+        assert_eq!(
+            observe_pipe(f.global.reader.as_ref().unwrap()),
+            PipeObservation::Byte(b'n')
+        );
+    }
+}
+
+#[test]
 fn thread_exit_receipt_preserves_the_live_shared_files_owner() {
     if run_isolated("thread_exit_receipt_preserves_the_live_shared_files_owner") {
         return;

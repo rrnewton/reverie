@@ -2899,6 +2899,7 @@ async fn finish_tool_process_after_workers<T: Tool>(
         &panics,
         None,
         None,
+        false,
     )
     .await;
     let mut payloads = panics.take();
@@ -2962,6 +2963,7 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
     panics: &crate::failure::tool_panics::ToolPanics,
     backend: Option<&KvmBackend>,
     child_exit: Option<crate::vm::OwnChildExitContext>,
+    start_permitted: bool,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
     let (pid, tid) = identity;
     let report = |phase, error| match failure {
@@ -3173,6 +3175,36 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
             .map_err(|error| report("process family exit", error)),
         (Some(_), false) | (None, _) => Ok(()),
     };
+    let retirement = if start_permitted
+        && pid == tid
+        && outcome.is_ok()
+        && workers.is_ok()
+        && process_status.is_ok()
+        && child_wait.is_ok()
+    {
+        // The terminal receipt already cancelled peer RPCs. The leader has
+        // now joined their cleanup, so a Tool's process-retirement fence can
+        // open before independent children need further deterministic turns.
+        let event = reverie::BackendProcessRetirement {
+            process: executor.retired_process_identity(),
+            status,
+        };
+        let caught = crate::failure::owned_future::catch_owned_future_from(|| {
+            std::future::ready(global_state.on_backend_process_retired(event))
+        })
+        .await;
+        panics
+            .finish(
+                crate::failure::owned_future::CaughtFuture {
+                    output: caught.output.map(|result| result.map_err(Error::Reverie)),
+                    panics: caught.panics,
+                },
+                "process retirement",
+            )
+            .map_err(|error| report("process retirement", error))
+    } else {
+        Ok(())
+    };
     // Worker hooks precede the leader. Owner hooks precede independent forks
     // that may need the parent's deregistration/accounting to finish.
     let owner = if pid != tid && panics.worker_execution_panicked() {
@@ -3217,6 +3249,7 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
             || workers.is_err()
             || process_status.is_err()
             || child_wait.is_err()
+            || retirement.is_err()
             || entry.is_err()
         {
             executor.join_child_processes_after_failure_async().await
@@ -3232,6 +3265,7 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
         workers,
         process_status,
         child_wait,
+        retirement,
         owner,
         entry,
         children,
@@ -3690,10 +3724,10 @@ impl KvmBackend {
             self.request_guest_thread_group_exit(ExitStatus::from_raw(wait_status));
         }
         if matches!(outcome, reverie::SignalBoundaryOutcome::Terminated { .. }) {
-            // The terminal receipt releases the Tool's exit fence. Retire this
-            // task's descriptor references first so a later scheduled reader
-            // cannot race host-thread teardown to observe pipe EOF. A live
-            // CLONE_FILES owner keeps its references to the shared table.
+            // Retire only this task's descriptor references before its terminal
+            // receipt. Peers keep their copies and shared-table references until
+            // their own cleanup; a process-retirement fence must cover those
+            // owners through the leader's final worker join.
             executor.release_files_on_exit();
             self.release_stdin_on_exit();
         }
@@ -3881,6 +3915,7 @@ impl KvmBackend {
             &self.tool_panic_owner(),
             Some(self),
             child_exit,
+            start_permitted,
         )
         .await
     }

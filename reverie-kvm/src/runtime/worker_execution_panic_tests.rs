@@ -204,6 +204,7 @@ fn check_worker(case: Case, destructor_panics: bool) {
         &panics,
         None,
         None,
+        false,
     ));
     let error = run.complete(result).unwrap_err();
     if let Some(first) = first {
