@@ -4833,6 +4833,10 @@ mod injected_error_tests;
 #[path = "liteinst_trap_only_tests.rs"]
 mod liteinst_trap_only_tests;
 
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "seccomp_ip_window_tests.rs"]
+mod seccomp_ip_window_tests;
+
 #[cfg(test)]
 mod tests {
     include!("tracer/fatal_callback_tests.rs");
