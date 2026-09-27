@@ -1759,8 +1759,9 @@ const SIGRETURN_FLAGS_OFFSET: u64 = (core::mem::offset_of!(libc::ucontext_t, uc_
 
 /// The instruction a single step runs, as far as the step can leave the TF
 /// that stepping sets where the guest sees it. `at` is the address of the
-/// instruction, with its prefixes, and `end` the address just past it, where a
-/// step that completes it stops.
+/// instruction, with its prefixes, `end` the address just past it, where a
+/// step that completes it stops, and `loads` the loads of SS that the step
+/// runs before it.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FlagsInstruction {
@@ -1773,21 +1774,48 @@ enum FlagsInstruction {
     Popf {
         end: u64,
     },
-    /// `popf` in the same step as a `mov ss` before it. Linux looks only at
-    /// the first instruction of a step, so it can hide the TF this loads.
+    /// `popf` in the same step as the loads of SS before it. Linux looks only
+    /// at the first instruction of a step, so it can hide the TF this loads.
     PopfAfterMovSs {
         end: u64,
     },
     /// `iret` loads RFLAGS like `popf`, and rip and rsp from the stack too.
     Iret {
         at: u64,
+        loads: SsLoads,
     },
     /// `syscall` saves RFLAGS in r11, and the kernel returns it there.
     Syscall {
         at: u64,
         end: u64,
+        loads: SsLoads,
     },
     Other,
+}
+
+/// The most consecutive loads of SS before an instruction that the decoder
+/// follows.
+#[cfg(target_arch = "x86_64")]
+const MAX_SS_LOADS: usize = 4;
+
+/// The addresses of the loads of SS that a step runs before its instruction.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SsLoads {
+    addrs: [u64; MAX_SS_LOADS],
+    len: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl SsLoads {
+    const NONE: Self = Self {
+        addrs: [0; MAX_SS_LOADS],
+        len: 0,
+    };
+
+    fn contains(&self, addr: u64) -> bool {
+        self.addrs[..self.len].contains(&addr)
+    }
 }
 
 /// What a single step starts from.
@@ -1854,46 +1882,57 @@ fn stepped_instruction(task: &Stopped, regs: &Regs) -> FlagsInstruction {
 /// reports the fault.
 #[cfg(target_arch = "x86_64")]
 fn flags_instruction(task: &Stopped, ip: u64) -> FlagsInstruction {
-    /// The longest x86 instruction, in bytes.
-    const MAX_INSTRUCTION_LEN: u64 = 15;
     let mut code = CodeReader {
         task,
         word_addr: None,
         word: [0; 8],
     };
+    decode_flags_instruction(ip, &mut |addr| code.byte(addr))
+}
+
+/// [`flags_instruction`] for the code that `byte` reads.
+#[cfg(target_arch = "x86_64")]
+fn decode_flags_instruction(ip: u64, byte: &mut dyn FnMut(u64) -> Option<u8>) -> FlagsInstruction {
+    /// The longest x86 instruction, in bytes.
+    const MAX_INSTRUCTION_LEN: u64 = 15;
     let mut start = ip;
-    let mut after_mov_ss = false;
+    let mut loads = SsLoads::NONE;
     let mut addr = ip;
     while addr < start.saturating_add(MAX_INSTRUCTION_LEN) {
-        let Some(opcode) = code.byte(addr) else {
+        let Some(opcode) = byte(addr) else {
             return FlagsInstruction::Other;
         };
         match opcode {
             0x9c => return FlagsInstruction::Pushf { end: addr + 1 },
-            0x9d if after_mov_ss => return FlagsInstruction::PopfAfterMovSs { end: addr + 1 },
+            0x9d if loads.len > 0 => return FlagsInstruction::PopfAfterMovSs { end: addr + 1 },
             0x9d => return FlagsInstruction::Popf { end: addr + 1 },
-            0xcf => return FlagsInstruction::Iret { at: start },
-            0x0f if code.byte(addr + 1) == Some(0x05) => {
+            0xcf => return FlagsInstruction::Iret { at: start, loads },
+            0x0f if byte(addr + 1) == Some(0x05) => {
                 return FlagsInstruction::Syscall {
                     at: start,
                     end: addr + 2,
+                    loads,
                 };
             }
-            // `mov ss, r/m16`. Of consecutive loads of SS only the first is
-            // sure to hold the trap back, so a second is not followed.
-            0x8e if !after_mov_ss => {
-                let Some(modrm) = code.byte(addr + 1) else {
+            // `mov ss, r/m16`. Of consecutive loads of SS, Intel documents
+            // only the first as sure to hold the trap back, but an AMD EPYC
+            // runs two and the `syscall` after them in one step, which then
+            // reports the syscall's return. The step's instruction is the
+            // first after the chain.
+            0x8e if loads.len < MAX_SS_LOADS => {
+                let Some(modrm) = byte(addr + 1) else {
                     return FlagsInstruction::Other;
                 };
                 if (modrm >> 3) & 7 != 2 {
                     return FlagsInstruction::Other;
                 }
-                let Some(len) = modrm_len(&mut code, addr + 1, modrm) else {
+                let Some(len) = modrm_len(byte, addr + 1, modrm) else {
                     return FlagsInstruction::Other;
                 };
+                loads.addrs[loads.len] = start;
+                loads.len += 1;
                 addr += 1 + len;
                 start = addr;
-                after_mov_ss = true;
                 continue;
             }
             // Legacy prefixes, then REX.
@@ -1909,14 +1948,14 @@ fn flags_instruction(task: &Stopped, ip: u64) -> FlagsInstruction {
 /// The length, in 64-bit mode, of the ModRM byte `modrm` at `addr` together
 /// with the SIB byte and displacement that follow it.
 #[cfg(target_arch = "x86_64")]
-fn modrm_len(code: &mut CodeReader, addr: u64, modrm: u8) -> Option<u64> {
+fn modrm_len(byte: &mut dyn FnMut(u64) -> Option<u8>, addr: u64, modrm: u8) -> Option<u64> {
     let (mode, rm) = (modrm >> 6, modrm & 7);
     if mode == 3 {
         return Some(1);
     }
     let mut len = 1;
     if rm == 4 {
-        let sib = code.byte(addr + 1)?;
+        let sib = byte(addr + 1)?;
         len += 1;
         // No base register: a 32-bit displacement instead.
         if mode == 0 && sib & 7 == 5 {
@@ -1982,7 +2021,7 @@ fn remove_stepping_trap_flag(
         FlagsInstruction::Popf { end } if regs.rip == end => {
             return Ok((regs.eflags & TRAP_FLAG != 0, regs));
         }
-        FlagsInstruction::Iret { at } if returned(&regs, start, at) => {
+        FlagsInstruction::Iret { at, loads } if returned(&regs, start, at, &loads) => {
             return Ok((regs.eflags & TRAP_FLAG != 0, regs));
         }
         FlagsInstruction::PopfAfterMovSs { end } if regs.rip == end => {
@@ -1993,10 +2032,10 @@ fn remove_stepping_trap_flag(
         // frame, r11 and RFLAGS included, and sets orig_rax to -1. Linux takes
         // the syscall number from the low 32 bits of rax. The frame may send
         // rip back to the `syscall` with another syscall number in rax.
-        FlagsInstruction::Syscall { at, .. }
+        FlagsInstruction::Syscall { at, loads, .. }
             if start.rax as u32 == libc::SYS_rt_sigreturn as u32
                 && regs.orig_rax as i64 == -1
-                && (returned(&regs, start, at) || regs.rax != start.rax) =>
+                && (returned(&regs, start, at, &loads) || regs.rax != start.rax) =>
         {
             let restored = regs.eflags & TRAP_FLAG != 0 || {
                 let addr = start.rsp + SIGRETURN_FLAGS_OFFSET + 1;
@@ -2058,6 +2097,10 @@ fn remove_stepping_trap_flag(
 /// `syscall` is the only instruction that a step reports with TRAP_BRKPT. A
 /// guest that has set TF itself raises TRAP_TRACE too, and that trap counts as
 /// the step.
+///
+/// A step that starts at loads of SS runs the instruction after them too (an
+/// AMD EPYC runs two loads and a `syscall` in one step), so
+/// `start.instruction` is the first instruction after the loads.
 #[cfg(target_arch = "x86_64")]
 fn is_step_report(task: &Stopped, start: &StepStart) -> Result<bool, TraceError> {
     Ok(match task.getsiginfo()?.si_code {
@@ -2069,13 +2112,14 @@ fn is_step_report(task: &Stopped, start: &StepStart) -> Result<bool, TraceError>
 
 /// Whether a step from `start` ran the instruction at `at`, which loads rip
 /// and rsp from memory. A step that stops before the instruction or faults in
-/// it leaves rsp as it was and rip at `at`, or at the start of the step if
-/// that is a `mov ss` before it. The instruction may return to either address
-/// too, but it then also moves rsp, unless it has loaded the rip and rsp that
-/// run it again, on the same stack.
+/// it leaves rsp as it was and rip at `at`, or at one of the `loads` of SS
+/// before it, where the step starts, a later load faults, or a processor that
+/// holds the trap back only for the first load traps. The instruction may
+/// return to any of these addresses too, but it then also moves rsp, unless it
+/// has loaded the rip and rsp that run it again, on the same stack.
 #[cfg(target_arch = "x86_64")]
-fn returned(regs: &Regs, start: &StepStart, at: u64) -> bool {
-    (regs.rip != start.rip && regs.rip != at) || regs.rsp != start.rsp
+fn returned(regs: &Regs, start: &StepStart, at: u64, loads: &SsLoads) -> bool {
+    (regs.rip != start.rip && regs.rip != at && !loads.contains(regs.rip)) || regs.rsp != start.rsp
 }
 
 /// Makes `own` the guest's TF after a step loaded flags that Linux did not
@@ -2760,5 +2804,153 @@ mod tests {
     ) {
         counter.single_step_with_clock(new_clock);
         assert_eq!((counter.rcbs, counter.instr), expected);
+    }
+
+    /// Where the decoder tests place their code.
+    #[cfg(target_arch = "x86_64")]
+    const BASE: u64 = 0x1000;
+
+    #[cfg(target_arch = "x86_64")]
+    fn decode(code: &[u8]) -> super::FlagsInstruction {
+        super::decode_flags_instruction(BASE, &mut |addr| {
+            let offset = usize::try_from(addr.checked_sub(BASE)?).ok()?;
+            code.get(offset).copied()
+        })
+    }
+
+    /// The loads of SS at the given offsets from `BASE`.
+    #[cfg(target_arch = "x86_64")]
+    fn loads(offsets: &[u64]) -> super::SsLoads {
+        let mut loads = super::SsLoads::NONE;
+        for offset in offsets {
+            loads.addrs[loads.len] = BASE + offset;
+            loads.len += 1;
+        }
+        loads
+    }
+
+    /// `mov ss, bx`.
+    #[cfg(target_arch = "x86_64")]
+    const MOV_SS: [u8; 2] = [0x8e, 0xd3];
+
+    #[cfg(target_arch = "x86_64")]
+    fn after_loads(count: usize, instruction: &[u8]) -> Vec<u8> {
+        let mut code = MOV_SS.repeat(count);
+        code.extend_from_slice(instruction);
+        code
+    }
+
+    // One step runs a chain of loads of SS and the instruction after it, which
+    // decides what the step leaks and how it reports.
+    #[cfg(target_arch = "x86_64")]
+    #[test_case(0, &[0x0f, 0x05] => (0, 2); "syscall")]
+    #[test_case(1, &[0x0f, 0x05] => (2, 4); "syscall after one load")]
+    #[test_case(2, &[0x0f, 0x05] => (4, 6); "syscall after two loads")]
+    #[test_case(4, &[0x0f, 0x05] => (8, 10); "syscall after four loads")]
+    #[test_case(2, &[0x48, 0x0f, 0x05] => (4, 7); "syscall with REX after two loads")]
+    fn decodes_syscall_after_loads_of_ss(count: usize, instruction: &[u8]) -> (u64, u64) {
+        match decode(&after_loads(count, instruction)) {
+            super::FlagsInstruction::Syscall { at, end, loads: l } => {
+                let offsets: Vec<u64> = (0..count as u64).map(|i| 2 * i).collect();
+                assert_eq!(l, loads(&offsets));
+                (at - BASE, end - BASE)
+            }
+            other => panic!("decoded {other:?}"),
+        }
+    }
+
+    // A guest's own trap after the loads is not a `syscall`, so its SIGTRAP is
+    // not taken for the step's report. Neither is a chain the decoder does
+    // not follow to its end.
+    #[cfg(target_arch = "x86_64")]
+    #[test_case(&after_loads(2, &[0xcc]); "int3 after two loads")]
+    #[test_case(&after_loads(2, &[0xf1]); "icebp after two loads")]
+    #[test_case(&after_loads(2, &[0xcd, 0x03]); "int 3 after two loads")]
+    #[test_case(&after_loads(5, &[0x0f, 0x05]); "syscall after five loads")]
+    #[test_case(&[0x8e, 0xdb, 0x0f, 0x05]; "syscall after a load of DS")]
+    #[test_case(&[0x8e]; "a load of SS cut short")]
+    #[test_case(&[0x8e, 0xd3, 0x0f]; "a syscall cut short")]
+    fn decodes_other_after_loads_of_ss(code: &[u8]) {
+        assert_eq!(decode(code), super::FlagsInstruction::Other);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn decodes_popf_and_iret_after_loads_of_ss() {
+        assert_eq!(
+            decode(&after_loads(2, &[0x9d])),
+            super::FlagsInstruction::PopfAfterMovSs { end: BASE + 5 }
+        );
+        assert_eq!(
+            decode(&after_loads(2, &[0x48, 0xcf])),
+            super::FlagsInstruction::Iret {
+                at: BASE + 4,
+                loads: loads(&[0, 2]),
+            }
+        );
+        // `mov ss, [rsp + 8]`: ModRM, SIB and an 8-bit displacement.
+        assert_eq!(
+            decode(&[0x8e, 0x54, 0x24, 0x08, 0x0f, 0x05]),
+            super::FlagsInstruction::Syscall {
+                at: BASE + 4,
+                end: BASE + 6,
+                loads: loads(&[0]),
+            }
+        );
+    }
+
+    // With no load of SS, or the one load at which the step starts, whether
+    // the instruction returned is decided as it was before chains of loads
+    // were followed. The first load is always at the step's start.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn returned_is_unchanged_without_a_chain_of_loads() {
+        let start = super::StepStart {
+            instruction: super::FlagsInstruction::Other,
+            rip: BASE,
+            rsp: 0x8000,
+            rax: 0,
+        };
+        let at = BASE + 2;
+        for chain in [loads(&[]), loads(&[0])] {
+            for rip in [BASE, BASE + 2, BASE + 4, 0x2000] {
+                for rsp in [0x8000, 0x8008] {
+                    // SAFETY: user_regs_struct has only integer fields.
+                    let mut regs: super::Regs = unsafe { core::mem::zeroed() };
+                    regs.rip = rip;
+                    regs.rsp = rsp;
+                    let before = (regs.rip != start.rip && regs.rip != at) || regs.rsp != start.rsp;
+                    assert_eq!(
+                        super::returned(&regs, &start, at, &chain),
+                        before,
+                        "rip {rip:#x}, rsp {rsp:#x}, loads {chain:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    // A step that stops at the second load, because it faulted there or the
+    // processor held the trap back only for the first, has not returned.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_stop_at_a_later_load_of_ss_has_not_returned() {
+        let start = super::StepStart {
+            instruction: super::FlagsInstruction::Other,
+            rip: BASE,
+            rsp: 0x8000,
+            rax: 0,
+        };
+        // SAFETY: user_regs_struct has only integer fields.
+        let mut regs: super::Regs = unsafe { core::mem::zeroed() };
+        regs.rsp = 0x8000;
+        for (rip, returned) in [(BASE + 2, false), (BASE + 4, false), (BASE + 6, true)] {
+            regs.rip = rip;
+            assert_eq!(
+                super::returned(&regs, &start, BASE + 4, &loads(&[0, 2])),
+                returned,
+                "rip {rip:#x}"
+            );
+        }
     }
 }
