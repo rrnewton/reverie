@@ -545,6 +545,30 @@ async fn trap_only_refuses_launch_without_ia32_emulation() {
     std::fs::remove_file(&marker).unwrap();
 }
 
+/// An IA-32 entry that changes rcx or r8-r11 (as entries before Linux 6.7
+/// do) cannot run a patched site, but patching off never runs one: the launch
+/// is admitted and the guest runs.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_with_patching_off_runs_on_a_register_clobbering_entry() {
+    let marker = tempfile_path("trap-only-clobbering-off");
+    let mut command = Command::new(parity_guest());
+    command.arg("touch").arg(&marker);
+    let (status, _) = TracerBuilder::<RecordTool>::new(command)
+        .liteinst_trap_only(SitePatching::Off)
+        .liteinst_trap_only_ia32_probe_for_test(Ia32EmulationProbe::ClobbersRegisters(
+            "int 0x80 getpid changed r8 from 0x5e171ce000000008 to 0x0".into(),
+        ))
+        .spawn()
+        .await
+        .expect("patching off is admitted on a register-clobbering entry")
+        .wait()
+        .await
+        .expect("guest run");
+    assert_eq!(status, ExitStatus::Exited(0));
+    assert!(marker.exists(), "the admitted guest did not run");
+    std::fs::remove_file(&marker).unwrap();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_and_the_preload_runtime_are_mutually_exclusive() {
     let marker = tempfile_path("trap-only-exclusive");

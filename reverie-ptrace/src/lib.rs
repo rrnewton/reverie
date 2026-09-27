@@ -77,6 +77,7 @@ pub use liteinst_stats::LiteinstInstrumentationStats;
 pub use liteinst_stats::LiteinstInstrumentationStatsHandle;
 pub use liteinst_trap_only::Ia32EmulationProbe;
 pub use liteinst_trap_only::Ia32EmulationUnavailable;
+pub use liteinst_trap_only::Ia32EntryClobbersRegisters;
 pub use liteinst_trap_only::LiteinstTrapOnlyHandle;
 pub use liteinst_trap_only::SitePatching;
 pub use liteinst_trap_only::SiteTable;

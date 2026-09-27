@@ -4174,8 +4174,10 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     ///
     /// Trap-only patching needs the kernel's IA-32 syscall entry. `spawn`
     /// probes whether `int 0x80` is serviced and fails closed with
-    /// [`crate::Ia32EmulationUnavailable`] when it is not. The mode cannot be
-    /// combined with [`Self::liteinst_runtime`].
+    /// [`crate::Ia32EmulationUnavailable`] when it is not. A launch that
+    /// rewrites sites is also refused, with
+    /// [`crate::Ia32EntryClobbersRegisters`], when the entry changes rcx or
+    /// r8-r11. The mode cannot be combined with [`Self::liteinst_runtime`].
     ///
     /// With [`SitePatching::Off`] no guest byte is ever written and the run is
     /// the ordinary ptrace run.
@@ -4466,7 +4468,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             require_supported_patching(trap_only.patching()).map_err(anyhow::Error::new)?;
             // A trap-only run must never degrade to plain ptrace under the
             // LiteInst label.
-            require_ia32_emulation(trap_only.ia32_probe()).map_err(anyhow::Error::new)?;
+            // An entry that changes rcx or r8-r11 refuses only site patching.
+            require_ia32_emulation(trap_only.ia32_probe(), trap_only.patching())?;
         }
         let trap_only_patching = self
             .liteinst_trap_only

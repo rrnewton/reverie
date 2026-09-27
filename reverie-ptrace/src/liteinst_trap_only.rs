@@ -218,8 +218,14 @@ impl LiteinstTrapOnlyHandle {
 /// Result of probing whether this host services `int 0x80` from 64-bit code.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Ia32EmulationProbe {
-    /// An `int 0x80` getpid returned the caller's PID.
+    /// An `int 0x80` getpid returned the caller's PID and changed none of
+    /// rcx, r8, r9, r10 and r11.
     Available,
+    /// An `int 0x80` getpid returned the caller's PID but changed one of rcx,
+    /// r8, r9, r10 and r11; the text names the register. The entry is usable
+    /// for a run that never patches a site, but not for site patching, which
+    /// relies on the entry leaving those registers alone.
+    ClobbersRegisters(String),
     /// `int 0x80` is not serviced; the text says what the probe observed.
     Unavailable(String),
 }
@@ -241,14 +247,45 @@ pub struct Ia32EmulationUnavailable {
     pub observation: String,
 }
 
-/// Converts a probe result into the trap-only admission decision.
+/// A trap-only LiteInst launch with site patching was refused because this
+/// host's `int 0x80` entry changes a register that a patched site needs
+/// preserved.
+///
+/// A patched site runs its syscall through `int 0x80`, and the guest resumes
+/// with whatever that entry left in rcx and r8-r11. Linux 6.7 and later enter
+/// through `int80_emulation`, which preserves them; older entries clear
+/// r8-r11. A launch without site patching never executes a patched site and is
+/// not refused for this.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("LiteInst trap-only launch with site patching {patching} refused: {observation}")]
+pub struct Ia32EntryClobbersRegisters {
+    /// The patching state that needs the registers preserved.
+    pub patching: SitePatching,
+    /// What the probe observed, starting with the changed register.
+    pub observation: String,
+}
+
+/// Converts a probe result into the trap-only admission decision for a launch
+/// with the given patching state.
+///
+/// A missing IA-32 entry refuses every trap-only launch
+/// ([`Ia32EmulationUnavailable`]). An entry that changes rcx or r8-r11 refuses
+/// only a launch that rewrites sites ([`Ia32EntryClobbersRegisters`]).
 pub(crate) fn require_ia32_emulation(
     probe: Ia32EmulationProbe,
-) -> Result<(), Ia32EmulationUnavailable> {
+    patching: SitePatching,
+) -> Result<(), anyhow::Error> {
     match probe {
         Ia32EmulationProbe::Available => Ok(()),
+        Ia32EmulationProbe::ClobbersRegisters(_) if !patching.rewrites_sites() => Ok(()),
+        Ia32EmulationProbe::ClobbersRegisters(observation) => {
+            Err(anyhow::Error::new(Ia32EntryClobbersRegisters {
+                patching,
+                observation,
+            }))
+        }
         Ia32EmulationProbe::Unavailable(observation) => {
-            Err(Ia32EmulationUnavailable { observation })
+            Err(anyhow::Error::new(Ia32EmulationUnavailable { observation }))
         }
     }
 }
@@ -392,7 +429,7 @@ fn classify_probe_outcome(
         )),
         None => match outcome.first_clobbered() {
             None => Ia32EmulationProbe::Available,
-            Some((name, sentinel, found)) => Ia32EmulationProbe::Unavailable(format!(
+            Some((name, sentinel, found)) => Ia32EmulationProbe::ClobbersRegisters(format!(
                 "int 0x80 getpid changed {name} from {sentinel:#x} to {found:#x}; trap-only \
                  patching needs an IA-32 entry that preserves rcx, r8, r9, r10 and r11 (the \
                  int80_emulation entry of Linux 6.7 and later){boot_note}"
@@ -659,6 +696,9 @@ mod probe_in_child {
             let expected = u64::from_ne_bytes(bytes[Int80Getpid::SIZE..].try_into().unwrap());
             return match classify_probe_outcome(None, outcome, expected, boot_note) {
                 Ia32EmulationProbe::Available => Ia32EmulationProbe::Available,
+                Ia32EmulationProbe::ClobbersRegisters(text) => {
+                    Ia32EmulationProbe::ClobbersRegisters(format!("{text}; {filter}"))
+                }
                 Ia32EmulationProbe::Unavailable(text) => {
                     Ia32EmulationProbe::Unavailable(format!("{text}; {filter}"))
                 }
@@ -914,30 +954,74 @@ mod tests {
 
     #[test]
     fn unavailable_probe_is_a_named_refusal() {
-        let error = require_ia32_emulation(Ia32EmulationProbe::Unavailable(
-            "int 0x80 getpid killed the probe with SIGSEGV (11)".into(),
-        ))
-        .expect_err("an unavailable IA-32 entry must refuse trap-only launch");
-        assert_eq!(
-            error.observation,
-            "int 0x80 getpid killed the probe with SIGSEGV (11)"
-        );
-        let message = error.to_string();
-        assert!(
-            message.contains("LiteInst trap-only launch refused")
-                && message.contains("CONFIG_IA32_EMULATION")
-                && message.contains("ia32_emulation=")
-                && message.contains("SIGSEGV"),
-            "{message}"
-        );
+        for patching in [SitePatching::Off, SitePatching::On] {
+            let error = require_ia32_emulation(
+                Ia32EmulationProbe::Unavailable(
+                    "int 0x80 getpid killed the probe with SIGSEGV (11)".into(),
+                ),
+                patching,
+            )
+            .expect_err("an unavailable IA-32 entry must refuse trap-only launch");
+            let refusal = error
+                .downcast_ref::<Ia32EmulationUnavailable>()
+                .unwrap_or_else(|| panic!("not Ia32EmulationUnavailable: {error}"));
+            assert_eq!(
+                refusal.observation,
+                "int 0x80 getpid killed the probe with SIGSEGV (11)"
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains("LiteInst trap-only launch refused")
+                    && message.contains("CONFIG_IA32_EMULATION")
+                    && message.contains("ia32_emulation=")
+                    && message.contains("SIGSEGV"),
+                "{message}"
+            );
+        }
     }
 
     #[test]
     fn available_probe_admits_launch() {
-        assert_eq!(
-            require_ia32_emulation(Ia32EmulationProbe::Available),
-            Ok(())
+        for patching in [SitePatching::Off, SitePatching::On] {
+            require_ia32_emulation(Ia32EmulationProbe::Available, patching)
+                .expect("an available IA-32 entry admits the launch");
+        }
+    }
+
+    /// An entry that changes rcx or r8-r11 cannot run a patched site, but a
+    /// launch that never patches one (patching off) is not refused for it.
+    #[test]
+    fn a_register_clobbering_entry_refuses_only_site_patching() {
+        let observation = "int 0x80 getpid changed r8 from 0x5e171ce000000008 to 0x0; trap-only \
+                           patching needs an IA-32 entry that preserves rcx, r8, r9, r10 and r11";
+        require_ia32_emulation(
+            Ia32EmulationProbe::ClobbersRegisters(observation.into()),
+            SitePatching::Off,
+        )
+        .expect("patching off must not be refused for a register-clobbering entry");
+
+        let error = require_ia32_emulation(
+            Ia32EmulationProbe::ClobbersRegisters(observation.into()),
+            SitePatching::On,
+        )
+        .expect_err("site patching must be refused on a register-clobbering entry");
+        let refusal = error
+            .downcast_ref::<Ia32EntryClobbersRegisters>()
+            .unwrap_or_else(|| panic!("not Ia32EntryClobbersRegisters: {error}"));
+        assert_eq!(refusal.patching, SitePatching::On);
+        assert_eq!(refusal.observation, observation);
+        assert!(
+            error.downcast_ref::<Ia32EmulationUnavailable>().is_none(),
+            "a clobbering entry is not an unavailable one"
         );
+        // The register cause comes first; the unavailable wording is absent.
+        let message = error.to_string();
+        assert_eq!(
+            message,
+            format!("LiteInst trap-only launch with site patching on refused: {observation}")
+        );
+        assert!(!message.contains("unavailable"), "{message}");
+        assert!(!message.contains("CONFIG_IA32_EMULATION"), "{message}");
     }
 
     /// An `int 0x80` outcome that preserved every sentinel.
@@ -982,19 +1066,20 @@ mod tests {
     }
 
     /// A correct getpid whose entry changed any of rcx, r8, r9, r10 or r11
-    /// (as IA-32 entries before Linux 6.7 do for r8-r11) fails closed, naming
-    /// the register, its sentinel and the value found.
+    /// (as IA-32 entries before Linux 6.7 do for r8-r11) is classified as a
+    /// clobbering entry, naming the register, its sentinel and the value found.
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn probe_outcome_fails_closed_when_int80_clobbers_a_preserved_register() {
         for (index, name) in PRESERVED_REGISTERS.into_iter().enumerate() {
             let mut outcome = preserving(42);
             outcome.preserved[index] = 0;
-            let Ia32EmulationProbe::Unavailable(text) =
+            let Ia32EmulationProbe::ClobbersRegisters(text) =
                 classify_probe_outcome(None, outcome, 42, "; kernel command line has x")
             else {
-                panic!("a clobbered {name} must classify as unavailable");
+                panic!("a clobbered {name} must classify as a clobbering entry");
             };
+            assert!(text.starts_with("int 0x80 getpid changed "), "{text}");
             let sentinel = format!("{:#x}", PRESERVED_SENTINELS[index]);
             assert!(
                 text.contains(&format!("changed {name} from {sentinel} to 0x0"))
@@ -1009,7 +1094,7 @@ mod tests {
         outcome.preserved[1] = 2;
         assert!(matches!(
             classify_probe_outcome(None, outcome, 42, ""),
-            Ia32EmulationProbe::Unavailable(text) if text.contains("changed r8 ")
+            Ia32EmulationProbe::ClobbersRegisters(text) if text.contains("changed r8 ")
         ));
         // A wrong result is reported before a clobber.
         assert!(matches!(
