@@ -78,7 +78,6 @@ use crate::liteinst_trap_only::LiteinstTrapOnlyConfig;
 use crate::liteinst_trap_only::LiteinstTrapOnlyHandle;
 use crate::liteinst_trap_only::SitePatching;
 use crate::liteinst_trap_only::require_ia32_emulation;
-use crate::liteinst_trap_only::require_supported_patching;
 use crate::task::Child;
 use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
@@ -4463,9 +4462,6 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             )));
         }
         if let Some(trap_only) = self.liteinst_trap_only.as_ref() {
-            // Refuse before anything is spawned. A patching state whose seccomp
-            // stops nothing handles yet would leave the guest stuck.
-            require_supported_patching(trap_only.patching()).map_err(anyhow::Error::new)?;
             // A trap-only run must never degrade to plain ptrace under the
             // LiteInst label.
             // An entry that changes rcx or r8-r11 refuses only site patching.
@@ -4490,6 +4486,13 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         // tool's state here in a single address space.
         let global_state = <T::GlobalState as GlobalTool>::init_global_state(&config).await;
         let events = T::subscriptions(&config);
+        // Only a patching run carries per-task trap-only state; with patching
+        // off every task runs the ordinary ptrace path unchanged.
+        let trap_only_task = self
+            .liteinst_trap_only
+            .as_ref()
+            .filter(|trap_only| trap_only.patching().rewrites_sites())
+            .map(|trap_only| trap_only.root_task(&events));
         let mut traced_events = events.clone();
         if self.liteinst_runtime.is_some() {
             // Mapping operations are controller-only lifecycle observations:
@@ -4662,6 +4665,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 events: &events,
                 injected_syscall_trap: self.injected_syscall_trap,
                 liteinst_runtime: self.liteinst_runtime,
+                liteinst_trap_only: trap_only_task,
                 backend_stats: backend_stats.clone(),
             },
             gdbserver,
@@ -4820,6 +4824,7 @@ where
                     events: &events,
                     injected_syscall_trap: None,
                     liteinst_runtime: None,
+                    liteinst_trap_only: None,
                     backend_stats: None,
                 },
                 None,
