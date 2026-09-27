@@ -3689,6 +3689,14 @@ impl KvmBackend {
             // any peer's pending RPC. This does not join or run a guest hook.
             self.request_guest_thread_group_exit(ExitStatus::from_raw(wait_status));
         }
+        if matches!(outcome, reverie::SignalBoundaryOutcome::Terminated { .. }) {
+            // The terminal receipt releases the Tool's exit fence. Retire this
+            // task's descriptor references first so a later scheduled reader
+            // cannot race host-thread teardown to observe pipe EOF. A live
+            // CLONE_FILES owner keeps its references to the shared table.
+            executor.release_files_on_exit();
+            self.release_stdin_on_exit();
+        }
         // Consuming notification is after the actual frame/register/mask commit,
         // or on owned terminal/image cleanup. It is never an ordinary posthook
         // request and never waits for a guest rt_sigreturn.
@@ -7177,3 +7185,6 @@ mod entry_owner_tests;
 
 #[cfg(test)]
 mod entry_operation_tests;
+
+#[cfg(test)]
+mod exit_descriptor_tests;
