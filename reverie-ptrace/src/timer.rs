@@ -733,14 +733,21 @@ impl Timer {
     /// LiteInst uses this hook to keep its exact-generation root-stop lease
     /// synchronized across the precise timer's internal single steps. The
     /// non-LiteInst caller supplies the historical raw transition.
+    ///
+    /// `intercept` sees every SIGTRAP stop the stepping reaches. Returning
+    /// `true` hands that stop back as [`HandleFailure::Event`] instead of
+    /// counting it as a completed step: a SIGTRAP from a real trap
+    /// instruction (the LiteInst host-hybrid `int3`) is a guest event that
+    /// must be dispatched, not a step report to swallow.
     pub(crate) async fn handle_signal(
         &mut self,
         task: Stopped,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        intercept: &mut (dyn FnMut(&Stopped) -> Result<bool, TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         match self.inner_mut_noinit() {
-            Some(t) => t.handle_signal(task, step, observe).await,
+            Some(t) => t.handle_signal(task, step, observe, intercept).await,
             None => {
                 warn!("Stray SIGSTKFLT indicates a bug!");
                 Err(HandleFailure::ImproperSignal(task))
@@ -816,6 +823,15 @@ struct TimerImpl {
 
     /// Tid of the monitored thread
     guest_tid: Tid,
+}
+
+/// The backend callbacks [`TimerImpl::attempt_single_step`] drives: `step`
+/// resumes one instruction, `observe` sees every resulting stop, and
+/// `intercept` claims a SIGTRAP stop as a backend event rather than a step.
+struct StepCallbacks<'a> {
+    step: &'a mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
+    observe: &'a mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+    intercept: &'a mut (dyn FnMut(&Stopped) -> Result<bool, TraceError> + Send),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -1345,6 +1361,7 @@ impl TimerImpl {
         task: Stopped,
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        intercept: &mut (dyn FnMut(&Stopped) -> Result<bool, TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         let signal = task.getsiginfo()?;
         #[cfg(test)]
@@ -1426,7 +1443,12 @@ impl TimerImpl {
                 clock_target,
                 offset,
             } => {
-                self.attempt_single_step(task, ctr, clock_target, offset, step, observe)
+                let callbacks = StepCallbacks {
+                    step,
+                    observe,
+                    intercept,
+                };
+                self.attempt_single_step(task, ctr, clock_target, offset, callbacks)
                     .await
             }
             ActiveEvent::Imprecise { clock_min } => {
@@ -1446,9 +1468,13 @@ impl TimerImpl {
         ctr_initial: u64,
         target_rcb: u64,
         target_instr: u64,
-        step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+        callbacks: StepCallbacks<'_>,
     ) -> Result<Stopped, HandleFailure> {
+        let StepCallbacks {
+            step,
+            observe,
+            intercept,
+        } = callbacks;
         // The perf interrupt can arrive *past* the target when descheduling or
         // migration delays signal handling long enough for the actual skid to
         // exceed the margin. Single stepping cannot move the guest backward, so
@@ -1496,8 +1522,17 @@ impl TimerImpl {
             let wait = step(task)?.next_state().await?;
             observe(&wait)?;
             task = match wait {
-                // a successful single step results in SIGTRAP stop
-                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
+                // A successful single step results in a SIGTRAP stop, but so
+                // does a stepped trap instruction, which is a guest event.
+                Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => {
+                    if intercept(&new_task)? {
+                        return Err(HandleFailure::Event(Wait::Stopped(
+                            new_task,
+                            TraceEvent::Signal(Signal::SIGTRAP),
+                        )));
+                    }
+                    new_task
+                }
                 wait => return Err(HandleFailure::Event(wait)),
             };
             current.single_step_with_clock(self.read_clock());
