@@ -634,3 +634,6 @@ fn tempfile_path(label: &str) -> PathBuf {
     let _ = std::fs::remove_file(&path);
     path
 }
+
+#[path = "liteinst_trap_only_p2_tests.rs"]
+mod p2;

@@ -4209,6 +4209,19 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         self
     }
 
+    /// Makes every trap-only patch write a no-op, so the readback finds the
+    /// original bytes.
+    #[cfg(test)]
+    fn liteinst_trap_only_skip_patch_write_for_test(self) -> Self {
+        self.liteinst_trap_only
+            .as_ref()
+            .expect("trap-only mode must be selected before skipping its patch writes")
+            .hooks
+            .skip_patch_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
     #[cfg(test)]
     fn fail_liteinst_preinit_for_test(mut self) -> Self {
         self.liteinst_runtime
