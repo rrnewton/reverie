@@ -129,6 +129,15 @@ impl Filter {
         self.filter.len()
     }
 
+    /// The exact classic BPF instructions supplied to the kernel by `load`.
+    ///
+    /// This is the userspace installation input, not evidence that a task has
+    /// installed it. A policy observer must compare it with the actual saved
+    /// kernel program and authenticate that task's complete predecessor chain.
+    pub fn instructions(&self) -> &[sock_filter] {
+        &self.filter
+    }
+
     /// Returns true if the program is empty. Empty seccomp filters will result
     /// in an error when loaded.
     pub fn is_empty(&self) -> bool {

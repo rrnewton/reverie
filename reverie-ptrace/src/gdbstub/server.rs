@@ -60,6 +60,25 @@ impl GdbServer {
         })
     }
 
+    /// Accept debugger transport on a controller-owned, already-bound listener.
+    /// No bind or network-namespace change occurs in the guest container.
+    pub async fn from_listener(listener: std::net::TcpListener) -> Result<Self, Error> {
+        let (inferior_attached_tx, inferior_attached_rx) = mpsc::channel(1);
+        let (server_tx, server_rx) = oneshot::channel();
+        let server =
+            GdbServerImpl::from_listener(listener, server_rx, inferior_attached_rx).await?;
+        tokio::task::spawn(async move {
+            if let Err(err) = server.run().await {
+                tracing::error!("Failed to run gdbserver: {:?}", err);
+            }
+        });
+        Ok(Self {
+            server_tx: Some(server_tx),
+            inferior_attached_tx: Some(inferior_attached_tx),
+            sequentialized_guest: false,
+        })
+    }
+
     /// Creates a GDB server from the given unix domain socket. This is useful
     /// when we know there will only be one client and want to avoid binding to a
     /// port.
@@ -179,19 +198,46 @@ impl GdbServerImpl {
         let stream = wait_for_tcp_connection(addr)
             .await
             .map_err(|source| Error::WaitForGdbConnect { source })?;
+        Ok(Self::from_tcp_stream(
+            stream,
+            server_rx,
+            inferior_attached_rx,
+        ))
+    }
+
+    async fn from_listener(
+        listener: std::net::TcpListener,
+        server_rx: oneshot::Receiver<()>,
+        inferior_attached_rx: mpsc::Receiver<StoppedInferior>,
+    ) -> Result<Self, Error> {
+        let stream = accept_tcp_connection(listener)
+            .await
+            .map_err(|source| Error::WaitForGdbConnect { source })?;
+        Ok(Self::from_tcp_stream(
+            stream,
+            server_rx,
+            inferior_attached_rx,
+        ))
+    }
+
+    fn from_tcp_stream(
+        stream: TcpStream,
+        server_rx: oneshot::Receiver<()>,
+        inferior_attached_rx: mpsc::Receiver<StoppedInferior>,
+    ) -> Self {
         let (reader, writer) = stream.into_split();
 
         let (tx, rx) = mpsc::channel(1);
         // create a gdb session.
         let session = Session::new(Box::new(writer), rx, inferior_attached_rx);
 
-        Ok(GdbServerImpl {
+        GdbServerImpl {
             reader: Box::new(reader),
             rx_buf: BytesMut::with_capacity(PACKET_BUFFER_CAPACITY),
             pkt_tx: Some(tx),
             server_rx: Some(server_rx),
             session: Some(session),
-        })
+        }
     }
 
     /// Creates a GDB server and listens on the given unix domain socket.
@@ -936,6 +982,47 @@ mod tests {
         );
 
         drop(accepted);
+        drop(client);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prebound_gdb_listener_is_released_when_accept_is_cancelled() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            GdbServer::from_listener(listener),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a server with no client cannot finish accepting"
+        );
+        assert!(
+            this_process_listening_fds_on(address.port()).is_empty(),
+            "cancelled GDB accept retained the controller listener"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prebound_gdb_server_uses_original_listener_without_rebinding() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client =
+            std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(1))
+                .unwrap();
+        let server = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            GdbServer::from_listener(listener),
+        )
+        .await
+        .expect("prequeued connection must be accepted within original bound")
+        .expect("already-reserved address must not be rebound");
+        assert!(
+            this_process_listening_fds_on(address.port()).is_empty(),
+            "successful GDB accept retained its listening alias"
+        );
+        drop(server);
         drop(client);
     }
 

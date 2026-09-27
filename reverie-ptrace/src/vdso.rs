@@ -24,6 +24,8 @@ use reverie::syscalls::Mprotect;
 use reverie::syscalls::Sysno;
 use tracing::debug;
 
+use crate::task::TracedTask;
+
 #[repr(align(64))]
 struct BufferAligned<const N: usize>([u8; N]);
 
@@ -390,11 +392,10 @@ fn vdso_get_symbols_info() -> BTreeMap<&'static str, (u64, usize)> {
 /// patch VDSOs when enabled
 ///
 /// `guest` must be in one of ptrace's stopped states.
-pub async fn vdso_patch<G, T>(guest: &mut G, subscriptions: &Subscription) -> Result<(), Error>
-where
-    G: Guest<T>,
-    T: Tool,
-{
+pub(crate) async fn vdso_patch<T: Tool + 'static>(
+    guest: &mut TracedTask<T>,
+    subscriptions: &Subscription,
+) -> Result<(), Error> {
     if let Some(vdso) = procfs::process::Process::new(guest.pid().as_raw())
         .map_or_else(
             |_| Vec::new(),
@@ -410,7 +411,7 @@ where
 
         // Allow write access to the vdso memory page.
         guest
-            .inject_with_retry(
+            .inject_backend_with_retry(
                 Mprotect::new()
                     .with_addr(AddrMut::from_raw(vdso.address.0 as usize))
                     .with_len((vdso.address.1 - vdso.address.0) as usize)
@@ -434,7 +435,7 @@ where
         }
 
         guest
-            .inject_with_retry(
+            .inject_backend_with_retry(
                 Mprotect::new()
                     .with_addr(AddrMut::from_raw(vdso.address.0 as usize))
                     .with_len((vdso.address.1 - vdso.address.0) as usize)

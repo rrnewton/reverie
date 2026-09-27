@@ -415,6 +415,12 @@ impl Timer {
         Self::with_initial_command(guest_pid, guest_tid, false)
     }
 
+    /// A newborn owner may reconcile an opening failure with its retained
+    /// kernel terminal wait. An error alone never authorizes a timerless task.
+    pub(crate) fn try_new(guest_pid: Pid, guest_tid: Tid) -> Result<Self, Errno> {
+        Self::try_with_initial_command(guest_pid, guest_tid, false)
+    }
+
     pub(crate) fn for_initial_command(guest_pid: Pid, guest_tid: Tid) -> Self {
         Self::with_initial_command(guest_pid, guest_tid, true)
     }
@@ -423,20 +429,28 @@ impl Timer {
         // No errors are exposed here, as the construction should be
         // bullet-proof, and if it wasn't, consumers wouldn't be able to
         // meaningfully handle the error anyway.
-        Self {
-            inner: if is_perf_supported() {
-                Some(
-                    TimerImpl::new(guest_pid, guest_tid, initial_command).unwrap_or_else(|err| {
-                        panic!(
-                            "failed to initialize perf timer for tracee {guest_tid} \
+        Self::try_with_initial_command(guest_pid, guest_tid, initial_command).unwrap_or_else(
+            |err| {
+                panic!(
+                    "failed to initialize perf timer for tracee {guest_tid} \
                          in process {guest_pid}: {err}"
-                        )
-                    }),
                 )
+            },
+        )
+    }
+
+    fn try_with_initial_command(
+        guest_pid: Pid,
+        guest_tid: Tid,
+        initial_command: bool,
+    ) -> Result<Self, Errno> {
+        Ok(Self {
+            inner: if is_perf_supported() {
+                Some(TimerImpl::new(guest_pid, guest_tid, initial_command)?)
             } else {
                 None
             },
-        }
+        })
     }
 
     fn inner(&self) -> &TimerImpl {

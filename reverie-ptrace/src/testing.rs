@@ -149,3 +149,78 @@ where
 {
     check_fn_with_config::<T, F>(f, Default::default(), true)
 }
+
+/// Retains the notifier generation used by a native newborn EXIT-stop fixture.
+/// It cannot construct a wait result or resume/consume a ptrace stop.
+#[must_use]
+pub struct NewbornExitStop {
+    child: reverie::Pid,
+    cleanup: safeptrace::TerminalCleanup,
+}
+
+impl NewbornExitStop {
+    /// The original child from the caller's still-owned NewChild event.
+    pub fn child(&self) -> reverie::Pid {
+        self.child
+    }
+
+    /// Waits for this original notifier worker's terminal acknowledgment.
+    /// The test must independently require the actual backend final-wait callback;
+    /// worker completion alone is not proof of a consumed native terminal status.
+    pub fn worker_drained(&self, timeout: std::time::Duration) -> bool {
+        self.cleanup.wait(timeout)
+    }
+}
+
+/// Kill an actual newborn process and observe its notifier's EXIT-stop
+/// publication without consuming or resuming that stop.
+///
+/// This test helper does not wait for pidfd terminal readiness: the tracer
+/// still needs to resume the EXIT stop before the kernel can exit. It retains
+/// the same notifier identity which ordinary dispatch will adopt, so no second
+/// wait owner is introduced. Errors are failed fixture setup, never a native
+/// child result. The outside owner must still prove the complete actor drain.
+///
+/// # Safety
+///
+/// The caller must be inside the synchronous Tool ChildCreated observation for
+/// this exact child, with the original NewChild ptrace event still owned and
+/// neither child nor creator resumed or reaped. This is the identity fence for
+/// initial capture: a numeric PID obtained elsewhere is not sufficient. The
+/// caller must fail the tracer if this helper errors, preserving its ordinary
+/// EXITKILL and outside command-owner cleanup; it must not resume the fixture.
+pub unsafe fn kill_newborn_process_at_exit_stop(
+    child: reverie::Pid,
+    timeout: std::time::Duration,
+) -> Result<NewbornExitStop, Error> {
+    let deadline = std::time::Instant::now() + timeout;
+    let running = safeptrace::Running::new(child);
+    let cleanup = running.terminal_cleanup();
+    loop {
+        match cleanup.ensure_registered() {
+            Err(reverie::Errno::EINTR) if std::time::Instant::now() < deadline => continue,
+            result => {
+                result?;
+                break;
+            }
+        }
+    }
+    if cleanup.thread_group_id()? != child || cleanup.exit_stop_observed() {
+        return Err(anyhow::anyhow!("fixture child is not an original pre-exit process").into());
+    }
+    if std::time::Instant::now() >= deadline {
+        return Err(anyhow::anyhow!("newborn binding exceeded original fixture deadline").into());
+    }
+    cleanup.terminate_bound_task()?;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                anyhow::anyhow!("actual newborn EXIT-stop was not published in time").into(),
+            );
+        }
+        if cleanup.exit_stop_observed() {
+            return Ok(NewbornExitStop { child, cleanup });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}

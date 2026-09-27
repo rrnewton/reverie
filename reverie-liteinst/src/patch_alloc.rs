@@ -90,7 +90,8 @@ struct ToolHeapBlock {
 struct ToolHeap {
     bytes: UnsafeCell<ToolHeapBytes>,
     next: UnsafeCell<usize>,
-    free_head: UnsafeCell<usize>,
+    // Invert the head so the empty sentinel has an all-zero static initializer.
+    inverted_free_head: UnsafeCell<usize>,
     locked: AtomicBool,
 }
 
@@ -102,7 +103,7 @@ impl ToolHeap {
         Self {
             bytes: UnsafeCell::new(ToolHeapBytes([0; TOOL_HEAP_BYTES])),
             next: UnsafeCell::new(0),
-            free_head: UnsafeCell::new(FREE_LIST_END),
+            inverted_free_head: UnsafeCell::new(0),
             locked: AtomicBool::new(false),
         }
     }
@@ -142,7 +143,7 @@ impl ToolHeap {
         let _guard = self.lock();
         let mut previous = FREE_LIST_END;
         // SAFETY: the heap lock serializes free-list access.
-        let mut current = unsafe { *self.free_head.get() };
+        let mut current = unsafe { !*self.inverted_free_head.get() };
 
         while current != FREE_LIST_END {
             let block = self.block(current);
@@ -155,7 +156,7 @@ impl ToolHeap {
                 // SAFETY: the heap lock serializes free-list mutation.
                 unsafe {
                     if previous == FREE_LIST_END {
-                        *self.free_head.get() = next;
+                        *self.inverted_free_head.get() = !next;
                     } else {
                         (*self.block(previous)).next = next;
                     }
@@ -203,8 +204,8 @@ impl ToolHeap {
         let _guard = self.lock();
         // SAFETY: the block header remains reserved until this allocation is freed.
         unsafe {
-            (*self.block(block_offset)).next = *self.free_head.get();
-            *self.free_head.get() = block_offset;
+            (*self.block(block_offset)).next = !*self.inverted_free_head.get();
+            *self.inverted_free_head.get() = !block_offset;
         }
     }
 

@@ -1,9 +1,14 @@
 //! Backend lifecycle controls. These observe real callback ordering, not native
 //! selected-file or capability evidence. Native tests require the maintained owner.
+use std::sync::Arc;
+use std::sync::Mutex as SyncMutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+
+use serde::Deserialize;
+use serde::Serialize;
+
 use super::*;
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as SyncMutex};
 
 #[derive(Default)]
 struct Log {
