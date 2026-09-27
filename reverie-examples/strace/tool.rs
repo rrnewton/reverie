@@ -6,6 +6,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// Apart from its test-only counter, this module names only `core` and
+// `alloc`, so it also builds without `std`: reverie-narf-tools compiles it for
+// the Narf kernel, with an `eprintln!` that hands each line to the backend.
+extern crate alloc;
+
+// The `#[reverie::tool]` expansion boxes each handler future by the bare name
+// `Box`, which is only in the prelude with `std`.
+use alloc::boxed::Box;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 #[cfg(test)]
