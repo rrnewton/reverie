@@ -23,7 +23,10 @@
 //! Proper use of timers requires that all delivered signals of type
 //! `Timer::signal_type()` be passed through `Timer::handle_signal`, and that
 //! `Timer::observe_event()` be called whenever a Tool-observable reverie event
-//! occurs. Additionally, `Timer::finalize_requests()` must be called
+//! occurs. A stop that is observed before it can be classified, and then turns
+//! out to be tracer-internal (for example a LiteInst handshake trap), must be
+//! handed to `Timer::retract_internal_stop()` before any Tool callback, so that
+//! it does not use up a pending event's grace tick. Additionally, `Timer::finalize_requests()` must be called
 //!  - after the end of the tool callback in which the user could have
 //!    requested a timer event, i.e. those with `&mut guest` access.
 //!  - after any reverie-critical single-stepping occurs (e.g. in syscall
@@ -599,6 +602,21 @@ impl Timer {
         }
     }
 
+    /// Undo the tick of the most recent [`Timer::observe_event`], because the
+    /// stop it counted is tracer-internal: no Tool callback runs for it and a
+    /// tracer without that mechanism would not stop there at all. The pending
+    /// event keeps the status it had before that stop.
+    ///
+    /// This must be called at the retracted stop, before any Tool callback and
+    /// before any other timer request or cancellation. If the status has been
+    /// set since the observation, or the observation was already retracted,
+    /// this does nothing.
+    pub(crate) fn retract_internal_stop(&mut self) {
+        if let Some(t) = self.inner_mut_noinit() {
+            t.retract_internal_stop();
+        }
+    }
+
     /// Cancel pending timer notifications. This is idempotent.
     ///
     /// If there was a previous call to [`Timer::enable_interval'], this
@@ -782,6 +800,10 @@ struct TimerImpl {
 
     /// The cancellation status of the active timer event.
     timer_status: EventStatus,
+
+    /// The status before the most recent `observe_event`, while no later
+    /// status change has superseded it. `retract_internal_stop` restores it.
+    status_before_observation: Option<EventStatus>,
 
     /// Whether or not the active timer event requires an artificial signal
     send_artificial_signal: bool,
@@ -1051,6 +1073,7 @@ impl TimerImpl {
                 offset: 0,
             },
             timer_status: EventStatus::Cancelled,
+            status_before_observation: None,
             send_artificial_signal: false,
             artificial_signal_sent: false,
             overflow_period: None,
@@ -1081,13 +1104,13 @@ impl TimerImpl {
         if self.initial_command != InitialCommand::Ordinary {
             self.event = Self::event_at(evt, self.read_clock() + delivery);
             self.held_initial_event = Some(self.event);
-            self.timer_status = EventStatus::Scheduled;
+            self.set_status(EventStatus::Scheduled);
             debug_assert!(!self.send_artificial_signal);
             return Ok(());
         }
         self.prepare_notification(notification)?;
         self.event = Self::event_at(evt, self.read_clock() + delivery);
-        self.timer_status = EventStatus::Scheduled;
+        self.set_status(EventStatus::Scheduled);
         Ok(())
     }
 
@@ -1177,7 +1200,7 @@ impl TimerImpl {
 
     fn retire_initial_event(&mut self) {
         let _ = self.held_initial_event.take();
-        self.timer_status = EventStatus::Cancelled;
+        self.set_status(EventStatus::Cancelled);
         self.send_artificial_signal = false;
     }
 
@@ -1197,12 +1220,32 @@ impl TimerImpl {
         }
     }
 
+    /// Every status change other than an observation supersedes the status a
+    /// retraction would restore.
+    fn set_status(&mut self, status: EventStatus) {
+        self.timer_status = status;
+        self.status_before_observation = None;
+    }
+
     pub fn observe_event(&mut self) {
+        self.status_before_observation = Some(self.timer_status);
         self.timer_status.tick()
     }
 
+    fn retract_internal_stop(&mut self) {
+        if let Some(status) = self.status_before_observation.take() {
+            if status != self.timer_status {
+                debug!(
+                    "Tracer-internal stop does not count as a timer event: {:?} restored from {:?}",
+                    status, self.timer_status
+                );
+            }
+            self.timer_status = status;
+        }
+    }
+
     pub fn schedule_cancellation(&mut self) {
-        self.timer_status = EventStatus::Cancelled;
+        self.set_status(EventStatus::Cancelled);
     }
 
     pub fn cancel(&self) -> Result<(), Errno> {
@@ -1593,6 +1636,7 @@ mod tests {
                 timer: counter,
                 event,
                 timer_status: EventStatus::Scheduled,
+                status_before_observation: None,
                 send_artificial_signal: true,
                 artificial_signal_sent: false,
                 overflow_period: None,
@@ -1714,6 +1758,74 @@ mod tests {
             Err(Errno::EIO)
         );
         assert_eq!(timer.fail_next_notification, None);
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+    }
+
+    #[test]
+    fn internal_stop_retraction_restores_only_the_last_observation() {
+        use super::EventStatus;
+        use super::TimerEventRequest;
+        use super::TimerImpl;
+
+        let pid = reverie::Pid::from_raw(unsafe { libc::getpid() });
+        let tid = reverie::Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        // A held initial command keeps requests off the physical counter.
+        let mut timer = TimerImpl::new(pid, tid, true).expect("control requires a working PMU");
+
+        // Nothing observed yet: a retraction has nothing to restore.
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+
+        // A request, then one internal stop: the grace tick survives it and
+        // the next observation (the timer signal's own stop) arms the event.
+        timer
+            .request_event(TimerEventRequest::Precise(1_000))
+            .unwrap();
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+        timer.observe_event();
+        assert_eq!(timer.timer_status, EventStatus::Armed);
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+        // A second retraction of the same observation changes nothing.
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+
+        // Two internal stops in a row, each retracted at its own stop.
+        for _ in 0..2 {
+            timer.observe_event();
+            timer.retract_internal_stop();
+        }
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+
+        // A Tool-observable stop that is not retracted still cancels the
+        // event, exactly as before; only the last observation is undone.
+        timer.observe_event();
+        timer.observe_event();
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Armed);
+
+        // A request made after the observation supersedes it.
+        timer.observe_event();
+        timer
+            .request_event(TimerEventRequest::Precise(1_000))
+            .unwrap();
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+
+        // So does a cancellation.
+        timer.observe_event();
+        timer.schedule_cancellation();
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+
+        // And so does retiring the initial command's request at exec.
+        timer
+            .request_event(TimerEventRequest::Precise(1_000))
+            .unwrap();
+        timer.observe_event();
+        timer.begin_initial_exec();
+        timer.retract_internal_stop();
         assert_eq!(timer.timer_status, EventStatus::Cancelled);
     }
 

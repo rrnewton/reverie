@@ -2998,6 +2998,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
+        // Only Tool-observable stops count as timer events. A handler that
+        // classifies its stop as LiteInst-internal retracts this observation
+        // with `retract_liteinst_internal_stop` before any Tool callback.
         self.timer.observe_event();
         // The guest can remove a timer notification between two stops without
         // an injection seeing the queue. See `untraced_syscall`.
@@ -3108,6 +3111,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             .iter_syscalls()
             .any(|subscribed| subscribed == nr)
         {
+            // A patched site can issue an unsubscribed syscall number (for
+            // example libc's `syscall(2)` wrapper). Ordinary ptrace would not
+            // stop for it.
+            self.retract_liteinst_internal_stop();
             self.injected_syscall_frame = Some(frame_address);
             let result = self.untraced_syscall(task, nr, args).await?;
             let task = self.assume_stopped();
@@ -3303,6 +3310,18 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(())
     }
 
+    /// The current stop exists only because of the LiteInst mechanism: the
+    /// runtime handshake, the executable-entry guard, a controller-only mapping
+    /// observation, or an unsubscribed syscall at a patched site. No Tool
+    /// callback runs for it and an ordinary ptrace run has no such stop, so it
+    /// must not use up a pending timer event's grace tick. See the `timer`
+    /// module header. An ordinary ptrace run never reaches this.
+    fn retract_liteinst_internal_stop(&mut self) {
+        if self.global_state.liteinst_runtime.is_some() {
+            self.timer.retract_internal_stop();
+        }
+    }
+
     fn classify_liteinst_trap(
         &mut self,
         task: &Stopped,
@@ -3389,6 +3408,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let Some(guard) = self.liteinst_entry_guard
             && regs.ip() == guard.address.saturating_add(1)
         {
+            self.retract_liteinst_internal_stop();
             let address = Addr::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
             let observed: u64 = task.read_value(address)?;
             let guarded_instruction = (guard.saved_instruction & !0xff) | 0xcc;
@@ -3410,11 +3430,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         match self.classify_liteinst_trap(&task, &regs) {
             Some(LiteinstTrap::HandshakeBegin) => {
+                self.retract_liteinst_internal_stop();
                 return Ok(HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
                 ));
             }
             Some(LiteinstTrap::HandshakeReady) => {
+                self.retract_liteinst_internal_stop();
                 if let Err(error) = self.restore_liteinst_entry_guard(&mut task) {
                     self.record_liteinst_failure(
                         LiteinstActivationFailureReason::RestoreExecutableEntryGuard,
@@ -4993,6 +5015,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             .iter_syscalls()
             .any(|subscribed| subscribed == nr);
         if is_liteinst_mapping_syscall(nr) && !tool_subscribed {
+            // Traced only for the controller's patched-site provenance.
+            self.retract_liteinst_internal_stop();
             return self.handle_liteinst_mapping_syscall(task, nr, args).await;
         }
         self.record_retained_liteinst_fallback_hit(&task);
