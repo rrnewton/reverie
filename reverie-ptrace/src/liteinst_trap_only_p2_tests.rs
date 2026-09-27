@@ -36,6 +36,8 @@ const SHAPE_TWO_PRIVATE: u64 = 5;
 const SEND_SIGUSR1: u64 = 0x100;
 const SEND_SIGWINCH: u64 = 0x200;
 const SEND_QUEUE: u64 = 0x400;
+/// The tracer leaves SIGUSR1 pending for its final resume of the stop.
+const SEND_RESUME: u64 = 0x800;
 
 #[derive(Default)]
 struct P2Log(Mutex<Vec<(Pid, String)>>);
@@ -412,7 +414,8 @@ async fn run_p2_with(
     command.arg(mode).arg(&report_path);
     let mut builder = TracerBuilder::<P2Tool>::new(command)
         .config(tail)
-        .backend_stats(BackendStatsRequest::ENABLED);
+        .backend_stats(BackendStatsRequest::ENABLED)
+        .final_resume_signal_for_test(resume_signal_hook());
     if let Some(patching) = patching {
         builder = builder.liteinst_trap_only(patching);
         if skip_patch_write {
@@ -453,6 +456,23 @@ async fn run_p2_with(
         table_state: handle.as_ref().map(|handle| handle.table_state()),
         site_state: handle.as_ref().and_then(|handle| handle.site_state(site)),
         site,
+    })
+}
+
+/// Leaves SIGUSR1 pending for the final resume of each `SEND_RESUME` call,
+/// once per call.
+fn resume_signal_hook() -> crate::task::FinalResumeSignalForTest {
+    let fired = std::sync::Arc::new(Mutex::new(std::collections::BTreeSet::<(i32, u64)>::new()));
+    std::sync::Arc::new(move |tid: Pid, regs: &libc::user_regs_struct| {
+        if regs.r9 & TP_MAGIC_MASK != TP_MAGIC || regs.r9 & SEND_RESUME == 0 {
+            return None;
+        }
+        let sequence = (regs.r9 & !TP_MAGIC_MASK) >> 16;
+        fired
+            .lock()
+            .unwrap()
+            .insert((tid.as_raw(), sequence))
+            .then_some(nix::sys::signal::Signal::SIGUSR1)
     })
 }
 
@@ -854,4 +874,43 @@ async fn trap_only_p2_patch_readback_mismatch_fails_closed() {
         .expect_err("a failed patch readback must end the run");
     let text = format!("{error:#} {error:?}");
     assert!(text.contains("TrapOnlyPatchReadback"), "{text}");
+}
+
+/// A signal left pending for the tracer's final resume of a patched stop is
+/// handled as under ptrace. After an in-place inject or an emulation the
+/// resume is from a syscall-exit stop, where the kernel sends it; after a
+/// tail inject ptrace resumes the seccomp stop, where the kernel ignores it,
+/// so the trap-only tail hop must drop it rather than pass it at its own
+/// syscall-exit stop.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_resume_signal_matches_ptrace() {
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("resume_signal").await;
+    assert_patched(&trap_only, SiteState::Live);
+    assert_patched(&trap_only_tail, SiteState::Live);
+    assert_report_has(
+        &ptrace,
+        &[
+            "getpid returned pid=1",
+            "resume_inject 0: sig=10 code=128 value=-1 rip=tp_site_end rax=<pid> ",
+            "emulated getpid returned 4242",
+            "resume_emulate 0: sig=10 code=0 value=-1 rip=tp_site_end rax=4242 ",
+            "tail getpid returned pid=1",
+        ],
+    );
+    assert!(
+        !ptrace.report.contains("resume_tail 0:"),
+        "ptrace drops a signal passed on resume from the seccomp stop:\n{}",
+        ptrace.report
+    );
+}
+
+/// Guest code that runs the private page's traced slot outside any hop fails
+/// the run closed with `TrapOnlyStraySlotStop`.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_stray_slot_stop_fails_closed() {
+    let error = run_p2_with("stray_slot", Some(SitePatching::On), false, false)
+        .await
+        .expect_err("a slot stop outside a hop must end the run");
+    let text = format!("{error:#} {error:?}");
+    assert!(text.contains("TrapOnlyStraySlotStop"), "{text}");
 }

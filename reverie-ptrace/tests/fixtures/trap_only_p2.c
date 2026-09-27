@@ -56,6 +56,8 @@
 #define SEND_SIGUSR1 0x100
 #define SEND_SIGWINCH 0x200
 #define SEND_QUEUE 0x400
+/* The tracer leaves SIGUSR1 pending for its final resume of the stop. */
+#define SEND_RESUME 0x800
 
 long tp_site_fn(long nr, long a1, long a2, long a3, long a4, long a5, long a6);
 extern char tp_site[], tp_site_end[];
@@ -557,6 +559,29 @@ static void mode_foreign_int80(void) {
       WIFEXITED(status));
 }
 
+/* A signal the tracer passes on its final resume of a patched stop. */
+static void mode_resume_signal(void) {
+  install(SIGUSR1, 0, handler);
+  warm();
+  long r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_INJECT | SEND_RESUME);
+  say("getpid returned pid=%d\n", r == getpid());
+  dump("resume_inject");
+  r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_EMULATE | SEND_RESUME);
+  say("emulated getpid returned %ld\n", r);
+  dump("resume_emulate");
+  r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_TAIL | SEND_RESUME);
+  say("tail getpid returned pid=%d\n", r == getpid());
+  dump("resume_tail");
+}
+
+/* Guest code running the private page's traced slot outside any hop. */
+static void mode_stray_slot(void) {
+  warm();
+  long ret;
+  __asm__ volatile("call *%1" : "=a"(ret) : "r"(0x71000004L), "a"(39L) : "rcx", "r11", "memory");
+  say("stray slot returned %ld\n", ret);
+}
+
 /* T8 */
 static void mode_rcx_r11(void) {
   for (int i = 0; i < 4; i++) {
@@ -615,6 +640,10 @@ int main(int argc, char **argv) {
     mode_foreign_int80();
   else if (!strcmp(m, "rcx_r11"))
     mode_rcx_r11();
+  else if (!strcmp(m, "resume_signal"))
+    mode_resume_signal();
+  else if (!strcmp(m, "stray_slot"))
+    mode_stray_slot();
   else
     return 4;
   say("done\n");

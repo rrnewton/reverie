@@ -3996,6 +3996,9 @@ pub struct TracerBuilder<T: Tool + 'static> {
 
     #[cfg(all(test, target_arch = "x86_64"))]
     clock_test_launcher_branches: u64,
+
+    #[cfg(test)]
+    final_resume_signal_for_test: Option<crate::task::FinalResumeSignalForTest>,
 }
 
 impl<T: Tool + 'static> TracerBuilder<T> {
@@ -4012,6 +4015,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             backend_stats_request: BackendStatsRequest::DISABLED,
             #[cfg(all(test, target_arch = "x86_64"))]
             clock_test_launcher_branches: 0,
+            #[cfg(test)]
+            final_resume_signal_for_test: None,
         }
     }
 
@@ -4206,6 +4211,14 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("trap-only mode must be selected before overriding its probe")
             .ia32_probe_override = Some(probe);
+        self
+    }
+
+    /// Leaves the signal `hook` picks pending for the final resume of each
+    /// seccomp stop it selects, under either backend.
+    #[cfg(test)]
+    fn final_resume_signal_for_test(mut self, hook: crate::task::FinalResumeSignalForTest) -> Self {
+        self.final_resume_signal_for_test = Some(hook);
         self
     }
 
@@ -4680,6 +4693,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 liteinst_runtime: self.liteinst_runtime,
                 liteinst_trap_only: trap_only_task,
                 backend_stats: backend_stats.clone(),
+                #[cfg(test)]
+                final_resume_signal_for_test: self.final_resume_signal_for_test,
             },
             gdbserver,
         )
@@ -4839,6 +4854,8 @@ where
                     liteinst_runtime: None,
                     liteinst_trap_only: None,
                     backend_stats: None,
+                    #[cfg(test)]
+                    final_resume_signal_for_test: None,
                 },
                 None,
             )

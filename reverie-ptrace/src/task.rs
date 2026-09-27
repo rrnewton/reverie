@@ -1715,7 +1715,18 @@ struct GlobalState<G: GlobalTool> {
 
     /// Optional collector for general ptrace lifecycle activity.
     backend_stats: Option<PtraceBackendStatsSource>,
+
+    #[cfg(test)]
+    final_resume_signal_for_test: Option<FinalResumeSignalForTest>,
 }
+
+/// Test-only: picks a signal to leave pending for the final resume of a
+/// seccomp stop, from the stopped thread and its registers. It stands in for
+/// a signal an earlier injection deferred, which no current path leaves
+/// pending while a trap-only live entry survives.
+#[cfg(test)]
+pub(crate) type FinalResumeSignalForTest =
+    Arc<dyn Fn(Pid, &libc::user_regs_struct) -> Option<Signal> + Send + Sync>;
 
 impl<G: GlobalTool> Clone for GlobalState<G> {
     fn clone(&self) -> Self {
@@ -1728,6 +1739,8 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             liteinst_runtime: self.liteinst_runtime.clone(),
             fatal_session: self.fatal_session.clone(),
             backend_stats: self.backend_stats.clone(),
+            #[cfg(test)]
+            final_resume_signal_for_test: self.final_resume_signal_for_test.clone(),
         }
     }
 }
@@ -1778,6 +1791,8 @@ pub(crate) struct TracedTaskOptions<'a> {
     /// The root task's trap-only state; `Some` only when sites are patched.
     pub(crate) liteinst_trap_only: Option<TrapOnlyTask>,
     pub(crate) backend_stats: Option<PtraceBackendStatsSource>,
+    #[cfg(test)]
+    pub(crate) final_resume_signal_for_test: Option<FinalResumeSignalForTest>,
 }
 
 /// Our runtime representation of what Reverie knows about a guest thread. Its
@@ -1992,6 +2007,8 @@ impl<L: Tool> TracedTask<L> {
             liteinst_runtime: options.liteinst_runtime,
             fatal_session,
             backend_stats: options.backend_stats,
+            #[cfg(test)]
+            final_resume_signal_for_test: options.final_resume_signal_for_test,
         };
         let thread_state = process_state.init_thread_state(tid, None);
         let (next_state, next_state_rx) = mpsc::channel(1);
@@ -5150,6 +5167,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 && let Err(error) = self.trap_only_maybe_patch(site, nr)
             {
                 return Err(self.trap_only_error(tid, error, "trap-only site patch"));
+            }
+            #[cfg(test)]
+            if let Some(hook) = self.global_state.final_resume_signal_for_test.clone() {
+                let regs = task
+                    .getregs()
+                    .tracee_context(tid, "read registers for a test resume signal")?;
+                if let Some(sig) = hook(self.tid, &regs) {
+                    self.pending_signal = Some(sig);
+                }
             }
             let sig = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeAfterSeccompStop,
