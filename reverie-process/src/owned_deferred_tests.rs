@@ -18,7 +18,7 @@ mod owned_deferred_tests {
     // this does not establish universal fork safety for arbitrary harnesses.
     fn isolated(test: fn(Instant)) {
         let deadline = Instant::now() + Duration::from_secs(3);
-        let mut stack = child_stack();
+        let mut stack = child_stack().unwrap();
         let child = super::super::super::clone::clone_with_stack_owned(
             || {
                 assert_eq!(std::fs::read_dir("/proc/self/task").unwrap().count(), 1);
