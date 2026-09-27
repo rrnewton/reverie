@@ -2628,9 +2628,9 @@ async fn host_hybrid_restart_nested_inside_the_handler_resolves_both() {
     }
 }
 
-/// The shell pattern that regressed seven compatibility cells: a real child
-/// exits, and its SIGCHLD reaches an `SA_RESTART` handler that reaps it while
-/// a Tool-restarted syscall is in progress. The syscall must restart.
+/// The shell pattern (bash reaps children from an `SA_RESTART` SIGCHLD
+/// handler): a real child exits, and its SIGCHLD reaches that handler while a
+/// Tool-restarted syscall is in progress. The syscall must restart.
 #[tokio::test(flavor = "current_thread")]
 async fn host_hybrid_restart_with_an_sa_restart_sigchld_handler_restarts() {
     let plan = RestartPlan {
