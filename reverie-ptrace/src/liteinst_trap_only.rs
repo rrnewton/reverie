@@ -20,16 +20,20 @@
 //! syscall entry, so a trap-only launch probes for it and fails closed when it
 //! is missing. There is no fallback to plain ptrace under the LiteInst label.
 //!
-//! In this increment the only public patching state is [`SitePatching::Off`]:
-//! no guest byte is ever written, and a trap-only run is observably the
-//! ordinary ptrace run. The seccomp filter is byte-identical to plain
-//! ptrace's; it still kills any non-x86_64 syscall.
+//! The only public patching state is [`SitePatching::Off`]: no guest byte is
+//! ever written, and a trap-only run is observably the ordinary ptrace run.
+//! The seccomp filter is byte-identical to plain ptrace's; it still kills any
+//! non-x86_64 syscall.
 //!
-//! A test-only `SitePatching::On` selects the filter that patching will need:
-//! `AUDIT_ARCH_I386` syscalls stop with [`TAG_I386`] instead of killing the
-//! process, and an x86_64 syscall from the page's traced `syscall` stub
-//! ([`SLOT`]) stops with [`TAG_SLOT`]. Nothing handles those stops yet, so a
-//! launch with `On` is refused.
+//! A test-only `SitePatching::On` rewrites sites. Its filter stops
+//! `AUDIT_ARCH_I386` syscalls with [`TAG_I386`] instead of killing the process,
+//! and stops an x86_64 syscall from the page's traced `syscall` stub ([`SLOT`])
+//! with [`TAG_SLOT`]. The tracer runs a patched site's syscall through that
+//! stub with every signal blocked (the "masked hop", in `task.rs`), and shows
+//! the tool and the guest the registers the original `syscall` would have
+//! produced. The site-table lifecycle rules for mapping changes, guest seccomp
+//! filters and syscall user dispatch, and the timer rules, are not implemented
+//! yet, which is why `On` stays test-only.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -45,9 +49,9 @@ pub enum SitePatching {
     /// Never write a guest byte. Every syscall takes the ordinary ptrace
     /// seccomp path, so the run is the ptrace run.
     Off,
-    /// Rewrite first-seen syscall sites (test-only). In this increment it
-    /// selects only the trap-only seccomp filter, and a launch with it is
-    /// refused.
+    /// Rewrite first-seen syscall sites to `int 0x80` and run each patched
+    /// site's syscall through the traced slot. Test-only until the patched
+    /// path is released.
     #[cfg(test)]
     On,
 }
@@ -92,27 +96,44 @@ pub(crate) const SLOT: u64 = crate::cp::PRIVATE_PAGE_OFFSET as u64 + 4;
 /// address after its two-byte `syscall`.
 pub(crate) const SLOT_RET: u64 = SLOT + 2;
 
-/// A trap-only launch with a patching state whose stops this increment cannot
-/// handle yet.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error(
-    "LiteInst trap-only launch refused: site patching {patching} is not supported yet (nothing \
-     handles the IA-32 and slot seccomp stops it would produce)"
-)]
-pub struct SitePatchingUnsupported {
-    /// The refused patching state.
-    pub patching: SitePatching,
+/// Why a site's patch was undone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RetiredReason {
+    /// A second task began executing the address space; the tracer never
+    /// writes text another thread may be executing.
+    MultiTask,
 }
 
-/// Admits only patching states whose stops the tracer handles.
-pub(crate) fn require_supported_patching(
-    patching: SitePatching,
-) -> Result<(), SitePatchingUnsupported> {
-    if patching.rewrites_sites() {
-        Err(SitePatchingUnsupported { patching })
-    } else {
-        Ok(())
-    }
+/// Whether a site's bytes are currently patched.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SiteState {
+    /// The site holds `int 0x80`.
+    Live,
+    /// The original bytes were restored and read back.
+    Retired(RetiredReason),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SiteEntry {
+    original: [u8; 2],
+    state: SiteState,
+}
+
+/// Why an address space no longer patches sites.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DisabledReason {
+    /// The address space gained a second executing task.
+    MultiTask,
+    /// The tool does not subscribe to every syscall, so a patched site could
+    /// carry an allowed number that must not become a tool-visible stop.
+    PartialSubscription,
+}
+
+/// Whether an address space may gain new patched sites.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TableState {
+    Patchable,
+    Disabled(DisabledReason),
 }
 
 /// Patched syscall sites of one guest address space.
@@ -124,7 +145,8 @@ pub(crate) fn require_supported_patching(
 #[derive(Clone, Debug)]
 pub struct SiteTable {
     patching: SitePatching,
-    sites: BTreeMap<u64, [u8; 2]>,
+    state: TableState,
+    sites: BTreeMap<u64, SiteEntry>,
 }
 
 impl SiteTable {
@@ -132,6 +154,7 @@ impl SiteTable {
     pub fn new(patching: SitePatching) -> Self {
         Self {
             patching,
+            state: TableState::Patchable,
             sites: BTreeMap::new(),
         }
     }
@@ -143,7 +166,306 @@ impl SiteTable {
 
     /// Returns the number of sites whose bytes are currently patched.
     pub fn patched_sites(&self) -> usize {
-        self.sites.len()
+        self.sites
+            .values()
+            .filter(|entry| entry.state == SiteState::Live)
+            .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> TableState {
+        self.state
+    }
+
+    pub(crate) fn disable(&mut self, reason: DisabledReason) {
+        self.state = TableState::Disabled(reason);
+    }
+
+    /// Whether new sites may be patched in this address space.
+    pub(crate) fn accepts_new_sites(&self) -> bool {
+        self.patching.rewrites_sites() && self.state == TableState::Patchable
+    }
+
+    pub(crate) fn is_live(&self, site: u64) -> bool {
+        self.sites
+            .get(&site)
+            .is_some_and(|entry| entry.state == SiteState::Live)
+    }
+
+    /// Whether the site was ever patched (live or retired).
+    pub(crate) fn knows(&self, site: u64) -> bool {
+        self.sites.contains_key(&site)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn site_state(&self, site: u64) -> Option<SiteState> {
+        self.sites.get(&site).map(|entry| entry.state)
+    }
+
+    /// Live sites with their original bytes, in address order.
+    pub(crate) fn live_sites(&self) -> Vec<(u64, [u8; 2])> {
+        self.sites
+            .iter()
+            .filter(|(_, entry)| entry.state == SiteState::Live)
+            .map(|(site, entry)| (*site, entry.original))
+            .collect()
+    }
+
+    pub(crate) fn record_live(&mut self, site: u64, original: [u8; 2]) {
+        self.sites.insert(
+            site,
+            SiteEntry {
+                original,
+                state: SiteState::Live,
+            },
+        );
+    }
+
+    pub(crate) fn retire(&mut self, site: u64, reason: RetiredReason) {
+        if let Some(entry) = self.sites.get_mut(&site) {
+            entry.state = SiteState::Retired(reason);
+        }
+    }
+}
+
+/// The bytes of a patched site: `int 0x80`.
+pub(crate) const PATCHED_BYTES: [u8; 2] = [0xcd, 0x80];
+
+/// The bytes of an x86_64 `syscall` instruction.
+pub(crate) const SYSCALL_BYTES: [u8; 2] = [0x0f, 0x05];
+
+/// A trap-only run failed closed.
+///
+/// Each variant names a state the tracer refuses to continue from rather
+/// than guess. The text starts with the variant name.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum TrapOnlyFailure {
+    /// Writing a site's bytes did not stick: reading them back found other
+    /// bytes.
+    #[error("TrapOnlyPatchReadback: site {site:#x} reads {found:02x?} after writing {wrote:02x?}")]
+    PatchReadback {
+        /// The site address.
+        site: u64,
+        /// The bytes written.
+        wrote: [u8; 2],
+        /// The bytes read back.
+        found: [u8; 2],
+    },
+    /// An `AUDIT_ARCH_I386` syscall stop that is not a live patched site
+    /// (guest code that really uses the IA-32 ABI) could not be turned into
+    /// the kill that plain ptrace's filter produces.
+    #[error("TrapOnlyForeignI386: int 0x80 at {rip:#x}: {reason}")]
+    ForeignI386 {
+        /// The instruction pointer after the `int 0x80`.
+        rip: u64,
+        /// What failed.
+        reason: String,
+    },
+    /// A stop during the masked hop that the hop does not handle.
+    #[error("TrapOnlyHopUnexpectedStop: {phase} for site {site:#x}: {stop}")]
+    HopUnexpectedStop {
+        /// Which hop step was waiting.
+        phase: &'static str,
+        /// The patched site.
+        site: u64,
+        /// The stop that arrived.
+        stop: String,
+    },
+    /// A stop from the private page's traced `syscall` stub outside a hop.
+    #[error(
+        "TrapOnlyStraySlotStop: slot seccomp stop at {rip:#x} (orig_rax {orig_rax}) outside a hop"
+    )]
+    StraySlotStop {
+        /// The reported instruction pointer.
+        rip: u64,
+        /// The reported syscall number.
+        orig_rax: i64,
+    },
+    /// A patched site carried a number the tool does not subscribe to (or
+    /// `rt_sigreturn`). Running it invisibly is not implemented yet.
+    #[error("TrapOnlyAllowClassUnsupported: site {site:#x} carried unsubscribed syscall {nr}")]
+    AllowClassUnsupported {
+        /// The patched site.
+        site: u64,
+        /// The syscall number.
+        nr: i64,
+    },
+}
+
+/// Why a site was not patched at its first stop. Not an error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PatchDecline {
+    /// The site is not in a private, executable, non-writable mapping.
+    Mapping(String),
+}
+
+/// Whether `site` lies in Reverie's private page or the legacy vsyscall page.
+pub(crate) fn is_reserved_site(site: u64) -> bool {
+    const VSYSCALL_START: u64 = 0xffff_ffff_ff60_0000;
+    let page = crate::cp::PRIVATE_PAGE_OFFSET as u64;
+    (page..page + crate::cp::PRIVATE_PAGE_SIZE as u64).contains(&site)
+        || (VSYSCALL_START..VSYSCALL_START + 0x1000).contains(&site)
+}
+
+fn proc_mem(tid: nix::unistd::Pid, write: bool) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(write)
+        .open(format!("/proc/{tid}/mem"))
+}
+
+/// Reads the two bytes at `site` in a stopped tracee.
+pub(crate) fn read_site(tid: nix::unistd::Pid, site: u64) -> std::io::Result<[u8; 2]> {
+    use std::os::unix::fs::FileExt;
+    let mut bytes = [0u8; 2];
+    proc_mem(tid, false)?.read_exact_at(&mut bytes, site)?;
+    Ok(bytes)
+}
+
+/// Writes two bytes at `site` in a stopped tracee through `/proc/<tid>/mem`
+/// (a FOLL_FORCE write, so a read-only text page is written through a private
+/// copy), then reads them back.
+///
+/// Returns the bytes read back. `skip_write` (tests only) leaves the page
+/// untouched so that the readback check can be shown to fire.
+pub(crate) fn write_site(
+    tid: nix::unistd::Pid,
+    site: u64,
+    bytes: [u8; 2],
+    skip_write: bool,
+) -> Result<(), anyhow::Error> {
+    use std::os::unix::fs::FileExt;
+    let mem = proc_mem(tid, true)?;
+    if !skip_write {
+        mem.write_all_at(&bytes, site)?;
+    }
+    let mut found = [0u8; 2];
+    mem.read_exact_at(&mut found, site)?;
+    if found != bytes {
+        return Err(anyhow::Error::new(TrapOnlyFailure::PatchReadback {
+            site,
+            wrote: bytes,
+            found,
+        }));
+    }
+    Ok(())
+}
+
+/// Checks that `site` is inside a mapping that is private, executable and not
+/// writable (`r-xp`) in `/proc/<tid>/maps`.
+pub(crate) fn site_mapping_is_patchable(
+    tid: nix::unistd::Pid,
+    site: u64,
+) -> Result<Result<(), PatchDecline>, std::io::Error> {
+    let maps = std::fs::read_to_string(format!("/proc/{tid}/maps"))?;
+    for line in maps.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(range), Some(perms)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let Some((start, end)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16))
+        else {
+            continue;
+        };
+        // The two bytes must both lie in the mapping.
+        if start <= site && site + 2 <= end {
+            return Ok(if perms == "r-xp" {
+                Ok(())
+            } else {
+                Err(PatchDecline::Mapping(line.to_owned()))
+            });
+        }
+    }
+    Ok(Err(PatchDecline::Mapping(format!(
+        "no single mapping holds {site:#x}..{:#x}",
+        site + 2
+    ))))
+}
+
+/// Test-only controls for a trap-only run.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct TrapOnlyTestHooks {
+    /// Skip every patch write, so the readback finds the original bytes.
+    pub(crate) skip_patch_write: std::sync::atomic::AtomicBool,
+}
+
+/// Configuration shared by every task of a trap-only run.
+#[derive(Debug)]
+pub(crate) struct TrapOnlyShared {
+    /// The tool subscribes to every syscall except `rt_sigreturn`, which the
+    /// filter always allows. Patching needs it: a patched site must never
+    /// carry a number that plain ptrace would run without a stop.
+    pub(crate) full_subscription: bool,
+    #[cfg(test)]
+    pub(crate) hooks: Arc<TrapOnlyTestHooks>,
+}
+
+/// Trap-only state of one traced task.
+#[derive(Debug)]
+pub(crate) struct TrapOnlyTask {
+    /// The site table of this task's address space.
+    pub(crate) sites: Arc<Mutex<SiteTable>>,
+    pub(crate) shared: Arc<TrapOnlyShared>,
+    /// The normalized registers of the patched-site stop this task is parked
+    /// at, until its syscall has been consumed (by the hop, by a skip, or by a
+    /// failure). While it is set the task must not be resumed from that stop
+    /// with its syscall number intact.
+    pub(crate) live_entry: Option<libc::user_regs_struct>,
+    /// Registers to restore into both tasks of a new-child stop that a hop
+    /// returned to the run loop.
+    pub(crate) new_child_view: Option<libc::user_regs_struct>,
+    /// Set while the masked hop runs; the hop must never single-step.
+    pub(crate) in_hop: bool,
+}
+
+impl TrapOnlyTask {
+    pub(crate) fn root(sites: Arc<Mutex<SiteTable>>, shared: Arc<TrapOnlyShared>) -> Self {
+        Self {
+            sites,
+            shared,
+            live_entry: None,
+            new_child_view: None,
+            in_hop: false,
+        }
+    }
+
+    /// State for a new task: shares the table when it shares the address
+    /// space, and otherwise copies it (the patched bytes are already in the
+    /// child's copy of the text).
+    pub(crate) fn child(&self, shares_address_space: bool) -> Self {
+        let sites = if shares_address_space {
+            Arc::clone(&self.sites)
+        } else {
+            Arc::new(Mutex::new(self.lock().clone()))
+        };
+        Self::root(sites, Arc::clone(&self.shared))
+    }
+
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, SiteTable> {
+        self.sites
+            .lock()
+            .expect("LiteInst trap-only site table lock poisoned")
+    }
+
+    /// Restores every live site of the address space (reading each back)
+    /// and disables further patching.
+    pub(crate) fn retire_all(
+        &self,
+        tid: nix::unistd::Pid,
+        site_reason: RetiredReason,
+        table_reason: DisabledReason,
+    ) -> Result<(), anyhow::Error> {
+        let mut table = self.lock();
+        table.disable(table_reason);
+        for (site, original) in table.live_sites() {
+            write_site(tid, site, original, false)?;
+            table.retire(site, site_reason);
+        }
+        Ok(())
     }
 }
 
@@ -154,6 +476,8 @@ pub(crate) struct LiteinstTrapOnlyConfig {
     pub(crate) instrumentation_stats: Option<Arc<Mutex<LiteinstInstrumentationStats>>>,
     #[cfg(test)]
     pub(crate) ia32_probe_override: Option<Ia32EmulationProbe>,
+    #[cfg(test)]
+    pub(crate) hooks: Arc<TrapOnlyTestHooks>,
 }
 
 impl LiteinstTrapOnlyConfig {
@@ -164,7 +488,29 @@ impl LiteinstTrapOnlyConfig {
                 .then(|| Arc::new(Mutex::new(LiteinstInstrumentationStats::default()))),
             #[cfg(test)]
             ia32_probe_override: None,
+            #[cfg(test)]
+            hooks: Arc::default(),
         }
+    }
+
+    /// The root task's trap-only state for a run whose tool subscribes to
+    /// `events`.
+    pub(crate) fn root_task(&self, events: &reverie::Subscription) -> TrapOnlyTask {
+        let full_subscription = has_full_subscription(events);
+        if !full_subscription {
+            self.root_sites
+                .lock()
+                .expect("LiteInst trap-only site table lock poisoned")
+                .disable(DisabledReason::PartialSubscription);
+        }
+        TrapOnlyTask::root(
+            Arc::clone(&self.root_sites),
+            Arc::new(TrapOnlyShared {
+                full_subscription,
+                #[cfg(test)]
+                hooks: Arc::clone(&self.hooks),
+            }),
+        )
     }
 
     /// Returns the patching state of the root address space.
@@ -183,6 +529,17 @@ impl LiteinstTrapOnlyConfig {
         }
         probe_ia32_emulation()
     }
+}
+
+/// Whether `events` subscribes to every syscall except `rt_sigreturn` (which
+/// the filter always allows).
+pub(crate) fn has_full_subscription(events: &reverie::Subscription) -> bool {
+    let subscribed = events
+        .iter_syscalls()
+        .collect::<std::collections::BTreeSet<_>>();
+    reverie::syscalls::Sysno::iter()
+        .filter(|nr| *nr != reverie::syscalls::Sysno::rt_sigreturn)
+        .all(|nr| subscribed.contains(&nr))
 }
 
 /// Observer for the trap-only state of a running tracer.
@@ -206,6 +563,19 @@ impl LiteinstTrapOnlyHandle {
     /// Returns the number of sites currently patched in the root address space.
     pub fn patched_sites(&self) -> usize {
         self.lock().patched_sites()
+    }
+
+    /// Returns whether the root address space still accepts new sites, and
+    /// if not, why.
+    #[cfg(test)]
+    pub(crate) fn table_state(&self) -> TableState {
+        self.lock().state()
+    }
+
+    /// Returns the state of one site of the root address space.
+    #[cfg(test)]
+    pub(crate) fn site_state(&self, site: u64) -> Option<SiteState> {
+        self.lock().site_state(site)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, SiteTable> {
