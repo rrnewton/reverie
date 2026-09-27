@@ -3573,7 +3573,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 });
                 // The int3 stop already ticked the timer's event status; this
                 // signal stop is its continuation, as if the signal had been
-                // reported there (DSR F4).
+                // reported there, so it must not tick the timer again.
                 self.skip_next_timer_observe = true;
                 Ok(Wait::Stopped(stopped, Event::Signal(sig)))
             }
