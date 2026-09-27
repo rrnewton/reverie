@@ -20,10 +20,16 @@
 //! syscall entry, so a trap-only launch probes for it and fails closed when it
 //! is missing. There is no fallback to plain ptrace under the LiteInst label.
 //!
-//! In this increment the only patching state is [`SitePatching::Off`]: no
-//! guest byte is ever written, and a trap-only run is observably the ordinary
-//! ptrace run. The seccomp filter is unchanged; it still kills any
-//! non-x86_64 syscall.
+//! In this increment the only public patching state is [`SitePatching::Off`]:
+//! no guest byte is ever written, and a trap-only run is observably the
+//! ordinary ptrace run. The seccomp filter is byte-identical to plain
+//! ptrace's; it still kills any non-x86_64 syscall.
+//!
+//! A test-only `SitePatching::On` selects the filter that patching will need:
+//! `AUDIT_ARCH_I386` syscalls stop with [`TAG_I386`] instead of killing the
+//! process, and an x86_64 syscall from the page's traced `syscall` stub
+//! ([`SLOT`]) stops with [`TAG_SLOT`]. Nothing handles those stops yet, so a
+//! launch with `On` is refused.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -39,13 +45,73 @@ pub enum SitePatching {
     /// Never write a guest byte. Every syscall takes the ordinary ptrace
     /// seccomp path, so the run is the ptrace run.
     Off,
+    /// Rewrite first-seen syscall sites (test-only). In this increment it
+    /// selects only the trap-only seccomp filter, and a launch with it is
+    /// refused.
+    #[cfg(test)]
+    On,
+}
+
+impl SitePatching {
+    /// Whether this state rewrites guest syscall sites, and so needs the
+    /// trap-only seccomp filter.
+    pub(crate) fn rewrites_sites(self) -> bool {
+        match self {
+            Self::Off => false,
+            #[cfg(test)]
+            Self::On => true,
+        }
+    }
 }
 
 impl fmt::Display for SitePatching {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Off => formatter.write_str("off"),
+            #[cfg(test)]
+            Self::On => formatter.write_str("on"),
         }
+    }
+}
+
+/// Seccomp `Trace` data of an `AUDIT_ARCH_I386` syscall stop, which a patched
+/// site (`int 0x80`) produces. Plain ptrace kills the process instead.
+pub(crate) const TAG_I386: u16 = 0x7101;
+
+/// Seccomp `Trace` data of an x86_64 syscall stop whose instruction pointer is
+/// [`SLOT_RET`], whatever the syscall number (including numbers the tool does
+/// not subscribe to and `rt_sigreturn`).
+pub(crate) const TAG_SLOT: u16 = 0x7102;
+
+/// The traced `syscall; ud2` stub of the private page (`cp::mmap`), through
+/// which the tracer will run a patched site's syscall. Plain ptrace never
+/// executes it.
+pub(crate) const SLOT: u64 = crate::cp::PRIVATE_PAGE_OFFSET as u64 + 4;
+
+/// The instruction pointer seccomp reports for [`SLOT`]'s syscall: the
+/// address after its two-byte `syscall`.
+pub(crate) const SLOT_RET: u64 = SLOT + 2;
+
+/// A trap-only launch with a patching state whose stops this increment cannot
+/// handle yet.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error(
+    "LiteInst trap-only launch refused: site patching {patching} is not supported yet (nothing \
+     handles the IA-32 and slot seccomp stops it would produce)"
+)]
+pub struct SitePatchingUnsupported {
+    /// The refused patching state.
+    pub patching: SitePatching,
+}
+
+/// Admits only patching states whose stops the tracer handles.
+pub(crate) fn require_supported_patching(
+    patching: SitePatching,
+) -> Result<(), SitePatchingUnsupported> {
+    if patching.rewrites_sites() {
+        Err(SitePatchingUnsupported { patching })
+    } else {
+        Ok(())
     }
 }
 
@@ -99,6 +165,14 @@ impl LiteinstTrapOnlyConfig {
             #[cfg(test)]
             ia32_probe_override: None,
         }
+    }
+
+    /// Returns the patching state of the root address space.
+    pub(crate) fn patching(&self) -> SitePatching {
+        self.root_sites
+            .lock()
+            .expect("LiteInst trap-only site table lock poisoned")
+            .patching()
     }
 
     /// Returns the IA-32 syscall-entry probe result for this launch.
@@ -279,10 +353,10 @@ fn probe_ia32_emulation_unfiltered() -> (Ia32EmulationProbe, bool) {
     // SAFETY: `int80_getpid` executes only `int 0x80`, which the guard
     // expects.
     match unsafe { guarded_fault::run(int80_getpid) } {
-        Ok((fault, result)) => {
+        Ok((fault, outcome)) => {
             let expected = unsafe { libc::syscall(libc::SYS_getpid) } as u64;
             (
-                classify_probe_outcome(fault, result, expected, &boot_parameter_note()),
+                classify_probe_outcome(fault, outcome, expected, &boot_parameter_note()),
                 true,
             )
         }
@@ -307,15 +381,23 @@ fn signal_name(signal: libc::c_int) -> &'static str {
 #[cfg(target_arch = "x86_64")]
 fn classify_probe_outcome(
     fault: Option<libc::c_int>,
-    result: u64,
+    outcome: Int80Getpid,
     expected: u64,
     boot_note: &str,
 ) -> Ia32EmulationProbe {
+    let result = outcome.rax;
     match fault {
-        None if result == expected => Ia32EmulationProbe::Available,
-        None => Ia32EmulationProbe::Unavailable(format!(
+        None if result != expected => Ia32EmulationProbe::Unavailable(format!(
             "int 0x80 getpid returned {result:#x}, not the caller's PID {expected}{boot_note}"
         )),
+        None => match outcome.first_clobbered() {
+            None => Ia32EmulationProbe::Available,
+            Some((name, sentinel, found)) => Ia32EmulationProbe::Unavailable(format!(
+                "int 0x80 getpid changed {name} from {sentinel:#x} to {found:#x}; trap-only \
+                 patching needs an IA-32 entry that preserves rcx, r8, r9, r10 and r11 (the \
+                 int80_emulation entry of Linux 6.7 and later){boot_note}"
+            )),
+        },
         Some(signal) => Ia32EmulationProbe::Unavailable(format!(
             "int 0x80 getpid raised {} ({signal}){boot_note}",
             signal_name(signal)
@@ -323,26 +405,102 @@ fn classify_probe_outcome(
     }
 }
 
-/// The production probe: IA-32 `getpid` (number 20) through `int 0x80`.
+/// Names of the registers the probe requires `int 0x80` to preserve, in the
+/// order of [`Int80Getpid::preserved`].
+///
+/// Trap-only patching turns a guest `syscall` into `int 0x80`. The guest then
+/// continues with whatever the IA-32 entry left in these registers, so the
+/// tracer can present the `syscall`-shaped values (rcx = next rip,
+/// r11 = rflags) only if the entry itself changes none of them. Linux 6.7 and
+/// later enter through `int80_emulation` and preserve every general-purpose
+/// register; older entries clobber r8-r11, so the probe fails closed there.
 #[cfg(target_arch = "x86_64")]
-unsafe fn int80_getpid() -> u64 {
+const PRESERVED_REGISTERS: [&str; 5] = ["rcx", "r8", "r9", "r10", "r11"];
+
+/// Distinct values loaded into [`PRESERVED_REGISTERS`] before the probe's
+/// `int 0x80`.
+#[cfg(target_arch = "x86_64")]
+const PRESERVED_SENTINELS: [u64; 5] = [
+    0x5e17_1ce0_0000_0c0c,
+    0x5e17_1ce0_0000_0008,
+    0x5e17_1ce0_0000_0009,
+    0x5e17_1ce0_0000_0010,
+    0x5e17_1ce0_0000_0011,
+];
+
+/// What the probe's `int 0x80` getpid left behind.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Int80Getpid {
+    /// The syscall result (`u64::MAX` if the instruction faulted).
+    rax: u64,
+    /// rcx, r8, r9, r10 and r11 after the instruction; each held its
+    /// [`PRESERVED_SENTINELS`] value before it.
+    preserved: [u64; 5],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Int80Getpid {
+    /// The first preserved register the instruction changed, as its name,
+    /// sentinel and the value found.
+    fn first_clobbered(&self) -> Option<(&'static str, u64, u64)> {
+        (0..PRESERVED_REGISTERS.len())
+            .find(|&index| self.preserved[index] != PRESERVED_SENTINELS[index])
+            .map(|index| {
+                (
+                    PRESERVED_REGISTERS[index],
+                    PRESERVED_SENTINELS[index],
+                    self.preserved[index],
+                )
+            })
+    }
+
+    const SIZE: usize = 8 * 6;
+
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[..8].copy_from_slice(&self.rax.to_ne_bytes());
+        for (index, value) in self.preserved.iter().enumerate() {
+            bytes[8 * (index + 1)..8 * (index + 2)].copy_from_slice(&value.to_ne_bytes());
+        }
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {
+        let word = |index: usize| {
+            u64::from_ne_bytes(bytes[8 * index..8 * (index + 1)].try_into().unwrap())
+        };
+        Self {
+            rax: word(0),
+            preserved: [word(1), word(2), word(3), word(4), word(5)],
+        }
+    }
+}
+
+/// The production probe: IA-32 `getpid` (number 20) through `int 0x80`, with
+/// [`PRESERVED_SENTINELS`] in rcx and r8-r11 across the instruction.
+#[cfg(target_arch = "x86_64")]
+unsafe fn int80_getpid() -> Int80Getpid {
     const IA32_NR_GETPID: u64 = 20;
-    let result: u64;
+    let rax: u64;
+    let mut preserved = PRESERVED_SENTINELS;
     // SAFETY: `int 0x80` either runs the IA-32 getpid, which touches no
     // memory, or faults. In process the fault reaches `guarded_fault`, which
-    // steps over it; in the probe child it terminates the child.
+    // steps over it; in the probe child it terminates the child. Every
+    // register the entry might change is an operand.
     unsafe {
         core::arch::asm!(
             "int 0x80",
-            inlateout("rax") IA32_NR_GETPID => result,
-            lateout("r8") _,
-            lateout("r9") _,
-            lateout("r10") _,
-            lateout("r11") _,
+            inlateout("rax") IA32_NR_GETPID => rax,
+            inlateout("rcx") preserved[0],
+            inlateout("r8") preserved[1],
+            inlateout("r9") preserved[2],
+            inlateout("r10") preserved[3],
+            inlateout("r11") preserved[4],
             options(nostack),
         );
     }
-    result
+    Int80Getpid { rax, preserved }
 }
 
 /// Probes `int 0x80` in a child whose PID is chosen, for a calling thread
@@ -368,6 +526,7 @@ mod probe_in_child {
     use std::os::fd::OwnedFd;
 
     use super::Ia32EmulationProbe;
+    use super::Int80Getpid;
     use super::classify_probe_outcome;
     use super::signal_name;
 
@@ -456,7 +615,8 @@ mod probe_in_child {
         };
         drop(writer);
 
-        let mut bytes = [0u8; 16];
+        // The child's `Int80Getpid`, then its own PID from an ordinary getpid.
+        let mut bytes = [0u8; Int80Getpid::SIZE + 8];
         let mut filled = 0;
         while filled < bytes.len() {
             // SAFETY: reads into the unfilled tail of `bytes`.
@@ -495,9 +655,9 @@ mod probe_in_child {
             ));
         }
         if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 && filled == bytes.len() {
-            let result = u64::from_ne_bytes(bytes[..8].try_into().unwrap());
-            let expected = u64::from_ne_bytes(bytes[8..].try_into().unwrap());
-            return match classify_probe_outcome(None, result, expected, boot_note) {
+            let outcome = Int80Getpid::from_bytes(bytes[..Int80Getpid::SIZE].try_into().unwrap());
+            let expected = u64::from_ne_bytes(bytes[Int80Getpid::SIZE..].try_into().unwrap());
+            return match classify_probe_outcome(None, outcome, expected, boot_note) {
                 Ia32EmulationProbe::Available => Ia32EmulationProbe::Available,
                 Ia32EmulationProbe::Unavailable(text) => {
                     Ia32EmulationProbe::Unavailable(format!("{text}; {filter}"))
@@ -505,8 +665,9 @@ mod probe_in_child {
             };
         }
         refuse(format!(
-            "the probe child ended with wait status {status:#x} after sending {filled} of 16 \
-             result bytes"
+            "the probe child ended with wait status {status:#x} after sending {filled} of {} \
+             result bytes",
+            bytes.len()
         ))
     }
 
@@ -524,11 +685,11 @@ mod probe_in_child {
             }
             libc::pthread_sigmask(libc::SIG_UNBLOCK, &unblock, std::ptr::null_mut());
             libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
-            let result = super::int80_getpid();
+            let outcome = super::int80_getpid();
             let expected = libc::syscall(libc::SYS_getpid) as u64;
-            let mut bytes = [0u8; 16];
-            bytes[..8].copy_from_slice(&result.to_ne_bytes());
-            bytes[8..].copy_from_slice(&expected.to_ne_bytes());
+            let mut bytes = [0u8; Int80Getpid::SIZE + 8];
+            bytes[..Int80Getpid::SIZE].copy_from_slice(&outcome.to_bytes());
+            bytes[Int80Getpid::SIZE..].copy_from_slice(&expected.to_ne_bytes());
             libc::write(writer, bytes.as_ptr().cast(), bytes.len());
             libc::_exit(0)
         }
@@ -569,15 +730,16 @@ mod guarded_fault {
     static PREVIOUS: Previous = Previous(UnsafeCell::new(unsafe { std::mem::zeroed() }));
 
     /// Runs `instruction`, which must execute exactly one two-byte `int imm8`
-    /// whose result is `rax`, with `SIGSEGV` and `SIGBUS` caught on this
-    /// thread. Returns the signal that interrupted it, if any, and `rax`.
+    /// and report `rax` in its result, with `SIGSEGV` and `SIGBUS` caught on
+    /// this thread. Returns the signal that interrupted it, if any, and the
+    /// instruction's result (whose `rax` is `u64::MAX` after a fault).
     ///
     /// A fault on any other thread in the meantime is passed to the
     /// disposition that was installed before, so this never swallows a real
     /// crash elsewhere in the process.
-    pub(super) unsafe fn run(
-        instruction: unsafe fn() -> u64,
-    ) -> Result<(Option<libc::c_int>, u64), String> {
+    pub(super) unsafe fn run<T>(
+        instruction: unsafe fn() -> T,
+    ) -> Result<(Option<libc::c_int>, T), String> {
         let _serial = RUN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -603,7 +765,7 @@ mod guarded_fault {
             installed += 1;
         }
 
-        let mut outcome = Err(String::new());
+        let mut outcome: Result<(Option<libc::c_int>, T), String> = Err(String::new());
         if failure.is_none() {
             // A blocked synchronous fault would kill the process instead of
             // reaching the handler.
@@ -778,16 +940,25 @@ mod tests {
         );
     }
 
+    /// An `int 0x80` outcome that preserved every sentinel.
+    #[cfg(target_arch = "x86_64")]
+    fn preserving(rax: u64) -> Int80Getpid {
+        Int80Getpid {
+            rax,
+            preserved: PRESERVED_SENTINELS,
+        }
+    }
+
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn probe_outcome_classification_names_the_fault() {
         assert_eq!(
-            classify_probe_outcome(None, 42, 42, ""),
+            classify_probe_outcome(None, preserving(42), 42, ""),
             Ia32EmulationProbe::Available
         );
         let Ia32EmulationProbe::Unavailable(text) = classify_probe_outcome(
             Some(libc::SIGSEGV),
-            u64::MAX,
+            preserving(u64::MAX),
             42,
             "; kernel command line has ia32_emulation=0",
         ) else {
@@ -798,16 +969,90 @@ mod tests {
             "{text}"
         );
         assert!(matches!(
-            classify_probe_outcome(Some(libc::SIGSYS), u64::MAX, 42, ""),
+            classify_probe_outcome(Some(libc::SIGSYS), preserving(u64::MAX), 42, ""),
             Ia32EmulationProbe::Unavailable(text) if text.contains("SIGSYS")
         ));
         // A serviced entry that answers wrongly (for example -ENOSYS) is not
         // usable either.
         assert!(matches!(
-            classify_probe_outcome(None, -38i64 as u64, 42, ""),
+            classify_probe_outcome(None, preserving(-38i64 as u64), 42, ""),
             Ia32EmulationProbe::Unavailable(text)
                 if text.contains("0xffffffffffffffda") && text.contains("PID 42")
         ));
+    }
+
+    /// A correct getpid whose entry changed any of rcx, r8, r9, r10 or r11
+    /// (as IA-32 entries before Linux 6.7 do for r8-r11) fails closed, naming
+    /// the register, its sentinel and the value found.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn probe_outcome_fails_closed_when_int80_clobbers_a_preserved_register() {
+        for (index, name) in PRESERVED_REGISTERS.into_iter().enumerate() {
+            let mut outcome = preserving(42);
+            outcome.preserved[index] = 0;
+            let Ia32EmulationProbe::Unavailable(text) =
+                classify_probe_outcome(None, outcome, 42, "; kernel command line has x")
+            else {
+                panic!("a clobbered {name} must classify as unavailable");
+            };
+            let sentinel = format!("{:#x}", PRESERVED_SENTINELS[index]);
+            assert!(
+                text.contains(&format!("changed {name} from {sentinel} to 0x0"))
+                    && text.contains("rcx, r8, r9, r10 and r11")
+                    && text.contains("kernel command line has x"),
+                "{text}"
+            );
+        }
+        // The first changed register in rcx, r8, r9, r10, r11 order is named.
+        let mut outcome = preserving(42);
+        outcome.preserved[4] = 1;
+        outcome.preserved[1] = 2;
+        assert!(matches!(
+            classify_probe_outcome(None, outcome, 42, ""),
+            Ia32EmulationProbe::Unavailable(text) if text.contains("changed r8 ")
+        ));
+        // A wrong result is reported before a clobber.
+        assert!(matches!(
+            classify_probe_outcome(None, Int80Getpid { rax: 7, ..outcome }, 42, ""),
+            Ia32EmulationProbe::Unavailable(text) if text.contains("returned 0x7")
+        ));
+    }
+
+    /// The probe child's pipe payload round-trips every field.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn int80_outcome_bytes_round_trip() {
+        let outcome = Int80Getpid {
+            rax: 0x1234,
+            preserved: [1, 2, 3, 4, u64::MAX],
+        };
+        assert_eq!(Int80Getpid::from_bytes(&outcome.to_bytes()), outcome);
+    }
+
+    /// The live probe on this host: the in-process `int 0x80` getpid under the
+    /// guard returns this PID and leaves every sentinel in place, so the
+    /// assertion admits the kernels the design relies on. Like the other live
+    /// probe tests, this requires a host with the IA-32 entry.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn live_int80_preserves_rcx_and_r8_through_r11_on_this_host() {
+        assert_eq!(
+            calling_thread_seccomp_filter(),
+            None,
+            "the live probe must run on an unfiltered thread"
+        );
+        let (fault, outcome) = unsafe { guarded_fault::run(int80_getpid) }.expect("guard installs");
+        assert_eq!(fault, None, "int 0x80 faulted on this host");
+        let pid = unsafe { libc::syscall(libc::SYS_getpid) } as u64;
+        assert_eq!(outcome.rax, pid);
+        assert_eq!(
+            outcome.preserved, PRESERVED_SENTINELS,
+            "int 0x80 changed a register the trap-only design needs preserved"
+        );
+        assert_eq!(
+            classify_probe_outcome(None, outcome, pid, ""),
+            Ia32EmulationProbe::Available
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
