@@ -23,7 +23,10 @@
 //! Proper use of timers requires that all delivered signals of type
 //! `Timer::signal_type()` be passed through `Timer::handle_signal`, and that
 //! `Timer::observe_event()` be called whenever a Tool-observable reverie event
-//! occurs. Additionally, `Timer::finalize_requests()` must be called
+//! occurs. A stop that is observed before it can be classified, and then turns
+//! out to be tracer-internal (for example a LiteInst handshake trap), must be
+//! handed to `Timer::retract_internal_stop()` before any Tool callback, so that
+//! it does not use up a pending event's grace tick. Additionally, `Timer::finalize_requests()` must be called
 //!  - after the end of the tool callback in which the user could have
 //!    requested a timer event, i.e. those with `&mut guest` access.
 //!  - after any reverie-critical single-stepping occurs (e.g. in syscall
@@ -90,6 +93,41 @@ pub const SKID_MARGIN_OVERRIDE_ENV: &str = "REVERIE_SKID_MARGIN_OVERRIDE";
 pub const WITNESS_TOKEN_ENV: &str = "HERMIT_SKID_WITNESS_TOKEN";
 
 static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
+
+/// Overflow records forgotten because their notification had left the
+/// thread's pending queue, for tests.
+pub(crate) static OVERFLOW_RECORDS_EXPIRED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Whether the running kernel may be built with `PREEMPT_RT`. A kernel whose
+/// version cannot be read counts as one.
+fn kernel_is_preempt_rt() -> bool {
+    static PREEMPT_RT: OnceLock<bool> = OnceLock::new();
+    *PREEMPT_RT.get_or_init(|| {
+        let mut uts = core::mem::MaybeUninit::<libc::utsname>::zeroed();
+        // SAFETY: `uts` is valid for writes, and on success the kernel
+        // NUL-terminates `version`.
+        let version = (unsafe { libc::uname(uts.as_mut_ptr()) } == 0).then(|| {
+            unsafe { std::ffi::CStr::from_ptr(uts.assume_init_ref().version.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        });
+        version.is_none_or(|version| version_is_preempt_rt(&version))
+            || std::fs::read_to_string("/sys/kernel/realtime")
+                .is_ok_and(|value| value.trim() == "1")
+    })
+}
+
+/// Whether a `uname` version string names a kernel that is or may be
+/// `PREEMPT_RT`. Mainline adds the word `PREEMPT_RT` for `CONFIG_PREEMPT_RT`
+/// (`init/Makefile`, `UTS_VERSION`), and `/sys/kernel/realtime` exists only in
+/// some distributions' kernels. The version is cut to 64 bytes, after the
+/// build version and flags, so a version of that length may have lost the
+/// word and counts as `PREEMPT_RT`.
+fn version_is_preempt_rt(version: &str) -> bool {
+    const UTS_VERSION_MAX: usize = 64;
+    version.len() >= UTS_VERSION_MAX || version.split_whitespace().any(|word| word == "PREEMPT_RT")
+}
 
 pub(crate) fn get_pmu_config() -> &'static PmuConfig {
     PMU_CONFIG.get_or_init(PmuConfig::new)
@@ -482,6 +520,61 @@ impl Timer {
         (dur.as_secs() * 600_000_000) + (u64::from(dur.subsec_nanos()) * 6 / 10)
     }
 
+    /// Whether `signal` is an unconsumed overflow notification of this timer's
+    /// counter, and if so, record that it has been consumed.
+    ///
+    /// Such a signal belongs to Reverie and is never guest-visible. An overflow
+    /// interrupt can arrive after the guest has reached its next event, which
+    /// cancels the timer event, so this can match at stops where the timer
+    /// has nothing left to deliver. Artificial timer signals carry no overflow
+    /// siginfo and do not match.
+    ///
+    /// Matching siginfo alone does not prove provenance: a guest file with
+    /// `F_SETSIG` set to the timer signal reports its own descriptor number,
+    /// which can equal the timer's. The kernel must also have recorded an
+    /// overflow whose notification has not been consumed. A counter that
+    /// passed its period is not enough, because the overflow interrupt can be
+    /// lost. Without overflow records nothing matches. A match while the
+    /// current programming has passed its period disables the counter, which
+    /// only prevents notifications of a timer event that has already been
+    /// cancelled.
+    pub(crate) fn consume_overflow_signal(
+        &mut self,
+        signal: &libc::siginfo_t,
+    ) -> Result<bool, Errno> {
+        match self.inner_mut_noinit() {
+            Some(timer) => timer.consume_overflow_signal(signal),
+            None => Ok(false),
+        }
+    }
+
+    /// Forget recorded overflows whose notification the kernel no longer
+    /// holds for the stopped thread `task`. Called at each stop and before
+    /// each injected syscall.
+    ///
+    /// A notification can leave the thread's pending queue without a stop
+    /// that consumes it: the guest can dequeue it with `sigtimedwait` or a
+    /// signalfd, flush it by ignoring the signal, or receive it where a guest
+    /// signal was expected. Its records would then authorize discarding a
+    /// later guest signal with the same siginfo. Nothing is read unless
+    /// records are unconsumed.
+    ///
+    /// The whole queue is read: real-time signals queue one entry each, so the
+    /// notification can sit behind any number of them. If the queue cannot be
+    /// read, the records are kept. For a stopped thread that happens only when
+    /// the thread has died, and then no discard follows.
+    pub(crate) fn expire_overflow_records(&mut self, task: &Stopped) {
+        if let Some(timer) = self.inner_mut_noinit()
+            && timer.has_overflow_records()
+        {
+            // The notification is sent to the thread, not the process.
+            match task.peeksiginfo_all(None) {
+                Ok(pending) => timer.expire_overflow_records(&pending),
+                Err(err) => debug!("Could not read pending signals of {}: {err}", task.pid()),
+            }
+        }
+    }
+
     /// Return the signal type sent by the timer. This is intended to allow
     /// pre-filtering signals without the full overhead of gathering signal info
     /// to pass to ['Timer::generated_signal`].
@@ -506,6 +599,21 @@ impl Timer {
     pub fn observe_event(&mut self) {
         if let Some(t) = self.inner_mut_noinit() {
             t.observe_event();
+        }
+    }
+
+    /// Undo the tick of the most recent [`Timer::observe_event`], because the
+    /// stop it counted is tracer-internal: no Tool callback runs for it and a
+    /// tracer without that mechanism would not stop there at all. The pending
+    /// event keeps the status it had before that stop.
+    ///
+    /// This must be called at the retracted stop, before any Tool callback and
+    /// before any other timer request or cancellation. If the status has been
+    /// set since the observation, or the observation was already retracted,
+    /// this does nothing.
+    pub(crate) fn retract_internal_stop(&mut self) {
+        if let Some(t) = self.inner_mut_noinit() {
+            t.retract_internal_stop();
         }
     }
 
@@ -693,6 +801,10 @@ struct TimerImpl {
     /// The cancellation status of the active timer event.
     timer_status: EventStatus,
 
+    /// The status before the most recent `observe_event`, while no later
+    /// status change has superseded it. `retract_internal_stop` restores it.
+    status_before_observation: Option<EventStatus>,
+
     /// Whether or not the active timer event requires an artificial signal
     send_artificial_signal: bool,
 
@@ -701,6 +813,16 @@ struct TimerImpl {
     /// queued signal, not a count. Logical cancellation, disable and exec do
     /// not flush kernel queues and must not clear this record.
     artificial_signal_sent: bool,
+
+    /// The sample period `timer` was last programmed with after a reset,
+    /// while that programming may still be enabled. A count at or beyond it
+    /// shows that the programming has passed its period, not that an
+    /// overflow notification exists.
+    overflow_period: Option<u64>,
+
+    /// Whether the kernel has recorded an overflow whose notification has not
+    /// been consumed. Records survive reprogramming.
+    overflow_recorded: bool,
 
     initial_command: InitialCommand,
 
@@ -883,7 +1005,7 @@ impl TimerImpl {
             builder.precise_ip(1);
         }
 
-        let timer = builder.check_for_pmu_bugs().create()?;
+        let mut timer = builder.check_for_pmu_bugs().create()?;
         timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
         timer.reset()?;
         // measure the target tid irrespective of CPU
@@ -896,7 +1018,48 @@ impl TimerImpl {
         if initial_command {
             clock_builder.enable_on_exec();
         }
-        let clock = clock_builder.create()?;
+        // Each thread locks up to three pages of perf buffer: the clock's
+        // fast-read page and the timer's metadata and record pages. The kernel
+        // charges them to a per-user budget of `perf_event_mlock_kb` per online
+        // CPU, then to RLIMIT_MEMLOCK. The record pages make that budget run out
+        // three times as soon, so a clock that cannot map its page falls back to
+        // read(2), which returns the same count.
+        let clock = match clock_builder.create() {
+            Ok(clock) => clock,
+            Err(errno) => {
+                // A failure of the counter itself fails again here.
+                let clock = clock_builder.fast_reads(false).create()?;
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    warn!(
+                        %errno,
+                        "Could not map a clock for fast reads; reading clocks with read(2)"
+                    )
+                });
+                clock
+            }
+        };
+        // Mapped after the clock, so that it never takes this thread's clock
+        // page.
+        if kernel_is_preempt_rt() {
+            // PREEMPT_RT sends the notification from a kernel thread some time
+            // after the record is written, so a record does not show that the
+            // notification is pending.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                warn!(
+                    "PREEMPT_RT kernel; late timer signals at injected syscalls will be delivered to the guest"
+                )
+            });
+        } else if let Err(errno) = timer.map_sample_records() {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                warn!(
+                    %errno,
+                    "Could not map timer overflow records; late timer signals at injected syscalls will be delivered to the guest"
+                )
+            });
+        }
         clock.reset()?;
         if !initial_command {
             clock.enable()?;
@@ -910,8 +1073,11 @@ impl TimerImpl {
                 offset: 0,
             },
             timer_status: EventStatus::Cancelled,
+            status_before_observation: None,
             send_artificial_signal: false,
             artificial_signal_sent: false,
+            overflow_period: None,
+            overflow_recorded: false,
             initial_command: if initial_command {
                 InitialCommand::WaitingForExec
             } else {
@@ -938,13 +1104,13 @@ impl TimerImpl {
         if self.initial_command != InitialCommand::Ordinary {
             self.event = Self::event_at(evt, self.read_clock() + delivery);
             self.held_initial_event = Some(self.event);
-            self.timer_status = EventStatus::Scheduled;
+            self.set_status(EventStatus::Scheduled);
             debug_assert!(!self.send_artificial_signal);
             return Ok(());
         }
         self.prepare_notification(notification)?;
         self.event = Self::event_at(evt, self.read_clock() + delivery);
-        self.timer_status = EventStatus::Scheduled;
+        self.set_status(EventStatus::Scheduled);
         Ok(())
     }
 
@@ -953,19 +1119,69 @@ impl TimerImpl {
         if let Some(error) = self.fail_next_notification.take() {
             return Err(error);
         }
+        // Keep the record buffer from filling.
+        self.collect_overflow_records();
         self.send_artificial_signal = if notification <= SINGLESTEP_TIMEOUT_RCBS {
             // If there's an existing event making use of the timer counter,
             // we need to "overwrite" it the same way setting an actual RCB
             // notification does.
             self.timer.disable()?;
+            self.overflow_period = None;
             true
         } else {
             self.timer.reset()?;
+            self.overflow_period = None;
             self.timer.set_period(notification)?;
             self.timer.enable()?;
+            self.overflow_period = Some(notification);
             false
         };
         Ok(())
+    }
+
+    /// Whether the current programming of `timer` has passed its period.
+    fn current_overflow(&self) -> Result<bool, Errno> {
+        match self.overflow_period {
+            Some(period) => Ok(self.timer.ctr_value()? >= period),
+            None => Ok(false),
+        }
+    }
+
+    /// Note the overflows the kernel has recorded since the last call.
+    fn collect_overflow_records(&mut self) {
+        if self
+            .timer
+            .take_sample_records()
+            .is_some_and(|samples| samples > 0)
+        {
+            self.overflow_recorded = true;
+        }
+    }
+
+    /// Record that the notification of every overflow recorded so far has
+    /// been consumed. Standard signals coalesce, so one notification accounts
+    /// for all of them.
+    fn mark_overflows_consumed(&mut self) {
+        self.collect_overflow_records();
+        self.overflow_recorded = false;
+    }
+
+    /// Whether the kernel has recorded an overflow whose notification has not
+    /// been consumed.
+    fn has_overflow_records(&mut self) -> bool {
+        self.collect_overflow_records();
+        self.overflow_recorded
+    }
+
+    /// Forget the recorded overflows unless `pending`, the stopped thread's
+    /// private pending signals, holds a notification with this timer's
+    /// siginfo. The thread is stopped, so no overflow can be recorded between
+    /// reading `pending` and this call.
+    fn expire_overflow_records(&mut self, pending: &[libc::siginfo_t]) {
+        if self.overflow_recorded && !pending.iter().any(|s| self.owns_overflow_signal(s)) {
+            self.mark_overflows_consumed();
+            OVERFLOW_RECORDS_EXPIRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     fn event_at(evt: TimerEventRequest, clock: u64) -> ActiveEvent {
@@ -984,7 +1200,7 @@ impl TimerImpl {
 
     fn retire_initial_event(&mut self) {
         let _ = self.held_initial_event.take();
-        self.timer_status = EventStatus::Cancelled;
+        self.set_status(EventStatus::Cancelled);
         self.send_artificial_signal = false;
     }
 
@@ -1004,12 +1220,32 @@ impl TimerImpl {
         }
     }
 
+    /// Every status change other than an observation supersedes the status a
+    /// retraction would restore.
+    fn set_status(&mut self, status: EventStatus) {
+        self.timer_status = status;
+        self.status_before_observation = None;
+    }
+
     pub fn observe_event(&mut self) {
+        self.status_before_observation = Some(self.timer_status);
         self.timer_status.tick()
     }
 
+    fn retract_internal_stop(&mut self) {
+        if let Some(status) = self.status_before_observation.take() {
+            if status != self.timer_status {
+                debug!(
+                    "Tracer-internal stop does not count as a timer event: {:?} restored from {:?}",
+                    status, self.timer_status
+                );
+            }
+            self.timer_status = status;
+        }
+    }
+
     pub fn schedule_cancellation(&mut self) {
-        self.timer_status = EventStatus::Cancelled;
+        self.set_status(EventStatus::Cancelled);
     }
 
     pub fn cancel(&self) -> Result<(), Errno> {
@@ -1090,6 +1326,36 @@ impl TimerImpl {
                     && get_si_fd(signal) == self.timer.raw_fd()))
     }
 
+    fn owns_overflow_signal(&self, signal: &libc::siginfo_t) -> bool {
+        self.initial_command == InitialCommand::Ordinary
+            && Self::is_timer_generated_signal(signal)
+            // The guest can produce the same siginfo: an `F_SETSIG`
+            // descriptor of its own with this number sends the timer's signal
+            // and code. Delivery of timer signals assumes it does not.
+            // `consume_overflow_signal`, which discards signals at injected
+            // syscalls, also requires a recorded overflow.
+            && get_si_fd(signal) == self.timer.raw_fd()
+    }
+
+    fn consume_overflow_signal(&mut self, signal: &libc::siginfo_t) -> Result<bool, Errno> {
+        if !self.owns_overflow_signal(signal) {
+            return Ok(false);
+        }
+        self.collect_overflow_records();
+        if !self.overflow_recorded {
+            return Ok(false);
+        }
+        if self.current_overflow()? {
+            // The notification can be this programming's, whose timer event
+            // the stop has ended. A programming that has not passed its
+            // period stays armed.
+            self.timer.disable()?;
+            self.overflow_period = None;
+        }
+        self.mark_overflows_consumed();
+        Ok(true)
+    }
+
     pub fn read_clock(&self) -> u64 {
         self.clock.ctr_value_fast().expect("Failed to read clock")
     }
@@ -1149,6 +1415,11 @@ impl TimerImpl {
                 "Passed a signal that wasn't for this timer, likely indicating a bug!",
             );
             return Err(HandleFailure::ImproperSignal(task));
+        }
+        if self.owns_overflow_signal(&signal) {
+            // Otherwise a later injected syscall could mistake a guest signal
+            // for this notification.
+            self.mark_overflows_consumed();
         }
 
         if controller {
@@ -1365,8 +1636,11 @@ mod tests {
                 timer: counter,
                 event,
                 timer_status: EventStatus::Scheduled,
+                status_before_observation: None,
                 send_artificial_signal: true,
                 artificial_signal_sent: false,
+                overflow_period: None,
+                overflow_recorded: false,
                 initial_command: InitialCommand::Ordinary,
                 held_initial_event: Some(event),
                 fail_next_notification: None,
@@ -1485,6 +1759,304 @@ mod tests {
         );
         assert_eq!(timer.fail_next_notification, None);
         assert_eq!(timer.timer_status, EventStatus::Cancelled);
+    }
+
+    #[test]
+    fn internal_stop_retraction_restores_only_the_last_observation() {
+        use super::EventStatus;
+        use super::TimerEventRequest;
+        use super::TimerImpl;
+
+        let pid = reverie::Pid::from_raw(unsafe { libc::getpid() });
+        let tid = reverie::Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        // A held initial command keeps requests off the physical counter.
+        let mut timer = TimerImpl::new(pid, tid, true).expect("control requires a working PMU");
+
+        // Nothing observed yet: a retraction has nothing to restore.
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+
+        // A request, then one internal stop: the grace tick survives it and
+        // the next observation (the timer signal's own stop) arms the event.
+        timer
+            .request_event(TimerEventRequest::Precise(1_000))
+            .unwrap();
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+        timer.observe_event();
+        assert_eq!(timer.timer_status, EventStatus::Armed);
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+        // A second retraction of the same observation changes nothing.
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+
+        // Two internal stops in a row, each retracted at its own stop.
+        for _ in 0..2 {
+            timer.observe_event();
+            timer.retract_internal_stop();
+        }
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+
+        // A Tool-observable stop that is not retracted still cancels the
+        // event, exactly as before; only the last observation is undone.
+        timer.observe_event();
+        timer.observe_event();
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Armed);
+
+        // A request made after the observation supersedes it.
+        timer.observe_event();
+        timer
+            .request_event(TimerEventRequest::Precise(1_000))
+            .unwrap();
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+
+        // So does a cancellation.
+        timer.observe_event();
+        timer.schedule_cancellation();
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+
+        // And so does retiring the initial command's request at exec.
+        timer
+            .request_event(TimerEventRequest::Precise(1_000))
+            .unwrap();
+        timer.observe_event();
+        timer.begin_initial_exec();
+        timer.retract_internal_stop();
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+    }
+
+    /// Takes the pending timer signal of the calling thread, which must have
+    /// blocked it.
+    fn take_timer_signal() -> Option<libc::siginfo_t> {
+        let mut set: libc::sigset_t = unsafe { core::mem::zeroed() };
+        let mut info: libc::siginfo_t = unsafe { core::mem::zeroed() };
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        unsafe {
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, super::MARKER_SIGNAL as i32);
+        }
+        let signo = unsafe { libc::sigtimedwait(&set, &mut info, &timeout) };
+        (signo == super::MARKER_SIGNAL as i32).then_some(info)
+    }
+
+    #[test]
+    fn overflow_signal_provenance_requires_a_recorded_overflow() {
+        use reverie::Pid;
+
+        use super::TimerImpl;
+        use crate::perf::do_branches;
+
+        // The timer signals this thread; keep its notifications pending so the
+        // test can take their real siginfo.
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        assert_eq!(timer.timer.take_sample_records(), Some(0));
+        const PERIOD: u64 = 10_000;
+
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        let notification = take_timer_signal().expect("the counter overflowed");
+        assert!(timer.owns_overflow_signal(&notification));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        // A guest signal can have identical siginfo. With every overflow
+        // consumed, it is not the timer's.
+        assert!(timer.owns_overflow_signal(&notification));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+
+        // A new programming that has not overflowed owns nothing.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD / 2);
+        timer.timer.disable().unwrap();
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert!(take_timer_signal_now().is_none());
+
+        // An overflow whose notification is still pending survives both kinds
+        // of reprogramming, and consuming it leaves the new programming armed.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        timer
+            .prepare_notification(super::SINGLESTEP_TIMEOUT_RCBS)
+            .unwrap();
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert!(take_timer_signal().is_some());
+
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        timer.prepare_notification(PERIOD).unwrap();
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert!(take_timer_signal().is_some());
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert!(take_timer_signal().is_some());
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+
+        // Consumption ends a programming that has passed its period, so no
+        // notification of its cancelled timer event follows. This includes
+        // consuming late, after several overflows, and with a period the
+        // kernel may restart.
+        for period in [PERIOD, PERIOD / 10] {
+            timer.prepare_notification(period).unwrap();
+            do_branches(period * 7 / 2);
+            // The counter keeps running, so unlike a stopped tracee's, its
+            // overflow interrupt can still be in flight. The kernel writes the
+            // record before it queues the notification.
+            assert!(wait_for_timer_signal_pending());
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+            let stopped_at = timer.timer.ctr_value().unwrap();
+            do_branches(PERIOD * 3);
+            assert_eq!(timer.timer.ctr_value(), Ok(stopped_at));
+            assert!(take_timer_signal().is_some());
+            assert!(take_timer_signal_now().is_none());
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        }
+
+        // A counter can pass its period without the kernel handling the
+        // overflow interrupt, for example when the interrupt arrives after the
+        // thread is scheduled out. No notification exists. Raising the
+        // hardware period produces the same counter state.
+        timer.prepare_notification(PERIOD).unwrap();
+        timer
+            .timer
+            .set_period(crate::perf::PerfCounter::DISABLE_SAMPLE_PERIOD)
+            .unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert!(timer.timer.ctr_value().unwrap() >= PERIOD);
+        assert!(take_timer_signal_now().is_none());
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+
+        // Records expire unless the thread's pending signals hold a
+        // notification with the timer's siginfo: signal number, code and
+        // descriptor.
+        let mut other_signo = notification;
+        other_signo.si_signo = libc::SIGUSR1;
+        // `tgkill` sends the timer's signal number with this code.
+        let mut other_code = notification;
+        other_code.si_code = libc::SI_TKILL;
+        let mut other_fd = notification;
+        set_si_fd(&mut other_fd, super::get_si_fd(&notification) + 1);
+        assert!(!timer.owns_overflow_signal(&other_signo));
+        assert!(!timer.owns_overflow_signal(&other_code));
+        assert!(!timer.owns_overflow_signal(&other_fd));
+        let others = [other_signo, other_code, other_fd];
+        for pending in [&[other_signo][..], &[other_code], &[other_fd], &others, &[]] {
+            timer.prepare_notification(PERIOD).unwrap();
+            do_branches(PERIOD * 3);
+            timer.timer.disable().unwrap();
+            assert!(timer.has_overflow_records());
+            timer.expire_overflow_records(&[other_signo, other_code, other_fd, notification]);
+            assert!(timer.has_overflow_records());
+            timer.expire_overflow_records(pending);
+            assert!(!timer.has_overflow_records());
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+            assert!(take_timer_signal().is_some());
+        }
+
+        // Without records, even a real notification is not consumed.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        let unrecorded = take_timer_signal().expect("the counter overflowed");
+        timer.timer.unmap_sample_records();
+        assert_eq!(timer.timer.take_sample_records(), None);
+        assert!(timer.owns_overflow_signal(&unrecorded));
+        assert_eq!(timer.consume_overflow_signal(&unrecorded), Ok(false));
+
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
+        }
+    }
+
+    /// Overwrite `si_fd`, at the offset `get_si_fd` reads.
+    fn set_si_fd(signal: &mut libc::siginfo_t, fd: libc::c_int) {
+        // Three `int`s, then the pointer-aligned union whose SIGPOLL member
+        // is `{ long si_band; int si_fd; }`.
+        let offset =
+            core::mem::size_of::<*const libc::c_void>() * 2 + core::mem::size_of::<libc::c_long>();
+        unsafe {
+            (signal as *mut libc::siginfo_t)
+                .cast::<u8>()
+                .add(offset)
+                .cast::<libc::c_int>()
+                .write_unaligned(fd);
+        }
+        assert_eq!(super::get_si_fd(signal), fd);
+    }
+
+    #[test]
+    fn preempt_rt_is_read_from_the_kernel_version() {
+        use super::version_is_preempt_rt;
+        assert!(version_is_preempt_rt(
+            "#1 SMP PREEMPT_RT Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(version_is_preempt_rt("#1 PREEMPT_RT"));
+        assert!(!version_is_preempt_rt(
+            "#1 SMP PREEMPT Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(!version_is_preempt_rt(
+            "#1 SMP PREEMPT_DYNAMIC Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(!version_is_preempt_rt("#1 SMP PREEMPT_RTX"));
+        assert!(!version_is_preempt_rt(""));
+        // A build version of 49 digits cuts the word of a PREEMPT_RT kernel
+        // at the 64-byte limit.
+        let cut = format!("#{} SMP PREEMPT_R", "1".repeat(49));
+        assert_eq!(cut.len(), 64);
+        assert!(version_is_preempt_rt(&cut));
+        // One digit less keeps the word.
+        let whole = format!("#{} SMP PREEMPT_RT", "1".repeat(48));
+        assert_eq!(whole.len(), 64);
+        assert!(version_is_preempt_rt(&whole));
+        let short = format!("#{} SMP PREEMPT_DYNAMIC", "1".repeat(42));
+        assert_eq!(short.len(), 63);
+        assert!(!version_is_preempt_rt(&short));
+    }
+
+    /// Wait up to five seconds for a timer notification to be pending,
+    /// without taking it.
+    fn wait_for_timer_signal_pending() -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            let mut pending: libc::sigset_t = unsafe { core::mem::zeroed() };
+            unsafe { libc::sigpending(&mut pending) };
+            if unsafe { libc::sigismember(&pending, super::MARKER_SIGNAL as i32) } == 1 {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
+    }
+
+    fn take_timer_signal_now() -> Option<libc::siginfo_t> {
+        let mut pending: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe { libc::sigpending(&mut pending) };
+        if unsafe { libc::sigismember(&pending, super::MARKER_SIGNAL as i32) } == 1 {
+            take_timer_signal()
+        } else {
+            None
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
