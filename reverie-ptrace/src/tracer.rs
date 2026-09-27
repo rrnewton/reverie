@@ -78,6 +78,7 @@ use crate::liteinst_trap_only::LiteinstTrapOnlyConfig;
 use crate::liteinst_trap_only::LiteinstTrapOnlyHandle;
 use crate::liteinst_trap_only::SitePatching;
 use crate::liteinst_trap_only::require_ia32_emulation;
+use crate::liteinst_trap_only::require_supported_patching;
 use crate::task::Child;
 use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
@@ -3892,10 +3893,32 @@ async fn postspawn<L: Tool + 'static>(
 
 /// Creates the seccomp filter. This lets us control which syscalls are traced
 /// and which ones are allowed through.
-fn seccomp_filter(events: &Subscription) -> seccomp::Filter {
+///
+/// With `trap_only_patching` false the filter is plain ptrace's, byte for byte
+/// (pinned by `seccomp_filter_tests`). With it true, and only then, the filter
+/// also:
+/// - returns `Trace(TAG_I386)` for every `AUDIT_ARCH_I386` syscall (a patched
+///   `int 0x80` site) instead of killing the process;
+/// - returns `Trace(TAG_SLOT)` for every x86_64 syscall whose instruction
+///   pointer is `SLOT_RET`, whatever its number, before any other rule.
+fn seccomp_filter(events: &Subscription, trap_only_patching: bool) -> seccomp::Filter {
     use reverie::process::seccomp::Action;
 
-    seccomp::FilterBuilder::new()
+    use crate::liteinst_trap_only::SLOT_RET;
+    use crate::liteinst_trap_only::TAG_I386;
+    use crate::liteinst_trap_only::TAG_SLOT;
+
+    let mut builder = seccomp::FilterBuilder::new();
+    if trap_only_patching {
+        builder
+            .alternate_arch(seccomp::TargetArch::x86, Action::Trace(TAG_I386))
+            // An exact 64-bit match on the one address, checked before every
+            // `ip_range` and syscall rule, so a syscall at SLOT_RET stops with
+            // TAG_SLOT whatever its number. The untraced `ip_range` below is
+            // `[0x7100_0002, 0x7100_0003)` and does not contain SLOT_RET.
+            .instruction_pointer(SLOT_RET, Action::Trace(TAG_SLOT));
+    }
+    builder
         // By default, all syscalls are allowed through untraced. Then, we can
         // intercept only the syscalls we are interested in.
         .default_action(Action::Allow)
@@ -4153,8 +4176,14 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     ///
     /// Trap-only patching needs the kernel's IA-32 syscall entry. `spawn`
     /// probes whether `int 0x80` is serviced and fails closed with
-    /// [`crate::Ia32EmulationUnavailable`] when it is not. The mode cannot be
-    /// combined with [`Self::liteinst_runtime`].
+    /// [`crate::Ia32EmulationUnavailable`] when it is not. A launch that
+    /// rewrites sites is also refused, with
+    /// [`crate::Ia32EntryClobbersRegisters`], when the entry changes rcx or
+    /// r8-r11. Until the IA-32 and slot stops are handled, a launch with the
+    /// test-only `SitePatching::On` is refused earlier, with
+    /// `SitePatchingUnsupported`, before the probe runs, so that
+    /// refusal is not reached yet. The mode cannot be combined with
+    /// [`Self::liteinst_runtime`].
     ///
     /// With [`SitePatching::Off`] no guest byte is ever written and the run is
     /// the ordinary ptrace run.
@@ -4440,10 +4469,18 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             )));
         }
         if let Some(trap_only) = self.liteinst_trap_only.as_ref() {
-            // Refuse before anything is spawned. A trap-only run must never
-            // degrade to plain ptrace under the LiteInst label.
-            require_ia32_emulation(trap_only.ia32_probe()).map_err(anyhow::Error::new)?;
+            // Refuse before anything is spawned. A patching state whose seccomp
+            // stops nothing handles yet would leave the guest stuck.
+            require_supported_patching(trap_only.patching()).map_err(anyhow::Error::new)?;
+            // A trap-only run must never degrade to plain ptrace under the
+            // LiteInst label.
+            // An entry that changes rcx or r8-r11 refuses only site patching.
+            require_ia32_emulation(trap_only.ia32_probe(), trap_only.patching())?;
         }
+        let trap_only_patching = self
+            .liteinst_trap_only
+            .as_ref()
+            .is_some_and(|trap_only| trap_only.patching().rewrites_sites());
         let liteinst_trap_only = self
             .liteinst_trap_only
             .as_ref()
@@ -4509,7 +4546,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             });
         }
 
-        command.seccomp(seccomp_filter(&traced_events));
+        command.seccomp(seccomp_filter(&traced_events, trap_only_patching));
 
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
@@ -4764,7 +4801,8 @@ where
     let events = L::subscriptions(&config);
     let gref = Arc::new(global_state);
 
-    let seccomp_filter = seccomp_filter(&events);
+    // This path never runs trap-only LiteInst (`liteinst_trap_only: None`).
+    let seccomp_filter = seccomp_filter(&events, false);
 
     let (read1, write1) = unistd::pipe().map_err(from_nix_error)?;
     let (read2, write2) = unistd::pipe().map_err(from_nix_error)?;
@@ -4871,6 +4909,10 @@ mod liteinst_trap_only_tests;
 #[cfg(all(test, target_arch = "x86_64"))]
 #[path = "seccomp_ip_window_tests.rs"]
 mod seccomp_ip_window_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "seccomp_filter_tests.rs"]
+mod seccomp_filter_tests;
 
 #[cfg(test)]
 mod tests {
