@@ -78,6 +78,14 @@ pub(crate) use strace::config;
 pub(crate) use strace::filter;
 pub(crate) use strace::global_state;
 
+/// chaos, compiled unmodified from `reverie-examples`: it fails every other
+/// read of each thread with `EINTR`, cuts the reads in between and every
+/// receive to one byte, and prints each syscall with `eprintln!`, here the
+/// macro above.
+#[allow(dead_code)]
+#[path = "../../reverie-examples/chaos_tool.rs"]
+pub mod chaos;
+
 /// Where a printing Tool delivers each finished line.
 ///
 /// `emit` receives one complete line without its terminating newline. The
