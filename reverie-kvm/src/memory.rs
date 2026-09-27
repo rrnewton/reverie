@@ -1869,11 +1869,13 @@ impl UserMemory {
         Ok(length)
     }
 
+    #[cfg(test)]
     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
         self.memory
             .with_copy(|copy| self.zero_admitted(guest_address, length, copy))
     }
 
+    #[cfg(test)]
     fn zero_admitted(&self, guest_address: u64, length: usize, copy: &CopyAccess) -> Result<()> {
         self.translate_admitted(guest_address, length, copy)?;
         if self.user_accessible_prefix_admitted(guest_address, length, copy)? != length {
