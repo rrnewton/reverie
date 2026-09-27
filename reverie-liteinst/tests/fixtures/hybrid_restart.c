@@ -13,6 +13,7 @@
 #include <linux/seccomp.h>
 #include <stddef.h>
 #include <pthread.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,6 +21,8 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
+#include <sys/ucontext.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -299,10 +302,18 @@ static void nested_restart_handler(int signo) {
 }
 
 // The magic read, which the Tool answers after `restarts` restart codes.
+// Branch-only work after the magic read returns, so a timer the Tool set at
+// the deciding signal expires before the guest makes another syscall.
+static int spin_after_read;
+
 static int magic_read(int with_handled) {
   char byte = 0;
   warm_up();
   long result = restart_site(SYS_read, MAGIC_FD, (long)&byte, 1, 0);
+  if (spin_after_read) {
+    for (volatile long i = 0; i < 1000000; i++) {
+    }
+  }
   printf("read-result=%ld", result);
   if (with_handled) {
     printf(" handled=%d nested-ok=%d", (int)handled, (int)nested_ok);
@@ -326,6 +337,158 @@ static int handled_read_with(void (*handler)(int), int flags) {
 
 static int handled_read(int flags) {
   return handled_read_with(guest_handler, flags);
+}
+
+// Counts deliveries without making any syscall, so no stop can come between
+// the delivery and the handler's return.
+static void quiet_handler(int signo) {
+  (void)signo;
+  handled += 1;
+}
+
+static sigjmp_buf longjmp_env;
+static volatile sig_atomic_t after_sleep;
+
+static void longjmp_alarm(int signo) {
+  (void)signo;
+  siglongjmp(longjmp_env, 1);
+}
+
+// Inside the handler that decides the magic read's restart, an unsubscribed
+// 400 ms nanosleep through the site is interrupted by SIGALRM at 50 ms, whose
+// handler siglongjmps back here. The nanosleep's own restart is abandoned, so
+// the handler returns to the magic read's landing with a newer restart still
+// recorded above it.
+static void longjmp_handler(int signo) {
+  (void)signo;
+  handled += 1;
+  if (sigsetjmp(longjmp_env, 1) == 0) {
+    struct itimerval alarm_at;
+    memset(&alarm_at, 0, sizeof(alarm_at));
+    alarm_at.it_value.tv_usec = 50 * 1000;
+    setitimer(ITIMER_REAL, &alarm_at, NULL);
+    struct timespec request = {.tv_sec = 0, .tv_nsec = 400 * 1000 * 1000};
+    restart_site(SYS_nanosleep, (long)&request, 0, 0, 0);
+    after_sleep += 1;
+  }
+}
+
+static int longjmp_read(int flags) {
+  struct sigaction alarm_action;
+  memset(&alarm_action, 0, sizeof(alarm_action));
+  alarm_action.sa_handler = longjmp_alarm;
+  if (sigaction(SIGALRM, &alarm_action, NULL) != 0) {
+    return 60;
+  }
+  int rc = handled_read_with(longjmp_handler, flags);
+  printf("after-sleep=%d\n", (int)after_sleep);
+  return rc;
+}
+
+// Edits the interrupted read's saved rax as a handler may: an interrupted
+// read (-EINTR) returns 777 instead, and a restarted one (rax is the syscall
+// number again) restarts as close(MAGIC_FD), which fails with EBADF.
+static void edit_rax_handler(int signo, siginfo_t *info, void *context) {
+  (void)signo;
+  (void)info;
+  ucontext_t *uc = context;
+  handled += 1;
+  if (uc->uc_mcontext.gregs[REG_RAX] == -EINTR) {
+    uc->uc_mcontext.gregs[REG_RAX] = 777;
+  } else if (uc->uc_mcontext.gregs[REG_RAX] == SYS_read) {
+    uc->uc_mcontext.gregs[REG_RAX] = SYS_close;
+  }
+}
+
+// Edits a register the syscall itself clobbers (r11), which the guest cannot
+// observe after the syscall.
+static void edit_r11_handler(int signo, siginfo_t *info, void *context) {
+  (void)signo;
+  (void)info;
+  ucontext_t *uc = context;
+  handled += 1;
+  uc->uc_mcontext.gregs[REG_R11] ^= 0x10000;
+}
+
+static int siginfo_read_with(void (*handler)(int, siginfo_t *, void *), int flags) {
+  expected_parent = getppid();
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_sigaction = handler;
+  action.sa_flags = SA_SIGINFO | flags;
+  if (sigaction(SIGUSR1, &action, NULL) != 0) {
+    return 38;
+  }
+  return magic_read(1);
+}
+
+static volatile sig_atomic_t in_fork_child;
+static volatile int fork_child_exit = -1;
+
+// Forks inside the handler that decides the magic read's restart. The child
+// returns from its copy of the handler to its own copy of the interrupted
+// read and reports that read's result as its exit code; the parent waits
+// first, so the child's restarted read (if any) reaches the Tool before the
+// parent's.
+static void fork_handler(int signo) {
+  (void)signo;
+  handled += 1;
+  long child = syscall(SYS_fork);
+  if (child == 0) {
+    in_fork_child = 1;
+    return;
+  }
+  int status = 0;
+  if (child < 0 || waitpid((pid_t)child, &status, 0) != child) {
+    fork_child_exit = -2;
+  } else {
+    fork_child_exit = WIFEXITED(status) ? WEXITSTATUS(status) : 100 + WTERMSIG(status);
+  }
+}
+
+static int fork_read(int flags) {
+  // SIGCHLD stays blocked, so the child's exit reaches neither the parent's
+  // Tool nor its handler.
+  sigset_t chld;
+  sigemptyset(&chld);
+  sigaddset(&chld, SIGCHLD);
+  if (sigprocmask(SIG_BLOCK, &chld, NULL) != 0) {
+    return 61;
+  }
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = fork_handler;
+  action.sa_flags = flags;
+  if (sigaction(SIGUSR1, &action, NULL) != 0) {
+    return 38;
+  }
+  char byte = 0;
+  warm_up();
+  long result = restart_site(SYS_read, MAGIC_FD, (long)&byte, 1, 0);
+  if (in_fork_child) {
+    _exit(result == 4243 ? 43 : result == -EINTR ? 4 : 99);
+  }
+  printf("read-result=%ld handled=%d child-exit=%d", result, (int)handled,
+         fork_child_exit);
+  print_site_counts();
+  return 0;
+}
+
+// The guest replaces the runtime's SIGTRAP router with its own handler, after
+// the warm-up has patched the site, and the Tool sends SIGTRAP.
+static int sigtrap_read(void) {
+  char byte = 0;
+  warm_up();
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = quiet_handler;
+  if (sigaction(SIGTRAP, &action, NULL) != 0) {
+    return 62;
+  }
+  long result = restart_site(SYS_read, MAGIC_FD, (long)&byte, 1, 0);
+  printf("read-result=%ld handled=%d", result, (int)handled);
+  print_site_counts();
+  return 0;
 }
 
 static volatile sig_atomic_t reaped;
@@ -398,6 +561,44 @@ int main(int argc, char **argv) {
   }
   if (strcmp(mode, "handler-nested-restart") == 0) {
     return handled_read_with(nested_restart_handler, SA_RESTART);
+  }
+  if (strcmp(mode, "handler-quiet-spin") == 0) {
+    spin_after_read = 1;
+    return handled_read_with(quiet_handler, 0);
+  }
+  if (strcmp(mode, "handler-quiet-spin-restart") == 0) {
+    spin_after_read = 1;
+    return handled_read_with(quiet_handler, SA_RESTART);
+  }
+  if (strcmp(mode, "handler-quiet") == 0) {
+    return handled_read_with(quiet_handler, 0);
+  }
+  if (strcmp(mode, "handler-quiet-restart") == 0) {
+    return handled_read_with(quiet_handler, SA_RESTART);
+  }
+  if (strcmp(mode, "handler-longjmp") == 0) {
+    return longjmp_read(0);
+  }
+  if (strcmp(mode, "handler-longjmp-restart") == 0) {
+    return longjmp_read(SA_RESTART);
+  }
+  if (strcmp(mode, "handler-edit-rax") == 0) {
+    return siginfo_read_with(edit_rax_handler, 0);
+  }
+  if (strcmp(mode, "handler-edit-rax-restart") == 0) {
+    return siginfo_read_with(edit_rax_handler, SA_RESTART);
+  }
+  if (strcmp(mode, "handler-edit-r11") == 0) {
+    return siginfo_read_with(edit_r11_handler, 0);
+  }
+  if (strcmp(mode, "handler-fork") == 0) {
+    return fork_read(0);
+  }
+  if (strcmp(mode, "handler-fork-restart") == 0) {
+    return fork_read(SA_RESTART);
+  }
+  if (strcmp(mode, "handler-sigtrap") == 0) {
+    return sigtrap_read();
   }
   if (strcmp(mode, "sigchld") == 0) {
     return sigchld_read();
