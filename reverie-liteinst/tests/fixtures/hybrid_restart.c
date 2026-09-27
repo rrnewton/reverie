@@ -29,6 +29,7 @@
 #define WARM_FD 0x7e56
 #define MAGIC_FD 0x7e57
 #define QUERY_FD 0x7e58
+#define NESTED_FD 0x7e59
 #define STRESS_SIGNALS 300
 
 // long restart_site(long nr, long a0, long a1, long a2, long a3)
@@ -282,6 +283,21 @@ static void guest_handler(int signo) {
   }
 }
 
+// The Tool answers the first nested read with -ERESTARTSYS and no signal,
+// then with NESTED_RESULT.
+#define NESTED_RESULT 4244
+
+// Makes a syscall that itself restarts while the interrupted magic read's
+// restart is still undecided (the handler runs before its outcome).
+static void nested_restart_handler(int signo) {
+  (void)signo;
+  handled += 1;
+  char byte = 0;
+  if (restart_site(SYS_read, NESTED_FD, (long)&byte, 1, 0) == NESTED_RESULT) {
+    nested_ok += 1;
+  }
+}
+
 // The magic read, which the Tool answers after `restarts` restart codes.
 static int magic_read(int with_handled) {
   char byte = 0;
@@ -296,16 +312,20 @@ static int magic_read(int with_handled) {
 }
 
 // SIGUSR1 gets a guest handler, with or without SA_RESTART.
-static int handled_read(int flags) {
+static int handled_read_with(void (*handler)(int), int flags) {
   expected_parent = getppid();
   struct sigaction action;
   memset(&action, 0, sizeof(action));
-  action.sa_handler = guest_handler;
+  action.sa_handler = handler;
   action.sa_flags = flags;
   if (sigaction(SIGUSR1, &action, NULL) != 0) {
     return 38;
   }
   return magic_read(1);
+}
+
+static int handled_read(int flags) {
+  return handled_read_with(guest_handler, flags);
 }
 
 static volatile sig_atomic_t reaped;
@@ -372,6 +392,12 @@ int main(int argc, char **argv) {
   }
   if (strcmp(mode, "handler-restart") == 0) {
     return handled_read(SA_RESTART);
+  }
+  if (strcmp(mode, "handler-nested") == 0) {
+    return handled_read_with(nested_restart_handler, 0);
+  }
+  if (strcmp(mode, "handler-nested-restart") == 0) {
+    return handled_read_with(nested_restart_handler, SA_RESTART);
   }
   if (strcmp(mode, "sigchld") == 0) {
     return sigchld_read();

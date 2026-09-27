@@ -2127,6 +2127,9 @@ const RESTART_WARM_FD: u64 = 0x7e56;
 const RESTART_MAGIC_FD: u64 = 0x7e57;
 const RESTART_QUERY_FD: u64 = 0x7e58;
 const RESTART_RESULT: i64 = 4243;
+/// Read by the `handler-nested` handlers; see `RestartTool`.
+const RESTART_NESTED_FD: u64 = 0x7e59;
+const RESTART_NESTED_RESULT: i64 = 4244;
 
 /// `RestartTool` configuration, packed into the `u64` Tool config.
 #[derive(Clone, Copy, Default)]
@@ -2191,6 +2194,7 @@ impl RestartPlan {
 struct RestartLog {
     events: std::sync::Mutex<Vec<String>>,
     magic_calls: AtomicU64,
+    nested_calls: AtomicU64,
     signals: AtomicU64,
 }
 
@@ -2206,14 +2210,17 @@ impl GlobalTool for RestartLog {
     type Response = u64;
     type Config = u64;
 
-    /// Records one Tool-visible event. A magic call returns its 0-based
-    /// index; `query` returns the number of signals seen, without recording.
+    /// Records one Tool-visible event. A magic or nested call returns its
+    /// 0-based index among its kind; `query` returns the number of signals
+    /// seen, without recording.
     async fn receive_rpc(&self, _from: Tid, event: String) -> u64 {
         if event == "query" {
             return self.signals.load(Ordering::SeqCst);
         }
         let index = if event.starts_with("magic ") {
             self.magic_calls.fetch_add(1, Ordering::SeqCst)
+        } else if event.starts_with("nested ") {
+            self.nested_calls.fetch_add(1, Ordering::SeqCst)
         } else {
             0
         };
@@ -2255,6 +2262,16 @@ impl Tool for RestartTool {
         }
         if nr == Sysno::read && args.arg0 as u64 == RESTART_QUERY_FD {
             return Ok(guest.send_rpc("query".to_owned()).await as i64);
+        }
+        if nr == Sysno::read && args.arg0 as u64 == RESTART_NESTED_FD {
+            // A restart with no signal, made from inside a signal handler.
+            let index = guest
+                .send_rpc(format!("nested {nr}({:#x},{})", args.arg0, args.arg2))
+                .await;
+            if index == 0 {
+                return Err(reverie::Errno::ERESTARTSYS.into());
+            }
+            return Ok(RESTART_NESTED_RESULT);
         }
         if args.arg0 as u64 == RESTART_MAGIC_FD
             && (nr == Sysno::read || nr == Sysno::restart_syscall)
@@ -2571,6 +2588,43 @@ async fn host_hybrid_restart_with_an_sa_restart_handler_follows_linux() {
             expected.push("magic read(0x7e57,1)");
         }
         assert_eq!(events, expected, "{errno}");
+    }
+}
+
+/// The guest handler of the signal that interrupts a restart makes a syscall
+/// that itself restarts, before the kernel's decision for the outer one is
+/// reported. Both restarts are pending at once; each must resolve as Linux
+/// resolves it: the nested one restarts (no signal), and the outer one
+/// follows the handler's `SA_RESTART`.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_nested_inside_the_handler_resolves_both() {
+    for (mode, result) in [
+        ("handler-nested", -4),
+        ("handler-nested-restart", RESTART_RESULT),
+    ] {
+        let plan = RestartPlan {
+            errno: reverie::Errno::ERESTARTSYS.into_raw(),
+            restarts: 1,
+            signal: libc::SIGUSR1,
+            ..Default::default()
+        };
+        let (stdout, events) = restart_parity(mode, plan, 2, mode).await;
+        assert_eq!(
+            stdout,
+            format!("read-result={result} handled=1 nested-ok=1 traps=- hooks=-\n"),
+            "{mode}"
+        );
+        let mut expected = vec![
+            "read(warm)",
+            "magic read(0x7e57,1)",
+            "signal SIGUSR1",
+            "nested read(0x7e59,1)",
+            "nested read(0x7e59,1)",
+        ];
+        if result == RESTART_RESULT {
+            expected.push("magic read(0x7e57,1)");
+        }
+        assert_eq!(events, expected, "{mode}");
     }
 }
 
