@@ -179,18 +179,40 @@ pub(crate) fn require_ia32_emulation(
     }
 }
 
-/// Probes, once per process, whether `int 0x80` is serviced.
+/// Probes whether `int 0x80` is serviced for a task created by the calling
+/// thread.
 ///
-/// The boot parameter and kernel configuration cannot change while this
-/// process runs, so the first definitive answer is cached. A probe that could
-/// not run (for example, because installing its signal handler failed) is
-/// reported but not cached, so a later launch probes again.
+/// Two things decide the answer. The kernel's IA-32 syscall entry
+/// (`CONFIG_IA32_EMULATION` and the `ia32_emulation=` boot parameter) is the
+/// same for every thread and cannot change while this process runs. A seccomp
+/// filter is per thread, is inherited by every task the thread creates
+/// (including the guest), and may allow, fail, trap or kill an IA-32 syscall.
 ///
-/// The probe runs on the calling thread and creates no task. That matters
-/// because an embedder may call this from inside the guest's PID namespace:
-/// a forked probe child would take a PID there and shift every guest PID by
-/// one relative to a plain-ptrace run.
+/// A thread with no seccomp filter runs the probe itself, on the calling
+/// thread, and creates no task: no filter can answer its `int 0x80`, and a
+/// fault is caught. (The one way a filter could appear on this thread
+/// meanwhile is another thread installing one with
+/// `SECCOMP_FILTER_FLAG_TSYNC` between the check and the instruction.) Its
+/// first definitive answer is cached for later unfiltered callers.
+/// A probe that could not run (for example, because installing its signal
+/// handler failed) is reported but not cached, so a later launch probes again.
+///
+/// A thread under a seccomp filter must not execute `int 0x80` itself: a
+/// filter that answers with `SECCOMP_RET_KILL_PROCESS` would kill this process,
+/// and `SECCOMP_RET_KILL_THREAD` would kill the calling thread. Such a thread
+/// probes in a child instead (see `probe_in_child` below), and its answer is
+/// never read from or stored in the cache, because it describes this thread's
+/// filter and not the kernel.
+///
+/// No path takes a PID from the guest's PID sequence. That matters because an
+/// embedder may call this from inside the guest's PID namespace: a probe child
+/// with an ordinary PID would shift every guest PID by one relative to a
+/// plain-ptrace run.
 pub fn probe_ia32_emulation() -> Ia32EmulationProbe {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(filter) = calling_thread_seccomp_filter() {
+        return probe_in_child::run(&filter, &boot_parameter_note());
+    }
     static PROBE: Mutex<Option<Ia32EmulationProbe>> = Mutex::new(None);
     let mut cached = PROBE
         .lock()
@@ -198,7 +220,7 @@ pub fn probe_ia32_emulation() -> Ia32EmulationProbe {
     if let Some(probe) = cached.as_ref() {
         return probe.clone();
     }
-    let (probe, definitive) = probe_ia32_emulation_uncached();
+    let (probe, definitive) = probe_ia32_emulation_unfiltered();
     if definitive {
         *cached = Some(probe.clone());
     }
@@ -206,26 +228,57 @@ pub fn probe_ia32_emulation() -> Ia32EmulationProbe {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn probe_ia32_emulation_uncached() -> (Ia32EmulationProbe, bool) {
+fn probe_ia32_emulation_unfiltered() -> (Ia32EmulationProbe, bool) {
     (
         Ia32EmulationProbe::Unavailable("int 0x80 exists only on x86_64 hosts".into()),
         true,
     )
 }
 
-/// Executes an IA-32 `getpid` through `int 0x80` on the calling thread.
+/// Describes the calling thread's seccomp filter, or returns `None` when it
+/// has none.
+///
+/// `prctl(PR_GET_SECCOMP)` reports the calling thread's own mode. A result
+/// other than 0 (disabled), including a failure of the call itself, is treated
+/// as filtered: absence of a filter must be proven before `int 0x80` runs in
+/// this process.
+#[cfg(target_arch = "x86_64")]
+fn calling_thread_seccomp_filter() -> Option<String> {
+    // SAFETY: PR_GET_SECCOMP reads the calling thread's seccomp mode.
+    match unsafe { libc::prctl(libc::PR_GET_SECCOMP, 0, 0, 0, 0) } {
+        0 => None,
+        -1 => Some(format!(
+            "the calling thread's seccomp mode is unknown (prctl(PR_GET_SECCOMP) failed: {})",
+            std::io::Error::last_os_error()
+        )),
+        mode => Some(format!(
+            "the calling thread runs under seccomp (PR_GET_SECCOMP mode {mode})"
+        )),
+    }
+}
+
+/// Executes an IA-32 `getpid` through `int 0x80` on the calling thread, which
+/// must have no seccomp filter.
 ///
 /// A missing IA-32 entry raises a general-protection fault (`SIGSEGV`; a
-/// not-present gate would raise `SIGBUS`), and a seccomp filter can answer
-/// with `SIGSYS`. A temporary handler for these signals catches the fault on
-/// this thread only, steps over the instruction,
+/// not-present gate would raise `SIGBUS`). A temporary handler for these
+/// signals catches the fault on this thread only, steps over the instruction,
 /// and records the signal. Returns the probe result and whether it is
 /// definitive (cacheable).
 #[cfg(target_arch = "x86_64")]
-fn probe_ia32_emulation_uncached() -> (Ia32EmulationProbe, bool) {
+fn probe_ia32_emulation_unfiltered() -> (Ia32EmulationProbe, bool) {
+    if let Some(filter) = calling_thread_seccomp_filter() {
+        // Callers check first; refuse rather than risk this process.
+        return (
+            Ia32EmulationProbe::Unavailable(format!(
+                "the in-process probe refused to run because {filter}"
+            )),
+            false,
+        );
+    }
     // SAFETY: `int80_getpid` executes only `int 0x80`, which the guard
     // expects.
-    match unsafe { guarded_fault::run(guarded_fault::int80_getpid) } {
+    match unsafe { guarded_fault::run(int80_getpid) } {
         Ok((fault, result)) => {
             let expected = unsafe { libc::syscall(libc::SYS_getpid) } as u64;
             (
@@ -241,6 +294,17 @@ fn probe_ia32_emulation_uncached() -> (Ia32EmulationProbe, bool) {
 }
 
 #[cfg(target_arch = "x86_64")]
+fn signal_name(signal: libc::c_int) -> &'static str {
+    match signal {
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGSYS => "SIGSYS",
+        libc::SIGKILL => "SIGKILL",
+        _ => "a signal",
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 fn classify_probe_outcome(
     fault: Option<libc::c_int>,
     result: u64,
@@ -252,16 +316,221 @@ fn classify_probe_outcome(
         None => Ia32EmulationProbe::Unavailable(format!(
             "int 0x80 getpid returned {result:#x}, not the caller's PID {expected}{boot_note}"
         )),
-        Some(signal) => {
-            let name = match signal {
-                libc::SIGSEGV => "SIGSEGV",
-                libc::SIGBUS => "SIGBUS",
-                libc::SIGSYS => "SIGSYS",
-                _ => "a signal",
-            };
+        Some(signal) => Ia32EmulationProbe::Unavailable(format!(
+            "int 0x80 getpid raised {} ({signal}){boot_note}",
+            signal_name(signal)
+        )),
+    }
+}
+
+/// The production probe: IA-32 `getpid` (number 20) through `int 0x80`.
+#[cfg(target_arch = "x86_64")]
+unsafe fn int80_getpid() -> u64 {
+    const IA32_NR_GETPID: u64 = 20;
+    let result: u64;
+    // SAFETY: `int 0x80` either runs the IA-32 getpid, which touches no
+    // memory, or faults. In process the fault reaches `guarded_fault`, which
+    // steps over it; in the probe child it terminates the child.
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") IA32_NR_GETPID => result,
+            lateout("r8") _,
+            lateout("r9") _,
+            lateout("r10") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+    result
+}
+
+/// Probes `int 0x80` in a child whose PID is chosen, for a calling thread
+/// under a seccomp filter.
+///
+/// The child inherits the calling thread's filters, so it observes exactly
+/// what the guest would: a kill or trap terminates the child with `SIGSYS`,
+/// an errno comes back as a wrong result, and an allowed call returns the
+/// child's PID. Nothing it does can reach this process.
+///
+/// The child is created with `clone3` and `set_tid`, which places it at a
+/// caller-chosen PID near `pid_max` in this thread's PID namespace. The kernel
+/// allocates a `set_tid` PID without advancing the namespace's next-PID
+/// cursor, so the guest's PIDs are the same as if no child had existed.
+/// `set_tid` requires `CAP_CHECKPOINT_RESTORE` or `CAP_SYS_ADMIN` over the PID
+/// namespace, which a tracer that created its own user and PID namespace (as
+/// Hermit does) has. Without it the probe fails closed with the reason; it
+/// never falls back to an ordinary child that would take the next PID.
+#[cfg(target_arch = "x86_64")]
+mod probe_in_child {
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
+    use std::os::fd::OwnedFd;
+
+    use super::Ia32EmulationProbe;
+    use super::classify_probe_outcome;
+    use super::signal_name;
+
+    /// `struct clone_args` up to `set_tid_size` (`CLONE_ARGS_SIZE_VER1`, Linux
+    /// 5.5), the first version with `set_tid`.
+    #[repr(C)]
+    #[derive(Default)]
+    struct CloneArgs {
+        flags: u64,
+        pidfd: u64,
+        child_tid: u64,
+        parent_tid: u64,
+        exit_signal: u64,
+        stack: u64,
+        stack_size: u64,
+        tls: u64,
+        set_tid: u64,
+        set_tid_size: u64,
+    }
+
+    /// PIDs tried, counting down from `pid_max - 1`, before giving up on
+    /// finding a free one.
+    const CANDIDATE_PIDS: libc::pid_t = 64;
+
+    pub(super) fn run(filter: &str, boot_note: &str) -> Ia32EmulationProbe {
+        let refuse = |what: String| {
             Ia32EmulationProbe::Unavailable(format!(
-                "int 0x80 getpid raised {name} ({signal}){boot_note}"
+                "{filter}, so int 0x80 must be probed in a child, and {what}"
             ))
+        };
+        let pid_max = std::fs::read_to_string("/proc/sys/kernel/pid_max")
+            .ok()
+            .and_then(|text| text.trim().parse::<libc::pid_t>().ok())
+            .unwrap_or(32768);
+        let mut fds = [0; 2];
+        // SAFETY: pipe2 writes two descriptors into `fds`.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return refuse(format!(
+                "its result pipe could not be created: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: both descriptors were just created and are owned here.
+        let (reader, writer) =
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+
+        let mut child = None;
+        let lowest = (pid_max - CANDIDATE_PIDS).max(2);
+        for tid in (lowest..pid_max).rev() {
+            let chosen: libc::pid_t = tid;
+            let args = CloneArgs {
+                exit_signal: libc::SIGCHLD as u64,
+                set_tid: &chosen as *const libc::pid_t as u64,
+                set_tid_size: 1,
+                ..CloneArgs::default()
+            };
+            // SAFETY: fork semantics (no CLONE_VM). The child runs only
+            // `child_main`, which is async-signal-safe and never returns.
+            let pid = unsafe {
+                libc::syscall(
+                    libc::SYS_clone3,
+                    &args as *const CloneArgs,
+                    std::mem::size_of::<CloneArgs>(),
+                )
+            };
+            if pid == 0 {
+                unsafe { child_main(writer.as_raw_fd()) }
+            }
+            if pid > 0 {
+                child = Some(pid as libc::pid_t);
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EEXIST) {
+                return refuse(format!(
+                    "creating that child at a chosen PID (clone3 with set_tid {chosen}, which \
+                     needs CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN over this PID namespace) \
+                     failed: {error}"
+                ));
+            }
+        }
+        let Some(child) = child else {
+            return refuse(format!(
+                "no PID in {lowest}..{pid_max} was free for the probe child"
+            ));
+        };
+        drop(writer);
+
+        let mut bytes = [0u8; 16];
+        let mut filled = 0;
+        while filled < bytes.len() {
+            // SAFETY: reads into the unfilled tail of `bytes`.
+            let n = unsafe {
+                libc::read(
+                    reader.as_raw_fd(),
+                    bytes[filled..].as_mut_ptr().cast(),
+                    bytes.len() - filled,
+                )
+            };
+            if n > 0 {
+                filled += n as usize;
+            } else if n == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+            {
+                break;
+            }
+        }
+        let mut status = 0;
+        loop {
+            // SAFETY: waits for the child created above.
+            let waited = unsafe { libc::waitpid(child, &mut status, 0) };
+            if waited == child {
+                break;
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EINTR) {
+                return refuse(format!("waiting for the probe child failed: {error}"));
+            }
+        }
+
+        if libc::WIFSIGNALED(status) {
+            let signal = libc::WTERMSIG(status);
+            return Ia32EmulationProbe::Unavailable(format!(
+                "int 0x80 getpid killed the probe child with {} ({signal}); {filter}{boot_note}",
+                signal_name(signal)
+            ));
+        }
+        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 && filled == bytes.len() {
+            let result = u64::from_ne_bytes(bytes[..8].try_into().unwrap());
+            let expected = u64::from_ne_bytes(bytes[8..].try_into().unwrap());
+            return match classify_probe_outcome(None, result, expected, boot_note) {
+                Ia32EmulationProbe::Available => Ia32EmulationProbe::Available,
+                Ia32EmulationProbe::Unavailable(text) => {
+                    Ia32EmulationProbe::Unavailable(format!("{text}; {filter}"))
+                }
+            };
+        }
+        refuse(format!(
+            "the probe child ended with wait status {status:#x} after sending {filled} of 16 \
+             result bytes"
+        ))
+    }
+
+    /// Runs in the probe child, a fork of a possibly multithreaded process:
+    /// only async-signal-safe calls.
+    unsafe fn child_main(writer: libc::c_int) -> ! {
+        unsafe {
+            // A fault or trap must terminate the child with its own signal,
+            // neither running an inherited handler nor dumping core.
+            let mut unblock: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut unblock);
+            for signal in [libc::SIGSEGV, libc::SIGBUS, libc::SIGSYS] {
+                libc::signal(signal, libc::SIG_DFL);
+                libc::sigaddset(&mut unblock, signal);
+            }
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &unblock, std::ptr::null_mut());
+            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+            let result = super::int80_getpid();
+            let expected = libc::syscall(libc::SYS_getpid) as u64;
+            let mut bytes = [0u8; 16];
+            bytes[..8].copy_from_slice(&result.to_ne_bytes());
+            bytes[8..].copy_from_slice(&expected.to_ne_bytes());
+            libc::write(writer, bytes.as_ptr().cast(), bytes.len());
+            libc::_exit(0)
         }
     }
 }
@@ -275,7 +544,13 @@ mod guarded_fault {
     use std::sync::atomic::AtomicI64;
     use std::sync::atomic::Ordering;
 
-    const SIGNALS: [libc::c_int; 3] = [libc::SIGSEGV, libc::SIGBUS, libc::SIGSYS];
+    /// The faults a missing IA-32 entry raises. `SIGSYS` is deliberately
+    /// absent: the guard runs only on a thread without a seccomp filter, so no
+    /// filter answers its `int 0x80` with a trap, and taking over the process-wide `SIGSYS`
+    /// disposition would intercept a seccomp trap meant for another thread.
+    /// Such a trap reports the address after the syscall, so it does not
+    /// recur when a handler returns, and forwarding it could lose it.
+    const SIGNALS: [libc::c_int; 2] = [libc::SIGSEGV, libc::SIGBUS];
 
     /// Value placed in `rax` when the instruction faults.
     const FAULTED: u64 = u64::MAX;
@@ -293,29 +568,9 @@ mod guarded_fault {
     unsafe impl Sync for Previous {}
     static PREVIOUS: Previous = Previous(UnsafeCell::new(unsafe { std::mem::zeroed() }));
 
-    /// The production probe: IA-32 `getpid` (number 20) through `int 0x80`.
-    pub(super) unsafe fn int80_getpid() -> u64 {
-        const IA32_NR_GETPID: u64 = 20;
-        let result: u64;
-        // SAFETY: `int 0x80` either runs the IA-32 getpid, which touches no
-        // memory, or faults into `on_fault`, which steps over it.
-        unsafe {
-            core::arch::asm!(
-                "int 0x80",
-                inlateout("rax") IA32_NR_GETPID => result,
-                lateout("r8") _,
-                lateout("r9") _,
-                lateout("r10") _,
-                lateout("r11") _,
-                options(nostack),
-            );
-        }
-        result
-    }
-
     /// Runs `instruction`, which must execute exactly one two-byte `int imm8`
-    /// whose result is `rax`, with `SIGSEGV`, `SIGBUS` and `SIGSYS` caught on
-    /// this thread. Returns the signal that interrupted it, if any, and `rax`.
+    /// whose result is `rax`, with `SIGSEGV` and `SIGBUS` caught on this
+    /// thread. Returns the signal that interrupted it, if any, and `rax`.
     ///
     /// A fault on any other thread in the meantime is passed to the
     /// disposition that was installed before, so this never swallows a real
@@ -404,9 +659,8 @@ mod guarded_fault {
                 let context = &mut *context.cast::<libc::ucontext_t>();
                 let gregs = &mut context.uc_mcontext.gregs;
                 let rip = gregs[libc::REG_RIP as usize];
-                // A fault reports the address of the `int`; a seccomp trap
-                // (SIGSYS) reports the address after it.
-                if signal != libc::SIGSYS && *(rip as *const u8) == 0xcd {
+                // A fault reports the address of the `int`.
+                if *(rip as *const u8) == 0xcd {
                     gregs[libc::REG_RIP as usize] = rip + 2;
                 }
                 gregs[libc::REG_RAX as usize] = FAULTED as i64;
@@ -427,12 +681,17 @@ mod guarded_fault {
         let previous = unsafe { &(*PREVIOUS.0.get())[index] };
         let action = previous.sa_sigaction;
         if action == libc::SIG_DFL || action == libc::SIG_IGN {
-            // Reinstall the old disposition. A synchronous fault re-executes
-            // and meets it; a sent signal is re-raised (it stays blocked
-            // until this handler returns) so that it is not lost.
+            // Reinstall the old disposition and re-raise the signal (it stays
+            // blocked until this handler returns), so that it is not lost. A
+            // synchronous fault would also re-execute and meet the old
+            // disposition, but not every kernel-generated signal recurs (an
+            // asynchronous BUS_MCEERR_AO does not), so under SIG_DFL the
+            // signal is always re-raised. Under SIG_IGN a sent signal is
+            // discarded as it would have been, and a fault re-executes and is
+            // forced by the kernel.
             unsafe {
                 libc::sigaction(signal, previous, std::ptr::null_mut());
-                if !info.is_null() && (*info).si_code <= 0 {
+                if action == libc::SIG_DFL || info.is_null() || (*info).si_code <= 0 {
                     libc::raise(signal);
                 }
             }
@@ -590,65 +849,381 @@ mod tests {
         assert_eq!(before, after, "the probe leaked its signal handlers");
     }
 
-    /// The fault path a seccomp filter takes: `SIGSYS` reported after the
-    /// instruction. The filter is installed on a scratch thread only.
+    const AUDIT_ARCH_I386: u32 = 0x4000_0003;
+    const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
+
+    /// Installs, on the calling thread only, a seccomp filter that answers
+    /// syscalls of `arch` (and, if given, only number `nr`) with `action` and
+    /// allows everything else.
+    #[cfg(target_arch = "x86_64")]
+    fn install_seccomp_filter(arch: u32, nr: Option<u32>, action: u32) {
+        let stmt = |code: u32, k: u32| libc::sock_filter {
+            code: code as u16,
+            jt: 0,
+            jf: 0,
+            k,
+        };
+        let jump_unless = |value: u32, skip: u8| libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: skip,
+            k: value,
+        };
+        let load = libc::BPF_LD | libc::BPF_W | libc::BPF_ABS;
+        let ret = libc::BPF_RET | libc::BPF_K;
+        let mut filter = vec![stmt(load, 4)]; // A = seccomp_data.arch
+        match nr {
+            None => filter.push(jump_unless(arch, 1)),
+            Some(nr) => {
+                filter.push(jump_unless(arch, 3));
+                filter.push(stmt(load, 0)); // A = seccomp_data.nr
+                filter.push(jump_unless(nr, 1));
+            }
+        }
+        filter.push(stmt(ret, action));
+        filter.push(stmt(ret, libc::SECCOMP_RET_ALLOW));
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_mut_ptr(),
+        };
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+            assert_eq!(
+                libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER,
+                    &program as *const libc::sock_fprog,
+                ),
+                0,
+                "install seccomp filter: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+
+    /// Runs `probe_ia32_emulation` on a fresh thread under a filter for IA-32
+    /// syscalls, bounded so that a killed or deadlocked probe fails the test
+    /// instead of hanging it.
+    #[cfg(target_arch = "x86_64")]
+    fn probe_on_filtered_thread(action: u32) -> Ia32EmulationProbe {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            install_seccomp_filter(AUDIT_ARCH_I386, None, action);
+            let _ = sender.send(probe_ia32_emulation());
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the probe on a filtered thread neither returned nor finished in 10 s")
+    }
+
+    /// An answer from a filtered thread that names the observed trap, or that
+    /// names why the child could not be created. Never Available.
+    #[cfg(target_arch = "x86_64")]
+    fn assert_filtered_refusal(probe: &Ia32EmulationProbe) {
+        let Ia32EmulationProbe::Unavailable(text) = probe else {
+            panic!("a filter that traps IA-32 syscalls was reported Available");
+        };
+        assert!(
+            text.contains("runs under seccomp")
+                && (text.contains("killed the probe child with SIGSYS (31)")
+                    || text.contains("clone3 with set_tid")),
+            "{text}"
+        );
+    }
+
+    /// The seccomp filter is per thread; an answer for one thread must not be
+    /// served to another. An unfiltered thread caches Available, a thread
+    /// that traps IA-32 syscalls must still see its own refusal, and that
+    /// refusal must not replace the cached answer.
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn probe_reports_sigsys_from_a_seccomp_trap_on_ia32_syscalls() {
-        let (probe, definitive) = std::thread::spawn(|| {
-            const AUDIT_ARCH_I386: u32 = 0x4000_0003;
-            let filter = [
-                // A = seccomp_data.arch
-                libc::sock_filter {
-                    code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
-                    jt: 0,
-                    jf: 0,
-                    k: 4,
-                },
-                libc::sock_filter {
-                    code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
-                    jt: 0,
-                    jf: 1,
-                    k: AUDIT_ARCH_I386,
-                },
-                libc::sock_filter {
-                    code: (libc::BPF_RET | libc::BPF_K) as u16,
-                    jt: 0,
-                    jf: 0,
-                    k: libc::SECCOMP_RET_TRAP,
-                },
-                libc::sock_filter {
-                    code: (libc::BPF_RET | libc::BPF_K) as u16,
-                    jt: 0,
-                    jf: 0,
-                    k: libc::SECCOMP_RET_ALLOW,
-                },
-            ];
-            let program = libc::sock_fprog {
-                len: filter.len() as u16,
-                filter: filter.as_ptr().cast_mut(),
-            };
-            unsafe {
-                assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
-                assert_eq!(
-                    libc::prctl(
-                        libc::PR_SET_SECCOMP,
-                        libc::SECCOMP_MODE_FILTER,
-                        &program as *const libc::sock_fprog,
-                    ),
-                    0,
-                    "install seccomp filter: {}",
-                    std::io::Error::last_os_error()
+    fn probe_on_a_filtered_thread_neither_uses_nor_fills_the_cache() {
+        assert_eq!(probe_ia32_emulation(), Ia32EmulationProbe::Available);
+        assert_filtered_refusal(&probe_on_filtered_thread(libc::SECCOMP_RET_TRAP));
+        assert_eq!(probe_ia32_emulation(), Ia32EmulationProbe::Available);
+    }
+
+    const REEXEC_ARM_ENV: &str = "REVERIE_IA32_PROBE_TEST_ARM";
+    const REEXEC_MARK: &str = "@@ia32-probe-arm@@ ";
+
+    /// Re-executes one test of this module in a child process (optionally in
+    /// a fresh user, PID and mount namespace, the way Hermit runs the tracer)
+    /// and returns its exit status and marked output lines.
+    fn reexec(
+        test: &str,
+        arm: &str,
+        fresh_pid_namespace: bool,
+    ) -> (std::process::ExitStatus, String) {
+        let module = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .unwrap();
+        let mut command = if fresh_pid_namespace {
+            let mut command = std::process::Command::new("/usr/bin/unshare");
+            command
+                .args([
+                    "--user",
+                    "--map-root-user",
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                    "--",
+                ])
+                .arg(std::env::current_exe().unwrap());
+            command
+        } else {
+            std::process::Command::new(std::env::current_exe().unwrap())
+        };
+        let mut child = command
+            .args([
+                "--exact",
+                &format!("{module}::{test}"),
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(REEXEC_ARM_ENV, arm)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("re-execute the test binary");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "{test} arm {arm} exceeded 60 s:\n{}",
+                    String::from_utf8_lossy(&output.stdout)
                 );
             }
-            probe_ia32_emulation_uncached()
-        })
-        .join()
-        .expect("probe thread");
-        assert!(definitive, "a fault is a definitive answer");
-        assert!(
-            matches!(&probe, Ia32EmulationProbe::Unavailable(text) if text.contains("SIGSYS")),
-            "{probe:?}"
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let record = stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix(REEXEC_MARK))
+            .collect::<Vec<_>>()
+            .join("\n");
+        eprintln!(
+            "{test} arm {arm}: {}\nstdout:\n{stdout}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
         );
+        (output.status, record)
+    }
+
+    /// A filter that kills on IA-32 syscalls must not kill the process or
+    /// the calling thread, and must not leave the probe deadlocked: a second
+    /// probe from another filtered thread answers too. Runs in a child
+    /// process so that a regression kills the child, not the test harness.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn probe_survives_seccomp_kill_filters_on_ia32_syscalls() {
+        if let Ok(arm) = std::env::var(REEXEC_ARM_ENV) {
+            unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+            let action = match arm.as_str() {
+                "kill-process" => libc::SECCOMP_RET_KILL_PROCESS,
+                "kill-thread" => libc::SECCOMP_RET_KILL_THREAD,
+                other => panic!("unknown arm {other}"),
+            };
+            for attempt in 0..2 {
+                let probe = probe_on_filtered_thread(action);
+                assert_filtered_refusal(&probe);
+                println!("\n{REEXEC_MARK}{arm} attempt {attempt}: {probe:?}");
+            }
+            let dispositions = [libc::SIGSEGV, libc::SIGBUS, libc::SIGSYS].map(current_disposition);
+            println!("{REEXEC_MARK}{arm} dispositions {dispositions:?}");
+            return;
+        }
+        for arm in ["kill-process", "kill-thread"] {
+            let (status, record) = reexec(
+                "probe_survives_seccomp_kill_filters_on_ia32_syscalls",
+                arm,
+                false,
+            );
+            assert!(status.success(), "{arm}: the probe process died: {status}");
+            assert_eq!(
+                record
+                    .lines()
+                    .filter(|line| line.contains("attempt"))
+                    .count(),
+                2,
+                "{arm}: {record}"
+            );
+        }
+    }
+
+    /// A child may only probe from a filtered thread if it takes no PID from
+    /// the guest's sequence. In a fresh PID namespace, which the test owns as
+    /// Hermit owns its own, each filter arm forks once before and once after
+    /// the probe; the two PIDs must be consecutive. A control arm that forks
+    /// an ordinary child in between shows that one taken PID is visible.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn filtered_probe_takes_no_pid_in_a_fresh_pid_namespace() {
+        fn fork_and_reap() -> libc::pid_t {
+            let pid = unsafe { libc::fork() };
+            if pid == 0 {
+                unsafe { libc::_exit(0) };
+            }
+            assert!(pid > 0, "fork: {}", std::io::Error::last_os_error());
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+            pid
+        }
+        if std::env::var(REEXEC_ARM_ENV).is_ok() {
+            // A regression kills this child with SIGSYS; do not dump core.
+            unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+            let arms: [(&str, Option<u32>); 6] = [
+                ("ordinary-child-control", None),
+                ("kill-process", Some(libc::SECCOMP_RET_KILL_PROCESS)),
+                ("kill-thread", Some(libc::SECCOMP_RET_KILL_THREAD)),
+                ("trap", Some(libc::SECCOMP_RET_TRAP)),
+                (
+                    "errno-enosys",
+                    Some(libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32),
+                ),
+                ("allow", Some(libc::SECCOMP_RET_ALLOW)),
+            ];
+            for (label, action) in arms {
+                let line = std::thread::spawn(move || {
+                    let before = fork_and_reap();
+                    let probe = match action {
+                        None => {
+                            fork_and_reap();
+                            None
+                        }
+                        Some(action) => {
+                            install_seccomp_filter(AUDIT_ARCH_I386, None, action);
+                            Some(probe_ia32_emulation())
+                        }
+                    };
+                    let after = fork_and_reap();
+                    format!("{label} {before} {after} {probe:?}")
+                })
+                .join()
+                .expect("arm thread");
+                println!("\n{REEXEC_MARK}{line}");
+            }
+            return;
+        }
+        let (status, record) = reexec(
+            "filtered_probe_takes_no_pid_in_a_fresh_pid_namespace",
+            "all",
+            true,
+        );
+        assert!(
+            status.success(),
+            "namespace child failed: {status}\n{record}"
+        );
+        let arm = |label: &str| -> (i32, i32, String) {
+            let line = record
+                .lines()
+                .find(|line| line.starts_with(&format!("{label} ")))
+                .unwrap_or_else(|| panic!("no {label} arm in:\n{record}"));
+            let mut words = line.splitn(4, ' ').skip(1);
+            let before = words.next().unwrap().parse().unwrap();
+            let after = words.next().unwrap().parse().unwrap();
+            (before, after, words.next().unwrap().to_owned())
+        };
+        let (before, after, _) = arm("ordinary-child-control");
+        assert_eq!(after, before + 2, "an ordinary child's PID was not visible");
+        for label in [
+            "kill-process",
+            "kill-thread",
+            "trap",
+            "errno-enosys",
+            "allow",
+        ] {
+            let (before, after, probe) = arm(label);
+            assert_eq!(after, before + 1, "{label}: the probe took a PID: {probe}");
+            match label {
+                "allow" => assert_eq!(probe, "Some(Available)"),
+                "errno-enosys" => assert!(
+                    probe.contains("returned 0xffffffffffffffda")
+                        && probe.contains("runs under seccomp"),
+                    "{probe}"
+                ),
+                _ => assert!(
+                    probe.contains("killed the probe child with SIGSYS (31)"),
+                    "{label}: {probe}"
+                ),
+            }
+        }
+    }
+
+    static OTHER_THREAD_GO: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    static OTHER_THREAD_DONE: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// A guarded "instruction" that keeps the guard armed until the other
+    /// thread has made its trapped syscall (or 5 s pass). It never faults.
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn hold_guard_armed() -> u64 {
+        use std::sync::atomic::Ordering;
+        OTHER_THREAD_GO.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !OTHER_THREAD_DONE.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::hint::spin_loop();
+        }
+        0
+    }
+
+    /// A seccomp trap on another thread while the guard is armed must reach
+    /// the process's own disposition. Under SIG_DFL, `SIGSYS` terminates the
+    /// process, and it must do so with the guard armed as it does without it
+    /// (the control arm). Runs in a child process.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_seccomp_trap_on_another_thread_is_not_swallowed_by_the_guard() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::sync::atomic::Ordering;
+        if let Ok(arm) = std::env::var(REEXEC_ARM_ENV) {
+            unsafe {
+                libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                libc::signal(libc::SIGSYS, libc::SIG_DFL);
+            }
+            let other = std::thread::spawn(|| {
+                while !OTHER_THREAD_GO.load(Ordering::SeqCst) {
+                    std::hint::spin_loop();
+                }
+                install_seccomp_filter(
+                    AUDIT_ARCH_X86_64,
+                    Some(libc::SYS_getppid as u32),
+                    libc::SECCOMP_RET_TRAP,
+                );
+                let returned = unsafe { libc::syscall(libc::SYS_getppid) };
+                OTHER_THREAD_DONE.store(true, Ordering::SeqCst);
+                println!("\n{REEXEC_MARK}other thread survived; getppid returned {returned}");
+            });
+            match arm.as_str() {
+                "control" => OTHER_THREAD_GO.store(true, Ordering::SeqCst),
+                "guarded" => {
+                    let outcome = unsafe { guarded_fault::run(hold_guard_armed) };
+                    println!("\n{REEXEC_MARK}guard returned {outcome:?}");
+                }
+                other => panic!("unknown arm {other}"),
+            }
+            let _ = other.join();
+            // Give a pending process-directed signal a moment to land.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            println!("\n{REEXEC_MARK}process survived");
+            return;
+        }
+        for arm in ["control", "guarded"] {
+            let (status, record) = reexec(
+                "a_seccomp_trap_on_another_thread_is_not_swallowed_by_the_guard",
+                arm,
+                false,
+            );
+            assert_eq!(
+                status.signal(),
+                Some(libc::SIGSYS),
+                "{arm}: the trapped syscall did not terminate the process by SIGSYS \
+                 ({status}):\n{record}"
+            );
+        }
     }
 }
