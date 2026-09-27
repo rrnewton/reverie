@@ -220,11 +220,11 @@ pub(crate) async fn run(
             >(command, (), preload, tool_data)
             .await?;
             let counter_summary = {
-                let inner = global.inner.lock().unwrap();
+                let (total_syscalls, processes, threads) = global.totals();
                 CounterSummary::Counter2 {
-                    total_syscalls: inner.total_syscalls,
-                    processes: inner.exited_procs,
-                    threads: inner.exited_threads,
+                    total_syscalls,
+                    processes,
+                    threads,
                 }
             };
             Ok(RunOutput {

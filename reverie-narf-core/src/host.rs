@@ -414,6 +414,8 @@ pub struct NarfToolHost<T: Tool, L> {
     global: T::GlobalState,
     config: Config<T>,
     subscribed: [u64; 8],
+    /// Builds each hosted process's Tool (see [`Self::with_tool_constructor`]).
+    new_tool: fn(Pid, &Config<T>) -> T,
     tasks: L,
 }
 
@@ -455,8 +457,20 @@ where
             global,
             config,
             subscribed,
+            new_tool: T::new,
             tasks: L::new(TaskTable::new()),
         })
+    }
+
+    /// Builds every hosted process's Tool with `new_tool` instead of
+    /// `T::new`, from the same process ID and configuration.
+    ///
+    /// For a backend that configures each Tool it hosts the same way, as
+    /// reverie-dbt gives counter2 a thread-exit reporter that writes to its
+    /// runtime's output.
+    pub fn with_tool_constructor(mut self, new_tool: fn(Pid, &Config<T>) -> T) -> Self {
+        self.new_tool = new_tool;
+        self
     }
 
     /// The run's global state, shared directly by every callback.
@@ -516,7 +530,7 @@ where
 
     /// Registers the root task of the hosted process tree.
     pub fn register_root(&self, tid: Pid, pid: Pid) -> Result<(), NarfFatal> {
-        let tool = Arc::new(T::new(pid, &self.config));
+        let tool = Arc::new((self.new_tool)(pid, &self.config));
         let state = tool.init_thread_state(tid, None);
         self.tasks.with(|table| {
             table.insert_process(pid, tool)?;
@@ -548,7 +562,7 @@ where
                 if created.pid != created.tid {
                     return Err(NarfFatal::CreatedTaskMismatch(created));
                 }
-                let tool = Arc::new(T::new(created.pid, &self.config));
+                let tool = Arc::new((self.new_tool)(created.pid, &self.config));
                 let state = tool.init_thread_state(created.tid, Some((parent_tid, parent_state)));
                 self.tasks.with(|table| {
                     table.insert_process(created.pid, tool)?;

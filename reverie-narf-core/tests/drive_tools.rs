@@ -308,6 +308,62 @@ fn counter2_tears_down_each_thread_and_process_exactly_once() {
     assert_eq!(kernel.violations(), []);
 }
 
+/// The thread-exit lines [`record_thread_exit`] received, in order.
+static THREAD_EXIT_LINES: std::sync::Mutex<Vec<(i32, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn record_thread_exit(tid: Pid, syscalls: u64) {
+    THREAD_EXIT_LINES
+        .lock()
+        .unwrap()
+        .push((tid.as_raw(), syscalls));
+}
+
+/// A backend without `std` gets counter2's thread-exit line only through a
+/// reporter. The host builds the root's Tool and each forked process's Tool
+/// with the backend's constructor, so the reporter sees every thread's exit,
+/// with that thread's own count.
+#[test]
+fn counter2_tool_constructor_reaches_every_process() {
+    THREAD_EXIT_LINES.lock().unwrap().clear();
+    let host = host::<counter2_tool::CounterLocal>().with_tool_constructor(|pid, config| {
+        <counter2_tool::CounterLocal as Tool>::new(pid, config)
+            .with_thread_exit_reporter(record_thread_exit)
+    });
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    let getpid = request(Sysno::getpid, NONE);
+
+    complete(kernel.syscall(&host, root, getpid));
+    let thread = pid(complete(kernel.syscall(
+        &host,
+        root,
+        request(Sysno::clone, [CLONE_THREAD, 0, 0, 0, 0, 0]),
+    )) as i32);
+    for _ in 0..3 {
+        complete(kernel.syscall(&host, thread, getpid));
+    }
+    context_managed(kernel.syscall(&host, thread, request(Sysno::exit, NONE)));
+    let child = pid(complete(kernel.syscall(&host, root, request(Sysno::fork, NONE))) as i32);
+    complete(kernel.syscall(&host, child, getpid));
+    context_managed(kernel.syscall(&host, child, request(Sysno::exit_group, NONE)));
+    context_managed(kernel.syscall(&host, root, request(Sysno::exit_group, NONE)));
+
+    assert_teardowns(
+        &kernel,
+        &[
+            (1001, exited(false)),
+            (1002, exited(true)),
+            (1000, exited(true)),
+        ],
+    );
+    assert_eq!(
+        *THREAD_EXIT_LINES.lock().unwrap(),
+        [(1001, 4), (1002, 2), (1000, 4)]
+    );
+    assert_eq!(host.global().totals(), (10, 2, 3));
+    assert_eq!(kernel.violations(), []);
+}
+
 // ----------------------------------------------------------------------------
 // Guest methods
 
