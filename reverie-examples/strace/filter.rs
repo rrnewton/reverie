@@ -6,6 +6,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// This module names only `core` and `alloc`, so it also builds without
+// `std` (reverie-narf-tools compiles it for the Narf kernel).
+extern crate alloc;
+
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use reverie::syscalls::Sysno;
 use serde::Deserialize;
 use serde::Serialize;
@@ -19,7 +27,7 @@ pub struct Filter {
     pub syscalls: Vec<Sysno>,
 }
 
-impl std::str::FromStr for Filter {
+impl core::str::FromStr for Filter {
     type Err = String;
 
     // Must parse this: [!][?]value1[,[?]value2]...
