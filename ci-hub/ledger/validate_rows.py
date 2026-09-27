@@ -1277,8 +1277,10 @@ def events(*, root: Path | None = None, preserve_admission: bool = False) -> lis
     cannot make an acceptance probe indistinguishable from a validation run.
     """
     root = (root or repository_root()).resolve()
-    read_options = ({"object_pairs_hook": qualifying_receipt.AdmissionJsonObject}
-                    if preserve_admission else {})
+    # Both modes keep written pairs wherever a dictionary would lose them, so a
+    # correction that repeats a key is judged as written in either mode.
+    read_options = {"object_pairs_hook": qualifying_receipt.AdmissionJsonObject
+                    if preserve_admission else _pairs_when_repeated}
     union_options = ({"canonical": _admission_event_identity} if preserve_admission else {})
     gathered: list[dict] = []
     for path in shard_paths(root):
@@ -1299,6 +1301,19 @@ def events(*, root: Path | None = None, preserve_admission: bool = False) -> lis
         for event in union_events(gathered, **union_options)
         if not _is_acceptance_fixture_event(event)
     ]
+
+
+def _pairs_when_repeated(pairs):
+    """A plain dictionary, unless the object names a key more than once.
+
+    Such an object keeps its written pairs (``AdmissionJsonObject``) instead of
+    silently keeping only the last value. Objects without a repeated key lose
+    nothing as dictionaries, so the compatibility views read them unchanged.
+    """
+    keys = [key for key, _value in pairs]
+    if len(keys) != len(set(keys)):
+        return qualifying_receipt.AdmissionJsonObject(pairs)
+    return dict(pairs)
 
 
 def _admission_event_identity(value):

@@ -3618,19 +3618,23 @@ def _repeat_first_key(text: str, anchor: str, key: str, value: str) -> str:
     "correction-row-branch", "correction-row-same-value", "correction-marker",
     "correction-envelope", "lost-run-row",
 ])
-def test_quarantine_that_repeats_a_key_is_refused_by_the_pair_preserving_reader(
+def test_quarantine_that_repeats_a_key_is_refused_by_every_ledger_reader(
     tmp_path: Path, where: str,
 ):
-    """Every dictionary view keeps the last of a repeated key, so each forged
-    text below reads as the exact correction. The authority reader keeps the
-    written pairs and must refuse it."""
+    """A dictionary keeps the last of a repeated key, so each forged text below
+    would read as the exact correction. Both the pair-preserving authority
+    readers and the default compatibility readers keep the written pairs of an
+    object that repeats a key, and must refuse it."""
     key = validate_rows.qualifying_receipt.RETAINED_EVIDENCE_QUARANTINE_KEY
     lost = quarantine_lost_events()
     corrections = [json.dumps(quarantine_correction(event), sort_keys=True) for event in lost]
     texts = [json.dumps(event, sort_keys=True) for event in lost]
     _write_event_texts(tmp_path, lost[0], *texts, *corrections)
-    genuine = validate_rows.rows(root=tmp_path, preserve_admission=True)
-    assert sum(key in row for row in genuine) == 2
+    for preserve_admission in (True, False):
+        genuine = validate_rows.rows(root=tmp_path, preserve_admission=preserve_admission)
+        assert sum(key in row for row in genuine) == 2
+    # Objects that repeat no key still read as plain dictionaries by default.
+    assert all(type(event) is dict for event in validate_rows.events(root=tmp_path))
     branch = json.dumps(lost[0]["legacy_row"]["branch"])
     refusal = "retained evidence quarantine names a key more than once"
     if where == "correction-row-branch":
@@ -3650,6 +3654,18 @@ def test_quarantine_that_repeats_a_key_is_refused_by_the_pair_preserving_reader(
         validate_rows.rows(root=tmp_path, preserve_admission=True)
     with pytest.raises(ValueError, match=refusal):
         validate_rows.status_input(root=tmp_path, preserve_admission=True)
+    # The default readers serialize a merged envelope for the event schema, so
+    # the repeated envelope key is refused by the quarantine judge instead.
+    default_refusal = ("retained evidence quarantine names a key more than once"
+                       if where == "correction-envelope" else refusal)
+    with pytest.raises(ValueError, match=default_refusal):
+        validate_rows.rows(root=tmp_path)
+    with pytest.raises(ValueError, match=default_refusal):
+        validate_rows.status_input(root=tmp_path)
+    # The raw union judges no correction; it must hand the written pairs on.
+    forged = [event for event in validate_rows.events(root=tmp_path)
+              if validate_rows.qualifying_receipt._quarantine_repeated_key(event)]
+    assert len(forged) == 1
 
 
 def test_quarantine_marker_in_a_result_row_is_refused(tmp_path: Path):
