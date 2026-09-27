@@ -4223,6 +4223,9 @@ impl ElfExecutor {
             return None;
         }
         let args = request.args();
+        if !wait4_options_supported(args[2]) {
+            return Some(negative_errno(libc::EINVAL));
+        }
         let requested = args[0] as u32 as libc::pid_t;
         let matches = |pid: i32| requested == -1 || requested > 0 && pid == requested;
         if self.state.children.keys().copied().any(matches) {
@@ -17909,13 +17912,28 @@ fn rt_sigtimedwait(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
     event.signal() as i64
 }
 
+fn wait4_options_supported(raw: u64) -> bool {
+    // Linux decodes options as int. WUNTRACED adds stopped-child eligibility;
+    // it does not exclude the terminal statuses already represented here.
+    // Terminal-only admission relies on stops remaining unsupported:
+    // kill_signal/send_thread_signal refuse Stop, validate_deferred_signal_event
+    // refuses SIGSTOP, and validate_child_exit_signal_event refuses CLD_STOPPED.
+    // vm::deliver_selected_signal_at_boundary and parked_signal_runtime's
+    // observe_parked_signal_impl also refuse a remaining Stop disposition.
+    // Adding stopped children requires extending wait4 before changing the
+    // wait4_wuntraced_requires_unsupported_stopped_children contract test.
+    // WCONTINUED remains unsupported.
+    let options = raw as libc::c_int;
+    options & !(libc::WNOHANG | libc::WUNTRACED) == 0
+}
+
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     // pid_t is a 32-bit signed value; the guest passes wait4(-1) as 0xFFFFFFFF
     // in a 64-bit register. Truncate to i32 before sign-extending so the common
     // wait-for-any-child form (-1), process-group forms (0, <-1), and a specific
     // pid are all interpreted correctly instead of collapsing to ECHILD.
     let requested = args[0] as i32 as i64;
-    if args[2] & !(libc::WNOHANG as u64) != 0 {
+    if !wait4_options_supported(args[2]) {
         return negative_errno(libc::EINVAL);
     }
     let child_pid = if requested > 0 {
@@ -17930,7 +17948,10 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
     };
-    let status = state.children[&child_pid].into_raw();
+    // Linux reaps the zombie before either copy-out. An EFAULT must still
+    // consume this exact child in both the backend and the family ledger.
+    let status = state.children.remove(&child_pid).unwrap().into_raw();
+    state.consumed_child_wait = Some(child_pid);
     if args[1] != 0 && memory.user().write(args[1], &status.to_le_bytes()).is_err() {
         return negative_errno(libc::EFAULT);
     }
@@ -17942,8 +17963,6 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     {
         return negative_errno(libc::EFAULT);
     }
-    state.children.remove(&child_pid);
-    state.consumed_child_wait = Some(child_pid);
     i64::from(child_pid)
 }
 
@@ -44774,6 +44793,260 @@ mod tests {
     }
 
     #[test]
+    fn wait4_wuntraced_reaps_terminal_statuses_with_linux_int_options() {
+        const STATUS: u64 = 0x100;
+        const USAGE: u64 = 0x200;
+        let root = TestDir::new();
+        for low in [libc::WUNTRACED, libc::WUNTRACED | libc::WNOHANG] {
+            for high in [0, 0xdead_beef_u64 << 32] {
+                for selected in [7, u64::from(u32::MAX)] {
+                    for terminal in [
+                        ExitStatus::Exited(3),
+                        ExitStatus::Signaled(Signal::SIGTERM, false),
+                        ExitStatus::Signaled(Signal::SIGABRT, true),
+                    ] {
+                        for outputs in [false, true] {
+                            let mut state = test_state(&root.0);
+                            state.children.insert(7, terminal);
+                            state.children.insert(8, ExitStatus::Exited(4));
+                            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                            let mut expected = vec![0xa5; PAGE_SIZE as usize];
+                            memory.write(0, &expected).unwrap();
+                            let args = [
+                                selected,
+                                if outputs { STATUS } else { 0 },
+                                high | low as u64,
+                                if outputs { USAGE } else { 0 },
+                                0,
+                                0,
+                            ];
+                            assert_eq!(wait4(&mut memory, &mut state, &args), 7);
+                            assert_eq!(state.consumed_child_wait, Some(7));
+                            assert_eq!(state.children.get(&8), Some(&ExitStatus::Exited(4)));
+                            assert!(!state.children.contains_key(&7));
+                            if outputs {
+                                expected[STATUS as usize..STATUS as usize + 4]
+                                    .copy_from_slice(&terminal.into_raw().to_le_bytes());
+                                expected[USAGE as usize
+                                    ..USAGE as usize + std::mem::size_of::<libc::rusage>()]
+                                    .fill(0);
+                            }
+                            // A second exact wait cannot consume the remaining sibling.
+                            state.consumed_child_wait.take();
+                            let mut second = args;
+                            second[0] = 7;
+                            assert_eq!(
+                                wait4(&mut memory, &mut state, &second),
+                                negative_errno(libc::ECHILD)
+                            );
+                            assert!(state.consumed_child_wait.is_none());
+                            let mut actual = vec![0; PAGE_SIZE as usize];
+                            memory.read(0, &mut actual).unwrap();
+                            assert_eq!(actual, expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wait4_rejects_invalid_low_options_without_consuming_or_writing() {
+        let root = TestDir::new();
+        // These low bits are invalid for Linux wait4 as well. WCONTINUED and
+        // clone-class flags are a separate, inherited backend-policy refusal.
+        for low in [0x40, 0x40 | libc::WNOHANG, libc::WEXITED, libc::WNOWAIT] {
+            for high in [0, 0xdead_beef_u64 << 32] {
+                let mut state = test_state(&root.0);
+                state.children.insert(7, ExitStatus::Exited(3));
+                let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                memory.write(0, &[0xa5; PAGE_SIZE as usize]).unwrap();
+                assert_eq!(
+                    wait4(
+                        &mut memory,
+                        &mut state,
+                        &[7, 0x100, high | low as u64, 0x200, 0, 0]
+                    ),
+                    negative_errno(libc::EINVAL)
+                );
+                assert_eq!(state.children.get(&7), Some(&ExitStatus::Exited(3)));
+                assert!(state.consumed_child_wait.is_none());
+                let mut actual = [0; PAGE_SIZE as usize];
+                memory.read(0, &mut actual).unwrap();
+                assert_eq!(actual, [0xa5; PAGE_SIZE as usize]);
+            }
+        }
+    }
+
+    #[test]
+    fn wait4_wuntraced_requires_unsupported_stopped_children() {
+        use reverie::ChildExitSignalErrorKind::Unsupported;
+        use reverie::ChildExitSignalOutcome::RejectedBeforeCommit;
+        use reverie::syscalls::Errno;
+
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let mut child = executor.fork_child(7, false, false).unwrap();
+        let pid = executor.state.pid as u64;
+        let tid = executor.state.tid as u64;
+        for signal in [libc::SIGSTOP, libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU] {
+            for (number, args) in [
+                (libc::SYS_kill, [pid, signal as u64, 0, 0, 0, 0]),
+                (libc::SYS_tgkill, [pid, tid, signal as u64, 0, 0, 0]),
+            ] {
+                assert_eq!(
+                    result_of(kill_signal(&mut executor.state, number as u64, &args)),
+                    negative_errno(libc::ENOSYS)
+                );
+                assert!(executor.state.thread_signals.lock().pending.is_empty());
+                assert!(
+                    executor
+                        .state
+                        .process_signals
+                        .lock()
+                        .unwrap()
+                        .shared_pending
+                        .is_empty()
+                );
+            }
+        }
+        let stopped = child_exit_test_event_with_code(
+            executor.state.pid,
+            7,
+            libc::CLD_STOPPED,
+            libc::SIGSTOP,
+            0xa5,
+        );
+        assert_eq!(
+            executor.queue_child_exit_signal(stopped),
+            RejectedBeforeCommit {
+                kind: Unsupported,
+                errno: Errno::ENOSYS,
+            }
+        );
+        assert!(executor.take_pending_signal().is_none());
+        assert!(executor.state.children.is_empty());
+
+        // Refusing stops must not prevent an ordinary terminal WUNTRACED wait.
+        child.retire_current_thread(ExitStatus::Exited(3), false);
+        executor.state.children.insert(7, ExitStatus::Exited(3));
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let request = SyscallRequest::new(
+            libc::SYS_wait4 as u64,
+            [7, 0, libc::WUNTRACED as u64, 0, 0, 0],
+        );
+        assert_eq!(executor.execute_checked(&request, &memory).unwrap(), 7);
+        assert!(executor.state.children.is_empty());
+        assert!(executor.state.consumed_child_wait.is_none());
+        assert_eq!(
+            executor.execute_checked(&request, &memory).unwrap(),
+            negative_errno(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn wait4_validates_options_before_starting_a_pending_child() {
+        let root = TestDir::new();
+        for low in [0x40, 0x40 | libc::WNOHANG] {
+            for high in [0, 0xdead_beef_u64 << 32] {
+                let mut executor = ElfExecutor::new(test_state(&root.0), false);
+                let (start_sender, start_receiver) = std::sync::mpsc::channel();
+                let (release_sender, release_receiver) = std::sync::mpsc::channel();
+                let completion = Arc::new(ChildCompletionSlot::default());
+                let child_completion = completion.clone();
+                let notifier = executor.child_completion_notifier();
+                let handle = ChildThread::spawn(move || {
+                    // Rescue a regressed blocking invalid wait; success releases
+                    // immediately. Do not leave a failed assertion owning a child.
+                    let _ = release_receiver.recv_timeout(std::time::Duration::from_secs(1));
+                    assert!(
+                        child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9)))
+                    );
+                    notifier.send(7).unwrap();
+                    Ok(())
+                });
+                executor.register_child_process(7, start_sender, completion, handle);
+                let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+                memory.write(0, &[0xa5; PAGE_SIZE as usize]).unwrap();
+                let result = executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_wait4 as u64,
+                        [7, 0x100, high | low as u64, 0x200, 0, 0],
+                    ),
+                    &memory,
+                );
+                let not_started = matches!(
+                    start_receiver.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                );
+                let still_pending = executor.has_pending_child_process(7);
+                let _ = release_sender.send(());
+                executor.join_all_child_processes().unwrap();
+                assert_eq!(result, negative_errno(libc::EINVAL));
+                assert!(not_started, "invalid options released the child start gate");
+                assert!(still_pending, "invalid options collected a child");
+                let mut actual = [0; PAGE_SIZE as usize];
+                memory.read(0, &mut actual).unwrap();
+                assert_eq!(actual, [0xa5; PAGE_SIZE as usize]);
+            }
+        }
+    }
+
+    #[test]
+    fn wait4_wuntraced_wnohang_preserves_running_child_outputs() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let completion = Arc::new(ChildCompletionSlot::default());
+        let child_completion = completion.clone();
+        let notifier = executor.child_completion_notifier();
+        let handle = ChildThread::spawn(move || {
+            start_receiver.recv().unwrap();
+            release_receiver.recv().unwrap();
+            assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9))));
+            notifier.send(7).unwrap();
+            Ok(())
+        });
+        executor.register_child_process(7, start_sender, completion, handle);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(0, &[0xa5; PAGE_SIZE as usize]).unwrap();
+        let request = SyscallRequest::new(
+            libc::SYS_wait4 as u64,
+            [
+                7,
+                0x100,
+                (0xdead_beef_u64 << 32) | (libc::WUNTRACED | libc::WNOHANG) as u64,
+                0x200,
+                0,
+                0,
+            ],
+        );
+        let poll = executor.execute(&request, &memory);
+        let mut before_reap = [0; PAGE_SIZE as usize];
+        memory.read(0, &mut before_reap).unwrap();
+        release_sender.send(()).unwrap();
+        let reap = executor.execute(
+            &SyscallRequest::new(
+                libc::SYS_wait4 as u64,
+                [7, 0x100, libc::WUNTRACED as u64, 0x200, 0, 0],
+            ),
+            &memory,
+        );
+        executor.join_all_child_processes().unwrap();
+        assert_eq!(poll, 0);
+        assert_eq!(before_reap, [0xa5; PAGE_SIZE as usize]);
+        assert_eq!(reap, 7);
+        assert_eq!(
+            executor.execute(&request, &memory),
+            negative_errno(libc::ECHILD)
+        );
+        let mut status = [0; 4];
+        memory.read(0x100, &mut status).unwrap();
+        assert_eq!(i32::from_le_bytes(status), 9 << 8);
+    }
+
+    #[test]
     fn wait4_decodes_zero_extended_negative_one_and_reports_exit_status() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -45091,7 +45364,11 @@ mod tests {
         const OUTPUT: u64 = 0x100;
 
         let root = TestDir::new();
-        for use_waitid in [false, true] {
+        for (use_waitid, wait4_options) in [
+            (false, libc::WNOHANG),
+            (false, libc::WNOHANG | libc::WUNTRACED),
+            (true, libc::WNOHANG),
+        ] {
             let mut executor = ElfExecutor::new(test_state(&root.0), false);
             let (start_sender, start_receiver) = std::sync::mpsc::channel();
             let (armed_sender, armed_receiver) = std::sync::mpsc::channel();
@@ -45132,7 +45409,7 @@ mod tests {
                 } else {
                     SyscallRequest::new(
                         libc::SYS_wait4 as u64,
-                        [2, OUTPUT, libc::WNOHANG as u64, 0, 0, 0],
+                        [2, OUTPUT, wait4_options as u64, 0, 0, 0],
                     )
                 };
                 let result = executor.execute(&request, &memory);

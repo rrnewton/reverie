@@ -495,7 +495,7 @@ fn exec_rearms_worker_survival_tool() {
     run_pthread("leader_exit::exec_rearms_worker_survival_tool", "3", true);
 }
 
-fn run_wait_status(test: &str, with_tool: bool) {
+fn run_wait_status(test: &str, with_tool: bool, modes: &[Option<&str>]) {
     if !leader_self_exec_bounded(test) {
         return;
     }
@@ -505,57 +505,62 @@ fn run_wait_status(test: &str, with_tool: bool) {
         "leader-wait-status",
         include_str!("../fixtures/leader_wait_status.c"),
     );
-    let native = std::process::Command::new("timeout")
-        .args(["--kill-after=2s", "5s"])
-        .arg(&executable)
-        .arg(if with_tool { "1" } else { "0" })
-        .output()
-        .unwrap();
-    assert_eq!(native.status.code(), Some(0), "{native:?}");
-    assert_eq!(
-        native.stdout,
-        b"wait observed last worker status exactly once\n"
-    );
-    assert!(native.stderr.is_empty(), "{native:?}");
-    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
-    backend
-        .install_static_elf_file_with_context(
-            std::fs::File::open(&executable).unwrap(),
-            &[
-                executable.to_str().unwrap(),
-                if with_tool { "1" } else { "0" },
-            ],
-            &[],
-            &directory.0,
-        )
-        .unwrap();
-    let (status, stdout, stderr) = if with_tool {
-        let (log, status, stdout, stderr) =
-            futures::executor::block_on(backend.run_static_elf_with_tool::<ExitTool>((), true))
-                .unwrap();
+    for mode in modes {
+        let arguments: Vec<&str> = std::iter::once(if with_tool { "1" } else { "0" })
+            .chain(mode.iter().copied())
+            .collect();
+        let native = std::process::Command::new("timeout")
+            .args(["--kill-after=2s", "5s"])
+            .arg(&executable)
+            .args(&arguments)
+            .output()
+            .unwrap();
+        assert_eq!(native.status.code(), Some(0), "{native:?}");
         assert_eq!(
-            log.0.into_inner().unwrap(),
-            vec![
-                (0, 3, ExitStatus::Exited(73)),
-                (0, 2, ExitStatus::Exited(73)),
-                (1, 2, ExitStatus::Exited(73)),
-                (0, 1, ExitStatus::SUCCESS),
-                (1, 1, ExitStatus::SUCCESS),
-            ]
+            native.stdout,
+            b"wait observed last worker status exactly once\n"
         );
-        (status, stdout, stderr)
-    } else {
-        backend.run_static_elf_captured().unwrap()
-    };
-    assert_eq!(status, 0);
-    assert_eq!(stdout, native.stdout);
-    assert_eq!(stderr, native.stderr);
+        assert!(native.stderr.is_empty(), "{native:?}");
+        let mut argv = vec![executable.to_str().unwrap()];
+        argv.extend_from_slice(&arguments);
+        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(&executable).unwrap(),
+                &argv,
+                &[],
+                &directory.0,
+            )
+            .unwrap();
+        let (status, stdout, stderr) = if with_tool {
+            let (log, status, stdout, stderr) =
+                futures::executor::block_on(backend.run_static_elf_with_tool::<ExitTool>((), true))
+                    .unwrap();
+            assert_eq!(
+                log.0.into_inner().unwrap(),
+                vec![
+                    (0, 3, ExitStatus::Exited(73)),
+                    (0, 2, ExitStatus::Exited(73)),
+                    (1, 2, ExitStatus::Exited(73)),
+                    (0, 1, ExitStatus::SUCCESS),
+                    (1, 1, ExitStatus::SUCCESS),
+                ]
+            );
+            (status, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(status, 0);
+        assert_eq!(stdout, native.stdout);
+        assert_eq!(stderr, native.stderr);
+    }
 }
 #[test]
 fn parent_wait_observes_final_worker_status_after_direct_child_completion() {
     run_wait_status(
         "leader_exit::parent_wait_observes_final_worker_status_after_direct_child_completion",
         false,
+        &[None],
     );
 }
 #[test]
@@ -563,6 +568,25 @@ fn parent_wait_observes_final_worker_status_tool() {
     run_wait_status(
         "leader_exit::parent_wait_observes_final_worker_status_tool",
         true,
+        &[None],
+    );
+}
+
+#[test]
+fn parent_wait_wuntraced_terminal_modes_direct() {
+    run_wait_status(
+        "leader_exit::parent_wait_wuntraced_terminal_modes_direct",
+        false,
+        &[Some("1"), Some("2"), Some("3"), Some("4"), Some("5")],
+    );
+}
+
+#[test]
+fn parent_wait_wuntraced_terminal_modes_tool() {
+    run_wait_status(
+        "leader_exit::parent_wait_wuntraced_terminal_modes_tool",
+        true,
+        &[Some("1"), Some("2"), Some("3"), Some("4"), Some("5")],
     );
 }
 
