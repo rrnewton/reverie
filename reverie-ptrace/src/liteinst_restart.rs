@@ -130,12 +130,16 @@ pub(crate) const fn signal_bit(signal: i32) -> u64 {
     1u64 << (signal - 1)
 }
 
-/// Handlers the host-hybrid runtime itself installs.
+/// Signals whose kernel disposition the host-hybrid runtime owns.
 ///
 /// `initialize_host_runtime` calls `liteinst2::patcher::prepare_live_patching`,
-/// which installs the SIGTRAP guard router. A plain ptrace run has no such
-/// handler, so for ptrace equivalence it is not a guest handler: a delivered
-/// SIGTRAP keeps the plain rewind, whose re-executed `int3` restarts.
+/// which installs the SIGTRAP guard router over a `SIG_DFL` or `SIG_IGN`
+/// disposition, and a guest can later replace the router with its own
+/// handler. The tracer cannot tell those apart at a signal-delivery stop, so
+/// the landing cannot present a SIGTRAP delivery to the kernel's restart rule:
+/// the router's `SA_RESTART` would decide in place of the disposition a plain
+/// ptrace run has. A handler-dependent restart that a SIGTRAP delivery would
+/// decide therefore fails closed (`arm_liteinst_restart_landing`).
 pub(crate) const RUNTIME_OWNED_HANDLERS: u64 = signal_bit(libc::SIGTRAP);
 
 /// Offset, within the private page, of the restart landing: three `int3`
@@ -160,18 +164,57 @@ pub(crate) const LANDING_LEN: usize = 3;
 /// runs and returns there, and the `int3` at `landing` (restart) or at
 /// `landing + 2` (interrupted) reports the outcome; see
 /// [`classify_landing_trap`].
+///
+/// `syscall_number` is the injected frame's syscall number. It is not `-1`,
+/// so it marks "in a syscall", and on a restart the kernel copies it to `rax`,
+/// where a handler sees it as it would under plain ptrace and the landing
+/// reads back the number to re-dispatch.
 pub(crate) fn landing_regs(
     controller: &libc::user_regs_struct,
     landing: u64,
     errno: Errno,
+    syscall_number: u64,
 ) -> libc::user_regs_struct {
     let mut regs = *controller;
     regs.rip = landing + 2;
-    // Any value other than -1 marks "in a syscall"; the kernel copies it to
-    // `rax` on restart, which the landing then discards.
-    regs.orig_rax = 0;
+    regs.orig_rax = syscall_number;
     regs.rax = (-(errno.into_raw() as i64)) as u64;
     regs
+}
+
+/// Names the first controller register a signal handler changed between the
+/// armed landing and the landing trap, if any.
+///
+/// The kernel's restart rule writes only `rax` and `rip`, the landing `int3`
+/// advances `rip`, and `orig_rax` and `eflags` are not restored as the
+/// handler left them. Every other general-purpose register returns exactly as
+/// armed unless the handler edited its `ucontext`. Those registers belong to
+/// the runtime's trap context rather than to the guest's syscall, so an edit
+/// has no plain-ptrace meaning the tracer could apply.
+pub(crate) fn changed_landing_register(
+    armed: &libc::user_regs_struct,
+    trapped: &libc::user_regs_struct,
+) -> Option<&'static str> {
+    [
+        ("r15", armed.r15, trapped.r15),
+        ("r14", armed.r14, trapped.r14),
+        ("r13", armed.r13, trapped.r13),
+        ("r12", armed.r12, trapped.r12),
+        ("rbp", armed.rbp, trapped.rbp),
+        ("rbx", armed.rbx, trapped.rbx),
+        ("r11", armed.r11, trapped.r11),
+        ("r10", armed.r10, trapped.r10),
+        ("r9", armed.r9, trapped.r9),
+        ("r8", armed.r8, trapped.r8),
+        ("rcx", armed.rcx, trapped.rcx),
+        ("rdx", armed.rdx, trapped.rdx),
+        ("rsi", armed.rsi, trapped.rsi),
+        ("rdi", armed.rdi, trapped.rdi),
+        ("rsp", armed.rsp, trapped.rsp),
+    ]
+    .into_iter()
+    .find(|(_, armed, trapped)| armed != trapped)
+    .map(|(name, _, _)| name)
 }
 
 /// The kernel's restart decision, as reported by the landing `int3`.
@@ -304,16 +347,42 @@ mod tests {
         controller.orig_rax = u64::MAX;
         controller.rdi = 0x1234;
         controller.rsp = 0x7fff_0000;
-        let regs = landing_regs(&controller, PRIVATE + 0x100, Errno::ERESTARTSYS);
+        let regs = landing_regs(&controller, PRIVATE + 0x100, Errno::ERESTARTSYS, 0);
         assert_eq!(regs.rip, PRIVATE + 0x102);
         assert_eq!(regs.rax as i64, -512);
         // The kernel's syscall_get_nr() is an int; anything but -1 enables the
-        // restart rule.
-        assert_ne!(regs.orig_rax as i32, -1);
+        // restart rule, and read is syscall 0.
+        assert_eq!(regs.orig_rax, 0);
         assert_eq!(regs.rdi, controller.rdi);
         assert_eq!(regs.rsp, controller.rsp);
-        let block = landing_regs(&controller, PRIVATE + 0x100, Errno::ERESTART_RESTARTBLOCK);
+        let block = landing_regs(
+            &controller,
+            PRIVATE + 0x100,
+            Errno::ERESTART_RESTARTBLOCK,
+            libc::SYS_restart_syscall as u64,
+        );
         assert_eq!(block.rax as i64, -516);
+        assert_eq!(block.orig_rax, libc::SYS_restart_syscall as u64);
+        assert_eq!(changed_landing_register(&controller, &regs), None);
+    }
+
+    #[test]
+    fn changed_landing_register_ignores_only_what_the_kernel_writes() {
+        let mut armed: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        armed.rsp = 0x7fff_0000;
+        armed.r12 = 0x1234;
+        let mut trapped = armed;
+        trapped.rax = 777;
+        trapped.rip = PRIVATE + 0x103;
+        trapped.orig_rax = u64::MAX;
+        trapped.eflags = 0x246;
+        assert_eq!(changed_landing_register(&armed, &trapped), None);
+        let mut edited = trapped;
+        edited.r12 = 0;
+        assert_eq!(changed_landing_register(&armed, &edited), Some("r12"));
+        let mut moved = trapped;
+        moved.rsp -= 8;
+        assert_eq!(changed_landing_register(&armed, &moved), Some("rsp"));
     }
 
     #[test]
@@ -339,7 +408,7 @@ mod tests {
 
     fn landing_regs_rip(landing: u64) -> u64 {
         let controller: libc::user_regs_struct = unsafe { std::mem::zeroed() };
-        landing_regs(&controller, landing, Errno::ERESTARTSYS).rip
+        landing_regs(&controller, landing, Errno::ERESTARTSYS, 0).rip
     }
 
     #[test]

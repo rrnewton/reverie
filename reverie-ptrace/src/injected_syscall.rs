@@ -122,6 +122,19 @@ impl InjectedSyscallFrame {
         self.rax = Sysno::restart_syscall as u64;
     }
 
+    /// The raw syscall number the frame will dispatch, before a result is
+    /// stored in its place.
+    pub(crate) fn raw_syscall_number(&self) -> u64 {
+        self.rax
+    }
+
+    /// Replaces the syscall number the frame will re-dispatch, as a signal
+    /// handler that edits `rax` before a kernel restart changes the syscall
+    /// the restarted `syscall` instruction makes.
+    pub(crate) fn set_raw_syscall_number(&mut self, number: u64) {
+        self.rax = number;
+    }
+
     pub(crate) fn copy_to_user_regs(&self, regs: &mut libc::user_regs_struct) {
         regs.r15 = self.r15;
         regs.r14 = self.r14;
