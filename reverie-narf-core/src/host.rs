@@ -905,9 +905,10 @@ where
             });
         }
         let process_result = match Arc::try_unwrap(tool) {
+            // CONTROL: on_exit_process is skipped.
             Ok(tool) => {
-                let mut future = tool.on_exit_process(pid, &rpc, process_status);
-                exit_result(poll_once(future.as_mut()))
+                let _ = (tool, pid, process_status);
+                Ok(())
             }
             Err(_) => Err(NarfFatal::ProcessToolShared(pid)),
         };
