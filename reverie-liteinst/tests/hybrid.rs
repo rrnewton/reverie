@@ -2139,6 +2139,25 @@ struct RestartPlan {
     signal: i32,
     /// Also subscribe `restart_syscall`.
     subscribe_restart_syscall: bool,
+    /// Request a precise timer due within the skid margin on the first magic
+    /// invocation, so the timer's single-step runs across the restart re-trap.
+    timer: bool,
+    /// A syscall the Tool injects on the first magic invocation, after any
+    /// `signal`.
+    inject: RestartInject,
+}
+
+/// A syscall `RestartTool` injects inside the first magic invocation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum RestartInject {
+    #[default]
+    None,
+    /// `getpid`, with the Tool's signal already pending: the signal arrives
+    /// during the injection, and the tracer holds it for the resume.
+    Getpid,
+    /// `rt_sigprocmask(SIG_UNBLOCK, arg1)`: the magic read's buffer is the
+    /// guest's blocked set, so this unblocks a signal already pending.
+    UnblockBuffer,
 }
 
 impl RestartPlan {
@@ -2147,6 +2166,8 @@ impl RestartPlan {
             | ((self.signal as u64 & 0xff) << 16)
             | ((self.restarts as u64) << 24)
             | ((self.subscribe_restart_syscall as u64) << 32)
+            | ((self.timer as u64) << 33)
+            | ((self.inject as u64) << 34)
     }
 
     fn decode(config: u64) -> Self {
@@ -2155,6 +2176,13 @@ impl RestartPlan {
             signal: ((config >> 16) & 0xff) as i32,
             restarts: ((config >> 24) & 0xff) as u8,
             subscribe_restart_syscall: (config >> 32) & 1 != 0,
+            timer: (config >> 33) & 1 != 0,
+            inject: match (config >> 34) & 3 {
+                0 => RestartInject::None,
+                1 => RestartInject::Getpid,
+                2 => RestartInject::UnblockBuffer,
+                other => panic!("bad RestartInject {other}"),
+            },
         }
     }
 }
@@ -2246,6 +2274,30 @@ impl Tool for RestartTool {
                 };
                 assert_eq!(sent, 0, "tgkill failed");
             }
+            if index == 0 {
+                match plan.inject {
+                    RestartInject::None => {}
+                    RestartInject::Getpid => {
+                        // The result is not asserted: the pending signal can
+                        // interrupt the injection itself.
+                        let getpid =
+                            Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+                        let _ = guest.inject(getpid).await;
+                    }
+                    RestartInject::UnblockBuffer => {
+                        let unblock = Syscall::from_raw(
+                            Sysno::rt_sigprocmask,
+                            SyscallArgs::new(libc::SIG_UNBLOCK as usize, args.arg1, 0, 8, 0, 0),
+                        );
+                        assert_eq!(guest.inject(unblock).await, Ok(0), "unblock failed");
+                    }
+                }
+            }
+            if index == 0 && plan.timer {
+                guest
+                    .set_timer_precise(reverie::TimerSchedule::Rcbs(1))
+                    .unwrap();
+            }
             if index < plan.restarts as u64 {
                 return Err(reverie::Errno::new(plan.errno).into());
             }
@@ -2264,6 +2316,10 @@ impl Tool for RestartTool {
     ) -> Result<Option<reverie::Signal>, reverie::Errno> {
         guest.send_rpc(format!("signal {}", signal.as_str())).await;
         Ok(Some(signal))
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        guest.send_rpc("timer".to_owned()).await;
     }
 }
 
@@ -2425,35 +2481,189 @@ async fn host_hybrid_restart_delivers_the_signal_before_re_invoking() {
     }
 }
 
-/// A restart is refused when a deliverable signal has a guest handler: Linux
-/// then restarts only for an `SA_RESTART` handler, which the tracer cannot
-/// see. Plain ptrace shows what is at stake: this handler lacks `SA_RESTART`,
-/// so the guest must observe `EINTR`, not a restarted read.
+/// Runs `mode` under both backends and requires the same guest output (up to
+/// the site counters, with `hooks` host-hybrid hook entries) and the same
+/// Tool-visible events, returning plain ptrace's.
+async fn restart_parity(
+    mode: &str,
+    plan: RestartPlan,
+    hooks: u64,
+    label: &str,
+) -> (String, Vec<String>) {
+    let (ptrace_stdout, ptrace_events) = run_restart_fixture(RestartBackend::Ptrace, mode, plan)
+        .await
+        .unwrap();
+    let (hybrid_stdout, hybrid_events) =
+        run_restart_fixture(RestartBackend::HostHybrid, mode, plan)
+            .await
+            .unwrap();
+    assert_eq!(
+        hybrid_stdout,
+        ptrace_stdout.replace(
+            &restart_counts(RestartBackend::Ptrace, 1),
+            &restart_counts(RestartBackend::HostHybrid, hooks)
+        ),
+        "{label}: host-hybrid output differs from plain ptrace"
+    );
+    assert_eq!(
+        hybrid_events, ptrace_events,
+        "{label}: host-hybrid Tool events differ from plain ptrace"
+    );
+    (ptrace_stdout, ptrace_events)
+}
+
+/// A restart code with a signal whose guest handler lacks `SA_RESTART`
+/// follows Linux: `-ERESTARTSYS`, `-ERESTARTNOHAND` and
+/// `-ERESTART_RESTARTBLOCK` become `EINTR` after the handler runs, and
+/// `-ERESTARTNOINTR` restarts. The kernel makes that decision at delivery;
+/// host-hybrid must present it the restartable syscall to decide.
 #[tokio::test(flavor = "current_thread")]
-async fn host_hybrid_restart_refuses_a_guest_handled_signal() {
+async fn host_hybrid_restart_with_a_guest_handler_follows_linux() {
+    for (errno, result) in [
+        (reverie::Errno::ERESTARTSYS, -4),
+        (reverie::Errno::ERESTARTNOHAND, -4),
+        (reverie::Errno::ERESTART_RESTARTBLOCK, -4),
+        (reverie::Errno::ERESTARTNOINTR, RESTART_RESULT),
+    ] {
+        let plan = RestartPlan {
+            errno: errno.into_raw(),
+            restarts: 1,
+            signal: libc::SIGUSR1,
+            ..Default::default()
+        };
+        let (stdout, events) = restart_parity("handler", plan, 2, &format!("{errno}")).await;
+        assert_eq!(
+            stdout,
+            format!("read-result={result} handled=1 nested-ok=1 traps=- hooks=-\n"),
+            "{errno}"
+        );
+        let mut expected = vec!["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1"];
+        if result == RESTART_RESULT {
+            expected.push("magic read(0x7e57,1)");
+        }
+        assert_eq!(events, expected, "{errno}");
+    }
+}
+
+/// An `SA_RESTART` handler restarts `-ERESTARTSYS` but not
+/// `-ERESTARTNOHAND`, as Linux does.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_with_an_sa_restart_handler_follows_linux() {
+    for (errno, result) in [
+        (reverie::Errno::ERESTARTSYS, RESTART_RESULT),
+        (reverie::Errno::ERESTARTNOHAND, -4),
+    ] {
+        let plan = RestartPlan {
+            errno: errno.into_raw(),
+            restarts: 1,
+            signal: libc::SIGUSR1,
+            ..Default::default()
+        };
+        let (stdout, events) =
+            restart_parity("handler-restart", plan, 2, &format!("{errno}")).await;
+        assert_eq!(
+            stdout,
+            format!("read-result={result} handled=1 nested-ok=1 traps=- hooks=-\n"),
+            "{errno}"
+        );
+        let mut expected = vec!["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1"];
+        if result == RESTART_RESULT {
+            expected.push("magic read(0x7e57,1)");
+        }
+        assert_eq!(events, expected, "{errno}");
+    }
+}
+
+/// The shell pattern that regressed seven compatibility cells: a real child
+/// exits, and its SIGCHLD reaches an `SA_RESTART` handler that reaps it while
+/// a Tool-restarted syscall is in progress. The syscall must restart.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_with_an_sa_restart_sigchld_handler_restarts() {
     let plan = RestartPlan {
         errno: reverie::Errno::ERESTARTSYS.into_raw(),
         restarts: 1,
-        signal: libc::SIGUSR1,
+        inject: RestartInject::UnblockBuffer,
         ..Default::default()
     };
-    let (stdout, events) = run_restart_fixture(RestartBackend::Ptrace, "handler", plan)
-        .await
-        .unwrap();
-    assert_eq!(stdout, "read-result=-4 traps=- hooks=-\n");
+    let (stdout, events) = restart_parity("sigchld", plan, 1, "sigchld").await;
+    assert_eq!(
+        stdout,
+        format!("read-result={RESTART_RESULT} reaped=1 traps=- hooks=-\n")
+    );
     assert_eq!(
         events,
-        ["read(warm)", "magic read(0x7e57,1)", "signal SIGUSR1"]
+        [
+            "read(warm)",
+            "magic read(0x7e57,1)",
+            "signal SIGCHLD",
+            "magic read(0x7e57,1)"
+        ]
     );
+}
 
-    let error = run_restart_fixture(RestartBackend::HostHybrid, "handler", plan)
-        .await
-        .expect_err("a restart with a guest-handled signal pending must fail closed");
-    let error = error.to_string();
-    assert!(
-        error.contains("restart LiteInst host-hybrid syscall")
-            && error.contains("guest-handled signals (mask 0x200)"),
-        "restart was not refused by the handler guard: {error}"
+/// The signal arrives while the Tool injects a syscall, so the tracer holds
+/// it and delivers it on the restart's resume instead of at a fresh signal
+/// stop. The Linux rule must apply to that delivery too: a handler without
+/// `SA_RESTART` interrupts, an `SA_RESTART` one restarts, and no handler
+/// restarts. As under plain ptrace, a signal that interrupts a Tool
+/// injection reaches the guest without a Tool signal event, so the handler
+/// count is the evidence of delivery.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_with_a_signal_held_across_an_injection_follows_linux() {
+    for (mode, signal, result) in [
+        ("handler", libc::SIGUSR1, -4),
+        ("handler-restart", libc::SIGUSR1, RESTART_RESULT),
+        ("read", libc::SIGURG, RESTART_RESULT),
+    ] {
+        let plan = RestartPlan {
+            errno: reverie::Errno::ERESTARTSYS.into_raw(),
+            restarts: 1,
+            signal,
+            inject: RestartInject::Getpid,
+            ..Default::default()
+        };
+        let hooks = if mode == "read" { 1 } else { 2 };
+        let (stdout, events) = restart_parity(mode, plan, hooks, mode).await;
+        let handled = if mode == "read" {
+            ""
+        } else {
+            " handled=1 nested-ok=1"
+        };
+        assert_eq!(
+            stdout,
+            format!("read-result={result}{handled} traps=- hooks=-\n"),
+            "{mode}"
+        );
+        let mut expected = vec!["read(warm)", "magic read(0x7e57,1)"];
+        if result == RESTART_RESULT {
+            expected.push("magic read(0x7e57,1)");
+        }
+        assert_eq!(events, expected, "{mode}");
+    }
+}
+
+/// A precise timer due within the skid margin makes the timer single-step
+/// the guest across the restart's int3 re-trap. That SIGTRAP is the syscall
+/// trap, not a completed step: it must reach the run loop, which re-invokes
+/// the Tool, rather than being consumed by the timer. As under plain ptrace,
+/// the re-invoked syscall is the next event, so the timer is cancelled and
+/// never fires.
+#[tokio::test(flavor = "current_thread")]
+async fn host_hybrid_restart_survives_an_imminent_precise_timer() {
+    let plan = RestartPlan {
+        errno: reverie::Errno::ERESTARTSYS.into_raw(),
+        restarts: 1,
+        timer: true,
+        ..Default::default()
+    };
+    let (stdout, events) = restart_parity("read", plan, 1, "timer").await;
+    assert_eq!(
+        stdout,
+        format!("read-result={RESTART_RESULT} traps=- hooks=-\n")
+    );
+    assert_eq!(
+        events,
+        ["read(warm)", "magic read(0x7e57,1)", "magic read(0x7e57,1)"]
     );
 }
 

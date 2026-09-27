@@ -14,7 +14,10 @@
 //! `-ERESTART*` code into the guest frame would leak it to the guest. Instead
 //! the tracer rewinds the controller to the `int3`: signal work happens on the
 //! resume, and the re-executed `int3` re-traps and re-dispatches the syscall.
-//! The helpers here decide when that is allowed, without touching a tracee.
+//! When a signal is delivered to a guest handler, whether Linux restarts or
+//! returns `-EINTR` depends on the code and on the handler's `SA_RESTART`; the
+//! tracer lets the kernel decide by presenting a restartable syscall at a
+//! private-page landing (`landing_regs`). The helpers here are pure.
 
 use nix::sys::signal::Signal;
 use reverie::Errno;
@@ -108,44 +111,18 @@ pub(crate) fn check_rewind_preconditions(
     Ok(())
 }
 
-/// Signal masks read from `/proc/<tid>/status`.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SignalStatus {
-    /// `SigPnd`: signals pending for this thread.
-    pub(crate) thread_pending: u64,
-    /// `ShdPnd`: signals pending for the whole thread group.
-    pub(crate) shared_pending: u64,
-    /// `SigBlk`: signals this thread blocks.
-    pub(crate) blocked: u64,
-    /// `SigCgt`: signals with an installed handler (process-wide).
-    pub(crate) caught: u64,
-}
-
-/// Parses the four signal masks from the text of `/proc/<tid>/status`.
-pub(crate) fn parse_signal_status(text: &str) -> Option<SignalStatus> {
-    let mut thread_pending = None;
-    let mut shared_pending = None;
-    let mut blocked = None;
-    let mut caught = None;
-    for line in text.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        let slot = match key {
-            "SigPnd" => &mut thread_pending,
-            "ShdPnd" => &mut shared_pending,
-            "SigBlk" => &mut blocked,
-            "SigCgt" => &mut caught,
-            _ => continue,
-        };
-        *slot = Some(u64::from_str_radix(value.trim(), 16).ok()?);
-    }
-    Some(SignalStatus {
-        thread_pending: thread_pending?,
-        shared_pending: shared_pending?,
-        blocked: blocked?,
-        caught: caught?,
-    })
+/// Whether the kernel's handler rule can turn this restart code into `EINTR`.
+///
+/// Linux restarts every restart code when the delivered signal has no handler.
+/// With a handler, `-ERESTARTSYS` restarts only under `SA_RESTART`, and
+/// `-ERESTARTNOHAND` and `-ERESTART_RESTARTBLOCK` always become `-EINTR`;
+/// `-ERESTARTNOINTR` restarts regardless. So only the first three need the
+/// kernel's decision when a signal is delivered (see [`landing_regs`]).
+pub(crate) fn restart_depends_on_handler(errno: Errno) -> bool {
+    matches!(
+        errno,
+        Errno::ERESTARTSYS | Errno::ERESTARTNOHAND | Errno::ERESTART_RESTARTBLOCK
+    )
 }
 
 /// The `/proc` mask bit for one signal number.
@@ -157,32 +134,77 @@ pub(crate) const fn signal_bit(signal: i32) -> u64 {
 ///
 /// `initialize_host_runtime` calls `liteinst2::patcher::prepare_live_patching`,
 /// which installs the SIGTRAP guard router. A plain ptrace run has no such
-/// handler, so for ptrace equivalence it is not a guest handler.
+/// handler, so for ptrace equivalence it is not a guest handler: a delivered
+/// SIGTRAP keeps the plain rewind, whose re-executed `int3` restarts.
 pub(crate) const RUNTIME_OWNED_HANDLERS: u64 = signal_bit(libc::SIGTRAP);
 
-/// Returns the signals that make the no-handler restart rule unsound.
+/// Offset, within the private page, of the restart landing: three `int3`
+/// bytes in the page's all-`int3` padding (`cp::mmap::populate_mmap_page`
+/// writes only the first eight bytes).
+pub(crate) const LANDING_OFFSET: usize = 0x100;
+
+/// The number of `int3` bytes the landing needs.
+pub(crate) const LANDING_LEN: usize = 3;
+
+/// Registers that make the kernel's own signal-delivery restart rule decide a
+/// host-hybrid restart.
 ///
-/// Linux restarts `-ERESTARTSYS`, `-ERESTARTNOHAND` and
-/// `-ERESTART_RESTARTBLOCK` unconditionally only when the delivered signal has
-/// no handler; with a guest handler the result depends on the handler's
-/// `SA_RESTART` flag or becomes `-EINTR`, and the tracer cannot see
-/// `SA_RESTART`. `-ERESTARTNOINTR` restarts even with a handler, so it never
-/// conflicts. The deliverable set is the tracer-held `pending_signal` plus
-/// every unblocked pending signal; a non-empty intersection with guest
-/// handlers is returned as a mask.
-pub(crate) fn restart_handler_conflict(
+/// The controller is stopped in `get_signal` (at a signal-delivery stop, or
+/// at the runtime `int3` stop) with `orig_rax == -1`, so after the signal is
+/// delivered the kernel would apply no restart rule at all. These registers
+/// present a syscall that returned `errno` at `landing + 2`: `orig_rax` is
+/// not `-1` and `rax` holds the restart code. x86 `handle_signal` then
+/// either restarts (`rip -= 2`, `rax = orig_rax`) or writes `-EINTR` and
+/// leaves `rip`, using the exact disposition and `SA_RESTART` of the signal
+/// it delivers, and with no handler the no-signal path restarts. The handler
+/// runs and returns there, and the `int3` at `landing` (restart) or at
+/// `landing + 2` (interrupted) reports the outcome; see
+/// [`classify_landing_trap`].
+pub(crate) fn landing_regs(
+    controller: &libc::user_regs_struct,
+    landing: u64,
     errno: Errno,
-    status: SignalStatus,
-    pending_signal: Option<Signal>,
-    runtime_owned: u64,
-) -> Option<u64> {
-    if errno == Errno::ERESTARTNOINTR {
-        return None;
+) -> libc::user_regs_struct {
+    let mut regs = *controller;
+    regs.rip = landing + 2;
+    // Any value other than -1 marks "in a syscall"; the kernel copies it to
+    // `rax` on restart, which the landing then discards.
+    regs.orig_rax = 0;
+    regs.rax = (-(errno.into_raw() as i64)) as u64;
+    regs
+}
+
+/// The kernel's restart decision, as reported by the landing `int3`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LandingOutcome {
+    /// The kernel restarted (`rip -= 2`): re-dispatch the syscall.
+    Restart,
+    /// The kernel wrote `-EINTR`: complete the syscall with it.
+    Interrupted,
+}
+
+/// Classifies a SIGTRAP stop against an armed landing. The `int3` at
+/// `landing` reports at `landing + 1`, the one at `landing + 2` at
+/// `landing + 3`.
+pub(crate) fn classify_landing_trap(ip: u64, landing: u64) -> Option<LandingOutcome> {
+    if Some(ip) == landing.checked_add(1) {
+        Some(LandingOutcome::Restart)
+    } else if Some(ip) == landing.checked_add(3) {
+        Some(LandingOutcome::Interrupted)
+    } else {
+        None
     }
-    let held = pending_signal.map_or(0, |signal| signal_bit(signal as i32));
-    let deliverable = held | ((status.thread_pending | status.shared_pending) & !status.blocked);
-    let conflict = deliverable & status.caught & !runtime_owned;
-    (conflict != 0).then_some(conflict)
+}
+
+/// Checks that the landing bytes are all `int3`.
+pub(crate) fn check_landing_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() == LANDING_LEN && bytes.iter().all(|byte| *byte == INT3) {
+        Ok(())
+    } else {
+        Err(format!(
+            "private-page restart landing holds {bytes:02x?}, not {LANDING_LEN} int3 bytes"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -265,124 +287,65 @@ mod tests {
         assert!(check_rewind_preconditions(0, marker, u64::MAX, marker, INT3).is_err());
     }
 
-    const STATUS: &str = "Name:\tguest\nState:\tt (tracing stop)\nSigQ:\t1/63477\n\
-SigPnd:\t0000000000000400\nShdPnd:\t0000000000000001\nSigBlk:\t0000000000000001\n\
-SigIgn:\t0000000000001000\nSigCgt:\t0000000000000404\nCapInh:\t0000000000000000\n";
-
     #[test]
-    fn signal_status_parses_the_four_masks() {
-        assert_eq!(
-            parse_signal_status(STATUS),
-            Some(SignalStatus {
-                thread_pending: 0x400,
-                shared_pending: 0x1,
-                blocked: 0x1,
-                caught: 0x404,
-            })
-        );
-        assert_eq!(
-            parse_signal_status("SigPnd:\t0\nShdPnd:\t0\nSigBlk:\t0\n"),
-            None
-        );
-        assert_eq!(
-            parse_signal_status("SigPnd:\tzz\nShdPnd:\t0\nSigBlk:\t0\nSigCgt:\t0\n"),
-            None
-        );
+    fn only_handler_dependent_codes_need_the_kernel_decision() {
+        assert!(restart_depends_on_handler(Errno::ERESTARTSYS));
+        assert!(restart_depends_on_handler(Errno::ERESTARTNOHAND));
+        assert!(restart_depends_on_handler(Errno::ERESTART_RESTARTBLOCK));
+        assert!(!restart_depends_on_handler(Errno::ERESTARTNOINTR));
+        assert!(!restart_depends_on_handler(Errno::EINTR));
     }
 
     #[test]
-    fn handler_conflict_is_limited_to_deliverable_guest_handlers() {
-        let usr1 = signal_bit(libc::SIGUSR1);
-        let urg = signal_bit(libc::SIGURG);
-        let trap = signal_bit(libc::SIGTRAP);
-        let handled_usr1 = SignalStatus {
-            caught: usr1,
-            ..Default::default()
-        };
+    fn landing_regs_present_a_restartable_syscall_at_the_landing() {
+        let mut controller: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        controller.rip = 0x1000;
+        controller.rax = 0x7265_766c_6900_0004;
+        controller.orig_rax = u64::MAX;
+        controller.rdi = 0x1234;
+        controller.rsp = 0x7fff_0000;
+        let regs = landing_regs(&controller, PRIVATE + 0x100, Errno::ERESTARTSYS);
+        assert_eq!(regs.rip, PRIVATE + 0x102);
+        assert_eq!(regs.rax as i64, -512);
+        // The kernel's syscall_get_nr() is an int; anything but -1 enables the
+        // restart rule.
+        assert_ne!(regs.orig_rax as i32, -1);
+        assert_eq!(regs.rdi, controller.rdi);
+        assert_eq!(regs.rsp, controller.rsp);
+        let block = landing_regs(&controller, PRIVATE + 0x100, Errno::ERESTART_RESTARTBLOCK);
+        assert_eq!(block.rax as i64, -516);
+    }
 
-        // A handler whose signal is not pending does not decide this restart.
+    #[test]
+    fn landing_trap_reports_restart_and_interrupted_outcomes() {
+        let landing = PRIVATE + 0x100;
+        let presented = landing_regs_rip(landing);
+        // Restart: the kernel moves rip back two bytes, onto the first int3,
+        // which reports one byte later.
         assert_eq!(
-            restart_handler_conflict(Errno::ERESTARTSYS, handled_usr1, None, 0),
-            None
+            classify_landing_trap(presented - 2 + 1, landing),
+            Some(LandingOutcome::Restart)
         );
-        // Pending for the thread, the group, or held by the tracer: refused.
-        for status in [
-            SignalStatus {
-                thread_pending: usr1,
-                ..handled_usr1
-            },
-            SignalStatus {
-                shared_pending: usr1,
-                ..handled_usr1
-            },
-        ] {
-            assert_eq!(
-                restart_handler_conflict(Errno::ERESTARTSYS, status, None, 0),
-                Some(usr1)
-            );
+        // EINTR: rip is left on the third int3.
+        assert_eq!(
+            classify_landing_trap(presented + 1, landing),
+            Some(LandingOutcome::Interrupted)
+        );
+        for ip in [landing, landing + 2, landing + 4, 0] {
+            assert_eq!(classify_landing_trap(ip, landing), None, "{ip:#x}");
         }
-        assert_eq!(
-            restart_handler_conflict(
-                Errno::ERESTART_RESTARTBLOCK,
-                handled_usr1,
-                Some(Signal::SIGUSR1),
-                0
-            ),
-            Some(usr1)
-        );
-        // A blocked pending signal is not delivered by this resume.
-        assert_eq!(
-            restart_handler_conflict(
-                Errno::ERESTARTNOHAND,
-                SignalStatus {
-                    thread_pending: usr1,
-                    blocked: usr1,
-                    ..handled_usr1
-                },
-                None,
-                0
-            ),
-            None
-        );
-        // A pending signal with no handler restarts under the no-handler rule.
-        assert_eq!(
-            restart_handler_conflict(
-                Errno::ERESTARTSYS,
-                SignalStatus {
-                    thread_pending: urg,
-                    ..handled_usr1
-                },
-                None,
-                0
-            ),
-            None
-        );
-        // ERESTARTNOINTR restarts even with a handler.
-        assert_eq!(
-            restart_handler_conflict(
-                Errno::ERESTARTNOINTR,
-                SignalStatus {
-                    thread_pending: usr1,
-                    ..handled_usr1
-                },
-                Some(Signal::SIGUSR1),
-                0
-            ),
-            None
-        );
-        // The runtime's own SIGTRAP router is not a guest handler.
-        assert_eq!(
-            restart_handler_conflict(
-                Errno::ERESTARTSYS,
-                SignalStatus {
-                    thread_pending: trap,
-                    caught: trap,
-                    ..Default::default()
-                },
-                None,
-                RUNTIME_OWNED_HANDLERS
-            ),
-            None
-        );
+        assert_eq!(classify_landing_trap(0, u64::MAX), None);
+    }
+
+    fn landing_regs_rip(landing: u64) -> u64 {
+        let controller: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        landing_regs(&controller, landing, Errno::ERESTARTSYS).rip
+    }
+
+    #[test]
+    fn landing_bytes_must_be_three_int3() {
+        assert_eq!(check_landing_bytes(&[INT3; LANDING_LEN]), Ok(()));
+        assert!(check_landing_bytes(&[INT3, 0x90, INT3]).is_err());
+        assert!(check_landing_bytes(&[INT3, INT3]).is_err());
     }
 }

@@ -21,6 +21,7 @@
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -267,28 +268,113 @@ static int seccomp_trap(void) {
   return 0;
 }
 
-static void guest_handler(int signo) { (void)signo; }
+static volatile sig_atomic_t handled;
+static volatile sig_atomic_t nested_ok;
+static long expected_parent;
+
+// Counts deliveries. The handler also calls through the patched site, so a
+// hook entry nests inside the signal that decides the restart.
+static void guest_handler(int signo) {
+  (void)signo;
+  handled += 1;
+  if (restart_site(SYS_getppid, 0, 0, 0, 0) == expected_parent) {
+    nested_ok += 1;
+  }
+}
+
+// The magic read, which the Tool answers after `restarts` restart codes.
+static int magic_read(int with_handled) {
+  char byte = 0;
+  warm_up();
+  long result = restart_site(SYS_read, MAGIC_FD, (long)&byte, 1, 0);
+  printf("read-result=%ld", result);
+  if (with_handled) {
+    printf(" handled=%d nested-ok=%d", (int)handled, (int)nested_ok);
+  }
+  print_site_counts();
+  return 0;
+}
+
+// SIGUSR1 gets a guest handler, with or without SA_RESTART.
+static int handled_read(int flags) {
+  expected_parent = getppid();
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = guest_handler;
+  action.sa_flags = flags;
+  if (sigaction(SIGUSR1, &action, NULL) != 0) {
+    return 38;
+  }
+  return magic_read(1);
+}
+
+static volatile sig_atomic_t reaped;
+
+static void reap_children(int signo) {
+  (void)signo;
+  int saved = errno;
+  while (waitpid(-1, NULL, WNOHANG) > 0) {
+    reaped += 1;
+  }
+  errno = saved;
+}
+
+// The shell pattern: an SA_RESTART SIGCHLD handler that reaps, and a child
+// exit that becomes deliverable while a syscall is in progress. SIGCHLD is
+// blocked until the child is a zombie; the magic read passes the blocked set
+// as its buffer so the Tool can unblock it from inside the syscall (by an
+// injected rt_sigprocmask) before returning -ERESTARTSYS. Linux restarts the
+// read after the handler because of SA_RESTART. The warm-up patches the site
+// before the fork, so the magic read reaches the tracer through the int3 trap.
+static int sigchld_read(void) {
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = reap_children;
+  action.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+  if (sigaction(SIGCHLD, &action, NULL) != 0) {
+    return 50;
+  }
+  sigset_t chld;
+  sigemptyset(&chld);
+  sigaddset(&chld, SIGCHLD);
+  if (sigprocmask(SIG_BLOCK, &chld, NULL) != 0) {
+    return 51;
+  }
+  warm_up();
+  pid_t child = fork();
+  if (child < 0) {
+    return 52;
+  }
+  if (child == 0) {
+    _exit(0);
+  }
+  siginfo_t info;
+  memset(&info, 0, sizeof(info));
+  if (waitid(P_PID, child, &info, WEXITED | WNOWAIT) != 0) {
+    return 53;
+  }
+  long result = restart_site(SYS_read, MAGIC_FD, (long)&chld, 1, 0);
+  printf("read-result=%ld reaped=%d", result, (int)reaped);
+  print_site_counts();
+  return 0;
+}
 
 int main(int argc, char **argv) {
   if (argc != 2) {
     return 2;
   }
   const char *mode = argv[1];
-  if (strcmp(mode, "read") == 0 || strcmp(mode, "handler") == 0) {
-    if (strcmp(mode, "handler") == 0) {
-      struct sigaction action;
-      memset(&action, 0, sizeof(action));
-      action.sa_handler = guest_handler;
-      if (sigaction(SIGUSR1, &action, NULL) != 0) {
-        return 38;
-      }
-    }
-    char byte = 0;
-    warm_up();
-    long result = restart_site(SYS_read, MAGIC_FD, (long)&byte, 1, 0);
-    printf("read-result=%ld", result);
-    print_site_counts();
-    return 0;
+  if (strcmp(mode, "read") == 0) {
+    return magic_read(0);
+  }
+  if (strcmp(mode, "handler") == 0) {
+    return handled_read(0);
+  }
+  if (strcmp(mode, "handler-restart") == 0) {
+    return handled_read(SA_RESTART);
+  }
+  if (strcmp(mode, "sigchld") == 0) {
+    return sigchld_read();
   }
   if (strcmp(mode, "sleep") == 0) {
     return interrupted_sleep();
