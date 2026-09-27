@@ -49,9 +49,9 @@ pub enum SitePatching {
     /// Never write a guest byte. Every syscall takes the ordinary ptrace
     /// seccomp path, so the run is the ptrace run.
     Off,
-    /// Rewrite first-seen syscall sites (test-only). In this increment it
-    /// selects only the trap-only seccomp filter, and a launch with it is
-    /// refused.
+    /// Rewrite first-seen syscall sites to `int 0x80` and run each patched
+    /// site's syscall through the traced slot. Test-only until the patched
+    /// path is released.
     #[cfg(test)]
     On,
 }
@@ -172,6 +172,7 @@ impl SiteTable {
             .count()
     }
 
+    #[cfg(test)]
     pub(crate) fn state(&self) -> TableState {
         self.state
     }
@@ -196,6 +197,7 @@ impl SiteTable {
         self.sites.contains_key(&site)
     }
 
+    #[cfg(test)]
     pub(crate) fn site_state(&self, site: u64) -> Option<SiteState> {
         self.sites.get(&site).map(|entry| entry.state)
     }
@@ -270,7 +272,9 @@ pub enum TrapOnlyFailure {
         stop: String,
     },
     /// A stop from the private page's traced `syscall` stub outside a hop.
-    #[error("TrapOnlyStraySlotStop: slot seccomp stop at {rip:#x} (orig_rax {orig_rax}) outside a hop")]
+    #[error(
+        "TrapOnlyStraySlotStop: slot seccomp stop at {rip:#x} (orig_rax {orig_rax}) outside a hop"
+    )]
     StraySlotStop {
         /// The reported instruction pointer.
         rip: u64,
@@ -291,12 +295,8 @@ pub enum TrapOnlyFailure {
 /// Why a site was not patched at its first stop. Not an error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PatchDecline {
-    /// The bytes at the site are not `syscall`.
-    NotSyscall([u8; 2]),
     /// The site is not in a private, executable, non-writable mapping.
     Mapping(String),
-    /// The site is in the private page or the vsyscall page.
-    ReservedPage,
 }
 
 /// Whether `site` lies in Reverie's private page or the legacy vsyscall page.
@@ -366,10 +366,8 @@ pub(crate) fn site_mapping_is_patchable(
         let Some((start, end)) = range.split_once('-') else {
             continue;
         };
-        let (Ok(start), Ok(end)) = (
-            u64::from_str_radix(start, 16),
-            u64::from_str_radix(end, 16),
-        ) else {
+        let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16))
+        else {
             continue;
         };
         // The two bytes must both lie in the mapping.

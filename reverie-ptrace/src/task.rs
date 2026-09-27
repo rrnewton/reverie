@@ -102,10 +102,11 @@ use crate::liteinst_trap_only::TrapOnlyTask;
 
 #[path = "task_trap_only.rs"]
 mod trap_only;
+use trap_only::TrapOnlyRoute;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use trap_only::step_count_for_test;
-use trap_only::TrapOnlyRoute;
+
 use crate::regs::Reg;
 use crate::regs::RegAccess;
 use crate::stack::GuestStack;

@@ -116,7 +116,12 @@ fn send_queued(pid: Pid, tid: Pid, signal: i32, value: i32, thread: bool) {
                 info.as_ptr(),
             )
         } else {
-            libc::syscall(libc::SYS_rt_sigqueueinfo, pid.as_raw(), signal, info.as_ptr())
+            libc::syscall(
+                libc::SYS_rt_sigqueueinfo,
+                pid.as_raw(),
+                signal,
+                info.as_ptr(),
+            )
         }
     };
     assert_eq!(result, 0, "queue signal {signal}");
@@ -286,9 +291,7 @@ impl Tool for P2Tool {
                     }
                     _ => errno_value(&result).to_string(),
                 };
-                guest
-                    .send_rpc(format!("syscall {name} = {rendered}"))
-                    .await;
+                guest.send_rpc(format!("syscall {name} = {rendered}")).await;
                 let after = guest.regs().await;
                 guest
                     .send_rpc(format!(
@@ -556,7 +559,9 @@ async fn compare_mode(mode: &str) -> [P2Run; 4] {
 fn assert_report_has(run: &P2Run, lines: &[&str]) {
     for line in lines {
         assert!(
-            run.report.lines().any(|candidate| candidate.starts_with(line)),
+            run.report
+                .lines()
+                .any(|candidate| candidate.starts_with(line)),
             "report lacks a line starting {line:?}:\n{}",
             run.report
         );
@@ -609,7 +614,11 @@ async fn trap_only_p2_t1c_queued_signals_keep_order_and_values() {
         .lines()
         .filter(|line| line.starts_with("queue "))
         .count();
-    assert_eq!(queued, 5, "five distinct signals delivered:\n{}", ptrace.report);
+    assert_eq!(
+        queued, 5,
+        "five distinct signals delivered:\n{}",
+        ptrace.report
+    );
     assert!(
         ptrace.report.contains("sig=10 code=-1 value=1"),
         "{}",
@@ -646,7 +655,11 @@ async fn trap_only_p2_t2_forced_sigtrap_profile_per_shape() {
     let ptrace_steps = steps_per_shape(&ptrace);
     eprintln!("ptrace steps per shape: {ptrace_steps:?}");
     assert_eq!(ptrace_steps, expected, "ptrace step profile");
-    assert_eq!(steps_per_shape(&trap_only), expected, "trap-only step profile");
+    assert_eq!(
+        steps_per_shape(&trap_only),
+        expected,
+        "trap-only step profile"
+    );
 }
 
 /// Steps taken by each tagged call: the cumulative count at the next
@@ -725,9 +738,10 @@ async fn trap_only_p2_t6a_fork_family_through_a_patched_site() {
         assert_report_has(ptrace, &["before thread site bytes 0f 05"]);
         assert_report_has(trap_only, &["before thread site bytes cd 80"]);
         let masked = P2Run {
-            report: trap_only
-                .report
-                .replace("before thread site bytes cd 80", "before thread site bytes 0f 05"),
+            report: trap_only.report.replace(
+                "before thread site bytes cd 80",
+                "before thread site bytes 0f 05",
+            ),
             ..clone_run(trap_only)
         };
         assert_equal_runs(&masked, ptrace);
@@ -755,14 +769,18 @@ async fn trap_only_p2_t6a_fork_family_through_a_patched_site() {
         assert_eq!(trap_only.patched_sites, 0);
     }
     assert_eq!(ptrace.counts.fork_stops() + ptrace.counts.clone_stops(), 0);
-    assert_eq!(ptrace_tail.counts.fork_stops(), 3, "fork, grandchild, clone3");
+    assert_eq!(
+        ptrace_tail.counts.fork_stops(),
+        3,
+        "fork, grandchild, clone3"
+    );
     assert_eq!(ptrace_tail.counts.vfork_stops(), 1);
     assert_eq!(ptrace_tail.counts.clone_stops(), 1);
 }
 
 fn clone_run(run: &P2Run) -> P2Run {
     P2Run {
-        status: run.status.clone(),
+        status: run.status,
         stops: run.stops.clone(),
         tool_events: run.tool_events.clone(),
         counts: run.counts.clone(),

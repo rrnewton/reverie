@@ -20,8 +20,10 @@
 //! from an I386 stop unchanged because H0 has already normalized the
 //! registers they save and restore.
 
+use reverie::Errno;
 #[cfg(test)]
 use reverie::Pid;
+use reverie::Tool;
 use reverie::syscalls::Sysno;
 use safeptrace::Error as TraceError;
 use safeptrace::Event;
@@ -43,8 +45,6 @@ use crate::liteinst_trap_only::is_reserved_site;
 use crate::liteinst_trap_only::read_site;
 use crate::liteinst_trap_only::site_mapping_is_patchable;
 use crate::liteinst_trap_only::write_site;
-use reverie::Errno;
-use reverie::Tool;
 
 /// How `handle_seccomp` continues after trap-only routing.
 pub(super) enum TrapOnlyRoute {
@@ -234,7 +234,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 },
             ));
         }
-        self.trap_only.as_mut().expect("trap-only routing").live_entry = Some(regs);
+        self.trap_only
+            .as_mut()
+            .expect("trap-only routing")
+            .live_entry = Some(regs);
         Ok(TrapOnlyRoute::Patched(task))
     }
 
@@ -541,7 +544,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             .untraced_syscall(
                 task,
                 Sysno::rt_sigaction,
-                reverie::syscalls::SyscallArgs::new(libc::SIGSYS as usize, act as usize, 0, 8, 0, 0),
+                reverie::syscalls::SyscallArgs::new(
+                    libc::SIGSYS as usize,
+                    act as usize,
+                    0,
+                    8,
+                    0,
+                    0,
+                ),
             )
             .await?;
         if let Err(errno) = restored {
