@@ -12,7 +12,7 @@
 #![allow(clippy::duplicate_mod)]
 
 #[allow(dead_code)]
-#[path = "../../../reverie-examples/chaos.rs"]
+#[path = "../../../reverie-examples/chaos_tool.rs"]
 mod chaos_exact;
 #[allow(dead_code)]
 #[path = "../../../reverie-examples/chrome-trace/main.rs"]
