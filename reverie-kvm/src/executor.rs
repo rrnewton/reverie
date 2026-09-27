@@ -17952,13 +17952,15 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     // consume this exact child in both the backend and the family ledger.
     let status = state.children.remove(&child_pid).unwrap().into_raw();
     state.consumed_child_wait = Some(child_pid);
-    if args[1] != 0 && memory.user().write(args[1], &status.to_le_bytes()).is_err() {
+    // Status is a nonpartial scalar store; the bulk rusage copy may leave a
+    // writable prefix on fault. Keep the backend's existing zero accounting.
+    if args[1] != 0 && memory.user().put_user_i32(args[1], status).is_err() {
         return negative_errno(libc::EFAULT);
     }
     if args[3] != 0
         && memory
             .user()
-            .zero(args[3], std::mem::size_of::<libc::rusage>())
+            .copy_to_user(args[3], &[0; std::mem::size_of::<libc::rusage>()])
             .is_err()
     {
         return negative_errno(libc::EFAULT);
@@ -44791,6 +44793,8 @@ mod tests {
             negative_errno(libc::EINVAL)
         );
     }
+
+    include!("wait4_copyout_tests.rs");
 
     #[test]
     fn wait4_wuntraced_reaps_terminal_statuses_with_linux_int_options() {

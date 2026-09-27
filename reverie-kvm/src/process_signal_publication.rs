@@ -5479,6 +5479,94 @@ mod tests {
     }
 
     #[test]
+    fn wait4_read_only_outputs_consume_only_the_selected_family_child() {
+        const STATUS: u64 = 0x100;
+        const USAGE: u64 = 0x1100;
+        for status_fault in [true, false] {
+            let mut parent = executor();
+            let parent_id = identity(&parent);
+            let mut child = parent.fork_child(2, false, false).unwrap();
+            let child_id = identity(&child);
+            let mut sibling = parent.fork_child(3, false, false).unwrap();
+            let sibling_id = identity(&sibling);
+            child.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+            sibling.retire_current_thread(reverie::ExitStatus::Exited(11), false);
+            parent
+                .state
+                .children
+                .insert(2, reverie::ExitStatus::Exited(9));
+            parent
+                .state
+                .children
+                .insert(3, reverie::ExitStatus::Exited(11));
+            parent
+                .signal_registry
+                .controlled
+                .store(true, Ordering::Release);
+            let memory = GuestMemory::new(0, 8192).unwrap();
+            memory.map_user_permissions(0, 8192, true, true).unwrap();
+            memory
+                .map_user_permissions(if status_fault { 0 } else { 4096 }, 4096, true, false)
+                .unwrap();
+            memory.enable_user_access();
+            memory.write_raw(0, &[0xa5; 8192]).unwrap();
+            let request = SyscallRequest::new(
+                libc::SYS_wait4 as u64,
+                [2, STATUS, libc::WUNTRACED as u64, USAGE, 0, 0],
+            );
+            assert_eq!(
+                parent.execute_checked(&request, &memory).unwrap(),
+                -i64::from(libc::EFAULT)
+            );
+            assert!(parent.state.consumed_child_wait.is_none());
+            assert_eq!(parent.state.children.len(), 1);
+            assert_eq!(
+                parent.state.children.get(&3),
+                Some(&reverie::ExitStatus::Exited(11))
+            );
+            {
+                let family = parent.signal_registry.family.lock().unwrap();
+                let children = &family.direct_children[&process_key(parent_id)];
+                assert_eq!(children.len(), 1);
+                assert!(!children.contains_key(&process_key(child_id)));
+                assert!(children.contains_key(&process_key(sibling_id)));
+            }
+            assert_eq!(
+                parent.execute_checked(&request, &memory).unwrap(),
+                -i64::from(libc::ECHILD)
+            );
+            let mut expected = [0xa5; 8192];
+            if !status_fault {
+                expected[STATUS as usize..STATUS as usize + 4]
+                    .copy_from_slice(&(9_i32 << 8).to_ne_bytes());
+            }
+            let mut actual = [0; 8192];
+            memory.read_raw(0, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                parent
+                    .execute_checked(
+                        &SyscallRequest::new(libc::SYS_wait4 as u64, [3, 0, 0, 0, 0, 0]),
+                        &memory,
+                    )
+                    .unwrap(),
+                3
+            );
+            assert!(parent.state.children.is_empty());
+            assert!(parent.state.consumed_child_wait.is_none());
+            assert!(
+                !parent
+                    .signal_registry
+                    .family
+                    .lock()
+                    .unwrap()
+                    .direct_children
+                    .contains_key(&process_key(parent_id))
+            );
+        }
+    }
+
+    #[test]
     fn wait4_copy_fault_consumes_the_exact_family_child_once() {
         const STATUS: u64 = 0x100;
         const USAGE: u64 = 0x200;

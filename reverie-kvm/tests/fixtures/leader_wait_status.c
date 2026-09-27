@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -29,7 +30,7 @@ static void *worker(void *unused) {
 int main(int argc, char **argv) {
     if (argc != 2 && argc != 3) return 90;
     int mode = argc == 3 ? argv[2][0] - '0' : 0;
-    if (mode < 0 || mode > 5) return 105;
+    if (mode < 0 || mode > 7) return 105;
     unsigned long options = WUNTRACED;
     if (mode == 2 || mode == 3) options |= WNOHANG;
     if (mode == 3) options |= 0xdeadbeefUL << 32;
@@ -76,16 +77,33 @@ int main(int argc, char **argv) {
         errno = 0;
         if (syscall(SYS_wait4, child, &status, options | 0x40, &usage) != -1 ||
             errno != EINVAL) return 108;
+        unsigned char *protected_output = 0;
+        if (mode == 6 || mode == 7) {
+            protected_output = mmap(0, 4096, PROT_READ | PROT_WRITE,
+                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (protected_output == MAP_FAILED) return 113;
+            memset(protected_output, 0xa5, 4096);
+            if (mprotect(protected_output, 4096, PROT_READ)) return 114;
+        }
+        void *status_output = mode == 4 ? (void *)-1 : &status;
+        void *usage_output = mode == 5 ? (void *)-1 : &usage;
+        if (mode == 6) status_output = protected_output;
+        if (mode == 7) usage_output = protected_output;
         errno = 0;
-        long result = syscall(SYS_wait4, child, mode == 4 ? (void *)-1 : &status,
-                              options, mode == 5 ? (void *)-1 : &usage);
-        if (mode == 4 || mode == 5) {
+        long result = syscall(SYS_wait4, child, status_output, options, usage_output);
+        if (mode >= 4) {
             if (result != -1 || errno != EFAULT) return 109;
-            if (mode == 4 && memcmp(&usage, untouched, sizeof usage)) return 110;
+            if ((mode == 4 || mode == 6) && memcmp(&usage, untouched, sizeof usage)) return 110;
         } else if (result != child) {
             return 111;
         }
-        if (mode != 4 && (!WIFEXITED(status) || WEXITSTATUS(status) != 73)) return 112;
+        if (mode != 4 && mode != 6 && (!WIFEXITED(status) || WEXITSTATUS(status) != 73)) return 112;
+        if (protected_output) {
+            for (int i = 0; i < 4096; i++) {
+                if (protected_output[i] != 0xa5) return 115;
+            }
+            if (munmap(protected_output, 4096)) return 116;
+        }
     }
     errno = 0;
     if (waitpid(child, &status, WNOHANG) != -1 || errno != ECHILD) return 103;
