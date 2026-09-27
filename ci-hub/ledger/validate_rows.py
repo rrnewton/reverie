@@ -1278,10 +1278,11 @@ def events(*, root: Path | None = None, preserve_admission: bool = False) -> lis
     """
     root = (root or repository_root()).resolve()
     # Both modes keep written pairs wherever a dictionary would lose them, so a
-    # correction that repeats a key is judged as written in either mode.
+    # correction that repeats a key is judged as written in either mode, and
+    # both deduplicate overlapping copies on every written pair.
     read_options = {"object_pairs_hook": qualifying_receipt.AdmissionJsonObject
                     if preserve_admission else _pairs_when_repeated}
-    union_options = ({"canonical": _admission_event_identity} if preserve_admission else {})
+    union_options = {"canonical": _written_event_identity}
     gathered: list[dict] = []
     for path in shard_paths(root):
         gathered.extend(read_shard(path, **read_options))
@@ -1318,6 +1319,32 @@ def _pairs_when_repeated(pairs):
 
 def _admission_event_identity(value):
     return qualifying_receipt.admission_json_dumps(value, sort_keys=True)
+
+
+def _written_event_identity(value) -> str:
+    """Every object's pairs as written, keys sorted stably, for event_id dedup.
+
+    The shards, spool and retained store overlap, so the union collapses equal
+    copies of one event. A dictionary view keeps only the last of a repeated key,
+    and ``_admission_event_identity`` keeps written pairs only around an
+    admission claim, so either would collapse a copy that writes a forged value
+    first into the genuine event and silently drop the contradiction. Sorting
+    keeps key order irrelevant, but a repeat and its order still differ.
+    """
+    receipt = qualifying_receipt
+    if receipt._admission_stdlib_json_safe(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+    def encode(item):
+        if isinstance(item, dict):
+            pairs = sorted(receipt._admission_pairs(item), key=lambda pair: pair[0])
+            return "{" + ",".join(json.dumps(key) + ":" + encode(child)
+                                  for key, child in pairs) + "}"
+        if isinstance(item, list):
+            return "[" + ",".join(encode(child) for child in item) + "]"
+        return json.dumps(item, separators=(",", ":"))
+
+    return encode(value)
 
 
 def _require_quarantine_correction(event: dict, target: dict) -> None:

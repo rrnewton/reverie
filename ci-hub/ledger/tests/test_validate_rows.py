@@ -19,6 +19,7 @@ sys.path.insert(0, str(HERE.parent.parent / "validate"))
 
 import validate_rows  # noqa: E402
 import ledger  # noqa: E402
+import publisher  # noqa: E402
 import reverie_node  # noqa: E402
 
 qualifying_receipt = validate_rows.qualifying_receipt
@@ -3666,6 +3667,91 @@ def test_quarantine_that_repeats_a_key_is_refused_by_every_ledger_reader(
     forged = [event for event in validate_rows.events(root=tmp_path)
               if validate_rows.qualifying_receipt._quarantine_repeated_key(event)]
     assert len(forged) == 1
+
+
+OVERLAP_READERS = (validate_rows.events, validate_rows.rows, validate_rows.status_input)
+
+
+def _claimed_selector_event(root: Path) -> dict:
+    # Data-only event whose row carries an admission claim. The claim's bytes
+    # belong to the downstream verifier; only the event union is under test.
+    event = _producer_selector_event(_producer_selector_row(root), root)
+    event["legacy_row"]["admission_floor_evidence"] = {
+        "schema_version": 1, "artifact": {"sha256": "b" * 64},
+    }
+    return event
+
+
+def _overlap_copy(root: Path, event: dict, text: str, store: str) -> None:
+    """Write one more copy of ``event``, as ``text``, to the spool or retained store."""
+    batch = root / validate_rows._spool_record_event(event, root)["spool"]
+    if store == "retained":
+        retained = publisher.retained_dir(validate_rows.live_spool_dir(root))
+        retained.mkdir(parents=True, exist_ok=True)
+        batch = batch.rename(retained / batch.name)
+    batch.write_text(text + "\n", encoding="utf-8")
+
+
+def test_overlapping_copies_of_one_event_collapse_in_both_reader_modes(tmp_path: Path):
+    """A copy serialized in another key order is the same event, not a conflict."""
+    event = _claimed_selector_event(tmp_path)
+    write_events(tmp_path, event)
+    alone = {mode: [reader(root=tmp_path, preserve_admission=mode) for reader in OVERLAP_READERS]
+             for mode in (False, True)}
+    _overlap_copy(tmp_path, event, json.dumps(event), "spool")
+    _overlap_copy(tmp_path, event, json.dumps(dict(reversed(event.items()))), "retained")
+    for mode in (False, True):
+        assert [reader(root=tmp_path, preserve_admission=mode)
+                for reader in OVERLAP_READERS] == alone[mode]
+        assert [item["event_id"] for item in validate_rows.events(
+            root=tmp_path, preserve_admission=mode)] == [event["event_id"]]
+
+
+@pytest.mark.parametrize("forged_in", [
+    "spool", "retained", "shard", "spool-pair", "retained-pair",
+])
+@pytest.mark.parametrize("where", ["admission-claim", "correction-row", "unclaimed-row"])
+def test_overlapping_copy_that_repeats_a_key_conflicts_in_both_reader_modes(
+    tmp_path: Path, where: str, forged_in: str,
+):
+    """Copies of one event in the tracked shards, the spool and the retained store
+    are deduplicated by event_id. A dictionary keeps the last of a repeated key,
+    so a copy that writes a forged value first reads as the genuine event, and
+    comparing that view would drop the contradictory bytes, whichever copy came
+    first. Every reader must refuse the pair, in both modes, including for an
+    event that carries no admission claim at all."""
+    if where == "admission-claim":
+        genuine = _claimed_selector_event(tmp_path)
+        tracked = []
+        anchor, key, value = '"admission_floor_evidence": {', "artifact", "{}"
+    elif where == "unclaimed-row":
+        genuine = validate_rows._event_for_row(row(tmp_path), tmp_path)
+        tracked = []
+        anchor, key, value = '"legacy_row": {', "result", '"fail"'
+    else:
+        lost = quarantine_lost_events()
+        genuine = quarantine_correction(lost[0])
+        tracked = [*lost, quarantine_correction(lost[1])]
+        anchor, key, value = '"legacy_row": {', "branch", '"forged"'
+    text = json.dumps(genuine, sort_keys=True)
+    forged = _repeat_first_key(text, anchor, key, value)
+    assert json.loads(forged) == genuine and forged != text
+    store = "retained" if forged_in.startswith("retained") else "spool"
+    shard_texts = [json.dumps(event, sort_keys=True) for event in tracked]
+    if forged_in == "shard":
+        shard_texts.append(forged)
+    elif not forged_in.endswith("-pair"):
+        shard_texts.append(text)
+    if shard_texts:
+        _write_event_texts(tmp_path, genuine, *shard_texts)
+    if forged_in.endswith("-pair"):
+        # Both copies in one store: that store's own union must also refuse.
+        _overlap_copy(tmp_path, genuine, text, store)
+    _overlap_copy(tmp_path, genuine, text if forged_in == "shard" else forged, store)
+    for preserve_admission in (False, True):
+        for reader in OVERLAP_READERS:
+            with pytest.raises(ledger.ConflictingEventId, match="appears twice with different bodies"):
+                reader(root=tmp_path, preserve_admission=preserve_admission)
 
 
 def test_quarantine_marker_in_a_result_row_is_refused(tmp_path: Path):
