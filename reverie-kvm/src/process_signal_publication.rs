@@ -5637,6 +5637,176 @@ mod tests {
     }
 
     #[test]
+    fn waitid_copy_fault_consumes_only_the_selected_family_child() {
+        const INFO: u64 = 0x100;
+        const USAGE: u64 = 0x1100;
+        for info_fault in [true, false] {
+            for accessible in [true, false] {
+                for keep in [0, libc::WNOWAIT] {
+                    let mut parent = executor();
+                    let parent_id = identity(&parent);
+                    let mut child = parent.fork_child(2, false, false).unwrap();
+                    let child_id = identity(&child);
+                    let mut sibling = parent.fork_child(3, false, false).unwrap();
+                    let sibling_id = identity(&sibling);
+                    child.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+                    sibling.retire_current_thread(reverie::ExitStatus::Exited(11), false);
+                    parent
+                        .state
+                        .children
+                        .insert(2, reverie::ExitStatus::Exited(9));
+                    parent
+                        .state
+                        .children
+                        .insert(3, reverie::ExitStatus::Exited(11));
+                    parent
+                        .signal_registry
+                        .controlled
+                        .store(true, Ordering::Release);
+                    let memory = GuestMemory::new(0, 8192).unwrap();
+                    memory.map_user_permissions(0, 8192, true, true).unwrap();
+                    memory
+                        .map_user_permissions(
+                            if info_fault { 0 } else { 4096 },
+                            4096,
+                            accessible,
+                            false,
+                        )
+                        .unwrap();
+                    memory.enable_user_access();
+                    memory.write_raw(0, &[0xa5; 8192]).unwrap();
+                    let args = [
+                        libc::P_PID as u64,
+                        2,
+                        INFO,
+                        (libc::WEXITED | keep) as u64,
+                        USAGE,
+                        0,
+                    ];
+                    assert_eq!(
+                        parent
+                            .execute_checked(
+                                &SyscallRequest::new(libc::SYS_waitid as u64, args),
+                                &memory,
+                            )
+                            .unwrap(),
+                        -i64::from(libc::EFAULT)
+                    );
+                    assert!(parent.state.consumed_child_wait.is_none());
+                    assert_eq!(parent.state.children.len(), if keep == 0 { 1 } else { 2 });
+                    assert_eq!(parent.state.children.contains_key(&2), keep != 0);
+                    assert_eq!(
+                        parent.state.children.get(&3),
+                        Some(&reverie::ExitStatus::Exited(11))
+                    );
+                    {
+                        let family = parent.signal_registry.family.lock().unwrap();
+                        let children = &family.direct_children[&process_key(parent_id)];
+                        assert_eq!(children.len(), if keep == 0 { 1 } else { 2 });
+                        assert_eq!(children.contains_key(&process_key(child_id)), keep != 0);
+                        assert!(children.contains_key(&process_key(sibling_id)));
+                    }
+                    let mut expected = [0xa5; 8192];
+                    if info_fault {
+                        // Rusage succeeds before siginfo faults; KVM accounting
+                        // remains zero. A rusage fault leaves every info byte.
+                        expected
+                            [USAGE as usize..USAGE as usize + std::mem::size_of::<libc::rusage>()]
+                            .fill(0);
+                    }
+                    let mut actual = [0; 8192];
+                    memory.read_raw(0, &mut actual).unwrap();
+                    assert_eq!(actual, expected);
+                    if keep != 0 {
+                        // Do not infer retention from another protected EFAULT:
+                        // an info fault can override an underlying ECHILD.
+                        assert_eq!(
+                            parent
+                                .execute_checked(
+                                    &SyscallRequest::new(
+                                        libc::SYS_waitid as u64,
+                                        [
+                                            libc::P_PID as u64,
+                                            2,
+                                            0,
+                                            (libc::WEXITED | libc::WNOWAIT) as u64,
+                                            0,
+                                            0,
+                                        ],
+                                    ),
+                                    &memory,
+                                )
+                                .unwrap(),
+                            0
+                        );
+                        assert!(parent.state.consumed_child_wait.is_none());
+                        let mut consume = args;
+                        consume[3] = libc::WEXITED as u64;
+                        assert_eq!(
+                            parent
+                                .execute_checked(
+                                    &SyscallRequest::new(libc::SYS_waitid as u64, consume),
+                                    &memory,
+                                )
+                                .unwrap(),
+                            -i64::from(libc::EFAULT)
+                        );
+                    }
+                    assert!(parent.state.consumed_child_wait.is_none());
+                    assert!(!parent.state.children.contains_key(&2));
+                    {
+                        let family = parent.signal_registry.family.lock().unwrap();
+                        let children = &family.direct_children[&process_key(parent_id)];
+                        assert_eq!(children.len(), 1);
+                        assert!(!children.contains_key(&process_key(child_id)));
+                        assert!(children.contains_key(&process_key(sibling_id)));
+                    }
+                    assert_eq!(
+                        parent
+                            .execute_checked(
+                                &SyscallRequest::new(
+                                    libc::SYS_waitid as u64,
+                                    [libc::P_PID as u64, 2, 0, libc::WEXITED as u64, 0, 0],
+                                ),
+                                &memory,
+                            )
+                            .unwrap(),
+                        -i64::from(libc::ECHILD)
+                    );
+                    assert!(parent.state.consumed_child_wait.is_none());
+                    memory.read_raw(0, &mut actual).unwrap();
+                    assert_eq!(actual, expected);
+                    assert_eq!(
+                        parent
+                            .execute_checked(
+                                &SyscallRequest::new(
+                                    libc::SYS_waitid as u64,
+                                    [libc::P_PID as u64, 3, 0, libc::WEXITED as u64, 0, 0],
+                                ),
+                                &memory,
+                            )
+                            .unwrap(),
+                        0
+                    );
+                    assert!(parent.state.children.is_empty());
+                    assert!(parent.state.consumed_child_wait.is_none());
+                    assert!(
+                        !parent
+                            .signal_registry
+                            .family
+                            .lock()
+                            .unwrap()
+                            .direct_children
+                            .contains_key(&process_key(parent_id))
+                    );
+                    memory.read_raw(0, &mut actual).unwrap();
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn child_wait_consumes_the_exact_family_child_selected_by_the_backend() {
         const INFO: u64 = 0x100;
 

@@ -608,6 +608,26 @@ fn parent_wait_read_only_outputs_tool() {
     );
 }
 
+#[test]
+fn parent_waitid_read_only_outputs_direct() {
+    run_wait_status(
+        "leader_exit::parent_waitid_read_only_outputs_direct",
+        false,
+        &[Some("8"), Some("9")],
+    );
+}
+
+#[test]
+fn parent_waitid_read_only_outputs_tool() {
+    // ExitTool runs the checked backend and lifecycle callbacks. It does not
+    // emulate waitid through Detcore or subscribe to its syscall hook.
+    run_wait_status(
+        "leader_exit::parent_waitid_read_only_outputs_tool",
+        true,
+        &[Some("8"), Some("9")],
+    );
+}
+
 #[derive(Debug, Default)]
 struct WorkerErrorControl {
     events: Mutex<Vec<(u8, i32, ExitStatus)>>,
