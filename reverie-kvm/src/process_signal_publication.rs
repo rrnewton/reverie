@@ -5479,10 +5479,80 @@ mod tests {
     }
 
     #[test]
+    fn wait4_copy_fault_consumes_the_exact_family_child_once() {
+        const STATUS: u64 = 0x100;
+        const USAGE: u64 = 0x200;
+        const INVALID: u64 = 0x10000;
+        for options in [
+            0,
+            libc::WUNTRACED as u64,
+            (libc::WUNTRACED | libc::WNOHANG) as u64,
+            (0xdead_beef_u64 << 32) | libc::WUNTRACED as u64,
+        ] {
+            for status_fault in [true, false] {
+                let mut parent = executor();
+                let parent_id = identity(&parent);
+                let mut child = parent.fork_child(2, false, false).unwrap();
+                child.retire_current_thread(reverie::ExitStatus::Exited(9), false);
+                parent
+                    .state
+                    .children
+                    .insert(2, reverie::ExitStatus::Exited(9));
+                parent
+                    .signal_registry
+                    .controlled
+                    .store(true, Ordering::Release);
+                let mut memory = GuestMemory::new(0, 4096).unwrap();
+                memory.write(0, &[0xa5; 4096]).unwrap();
+                let request = SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [
+                        2,
+                        if status_fault { INVALID } else { STATUS },
+                        options,
+                        if status_fault { USAGE } else { INVALID },
+                        0,
+                        0,
+                    ],
+                );
+                assert_eq!(
+                    parent.execute_checked(&request, &memory).unwrap(),
+                    -i64::from(libc::EFAULT)
+                );
+                assert!(parent.state.children.is_empty());
+                assert!(parent.state.consumed_child_wait.is_none());
+                assert!(
+                    !parent
+                        .signal_registry
+                        .family
+                        .lock()
+                        .unwrap()
+                        .direct_children
+                        .contains_key(&process_key(parent_id)),
+                    "an output fault must consume the exact family edge as well as the numeric child"
+                );
+                assert_eq!(
+                    parent.execute_checked(&request, &memory).unwrap(),
+                    -i64::from(libc::ECHILD)
+                );
+                let mut expected = [0xa5; 4096];
+                if !status_fault {
+                    // Linux writes status before attempting the rusage copy.
+                    expected[STATUS as usize..STATUS as usize + 4]
+                        .copy_from_slice(&(9_i32 << 8).to_le_bytes());
+                }
+                let mut actual = [0; 4096];
+                memory.read(0, &mut actual).unwrap();
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
     fn child_wait_consumes_the_exact_family_child_selected_by_the_backend() {
         const INFO: u64 = 0x100;
 
-        for mode in 0..5 {
+        for mode in 0..6 {
             let mut parent = executor();
             let parent_id = identity(&parent);
             let mut low = parent.fork_child(2, false, false).unwrap();
@@ -5506,6 +5576,7 @@ mod tests {
                 2 => (libc::P_PID, high_id.tgid.as_raw(), high_id, true, false),
                 3 => (libc::P_ALL, 0, low_id, false, false),
                 4 => (libc::P_ALL, 0, low_id, true, true),
+                5 => (libc::P_ALL, 0, low_id, true, true),
                 _ => unreachable!(),
             };
             let memory = GuestMemory::new(0, 4096).unwrap();
@@ -5514,7 +5585,14 @@ mod tests {
                     &mut parent,
                     &memory,
                     libc::SYS_wait4,
-                    [u64::from(u32::MAX), INFO, libc::WNOHANG as u64, 0, 0, 0],
+                    [
+                        u64::from(u32::MAX),
+                        INFO,
+                        (libc::WNOHANG | if mode == 5 { libc::WUNTRACED } else { 0 }) as u64,
+                        0,
+                        0,
+                        0,
+                    ],
                 );
                 libc::pid_t::try_from(selected).expect("wait4 returned the selected child pid")
             } else {
