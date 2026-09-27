@@ -98,16 +98,14 @@ impl Tool for Strace {
             Syscall::Execve(_) | Syscall::Execveat(_) => {
                 let tid = guest.tid();
 
-                // must be pre-formatted, otherwise the memory references become
-                // invalid when execve/execveat returns success because the original
-                // program got wiped out.
+                // CONTROL: formatted and printed after the inject.
+                let errno = guest.inject(syscall).await.unwrap_err();
+
                 eprintln!(
                     "[pid {}] {}",
                     tid.colored(),
                     syscall.display_with_outputs(&guest.memory())
                 );
-
-                let errno = guest.inject(syscall).await.unwrap_err();
 
                 eprintln!(
                     "[pid {}] ({}) = {:?}",
