@@ -1,6 +1,6 @@
 # Purpose
 
-Drive Hermit toward robust deterministic execution of real Linux programs: faithful run and record/replay, race exposure and schedule localization, a production backend without ptrace overhead, parallel execution for independent processes, and a reproducible QEMU/Linux path. Keep `main` green, turn reviewed work into landed work, and reduce the open pull-request queue without weakening evidence. The capability definition is the [Hermit product vision](.skills/supplemental_docs/hermit-v2-roadmap.md); the dated current-state measurements elsewhere in that roadmap are history, not startup policy.
+Drive Hermit toward robust deterministic execution of real Linux programs: faithful run and record/replay, race exposure and schedule localization, a production backend without ptrace overhead, parallel execution for independent processes, and a reproducible QEMU/Linux path. Keep `main` green, turn reviewed work into landed work, and reduce the open pull-request queue without weakening evidence. The capability definition is the [Hermit product vision](ai_docs/hermit-v2-roadmap.md); the dated current-state measurements elsewhere in that roadmap are history, not startup policy.
 
 # Scope and coordinator mode
 
