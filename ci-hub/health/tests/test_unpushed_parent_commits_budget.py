@@ -170,8 +170,45 @@ class UnpushedParentCommitsBudget(unittest.TestCase):
         # The rescue ref really exists in the inert origin: publication is a
         # fact about the remote, not a claim in the log line.
         refs = run("git", "for-each-ref", "--format=%(refname)", cwd=fx.origin)
-        self.assertIn(f"refs/heads/rescue/auto-{sha[:7]}", refs, refs)
+        self.assertIn(f"refs/rescue/auto-{sha[:7]}", refs.splitlines(), refs)
+        # dev-hermit is main-only: a rescue must never create a branch.
+        self.assertNotIn("refs/heads/rescue/", refs, refs)
+        self.assertEqual(["refs/heads/main"],
+                         [r for r in refs.splitlines() if r.startswith("refs/heads/")],
+                         refs)
         self.assertLess(elapsed, 30.0, f"must fit the 30s gate budget; took {elapsed:.2f}s")
+        # The verified rescue is mirrored under refs/remotes/, so the census
+        # stops counting it -- the self-clearing a fetched rescue BRANCH used
+        # to provide, which a custom ref no longer gets from a plain fetch.
+        mirror = run("git", "rev-parse", f"refs/remotes/origin-rescue/auto-{sha[:7]}",
+                     cwd=fx.root)
+        self.assertEqual(sha, mirror)
+        rc, out, _elapsed = fx.gate_run("--scope", "all")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("count=0", out, out)
+
+    def test_rescue_is_not_verified_by_a_ref_that_only_shares_its_tail(self) -> None:
+        """ls-remote matches ref-name TAILS. A foreign ref ending in the same
+        path must not count as publication when the real push failed."""
+        fx = Fixture(self.tmp)
+        sha = fx.commit("planted local-only commit")
+        decoy = f"refs/decoy/refs/rescue/auto-{sha[:7]}"
+        run("git", "push", "-q", "origin", f"{sha}:{decoy}", cwd=fx.root)
+        # Make the real push fail: the origin refuses every refs/rescue/ update.
+        hook = fx.origin / "hooks" / "update"
+        hook.write_text('#!/bin/sh\ncase "$1" in refs/rescue/*) exit 1;; esac\n')
+        hook.chmod(0o755)
+
+        rc, out, _elapsed = fx.gate_run("--scope", "all", "--rescue")
+
+        self.assertEqual(rc, 1, out)
+        self.assertIn(f"refs/rescue/auto-{sha[:7]} [FAILED]", out, out)
+        self.assertNotIn("[verified]", out, out)
+        missing = subprocess.run(
+            ["git", "-C", str(fx.root), "rev-parse", "--verify", "--quiet",
+             f"refs/remotes/origin-rescue/auto-{sha[:7]}"],
+            capture_output=True, text=True)
+        self.assertNotEqual(0, missing.returncode, "an unverified rescue must not be mirrored")
 
     def test_clean_tree_reports_zero_and_is_cheap(self) -> None:
         """CONTROL: with nothing to find the gate passes, and it is fast for the

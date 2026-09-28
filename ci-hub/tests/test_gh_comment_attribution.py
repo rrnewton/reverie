@@ -804,6 +804,106 @@ class FleetGhTest(unittest.TestCase):
             captured,
         )
 
+    def assert_main_only_refusal(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("MAIN-ONLY by owner directive", result.stderr)
+        self.assertIn("git-push-verified origin HEAD:main", result.stderr)
+        self.assertFalse(
+            self.capture.exists(),
+            "A PULL REQUEST AGAINST A MAIN-ONLY REPOSITORY REACHED GITHUB",
+        )
+
+    def test_pr_create_naming_a_main_only_repository_is_refused_before_write(self) -> None:
+        for spec in (
+            ["--repo", "rrnewton/dev-hermit"],
+            ["--repo=rrnewton/agent-utils"],
+            ["-R", "https://github.com/rrnewton/dev-hermit.git"],
+            ["-R", "git@github.com:rrnewton/agent-utils.git"],
+            ["--repo", "github.com/RRNewton/Dev-Hermit"],
+        ):
+            with self.subTest(spec=spec):
+                self.capture.unlink(missing_ok=True)
+                result = self.run_shim(
+                    *self.identity(),
+                    "pr", "create", *spec, "--title", "t", "--body", "prose",
+                )
+                self.assert_main_only_refusal(result)
+
+    def test_pr_create_through_gh_repo_env_is_refused(self) -> None:
+        env = dict(self.env, GH_REPO="rrnewton/agent-utils")
+        result = self.run_shim(
+            "pr", "create", "--title", "t", "--body", "prose", env=env
+        )
+        self.assert_main_only_refusal(result)
+
+    def test_pr_create_from_a_main_only_checkout_is_refused_even_behind_insteadof(
+        self,
+    ) -> None:
+        """Without --repo the CLI picks a remote of the checkout. A rewrite rule
+        must not hide that the remote really is the main-only repository."""
+        checkout = self.root / "main-only-checkout"
+        checkout.mkdir()
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        subprocess.run(
+            ["git", "-C", str(checkout), "remote", "add", "origin",
+             "https://github.com/rrnewton/dev-hermit.git"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(checkout), "config",
+             "url./somewhere/else.insteadOf", "https://github.com/rrnewton/"],
+            check=True,
+        )
+        result = self.run_shim(
+            "pr", "create", "--title", "t", "--body", "prose", cwd=checkout
+        )
+        self.assert_main_only_refusal(result)
+        # An explicit, different --repo is the documented way out.
+        result = self.run_shim(
+            "pr", "create", "--repo", "rrnewton/hermit",
+            "--title", "t", "--body", "prose", cwd=checkout,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.captured()[:4], ["pr", "create", "--repo", "rrnewton/hermit"])
+
+    def test_creating_a_main_only_pull_request_through_the_raw_api_is_refused(
+        self,
+    ) -> None:
+        for endpoint in ("repos/rrnewton/dev-hermit/pulls", "/repos/rrnewton/agent-utils/pulls"):
+            with self.subTest(endpoint=endpoint):
+                self.capture.unlink(missing_ok=True)
+                result = self.run_shim(
+                    "api", "-X", "POST", endpoint,
+                    "-f", "title=t", "-f", "head=x", "-f", "base=main", "-f", "body=b",
+                )
+                self.assert_main_only_refusal(result)
+        env = dict(self.env, GH_REPO="rrnewton/dev-hermit")
+        self.capture.unlink(missing_ok=True)
+        result = self.run_shim(
+            "api", "-X", "POST", "repos/{owner}/{repo}/pulls", "-f", "body=b", env=env
+        )
+        self.assert_main_only_refusal(result)
+
+    def test_main_only_refusal_leaves_other_repositories_and_other_commands_alone(
+        self,
+    ) -> None:
+        cases = (
+            ["pr", "create", "--repo", "rrnewton/hermit", "--title", "t", "--body", "p"],
+            ["pr", "create", "--repo", "rrnewton/dev-hermit-fork", "--title", "t",
+             "--body", "p"],
+            ["pr", "create", "--repo", "someone/dev-hermit", "--title", "t", "--body", "p"],
+            ["issue", "create", "--repo", "rrnewton/dev-hermit", "--title", "t",
+             "--body", "p"],
+            ["pr", "list", "--repo", "rrnewton/dev-hermit"],
+            ["api", "repos/rrnewton/dev-hermit/pulls"],
+        )
+        for command in cases:
+            with self.subTest(command=command):
+                self.capture.unlink(missing_ok=True)
+                result = self.run_shim(*command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(self.capture.exists())
+
     def test_reads_and_non_prose_commands_still_pass_through_untouched(self) -> None:
         for command in (["issue", "list"], ["pr", "view", "42"], ["issue", "close", "7"]):
             with self.subTest(command=" ".join(command)):

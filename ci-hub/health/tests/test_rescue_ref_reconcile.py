@@ -16,7 +16,10 @@ real parent, and nothing pushes.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import subprocess
 import tempfile
 import unittest
@@ -196,6 +199,41 @@ class RescueReconcileTest(unittest.TestCase):
             git(s.repo, "reset", "-q", "--hard", "HEAD~1")
             self.assertEqual(1, s.run("--baseline", str(baseline)),
                              "a new drop must still fail even with a baseline present")
+
+    def test_non_branch_rescue_locations_are_reconciled(self):
+        """The producer now writes refs/rescue/ (never a branch) and mirrors a
+        verified one under refs/remotes/origin-rescue/. A drop sitting only in
+        either location must still be reported, not silently unenumerated."""
+        for location in ("refs/remotes/origin-rescue/auto-{short}",
+                         "refs/rescue/auto-{short}"):
+            with self.subTest(location=location), tempfile.TemporaryDirectory() as tmp:
+                s = Scratch(tmp)
+                dropped = commit(s.repo, "a.txt", "A work\n", "agent A: real work")
+                git(s.repo, "update-ref", location.format(short=dropped[:7]), dropped)
+                git(s.repo, "reset", "-q", "--hard", "HEAD~1")
+                self.assertEqual(
+                    [], git(s.repo, "for-each-ref", "refs/heads/rescue").splitlines(),
+                    "the fixture must hold no rescue BRANCH, or this proves nothing",
+                )
+                self.assertEqual(1, s.run(), f"a drop at {location} must fail the check")
+                landed = commit(s.repo, "b.txt", "B\n", "landed work")
+                git(s.repo, "update-ref", location.format(short=dropped[:7]), landed)
+                self.assertEqual(0, s.run(), "a landed rescue must stay silent")
+
+    def test_one_commit_at_several_locations_is_one_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = Scratch(tmp)
+            dropped = commit(s.repo, "a.txt", "A work\n", "agent A: real work")
+            s.rescue(dropped)
+            git(s.repo, "update-ref", f"refs/remotes/origin-rescue/auto-{dropped[:7]}",
+                dropped)
+            git(s.repo, "reset", "-q", "--hard", "HEAD~1")
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                self.assertEqual(1, s.run("--json"))
+            report = json.loads(buffer.getvalue())
+            self.assertEqual(1, report["total"], report)
+            self.assertEqual([dropped], [r["sha"] for r in report["unreconciled"]])
 
 
 if __name__ == "__main__":

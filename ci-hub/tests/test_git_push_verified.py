@@ -186,5 +186,100 @@ class GitPushVerifiedNewBranchTests(unittest.TestCase):
         self.assertFalse(self.rustfmt_log.exists())
 
 
+class GitPushVerifiedMainOnlyTests(unittest.TestCase):
+    """dev-hermit and agent-utils are main-only: no branch but main (and the
+    receipt store) may be pushed there. Other repositories are unaffected.
+
+    The remote is configured with its REAL GitHub URL and redirected to a local
+    bare repository through `insteadOf`, so the refusal is keyed on the
+    repository a push is addressed to while allowed pushes really land.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="git-push-verified-main-only-")
+        self.root = Path(self.temporary.name)
+        self.remote = self.root / "remote.git"
+        self.checkout = self.root / "checkout"
+        self.hooks = self.root / "empty-hooks"
+        self.hooks.mkdir()
+        self._git(["init", "--bare", str(self.remote)], cwd=self.root)
+        self._git(["init", "-b", "main", str(self.checkout)], cwd=self.root)
+        for key, value in (
+            ("user.name", "Test Author"),
+            ("user.email", "test@example.com"),
+            ("core.hooksPath", str(self.hooks)),
+        ):
+            self._git(["config", key, value])
+        (self.checkout / "notes.txt").write_text("content\n")
+        self._git(["add", "notes.txt"])
+        self._git(["commit", "-m", "seed"])
+        self.head = self._git(["rev-parse", "HEAD"]).stdout.strip()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _git(self, args: list[str], *, cwd: Path | None = None):
+        return subprocess.run(
+            ["git", *args], cwd=cwd or self.checkout, check=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+        )
+
+    def _address(self, url: str) -> None:
+        self._git(["remote", "add", "origin", url])
+        self._git(["config", f"url.{self.remote}.insteadOf", url])
+
+    def _push(self, refspec: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(SCRIPT), "origin", refspec], cwd=self.checkout, check=False,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+        )
+
+    def _remote_refs(self) -> list[str]:
+        return self._git(
+            ["for-each-ref", "--format=%(refname)"], cwd=self.remote
+        ).stdout.splitlines()
+
+    def test_main_only_repositories_refuse_a_feature_branch_before_pushing(self) -> None:
+        for url in (
+            "https://github.com/rrnewton/dev-hermit.git",
+            "git@github.com:rrnewton/dev-hermit.git",
+            "https://github.com/rrnewton/agent-utils",
+            "ssh://git@github.com/RRNewton/Agent-Utils.git/",
+        ):
+            for refspec in ("HEAD:feature", "HEAD:refs/heads/salvage/x/y",
+                            "HEAD:refs/heads/rescue/auto-abc"):
+                with self.subTest(url=url, refspec=refspec):
+                    self.tearDown()
+                    self.setUp()
+                    self._address(url)
+                    refused = self._push(refspec)
+                    self.assertEqual(5, refused.returncode, refused.stdout + refused.stderr)
+                    self.assertIn("MAIN-ONLY", refused.stderr)
+                    self.assertIn("Nothing was pushed", refused.stderr)
+                    self.assertEqual([], self._remote_refs())
+
+    def test_main_only_repository_still_accepts_main_and_the_receipt_store(self) -> None:
+        self._address("https://github.com/rrnewton/dev-hermit.git")
+        for refspec, ref in (("HEAD:main", "refs/heads/main"),
+                             ("HEAD:refs/heads/validation-receipts",
+                              "refs/heads/validation-receipts")):
+            with self.subTest(refspec=refspec):
+                passed = self._push(refspec)
+                self.assertEqual(0, passed.returncode, passed.stdout + passed.stderr)
+                self.assertIn(ref, self._remote_refs())
+
+    def test_other_repositories_keep_branch_pushes(self) -> None:
+        for url in ("https://github.com/rrnewton/hermit.git",
+                    "git@github.com:rrnewton/dev-hermit-fork.git",
+                    "https://github.com/other/dev-hermit.git"):
+            with self.subTest(url=url):
+                self.tearDown()
+                self.setUp()
+                self._address(url)
+                passed = self._push("HEAD:feature")
+                self.assertEqual(0, passed.returncode, passed.stdout + passed.stderr)
+                self.assertEqual(["refs/heads/feature"], self._remote_refs())
+
+
 if __name__ == "__main__":
     unittest.main()

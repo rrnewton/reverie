@@ -34,6 +34,18 @@ What each verdict actually proves, stated plainly because they are not equal:
                can tell them apart rather than trusting the label.
   UNRECONCILED "none of the above", i.e. worth a human look. Not a claim that
                the commit is definitely lost.
+
+WHERE RESCUE REFS LIVE (2026-09-27). dev-hermit is main-only, so the producer
+now pushes custom refs ``refs/rescue/auto-*`` instead of branches, and mirrors
+each verified one locally as ``refs/remotes/origin-rescue/auto-*``. A plain
+fetch does not bring custom refs down; mirror another checkout's with
+
+    git fetch origin '+refs/rescue/*:refs/remotes/origin-rescue/*'
+
+This reads every location a rescue ref can be found locally: the mirror, a
+local ``refs/rescue/`` copy, and the legacy branch forms
+(``refs/remotes/origin/rescue/`` and ``refs/heads/rescue/``) so older rescues
+still reconcile. The same commit found at several locations is one row.
 """
 
 from __future__ import annotations
@@ -142,6 +154,32 @@ def index_main(repo: str, main_ref: str, limit: int) -> dict:
     return {"by_subject": by_subject, "by_patch_id": by_patch_id, "limit": limit}
 
 
+def rescue_ref_patterns(glob: str) -> list[str]:
+    """Every local location a rescue ref named by `glob` (``rescue/...``) can occupy.
+
+    Current: the verified mirror under refs/remotes/origin-rescue/ and a local
+    refs/rescue/ copy. Legacy: the fetched branch and a local branch.
+    """
+    tail = glob.removeprefix("rescue/")
+    return [
+        f"refs/remotes/origin-rescue/{tail}",
+        f"refs/{glob}",
+        f"refs/remotes/origin/{glob}",
+        f"refs/heads/{glob}",
+    ]
+
+
+def dedupe_by_sha(rows) -> list[list[str]]:
+    """Keep the first location of each commit, so one rescue is one row."""
+    seen: set[str] = set()
+    out: list[list[str]] = []
+    for name, sha in rows:
+        if sha not in seen:
+            seen.add(sha)
+            out.append([name, sha])
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=PARENT)
@@ -162,11 +200,11 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     rc, out = git(a.repo, "for-each-ref", "--format=%(refname:short) %(objectname)",
-                  f"refs/remotes/origin/{a.glob}", f"refs/heads/{a.glob}")
+                  *rescue_ref_patterns(a.glob))
     if rc != 0:
         print("UNVERIFIABLE: could not enumerate rescue refs", file=sys.stderr)
         return 2
-    refs = [line.split() for line in out.splitlines() if line.strip()]
+    refs = dedupe_by_sha(line.split() for line in out.splitlines() if line.strip())
     if not refs:
         print(f"no refs matched {a.glob}; nothing to reconcile")
         return 0

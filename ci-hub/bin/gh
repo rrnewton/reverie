@@ -828,8 +828,121 @@ def create_pr_and_record(args: list[str], task: str, actor: str) -> int:
 
 
 
+# Repositories the owner keeps MAIN-ONLY: no pull requests and no branches.
+# Every change lands as a verified direct push to main from a clean worktree,
+# so a pull request against one of them is an unowned wait state that nothing
+# will ever merge. The push side is enforced by ci-hub/bin/git-push-verified.
+MAIN_ONLY_REPOSITORIES = frozenset({"rrnewton/dev-hermit", "rrnewton/agent-utils"})
+
+_REPOSITORY_SPEC = re.compile(
+    r"""^(?:
+        (?:https?|ssh|git)://(?:[^@/]+@)?github\.com(?::\d+)?/
+      | [^@/:]+@github\.com:
+      | github\.com/
+    )?
+    (?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def repository_of(spec: str) -> str | None:
+    """``owner/repo`` (lowercase) for a GitHub repository spec or remote URL.
+
+    Accepts ``OWNER/REPO``, ``github.com/OWNER/REPO``, and https, ssh, and scp
+    remote URLs. Anything else (another host, a local path) is ``None``.
+    """
+
+    match = _REPOSITORY_SPEC.match(spec.strip())
+    if match is None:
+        return None
+    return f"{match['owner']}/{match['repo']}".lower()
+
+
+def cwd_remote_repositories() -> set[str]:
+    """Every GitHub repository a remote of the current checkout names.
+
+    Read from raw configuration, so an insteadOf rewrite cannot hide the real
+    destination. Outside a git checkout this is empty.
+    """
+
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get-regexp", r"^remote\..*\.(url|pushurl)$"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    found: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and (repository := repository_of(parts[1])):
+            found.add(repository)
+    return found
+
+
+def explicit_repository_option(args: list[str]) -> str | None:
+    for index in range(len(args)):
+        for name in ("--repo", "-R"):
+            found = _option_value(args, index, name)
+            if found is not None:
+                return found[0]
+        if args[index].startswith("-R") and len(args[index]) > 2 and args[index][2] != "=":
+            return args[index][2:]
+    return None
+
+
+def pull_request_targets(args: list[str]) -> set[str]:
+    """Repositories a pull-request creation would target, conservatively.
+
+    An explicit ``--repo``/``-R`` (or ``GH_REPO``) is the target, as the GitHub
+    CLI would use it. Without one the CLI chooses among the checkout's remotes,
+    so every remote counts: refusing is the safe side of that ambiguity, and
+    ``--repo`` names the intended repository explicitly.
+    """
+
+    if len(args) >= 2 and args[:2] == ["pr", "create"]:
+        explicit = explicit_repository_option(args[2:]) or os.environ.get("GH_REPO")
+        if explicit:
+            repository = repository_of(explicit)
+            return {repository} if repository else set()
+        return cwd_remote_repositories()
+    if args and args[0] == "api" and api_method(args) == "POST":
+        endpoint = api_endpoint(args).split("?", 1)[0].strip("/")
+        match = re.fullmatch(r"repos/([^/]+)/([^/]+)/pulls", endpoint)
+        if match is None:
+            return set()
+        if "{" in endpoint:
+            # {owner}/{repo} placeholders resolve from GH_REPO or the checkout.
+            explicit = os.environ.get("GH_REPO")
+            if explicit:
+                repository = repository_of(explicit)
+                return {repository} if repository else set()
+            return cwd_remote_repositories()
+        return {f"{match[1]}/{match[2]}".lower()}
+    return set()
+
+
+def refuse_main_only_pull_request(args: list[str]) -> None:
+    targeted = sorted(pull_request_targets(args) & MAIN_ONLY_REPOSITORIES)
+    if not targeted:
+        return
+    die(
+        f"pull request against {', '.join(targeted)} refused: that repository is "
+        "MAIN-ONLY by owner directive (no pull requests, no branches). Land the "
+        "change as a direct push to main from a clean detached worktree, e.g. "
+        "`git worktree add --detach /tmp/<name> origin/main`, commit only your "
+        "paths, then `ci-hub/bin/git-push-verified origin HEAD:main` and verify "
+        "the result by content. If this checkout merely has such a remote and "
+        "you meant another repository, pass --repo OWNER/REPO explicitly. "
+        "Nothing was sent to GitHub."
+    )
+
+
 def main() -> int:
     args, supplied = disclosure_options(sys.argv[1:])
+    refuse_main_only_pull_request(args)
     task = supplied.get("task")
     verdict = supplied.get("verdict")
     if verdict is not None and not is_verdict_write(args):

@@ -43,10 +43,22 @@ EXIT
     1  usage / could not resolve the local sha or the remote ref
     2  the push itself failed (this is the case the pipeline hid)
     3  the push reported success but the remote ref does NOT match
+    4  refused before pushing: the Rust format check failed
+    5  refused before pushing: the destination is a branch other than `main`
+       (or `validation-receipts`) on a main-only repository
+
+MAIN-ONLY REPOSITORIES
+----------------------
+github.com/rrnewton/dev-hermit and github.com/rrnewton/agent-utils carry no
+branches but `main` (dev-hermit also keeps its `validation-receipts` store).
+When the remote's configured URL names either repository, any other
+destination is refused before anything is pushed. Pushes to every other
+repository -- hermit and reverie feature branches included -- are unchanged.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +69,63 @@ def run(args: list[str]) -> tuple[int, str, str]:
     """Run a command with NO shell and NO pipe, so the status is the command's."""
     p = subprocess.run(args, capture_output=True, text=True)
     return p.returncode, p.stdout, p.stderr
+
+
+# Owner directive: these repositories stay main-only -- no pull requests and no
+# branches besides `main`. `validation-receipts` is dev-hermit's receipt store,
+# deliberately still a branch; it is allowed so receipt publication keeps
+# working.
+MAIN_ONLY_REPOSITORIES = frozenset({"rrnewton/dev-hermit", "rrnewton/agent-utils"})
+MAIN_ONLY_ALLOWED_DESTINATIONS = ("refs/heads/main", "refs/heads/validation-receipts")
+_GITHUB_REPOSITORY = re.compile(
+    r"github\.com[:/]+([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/*$",
+    re.IGNORECASE,
+)
+
+
+def github_repository(url: str) -> str | None:
+    """`owner/name` (lowercase) for a GitHub URL in https, ssh or scp form."""
+    match = _GITHUB_REPOSITORY.search(url.strip())
+    return f"{match.group(1)}/{match.group(2)}".lower() if match else None
+
+
+def remote_urls(remote: str) -> list[str]:
+    """Every URL this push could be addressed to.
+
+    The CONFIGURED url/pushurl values are read raw as well as expanded, because
+    an `insteadOf` rewrite (a local mirror, a proxy) would otherwise hide which
+    repository a push is really for. A remote that is not a configured name is
+    a literal URL or path and is checked as itself.
+    """
+    urls: list[str] = []
+    for key in (f"remote.{remote}.url", f"remote.{remote}.pushurl"):
+        rc, out, _ = run(["git", "config", "--get-all", key])
+        if rc == 0:
+            urls.extend(line for line in out.splitlines() if line.strip())
+    rc, out, _ = run(["git", "remote", "get-url", "--push", "--all", remote])
+    if rc == 0:
+        urls.extend(line for line in out.splitlines() if line.strip())
+    return urls or [remote]
+
+
+def main_only_refusal(remote: str, dst: str) -> str | None:
+    """The refusal message when `dst` would add a branch to a main-only repo."""
+    if dst in MAIN_ONLY_ALLOWED_DESTINATIONS:
+        return None
+    for url in remote_urls(remote):
+        repository = github_repository(url)
+        if repository in MAIN_ONLY_REPOSITORIES:
+            allowed = " or ".join(MAIN_ONLY_ALLOWED_DESTINATIONS)
+            return (
+                f"git-push-verified: REFUSING THE PUSH. {remote} is github.com/{repository}, "
+                f"which is MAIN-ONLY: no pull requests and no branches besides main "
+                f"(owner directive). Destination {dst} is not {allowed}.\n"
+                "  Land the change on main from a clean detached worktree instead:\n"
+                "    git worktree add --detach /tmp/<name> origin/main\n"
+                f"    ci-hub/bin/git-push-verified {remote} HEAD:main\n"
+                "  Nothing was pushed."
+            )
+    return None
 
 
 def local_sha(src: str) -> str | None:
@@ -357,6 +426,11 @@ def main(argv: list[str]) -> int:
     src = src.lstrip("+")
     if not dst.startswith("refs/"):
         dst = f"refs/heads/{dst}"
+
+    refusal = main_only_refusal(remote, dst)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        return 5
 
     intended = local_sha(src)
     if intended is None:

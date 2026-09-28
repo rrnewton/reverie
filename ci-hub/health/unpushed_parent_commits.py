@@ -23,8 +23,26 @@ to stop commits BECOMING unreachable, by publishing them while a ref still
 points at them.
 
 DETECT AND PUBLISH ONLY. This never merges, resets, rewrites, gcs, prunes,
-expires a reflog, repacks or cleans. Its only mutation is creating new remote
-refs under ``rescue/``, which cannot destroy anything.
+expires a reflog, repacks or cleans. Its only mutations are creating new remote
+refs under ``refs/rescue/`` and, once the remote read-back confirms one, a
+local mirror of it under ``refs/remotes/origin-rescue/``. Neither can destroy
+anything.
+
+WHY ``refs/rescue/`` AND NOT A BRANCH (2026-09-27). dev-hermit is main-only: it
+must carry no branches but ``main`` (and the receipt store). Rescue refs used to
+be ``refs/heads/rescue/auto-*`` branches; they are now custom refs, which the
+default fetch neither clones nor fetches. That removes the old self-clearing
+path -- a fetched ``origin/rescue/auto-*`` made the census below stop counting
+the commit -- so ``rescue`` now writes the local mirror itself, and only after
+verifying the exact remote ref. ``refs/remotes/origin-rescue/`` is covered by
+the census's ``--not --remotes`` and is not pruned by ``git fetch --prune
+origin`` (that prunes only ``refs/remotes/origin/``). To mirror refs another
+checkout rescued, fetch them explicitly:
+
+    git fetch origin '+refs/rescue/*:refs/remotes/origin-rescue/*'
+
+Legacy ``refs/heads/rescue/auto-*`` branches still fetch as
+``origin/rescue/auto-*`` and remain covered by ``--remotes`` unchanged.
 
 OBSERVATION AND RESCUE ARE SEPARATE, AND THE ORDER IS LOAD-BEARING (2026-08-08).
 Measured on this repo: the scan takes **0.40s**; a single ``herdr-run`` rescue
@@ -95,6 +113,12 @@ VERIFY_TIMEOUT_SECS = 45
 # Total wall ceiling for the whole rescue phase. Rescue is remote mutation, not
 # observation, so it gets its OWN budget and must never borrow the scan's.
 RESCUE_DEADLINE_SECS = 120
+# Remote namespace for rescue refs: outside refs/heads/, so a rescue never
+# creates a branch on the main-only remote. See the module docstring.
+RESCUE_REF_ROOT = "refs/rescue"
+# Local mirror written after a verified push; under refs/remotes/ so the
+# census's `--not --remotes` treats the commit as published.
+RESCUE_MIRROR_ROOT = "refs/remotes/origin-rescue"
 
 
 class ScanUnavailable(RuntimeError):
@@ -340,7 +364,7 @@ def rescue(
     done: list[dict[str, str]] = []
     started = time.monotonic()
     for index, r in enumerate(rows):
-        ref = f"rescue/auto-{r['short']}"
+        ref = f"{RESCUE_REF_ROOT}/auto-{r['short']}"
         if dry:
             done.append({**r, "ref": ref, "published": "dry-run"})
             continue
@@ -348,7 +372,7 @@ def rescue(
             # Do not start work that cannot finish, and do not pretend the
             # remaining rows were examined.
             done.extend(
-                {**row, "ref": f"rescue/auto-{row['short']}",
+                {**row, "ref": f"{RESCUE_REF_ROOT}/auto-{row['short']}",
                  "published": "skipped-deadline"}
                 for row in rows[index:]
             )
@@ -356,17 +380,32 @@ def rescue(
         try:
             subprocess.run(
                 [HERDR, "--agent", agent,
-                 f"with-proxy git -C {PARENT} push origin {r['sha']}:refs/heads/{ref}"],
+                 f"with-proxy git -C {PARENT} push origin {r['sha']}:{ref}"],
                 capture_output=True, text=True, timeout=PUSH_TIMEOUT_SECS)
+            # No `--heads`: it would restrict the listing to refs/heads/ and
+            # never show the custom ref this just pushed.
             seen = subprocess.run(
                 [HERDR, "--agent", agent,
-                 f"with-proxy git -C {PARENT} ls-remote --heads origin refs/heads/{ref}"],
+                 f"with-proxy git -C {PARENT} ls-remote origin {ref}"],
                 capture_output=True, text=True, timeout=VERIFY_TIMEOUT_SECS).stdout
         except subprocess.TimeoutExpired:
             # A stuck transport is a FAILED publish, never a silent success.
             done.append({**r, "ref": ref, "published": "FAILED-timeout"})
             continue
-        ok = r["sha"] in seen
+        # The exact advertised (sha, ref) pair, not a substring: ls-remote
+        # matches its pattern against ref-name TAILS, so another ref ending in
+        # the same path must not stand in for this one. Split on any
+        # whitespace because the herdr transport may not preserve the tab.
+        ok = [r["sha"], ref] in (line.split() for line in seen.splitlines())
+        if ok:
+            mirrored = bounded_capture.git(
+                ["update-ref", f"{RESCUE_MIRROR_ROOT}/auto-{r['short']}", r["sha"]],
+                cwd=PARENT,
+            )
+            if mirrored.returncode != 0:
+                # Published and verified, but the census will keep counting it.
+                done.append({**r, "ref": ref, "published": "verified-unmirrored"})
+                continue
         done.append({**r, "ref": ref, "published": "verified" if ok else "FAILED"})
     return done
 
@@ -385,8 +424,10 @@ def main() -> int:
                     help="all = every local ref (the real exposure); head = the "
                          "checked-out branch only (under-reports)")
     ap.add_argument("--rescue", action="store_true",
-                    help="publish each local-only commit to rescue/auto-<sha> and "
-                         "verify at the remote. A report needs a reader; this does not")
+                    help="publish each local-only commit to refs/rescue/auto-<sha> "
+                         "(a custom ref, never a branch), verify it at the remote, "
+                         "and mirror it locally under refs/remotes/origin-rescue/. "
+                         "A report needs a reader; this does not")
     ap.add_argument("--dry-run", action="store_true", help="with --rescue, do not push")
     ap.add_argument("--rescue-deadline", type=float, default=RESCUE_DEADLINE_SECS,
                     help="wall ceiling for the whole rescue phase; commits the "
@@ -510,13 +551,17 @@ def main() -> int:
 
     published = rescue(rows, a.agent, a.dry_run, a.rescue_deadline)
     verified = sum(1 for r in published if r.get("published") == "verified")
+    unmirrored = sum(
+        1 for r in published if r.get("published") == "verified-unmirrored"
+    )
     skipped = sum(1 for r in published if r.get("published") == "skipped-deadline")
-    failed = len(published) - verified - skipped
+    failed = len(published) - verified - unmirrored - skipped
     if not a.json:
         for r in published:
             print(f"  rescue {r['short']} -> {r['ref']} [{r['published']}]", flush=True)
     print(f"unpushed-parent-commits rescue attempted={len(published) - skipped} "
-          f"verified={verified} failed={failed} skipped_deadline={skipped}",
+          f"verified={verified} verified_unmirrored={unmirrored} "
+          f"failed={failed} skipped_deadline={skipped}",
           flush=True)
     # Partial coverage is NOT success. Anything unpublished keeps the nonzero
     # exit, so a deadline or a broken transport can never read as "all clear".
