@@ -389,6 +389,27 @@ fn is_group_stop(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
     }
 }
 
+/// The bit for `sig` in a kernel signal mask as read by `PTRACE_GETSIGMASK`.
+fn signal_mask_bit(sig: Signal) -> u64 {
+    1u64 << (sig as i32 - 1)
+}
+
+/// Whether `nr` installs a temporary signal mask that the kernel restores only
+/// after signal handling (`TIF_RESTORE_SIGMASK`). A ptrace mask write discards
+/// that pending restore, so a signal stopping such a syscall must not be
+/// returned to the kernel queue by masking it.
+fn swaps_signal_mask(nr: Sysno) -> bool {
+    matches!(
+        nr,
+        Sysno::rt_sigsuspend
+            | Sysno::ppoll
+            | Sysno::pselect6
+            | Sysno::epoll_pwait
+            | Sysno::epoll_pwait2
+            | Sysno::io_pgetevents
+    )
+}
+
 fn is_expected_private_syscall_trap(
     task: &Stopped,
     expected_rip: u64,
@@ -7131,7 +7152,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let wait = self.step_private_syscall(task).await?;
+        let wait = self.step_private_syscall(task, nr).await?;
 
         // Get the result of the syscall to return to the caller.
         let result = self
@@ -7153,30 +7174,62 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   before the `syscall` this executes it; after it, the kernel next
     ///   dequeues the step SIGTRAP that syscall exit already queued. Linux
     ///   checks for a pending group stop before dequeuing any signal, so this
-    ///   stop can arrive after the syscall completed.
+    ///   stop can arrive after the syscall completed. Unlike a group stop in
+    ///   the main loop, it is not reported to `Tool::handle_signal_event`:
+    ///   honoring it is impossible either way, and resuming the step without
+    ///   a signal is what the main loop's forwarded stop amounts to.
     /// - A genuine signal-delivery stop after the `syscall` completed (RIP past
     ///   the instruction). Linux dequeues a synchronous-class signal (positive
-    ///   `si_code`) queued before the step SIGTRAP ahead of it. RAX already
-    ///   holds the kernel's result, so the signal is held for delivery at the
-    ///   next resume, as the kernel would deliver it after the syscall
-    ///   returned, and the queued step trap is collected.
+    ///   `si_code`) queued before the step SIGTRAP ahead of it; several such
+    ///   signals arrive one stop each. RAX already holds the kernel's result,
+    ///   so none of them may turn the syscall into a restart. Each is returned
+    ///   to the kernel's queue unchanged: the tracer blocks it and resumes
+    ///   with it, and `ptrace_signal` requeues a resumed signal that is now
+    ///   blocked, with its original siginfo, behind the step SIGTRAP. Once
+    ///   the step SIGTRAP is collected the masks are lifted again. Nothing
+    ///   has run in between, so the kernel then delivers the signals in their
+    ///   original order at the next resume, each through a signal-delivery
+    ///   stop that the main loop reports to `Tool::handle_signal_event`, just
+    ///   as it would after the syscall returned in place. A later injection
+    ///   in the same callback finds them pending before its `syscall`, the
+    ///   interrupted case below. No signal is taken into `pending_signal`,
+    ///   whose single slot could otherwise be overwritten.
+    ///
+    ///   The one exception is a syscall that swaps in a temporary signal mask
+    ///   (`swaps_signal_mask`): a ptrace mask write would discard the saved
+    ///   mask the kernel restores after signal handling. Such a signal is
+    ///   held in `pending_signal` instead, and the step fails closed if the
+    ///   slot is already occupied.
+    ///
+    /// A genuine signal returning to this stop is a protocol violation (the
+    /// kernel cannot dequeue a blocked signal, and a queued step SIGTRAP ends
+    /// the loop) and fails closed rather than stepping forever.
     ///
     /// A genuine signal-delivery stop before the `syscall` executed is returned
     /// for `status_to_result` to report as an interrupted syscall. During
     /// LiteInst activation every stop is returned unchanged so the activation
     /// signal validation keeps rejecting it.
-    async fn step_private_syscall(&mut self, task: Stopped) -> Result<Wait, TraceError> {
+    async fn step_private_syscall(&mut self, task: Stopped, nr: Sysno) -> Result<Wait, TraceError> {
         let after_syscall = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
+        // Signals returned to the kernel queue during this step, still blocked
+        // by the tracer.
+        let mut requeued: u64 = 0;
         let mut running = self.step_stopped(task, None)?;
         loop {
             let wait = running.next_state().await?;
             self.arm_liteinst_wait(&wait);
-            if self.liteinst_activation_in_progress() {
-                return Ok(wait);
-            }
             let (stopped, sig) = match wait {
-                Wait::Stopped(stopped, Event::Signal(sig)) if sig != Signal::SIGTRAP => {
+                Wait::Stopped(stopped, Event::Signal(sig))
+                    if sig != Signal::SIGTRAP && !self.liteinst_activation_in_progress() =>
+                {
                     (stopped, sig)
+                }
+                Wait::Stopped(stopped, event) => {
+                    if requeued != 0 {
+                        let mask = stopped.getsigmask()?;
+                        stopped.setsigmask(mask & !requeued)?;
+                    }
+                    return Ok(Wait::Stopped(stopped, event));
                 }
                 wait => return Ok(wait),
             };
@@ -7186,17 +7239,56 @@ impl<L: Tool + 'static> TracedTask<L> {
                     stopped.pid(),
                     sig
                 );
+                running = self.step_stopped(stopped, None)?;
             } else if stopped.getregs()?.ip() == after_syscall {
-                tracing::debug!(
-                    "[scheduler/tool] (pid = {}) holding {} delivered after injected syscall completed",
-                    stopped.pid(),
-                    sig
-                );
-                self.pending_signal = Some(sig);
+                let bit = signal_mask_bit(sig);
+                if requeued & bit != 0 {
+                    tracing::error!(
+                        "[scheduler/tool] (pid = {}) {} stopped injected {} again after it was requeued blocked",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    return Err(Errno::EPROTO.into());
+                }
+                if swaps_signal_mask(nr) {
+                    if let Some(held) = self.pending_signal {
+                        tracing::error!(
+                            "[scheduler/tool] (pid = {}) cannot hold {} delivered after injected {} completed: {} is already held",
+                            stopped.pid(),
+                            sig,
+                            nr,
+                            held
+                        );
+                        return Err(Errno::EPROTO.into());
+                    }
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) holding {} delivered after injected {} completed",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    self.pending_signal = Some(sig);
+                    running = self.step_stopped(stopped, None)?;
+                } else {
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) requeueing {} delivered after injected {} completed",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    let mask = stopped.getsigmask()?;
+                    stopped.setsigmask(mask | bit)?;
+                    requeued |= bit;
+                    running = self.step_stopped(stopped, sig)?;
+                }
             } else {
+                if requeued != 0 {
+                    let mask = stopped.getsigmask()?;
+                    stopped.setsigmask(mask & !requeued)?;
+                }
                 return Ok(Wait::Stopped(stopped, Event::Signal(sig)));
             }
-            running = self.step_stopped(stopped, None)?;
         }
     }
 
