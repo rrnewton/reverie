@@ -1,0 +1,5 @@
+bounded-run-space/v1
+directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/core-check/safehermit/brs-safehermit-20260918T020136Z-454685-454712-1789696896897747877
+device_inode=5243009:256
+subvolume_id=1632
+limit_bytes=8000000000

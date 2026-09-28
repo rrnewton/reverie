@@ -1,0 +1,47 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/APPLIED.json",
+    "bytes": 2029,
+    "sha256": "5c8eb6843025c34c8ec8903558c0e019cf98863539eb2427bd7cc40beb025ec7"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/AUTHOR_AUDIT.md",
+    "bytes": 3377,
+    "sha256": "cd58332a50f4f1fec58371d3ed9363b368585714f031a9345f0c4dd68932f24c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/REPORT.md",
+    "bytes": 5806,
+    "sha256": "67fe5f103e80e9118f064bc9d4fddb3bc77f19269935aeb7c0c0461d1b0bbc7b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/RESULTS.json",
+    "bytes": 7516,
+    "sha256": "3a14372551c32535ea8d14351ca4231b9b39403e046a797c0d1c1d33a9b3a83a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/COMMITTED_READBACK.json",
+    "bytes": 35438,
+    "sha256": "d33187971b43a5eeab003b334bd36e2bf446be42400a100f0438ebcdc1736dce"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/RUNNER_ORIGINS.json",
+    "bytes": 3099,
+    "sha256": "b6f33f0af5ec3506196e0295d9ec64830b075d86f39934693f42fb55ddcdfe5d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/source-manifest.json",
+    "bytes": 670720,
+    "sha256": "8e515d28346a31d372033f0b6d0e743fac169a11fcd64d70ffd88123e4bec140"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/dependency-inputs.json",
+    "bytes": 3016328,
+    "sha256": "49e04b0789092a53e5bcc6cb1103042c41b67191c43e2e8ae5296e367bf0c295"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/dependency-closure.json",
+    "bytes": 18262,
+    "sha256": "8226988fb6aa6936dcb02411ee8bc9fc298f12e49d7e11e1d081634071ea5be9"
+  }
+]

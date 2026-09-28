@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "ac30a8274489645889ae2acf80cfe841c2d8acbe61cda1a640fa739c47f5e74c",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/controls/compile/result.json",
+    "bytes": 3922,
+    "mode": 420,
+    "sha256": "14937e0376887450fe34b2e2c2d2ee8247a901ae27c09caea108829aa961ea9a"
+  }
+}

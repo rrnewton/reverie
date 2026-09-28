@@ -1,0 +1,51 @@
+{
+  "helpers": [
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-f1-qualification-v1/common.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/common.py",
+      "sha256": "f6e91aefd053016800b3446efdcfece1a8fc30d6fc19d8d117b39f8b90f668e4",
+      "bytes": 10759,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-f1-qualification-v1/cache_lease.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/cache_lease.py",
+      "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0",
+      "bytes": 4603,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-f1-qualification-v1/observer/observer.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/observer.py",
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6",
+      "bytes": 34363,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-f1-qualification-v1/observer/before_exec.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/before_exec.py",
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+      "bytes": 8260,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-f1-qualification-v1/observer/unit_reference.py",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/unit_reference.py",
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+      "bytes": 8569,
+      "copy": "byte-identical"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-f1-qualification-v1/observer/source-inputs.json",
+      "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/source-inputs.json",
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7",
+      "bytes": 1812,
+      "copy": "byte-identical"
+    }
+  ],
+  "lock_seed": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "compatibility": "All 27 tracked Cargo.toml files byte-identical between owned7d slot and seed slot; every Cargo command remains --locked --offline."
+  }
+}
