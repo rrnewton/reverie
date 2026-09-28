@@ -176,6 +176,7 @@ impl PmuConfig {
         Self::from_cpuid_features(fi).with_env_overrides()
     }
 
+    /// Creates / initializes the PMU config.
     #[cfg(target_arch = "aarch64")]
     pub fn new() -> Self {
         // TODO:

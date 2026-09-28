@@ -102,4 +102,5 @@ pub use tracer::quarantine_cleanup_resource;
 pub use tracer::spawn_fn;
 pub use tracer::spawn_fn_with_config;
 pub use vdso::VdsoSyscallSite;
+#[cfg(target_arch = "x86_64")]
 pub use vdso::patch_current_vdso;

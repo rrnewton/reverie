@@ -8,6 +8,8 @@
 
 //! Regression coverage for the x86-64 legacy-vsyscall interception path.
 
+#![cfg(target_arch = "x86_64")]
+
 use reverie::Error;
 use reverie::Guest;
 use reverie::Tool;

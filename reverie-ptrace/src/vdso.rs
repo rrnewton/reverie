@@ -498,9 +498,11 @@ mod tests {
             );
         }
 
+        #[cfg(target_arch = "x86_64")]
         let time_is_present = VDSO_PATCH_INFO
             .values()
             .any(|(_, _, _, sysno)| *sysno == Sysno::time);
+        #[cfg(target_arch = "x86_64")]
         assert_eq!(
             is_patch_required(&[Sysno::time].into_iter().collect()),
             time_is_present,

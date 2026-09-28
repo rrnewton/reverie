@@ -462,6 +462,7 @@ mod test {
             // BIOS/firmware setting, not a defect in this code. Self-hosted CI
             // runners may leave it enabled, so treat that specific condition as a
             // skip while still failing on any other (unexpected) validation error.
+            #[cfg(target_arch = "x86_64")]
             Err(PmuValidationError::AmdSpecLockMapShouldBeDisabled) => {
                 eprintln!(
                     "skipping arch-bug check: host has AMD Zen SpecLockMap enabled \
@@ -510,6 +511,7 @@ mod test {
                 Ok(()) => {}
                 // See test_check_for_arch_bugs: SpecLockMap is a host firmware
                 // setting, so tolerate that specific condition here as well.
+                #[cfg(target_arch = "x86_64")]
                 Err(PmuValidationError::AmdSpecLockMapShouldBeDisabled) => {
                     eprintln!(
                         "skipping arch-bug check (precise_ip): host has AMD Zen \

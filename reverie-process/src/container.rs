@@ -4603,7 +4603,11 @@ mod tests {
                 .syscalls([
                     (Sysno::sendmsg, Action::Errno(Errno::EPERM)),
                     (Sysno::recvmsg, Action::Errno(Errno::EPERM)),
+                    #[cfg(target_arch = "x86_64")]
                     (Sysno::poll, Action::Errno(Errno::EPERM)),
+                    // Without a poll syscall, libc::poll uses ppoll.
+                    #[cfg(not(target_arch = "x86_64"))]
+                    (Sysno::ppoll, Action::Errno(Errno::EPERM)),
                     (Sysno::getppid, Action::Errno(Errno::EPERM)),
                 ])
                 .build()
