@@ -1112,6 +1112,42 @@ async fn trap_only_p2_t6b_exec_gets_an_empty_table() {
     }
 }
 
+/// T6b, exec_thread, with each exec'ing thread's run loop observing its lost
+/// TID before that thread's exit future does: the order a loaded tracer
+/// produces by chance. Every T6b assertion for this mode still applies.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t6b_exec_thread_run_loop_observes_echild_first() {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            crate::task::NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(|slot| slot.set(false));
+        }
+    }
+    let _reset = Reset;
+    crate::task::NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(|slot| slot.set(true));
+    let (mode, old_state) = (
+        "exec_thread",
+        TableState::Disabled(DisabledReason::MultiTask),
+    );
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode(mode).await;
+    assert_report_has(
+        &ptrace,
+        &["mode exec_image site=", "exec image getpid ok", "done"],
+    );
+    for run in [&trap_only, &trap_only_tail] {
+        lifecycle_has(run, "exec initial=false entries=0 state=Patchable");
+        let exec = tables(run, "exec");
+        assert_eq!(exec.len(), 1, "{mode}: one exec table");
+        assert_eq!(exec[0].state(), TableState::Patchable, "{mode}");
+        assert_eq!(
+            exec[0].site_state(run.site),
+            Some(SiteState::Live),
+            "{mode}: the new image patched its site again"
+        );
+        assert_eq!(run.table_state, Some(old_state), "{mode}");
+    }
+}
+
 /// T6c: JIT code is patched only while its page is `r-xp`; every mapping
 /// change that reaches a patched site restores it first, so that the guest
 /// reads its own bytes, and the runs equal ptrace.
