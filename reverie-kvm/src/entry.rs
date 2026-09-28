@@ -34,6 +34,11 @@ pub(crate) mod driver;
 pub(crate) mod owner;
 mod signal;
 
+#[cfg(feature = "native-test-support")]
+pub(crate) fn check_reserved_signal_handler() -> crate::Result<()> {
+    signal::Mask::block()?.finish()
+}
+
 #[cfg(test)]
 mod cleanup_tests;
 
