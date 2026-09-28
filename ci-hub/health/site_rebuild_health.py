@@ -33,12 +33,16 @@ Hermit tests. It is skipped while any docs.yml run is queued or in flight
 --min-dispatch-interval-hours, so a deterministic failure cannot turn into a
 dispatch loop. A dispatch that GitHub refuses is itself a warning.
 
-FIRES ON STATE CHANGE. With --gate the exit status is 1 only when the outcome
-key differs from the last one this gate reported: `failed:<run id>`,
+FIRES WHILE IT PERSISTS (site_gate_policy.py). With --gate the exit status is 1
+on EVERY evaluation whose outcome is a warning: `failed:<run id>`,
 `stale:<newest successful run id>`, either one suffixed `:dispatch-failed`
-while GitHub refuses the rebuild dispatch. The same failed run does not page
-every tick; a NEW failed run does. Returning to `current` is recorded quietly. The state file is written atomically under an exclusive lock,
-so two ticks cannot interleave a read and a write.
+while GitHub refuses the rebuild dispatch. tick-hub evaluates it on the
+30-minute tick (cadence 1800; at least hourly), so an unfixed failure pages on
+every evaluation and each page says since when; this replaced a once-per-outcome-key policy under which a failure that
+persisted warned only once. Returning to `current` is recorded quietly. An
+unreadable Actions API exits 75 for the first two consecutive evaluations and
+fires state `unknown` from the third. The state file is written atomically
+under an exclusive lock, so two ticks cannot interleave a read and a write.
 
     site_rebuild_health.py                              # report, exit 0
     site_rebuild_health.py --json                       # machine readable
@@ -48,16 +52,16 @@ so two ticks cannot interleave a read and a write.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import datetime as dt
-import fcntl
 import json
-import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import site_gate_policy as policy  # noqa: E402
+from site_gate_policy import locked_state  # noqa: E402,F401  (tests use it)
 
 QUIET = 0
 FIRE = 1
@@ -271,35 +275,15 @@ def dispatch(repo: str, run: Runner = _run) -> tuple[bool, str]:
     return True, (out.strip() or err.strip() or "dispatched")[:200]
 
 
-@contextlib.contextmanager
-def locked_state(path: Path) -> Iterator[dict]:
-    """Read, yield for mutation, then atomically replace the state file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(path.name + ".lock")
-    with open(lock_path, "a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            state = json.loads(path.read_text())
-            if not isinstance(state, dict):
-                state = {}
-        except (OSError, ValueError):
-            state = {}
-        yield state
-        fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
-        try:
-            with os.fdopen(fd, "w") as handle:
-                json.dump(state, handle, indent=2, sort_keys=True)
-                handle.write("\n")
-            os.replace(temporary, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary)
-            raise
-
-
 def render(m: dict) -> str:
+    # A warning names times, never ages, so an unchanged condition renders the
+    # same text on every evaluation (site_gate_policy: THE PAGE TEXT IS STABLE).
+    verdict = m.get("policy")
     if m["state"] == "unknown":
-        return f"site-rebuild: UNKNOWN -- {m['reason']}"
+        text = f"site-rebuild: UNKNOWN -- {m['reason']}"
+        if verdict:
+            text = _with_persistence(text, verdict)
+        return text
     attempt = m.get("newest_attempt") or {}
     success = m.get("newest_success") or {}
     age = m.get("newest_success_age_hours")
@@ -313,17 +297,27 @@ def render(m: dict) -> str:
             f"site-rebuild: FAILED -- docs.yml rebuild run {attempt.get('run_id')} "
             f"({attempt.get('event')}, head {str(attempt.get('head_sha'))[:10]}) concluded "
             f"{attempt.get('conclusion')}: {attempt.get('url')}. Last successful rebuild: "
-            f"run {success.get('run_id') or 'none in window'}, {age} h ago"
+            f"run {success.get('run_id') or 'none in window'}, finished "
+            f"{success.get('finished_at') or 'never'}"
         )
     else:
         text = (
             f"site-rebuild: STALE -- no successful docs.yml rebuild in {m['stale_hours']} h; "
-            f"the newest is run {success.get('run_id') or 'none in window'} ({age} h ago)"
+            f"the newest is run {success.get('run_id') or 'none in window'} (finished "
+            f"{success.get('finished_at') or 'never'})"
         )
     dispatched = m.get("dispatch")
     if dispatched:
         text += f". Dispatch: {dispatched}"
+    if verdict and m["state"] != "current":
+        text = _with_persistence(text, verdict)
     return text
+
+
+def _with_persistence(text: str, verdict: dict) -> str:
+    """Put since-when right after the state, where a truncated capture keeps it."""
+    head, sep, rest = text.partition(" -- ")
+    return f"{head} ({policy.persistence_text(verdict)}){sep}{rest}"
 
 
 def captured_summary(m: dict) -> str:
@@ -336,50 +330,59 @@ def main(argv: list[str] | None = None, run: Runner = _run, now: dt.datetime | N
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=DEFAULT_REPO)
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--gate", action="store_true", help="exit 1 when the outcome changed to a warning")
+    ap.add_argument(
+        "--gate", action="store_true",
+        help="exit 1 on every evaluation in a warning state, and on persistent unknown",
+    )
     ap.add_argument("--state", type=Path, help="state file; required with --gate or --dispatch")
     ap.add_argument("--dispatch", action="store_true", help="rebuild a failed or stale site")
     ap.add_argument("--stale-hours", type=float, default=30.0)
     ap.add_argument("--min-dispatch-interval-hours", type=float, default=12.0)
+    ap.add_argument(
+        "--unknown-limit", type=int, default=policy.UNKNOWN_LIMIT,
+        help="consecutive unknown evaluations before the gate itself warns",
+    )
     args = ap.parse_args(argv)
     if (args.gate or args.dispatch) and args.state is None:
         ap.error("--gate and --dispatch need --state")
+    if args.unknown_limit < 1:
+        ap.error("--unknown-limit must be at least 1")
 
     now = now or dt.datetime.now(dt.timezone.utc)
     m = measure(args.repo, now, args.stale_hours, run)
-    fire = False
-    if m["state"] != "unknown" and args.state is not None:
+    verdict: dict | None = None
+    if args.state is not None:
         with locked_state(args.state) as state:
-            key = outcome_key(m)
-            if args.dispatch:
-                skipped = should_dispatch(m, state, now, args.min_dispatch_interval_hours)
-                if skipped is None:
-                    ok, detail = dispatch(args.repo, run)
-                    state["last_dispatch_at"] = _iso(now)
-                    state["last_dispatch_ok"] = ok
-                    state["last_dispatch_result"] = detail
-                    m["dispatch"] = (
-                        f"dispatched docs.yml rebuild_compatibility=true at {_iso(now)}"
-                        if ok
-                        else f"FAILED: {detail}"
-                    )
-                else:
-                    m["dispatch_skipped"] = skipped
-            # A refused dispatch stays part of the outcome until a dispatch is
-            # accepted or the site recovers, so the key does not flap between
-            # ticks that retry and ticks that wait out the interval.
-            if key == "current":
-                state.pop("last_dispatch_ok", None)
-            elif state.get("last_dispatch_ok") is False:
-                key += ":dispatch-failed"
-            m["outcome_key"] = key
-            m["previous_outcome_key"] = state.get("outcome_key")
-            fire = key != "current" and key != state.get("outcome_key")
-            if key != state.get("outcome_key"):
-                state["outcome_key"] = key
-                state["changed_at"] = _iso(now)
-            state["measured_at"] = _iso(now)
-            state["state"] = m["state"]
+            if m["state"] == "unknown":
+                key = policy.UNKNOWN_KEY
+            else:
+                key = outcome_key(m)
+                if args.dispatch:
+                    skipped = should_dispatch(m, state, now, args.min_dispatch_interval_hours)
+                    if skipped is None:
+                        ok, detail = dispatch(args.repo, run)
+                        state["last_dispatch_at"] = _iso(now)
+                        state["last_dispatch_ok"] = ok
+                        state["last_dispatch_result"] = detail
+                        m["dispatch"] = (
+                            f"dispatched docs.yml rebuild_compatibility=true at {_iso(now)}"
+                            if ok
+                            else f"FAILED: {detail}"
+                        )
+                    else:
+                        m["dispatch_skipped"] = skipped
+                # A refused dispatch stays part of the outcome until a dispatch
+                # is accepted or the site recovers, so the key does not flap
+                # between ticks that retry and ticks that wait out the interval.
+                if key == "current":
+                    state.pop("last_dispatch_ok", None)
+                elif state.get("last_dispatch_ok") is False:
+                    key += ":dispatch-failed"
+                state["state"] = m["state"]
+            verdict = policy.evaluate(state, key, now, unknown_limit=args.unknown_limit)
+            m["policy"] = verdict
+            m["outcome_key"] = verdict["outcome_key"]
+            m["previous_outcome_key"] = verdict.get("previous_outcome_key")
 
     if args.json:
         print(json.dumps(m, indent=2, sort_keys=True))
@@ -389,13 +392,17 @@ def main(argv: list[str] | None = None, run: Runner = _run, now: dt.datetime | N
         print(f"state={m['state']}")
         print(f"summary={captured_summary(m)}")
         print(f"run_id={attempt.get('run_id') or 'none'}")
-        key = "unknown" if m["state"] == "unknown" else (m.get("outcome_key") or outcome_key(m))
+        if m.get("outcome_key"):
+            key = m["outcome_key"]
+        else:
+            key = "unknown" if m["state"] == "unknown" else outcome_key(m)
         print(f"outcome_key={key}")
 
-    if m["state"] == "unknown":
-        return UNKNOWN
+    fire = bool(verdict and verdict["fire"])
     if args.gate and fire:
         return FIRE
+    if m["state"] == "unknown":
+        return UNKNOWN
     return QUIET
 
 

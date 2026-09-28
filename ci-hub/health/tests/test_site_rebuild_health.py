@@ -4,7 +4,12 @@ Every state is driven from synthetic Actions API answers, including the two the
 live repository cannot produce on demand: a dropped schedule (stale) and a
 refused dispatch. The live reading on 2026-09-28 was `failed` for scheduled run
 36453865612 ("validate-status ... selects unknown cells"), which
-`test_failed_rebuild_fires_once_per_run` reconstructs.
+`test_failed_rebuild_fires_every_evaluation_until_fixed` reconstructs.
+
+The firing policy (site_gate_policy.py) replaced "fire once per outcome key":
+a warning fires on every evaluation for as long as it lasts, and an unknown
+reading warns by itself from the third consecutive evaluation. See
+https://github.com/rrnewton/dev-hermit/issues/394.
 """
 
 from __future__ import annotations
@@ -77,6 +82,11 @@ class FakeGh:
         return [c for c in self.calls if c[2:4] == ["workflow", "run"]]
 
 
+def summary_line(out):
+    [line] = [line for line in out.splitlines() if line.startswith("summary=")]
+    return line
+
+
 def gate(fake, state, *extra, now=NOW):
     return srh.main(["--gate", "--state", str(state), *extra], run=fake, now=now)
 
@@ -89,7 +99,7 @@ def test_current_when_the_newest_rebuild_succeeded_recently(tmp_path, capsys):
     assert fake.dispatches() == []
 
 
-def test_failed_rebuild_fires_once_per_run(tmp_path, capsys):
+def test_failed_rebuild_fires_every_evaluation_until_fixed(tmp_path, capsys):
     runs = [
         run_record(36453865612, "schedule", "failure", "2026-09-28T16:50:00Z", "2026-09-28T17:01:22Z"),
         run_record(36324733377, "schedule", "success", "2026-09-27T14:06:40Z", "2026-09-27T15:05:46Z"),
@@ -102,12 +112,25 @@ def test_failed_rebuild_fires_once_per_run(tmp_path, capsys):
     assert "36453865612" in out
     # The last success is 26 h old, under the 30 h window: warn, do not dispatch.
     assert fake.dispatches() == []
-    # The same failed run does not page again on the next tick.
-    assert gate(FakeGh(runs), state, "--dispatch") == srh.QUIET
-    # A NEW failed run does.
+    assert "in this state since 2026-09-28T17:05:00Z" in out
+    first_summary = summary_line(out)
+    assert first_summary.startswith("summary=site-rebuild: FAILED (in this state since 2026-09-28T17:05:00Z) -- ")
+    assert "Last successful rebuild: run 36324733377, finished 2026-09-27T15:05:46Z" in first_summary
+    # The same failed run pages again an hour later, and says since when. Under
+    # the old policy this was QUIET: a failure nobody fixed warned once.
+    assert gate(FakeGh(runs), state, "--dispatch", now=NOW + dt.timedelta(hours=1)) == srh.FIRE
+    out = capsys.readouterr().out
+    assert "outcome_key=failed:36453865612" in out
+    # Byte-identical while the condition is unchanged, so the escalation sink's
+    # quiet-while-unchanged digest applies instead of a comment every tick.
+    assert summary_line(out) == first_summary
+    # A NEW failed run fires too, restarts the clock, and changes the page.
     newer = [run_record(36500000000, "workflow_dispatch", "failure", "2026-09-28T18:00:00Z",
                         "2026-09-28T18:10:00Z"), *runs]
-    assert gate(FakeGh(newer), state, "--dispatch") == srh.FIRE
+    assert gate(FakeGh(newer), state, "--dispatch", now=NOW + dt.timedelta(hours=2)) == srh.FIRE
+    out = capsys.readouterr().out
+    assert "in this state since 2026-09-28T19:05:00Z" in out
+    assert summary_line(out) != first_summary
 
 
 def test_a_plain_docs_dispatch_is_not_a_rebuild(tmp_path, capsys):
@@ -135,13 +158,15 @@ def test_dropped_schedule_goes_stale_and_is_dispatched_once(tmp_path, capsys):
     ]]
     recorded = json.loads(state.read_text())
     assert recorded["last_dispatch_at"] == "2026-09-28T17:05:00Z"
-    # One hour later, still stale: no second dispatch inside the interval, no page.
+    # One hour later, still stale: no second dispatch inside the interval, but
+    # the warning pages again.
     later = FakeGh(runs)
-    assert gate(later, state, "--dispatch", now=NOW + dt.timedelta(hours=1)) == srh.QUIET
+    assert gate(later, state, "--dispatch", now=NOW + dt.timedelta(hours=1)) == srh.FIRE
     assert later.dispatches() == []
-    # Past the interval it dispatches again, quietly: the outcome is unchanged.
+    assert "in this state since 2026-09-28T17:05:00Z" in capsys.readouterr().out
+    # Past the interval it dispatches again, and keeps warning.
     again = FakeGh(runs)
-    assert gate(again, state, "--dispatch", now=NOW + dt.timedelta(hours=13)) == srh.QUIET
+    assert gate(again, state, "--dispatch", now=NOW + dt.timedelta(hours=13)) == srh.FIRE
     assert len(again.dispatches()) == 1
 
 
@@ -165,13 +190,16 @@ def test_a_refused_dispatch_is_loud(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Dispatch: FAILED: gh workflow run refused" in out
     assert "outcome_key=stale:3:dispatch-failed" in out
-    # Waiting out the interval does not flap the key back to plain stale.
+    # Waiting out the interval does not flap the key back to plain stale, and
+    # the refused dispatch keeps paging.
     waiting = FakeGh(runs)
-    assert gate(waiting, state, "--dispatch", now=NOW + dt.timedelta(hours=1)) == srh.QUIET
+    assert gate(waiting, state, "--dispatch", now=NOW + dt.timedelta(hours=1)) == srh.FIRE
     assert waiting.dispatches() == []
-    # An accepted retry is a change worth reporting.
+    out = capsys.readouterr().out
+    assert "outcome_key=stale:3:dispatch-failed" in out
+    assert "in this state since 2026-09-28T17:05:00Z" in out
+    # An accepted retry clears the dispatch failure; the site is still stale.
     retry = FakeGh(runs)
-    capsys.readouterr()
     assert gate(retry, state, "--dispatch", now=NOW + dt.timedelta(hours=13)) == srh.FIRE
     assert "outcome_key=stale:3\n" in capsys.readouterr().out
     assert len(retry.dispatches()) == 1
@@ -180,8 +208,50 @@ def test_a_refused_dispatch_is_loud(tmp_path, capsys):
 def test_unreadable_actions_api_is_no_result_not_current(tmp_path, capsys):
     fake = FakeGh([], list_rc=1)
     assert gate(fake, tmp_path / "s.json", "--dispatch") == srh.UNKNOWN
-    assert "state=unknown" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "state=unknown" in out
+    assert "outcome_key=unknown\n" in out
     assert fake.dispatches() == []
+
+
+def test_a_persistently_unreadable_api_warns_from_the_third_evaluation(tmp_path, capsys):
+    # Qualifying and violating cases in one sequence: evaluations 1 and 2 are
+    # NO_RESULT (tick-hub reruns them on the next outer tick), evaluation 3 and
+    # every one after it fires the gate's own warning.
+    state = tmp_path / "s.json"
+    healthy = [run_record(2, "schedule", "success", "2026-09-28T13:00:00Z", "2026-09-28T13:50:00Z")]
+    assert gate(FakeGh(healthy), state) == srh.QUIET
+    capsys.readouterr()
+    for tick in range(2):
+        assert gate(FakeGh([], list_rc=1), state, now=NOW + dt.timedelta(minutes=30 * tick)) == srh.UNKNOWN
+    out = capsys.readouterr().out
+    assert "undetermined since 2026-09-28T17:05:00Z; the gate warns from 3 consecutive" in out
+    assert json.loads(state.read_text())["consecutive_unknown"] == 2
+    assert gate(FakeGh([], list_rc=1), state, now=NOW + dt.timedelta(hours=1)) == srh.FIRE
+    out = capsys.readouterr().out
+    assert "state=unknown" in out
+    assert "outcome_key=unknown-persistent" in out
+    assert "undetermined since 2026-09-28T17:05:00Z; the gate warns from 3 consecutive" in out
+    assert gate(FakeGh([], list_rc=1), state, now=NOW + dt.timedelta(hours=2)) == srh.FIRE
+    recorded = json.loads(state.read_text())
+    assert recorded["consecutive_unknown"] == 4
+    # Unknown never overwrote the last real outcome.
+    assert recorded["outcome_key"] == "current"
+    # A real verdict resets the count: the next unknown is NO_RESULT again.
+    assert gate(FakeGh(healthy), state, now=NOW + dt.timedelta(hours=3)) == srh.QUIET
+    assert json.loads(state.read_text())["consecutive_unknown"] == 0
+    assert gate(FakeGh([], list_rc=1), state, now=NOW + dt.timedelta(hours=4)) == srh.UNKNOWN
+
+
+def test_unknown_limit_is_configurable_and_bounded(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    assert gate(FakeGh([], list_rc=1), state, "--unknown-limit", "1") == srh.FIRE
+    try:
+        gate(FakeGh([], list_rc=1), state, "--unknown-limit", "0")
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("--unknown-limit 0 must be a usage error")
 
 
 def test_recovery_is_quiet_and_a_later_failure_fires_again(tmp_path):
@@ -193,6 +263,7 @@ def test_recovery_is_quiet_and_a_later_failure_fires_again(tmp_path):
                         "2026-09-28T15:10:00Z"), *failed]
     assert gate(FakeGh(fixed), state) == srh.QUIET
     assert json.loads(state.read_text())["outcome_key"] == "current"
+    assert gate(FakeGh(fixed), state) == srh.QUIET
     assert gate(FakeGh(failed), state) == srh.FIRE
 
 

@@ -713,20 +713,46 @@ reminders:
   # failure: scheduled run 36453865612 failed on 2026-09-28 ("validate-status ...
   # selects unknown cells") and the first reading of this gate was that failure.
   #
-  # This gate FIRES ON STATE CHANGE: a new failed rebuild run, or a site with no
-  # successful rebuild in 30 hours, pages once, not every tick. With --dispatch it
-  # also REBUILDS a site whose last success is 30+ hours old, through the
-  # owner-authorized `gh workflow run docs.yml -f rebuild_compatibility=true`
-  # (no Hermit tests run), skipping while any docs.yml run is in flight and at
-  # most once per 12 hours; a refused dispatch pages. The Actions API is exactly
-  # the external state ORC cannot observe, so it passes the admission test above.
+  # With --dispatch it also REBUILDS a site whose last success is 30+ hours old,
+  # through the owner-authorized `gh workflow run docs.yml -f
+  # rebuild_compatibility=true` (no Hermit tests run), skipping while any docs.yml
+  # run is in flight and at most once per 12 hours; a refused dispatch warns. The
+  # Actions API is exactly the external state ORC cannot observe, so it passes the
+  # admission test above.
+  #
+  # A green rebuild says nothing about WHAT it published, so site_data_freshness
+  # below reads the published data itself.
+  #
+  # BOTH SITE GATES WARN WHILE THE CONDITION PERSISTS (site_gate_policy.py), and
+  # BOTH TURN A PERSISTENT UNKNOWN INTO THEIR OWN WARNING. The round-1 review of
+  # https://github.com/rrnewton/dev-hermit/issues/394 found both halves of the
+  # old policy wrong:
+  #   * Warning only when the outcome key changed meant one page per condition.
+  #     Each tick's escalation event carries only THAT tick's ACTION/ERROR lines
+  #     (scripts/hermit-health-tick.sh escalate_live_report_findings), and a
+  #     complete tick with none enqueues kind=resolve, which closes the host's
+  #     escalation issue. A warned-once condition was therefore reported as
+  #     resolved on the next clean tick while it still held.
+  #   * Exit 75 only ever produced tick-hub's generic could-not-determine line.
+  #     The two gates this pair replaced exited 75 on every run from 2026-09-22
+  #     to 2026-09-28, so the site went stale without either gate's own warning.
+  # Now every evaluation in a warning state exits 1 and names since when the
+  # condition has held; the first two consecutive unknown evaluations still exit
+  # 75 (tick-hub reruns those on the next tick without waiting for the cadence),
+  # and the third and later ones fire the gate's own `unknown-persistent`
+  # warning. The 1800 s cadence evaluates them on every 30-minute tick that is
+  # at least 1800 s after the previous evaluation; a tick that starts a few
+  # seconds early skips them once, so a persisting warning is re-raised at least
+  # hourly and usually every tick.
   #
   # REPLACES site_publication_lag_note and site_publication_lag_escalation. Both
   # grepped the live page for "Source validation run"/"Run finished", text the
   # ledger-rebuilt page no longer carries, so both had exited 75 (NO_RESULT) on
-  # every run since 2026-09-22 and measured nothing.
+  # every run since 2026-09-22 and measured nothing. Their script,
+  # site_publication_lag.py, is deleted; site_data_freshness measures what it
+  # meant to, from build.json instead of page text.
   - name: site_rebuild_health
-    cadence_secs: 3600
+    cadence_secs: 1800
     gate:
       cmd: ./ci-hub/health/site_rebuild_health.py --gate --dispatch --state "$DEV_HERMIT_PARENT/.tick-hub/site-rebuild-health.json"
       when: failure
@@ -738,6 +764,38 @@ reminders:
         component: site-rebuild
         outcome: "{outcome_key}"
       title: "compatibility website rebuild needs attention: {summary}"
+
+  # IS THE PUBLISHED DATA CURRENT, AND IS ANY ROW SILENTLY DROPPED?
+  # Reads the published site's build.json and the two data artifacts it records
+  # by SHA-256 (never page text), and the validation ledger in this tool root.
+  # Warns when the newest terminal validation row the build could have admitted
+  # on a main commit is more than 24 h newer than the newest published
+  # measurement, and whenever a series row is excluded because its cell is
+  # missing from the builder's manifest (dev-hermit d262eae6bc made that an
+  # exclusion instead of a refusal, and nothing counted it). Every warning names
+  # the exclusion counts by reason: no admitted terminal row, series schema, and
+  # cell not in the manifest. First reading, 2026-09-28T21:16Z: STALE, data as
+  # of 2026-09-22T14:16:37Z against RUN 1950 (hermit 1bd45c15f3, finished
+  # 2026-09-28T18:38:52Z, left unfinalized by the build), 148.4 h; 48709 of
+  # 97580 series rows excluded, 0 of them for a missing manifest cell.
+  # The published data and the site are external state ORC cannot observe.
+  # 3.1 s measured for one evaluation (three downloads, 35 MB); the script's own
+  # 150 s budget keeps it inside this 180 s timeout.
+  - name: site_data_freshness
+    cadence_secs: 1800
+    gate:
+      timeout_secs: 180
+      cmd: ./ci-hub/health/site_data_freshness.py --gate --state "$DEV_HERMIT_PARENT/.tick-hub/site-data-freshness.json"
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: site-data
+        outcome: "{outcome_key}"
+        excluded_not_in_manifest: "{excluded_not_in_manifest}"
+      title: "compatibility website data needs attention: {summary}"
 
   - name: github_main_health
     cadence_secs: 3600
