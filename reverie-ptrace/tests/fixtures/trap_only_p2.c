@@ -1576,6 +1576,47 @@ static void mode_sigreturn_bad_frame(void) {
   say("bad-frame getpid after=%d\n", tp_gen1_fn(SYS_getpid) == pid);
 }
 
+/* rt_sigreturn through a warmed generic site at a frame on a PROT_NONE page
+ * whose saved rip is the slot's return address and whose saved rsp is the
+ * frame's own rsp. The kernel's user copies fail on the page, so it returns 0
+ * at S+2 without loading a register and forces SIGSEGV. A tracer that reads
+ * the frame with FOLL_FORCE (/proc/<tid>/mem) sees rip == SLOT_RET and rsp ==
+ * rsp and would keep rip at the slot's return. */
+static void mode_sigreturn_prot_none_frame(void) {
+  long pid = getpid();
+  for (int j = 0; j < 3; j++)
+    if (tp_gen1_fn(SYS_getpid) != pid)
+      die("warm generic site");
+  static char altstack[65536];
+  stack_t ss = {.ss_sp = altstack, .ss_size = sizeof altstack, .ss_flags = 0};
+  if (sigaltstack(&ss, NULL) != 0)
+    die("sigaltstack");
+  install(SIGSEGV, SA_ONSTACK, bad_frame_segv);
+  unsigned char *page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (page == MAP_FAILED)
+    die("mmap frame page");
+  unsigned long frame_rsp = (unsigned long)page + 64;
+  /* ucontext at rsp: uc_mcontext at +40; gregs rsp is index 15, rip 16. */
+  unsigned long *gregs = (unsigned long *)(frame_rsp + 40);
+  gregs[15] = frame_rsp;
+  gregs[16] = SLOT_RET_ADDR;
+  if (mprotect(page, 4096, PROT_NONE) != 0)
+    die("mprotect frame page");
+  if (!sigsetjmp(bad_frame_env, 1)) {
+    __asm__ volatile("mov %0, %%rsp\n"
+                     "mov $15, %%eax\n"
+                     "jmp tp_gen1\n" ::"r"(frame_rsp)
+                     : "memory");
+    __builtin_unreachable();
+  }
+  unsigned char *p = (unsigned char *)tp_gen1;
+  say("prot-none-frame SIGSEGV code=%ld rip-next=%d rip-is-slot-ret=%d rax=%ld bytes after %02x "
+      "%02x\n",
+      bad_frame_code, bad_frame_rip == (long)tp_gen1 + 2, bad_frame_rip == (long)SLOT_RET_ADDR,
+      bad_frame_rax, p[0], p[1]);
+  say("prot-none-frame getpid after=%d\n", tp_gen1_fn(SYS_getpid) == pid);
+}
+
 static sigjmp_buf probe_env;
 static volatile long probe_sig_code;
 
@@ -1788,6 +1829,8 @@ int main(int argc, char **argv) {
     mode_sigreturn_slot_ret();
   else if (!strcmp(m, "sigreturn_bad_frame"))
     mode_sigreturn_bad_frame();
+  else if (!strcmp(m, "sigreturn_prot_none_frame"))
+    mode_sigreturn_prot_none_frame();
   else if (!strcmp(m, "sigstop_hop"))
     mode_sigstop_hop();
   else if (!strcmp(m, "probe_uretprobe"))
