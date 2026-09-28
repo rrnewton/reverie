@@ -1225,6 +1225,15 @@ pub(crate) struct LeaderStepExitHold {
     pub(crate) exit_published: AtomicBool,
     /// The held leader's notifier generation, for diagnostics readback.
     pub(crate) terminal: StdMutex<Option<safeptrace::TerminalCleanup>>,
+    /// When nonzero, the address of a word shared with the forked guest. The
+    /// hold then single-steps the leader once more, so a second real step
+    /// stop is queued behind the first, and stores 1 into that word once the
+    /// notifier holds both. The guest's exec'ing thread waits for the word.
+    pub(crate) second_step_release: AtomicUsize,
+    /// The result of that second real single step.
+    pub(crate) second_step: StdMutex<Option<String>>,
+    /// The raw statuses queued for the leader when the word was released.
+    pub(crate) queued_statuses: StdMutex<Vec<i32>>,
 }
 
 #[cfg(test)]
@@ -1249,6 +1258,31 @@ async fn hold_leader_step_until_exit(hold: Arc<LeaderStepExitHold>, running: &Ru
         drop(pending);
         hold.queued_step_is_trap.store(is_trap, Ordering::SeqCst);
         *hold.queued_step.lock().unwrap() = Some(decoded);
+    }
+    let release = hold.second_step_release.load(Ordering::SeqCst);
+    if release != 0 {
+        // The leader is still in the real stop whose report is queued above.
+        // One more real single step leaves a second stale report behind it.
+        // The capability is unmarked: it names no exit stop and retires
+        // nothing.
+        let step = match Stopped::try_new_current_unchecked(running.pid()) {
+            Ok(stopped) => stopped
+                .step(None)
+                .map(drop)
+                .map_err(|error| format!("{error:?}")),
+            Err(error) => Err(format!("{error:?}")),
+        };
+        *hold.second_step.lock().unwrap() = Some(format!("{step:?}"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut queued = terminal.queued_raw_statuses();
+        while step.is_ok() && queued.len() < 2 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            queued = terminal.queued_raw_statuses();
+        }
+        *hold.queued_statuses.lock().unwrap() = queued;
+        // Release the guest's exec whatever was observed; the test asserts
+        // the readback.
+        unsafe { &*(release as *const AtomicUsize) }.store(1, Ordering::SeqCst);
     }
     // The hold ends only when `drive_ordinary` drops the run loop, normally
     // because the exit future won. Record what was true at that moment.

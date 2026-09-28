@@ -548,6 +548,8 @@ async fn finish_ordinary_terminal(
 ) -> OrdinaryTerminal {
     let mut current = stopped;
     let mut exit_status = None;
+    // Whether this path has already failed the session for a non-exit stop.
+    let mut unexpected_stop_failed = false;
     #[cfg(test)]
     record_fatal_phase_for_test(|| format!("finish_ordinary_terminal entered: {current:?}"));
     loop {
@@ -593,6 +595,8 @@ async fn finish_ordinary_terminal(
                                 // superseded capability and transfer this same
                                 // generation to one retained wait; only its
                                 // actual terminal/Exec result can settle it.
+                                // The ESRCH on the exit-stop capability has
+                                // already retired the stops queued before it.
                                 drop(stopped);
                                 break zombie.wait_owned();
                             }
@@ -637,6 +641,8 @@ async fn finish_ordinary_terminal(
                             // A real group-fatal signal may advance this EXIT
                             // after GETEVENTMSG and before CONT. Keep its sole
                             // generation owner; ESRCH itself supplies no status.
+                            // As on success, the stops queued before the exit
+                            // stop were retired, so the wait cannot pop one.
                             break retained.wait_owned();
                         }
                         Err((retained, error)) => {
@@ -738,11 +744,27 @@ async fn finish_ordinary_terminal(
                             receipt,
                         };
                     } else if event != Event::Exit {
-                        session.fail(
-                            anyhow::anyhow!("unexpected ptrace terminal stop: {event:?}").into(),
-                        );
-                        for error in session.signal_groups() {
-                            session.retry_after(error.into()).await;
+                        #[cfg(test)]
+                        record_fatal_phase_for_test(|| {
+                            format!(
+                                "finish unexpected stop: tid={}, event={event:?}, first={}",
+                                stopped.pid(),
+                                !unexpected_stop_failed
+                            )
+                        });
+                        // The first non-exit stop fails the session and
+                        // signals the groups, once. Any later one is only
+                        // drained: the failure and the group SIGKILL already
+                        // cover it.
+                        if !unexpected_stop_failed {
+                            unexpected_stop_failed = true;
+                            session.fail(
+                                anyhow::anyhow!("unexpected ptrace terminal stop: {event:?}")
+                                    .into(),
+                            );
+                            for error in session.signal_groups() {
+                                session.retry_after(error.into()).await;
+                            }
                         }
                         // This stop is not an exit stop. It is never re-entered:
                         // no GETEVENTMSG and no resume are issued on it. The
@@ -6547,6 +6569,193 @@ mod tests {
         assert_eq!(terminal.retired_stops_before_exit(), 1);
     }
 
+    /// The ESRCH disposition of the same exit stop. The held step stop is
+    /// queued ahead of the leader's exit stop as in T6, and a real SIGKILL
+    /// reaches the group while the exit owner sits between GETEVENTMSG and
+    /// its resume. The resume gets a real ESRCH. Before the fix that left the
+    /// step stop queued, and the retained wait popped it and failed
+    /// "unexpected ptrace terminal stop: Signal(SIGTRAP)". Now exactly that
+    /// one stop is retired and the run Completes with the real
+    /// Signaled(SIGKILL) that the kernel reported after it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_exec_killed_exit_resume_retires_leader_step_stop() {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = None);
+                FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let hold = LeaderStepExitHoldGuard::arm();
+        let control = Arc::new(ExitResumeControl::default());
+        let _clear = Clear;
+        EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = Some(control.clone()));
+        FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = Some((Vec::new(), 0)));
+        let tracer = spawn_fn_with_config::<ExecOwnerTool, _>(
+            || {
+                std::thread::spawn(|| {
+                    let args = [
+                        c"/bin/sh".as_ptr(),
+                        c"-c".as_ptr(),
+                        c"printf survived".as_ptr(),
+                        std::ptr::null(),
+                    ];
+                    unsafe {
+                        libc::execv(args[0], args.as_ptr());
+                        libc::_exit(127);
+                    }
+                });
+                loop {
+                    unsafe {
+                        libc::pause();
+                    }
+                }
+            },
+            (false, 1),
+            true,
+        )
+        .await
+        .unwrap();
+        let root = tracer.guest_pid();
+        control
+            .target
+            .store(root.as_raw() as usize, Ordering::SeqCst);
+        let identity = untraced_process_identity(root);
+        let termination = tracer.termination_handle().unwrap();
+        let log = tracer.gref.0.clone();
+        let mut completion = Box::pin(tracer.wait_with_output_completion());
+        let gated =
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
+                while !control.entered.load(Ordering::SeqCst) {
+                    tokio::select! {
+                        _ = &mut completion => return false,
+                        () = tokio::task::yield_now() => {}
+                    }
+                }
+                true
+            })
+            .await;
+        let killed = if gated == Ok(true) {
+            // The leader's exit stop from the exec's zap carries status 0.
+            assert_eq!(control.payload.load(Ordering::SeqCst), 0);
+            identity.send_signal(Signal::SIGKILL).unwrap();
+            // The group has exited once the leader's pidfd is readable, so
+            // the resume below meets a real ESRCH.
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
+                loop {
+                    let mut query = libc::pollfd {
+                        fd: identity.pidfd.as_ref().unwrap().as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    let observed = unsafe { libc::poll(&mut query, 1, 0) };
+                    assert!(observed >= 0);
+                    if observed == 1 && query.revents & libc::POLLIN != 0 {
+                        break true;
+                    }
+                    tokio::select! {
+                        _ = &mut completion => break false,
+                        () = tokio::task::yield_now() => {}
+                    }
+                }
+            })
+            .await
+        } else {
+            Ok(false)
+        };
+        control.release.store(true, Ordering::SeqCst);
+        let result = if killed == Ok(true) {
+            Some(
+                tokio::time::timeout(
+                    deadline.saturating_duration_since(Instant::now()),
+                    &mut completion,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let resumes = control.results.lock().unwrap().clone();
+        let done = match result {
+            Some(Ok(ToolRunOutcome::Complete(done))) => done,
+            other => {
+                let description = match &other {
+                    None => format!("gate not reached: gated={gated:?}, killed={killed:?}"),
+                    Some(Ok(ToolRunOutcome::CleanupPending(pending))) => {
+                        format!("Pending({:?})", pending.failure())
+                    }
+                    Some(Ok(ToolRunOutcome::UnsupportedBackend(_))) => {
+                        "UnsupportedBackend".to_owned()
+                    }
+                    Some(Ok(ToolRunOutcome::Complete(_))) => unreachable!(),
+                    Some(Err(error)) => format!("Timeout({error})"),
+                };
+                let rescue_deadline = Instant::now() + Duration::from_secs(2);
+                termination.terminate(Error::Tool(anyhow::Error::new(TestDeadline)));
+                let signal = identity.send_signal(Signal::SIGKILL);
+                let rescued = match other {
+                    Some(Ok(ToolRunOutcome::CleanupPending(pending))) => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        pending.resume_cleanup(),
+                    )
+                    .await
+                    .is_ok(),
+                    _ => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        &mut completion,
+                    )
+                    .await
+                    .is_ok(),
+                };
+                panic!(
+                    "killed exit-resume run did not Complete within 3s: {description}; resumes={resumes:?}, rescue signal={signal:?}, rescued={rescued}"
+                );
+            }
+        };
+        assert_reaped("killed exit-resume root", root);
+        hold.assert_step_stop_was_queued_before_exit();
+        let status = ExitStatus::Signaled(Signal::SIGKILL, false);
+        let output = done.result.expect("the killed exit-resume run failed");
+        assert_eq!(output.status, status);
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        let leader_resumes: Vec<_> = resumes
+            .iter()
+            .filter(|(pid, _)| *pid == root)
+            .cloned()
+            .collect();
+        assert_eq!(
+            leader_resumes,
+            vec![(root, Err(Errno::ESRCH))],
+            "the exit owner's one resume did not meet the real ESRCH"
+        );
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.iter().all(|event| event.0 != 1),
+            "the killed exec reached post-exec: {events:?}"
+        );
+        let (records, omitted) = FATAL_REAP_CHRONOLOGY
+            .with(|slot| slot.borrow().clone())
+            .expect("chronology installed");
+        assert_eq!(omitted, 0, "chronology truncated: {records:?}");
+        assert!(
+            records
+                .iter()
+                .all(|record| !record.starts_with("finish unexpected stop:")),
+            "a stale stop reached the non-exit arm: {records:?}"
+        );
+        let terminal = hold
+            .0
+            .terminal
+            .lock()
+            .unwrap()
+            .take()
+            .expect("held leader generation");
+        assert_eq!(terminal.retired_stops_before_exit(), 1);
+        assert_eq!(terminal.observed_exit_status(), Ok(Some(status)));
+        assert!(terminal.queued_raw_statuses().is_empty());
+    }
+
     /// A genuinely unexpected non-exit stop after the exit-stop resume: the
     /// same held step stop, with the exit resume forced through a capability
     /// that does not retire it. The session fails exactly once with the
@@ -6555,6 +6764,20 @@ mod tests {
     /// nothing more is issued for that TID by the terminal path.
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_unexpected_nonexit_stop_after_exit_resume_fails_once_without_reentry() {
+        unexpected_nonexit_stops_after_exit_resume(false).await;
+    }
+
+    /// As above with two stale stops: the hold single-steps the leader once
+    /// more, so two real step stops are queued ahead of the exec. Both reach
+    /// the non-exit arm; only the first fails the session and signals the
+    /// groups, the second is only drained. Neither gets a GETEVENTMSG or a
+    /// resume.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_two_unexpected_nonexit_stops_after_exit_resume_fail_once_without_reentry() {
+        unexpected_nonexit_stops_after_exit_resume(true).await;
+    }
+
+    async fn unexpected_nonexit_stops_after_exit_resume(second_step: bool) {
         struct Clear;
         impl Drop for Clear {
             fn drop(&mut self) {
@@ -6564,6 +6787,9 @@ mod tests {
             }
         }
         let hold = LeaderStepExitHoldGuard::arm();
+        let words = FatalWords::new();
+        let release = if second_step { words.0 as usize } else { 0 };
+        hold.0.second_step_release.store(release, Ordering::SeqCst);
         let bypass = Arc::new(ExitResumeRetirementBypass::default());
         bypass.armed.store(true, Ordering::SeqCst);
         // Target 0 matches no TID, so this control only records resumes.
@@ -6574,8 +6800,15 @@ mod tests {
         FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = Some((Vec::new(), 0)));
         let deadline = Instant::now() + Duration::from_secs(3);
         let tracer = spawn_fn_with_config::<ExecOwnerTool, _>(
-            || {
-                std::thread::spawn(|| {
+            move || {
+                std::thread::spawn(move || {
+                    if release != 0 {
+                        // Wait until the hold has queued the second step stop.
+                        let word = unsafe { &*(release as *const std::sync::atomic::AtomicUsize) };
+                        while word.load(Ordering::SeqCst) == 0 {
+                            std::hint::spin_loop();
+                        }
+                    }
                     let args = [
                         c"/bin/sh".as_ptr(),
                         c"-c".as_ptr(),
@@ -6691,6 +6924,35 @@ mod tests {
             1,
             "GETEVENTMSG issued on the leader's non-exit stop: {records:?}"
         );
+        // Each stale stop reached the non-exit arm, and only the first one
+        // failed the session.
+        let prefix = format!("finish unexpected stop: tid={root},");
+        let arm: Vec<&String> = records
+            .iter()
+            .filter(|record| record.starts_with(&prefix))
+            .collect();
+        let expected: Vec<String> = std::iter::once(true)
+            .chain(second_step.then_some(false))
+            .map(|first| format!("{prefix} event=Signal(SIGTRAP), first={first}"))
+            .collect();
+        assert_eq!(
+            arm,
+            expected.iter().collect::<Vec<_>>(),
+            "non-exit arm visits: {records:?}"
+        );
+        if second_step {
+            assert_eq!(
+                *hold.0.second_step.lock().unwrap(),
+                Some("Ok(())".to_owned())
+            );
+            let step_stop = (libc::SIGTRAP << 8) | 0x7f;
+            assert_eq!(
+                *hold.0.queued_statuses.lock().unwrap(),
+                [step_stop, step_stop],
+                "the two real step stops were not both queued before the exec"
+            );
+        }
+        drop(words);
     }
 
     #[tokio::test(flavor = "current_thread")]
