@@ -1,0 +1,160 @@
+1700: 			break;
+1701: 
+1702: 		exec = bprm->file;
+1703: 		bprm->file = bprm->interpreter;
+1704: 		bprm->interpreter = NULL;
+1705: 
+1706: 		exe_file_allow_write_access(exec);
+1707: 		if (unlikely(bprm->have_execfd)) {
+1708: 			if (bprm->executable) {
+1709: 				fput(exec);
+1710: 				return -ENOEXEC;
+1711: 			}
+1712: 			bprm->executable = exec;
+1713: 		} else
+1714: 			fput(exec);
+1715: 	}
+1716: 
+1717: 	audit_bprm(bprm);
+1718: 	trace_sched_process_exec(current, old_pid, bprm);
+1719: 	ptrace_event(PTRACE_EVENT_EXEC, old_vpid);
+1720: 	proc_exec_connector(current);
+1721: 	return 0;
+1722: }
+
+### binfmt_elf.c:832-1395
+Full source: /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-clock-exec-elf-primary-v1/binfmt_elf.c
+SHA256: ec882e2f70b9f3647a16496f425f9951d6b494516350d1fec168c59e080b9702
+Upstream Linux: 199c9959d3a9b53f346c221757fc7ac507fbac50; vendor kernel identity is not inferred.
+
+832: static int load_elf_binary(struct linux_binprm *bprm)
+833: {
+834: 	struct file *interpreter = NULL; /* to shut gcc up */
+835: 	unsigned long load_bias = 0, phdr_addr = 0;
+836: 	int first_pt_load = 1;
+837: 	unsigned long error;
+838: 	struct elf_phdr *elf_ppnt, *elf_phdata, *interp_elf_phdata = NULL;
+839: 	struct elf_phdr *elf_property_phdata = NULL;
+840: 	unsigned long elf_brk;
+841: 	bool brk_moved = false;
+842: 	int retval, i;
+843: 	unsigned long elf_entry;
+844: 	unsigned long e_entry;
+845: 	unsigned long interp_load_addr = 0;
+846: 	unsigned long start_code, end_code, start_data, end_data;
+847: 	unsigned long reloc_func_desc __maybe_unused = 0;
+848: 	int executable_stack = EXSTACK_DEFAULT;
+849: 	struct elfhdr *elf_ex = (struct elfhdr *)bprm->buf;
+850: 	struct elfhdr *interp_elf_ex = NULL;
+851: 	struct arch_elf_state arch_state = INIT_ARCH_ELF_STATE;
+852: 	struct mm_struct *mm;
+853: 	struct pt_regs *regs;
+854: 
+855: 	retval = -ENOEXEC;
+856: 	/* First of all, some simple consistency checks */
+857: 	if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
+858: 		goto out;
+859: 
+860: 	if (elf_ex->e_type != ET_EXEC && elf_ex->e_type != ET_DYN)
+861: 		goto out;
+862: 	if (!elf_check_arch(elf_ex))
+863: 		goto out;
+864: 	if (elf_check_fdpic(elf_ex))
+865: 		goto out;
+866: 	if (!can_mmap_file(bprm->file))
+867: 		goto out;
+868: 
+869: 	elf_phdata = load_elf_phdrs(elf_ex, bprm->file);
+870: 	if (!elf_phdata)
+871: 		goto out;
+872: 
+873: 	elf_ppnt = elf_phdata;
+874: 	for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++) {
+875: 		char *elf_interpreter;
+876: 
+877: 		if (elf_ppnt->p_type == PT_GNU_PROPERTY) {
+878: 			elf_property_phdata = elf_ppnt;
+879: 			continue;
+880: 		}
+881: 
+882: 		if (elf_ppnt->p_type != PT_INTERP)
+883: 			continue;
+884: 
+885: 		/*
+886: 		 * This is the program interpreter used for shared libraries -
+887: 		 * for now assume that this is an a.out format binary.
+888: 		 */
+889: 		retval = -ENOEXEC;
+890: 		if (elf_ppnt->p_filesz > PATH_MAX || elf_ppnt->p_filesz < 2)
+891: 			goto out_free_ph;
+892: 
+893: 		retval = -ENOMEM;
+894: 		elf_interpreter = kmalloc(elf_ppnt->p_filesz, GFP_KERNEL);
+895: 		if (!elf_interpreter)
+896: 			goto out_free_ph;
+897: 
+898: 		retval = elf_read(bprm->file, elf_interpreter, elf_ppnt->p_filesz,
+899: 				  elf_ppnt->p_offset);
+900: 		if (retval < 0)
+901: 			goto out_free_interp;
+902: 		/* make sure path is NULL terminated */
+903: 		retval = -ENOEXEC;
+904: 		if (elf_interpreter[elf_ppnt->p_filesz - 1] != '\0')
+905: 			goto out_free_interp;
+906: 
+907: 		interpreter = open_exec(elf_interpreter);
+908: 		kfree(elf_interpreter);
+909: 		retval = PTR_ERR(interpreter);
+910: 		if (IS_ERR(interpreter))
+911: 			goto out_free_ph;
+912: 
+913: 		/*
+914: 		 * If the binary is not readable then enforce mm->dumpable = 0
+915: 		 * regardless of the interpreter's permissions.
+916: 		 */
+917: 		would_dump(bprm, interpreter);
+918: 
+919: 		interp_elf_ex = kmalloc_obj(*interp_elf_ex);
+920: 		if (!interp_elf_ex) {
+921: 			retval = -ENOMEM;
+922: 			goto out_free_file;
+923: 		}
+924: 
+925: 		/* Get the exec headers */
+926: 		retval = elf_read(interpreter, interp_elf_ex,
+927: 				  sizeof(*interp_elf_ex), 0);
+928: 		if (retval < 0)
+929: 			goto out_free_dentry;
+930: 
+931: 		break;
+932: 
+933: out_free_interp:
+934: 		kfree(elf_interpreter);
+935: 		goto out_free_ph;
+936: 	}
+937: 
+938: 	elf_ppnt = elf_phdata;
+939: 	for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++)
+940: 		switch (elf_ppnt->p_type) {
+941: 		case PT_GNU_STACK:
+942: 			if (elf_ppnt->p_flags & PF_X)
+943: 				executable_stack = EXSTACK_ENABLE_X;
+944: 			else
+945: 				executable_stack = EXSTACK_DISABLE_X;
+946: 			break;
+947: 
+948: 		case PT_LOPROC ... PT_HIPROC:
+949: 			retval = arch_elf_pt_proc(elf_ex, elf_ppnt,
+950: 						  bprm->file, false,
+951: 						  &arch_state);
+952: 			if (retval)
+953: 				goto out_free_dentry;
+954: 			break;
+955: 		}
+956: 
+957: 	/* Some simple consistency checks for the interpreter */
+958: 	if (interpreter) {
+959: 		retval = -ELIBBAD;
+960: 		/* Not an ELF interpreter */
+961: 		if (memcmp(interp_elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
+962: 			goto out_free_dentry;

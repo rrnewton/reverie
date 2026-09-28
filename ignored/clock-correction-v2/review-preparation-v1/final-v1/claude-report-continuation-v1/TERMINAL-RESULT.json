@@ -1,0 +1,84 @@
+{
+  "duration_api_ms": 43261,
+  "stop_reason": "end_turn",
+  "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+  "total_cost_usd": 1.04450375,
+  "usage": {
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 154723,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 3099,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 154723
+    },
+    "inference_geo": "",
+    "iterations": [],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-opus-5[1m]": {
+      "inputTokens": 2,
+      "outputTokens": 3099,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 154723,
+      "webSearchRequests": 0,
+      "costUSD": 1.04450375,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "thinkingTokens": 0,
+      "canonicalModel": "claude-opus-5",
+      "provider": "vertex",
+      "costBasis": "list"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "fast_mode_state": "off",
+  "fast_mode_disabled_reason": "not_first_party",
+  "subagent_stats": {
+    "spawned": 0,
+    "requested": {
+      "background": 0,
+      "foreground": 0,
+      "unset": 0
+    },
+    "started_in_background": 0,
+    "max_depth": 0,
+    "spawned_by_subagents": 0,
+    "completed": 0,
+    "failed": 0,
+    "killed": {
+      "parent": 0,
+      "user": 0,
+      "system": 0
+    },
+    "refused": {
+      "depth_limit": 0,
+      "concurrency_limit": 0,
+      "budget": 0
+    },
+    "by_type": {}
+  },
+  "is_error": false,
+  "num_turns": 1,
+  "subtype": "success",
+  "api_error_status": null,
+  "result": "# Supplemental Report \u2014 reverie PR 588\n\n**Target:** `https://github.com/rrnewton/reverie/pull/588`, base `b5e2ab49cd99e5d456fa0238b8cebd75958c529f` \u2192 head `a9449f8ee22a17ba87a106c2af957a938fa57c45`, tree `da3e0a5c13bbd1b95adca1bc3ac0037b89494544`. No source, test, assertion or comparator changed since my first report.\n\n## 1. Correction to the first report's reading claim\n\nMy first report opened with a statement that I had completed the mandatory reading. **That statement was false.** The same report's \u00a79 disclosed that I had read only 8 of 24 `entry-replay-raw-events` chunks, and the terminal audit of that invocation **failed at 224/240 mandatory chunks**. I do not claim the first invocation had complete coverage, and I do not claim it followed strict index order.\n\nThe repair is a *distinct* set, not a retroactive fix: **original 224/240, supplemental 16/16.** The supplemental invocation read all sixteen missing chunks and the trigger-rule excerpt completely, but **it too ended in failure** \u2014 the guard expired at 600.055 s before any verdict was issued. Both the original failed audit and the supplemental timeout stand as failures. The union of reading is now complete (240/240 plus the rule excerpt); reading is evidence of custody, not a verdict, and it does not convert either failed run into a successful one.\n\n## 2. Effect of the newly read records\n\nThe sixteen chunks **corroborate and strengthen** my prior inference. Nothing is refuted; two conclusions become stronger, and I withdraw one hedge.\n\n**(a) Perf attribute split, now proven at the kernel ABI, not from Rust source.** Two guest-targeted `perf_event_open` calls on tid 2578706 with identical config `0x5100d1`: seq 84 (sampling counter, `sample_period` 1152921504606846976) carries attr bytes `65 00 10 00`; seq 88/90 (the `clock_owner`, fd 12, `sample_period` 0) carries `65 10 10 00`. The single differing bit is `enable_on_exec`, set only on the counting clock. Both are `pinned=1, disabled=1, exclude_kernel=1, exclude_hv=1, exclude_guest=1`. This is direct byte evidence for the launcher-interval exclusion contract.\n\n**(b) The causal arithmetic is now exhaustive over the trace, not inferred.** My first report said per-step attribution was inferred because no intermediate sample exists. I withdraw that hedge for both measured intervals, because every guest resumption between the clock reads is now enumerable:\n\n- Reads: seq 202 \u2192 `raw_count 0`; seq 308 \u2192 `1`; seq 378 \u2192 `3`; seq 414 \u2192 `67`.\n- Interval 0\u21921: seq 216 step (rip stays 0x401000 at seq 222 \u2014 no instruction retired); seq 236 step executes the *patched* `syscall` written at seq 228/230 (`0xCCCCCCCCCCCC050F`), rip 0x401000\u21920x401002 at seq 243, **0 RCB**; seq 266 step runs the restored `JNE +0` (seq 250/252 rewrote `0x0F00000027B80075`) under `orig_rax = \u22121` set at seq 262, **1 RCB**; seq 284 step is the private-page `syscall` at 0x71000000, **0 RCB**. Predicted \u0394 = 1; observed \u0394 = 1.\n- Interval 1\u21923: seq 318 step, `orig_rax = \u22121` at seq 314, restored `JNE +0`, **1 RCB**; seq 335 private-page `syscall`, **0 RCB**; seq 352 the genuine guest `JNE +0` (confirmed by seq 359: rip 0x401002, `orig_rax` reads \u22121 = not-in-syscall), **1 RCB**; seq 362 `PTRACE_CONT` runs `MOV EAX,39; syscall` to the seccomp stop at rip 0x401009, **0 RCB**. Predicted \u0394 = 2; observed \u0394 = 2.\n\nThis closes the loop on the preserved counters exactly: the two spurious retirements at seq 266 and seq 318 are precisely the difference between the observed **`[3, 67]`** and the unchanged required **`[1, 65]`**. The required pair was in place *before* the fix and was *failing* \u2014 the test was not weakened to accommodate the new behaviour.\n\n**(c) A second, independent reachability instance for A1's neighbourhood.** Chunk 4 shows the same no-pending-original `skip_seccomp_syscall` misuse **pre-exec on the launcher**: seq 156 sets `orig_rax = \u22121` at a signal-delivery stop (rip \u2026d38c, `orig_rax` 234 = tgkill), steps at 160, traps at 164, restores at 166. My first report could not cite this. It does not change A1's severity \u2014 it raises confidence that the defect class is real and not a single post-exec accident.\n\n**(d) Trace terminates cleanly.** seq 438 `PTRACE_EVENT_EXIT`, seq 442 `CLD_EXITED` status 0, then `munmap(0x7f9967b35000, 4096)` and `close(12)`. No leaked counter or mapping.\n\n**A1\u2013A5:** all confirmed, none upgraded. A1 (returning tail-inject with no pending original, `task.rs:5581-5590`, no `set_ret`, not `cancellable()`) remains LOW and unexercised. A2 (`task.rs:2932-2933`), A3 (`timer.rs:907-913`), A4 (`phase.py:112-114`), A5 (`fs/exec.c:1264-1265`) are unchanged.\n\n## 3. Trigger classification \u2014 my own reassessment\n\nMy earlier trigger-2 reasoning rested on public shape and unchanged `Tool`/`Guest` files. That reasoning **omitted the rule's \"or the syscall-interception model\" clause**, which is not a file-identity test. Re-reading the actual text (Hermit `AGENTS.md` 452\u2013460), the clause asks whether the change alters *how syscalls are intercepted and mediated*, independent of whether a public trait signature moved.\n\nAgainst that clause, the change does qualify. `pending_syscall` becomes `Option<(Sysno, SyscallArgs)>` and *taking it* is now the authority to run `skip_seccomp_syscall`; `inner_inject` and `inner_tail_inject` replace a two-way `==` with a three-way match (`Some(o) if o == (nr,args)` / `Some(_)` / `None`). That is a change to the ownership rule governing when the tracer may consume a seccomp entry \u2014 the interception model itself \u2014 and the raw trace shows exactly the behaviour it governs (the `orig_rax = \u22121` steps at seq 262 and 314 that the old model permitted with no pending original). **My conclusion: trigger 2 is TRIGGERED.** I was wrong to classify it as not triggered; the correction is mine, from the rule text.\n\n**Trigger 3 remains TRIGGERED** \u2014 the initial-command clock origin is a new determinization strategy, and the PR is already labelled for it. Trigger 2 adds no new label requirement beyond the same `post-facto-human-review`, but the *basis* should be recorded as two triggers, not one.\n\n## 4. Verdict\n\n**APPROVE** the whole change at base `b5e2ab49` \u2192 head `a9449f8e`, tree `da3e0a5c`, with one non-blocking correction: the review trigger basis is **triggers 2 and 3**, not trigger 3 alone.\n\nNo goalpost moving found. The `[1,65]` assertion predates the fix and was failing; the lib inventory moves 187 \u2192 194 = exactly the seven new `injection_stop_tests` declarations; `execute.py:23`/`:48-50` forbid the legacy skip; `phase.py:153-154` forbids ignored-test credit; `retain_artifacts.py:26,32` require `fresh: false` and a differing ELF hash. Nothing was widened, exempted, relabelled or deleted.\n\n**Material limits.** Qualification is **45 phases attempted, 44 accepted, 37 declarations qualified**. The unchanged legacy-vsyscall declaration had payload raw 0 and real assertions, but its structured-reader receipt remains `accepted=false`; it is not qualified, and all 45 phases were not accepted. The compile raw 101 predecessor, the raw 125 diagnostic refusal, the precise-timer parent's two internally captured child modes (not inflated), and every unmeasured state stand as recorded. `has_precise_ip()` is false on this AMD 9D85 host, so the skid-margin path is unmeasured here. This approval covers this Reverie change only: **no Hermit integration, no backend parity, no whole-scheduler approval, no activation.** Two of my own invocations on this target ended in failure (audit 224/240; 600.055 s timeout); this verdict rests on the completed reading union and my own source analysis, not on either run succeeding.",
+  "ttft_ms": 44387,
+  "type": "result",
+  "duration_ms": 44763,
+  "uuid": "1238cf6e-8cfa-4a30-b9de-0bc24a1c035d",
+  "ttft_stream_ms": 2509,
+  "time_to_request_ms": 1169,
+  "first_content_frame_ms": 2509,
+  "queued_turn_count": 0
+}

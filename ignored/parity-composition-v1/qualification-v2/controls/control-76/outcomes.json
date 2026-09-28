@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.001856609
+    }
+  ]
+}

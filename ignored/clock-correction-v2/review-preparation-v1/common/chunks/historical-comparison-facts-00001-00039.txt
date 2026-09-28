@@ -1,0 +1,39 @@
+{
+  "original_plan_sha256": "e922d902d8d8c47a6a991b851fe6567f4c107efa10071da3cc57f8fb127539e4",
+  "original_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/controls/ptrace-off-on/result.json",
+    "bytes": 2680,
+    "mode": 420,
+    "sha256": "091083258778350ec6e62c1873071b52ed22ea35cf963e651b02ea7c4cbfe4b2"
+  },
+  "original_accepted": false,
+  "raw_status": 0,
+  "reported_verdict": "matched",
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/ptrace-off-on/comparison.json",
+    "bytes": 670,
+    "mode": 384,
+    "sha256": "e65d89dc4a2261220063e53b46d20e9be99284e61c0f24da2d527a099cfe8d06"
+  },
+  "actual_payload_argv_equals_plan": true,
+  "actual_command_names_exact_bound_logs": true,
+  "caller_bound_inputs": {
+    "left": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run1_log_S16Oh",
+      "bytes": 17217,
+      "mode": 384,
+      "sha256": "c7e849821aef542fea8742c155c6f3c69256722883b0de109d213c6244f49bd9"
+    },
+    "right": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/verify-logs/run1_log_H8QM0",
+      "bytes": 17217,
+      "mode": 384,
+      "sha256": "f63a0ae45f3e7dfce7d763ac212f94b55b7f796909be7a45002c65267a147f74"
+    }
+  },
+  "reported_require_structured_events": false,
+  "source_fixed_comparator_requires_structured_events": true,
+  "producer_report_input_identities_absent": true,
+  "interpretation": "A later source/evidence adjudication, not a replacement acceptance receipt; reported policy metadata remains inconsistent with the effective fixed comparator.",
+  "new_execution": false
+}

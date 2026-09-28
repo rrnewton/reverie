@@ -1,0 +1,86 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/01-cpuid-on-v7-00001-00298.txt",
+    "first": 1,
+    "last": 298,
+    "sha256": "c3f5370d78b256441ea608c52feae8eb7b291f400f851dfd420879726281c653"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/01-cpuid-on-v7-00299-00535.txt",
+    "first": 299,
+    "last": 535,
+    "sha256": "c6d7df0862be3da784b8554756c6bb4f97439db31688c2624848f78f2e152f3f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/01-cpuid-on-v7-00536-00732.txt",
+    "first": 536,
+    "last": 732,
+    "sha256": "d159cd11ed378438b4ff06a87a2accbd13accfa9c4af6de4c07eac047b707f8d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/01-cpuid-on-v7-00733-00972.txt",
+    "first": 733,
+    "last": 972,
+    "sha256": "e41764b01e1f82373e854715f1bc81720b339b47ca5d0241079df9264629779a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/01-cpuid-on-v7-00973-01261.txt",
+    "first": 973,
+    "last": 1261,
+    "sha256": "454a0b6f2e7fbc4d91da1f1de95a249ca644796a664b6eeffd8d061b89542111"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/01-cpuid-on-v7-01262-01496.txt",
+    "first": 1262,
+    "last": 1496,
+    "sha256": "5cea3aa734824cce5e1dc68ef1223e4004b0a80cc9ca0106ee8b6f86241aed0c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/01-cpuid-on-v7-01497-01772.txt",
+    "first": 1497,
+    "last": 1772,
+    "sha256": "d692eb442136332d2568e241852ff23f138622e9b76382b61cfd424eeb78ed77"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/01-cpuid-on-v7-01773-01929.txt",
+    "first": 1773,
+    "last": 1929,
+    "sha256": "57c5a72d9a6a0ba8ec3cd9bc16f19c587c0d0a74f875b7a8ed082ef3a5f9f600"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/02-capture-after-cpuid-00001-00281.txt",
+    "first": 1,
+    "last": 281,
+    "sha256": "422d6dc8ce7e53280a11c114632bd2d1c8cac2f02ebe197997527a2587ee847f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/02-capture-after-cpuid-00282-00548.txt",
+    "first": 282,
+    "last": 548,
+    "sha256": "cea67c654c6b7442754cdaaa870911eab4c0e719873bb3edfdac12afe1e3d780"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/02-capture-after-cpuid-00549-00803.txt",
+    "first": 549,
+    "last": 803,
+    "sha256": "84a0fbcf2b921a55ff85eef3289331fb33a1387bd829791402dbe2d73adaac63"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/02-capture-after-cpuid-00804-01090.txt",
+    "first": 804,
+    "last": 1090,
+    "sha256": "9b3fcfbc8caa333ef3736bf9f406610996ca3377087d7b72d3ec74a0b1361982"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/02-capture-after-cpuid-01091-01316.txt",
+    "first": 1091,
+    "last": 1316,
+    "sha256": "777113bc4984f5c434037fdf55e7ad938066533f885de785db160fdaa82a61cd"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/author-patch-reads/02-capture-after-cpuid-01317-01485.txt",
+    "first": 1317,
+    "last": 1485,
+    "sha256": "c1a6a963eb01d2cb208c42e3b42b1c0bf964cf1089212a9db8634b254ce78a44"
+  }
+]

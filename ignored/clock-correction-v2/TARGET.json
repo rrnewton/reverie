@@ -1,0 +1,98 @@
+{
+  "scope": "Authored unexecuted initial clock and physical injection-stop correction; no qualification or approval",
+  "base": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "base_tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "landed_identical_base": "b5e2ab49cd99e5d456fa0238b8cebd75958c529f",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source",
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/SOURCE-MANIFEST.json",
+    "bytes": 472196,
+    "mode": 420,
+    "sha256": "a5d4421bbd3db561f8e19b5ed2833a24181e9c83becef6845a21169f98713202"
+  },
+  "full_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/SOURCE.patch",
+    "bytes": 54939,
+    "mode": 420,
+    "sha256": "bdf69da444fe5c9622eb3cdd6effd7ed62c415fb44e554b5879e96133766eaab"
+  },
+  "successor_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/INJECTION-CORRECTION.patch",
+    "bytes": 25739,
+    "mode": 420,
+    "sha256": "2c1b9cc824abf48ddefe710ffc4d996edee2509ae49ab390699a67c9013ec205"
+  },
+  "oracle_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/ORACLE-CHANGES.patch",
+    "bytes": 1644,
+    "mode": 420,
+    "sha256": "805a718f83f285daeea2ee4e778593db8f5e12002d44e78849b5d89025bf62b5"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/REPORT.md",
+    "bytes": 8047,
+    "mode": 420,
+    "sha256": "554955db06ebe99b8ddf41c30ef37fdd5532af82fdbd3b48f3b61249ca4a418c"
+  },
+  "continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/CONTINUITY.json",
+    "bytes": 780,
+    "mode": 420,
+    "sha256": "87a96edc0e30163841be153a782083dbe1afd3296b72e5516c984b9300268981"
+  },
+  "origin": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/SOURCE-ORIGIN.json",
+    "bytes": 2381,
+    "mode": 420,
+    "sha256": "d6c7e3f447d8fefcad228533e04e7a1def6a1fed105174848ec9c5f77f55ed61"
+  },
+  "publication_base": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/PUBLICATION-BASE.json",
+    "bytes": 293,
+    "mode": 420,
+    "sha256": "4f482e8b6766568030fa964ae4bd7d0305e56c87c503b86fff80f416bfb0e9e2"
+  },
+  "preparation_limits": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/PREPARATION-LIMITS.json",
+    "bytes": 1317,
+    "mode": 420,
+    "sha256": "deaa741b00b749dfd565d27292f414524564bf3a8029d1eda441e4c07f37b133"
+  },
+  "policy_origin": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/POLICY-ORIGIN.json",
+    "bytes": 2156,
+    "mode": 420,
+    "sha256": "a2d032375437253fd824b2cd14c557c49765ff4b3f74bcabf8a73cae03080e56"
+  },
+  "old_evidence": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/HISTORY.json",
+    "bytes": 4187,
+    "mode": 420,
+    "sha256": "b3dc5571663d82ff91530a01f9668cbab749c72604f624a3a8d95e4353d970b8"
+  },
+  "author_formats": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/AUTHOR-FORMAT.json",
+      "bytes": 3809,
+      "mode": 420,
+      "sha256": "6cdf4069718f87fd659d88a44367812ddf782b5d9a09c7c7eafdf44ae4f2b244"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/AUTHOR-FORMAT-2.json",
+      "bytes": 3820,
+      "mode": 420,
+      "sha256": "2834a227120379b0e9fe4d304169060cd3d67cd2cb38054ef05a4c983cb97b41"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/AUTHOR-FORMAT-3.json",
+      "bytes": 3821,
+      "mode": 420,
+      "sha256": "3a582a3fa744d23557e662cc7f2691282736b42aaf5be96aaee2df12b6de8159"
+    }
+  ],
+  "meaningful_new_declarations": 7,
+  "meaningful_new_modes": 8,
+  "no_product_execution": true,
+  "no_lease_admission": true,
+  "source_author_not_independent_reviewer": true
+}

@@ -1,0 +1,64 @@
+## Findings
+
+No blocking source defect found.
+
+- Evidence limitation: the unchanged legacy-vsyscall phase returned raw 0 and emitted exact test/suite success plus the real `time` interception, but its original JSON-only reader rejected 26 interleaved tracing records. It remains `accepted=false`; therefore only 37 of 38 declarations are qualified. The retained raw stream supports the legacy behavior as supplementary evidence, but does not convert that receipt into a pass.
+- Coverage limitation: activated LiteInst-frame injection, converted mapping-tail execution, interrupted private-syscall/restart paths, another architecture, Hermit integration, and cross-backend parity remain unmeasured. The existing precise-timer parent can also return early when PMU support is missing. These limit runtime claims but do not reveal a defect in this finite source.
+
+## Source assessment
+
+The initial-command clock transition is sound:
+
+- Command launches alone receive `command_bootstrap=true`; function launches, clones, forks, and later tasks receive ordinary timers ([tracer.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/tracer.rs:2524), [task.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/task.rs:1162)).
+- The clock counter is created disabled with one-shot Linux `enable_on_exec`; ordinary counters are enabled immediately ([perf.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/perf.rs:200), [timer.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/timer.rs:783)).
+- `PTRACE_EVENT_EXEC` is the successful-commit boundary. It enters `InitializingExec`, clears obsolete syscall/frame state, completes backend setup, switches to ordinary timing, and only then invokes arbitrary Tool post-exec code ([task.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/task.rs:2875), [task.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/task.rs:3054)).
+- A missing interpreter fails before that event, leaving bootstrap provenance and the clock inactive. Later successful execs do not reset the counter.
+- Kernel execution and tracer work are excluded. The committed ELF/interpreter’s subsequent user-mode entry instructions count continuously; no PID/path heuristic, fixed subtraction, rounding, or per-exec reset exists.
+
+The prior injected-exec High is resolved:
+
+- Pre-post-exec requests are held without calling the physical notification path. Finalization and signal recognition are disabled in both preordinary states ([timer.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/timer.rs:820), [timer.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/timer.rs:924)).
+- Requests are retired on committed exec, including a request made from the intercepted exec callback, and the initializing interval is swept again before post-exec ([timer.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/timer.rs:877)).
+- The tests cover normal and injected exec, precise/imprecise/RCB-plus-instruction requests, launcher branches, missing-interpreter failure, and a new post-exec timer. Timer callbacks are asserted absent for retired requests; the live post-exec request fires at exactly RCB 1 ([clock_origin_tests.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/clock_origin_tests.rs:258)).
+
+Syscall-stop ownership is also coherent:
+
+- Normal callback return atomically takes the pending original and skips it exactly once. The legacy-vsyscall path retains the kernel-owned synthetic return ([task.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/task.rs:4120)).
+- Same-original injection executes that pending syscall. A different original is suppressed once and replaced. With no pending original, private injection runs without stepping or replaying an unrelated guest instruction ([task.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/task.rs:5491)).
+- Tail injection preserves the same distinctions, including mapping-specific result observation and nonreturning post-exec exit ([task.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/task.rs:5536)).
+- Positive/error results and guest memory effects are preserved. Tests check exact RIP, memory, output, status, and subsequent timestamp callback behavior ([injection_stop_tests.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/injection_stop_tests.rs:119)).
+
+## Determinism and Linux/POSIX
+
+The change introduces no scheduler, run-queue, turn, INFO, or replay modification. Eligibility changes only for the command’s first committed exec. Before that transition, no physical timer arrival can influence delivery; afterward, existing exact target/overshoot handling applies. The grounded Hermit scheduler therefore receives the same classes of Tool requests, with corrected ptrace clock coordinates rather than a new ordering policy.
+
+Linux semantics are preserved: `enable_on_exec` supplies the real successful-exec boundary; failed exec remains returning; exact pending syscalls retain kernel execution; replacements suppress the original once; no-pending injection does not replay guest code; and legacy-vsyscall handling remains explicit.
+
+## Goalpost audit
+
+- Assertion weakening: none. The explicit `post_exec` expectation changed 1→0 and the first post-exec timer observation 2→1, but both remain exact and are backed by stronger RIP and memory non-execution assertions. The original `[3,67]` failure remains historical evidence.
+- Tolerance/comparator widening: none.
+- Exemptions/skips/relabeling: none. The legacy raw-zero phase remains refused, and the precise-timer capability early return is disclosed.
+- Deleted checks: none; the new controls are additive.
+
+## Post-facto review triggers
+
+1. New syscall support: **No**. Existing syscalls and callbacks are used.
+2. Reverie API/core abstraction or syscall-interception-model change: **Yes**. The pending-original ownership and injection-state machine materially change the syscall-interception model despite no new public Tool/Guest API.
+3. New determinization strategy: **Yes**. Initial-command clock and timer eligibility move to committed exec.
+4. Core DetCore scheduling/race-search change: **No**. No Hermit scheduler source changes here.
+
+## Evidence and reading limits
+
+I completed all 59 indexed documents, 238 chunks, and 28,132 lines, including the complete six changed files, full patch, kernel excerpts, tests, caller, raw outputs, and qualification records. The authenticated grounding is my own complete paper/scheduler/vision/roadmap reading; Hermit `97c39b…` uses scheduler SHA256 `a5da44…`. The historical first grounding used read-only/on-request despite requested never; this review used never/read-only.
+
+One initial combined read truncated. A later batch clipped chunk 153 and omitted 154; both were reread directly, then all remaining chunks were completed in order. Two exploratory `jq` shape queries failed; they did not replace any required read. No mandatory gap remains.
+
+Qualification remains exactly: 45 attempted phases, 44 accepted; 37 qualified declarations and one raw-zero reader refusal; service CPU 344.439192 s, observer wall 289.910501011 s, test payload 0.286275571 s. The first compile raw 101, old clock failure, debugger raw 125, and mapped-read failures remain failures. No Hermit run or parity result is credited.
+
+## Verdict
+
+**APPROVE SOURCE** for the whole exact change  
+`b5e2ab49cd99e5d456fa0238b8cebd75958c529f..a9449f8ee22a17ba87a106c2af957a938fa57c45`, tree `da3e0a5c13bbd1b95adca1bc3ac0037b89494544`, TARGET SHA256 `c01fe71e9f784013be5c657d20e9578467f9b463efe0fb70365e9eefceda34eb`, patch SHA256 `50580ff2751dad2e24a2fc86aa5ca7274b13ef0ee6761514ea383a8e360e410e`.
+
+This approves only the finite Reverie source. It does not approve Hermit integration, runtime parity, timer/signal completion, scheduler changes, or activation.

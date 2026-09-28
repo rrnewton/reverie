@@ -1,0 +1,24 @@
+{
+  "started": [
+    "default_tool_handler_tail_injects_through_executor"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "default_tool_handler_tail_injects_through_executor",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 5,
+      "exec_time": 0.032765397
+    }
+  ]
+}

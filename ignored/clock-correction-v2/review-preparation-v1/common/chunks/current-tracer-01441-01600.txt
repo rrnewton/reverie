@@ -1,0 +1,160 @@
+            "{setup_failure}; numeric setup-failure kill also failed: {kill_error}; drain result: {drain_result:?}"
+        ),
+        (None, Err(drain_error)) => {
+            anyhow::anyhow!("{setup_failure}; cleanup drain also failed: {drain_error}")
+        }
+        (None, Ok(())) => anyhow::anyhow!(setup_failure),
+    }
+}
+
+impl<G: Default> Tracer<G> {
+    /// Returns the PID of the root guest process.
+    pub fn guest_pid(&self) -> Pid {
+        self.guest_pid
+    }
+
+    /// Returns a live observer for this tracer's LiteInst patch-site statistics.
+    pub fn liteinst_instrumentation_stats(&self) -> Option<LiteinstInstrumentationStatsHandle> {
+        self.liteinst_instrumentation_stats
+            .as_ref()
+            .map(|stats| LiteinstInstrumentationStatsHandle::from_shared(Arc::clone(stats)))
+    }
+
+    /// Returns the live ptrace activity-statistics source when collection was enabled.
+    pub fn backend_stats(&self) -> Option<PtraceBackendStatsSource> {
+        self.backend_stats.clone()
+    }
+
+    /// Simultaneously waits for the tracee to exit and collect all remaining
+    /// output on the stdout/stderr handles, returning an `Output` instance.
+    ///
+    /// The stdin handle to the child process, if any, will be closed before
+    /// waiting. This helps avoid deadlock: it ensures that the child does not
+    /// block waiting for input from the parent, while the parent waits for the
+    /// child to exit.
+    ///
+    /// By default, stdin, stdout and stderr are inherited from the parent. In
+    /// order to capture the output it is necessary to create new pipes between
+    /// parent and child. Use `stdout(Stdio::piped())` or
+    /// `stderr(Stdio::piped())`, respectively.
+    pub async fn wait_with_output(mut self) -> Result<(Output, G), Error> {
+        use tokio::io::AsyncRead;
+        use tokio::io::AsyncReadExt;
+
+        async fn read_to_end<A: AsyncRead + Unpin>(io: Option<A>) -> Result<Vec<u8>, Error> {
+            let mut vec = Vec::new();
+            if let Some(mut io) = io {
+                io.read_to_end(&mut vec).await?;
+            }
+            Ok(vec)
+        }
+
+        drop(self.stdin.take());
+
+        let stdout = read_to_end(self.stdout.take());
+        let stderr = read_to_end(self.stderr.take());
+
+        let ((status, state), stdout, stderr) =
+            future::try_join3(self.wait(), stdout, stderr).await?;
+
+        Ok((
+            Output {
+                status,
+                stdout,
+                stderr,
+            },
+            state,
+        ))
+    }
+
+    /// Waits for the tracee to exit while concurrently draining and discarding
+    /// any piped stdout/stderr, returning its exit status and global state.
+    ///
+    /// This is the discard-output counterpart of [`Tracer::wait_with_output`]
+    /// and shares its deadlock-avoidance behavior: the stdin handle, if any, is
+    /// closed before waiting, and both output pipes are read as the guest
+    /// produces bytes. Unlike `wait_with_output` the bytes are sunk rather than
+    /// buffered, so a guest that writes unbounded output costs no memory here.
+    ///
+    /// Prefer this over the bare [`Tracer::wait`] whenever the caller piped the
+    /// guest's stdio but does not want the output. `wait` never touches the
+    /// pipes, so a guest that fills the (64 KiB by default) pipe buffer blocks
+    /// in `write(2)` forever while the parent waits for a process that can
+    /// never exit.
+    pub async fn wait_discarding_output(mut self) -> Result<(ExitStatus, G), Error> {
+        use tokio::io::AsyncRead;
+
+        async fn drain<A: AsyncRead + Unpin>(io: Option<A>) -> Result<(), Error> {
+            if let Some(mut io) = io {
+                tokio::io::copy(&mut io, &mut tokio::io::sink()).await?;
+            }
+            Ok(())
+        }
+
+        drop(self.stdin.take());
+
+        let stdout = drain(self.stdout.take());
+        let stderr = drain(self.stderr.take());
+
+        let ((status, state), (), ()) = future::try_join3(self.wait(), stdout, stderr).await?;
+
+        Ok((status, state))
+    }
+
+    /// Waits for the tracee to exit and returns its exit status and global
+    /// state.
+    ///
+    /// This does **not** touch the guest's stdio handles. If the caller piped
+    /// stdout or stderr, use [`Tracer::wait_with_output`] or
+    /// [`Tracer::wait_discarding_output`] instead; otherwise a guest that fills
+    /// an unread pipe buffer deadlocks against this wait.
+    pub async fn wait(mut self) -> Result<(ExitStatus, G), Error> {
+        // Note: The usage of LocalSet is *very* important here. Once polled,
+        // the `tracer` future drives all tracees to completion. The `fork` for
+        // the root tracee and all subsequent ptrace operations *MUST* be done
+        // on the same thread. Thus, we use `LocalSet` in combination with
+        // `tokio::task::spawn_local` to ensure that everything happens on the
+        // same thread. Otherwise, ptrace operations will start returning
+        // `ESRCH` errors and they will be (incorrectly) interpretted to mean
+        // that the tracee has died unexpectedly.
+        let local_set = tokio::task::LocalSet::new();
+        let exit_status = match local_set.run_until(self.tracer).await {
+            Ok(status) => {
+                if let Some(cleanup) = self.liteinst_cleanup.as_mut() {
+                    cleanup.disarm();
+                }
+                status
+            }
+            Err(error) => {
+                if let Some(cleanup) = self.liteinst_cleanup.as_mut()
+                    && let Err(cleanup_error) = cleanup.terminate_and_confirm()
+                {
+                    return Err(anyhow::anyhow!(
+                        "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
+                    )
+                    .into());
+                }
+                return Err(error);
+            }
+        };
+
+        let g = Arc::try_unwrap(self.gref).unwrap_or_else(|_| {
+            panic!("Reverie internal invariant broken. Arc::try_unwrap on global state failed.")
+        });
+
+        Ok((exit_status, g))
+    }
+}
+
+fn from_nix_error(err: nix::Error) -> Errno {
+    Errno::new(err as i32)
+}
+
+async fn initialization_error(pid: Pid, err: TraceError) -> Error {
+    match err {
+        TraceError::Errno(errno) => {
+            anyhow::anyhow!("failed to initialize ptrace for tracee {pid}: {errno}").into()
+        }
+        TraceError::Died(zombie) => {
+            let exit_status = match zombie.reap().await {
+                Ok(exit_status) => exit_status,

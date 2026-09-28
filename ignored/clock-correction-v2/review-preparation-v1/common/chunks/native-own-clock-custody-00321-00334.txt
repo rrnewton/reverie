@@ -1,0 +1,14 @@
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+      "bytes": 1469261,
+      "sha256": "b9678aab96c0d77a0e8c3abf0608b6841ff1d2fc59adebacec18dee903c3054e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-COMMANDS.json",
+      "bytes": 1336598,
+      "sha256": "76f07baf177c3935b58b29b871d81cbcd450b169b642e79176d5acc0db3593c7",
+      "mode": 420
+    }
+  ]
+}

@@ -1,0 +1,160 @@
+      "name": "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Actual UD2 Tool run plus failing on_exit_thread must retain both typed causes; existing fault-only helper must reject the complete cleanup aggregate. No synthetic error object or production variant."
+    },
+    {
+      "phase": "control-47",
+      "artifact": "static",
+      "name": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "purpose": "Five actual modes: tail Exit23/ExitGroup29, ordinary Exit23/ExitGroup29, and real EIO cleanup; exact status, one callback and both consuming hooks, no continuation."
+    },
+    {
+      "phase": "control-48",
+      "artifact": "static",
+      "name": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects",
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "purpose": "Four real timestamp tail refusals: uname/getpid/fork/exec; exact ENOSYS/full failure shape and unchanged guest-memory marker/no child/image or resumed callback."
+    },
+    {
+      "phase": "control-49",
+      "artifact": "static",
+      "name": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "purpose": "Real Tool-owned worker timestamp RPC and terminal Exit0 precede leader actual ExitGroup17; exact exits and callback count. Backend control, not Detcore clock coverage."
+    },
+    {
+      "phase": "control-50",
+      "artifact": "lib",
+      "name": "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception",
+      "source": "reverie-kvm/src/vm.rs",
+      "purpose": "Both actual CR4.TSD entry states, real-mode RDTSC plus real vmcall/HLT; one syscall, no timestamp callback, cleared ownership. No CPL0 interception claim."
+    },
+    {
+      "phase": "control-51",
+      "artifact": "lib",
+      "name": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect",
+      "source": "reverie-kvm/src/runtime.rs",
+      "purpose": "Existing signal-hook side-effect/refusal control with unchanged assertions; private predicate now receives exact request."
+    },
+    {
+      "phase": "control-52",
+      "artifact": "lib",
+      "name": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children",
+      "source": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "purpose": "Existing exact cancellation/IntoGuest forwarding assertions and no injection/child-start effects remain unchanged."
+    },
+    {
+      "phase": "control-53",
+      "artifact": "lib",
+      "name": "cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique",
+      "source": "reverie-kvm/src/cpuid.rs",
+      "purpose": "Preserve installed table/indexed XSAVE and actual dynamic guest behavior; existing oracle unchanged"
+    },
+    {
+      "phase": "control-54",
+      "artifact": "lib",
+      "name": "cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index",
+      "source": "reverie-kvm/src/cpuid.rs",
+      "purpose": "Preserve installed table/indexed XSAVE and actual dynamic guest behavior; existing oracle unchanged"
+    },
+    {
+      "phase": "control-55",
+      "artifact": "static",
+      "name": "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Preserve installed table/indexed XSAVE and actual dynamic guest behavior; existing oracle unchanged"
+    },
+    {
+      "phase": "control-56",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks",
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "purpose": "actual native pipe and keeper identity; all metadata routes; unchanged no-follow device"
+    },
+    {
+      "phase": "control-57",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement",
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "purpose": "real executor descriptor alias/table/fork/exec mutations and buffered output"
+    },
+    {
+      "phase": "control-58",
+      "artifact": "lib",
+      "name": "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed",
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "purpose": "isolated closed 0/1/2 setup; private keeper relocation and CLOEXEC"
+    },
+    {
+      "phase": "control-59",
+      "artifact": "lib",
+      "name": "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind",
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "purpose": "real executor/worker teardown and final OwnedFd release after both guards; normal/unwind"
+    },
+    {
+      "phase": "control-60",
+      "artifact": "lib",
+      "name": "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams",
+      "source": "reverie-kvm/src/capture_identity_tests.rs",
+      "purpose": "actual root API error before GlobalState; pipe1/pipe2/F_DUPFD_CLOEXEC EMFILE; restored limits"
+    },
+    {
+      "phase": "control-61",
+      "artifact": "static",
+      "name": "capture_identity::direct_and_tool_capture_share_device_with_anonymous_pipe",
+      "source": "reverie-kvm/tests/support/capture_identity.rs",
+      "purpose": "freestanding actual KVM root paths, full exact output/status, device equality and distinct inodes"
+    },
+    {
+      "phase": "control-62",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-63",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-64",
+      "artifact": "lib",
+      "name": "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-65",
+      "artifact": "lib",
+      "name": "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-66",
+      "artifact": "lib",
+      "name": "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-67",
+      "artifact": "lib",
+      "name": "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-68",
+      "artifact": "lib",
+      "name": "executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-69",

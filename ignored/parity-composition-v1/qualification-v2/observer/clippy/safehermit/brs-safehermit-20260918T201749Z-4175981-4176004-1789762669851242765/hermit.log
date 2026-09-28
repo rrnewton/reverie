@@ -1,0 +1,22 @@
+    Checking futures-core v0.3.34
+    Checking futures-sink v0.3.34
+    Checking lock_api v0.4.14
+    Checking futures-channel v0.3.34
+    Checking parking_lot v0.12.5
+    Checking futures-util v0.3.34
+    Checking bytes v1.12.1
+    Checking tokio v1.53.1
+    Checking futures-executor v0.3.34
+    Checking futures v0.3.34
+    Checking derive_more v1.0.0
+    Checking reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-memory)
+    Checking vmm-sys-util v0.15.0
+    Checking kvm-bindings v0.14.1
+    Checking reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-syscalls)
+    Checking reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-process)
+    Checking log v0.4.34
+    Checking goblin v0.10.7
+    Checking kvm-ioctls v0.25.0
+    Checking reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie)
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.39s

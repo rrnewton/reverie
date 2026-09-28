@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! `Tracer` type, plus ways to spawn it and retrieve its output.
+
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::net::SocketAddr;
+use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
+use std::os::fd::FromRawFd;
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock as StdOnceLock;
+use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+use std::thread::ThreadId;
+use std::time::Duration;
+use std::time::Instant;
+
+use anyhow::Context;
+use close_err::Closable;
+use futures::future;
+use futures::future::BoxFuture;
+use futures::future::Either;
+use futures::stream::StreamExt;
+use nix::sys::ptrace;
+use nix::sys::signal;
+use nix::sys::signal::Signal;
+use nix::unistd;
+use nix::unistd::ForkResult;
+use reverie::BackendStatsRequest;
+use reverie::Errno;
+use reverie::Error;
+use reverie::ExitStatus;
+use reverie::GlobalTool;
+use reverie::Pid;
+use reverie::Subscription;
+use reverie::Tool;
+use reverie::process::ChildStderr;
+use reverie::process::ChildStdin;
+use reverie::process::ChildStdout;
+use reverie::process::Command;
+use reverie::process::Output;
+use reverie::process::seccomp;
+use reverie::syscalls::Sysno;
+use safeptrace::ChildOp;
+use safeptrace::Error as TraceError;
+use safeptrace::Event;
+use safeptrace::Running;
+use safeptrace::Stopped;
+use safeptrace::TerminalCleanup;
+use safeptrace::Wait;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
+
+use crate::LiteinstInstrumentationStats;
+use crate::LiteinstInstrumentationStatsHandle;
+use crate::PtraceBackendStatsSource;
+use crate::cp;
+use crate::gdbstub::GdbServer;
+use crate::task::Child;
+use crate::task::InjectedSyscallProvenance;
+use crate::task::InjectedSyscallTrap;
+use crate::task::LiteinstRuntimeConfig;
+#[cfg(test)]
+use crate::task::RootStopPause;
+use crate::task::TracedTask;
+use crate::task::TracedTaskOptions;
+
+/// Represents the tracer.
+///
+/// We need to simultaneously capture stderr/stdout while handling events. These
+/// can be two separate futures. The stderr/stdout future will finish when the
+/// pipes are closed.
+///
+/// The stderr/stdout capture can be a `Stream<Item = Either<Bytes, Bytes>>`
+/// where each item is either a chunk of stderr bytes or stdout bytes. Zipping
+/// together the two streams like this preserves ordering.
+pub struct Tracer<G> {
+    /// PID of the root guest process.
+    guest_pid: Pid,
+
+    // Future of the running handler.
+    tracer: BoxFuture<'static, Result<ExitStatus, Error>>,
+
+    // A reference to the global state.
+    gref: Arc<G>,
+
+    stdin: Option<ChildStdin>,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+
+    // Present only for the single-process dynamic LiteInst host. Ordinary
+    // ptrace and e9patch lifecycles retain their existing teardown behavior.
+    liteinst_cleanup: Option<LiteinstTraceeCleanup>,
+    liteinst_instrumentation_stats: Option<Arc<StdMutex<LiteinstInstrumentationStats>>>,
+
+    // Present only when the caller requested general ptrace activity stats.
+    backend_stats: Option<PtraceBackendStatsSource>,
+}
+
+struct LiteinstTraceeCleanup {
+    identity: TraceeIdentity,
+    newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
+    armed: bool,
+    terminal: Option<TerminalCleanup>,
+    notifier_owner: Option<ThreadId>,
+    retained_descendants: HashMap<Pid, RegisteredTraceeCleanup>,
+    retained_terminal_descendants: HashMap<Pid, TraceeIdentity>,
+    held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    root_frozen: bool,
+    #[cfg(test)]
+    fail_discovery_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    fail_after_scan_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    force_task_scan_once: Option<Arc<AtomicBool>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TraceeSnapshot {
+    tgid: Pid,
+    ppid: Pid,
+    tracer_pid: Pid,
+    start_time: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct TraceeIdentity {
+    tid: Pid,
+    snapshot: TraceeSnapshot,
+    proc_dir: OwnedFd,
+    proc_inode: u64,
+    pidfd: Option<OwnedFd>,
+    parent: Option<(Pid, Pid, Option<ChildOp>)>,
+}
+
+pub(crate) struct NewbornTracee {
+    link: EventChildLink,
+    identity: Option<TraceeIdentity>,
+    terminal: TerminalCleanup,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]

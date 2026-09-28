@@ -1,0 +1,100 @@
+            read_med / rdpmc_med
+        );
+    }
+
+    #[test]
+    fn trace_other_thread() {
+        ret_without_perf!();
+        use std::sync::mpsc::sync_channel;
+        let (tx1, rx1) = sync_channel(0); // send TID
+        let (tx2, rx2) = sync_channel(0); // start guest spinn
+
+        const ITERS: u64 = 100000;
+
+        let handle = std::thread::spawn(move || {
+            tx1.send(gettid())
+                .expect("perf test operation should succeed");
+            rx2.recv().expect("perf test operation should succeed");
+            do_branches(ITERS);
+        });
+
+        let pc = Builder::new(
+            rx1.recv()
+                .expect("perf test operation should succeed")
+                .as_raw(),
+            -1,
+        )
+        .sample_period(PerfCounter::DISABLE_SAMPLE_PERIOD)
+        .event(Event::Hardware(HardwareEvent::BranchInstructions))
+        .create()
+        .expect("perf test operation should succeed");
+
+        pc.enable().expect("perf test operation should succeed");
+        tx2.send(()).expect("perf test operation should succeed"); // tell thread to start
+        handle.join().expect("perf test operation should succeed");
+        let ctr = pc.ctr_value().expect("perf test operation should succeed");
+        assert!(ctr >= ITERS);
+        assert!(ctr <= ITERS * 2, "{}", ctr); // overhead from channel operations
+    }
+
+    #[test]
+    fn deliver_signal() {
+        ret_without_perf!();
+        use std::mem::MaybeUninit;
+        use std::sync::mpsc::sync_channel;
+        let (tx1, rx1) = sync_channel(0); // send TID
+        let (tx2, rx2) = sync_channel(0); // start guest spinn
+
+        // SIGSTKFLT defaults to TERM, so if any thread but the traced one
+        // receives the signal, the test will fail due to process exit.
+        const MARKER_SIGNAL: Signal = Signal::SIGSTKFLT;
+        const SPIN_BRANCHES: u64 = 50000; // big enough to "absorb" noise from debug/release
+        const SPINS_PER_EVENT: u64 = 10;
+        const SAMPLE_PERIOD: u64 = SPINS_PER_EVENT * SPIN_BRANCHES + (SPINS_PER_EVENT / 4);
+
+        fn signal_is_pending() -> bool {
+            unsafe {
+                let mut mask = MaybeUninit::<libc::sigset_t>::zeroed();
+                libc::sigemptyset(mask.as_mut_ptr());
+                libc::sigpending(mask.as_mut_ptr());
+                libc::sigismember(mask.as_ptr(), MARKER_SIGNAL as _) == 1
+            }
+        }
+
+        let handle = std::thread::spawn(move || {
+            unsafe {
+                let mut mask = MaybeUninit::<libc::sigset_t>::zeroed();
+                libc::sigemptyset(mask.as_mut_ptr());
+                libc::sigaddset(mask.as_mut_ptr(), MARKER_SIGNAL as _);
+                libc::sigprocmask(libc::SIG_BLOCK, mask.as_ptr(), std::ptr::null_mut());
+            }
+
+            tx1.send(gettid())
+                .expect("perf test operation should succeed");
+            rx2.recv().expect("perf test operation should succeed");
+
+            let mut count = 0;
+            loop {
+                count += 1;
+                do_branches(SPIN_BRANCHES);
+                if signal_is_pending() {
+                    break;
+                }
+            }
+            assert_eq!(count, SPINS_PER_EVENT);
+        });
+
+        let tid = rx1.recv().expect("perf test operation should succeed");
+        let pc = Builder::new(tid.as_raw(), -1)
+            .sample_period(SAMPLE_PERIOD)
+            .event(Event::Hardware(HardwareEvent::BranchInstructions))
+            .create()
+            .expect("perf test operation should succeed");
+        pc.set_signal_delivery(tid.into(), MARKER_SIGNAL)
+            .expect("perf test operation should succeed");
+        pc.enable().expect("perf test operation should succeed");
+
+        tx2.send(()).expect("perf test operation should succeed"); // tell thread to start
+        handle.join().expect("perf test operation should succeed"); // propagate panics
+    }
+}

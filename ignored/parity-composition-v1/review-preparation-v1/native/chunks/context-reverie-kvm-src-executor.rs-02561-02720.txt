@@ -1,0 +1,160 @@
+            let identity = output
+                .metadata()
+                .identity(output_alias(&state, fd).unwrap());
+            assert_eq!(
+                (stat.st_dev, stat.st_ino),
+                (identity.device, identity.inode)
+            );
+            assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
+            assert_eq!(stat.st_size, 0);
+            assert_eq!(stat.st_blocks, 0);
+            assert_eq!(stat.st_mtime, DETERMINISTIC_METADATA_SECONDS);
+            stats.push(stat);
+        }
+
+        assert_ne!(stats[0].st_ino, stats[1].st_ino);
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 25053..25180; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    fn metadata_call(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        capture: Option<&mut CapturedOutput>,
+        number: libc::c_long,
+        args: [u64; 6],
+    ) -> i64 {
+        if let Some(output) = capture {
+            syscall_result_with_output(memory, state, output, number, args)
+        } else {
+            syscall_result(memory, state, number, args)
+        }
+    }
+
+    fn assert_descriptor_stat_routes(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        fd: libc::c_int,
+        mut capture: Option<&mut CapturedOutput>,
+    ) -> libc::stat {
+        const PATH: u64 = 0x100;
+        const STAT: u64 = 0x800;
+        const STATX: u64 = 0x1000;
+        assert_eq!(
+            metadata_call(
+                memory,
+                state,
+                capture.as_deref_mut(),
+                libc::SYS_fstat,
+                [fd as u64, STAT, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let direct: libc::stat = read_struct(memory, STAT);
+        for path in [
+            format!("/dev/fd/{fd}"),
+            format!("/proc/self/fd/{fd}"),
+            format!("/proc/thread-self/fd/{fd}"),
+            format!("/proc/{}/fd/{fd}", state.pid),
+            String::new(),
+        ] {
+            write_c_string(memory, PATH, &path);
+            let (dirfd, flags) = if path.is_empty() {
+                (fd, libc::AT_EMPTY_PATH)
+            } else {
+                (libc::AT_FDCWD, 0)
+            };
+            assert_eq!(
+                metadata_call(
+                    memory,
+                    state,
+                    capture.as_deref_mut(),
+                    libc::SYS_newfstatat,
+                    [dirfd as u64, PATH, STAT, flags as u64, 0, 0]
+                ),
+                0,
+                "{path}"
+            );
+            let via_path: libc::stat = read_struct(memory, STAT);
+            assert_eq!(
+                (
+                    via_path.st_dev,
+                    via_path.st_ino,
+                    via_path.st_mode,
+                    via_path.st_size
+                ),
+                (direct.st_dev, direct.st_ino, direct.st_mode, direct.st_size),
+                "{path}"
+            );
+            assert_eq!(
+                metadata_call(
+                    memory,
+                    state,
+                    capture.as_deref_mut(),
+                    libc::SYS_statx,
+                    [
+                        dirfd as u64,
+                        PATH,
+                        flags as u64,
+                        libc::STATX_BASIC_STATS as u64,
+                        STATX,
+                        0
+                    ]
+                ),
+                0
+            );
+            let extended: libc::statx = read_struct(memory, STATX);
+            assert_eq!(
+                extended.stx_mask & (libc::STATX_TYPE | libc::STATX_INO | libc::STATX_SIZE),
+                libc::STATX_TYPE | libc::STATX_INO | libc::STATX_SIZE
+            );
+            assert_eq!(
+                (
+                    extended.stx_dev_major,
+                    extended.stx_dev_minor,
+                    extended.stx_ino,
+                    extended.stx_mode,
+                    extended.stx_size
+                ),
+                (
+                    libc::major(direct.st_dev),
+                    libc::minor(direct.st_dev),
+                    direct.st_ino,
+                    direct.st_mode as u16,
+                    direct.st_size as u64
+                ),
+                "{path}"
+            );
+            if !path.is_empty() {
+                assert_eq!(
+                    metadata_call(
+                        memory,
+                        state,
+                        capture.as_deref_mut(),
+                        libc::SYS_stat,
+                        [PATH, STAT, 0, 0, 0, 0]
+                    ),
+                    0
+                );
+                let legacy: libc::stat = read_struct(memory, STAT);
+                assert_eq!(
+                    (legacy.st_dev, legacy.st_ino),
+                    (direct.st_dev, direct.st_ino)
+                );
+            }
+        }
+        direct
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 27233..27496; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    #[test]
+    fn ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let first = root.0.join("first");
+        let other = root.0.join("other");
+        std::fs::write(&first, b"first object").unwrap();
+        std::fs::write(&other, b"different object").unwrap();
+        let fd = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&first).unwrap(),

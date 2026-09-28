@@ -1,0 +1,160 @@
+      "selected": [
+        "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.390736297,
+      "payload_elapsed_seconds": 0.0066339061595499516,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-12",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.558029944,
+      "payload_elapsed_seconds": 0.007358865113928914,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-13",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.377482166,
+      "payload_elapsed_seconds": 0.007381819188594818,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-14",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::different_tail_injection_replaces_original_once"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.346630199,
+      "payload_elapsed_seconds": 0.006544342031702399,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-15",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.427285874,
+      "payload_elapsed_seconds": 0.009053960908204317,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-16",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.997466758,
+      "payload_elapsed_seconds": 0.009243195876479149,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-17",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.374023945,
+      "payload_elapsed_seconds": 0.010372021002694964,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-18",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.320158418,
+      "payload_elapsed_seconds": 0.008026958908885717,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-19",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.42202928,
+      "payload_elapsed_seconds": 0.0065986220724880695,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-20",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.340267817,
+      "payload_elapsed_seconds": 0.007125073112547398,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-21",
+      "kind": "test",

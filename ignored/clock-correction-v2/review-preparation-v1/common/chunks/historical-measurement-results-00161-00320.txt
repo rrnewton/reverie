@@ -1,0 +1,160 @@
+          "verdict": "matched",
+          "no_result_reason": null,
+          "infrastructure_error": null,
+          "comparison": {
+            "strictness": "canonical",
+            "display_name": "BitwiseInfoV1",
+            "compare_logs": true,
+            "compare_io_buffers": true,
+            "log_scope": "info",
+            "record_envelope": "all_records_v1",
+            "virtualize_time": true,
+            "strip_lines": false,
+            "canonicalize_addresses": true,
+            "full_trace": true,
+            "exact_remainder": true,
+            "stripped_prefixes": [
+              "real-wall-clock-prefix/v1"
+            ],
+            "canonicalizations": [
+              "host-address-to-first-appearance-ordinal/v1"
+            ],
+            "ignore_lines": false,
+            "skip_commit": false,
+            "skip_detlog": false
+          },
+          "compared_log_messages": {
+            "left": 76,
+            "right": 76
+          },
+          "compared_outputs": {
+            "left": {
+              "exit_code": 0,
+              "signal": null,
+              "stdout_sha256": "80b78babbe3628253630cfe0496bce237525afa7ab538a92b647757d2794fa62",
+              "stdout_bytes": 158,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_bytes": 0
+            },
+            "right": {
+              "exit_code": 0,
+              "signal": null,
+              "stdout_sha256": "80b78babbe3628253630cfe0496bce237525afa7ab538a92b647757d2794fa62",
+              "stdout_bytes": 158,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_bytes": 0
+            }
+          },
+          "runtime": {
+            "run1": {
+              "scheduler_turns": 17,
+              "virtual_nanoseconds": 9112750,
+              "syscalls": 17
+            },
+            "run2": {
+              "scheduler_turns": 17,
+              "virtual_nanoseconds": 9112750,
+              "syscalls": 17
+            }
+          },
+          "guest_exit_code": 0,
+          "guest_signal": null,
+          "first_divergent_scheduler_turn": null,
+          "first_divergent_virtual_nanoseconds": null,
+          "first_divergent_record": null,
+          "first_divergent_syscall": null,
+          "first_divergent_left_message": null,
+          "first_divergent_right_message": null
+        },
+        "retained_info_logs": [
+          {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run1_log_S16Oh",
+            "bytes": 17217,
+            "mode": 384,
+            "sha256": "c7e849821aef542fea8742c155c6f3c69256722883b0de109d213c6244f49bd9"
+          },
+          {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run2_log_XSgVX",
+            "bytes": 17217,
+            "mode": 384,
+            "sha256": "64ca6294348e168f44dede3f7c7931d5988a3410192209dd798a8024b638a52b"
+          }
+        ],
+        "meaning": "One backend repeat only; cross-backend comparison and raw-clock sidecars have separate results."
+      },
+      "error": null
+    },
+    {
+      "name": "original-ptrace-on",
+      "kind": "guest",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/original-ptrace-on-plan.json",
+        "bytes": 77921,
+        "mode": 420,
+        "sha256": "7286916d22cec63ec1b1487c212bb106e2c2944a97cb1ed7bf92132120cc7291"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/controls/original-ptrace-on/result.json",
+        "bytes": 5715,
+        "mode": 420,
+        "sha256": "8b39d44be67ec4a2e7095f84cf9213927ad5e20a08565d8a76bbc3b28687ce6a"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/result.json",
+        "bytes": 47775,
+        "mode": 384,
+        "sha256": "075b36ea936e7bed12a20612bdc6ae337c8e8740d2374a5365eeb63548774d33"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "payload_seconds": 0.0748612261377275,
+      "observer_seconds": 6.176576431,
+      "cpu_seconds": 5.642785,
+      "readback": {
+        "report": {
+          "verified": true,
+          "bitwise_parity": true,
+          "verdict": "matched",
+          "no_result_reason": null,
+          "infrastructure_error": null,
+          "comparison": {
+            "strictness": "canonical",
+            "display_name": "BitwiseInfoV1",
+            "compare_logs": true,
+            "compare_io_buffers": true,
+            "log_scope": "info",
+            "record_envelope": "all_records_v1",
+            "virtualize_time": true,
+            "strip_lines": false,
+            "canonicalize_addresses": true,
+            "full_trace": true,
+            "exact_remainder": true,
+            "stripped_prefixes": [
+              "real-wall-clock-prefix/v1"
+            ],
+            "canonicalizations": [
+              "host-address-to-first-appearance-ordinal/v1"
+            ],
+            "ignore_lines": false,
+            "skip_commit": false,
+            "skip_detlog": false
+          },
+          "compared_log_messages": {
+            "left": 76,
+            "right": 76
+          },
+          "compared_outputs": {
+            "left": {
+              "exit_code": 0,
+              "signal": null,
+              "stdout_sha256": "80b78babbe3628253630cfe0496bce237525afa7ab538a92b647757d2794fa62",
+              "stdout_bytes": 158,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_bytes": 0
+            },
+            "right": {
+              "exit_code": 0,
+              "signal": null,
+              "stdout_sha256": "80b78babbe3628253630cfe0496bce237525afa7ab538a92b647757d2794fa62",

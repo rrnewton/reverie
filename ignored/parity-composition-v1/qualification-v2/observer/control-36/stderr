@@ -1,0 +1,5 @@
+[kvm-strace] fork() = 2
+[kvm-strace] write(1, 0x200026, 21) = 21
+[kvm-strace] exit_group(0) = ?
+[kvm-strace] wait4(2, 0xffeea0, WaitPidFlag(0x0), NULL) = 2
+[kvm-strace] exit_group(0) = ?

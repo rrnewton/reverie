@@ -1,0 +1,21 @@
+{
+  "at_utc": "2026-09-18T20:27:43.768847+00:00",
+  "command": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/run_stage.py",
+    "01-source",
+    "01a0b38e-9e3c-7883-9816-65199c048935"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native",
+  "session_id": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "input_index": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/inputs.json",
+    "bytes": 1894397,
+    "sha256": "d47a09ff43834b972e68c69b4e89cc2a038f7784280c301d683c63ff1fe60292",
+    "mode": 420
+  },
+  "inputs": 5974,
+  "limits": "Unchanged run_stage.py: 1800 seconds wall; 64 MiB combined raw outputs; fresh all-UID cap 15 and exact-session refusal",
+  "permission": "Root must authorize this prepared caller before invoking it; preparation is not authorization"
+}

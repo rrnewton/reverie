@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Detcore is a Reverie tool that determinizes the execution of a process.
+//!
+//! # Backend-abstraction commandment
+//!
+//! Detcore is a *tool* written against Reverie's **abstract** instrumentation
+//! interface (the `reverie` crate). It depends only on those traits and types
+//! and is deliberately ignorant of how a guest is actually traced.
+//!
+//! Detcore MUST NEVER depend on or import a concrete Reverie backend or support
+//! crate -- any `reverie-*` crate other than the abstract `reverie-core`
+//! interface. Choosing and instantiating a backend, and running a detcore tool
+//! against it, is the sole responsibility of the `hermit-cli` package. There
+//! are no backend-specific hacks in detcore: any tracing-mechanism-specific
+//! behavior belongs behind the Reverie abstraction, not here.
+//!
+//! Why: Hermit follows Reverie's abstract model. A backend dependency in
+//! detcore would couple the determinism engine to one tracing mechanism and
+//! break the clean abstraction boundary that lets the same tool run over any
+//! backend.
+//!
+//! The one allowed exception is test-only: detcore's own integration tests
+//! (under `detcore/tests/`, wired via the `reverie-ptrace` **dev-dependency**)
+//! drive a real tracer to exercise the tool. That coupling never reaches the
+//! shipped library. This invariant is enforced in CI by
+//! `scripts/check-detcore-backend-abstraction.sh`.
+
+#![deny(clippy::all)]
+#![deny(missing_docs)]
+#![allow(clippy::uninlined_format_args)]
+
+mod config;
+mod consts;
+mod cpuid;
+mod digest;
+mod dirents;
+/// Schedule-alignment and edit-distance algorithms shared by Hermit tools.
+#[allow(missing_docs)]
+pub mod edit_distance;
+mod fd;
+mod io_buffers;
+#[allow(unused)]
+mod ivar;
+pub mod logdiff;
+mod memory;
+pub mod netlink_route;
+mod procfs;
+mod procmaps;
+pub mod random;
+mod record_or_replay;
+mod resources;
+mod scheduler;
+mod sock_diag;
+mod stat;
+mod syscall_classification;
+mod syscall_time;
+mod syscalls;
+mod tool_global;
+mod tool_local;
+pub mod util;
+
+pub mod detlog;
+pub mod preemptions;
+pub mod types;
+use std::fs::File;
+use std::io::Write;
+use std::os::unix::io::RawFd;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+
+pub use config::BlockingMode;
+pub use config::CONFIG_FINGERPRINT_ENV;
+pub use config::Config;
+pub use config::RunsPostFork;
+pub use config::SchedHeuristic;
+pub use config::config_wire_fingerprint;
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-1120): Review the public canonical Detcore root identity.
+pub use consts::ROOT_DETPID;
+pub use digest::Digest;
+#[cfg(test)]
+use rand::RngExt as _;
+use raw_cpuid::CpuIdResult;
+use raw_cpuid::cpuid;
+pub use record_or_replay::RecordOrReplay;
+use reverie::Error;
+use reverie::ExitStatus;
+use reverie::GlobalRPC;
+use reverie::Guest;
+use reverie::Pid;
+use reverie::Rdtsc;
+use reverie::RdtscResult;
+use reverie::RegDisplay;
+use reverie::Signal;
+use reverie::Subscription;
+use reverie::Tid;
+use reverie::TimerSchedule;
+use reverie::Tool;
+pub use reverie::process::Namespace;
+use reverie::syscalls::CloneFlags;
+use reverie::syscalls::Displayable;
+use reverie::syscalls::EpollCreate1;
+use reverie::syscalls::Errno;
+use reverie::syscalls::InotifyInit1;
+use reverie::syscalls::MemoryAccess;
+use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallInfo;
+use reverie::syscalls::Sysno;
+pub use scheduler::Priority;
+pub use scheduler::runqueue::DEFAULT_PRIORITY;
+pub use scheduler::runqueue::FIRST_PRIORITY;
+pub use scheduler::runqueue::LAST_PRIORITY;
+pub use tool_global::BackendFailureCleanup;
+pub use tool_global::GlobalState;
+use tool_global::ThreadDeregistration;
+use tool_global::acknowledge_robust_list_exit_time;
+use tool_global::create_child_thread;
+use tool_global::create_vfork_child_thread;
+use tool_global::deregister_thread;
+pub use tool_global::format_unsupported_syscall_warning;
+pub use tool_global::prepare_exec;
+use tool_global::report_unsupported_syscall;
+use tool_global::robust_list_wakes_after_exit;
+
+fn select_thread_exit_detpid(
+    thread_detpid: Option<DetPid>,
+    process_detpid: DetPid,
+) -> (DetPid, bool) {
+    match thread_detpid {
+        Some(detpid) => (detpid, false),
+        None => (process_detpid, true),
+    }
+}
+
+fn select_thread_start_detpid(thread_detpid: Option<DetPid>, guest_pid: Pid) -> DetPid {
+    thread_detpid.unwrap_or_else(|| DetPid::from_raw(guest_pid.into()))
+}
+
+fn is_root_thread_start(is_root_process: bool, dettid: DetTid, detpid: DetPid) -> bool {
+    is_root_process && dettid == detpid
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-644): Review the typed fail-closed backend signal.
+/// Identifies an unsupported syscall that a backend must terminate without unwinding.
+#[derive(Debug)]
+pub struct UnsupportedSyscallError(pub Sysno);
+
+impl std::fmt::Display for UnsupportedSyscallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "unsupported syscall: {:?}", self.0)
+    }

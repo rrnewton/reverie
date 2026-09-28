@@ -1,0 +1,160 @@
+
+            if let Some(resume_rip) = liteinst_resume_rip {
+                let mut regs = task
+                    .getregs()
+                    .tracee_context(tid, "read registers before LiteInst tail resume")?;
+                *regs.ip_mut() = resume_rip;
+                task.setregs(&regs)
+                    .tracee_context(tid, "resume after displaced LiteInst window")?;
+            }
+
+            #[cfg(test)]
+            if self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
+                && let Some(queue_once) = self
+                    .global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.queue_pending_signal_once.as_ref())
+                && queue_once.swap(false, Ordering::SeqCst)
+            {
+                self.pending_signal = Some(Signal::SIGUSR1);
+            }
+            let sig = self.take_pending_signal_for_resume(
+                LiteinstActivationOperation::ResumeAfterSeccompStop,
+            )?;
+            let running = self
+                .resume_stopped(task, sig)
+                .tracee_context(tid, "resume after seccomp stop")?;
+            let wait = running
+                .next_state()
+                .await
+                .tracee_context(tid, "wait after seccomp resume")?;
+            tracing::trace!(
+                target: "reverie_ptrace::syscall",
+                "completed guest syscall interception"
+            );
+            Ok(wait)
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// The LiteInst config, but only when this task is the session root.
+    ///
+    /// The root-stop lease and the fail-closed cleanup guard are owned by the
+    /// single spawned root TID. `tid == pid` is NOT that predicate: a forked
+    /// child is its own thread-group leader and would otherwise take the
+    /// root's shared lease, whose `root_tid` check then rejects every
+    /// transition with `EINVAL`.
+    fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+        let runtime = self.liteinst_root_config()?;
+        (Some(&task.pid()) == runtime.root_tid.get()).then_some(runtime)
+    }
+
+    /// The LiteInst config, but only when *this task* is the session root.
+    fn liteinst_root_config(&self) -> Option<&LiteinstRuntimeConfig> {
+        let runtime = self.global_state.liteinst_runtime.as_ref()?;
+        (Some(&self.tid()) == runtime.root_tid.get()).then_some(runtime)
+    }
+
+    fn liteinst_root_stop_slot(
+        &self,
+        task: &Stopped,
+    ) -> Option<Arc<StdMutex<Option<HeldRootStop>>>> {
+        self.liteinst_root_runtime(task)
+            .map(|runtime| Arc::clone(&runtime.held_root_stop))
+    }
+
+    fn liteinst_root_stop_armer(&self, task: &Stopped) -> Option<LiteinstRootStopArmer> {
+        let runtime = self.liteinst_root_runtime(task)?;
+        Some(LiteinstRootStopArmer {
+            root_tid: task.pid(),
+            held_root_stop: Arc::clone(&runtime.held_root_stop),
+        })
+    }
+
+    pub(crate) fn arm_liteinst_root_stop(&self, task: &Stopped, event: &Event) {
+        let Some(armer) = self.liteinst_root_stop_armer(task) else {
+            return;
+        };
+        armer
+            .arm(task, event)
+            .expect("rearmed an undisarmed or mismatched root stop lease");
+    }
+
+    /// Gives the cleanup guard ownership of a newborn tracee's wait statuses.
+    ///
+    /// This is deliberately NOT root-scoped, unlike the root-stop lease: the
+    /// guard has to be able to reap the whole descendant tree, and
+    /// `handle_new_task` requires the entry to exist for every child it sees.
+    /// A grandchild is reported to its own non-root parent, so scoping this to
+    /// the root leaves it unregistered.
+    fn register_liteinst_newborn(&self, task: &Stopped, event: &Event) {
+        let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
+            return;
+        };
+        if let Event::NewChild(op, child) = event {
+            runtime
+                .newborn_tracees
+                .lock()
+                .unwrap()
+                .entry(child.pid())
+                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
+        }
+    }
+
+    fn arm_liteinst_wait(&self, wait: &Wait) {
+        if let Wait::Stopped(task, event) = wait {
+            self.register_liteinst_newborn(task, event);
+            self.arm_liteinst_root_stop(task, event);
+        }
+    }
+
+    fn ensure_liteinst_wait(&self, wait: &Wait) {
+        if let Wait::Stopped(task, event) = wait {
+            self.register_liteinst_newborn(task, event);
+            let Some(armer) = self.liteinst_root_stop_armer(task) else {
+                return;
+            };
+            armer
+                .ensure(task, event)
+                .expect("run-loop stop mismatched its armed root lease");
+        }
+    }
+
+    fn lease_liteinst_root_stop(&self, task: Stopped) -> RootStopLease {
+        let slot = self.liteinst_root_stop_slot(&task);
+        RootStopLease::new(task, slot)
+    }
+
+    fn resume_stopped<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.lease_liteinst_root_stop(task).resume(signal)
+    }
+
+    fn step_stopped<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.lease_liteinst_root_stop(task).step(signal)
+    }
+
+    fn syscall_stopped<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.lease_liteinst_root_stop(task).syscall(signal)
+    }
+
+    async fn dispatch_new_task(
+        &mut self,
+        op: ChildOp,
+        parent: Stopped,
+        child: Running,
+        context: Option<libc::user_regs_struct>,
+        child_context: Option<libc::user_regs_struct>,

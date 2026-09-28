@@ -1,0 +1,23 @@
+diff --git a/reverie-ptrace/src/injection_stop_tests.rs b/reverie-ptrace/src/injection_stop_tests.rs
+--- a/reverie-ptrace/src/injection_stop_tests.rs
++++ b/reverie-ptrace/src/injection_stop_tests.rs
+@@ -4,7 +4,6 @@
+  * LICENSE file in the root directory of this source tree.
+  */
+ 
+-use std::io::Write as _;
+ use std::os::unix::ffi::OsStrExt;
+ use std::os::unix::fs::PermissionsExt;
+ use std::sync::Mutex;
+@@ -25,10 +24,10 @@
+ use reverie::syscalls::Mmap;
+ use reverie::syscalls::OFlag;
+ use reverie::syscalls::Openat;
++use reverie::syscalls::PathPtr;
+ use reverie::syscalls::ProtFlags;
+ use reverie::syscalls::Syscall;
+ use reverie::syscalls::Write as WriteCall;
+-use reverie::syscalls::args::PathPtr;
+ use serde::Deserialize;
+ use serde::Serialize;
+ 

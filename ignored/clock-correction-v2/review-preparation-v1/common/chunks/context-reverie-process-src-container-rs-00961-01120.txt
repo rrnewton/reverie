@@ -1,0 +1,160 @@
+        let writer_fd = writer.as_raw_fd();
+        let mut stack = child_stack();
+
+        #[cfg(feature = "nightly")]
+        let output_capture = std::io::set_output_capture(None);
+
+        let result = clone_with_stack(
+            || {
+                let (value, deferred) = match self.setup(&context, &mut []) {
+                    Ok(()) => {
+                        let (value, deferred) = f();
+                        (Ok(value), Some(deferred))
+                    }
+                    Err(error) => (Err(error), None),
+                };
+                let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
+                bincode::serde::encode_into_std_write(
+                    &value,
+                    &mut writer,
+                    bincode::config::legacy(),
+                )
+                .expect("Failed to serialize return value");
+                writer.flush().expect("Failed to flush return value");
+                drop(writer);
+                drop(deferred);
+                0
+            },
+            clone_flags,
+            &mut stack,
+        );
+
+        #[cfg(feature = "nightly")]
+        std::io::set_output_capture(output_capture);
+
+        let child = WaitGuard::new(result?);
+        drop(writer);
+
+        let mut buf = Vec::new();
+        match reader.read_to_end(&mut buf) {
+            Ok(0) => Err(RunError::ExitStatus(child.wait()?)),
+            Ok(n) => {
+                let value: Result<T, Error> =
+                    bincode::serde::decode_from_slice(&buf[0..n], bincode::config::legacy())
+                        .unwrap()
+                        .0;
+                Ok(DeferredContainerRun {
+                    value: Some(value.map_err(RunError::Spawn)?),
+                    child,
+                })
+            }
+            Err(error) => panic!("Got unexpected error: {error}"),
+        }
+    }
+}
+
+pub(super) struct ChildContext<'a> {
+    pub stdin: Option<&'a Fd>,
+    pub stdout: Option<&'a Fd>,
+    pub stderr: Option<&'a Fd>,
+    pub uid_map: &'a [u8],
+    pub gid_map: &'a [u8],
+    pub seccomp_fd: Option<&'a core::sync::atomic::AtomicI32>,
+}
+
+impl<'a> ChildContext<'a> {
+    fn map_uid(&self) -> Result<(), Errno> {
+        write_bytes(b"/proc/self/uid_map\0", self.uid_map)
+    }
+
+    fn map_gid(&self) -> Result<(), Errno> {
+        write_bytes(b"/proc/self/gid_map\0", self.gid_map)
+    }
+
+    fn setgroups(&self, allow: bool) -> Result<(), Errno> {
+        write_bytes(
+            b"/proc/self/setgroups\0",
+            if allow { b"allow\0" } else { b"deny\0" },
+        )
+    }
+}
+
+/// An error that ocurred while running a containerized function.
+#[derive(thiserror::Error, Debug, Eq, PartialEq)]
+pub enum RunError {
+    /// An error that occurred while spawning the container.
+    #[error("Process failed to spawn: {0}")]
+    Spawn(#[from] Error),
+
+    /// The function exited prematurely. This can happen if the function called
+    /// `std::process::exit(0)`, preventing the return value from being sent to
+    /// the parent. It can also happen if the process panics.
+    #[error("Process exited with code: {0:?}")]
+    ExitStatus(ExitStatus),
+}
+
+impl From<Errno> for RunError {
+    fn from(errno: Errno) -> Self {
+        Self::Spawn(Error::from(errno))
+    }
+}
+
+// Helper guard for making sure that the process gets waited on even if an error
+// is encountered.
+struct WaitGuard(Option<Pid>);
+
+impl WaitGuard {
+    pub fn new(pid: Pid) -> Self {
+        Self(Some(pid))
+    }
+
+    /// Eagerly waits for the pid. Otherwise, it'll get waited on upon drop.
+    pub fn wait(mut self) -> Result<ExitStatus, Errno> {
+        self.wait_inner()
+    }
+
+    fn wait_inner(&mut self) -> Result<ExitStatus, Errno> {
+        let pid = self.0.expect("child wait guard has already been consumed");
+        #[cfg(test)]
+        let instrumented_wait = WAITPID_TEST_PID.load(Ordering::Acquire) == pid.as_raw();
+        let mut status = 0;
+        loop {
+            #[cfg(test)]
+            if instrumented_wait {
+                WAITPID_ENTERED.store(true, Ordering::Release);
+            }
+            match Errno::result(unsafe { libc::waitpid(pid.as_raw(), &mut status, 0) }) {
+                Ok(ret) => {
+                    assert_eq!(ret, pid.as_raw());
+                    self.0 = None;
+                    return Ok(ExitStatus::from_raw(status));
+                }
+                Err(Errno::EINTR) => {
+                    #[cfg(test)]
+                    {
+                        if instrumented_wait {
+                            WAITPID_INTERRUPTED.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+                Err(Errno::ECHILD) => {
+                    self.0 = None;
+                    return Err(Errno::ECHILD);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+/// A provisional container result whose successful value remains owned by its
+/// mandatory cleanup check.
+#[must_use = "a deferred container result must be finalized before its value can be returned"]
+pub struct DeferredContainerRun<T> {
+    value: Option<T>,
+    child: WaitGuard,
+}
+
+impl<T> DeferredContainerRun<T> {
+    /// Borrows the value while the child finishes cleanup.
+    pub fn provisional(&self) -> &T {

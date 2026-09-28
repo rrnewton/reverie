@@ -1,0 +1,160 @@
+                let Some(selected) = selected else {
+                    steps.push(Step::Reblocked {
+                        dequeue: id,
+                        domain: effect.domain,
+                    });
+                    continue;
+                };
+                let fatal = match self.executor.signal_disposition(selected.event.signal()) {
+                    crate::executor::SignalDisposition::Ignore => {
+                        steps.push(Step::Ignored { dequeue: id });
+                        continue;
+                    }
+                    crate::executor::SignalDisposition::Handled => false,
+                    crate::executor::SignalDisposition::Terminate => true,
+                    crate::executor::SignalDisposition::Stop => {
+                        return Err(Error::Reverie(Errno::ENOSYS.into()));
+                    }
+                };
+                let selection = self
+                    .executor
+                    .reserve_signal_delivery(selected, id, fatal)
+                    .map_err(|errno| Error::Reverie(errno.into()))?;
+                steps.push(if fatal {
+                    Step::Fatal { dequeue: id }
+                } else {
+                    Step::Caught { dequeue: id }
+                });
+                return Ok(reverie::ParkedSignalObservation {
+                    steps,
+                    stop: if fatal {
+                        Stop::Fatal(selection)
+                    } else {
+                        Stop::Caught(selection)
+                    },
+                });
+            }
+            Err(Error::UnexpectedVcpuExit(
+                "parked signal observation exhausted 64 actual selections".to_owned(),
+            ))
+        }
+        .await;
+        self.executor.set_signal_guard(previous);
+        self.observation_lease = None;
+        match result {
+            Ok(observation) => Ok(observation),
+            Err(error) => {
+                // Dropping the outer future cannot erase acknowledged removals.
+                let error = self.executor.with_signal_effects(error, None);
+                self.signal_handler(HandlerSignal::RuntimeError(error));
+                std::future::pending().await
+            }
+        }
+    }
+}
+
+// Give an already-ready consuming cleanup its result even after failure. A
+// blocked FIFO predecessor or notification must still observe run termination.
+// This is deliberately different from ordinary callbacks, where failure wins
+// before the callback is polled. No cancellation acknowledges a removal.
+async fn drive_signal_cleanup<T>(
+    future: impl Future<Output = T>,
+    handler_signal: SharedHandlerSignal,
+    pending_children: SharedChildStarts,
+    failure: impl Future<Output = ()>,
+) -> HandlerOutcome<T> {
+    let mut cleanup = pin!(drive_handler(
+        future,
+        handler_signal,
+        pending_children,
+        std::future::pending(),
+    ));
+    let mut failure = pin!(failure);
+    poll_fn(|cx| {
+        if let Poll::Ready(result) = cleanup.as_mut().poll(cx) {
+            return Poll::Ready(result);
+        }
+        if failure.as_mut().poll(cx).is_ready() {
+            Poll::Ready(HandlerOutcome::RunFailed)
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn flush_pending_signal_effects_with_tool<T>(
+    backend: &mut KvmBackend,
+    executor: &mut ElfExecutor,
+    pid: Pid,
+    tid: Pid,
+    tool: &Arc<T>,
+    memory: &GuestMemory,
+    auxv: &[(libc::c_ulong, libc::c_ulong)],
+    registers: libc::user_regs_struct,
+    thread_state: &mut T::ThreadState,
+    global_state: &Arc<T::GlobalState>,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    subscriptions: &Subscription,
+    stack_checked_out: &Arc<AtomicBool>,
+    raw: Option<i64>,
+) -> Result<()>
+where
+    T: Tool + 'static,
+    T::ThreadState: 'static,
+    T::GlobalState: 'static,
+    <T::GlobalState as GlobalTool>::Config: 'static,
+{
+    if executor.signal_dequeue_front().is_none() && executor.signal_dequeue_failure().is_none() {
+        return Ok(());
+    }
+    let failure = backend.failure_subscription(executor.is_traced_tree_root());
+    let handler_signal = Arc::new(Mutex::new(None));
+    let pending_children = Arc::new(Mutex::new(Vec::new()));
+    let mut process_completed = false;
+    let tool_stack_top = backend.tool_stack_top();
+    let outcome = {
+        let mut adapter = StaticElfSyscallExecutor {
+            backend,
+            executor,
+            memory: memory.clone(),
+            process_context: ProcessExecutionContext::Lifecycle,
+            last_result: raw,
+            process_completed: &mut process_completed,
+            callback_site: None,
+            original_syscall: None,
+            signal_guard: SignalGuard::Ordinary,
+        };
+        let mut guest = KvmGuest::new(
+            pid,
+            tid,
+            tool.clone(),
+            memory.clone(),
+            auxv,
+            registers,
+            thread_state,
+            &mut adapter,
+            global_state.as_ref(),
+            Some(global_state.clone()),
+            config,
+            subscriptions,
+            handler_signal.clone(),
+            pending_children.clone(),
+            tool_stack_top,
+            stack_checked_out.clone(),
+        );
+        // Consuming cleanup must flush even when the run has already failed.
+        drive_signal_cleanup(
+            guest.complete_signal_effects(raw),
+            handler_signal,
+            pending_children,
+            wait_for_failure(global_state.as_ref(), failure),
+        )
+        .await
+    };
+    match outcome {
+        HandlerOutcome::Returned(result) => result.map(|_| ()),
+        HandlerOutcome::RuntimeError(error) => Err(error),
+        HandlerOutcome::ParkedCancelled(_) | HandlerOutcome::RunFailed => {
+            Err(executor.with_signal_effects(Error::RunAborted, raw))

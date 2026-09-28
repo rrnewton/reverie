@@ -1,0 +1,67 @@
+                    result['forced'] = True
+                    result['reason'] = 'outer_output_limit' if too_large else 'outer_wall_limit'
+                    # The observer installs SIGALRM to enter its authenticated service cleanup.
+                    signal_owned(process, pidfd, signal.SIGALRM if observer else signal.SIGTERM)
+                    try:
+                        process.wait(timeout=10 if observer else 1)
+                    except subprocess.TimeoutExpired:
+                        signal_owned(process, pidfd, signal.SIGKILL)
+                        try:
+                            process.wait(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            result['reap_incomplete'] = True
+                    break
+                time.sleep(0.05)
+            result['returncode'] = process.poll()
+        finally:
+            if process.poll() is None:
+                signal_owned(process, pidfd, signal.SIGKILL)
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    result['reap_incomplete'] = True
+            os.close(pidfd)
+    result['elapsed_seconds'] = time.monotonic() - started
+    result['stdout'] = file_record(stdout_path)
+    result['stderr'] = file_record(stderr_path)
+    write_new(prefix.with_suffix('.json'), result)
+    return result
+
+
+def terminal(result, phase, outer, prefix, env, receipt):
+    final = result.get('final_accounting') or result.get('refusal_final_accounting')
+    require(final is not None and final['cgroup_empty'] is True, 'missing final service accounting')
+    values = final['properties']
+    require(values['ActiveState'] in ('inactive', 'failed') and values['MainPID'] == 0, 'service not terminal')
+    unit = values['Id']
+    require(re.fullmatch(r'safehermit-[A-Za-z0-9_.-]+\.service', unit), 'invalid retained service unit')
+    queries = []
+    for index in range(2):
+        q = bounded_process(['/usr/bin/systemctl', '--user', 'show', unit,
+                             '--property=LoadState,ActiveState,SubState,MainPID,ControlGroup'],
+                            REPO, env, Path(str(prefix) + '-' + str(index)), 5, 8192)
+        text = read(q['stdout']['path'], 8192).decode()
+        properties = dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+        q['properties'] = properties
+        queries.append(q)
+        require(q['returncode'] == 0 and not q['forced'], 'independent terminal query failed')
+        require(properties.get('ActiveState') in ('inactive', 'failed') and properties.get('MainPID') == '0'
+                and properties.get('ControlGroup') == '', 'fresh service query is not inactive/empty')
+    write_new(Path(str(prefix) + '-readback.json'), queries)
+    require(not outer['forced'] and outer['returncode'] in (0, 1), 'observer transport failure')
+    require(result['accounting_complete'] is True and result['observer_error'] is None, 'observer accounting incomplete')
+    # A terminal failing/limited cohort still has a production result-writer
+    # phase. Record authentic complete terminal accounting before refusing
+    # qualification for a limit; never replace the original raw status.
+    require(type(result['wrapper_exit_code']) is int, 'missing raw terminal status')
+    receipt['terminal_authenticated'] = True
+    require(result['stop_reason'] is None, 'service stopped by a bound')
+    for key in ['cleanup_error', 'cleanup_identity_error', 'library_readback_error', 'reference_cleanup_error', 'refusal_final_accounting_error']:
+        require(not result.get(key), 'observer cleanup/readback error: ' + key)
+    require(result['final_report']['truncated'] == 'false', 'retained stderr was truncated')
+    require(0 <= final['cpu_usage_nsec'] < phase['aggregate_cpu_usec'] * 1000, 'CPU allowance exhausted')
+    require(0 <= result['elapsed_seconds'] <= phase['wall_seconds'] + 40, 'observer wall allowance exhausted')
+    launch = result['launch']
+    require(launch['cpu_allowance_usec'] == phase['aggregate_cpu_usec'] and launch['wall_seconds'] == phase['wall_seconds']
+            and launch['log_bytes'] == phase['lethal_stderr_bytes'], 'actual bounds differ')
+    return result['wrapper_exit_code']

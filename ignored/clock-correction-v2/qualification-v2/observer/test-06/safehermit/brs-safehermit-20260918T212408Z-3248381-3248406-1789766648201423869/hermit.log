@@ -1,0 +1,3 @@
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST intercepted_exec=0
+CLOCK_ORIGIN_TEST failed_exec=0

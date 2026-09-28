@@ -1,0 +1,160 @@
+            let mut spawn = Box::pin(builder.spawn());
+            let root_pid = tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::select! {
+                    _result = &mut spawn => panic!("preinit completed before step {step}"),
+                    pid = step_rx.recv() => pid.expect("preinit pause channel closed"),
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("tracee did not reach preinit step {step}"));
+
+            drop(spawn);
+            assert_reaped("cancelled preinit root", root_pid);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn normal_liteinst_completion_leaves_no_stale_root_stop_lease() {
+        let builder = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test();
+        let held = Arc::clone(
+            &builder
+                .liteinst_runtime
+                .as_ref()
+                .expect("LiteInst runtime configured")
+                .held_root_stop,
+        );
+        let tracer = builder.spawn().await.expect("spawn normal LiteInst tracee");
+        let (status, ()) = tracer.wait().await.expect("wait normal LiteInst tracee");
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert!(
+            held.lock().unwrap().is_none(),
+            "normal path left stale lease"
+        );
+    }
+
+    #[test]
+    fn resolving_program_preserves_explicit_arg0() {
+        let mut command = Command::new("/bin/echo");
+        command.arg0("chosen-name");
+        resolve_program(&mut command).unwrap();
+        assert_eq!(command.get_program(), "/bin/echo");
+        assert_eq!(command.get_arg0(), "chosen-name");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn liteinst_preinit_failure_reaps_and_unregisters_root() {
+        let error = match TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .fail_liteinst_preinit_for_test()
+            .spawn()
+            .await
+        {
+            Ok(_) => panic!("injected LiteInst preinit failure unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        let pid = message
+            .split("tracee ")
+            .nth(1)
+            .and_then(|suffix| suffix.split(':').next())
+            .and_then(|pid| pid.parse::<i32>().ok())
+            .unwrap_or_else(|| panic!("preinit error omitted tracee PID: {message}"));
+
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "failed LiteInst preinit left tracee {pid} in procfs: {message}"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD),
+            "failed LiteInst preinit left tracee {pid} waitable"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn direct_drop_retries_first_discovery_failure() {
+        let fail_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .fail_liteinst_discovery_once_for_test(Arc::clone(&fail_once))
+            .spawn()
+            .await
+            .expect("spawn direct-Drop cleanup tracee");
+        let root_pid = tracer.guest_pid();
+
+        drop(tracer);
+        let reaped_by_drop = !std::path::Path::new(&format!("/proc/{root_pid}")).exists();
+        if !reaped_by_drop {
+            // Preserve a clean host after recording the pre-fix failure.
+            unsafe { libc::kill(root_pid.as_raw(), libc::SIGKILL) };
+            for _ in 0..2_000 {
+                if !std::path::Path::new(&format!("/proc/{root_pid}")).exists() {
+                    break;
+                }
+                let _ = ptrace::cont(root_pid.into(), None);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        assert!(!fail_once.load(Ordering::SeqCst));
+        assert!(reaped_by_drop, "direct Drop stopped after its first error");
+        assert_reaped("direct-Drop root", root_pid);
+    }
+
+    #[test]
+    fn stale_pidfd_identity_never_signals_reused_numeric_pid() {
+        let old_pid = fork_paused_child();
+        let mut identity = untraced_process_identity(old_pid);
+        identity
+            .send_signal(Signal::SIGKILL)
+            .expect("kill old child");
+        Running::new(old_pid).wait().expect("reap old child");
+
+        let unrelated_pid = fork_paused_child();
+        identity.tid = unrelated_pid;
+        assert_eq!(identity.send_signal(Signal::SIGKILL), Err(Errno::ESRCH));
+        assert_eq!(unsafe { libc::kill(unrelated_pid.as_raw(), 0) }, 0);
+
+        unsafe { libc::kill(unrelated_pid.as_raw(), libc::SIGKILL) };
+        Running::new(unrelated_pid)
+            .wait()
+            .expect("reap unrelated child");
+    }
+
+    #[test]
+    fn discovery_skips_only_confirmed_absence_or_replacement() {
+        let absent = Pid::from_raw(i32::MAX - 71);
+        assert!(skippable_tracee_open_error(absent, Errno::ENOENT));
+        assert!(skippable_tracee_open_error(absent, Errno::ESRCH));
+        for error in [Errno::EMFILE, Errno::ENFILE, Errno::EIO] {
+            assert!(
+                !skippable_tracee_open_error(absent, error),
+                "resource/read error {error} was silently skipped"
+            );
+        }
+
+        let replacement = fork_paused_child();
+        assert!(skippable_tracee_open_error(replacement, Errno::ESRCH));
+        assert!(!skippable_tracee_open_error(replacement, Errno::EMFILE));
+        unsafe { libc::kill(replacement.as_raw(), libc::SIGKILL) };
+        Running::new(replacement)
+            .wait()
+            .expect("reap replacement fixture");
+    }
+
+    #[test]
+    fn pidfd_setup_error_retains_cleanup_drain_failure() {
+        let message = liteinst_pidfd_setup_error(
+            Pid::from_raw(42),
+            Errno::EMFILE,
+            None,
+            Err(TraceError::Errno(Errno::EIO)),
+        )
+        .to_string();

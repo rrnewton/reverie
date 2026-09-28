@@ -1,0 +1,16 @@
+capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 522 filtered out; finished in 0.00s
+
+
+stderr:
+
+thread 'executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind' (3738116) panicked at reverie-kvm/src/capture_identity_tests.rs:332:17:
+intentional capture cleanup unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+capture final owner cleanup completed
+

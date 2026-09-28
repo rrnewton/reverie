@@ -1,0 +1,143 @@
+{
+  "compile_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/compile-plan.json",
+    "bytes": 54382,
+    "mode": 420,
+    "sha256": "814cd0c80bae2fa406336698e11f5f05826a7be31dd53f386b98223e04429a11"
+  },
+  "compile_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/controls/compile/result.json",
+    "bytes": 10108,
+    "mode": 420,
+    "sha256": "31b914a398360aa19a547980662c6501223ca71afd02c9cb0513269d675f7dd1"
+  },
+  "cargo_output": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/compile/stdout",
+    "bytes": 133310,
+    "mode": 384,
+    "sha256": "a6fcc483ae350fd692cbc7115f087a154ffd080ce913d167680fcf6d74fd73ad"
+  },
+  "original_artifacts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/controls/compile/artifacts.json",
+    "bytes": 6934,
+    "mode": 420,
+    "sha256": "8e4e5a713394467dff96a9d5183965221ed29bfc5e06073b4ab4c20c67f83100"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/source-manifest.json",
+    "bytes": 472053,
+    "mode": 420,
+    "sha256": "dfd21968df3b73ba28a7388f3504b8891e3f13035dab6f364e69fbe2947d1211"
+  },
+  "linked_library": {
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [
+        "default"
+      ],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/libreverie_kvm-7f5cea81517ac40f.rlib",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/libreverie_kvm-7f5cea81517ac40f.rmeta"
+      ],
+      "executable": null,
+      "fresh": false
+    },
+    "file": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/libreverie_kvm-7f5cea81517ac40f.rlib",
+      "bytes": 63754402,
+      "mode": 420,
+      "sha256": "a2b24191197143e652326272630220d16b902bf2f08241f4695bdf5f688c061a"
+    }
+  },
+  "copies": [
+    {
+      "id": "lib",
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+        "bytes": 129416128,
+        "mode": 493,
+        "sha256": "598028db22d3c832ce0f0b79957f46ab745c7cac25fdbbb051e5f2029ea3b7eb"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/retained-binaries/lib.elf",
+        "bytes": 129416128,
+        "mode": 365,
+        "sha256": "598028db22d3c832ce0f0b79957f46ab745c7cac25fdbbb051e5f2029ea3b7eb"
+      },
+      "distinct_inode": true
+    },
+    {
+      "id": "static",
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/static_elf-8045a74b4f627592",
+        "bytes": 188341832,
+        "mode": 493,
+        "sha256": "d3df4c0d153c64c9c824a86152ce682491b6b77b10815d7be168d8f3737c2bf6"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/retained-binaries/static.elf",
+        "bytes": 188341832,
+        "mode": 365,
+        "sha256": "d3df4c0d153c64c9c824a86152ce682491b6b77b10815d7be168d8f3737c2bf6"
+      },
+      "distinct_inode": true
+    },
+    {
+      "id": "vmcall",
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/vmcall-6f24a603a27fcb71",
+        "bytes": 88088640,
+        "mode": 493,
+        "sha256": "baa2803eb7f0311b3f0461569f1ec219f9ce1dba00771113940075cc080d9d96"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/retained-binaries/vmcall.elf",
+        "bytes": 88088640,
+        "mode": 365,
+        "sha256": "baa2803eb7f0311b3f0461569f1ec219f9ce1dba00771113940075cc080d9d96"
+      },
+      "distinct_inode": true
+    },
+    {
+      "id": "read-clock",
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/read_clock-19dc7265d033212c",
+        "bytes": 97912464,
+        "mode": 493,
+        "sha256": "b8f987d88bbff830282abcf09890c9fc141a38c3bca8751a98f05a35fe495674"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/retained-binaries/read-clock.elf",
+        "bytes": 97912464,
+        "mode": 365,
+        "sha256": "b8f987d88bbff830282abcf09890c9fc141a38c3bca8751a98f05a35fe495674"
+      },
+      "distinct_inode": true
+    }
+  ],
+  "all_selected_newly_built": true,
+  "meaning": "Cargo fresh=false for all four harnesses and linked KVM library; not a test result"
+}

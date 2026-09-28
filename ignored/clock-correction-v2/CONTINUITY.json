@@ -1,0 +1,23 @@
+{
+  "base": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "full_changed_paths": [
+    "reverie-ptrace/src/clock_origin_tests.rs",
+    "reverie-ptrace/src/injection_stop_tests.rs",
+    "reverie-ptrace/src/perf.rs",
+    "reverie-ptrace/src/task.rs",
+    "reverie-ptrace/src/timer.rs",
+    "reverie-ptrace/src/tracer.rs"
+  ],
+  "successor_changed_paths": [
+    "reverie-ptrace/src/clock_origin_tests.rs",
+    "reverie-ptrace/src/injection_stop_tests.rs",
+    "reverie-ptrace/src/task.rs",
+    "reverie-ptrace/src/tracer.rs"
+  ],
+  "other_base_entries_identical": 2623,
+  "dependency_manifests_unchanged": true,
+  "same_lock_as_prior": true,
+  "timestamp_cpuid_capture_source_unchanged": true,
+  "no_scm_or_product_edits": true
+}

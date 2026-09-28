@@ -1,0 +1,160 @@
+        if self.global_state.liteinst_runtime.is_some() && phase != LiteinstRuntimePhase::Ready {
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::UnexpectedActivationTrap,
+                Error::runtime(
+                    self.tid(),
+                    "reject unexpected LiteInst activation trap",
+                    format!(
+                        "received SIGTRAP at RIP {:#x} with RAX {:#x} that matched neither the entry guard nor a validated runtime handshake (phase {phase:?})",
+                        regs.ip(), regs.rax
+                    ),
+                ),
+            );
+            return Err(Errno::EPROTO.into());
+        }
+        // TODO-HUMAN-REVIEW(PR-103): Review rewritten-trap provenance validation.
+        if let Some(trap) = self.global_state.injected_syscall_trap.as_ref()
+            && regs.rax == trap.marker
+        {
+            if let Ok(frame) = self.read_injected_syscall_frame(&task, regs.rdi as usize)
+                && trap.validates_site_provenance(task.pid(), regs.ip(), &frame)
+            {
+                let next_state = self
+                    .handle_injected_syscall(task, regs.rdi as usize, regs.eflags)
+                    .await?;
+                return Ok(HandleSignalResult::SignalSuppressed(next_state));
+            }
+            return Ok(HandleSignalResult::SignalToDeliver(task, Signal::SIGTRAP));
+        }
+
+        let rip_minus_one = regs.ip() - 1;
+
+        Ok(if self.breakpoints.contains_key(&rip_minus_one) {
+            *regs.ip_mut() = rip_minus_one;
+            let next_state = self.resume_from_swbreak(task, regs).await?;
+            HandleSignalResult::SignalSuppressed(next_state)
+        } else if resumed_by_gdb_step {
+            self.notify_gdb_stop(StopReason::stopped(
+                task.pid(),
+                self.pid(),
+                StopEvent::Signal(Signal::SIGTRAP),
+                regs.into(),
+            ))
+            .await?;
+            let running = self
+                .await_gdb_resume(task, ExpectedGdbResume::Resume)
+                .await?;
+            HandleSignalResult::SignalSuppressed(running.next_state().await?)
+        } else {
+            let running = self.resume_stopped(task, None)?;
+            HandleSignalResult::SignalSuppressed(running.next_state().await?)
+        })
+    }
+
+    async fn handle_sigstop(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
+        let resumed_by_gdb_step = self
+            .resumed_by_gdb
+            .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
+        debug_assert!(!resumed_by_gdb_step);
+        if let Some((suspended_flag, stop_tx)) = self.get_stop_tx().await {
+            let notify_stop_tx = stop_tx
+                .send((
+                    task.pid(),
+                    Suspended {
+                        waker: self.exit_suspend_tx.clone(),
+                        suspended: suspended_flag,
+                    },
+                ))
+                .await;
+            drop(stop_tx);
+            if notify_stop_tx.is_ok()
+                && let Some(rx) = self.exit_suspend_rx.as_mut()
+                && rx.recv().await.is_none()
+            {
+                tracing::warn!(
+                    tid = %self.tid(),
+                    "tracee suspension channel closed before resume"
+                );
+            }
+        }
+        Ok(HandleSignalResult::SignalSuppressed(
+            self.resume_stopped(task, None)?.next_state().await?,
+        ))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn handle_sigsegv(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
+        let regs = task.getregs()?;
+        let trap_info = Addr::from_raw(regs.rip as usize)
+            .and_then(|addr| task.read_value(addr).ok())
+            .and_then(SegfaultTrapInfo::decode_segfault);
+        Ok(match trap_info {
+            Some(SegfaultTrapInfo::Cpuid)
+                if self.global_state.subscriptions.has_cpuid() && self.has_cpuid_interception =>
+            {
+                let regs = self.handle_cpuid(regs).await?;
+                task.setregs(&regs)?;
+                HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                )
+            }
+            Some(SegfaultTrapInfo::Rdtscs(req)) if self.global_state.subscriptions.has_rdtsc() => {
+                let regs = self.handle_rdtscs(regs, req).await?;
+                task.setregs(&regs)?;
+                HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                )
+            }
+            _ => HandleSignalResult::SignalToDeliver(task, Signal::SIGSEGV),
+        })
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    async fn handle_sigsegv(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
+        Ok(HandleSignalResult::SignalToDeliver(task, Signal::SIGSEGV))
+    }
+
+    fn liteinst_activation_in_progress(&self) -> bool {
+        #[cfg(test)]
+        let test_activation_bypass = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.activate_without_handshake);
+        #[cfg(not(test))]
+        let test_activation_bypass = false;
+
+        self.global_state.liteinst_runtime.is_some()
+            && self.liteinst_runtime.lock().unwrap().phase != LiteinstRuntimePhase::Ready
+            && !test_activation_bypass
+    }
+
+    fn record_liteinst_failure(&mut self, reason: LiteinstActivationFailureReason, error: Error) {
+        let stage = match self.liteinst_runtime.lock().unwrap().phase {
+            LiteinstRuntimePhase::Ready => LiteinstActivationStage::PostReady,
+            LiteinstRuntimePhase::PreExec
+            | LiteinstRuntimePhase::Waiting
+            | LiteinstRuntimePhase::Bootstrap => LiteinstActivationStage::PreReady,
+        };
+        let failure = LiteinstActivationFailure::new(stage, reason, error);
+        if let Some(runtime) = self.global_state.liteinst_runtime.clone() {
+            let mut slot = runtime.session_failure.lock().unwrap();
+            if slot.is_none() {
+                *slot = Some(format!("tracee {}: {failure}", self.tid()));
+                drop(slot);
+                runtime.session_failure_changed.notify_waiters();
+            }
+        }
+        self.liteinst_failure = Some(failure);
+    }
+
+    fn reject_liteinst_activation_signal(
+        &mut self,
+        sig: Signal,
+        reason: LiteinstActivationFailureReason,
+        detail: impl Into<String>,
+    ) -> TraceError {
+        self.record_liteinst_failure(
+            reason,
+            Error::runtime(
+                self.tid(),

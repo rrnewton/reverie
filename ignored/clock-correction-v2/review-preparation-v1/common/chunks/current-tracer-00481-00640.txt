@@ -1,0 +1,160 @@
+        Ok(Some(identity))
+    }
+
+    fn capture(
+        tid: Pid,
+        parent: Option<(Pid, Option<ChildOp>)>,
+        validate_proc_parent: bool,
+    ) -> Result<Self, Errno> {
+        let before = tracee_snapshot(tid).map_err(io_errno)?;
+        let parent_snapshot = parent
+            .map(|(parent_tid, _)| tracee_snapshot(parent_tid).map_err(io_errno))
+            .transpose()?;
+        let proc_dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(format!("/proc/{tid}"))
+            .map_err(io_errno)?;
+        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
+        let pidfd = if tid == before.tgid {
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, tid.as_raw(), 0) };
+            if fd == -1 {
+                return Err(Errno::last());
+            }
+            Some(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+        } else {
+            None
+        };
+        let after = tracee_snapshot(tid).map_err(io_errno)?;
+        let current_inode = fs::metadata(format!("/proc/{tid}"))
+            .map_err(io_errno)?
+            .ino();
+        if before != after || current_inode != proc_inode || !tracer_is_current(after.tracer_pid) {
+            return Err(Errno::ESRCH);
+        }
+
+        let parent = match (parent, parent_snapshot) {
+            (Some((parent_tid, op)), Some(parent_snapshot)) => {
+                let parent_after = tracee_snapshot(parent_tid).map_err(io_errno)?;
+                if parent_after != parent_snapshot
+                    || (validate_proc_parent
+                        && after.tgid != parent_snapshot.tgid
+                        && after.ppid != parent_snapshot.tgid)
+                {
+                    return Err(Errno::ESRCH);
+                }
+                Some((parent_tid, parent_snapshot.tgid, op))
+            }
+            (None, None) => None,
+            _ => unreachable!("parent snapshot and relation must be paired"),
+        };
+
+        Ok(Self {
+            tid,
+            snapshot: after,
+            proc_dir: proc_dir.into(),
+            proc_inode,
+            pidfd,
+            parent,
+        })
+    }
+
+    pub(crate) fn send_signal(&self, signal: Signal) -> Result<(), Errno> {
+        self.send_raw_signal(signal as i32)
+    }
+
+    fn same_process(&self) -> bool {
+        let path = format!("/proc/{}", self.tid);
+        let Some(current) = tracee_snapshot(self.tid).ok() else {
+            return false;
+        };
+        fd_inode(&self.proc_dir).ok() == Some(self.proc_inode)
+            && fs::metadata(path).ok().map(|metadata| metadata.ino()) == Some(self.proc_inode)
+            && current.tgid == self.snapshot.tgid
+            && current.start_time == self.snapshot.start_time
+    }
+
+    fn is_our_tracee(&self) -> bool {
+        self.same_process()
+            && tracee_snapshot(self.tid).ok().is_some_and(|current| {
+                current.tracer_pid == self.snapshot.tracer_pid
+                    && tracer_is_current(current.tracer_pid)
+            })
+            && self.parent.is_none_or(|(_, parent_tgid, event_op)| {
+                event_op.is_some()
+                    || self.snapshot.tgid == parent_tgid
+                    || self.snapshot.ppid == parent_tgid
+            })
+    }
+
+    fn send_raw_signal(&self, signal: i32) -> Result<(), Errno> {
+        let Some(pidfd) = self.pidfd.as_ref() else {
+            return Err(Errno::EOPNOTSUPP);
+        };
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if result == -1 {
+            Err(Errno::last())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct RegisteredTraceeCleanup {
+    identity: TraceeIdentity,
+    terminal: TerminalCleanup,
+    event_link: Option<EventChildLink>,
+}
+
+fn terminal_descendant_remains_owned(identity: &TraceeIdentity) -> bool {
+    if identity.is_our_tracee() {
+        return true;
+    }
+    let Some((_, parent_tgid, _)) = identity.parent else {
+        return false;
+    };
+    identity.same_process()
+        && tracee_snapshot(identity.tid)
+            .ok()
+            .is_some_and(|current| current.ppid == parent_tgid)
+}
+
+impl LiteinstTraceeCleanup {
+    fn new(
+        pid: Pid,
+        newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
+        held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    ) -> Result<Self, Errno> {
+        Ok(Self {
+            identity: TraceeIdentity::open_root(pid)?,
+            newborn_tracees,
+            armed: true,
+            terminal: None,
+            notifier_owner: None,
+            retained_descendants: HashMap::new(),
+            retained_terminal_descendants: HashMap::new(),
+            held_root_stop,
+            root_frozen: false,
+            #[cfg(test)]
+            fail_discovery_once: None,
+            #[cfg(test)]
+            fail_after_scan_once: None,
+            #[cfg(test)]
+            force_task_scan_once: None,
+        })
+    }
+
+    fn pid(&self) -> Pid {
+        self.identity.tid
+    }
+
+    fn register_notifier(&mut self, task: &Running) {
+        debug_assert!(self.terminal.is_none());

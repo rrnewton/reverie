@@ -1,0 +1,46 @@
+- If no data was transferred, does interruption produce the correct `EINTR`,
+  handler execution, or restart behavior under `SA_RESTART` and the syscall's
+  Linux restart rules?
+- Does the design preserve kernel atomicity around temporary signal masks and
+  wait operations?
+- Can the same physical signal be delivered twice, consumed without delivery,
+  or left pending after the scheduler reports it handled?
+- What happens if the target exits, changes its mask or disposition, completes
+  the syscall, or moves between scheduler states before the wake is committed?
+
+Reject a design that makes the reproducer resemble one native run while changing
+allowed return values, partial effects, target selection, signal multiplicity,
+mask behavior, handler ordering, or restart behavior.
+
+## Evidence required
+
+Require tests at the lowest useful layer and an end-to-end guest test. Tests must
+cover the state transitions and timing boundaries identified above, with both a
+case that must wake and a nearby case that must not. For an asynchronous event,
+exercise arrival before and after request publication, before and after queue
+selection, while blocked outside the queue, and after completion or exit where
+those states are reachable.
+
+Run repeated strict verification at the required assurance level and name the
+backend, exact command, exact revision, log level, and relaxations. A native run
+is useful for Linux behavior comparison but is not determinism evidence. A unit
+test that directly constructs an otherwise unreachable scheduler state is not
+end-to-end evidence. Inspect test, assertion, comparator, allowlist, skip, and
+logging changes for a lowered bar.
+
+For virtual time, compare repeated reads across threads and exec boundaries and,
+for backend parity, compare the full trajectory rather than one initial value.
+
+## Verdict
+
+Report findings first, with file and line evidence, impact, and the change needed
+to resolve each issue. Then state separate conclusions for:
+
+- determinism guarantee;
+- Linux and POSIX semantics;
+- evidence and goalpost-moving;
+- residual risks and untested backends or states.
+
+Approve only when both review axes are supported by the implementation and by
+tests at the exact reviewed head. If either axis is unresolved, request changes
+even when the original reproducer passes.

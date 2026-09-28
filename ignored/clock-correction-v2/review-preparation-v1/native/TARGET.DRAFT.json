@@ -1,0 +1,28 @@
+{
+  "scope": "Initial-command clock and syscall-injection whole-source review; draft, no launch authority",
+  "stage": "01-source",
+  "session_id": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "base": "b5e2ab49cd99e5d456fa0238b8cebd75958c529f",
+  "head": null,
+  "tree": null,
+  "frozen_source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source",
+  "expected_actual_model": "gpt-5.6-sol",
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/TARGET.json",
+    "bytes": 2227,
+    "sha256": "c01fe71e9f784013be5c657d20e9578467f9b463efe0fb70365e9eefceda34eb",
+    "mode": 420
+  },
+  "patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/SOURCE.patch",
+    "bytes": 54907,
+    "sha256": "50580ff2751dad2e24a2fc86aa5ca7274b13ef0ee6761514ea383a8e360e410e",
+    "mode": 420
+  },
+  "grounding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-native-cli-review-v1-20260918",
+  "mandatory_documents": 71,
+  "mandatory_chunks": 288,
+  "mandatory_lines": 34265,
+  "final_qualification_pending": true,
+  "executable_target_deliberately_absent": true
+}

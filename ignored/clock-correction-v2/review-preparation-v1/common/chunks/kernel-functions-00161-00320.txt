@@ -1,0 +1,160 @@
+1158: #ifdef CONFIG_POSIX_TIMERS
+1159: 	spin_lock_irq(&me->sighand->siglock);
+1160: 	posix_cpu_timers_exit(me);
+1161: 	spin_unlock_irq(&me->sighand->siglock);
+1162: 	exit_itimers(me);
+1163: 	flush_itimer_signals();
+1164: #endif
+1165: 
+1166: 	/*
+1167: 	 * Make the signal table private.
+1168: 	 */
+1169: 	retval = unshare_sighand(me);
+1170: 	if (retval)
+1171: 		goto out_unlock;
+1172: 
+1173: 	me->flags &= ~(PF_RANDOMIZE | PF_FORKNOEXEC |
+1174: 					PF_NOFREEZE | PF_NO_SETAFFINITY);
+1175: 	flush_thread();
+1176: 	me->personality &= ~bprm->per_clear;
+1177: 
+1178: 	clear_syscall_work_syscall_user_dispatch(me);
+1179: 
+1180: 	/*
+1181: 	 * We have to apply CLOEXEC before we change whether the process is
+1182: 	 * dumpable (in setup_new_exec) to avoid a race with a process in userspace
+1183: 	 * trying to access the should-be-closed file descriptors of a process
+1184: 	 * undergoing exec(2).
+1185: 	 */
+1186: 	do_close_on_exec(me->files);
+1187: 
+1188: 	if (bprm->secureexec) {
+1189: 		/* Make sure parent cannot signal privileged process. */
+1190: 		me->pdeath_signal = 0;
+1191: 
+1192: 		/*
+1193: 		 * For secureexec, reset the stack limit to sane default to
+1194: 		 * avoid bad behavior from the prior rlimits. This has to
+1195: 		 * happen before arch_pick_mmap_layout(), which examines
+1196: 		 * RLIMIT_STACK, but after the point of no return to avoid
+1197: 		 * needing to clean up the change on failure.
+1198: 		 */
+1199: 		if (bprm->rlim_stack.rlim_cur > _STK_LIM)
+1200: 			bprm->rlim_stack.rlim_cur = _STK_LIM;
+1201: 	}
+1202: 
+1203: 	me->sas_ss_sp = me->sas_ss_size = 0;
+1204: 
+1205: 	/*
+1206: 	 * Figure out dumpability. Note that this checking only of current
+1207: 	 * is wrong, but userspace depends on it. This should be testing
+1208: 	 * bprm->secureexec instead.
+1209: 	 */
+1210: 	if (bprm->interp_flags & BINPRM_FLAGS_ENFORCE_NONDUMP ||
+1211: 	    !(uid_eq(current_euid(), current_uid()) &&
+1212: 	      gid_eq(current_egid(), current_gid())))
+1213: 		set_dumpable(current->mm, suid_dumpable);
+1214: 	else
+1215: 		set_dumpable(current->mm, SUID_DUMP_USER);
+1216: 
+1217: 	perf_event_exec();
+1218: 
+1219: 	/*
+1220: 	 * If the original filename was empty, alloc_bprm() made up a path
+1221: 	 * that will probably not be useful to admins running ps or similar.
+1222: 	 * Let's fix it up to be something reasonable.
+1223: 	 */
+1224: 	if (bprm->comm_from_dentry) {
+1225: 		/*
+1226: 		 * Hold RCU lock to keep the name from being freed behind our back.
+1227: 		 * Use acquire semantics to make sure the terminating NUL from
+1228: 		 * __d_alloc() is seen.
+1229: 		 *
+1230: 		 * Note, we're deliberately sloppy here. We don't need to care about
+1231: 		 * detecting a concurrent rename and just want a terminated name.
+1232: 		 */
+1233: 		rcu_read_lock();
+1234: 		__set_task_comm(me, smp_load_acquire(&bprm->file->f_path.dentry->d_name.name),
+1235: 				true);
+1236: 		rcu_read_unlock();
+1237: 	} else {
+1238: 		__set_task_comm(me, kbasename(bprm->filename), true);
+1239: 	}
+1240: 
+1241: 	/* An exec changes our domain. We are no longer part of the thread
+1242: 	   group */
+1243: 	WRITE_ONCE(me->self_exec_id, me->self_exec_id + 1);
+1244: 	flush_signal_handlers(me, 0);
+1245: 
+1246: 	retval = set_cred_ucounts(bprm->cred);
+1247: 	if (retval < 0)
+1248: 		goto out_unlock;
+1249: 
+1250: 	/*
+1251: 	 * install the new credentials for this executable
+1252: 	 */
+1253: 	security_bprm_committing_creds(bprm);
+1254: 
+1255: 	commit_creds(bprm->cred);
+1256: 	bprm->cred = NULL;
+1257: 
+1258: 	/*
+1259: 	 * Disable monitoring for regular users
+1260: 	 * when executing setuid binaries. Must
+1261: 	 * wait until new credentials are committed
+1262: 	 * by commit_creds() above
+1263: 	 */
+1264: 	if (get_dumpable(me->mm) != SUID_DUMP_USER)
+1265: 		perf_event_exit_task(me);
+1266: 	/*
+1267: 	 * cred_guard_mutex must be held at least to this point to prevent
+1268: 	 * ptrace_attach() from altering our determination of the task's
+1269: 	 * credentials; any time after this it may be unlocked.
+1270: 	 */
+1271: 	security_bprm_committed_creds(bprm);
+1272: 
+1273: 	/* Pass the opened binary to the interpreter. */
+1274: 	if (bprm->have_execfd) {
+1275: 		retval = FD_ADD(0, bprm->executable);
+1276: 		if (retval < 0)
+1277: 			goto out_unlock;
+1278: 		bprm->executable = NULL;
+1279: 		bprm->execfd = retval;
+1280: 	}
+1281: 	return 0;
+1282: 
+1283: out_unlock:
+1284: 	up_write(&me->signal->exec_update_lock);
+1285: 	if (!bprm->cred)
+1286: 		mutex_unlock(&me->signal->cred_guard_mutex);
+1287: 
+1288: out:
+1289: 	return retval;
+1290: }
+
+### fs--exec.c:1679-1722
+Full source: /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/fs--exec.c
+SHA256: 5719b011ce9fdb29ae18247e11633ce5545c138ed21168c73c1cdcebe4fe5889
+Upstream Linux: 199c9959d3a9b53f346c221757fc7ac507fbac50; vendor kernel identity is not inferred.
+
+1679: static int exec_binprm(struct linux_binprm *bprm)
+1680: {
+1681: 	pid_t old_pid, old_vpid;
+1682: 	int ret, depth;
+1683: 
+1684: 	/* Need to fetch pid before load_binary changes it */
+1685: 	old_pid = current->pid;
+1686: 	rcu_read_lock();
+1687: 	old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
+1688: 	rcu_read_unlock();
+1689: 
+1690: 	/* This allows 4 levels of binfmt rewrites before failing hard. */
+1691: 	for (depth = 0;; depth++) {
+1692: 		struct file *exec;
+1693: 		if (depth > 5)
+1694: 			return -ELOOP;
+1695: 
+1696: 		ret = search_binary_handler(bprm);
+1697: 		if (ret < 0)
+1698: 			return ret;
+1699: 		if (!bprm->interpreter)

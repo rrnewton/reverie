@@ -1,0 +1,160 @@
+             assert_eq!(captured.st_size, 0);
+-            assert_eq!(captured.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
+-            assert_eq!(captured.st_ino, synthetic_guest_fd_object_inode(&state, fd));
++            let identity = output
++                .metadata()
++                .identity(output_alias(&state, fd).unwrap());
++            assert_eq!(
++                (captured.st_dev, captured.st_ino),
++                (identity.device, identity.inode)
++            );
+             write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+             let expected = format!("pipe:[{}]", captured.st_ino).into_bytes();
+             let count = metadata_call(
+                 &mut memory,
+                 &mut state,
+-                true,
++                Some(&mut output),
+                 libc::SYS_readlinkat,
+                 [libc::AT_FDCWD as u64, 0x100, 0x2000, 256, 0, 0],
+             );
+@@ -27349,7 +27398,7 @@
+                 metadata_call(
+                     &mut memory,
+                     &mut state,
+-                    true,
++                    Some(&mut output),
+                     libc::SYS_lstat,
+                     [0x100, 0x800, 0, 0, 0, 0]
+                 ),
+@@ -27362,6 +27411,7 @@
+ 
+     #[test]
+     fn proc_fd_statx_preserves_native_masks_and_error_results() {
++        let mut output = CapturedOutput::default();
+         let root = TestDir::new();
+         let mut state = test_state(&root.0);
+         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+@@ -27402,7 +27452,7 @@
+             let actual = metadata_call(
+                 &mut memory,
+                 &mut state,
+-                false,
++                None,
+                 libc::SYS_statx,
+                 [
+                     libc::AT_FDCWD as u64,
+@@ -27428,7 +27478,7 @@
+                     metadata_call(
+                         &mut memory,
+                         &mut state,
+-                        true,
++                        Some(&mut output),
+                         libc::SYS_statx,
+                         [
+                             libc::AT_FDCWD as u64,
+@@ -39548,7 +39598,7 @@
+                 0x100,
+                 0x1000,
+                 4096,
+-                false,
++                None,
+             );
+             assert!((0..4096).contains(&count));
+             let mut output = [0; 4096];
+--- a/reverie-kvm/src/lib.rs
++++ b/reverie-kvm/src/lib.rs
+@@ -18,6 +18,7 @@
+ mod bootstrap;
+ mod clock;
+ mod cpuid;
++mod cpuid_instruction;
+ mod elf;
+ mod error;
+ mod executor;
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -254,6 +254,10 @@
+ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
+     fn read_clock(&self) -> Result<u64>;
+ 
++    fn has_cpuid_interception(&self) -> bool {
++        false
++    }
++
+     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+ 
+     /// Reserve backend bookkeeping before executing an injected syscall.
+@@ -422,7 +426,7 @@
+     InitialExec(SyscallRequest),
+     InitialExecCompleted,
+     Lifecycle,
+-    Timestamp,
++    Instruction,
+     ThreadEntrySignal,
+     SignalBoundary(CompletedSyscallBoundary),
+     FaultBoundary(Box<PageZeroFault>),
+@@ -443,7 +447,7 @@
+     }
+ 
+     fn tail_injection_allowed(&self, request: &SyscallRequest) -> bool {
+-        if matches!(self, Self::Timestamp) {
++        if matches!(self, Self::Instruction) {
+             // Terminal exits do not need a syscall return frame. Every other
+             // tail still requires a transport that can consume its result.
+             return injection_is_explicit_exit(request);
+@@ -455,12 +459,12 @@
+     }
+ 
+     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+-        if matches!(self, Self::Timestamp) && injection_is_explicit_exit(request) {
++        if matches!(self, Self::Instruction) && injection_is_explicit_exit(request) {
+             // inject() itself is nonreturning once the real exit is staged;
+             // tail_inject() uses that same path and both executor preflights.
+             return true;
+         }
+-        if matches!(self, Self::ThreadEntrySignal | Self::Timestamp) {
++        if matches!(self, Self::ThreadEntrySignal | Self::Instruction) {
+             // There is a real user continuation, but no consumed syscall
+             // transport to restore after an injected process action.
+             return !injection_can_be_nonreturning(request)
+@@ -574,6 +578,10 @@
+         self.backend.vcpu.read_clock()
+     }
+ 
++    fn has_cpuid_interception(&self) -> bool {
++        self.backend.has_cpuid_interception()
++    }
++
+     fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
+         self.backend
+             .tool_failure
+@@ -591,7 +599,7 @@
+         }
+         if matches!(
+             self.process_context,
+-            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Timestamp
++            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Instruction
+         ) && let Some(result) = self
+             .executor
+             .lifecycle_signal_mask_preflight(request, memory)
+@@ -913,8 +921,8 @@
+                     ProcessExecutionContext::InitialExecCompleted => unreachable!(
+                         "synthetic initial exec completes before process actions are inspected"
+                     ),
+-                    ProcessExecutionContext::Timestamp => Err(Error::UnexpectedVcpuExit(
+-                        "process injection from a timestamp callback is unsupported".to_owned(),
++                    ProcessExecutionContext::Instruction => Err(Error::UnexpectedVcpuExit(
++                        "process injection from an instruction callback is unsupported".to_owned(),
+                     )),
+                     ProcessExecutionContext::ThreadEntrySignal => Err(Error::UnexpectedVcpuExit(
+                         "process injection from a thread-entry signal hook is unsupported"
+@@ -1089,6 +1097,10 @@
+ 
+ #[reverie::tool]
+ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
++    fn has_cpuid_interception(&self) -> bool {
++        self.executor.has_cpuid_interception()
++    }
++
+     type Memory = GuestMemory;

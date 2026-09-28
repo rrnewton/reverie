@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once" }
+{ "type": "test", "name": "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.003950034 }

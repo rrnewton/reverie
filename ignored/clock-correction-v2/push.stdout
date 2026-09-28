@@ -1,0 +1,18 @@
+git-push-verified: intending a9449f8ee22a -> origin refs/heads/codex/kvm-clock-injection-20260918
+git-push-verified: remote is currently (absent)
+
+git-push-verified: ⚠️  PUSHING FROM A CHECKOUT THAT IS NOT CLEAN
+  1 uncommitted path(s) present, 1 of them NOT part of this push:
+      ignored/
+  If this is the shared parent checkout, ask the coordinator for a clean slot:
+      ci-hub/bin/wrkslots create <slot> --slot-type agent --coordinator-authorized ...
+  then stage only the paths you own. Not blocking; naming it so it is a choice.
+
+git-push-verified: format CHECKED and clean (6 .rs file(s))
+remote: 
+remote: Create a pull request for 'codex/kvm-clock-injection-20260918' on GitHub by visiting:        
+remote:      https://github.com/rrnewton/reverie/pull/new/codex/kvm-clock-injection-20260918        
+remote: 
+To https://github.com/rrnewton/reverie.git
+ * [new branch]        HEAD -> codex/kvm-clock-injection-20260918
+git-push-verified: VERIFIED origin refs/heads/codex/kvm-clock-injection-20260918 = a9449f8ee22a17ba87a106c2af957a938fa57c45

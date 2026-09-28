@@ -1,0 +1,160 @@
+    let joined_jump = code.len() - 4;
+    code.extend_from_slice(&[
+        0x31, 0xf6, // xor esi, esi: FUTEX_WAIT, current nonzero value in edx
+        0x45, 0x31, 0xd2, // xor r10d, r10d: no timeout
+        0xb8, 0xca, 0x00, 0x00, 0x00, // mov eax, SYS_futex
+        0x0f, 0x05, // syscall
+    ]);
+    // A racing clear-TID may win before FUTEX_WAIT. Only Linux's normal
+    // successful wake, changed-value refusal or signal interruption can retry.
+    for result in [0_i32, -libc::EAGAIN, -libc::EINTR] {
+        code.push(0x3d); // cmp eax, result
+        code.extend_from_slice(&result.to_le_bytes());
+        code.extend_from_slice(&[0x0f, 0x84, 0, 0, 0, 0]); // je wait
+        let operand = code.len() - 4;
+        patch_stats_jump(&mut code, operand, wait);
+    }
+    code.push(0xe9); // jmp failure for any other futex result
+    failures.push(code.len());
+    code.extend_from_slice(&0_i32.to_le_bytes());
+    let joined = code.len();
+    patch_stats_jump(&mut code, joined_jump, joined);
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_result
+    code.extend_from_slice(&CHILD_RESULT.to_le_bytes());
+    code.extend_from_slice(&[0x44, 0x39, 0x29]); // cmp [rcx], r13d
+    append_jne_failure(&mut code, &mut failures);
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_done
+    code.extend_from_slice(&CHILD_DONE.to_le_bytes());
+    code.extend_from_slice(&[0x81, 0x39, 0x34, 0x12, 0x00, 0x00]); // cmp [rcx], 0x1234
+    append_jne_failure(&mut code, &mut failures);
+    append_root_read(&mut code, &mut failures);
+    append_stats_exit(&mut code, true);
+
+    let child = code.len();
+    patch_stats_jump(&mut code, child_jump, child);
+    code.extend_from_slice(&[
+        0x0f, 0xa2, // actual Host-worker CPUID: must retire without a Tool callback
+        0xb8, 0xba, 0x00, 0x00, 0x00, // mov eax, SYS_gettid
+        0x0f, 0x05, // syscall
+        0x48, 0xb9, // movabs rcx, child_result
+    ]);
+    code.extend_from_slice(&CHILD_RESULT.to_le_bytes());
+    code.extend_from_slice(&[0x89, 0x01]); // mov [rcx], eax
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_done
+    code.extend_from_slice(&CHILD_DONE.to_le_bytes());
+    code.extend_from_slice(&[0xc7, 0x01, 0x34, 0x12, 0x00, 0x00]); // mov [rcx], 0x1234
+    append_stats_exit(&mut code, false); // clear-TID and wake parent on real exit
+
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ]);
+    for operand in failures {
+        patch_stats_jump(&mut code, operand, failure);
+    }
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let clone_args_address = LOAD_ADDRESS + code.len() as u64;
+    code[clone_args_operand..clone_args_operand + 8]
+        .copy_from_slice(&clone_args_address.to_le_bytes());
+    let mut clone_args = [0_u8; 88];
+    clone_args[0..8].copy_from_slice(&flags.to_le_bytes());
+    clone_args[16..24].copy_from_slice(&CHILD_TID.to_le_bytes());
+    clone_args[40..48].copy_from_slice(&CHILD_STACK.to_le_bytes());
+    clone_args[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
+    code.extend_from_slice(&clone_args);
+    assert!(
+        code.len() < 0x1000,
+        "code must not overlap the shared data page"
+    );
+    code
+}
+
+#[test]
+fn cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed() {
+    for (ownership, expected) in [
+        (ThreadOwnership::Host, vec![1, 1]),
+        (ThreadOwnership::Tool, vec![1, 2, 1]),
+    ] {
+        let (log, status) = run_cpuid(&cpuid_clone_program(), (true, 2), ownership);
+        assert_eq!(status, 0);
+        assert_eq!(
+            log.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|row| row.0.as_raw())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+fn table_program(leaf: u32, subleaf: u32, values: [u32; 4]) -> Vec<u8> {
+    let mut code = vec![0xb8];
+    code.extend_from_slice(&leaf.to_le_bytes());
+    code.push(0xb9);
+    code.extend_from_slice(&subleaf.to_le_bytes());
+    code.extend_from_slice(&[0x0f, 0xa2]);
+    let mut failures = Vec::new();
+    for (register, value) in [0_u8, 3, 1, 2].into_iter().zip(values) {
+        code.extend_from_slice(&[0x49, 0xba]);
+        code.extend_from_slice(&u64::from(value).to_le_bytes());
+        code.extend_from_slice(&[0x4c, 0x39, 0xd0 | register]);
+        append_jne_failure(&mut code, &mut failures);
+    }
+    append_stats_exit(&mut code, true);
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 20, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+    ]);
+    for operand in failures {
+        patch_stats_jump(&mut code, operand, failure);
+    }
+    code
+}
+
+#[test]
+fn unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy() {
+    for (leaf, subleaf, expected) in [
+        (0x80000001, 0, [0x663, 0, 1, 0x20100800]),
+        (0xd, 1, [0; 4]),
+        (0xd, 17, [0; 4]),
+        (0xd, 19, [0; 4]),
+    ] {
+        let (log, status) = run_cpuid(
+            &table_program(leaf, subleaf, expected),
+            (false, 0),
+            ThreadOwnership::Tool,
+        );
+        assert_eq!(status, 0, "leaf={leaf:#x}, subleaf={subleaf}");
+        assert!(log.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn cpuid_dispatch_survives_real_fork_and_same_pid_exec() {
+    let directory = TestDirectory::new();
+    let executable = directory.0.join("cpuid-exec-target");
+    let child_image = static_elf(&assertion_program(&[], 1, false));
+    std::fs::write(&executable, &child_image).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut code = Vec::new();
+    let mut failures = Vec::new();
+    append_cpuid(&mut code, &[], 0, &mut failures);
+    code.extend_from_slice(&[
+        0xb8, 57, 0, 0, 0, 0x0f, 0x05, 0x85, 0xc0, 0x0f, 0x84, 0, 0, 0, 0,
+    ]);
+    let child_jump = code.len() - 4;
+    code.extend_from_slice(&[0x0f, 0x88]);
+    failures.push(code.len());
+    code.extend_from_slice(&0_i32.to_le_bytes());
+    code.extend_from_slice(&[
+        0x49, 0x89, 0xc5, // mov r13,rax: exact child identity
+        0x48, 0x89, 0xc7, // mov rdi,rax: wait for that child
+        0x48, 0x83, 0xec, 0x10, // sub rsp,16: real writable guest stack
+        0x48, 0x89, 0xe6, // mov rsi,rsp: wait status

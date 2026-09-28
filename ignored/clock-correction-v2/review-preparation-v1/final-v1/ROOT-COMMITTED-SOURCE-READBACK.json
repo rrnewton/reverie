@@ -1,0 +1,16 @@
+{
+  "head": "a9449f8ee22a17ba87a106c2af957a938fa57c45",
+  "base": "b5e2ab49cd99e5d456fa0238b8cebd75958c529f",
+  "tree": "da3e0a5c13bbd1b95adca1bc3ac0037b89494544",
+  "independently_compared_tracked_entries": 2632,
+  "modes": {
+    "100644": 2500,
+    "120000": 7,
+    "100755": 122,
+    "160000": 3
+  },
+  "qualified_manifest_population": 2630,
+  "ignored_extra": "Cargo.lock",
+  "method": "Computed Git blob object identities from every actual qualified regular file and literal alias; compared exact ls-tree mode/type/OID. All three gitlinks unchanged and empty; sole parent and whole manifest population checked. No product execution or source verdict.",
+  "read_limit": "Initial full JSON proof print truncated; no semantic reading of every hash row claimed. This reconstruction checks every entry directly."
+}

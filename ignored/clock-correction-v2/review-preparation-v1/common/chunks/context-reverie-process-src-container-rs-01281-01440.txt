@@ -1,0 +1,160 @@
+
+        let shared_ref = unsafe { &*shared };
+        while !shared_ref.started.load(Ordering::Acquire) {
+            unsafe { libc::sched_yield() };
+        }
+        shared_ref.release.store(true, Ordering::Release);
+        assert_eq!(run.finalize(), Ok(42));
+        assert!(shared_ref.finished.load(Ordering::Acquire));
+
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    #[test]
+    fn dropping_cleanup_handle_still_reaps_the_child() {
+        let (mapping, shared) = new_shared_drop_state();
+        let run = Container::new()
+            .run_with_deferred_drop(|| ((), BlockingDrop { shared }))
+            .unwrap();
+        let shared_ref = unsafe { &*shared };
+        while !shared_ref.started.load(Ordering::Acquire) {
+            unsafe { libc::sched_yield() };
+        }
+        shared_ref.release.store(true, Ordering::Release);
+        drop(run);
+        assert!(shared_ref.finished.load(Ordering::Acquire));
+
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    static WAITPID_SIGNAL_TEST: Mutex<()> = Mutex::new(());
+
+    extern "C" fn ignore_test_signal(_signal: libc::c_int) {}
+
+    #[test]
+    fn deferred_finalize_retries_an_interrupted_wait_and_reaps() {
+        let _serial = WAITPID_SIGNAL_TEST.lock().unwrap();
+        WAITPID_ENTERED.store(false, Ordering::Release);
+        WAITPID_INTERRUPTED.store(0, Ordering::Release);
+
+        let action = SigAction::new(
+            SigHandler::Handler(ignore_test_signal),
+            SaFlags::empty(),
+            SigSet::empty(),
+        );
+        let previous = unsafe { sigaction(Signal::SIGUSR2, &action) }.unwrap();
+
+        let (mapping, shared) = new_shared_drop_state();
+        let run = Container::new()
+            .run_with_deferred_drop(|| (42, BlockingDrop { shared }))
+            .unwrap();
+        let child_pid = run.child.0.expect("deferred child pid");
+        WAITPID_TEST_PID.store(child_pid.as_raw(), Ordering::Release);
+        let waiting_thread = unsafe { libc::pthread_self() };
+        let shared_address = shared as usize;
+        let interrupter = std::thread::spawn(move || {
+            while !WAITPID_ENTERED.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while WAITPID_INTERRUPTED.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+                assert_eq!(
+                    unsafe { libc::pthread_kill(waiting_thread, libc::SIGUSR2) },
+                    0
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let shared = unsafe { &*(shared_address as *mut SharedDropState) };
+            shared.release.store(true, Ordering::Release);
+        });
+
+        assert_eq!(run.finalize(), Ok(42));
+        interrupter.join().unwrap();
+        unsafe { sigaction(Signal::SIGUSR2, &previous) }.unwrap();
+        WAITPID_TEST_PID.store(0, Ordering::Release);
+        assert!(
+            WAITPID_INTERRUPTED.load(Ordering::Acquire) > 0,
+            "the signal did not interrupt waitpid"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(child_pid.as_raw(), &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(Errno::last(), Errno::ECHILD);
+
+        unsafe { unmap_shared_drop_state(mapping, shared) };
+    }
+
+    struct ExitDuringDrop(i32);
+
+    impl Drop for ExitDuringDrop {
+        fn drop(&mut self) {
+            unsafe { libc::_exit(self.0) }
+        }
+    }
+
+    #[test]
+    fn deferred_drop_exposes_cleanup_failure() {
+        let run = Container::new()
+            .run_with_deferred_drop(|| (42, ExitDuringDrop(71)))
+            .unwrap();
+
+        assert_eq!(run.provisional(), &42);
+        assert_eq!(
+            run.finalize(),
+            Err(RunError::ExitStatus(ExitStatus::Exited(71)))
+        );
+    }
+
+    #[test]
+    fn mount_error_from_child_is_returned() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let missing_source = source_dir.path().join("missing");
+
+        let result = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(Mount::bind(missing_source, "/test"))
+            .run(|| 42);
+
+        assert_eq!(
+            result,
+            Err(RunError::Spawn(Error::new(Errno::ENOENT, Context::Mount)))
+        );
+    }
+
+    #[test]
+    fn test_directory_is_available_after_mount() {
+        let result = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(Mount::tmpfs("/test").touch_target())
+            .run(|| Path::new("/test").is_dir());
+
+        assert_eq!(result, Ok(true));
+    }
+
+    /// A read-only bind of a source on a `nosuid`/`nodev` filesystem must work.
+    ///
+    /// ⚠️ REGRESSION TEST FOR A WHOLE LOST VALIDATE ARM, not a corner case.
+    /// Inside a user namespace the kernel LOCKS the flags of mounts inherited
+    /// from the parent namespace and refuses any remount that would clear one.
+    /// A read-only bind is bind-then-remount, and the remount used to pass
+    /// `MS_RDONLY` alone -- which asks to drop every other flag the source had.
+    /// The mount returned EPERM and the container never spawned, so the guest
+    /// did not fail, it never existed.
+    ///
+    /// Measured 2026-08-27: Hermit puts its frozen `/etc/group` and empty nscd
+    /// directory in TMPDIR and binds each read-only, so a TMPDIR on
+    /// `/run/user/<uid>` -- `nosuid,nodev` on any systemd host -- killed every
+    /// container spawn. 610 of one arm's 612 e2e rows came from this one mount.
+    ///
+    /// ⚠️ THE SOURCE MUST BE MOUNTED BY THE HOST, NOT BY THIS CONTAINER. A tmpfs
+    /// this test mounts itself lives in the container's own namespace, so its
+    /// flags are NOT locked and the remount succeeds even unfixed -- a test that
+    /// cannot fail. `/dev/shm` is host-mounted and carries both flags, so it
+    /// reproduces the inheritance that makes them locked.
+    #[test]
+    fn a_readonly_bind_survives_a_nosuid_nodev_source() {
+        let shm = Path::new("/dev/shm");

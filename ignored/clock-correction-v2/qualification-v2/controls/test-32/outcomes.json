@@ -1,0 +1,24 @@
+{
+  "started": [
+    "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.00023249
+    }
+  ]
+}

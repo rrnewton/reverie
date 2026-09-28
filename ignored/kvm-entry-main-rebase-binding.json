@@ -1,0 +1,10 @@
+{
+  "before": "0f09630c3d19fc7c032566ae181cdd10423ee1f5",
+  "after": "4ea79f6da7100709fea0e0a5591b0945d438e34f",
+  "base": "34fa859aa825efb10a9b8ae7da969fd4a156a814",
+  "changed_previously_qualified_files": [
+    "reverie-kvm/src/runtime/failure_tests.rs"
+  ],
+  "preserved_ref": "refs/rescue/kvm-entry-before-main-rebase-20260919",
+  "remote_pr_not_updated_yet": true
+}

@@ -1,0 +1,160 @@
+    /// Waits until this run cannot continue faithfully. Each call must subscribe
+    /// independently: multiple Tool callbacks and the scheduler may be waiting.
+    /// The default preserves Tools that do not own a scheduler.
+    /// Returning allows the backend to drop in-flight callbacks, including
+    /// `receive_rpc`, and proceed to consuming exit hooks. Shared state must
+    /// already support that cleanup; returning is not an ordinary RPC reply.
+    async fn wait_for_backend_failure(&self) {
+        std::future::pending::<()>().await
+    }
+
+    /// Reports that a backend observed a child transition and committed its
+    /// waitability for the parent process.
+    ///
+    /// Backends that model child lifecycle outside the host kernel should
+    /// invoke this at that boundary rather than inferring state from signal
+    /// delivery. Backends whose host kernel owns child waitability may retain
+    /// the default no-op.
+    async fn on_backend_child_wait_event(
+        &self,
+        _event: BackendChildWaitEvent,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// The location of a fatal backend failure. The backend retains its typed cause;
+/// this notification only ends dependent waits and must not invent guest status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendFailure {
+    /// Guest process owning the failed operation.
+    pub pid: Pid,
+    /// Guest thread owning the failed operation.
+    pub tid: Tid,
+    /// Backend operation that failed.
+    pub phase: &'static str,
+}
+
+/// A child state and waitability decision observed by an execution backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendChildWaitState {
+    /// The child terminated with this exit status.
+    Exited {
+        /// The terminal status reported by the backend.
+        status: ExitStatus,
+        /// Whether the parent may consume this status with a wait syscall.
+        /// Explicit `SIGCHLD` ignore and `SA_NOCLDWAIT` make this false.
+        waitable: bool,
+    },
+    /// The child entered a job-control stop for this signal number.
+    Stopped(i32),
+    /// A previously stopped child resumed.
+    Continued,
+}
+
+/// A backend-observed child waitability decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendChildWaitEvent {
+    /// The process whose wait syscalls may observe the transition.
+    pub parent: Pid,
+    /// The child process that changed state.
+    pub child: Pid,
+    /// The observed child state and whether it remains waitable.
+    pub state: BackendChildWaitState,
+}
+
+#[async_trait]
+impl GlobalTool for () {
+    type Request = ();
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Tid, _message: ()) {}
+}
+
+/// A trait that every Reverie *tool* must implement. The primary function of the
+/// tool specifies how syscalls and signals are handled.
+///
+/// The type that a `Tool` is implemented for represents the process-level state.
+/// That is, one runtime instance of this type will be created for each guest
+/// process. This type is in turn a factory for *thread level states*, which are
+/// allocated dynamically upon guest thread creation. Instances of the thread
+/// state are also managed by Reverie.
+///
+/// During fatal KVM run cleanup, asynchronous event callbacks may be dropped
+/// at any await point. Their thread state is then passed to `on_exit_thread`
+/// even if the start callback was never entered or did not finish. Exit hooks
+/// must consume partially initialized state without requiring guest execution
+/// or a normal response from an abandoned callback. This contract covers
+/// returned runtime errors; arbitrary panic unwinding is not guaranteed to
+/// invoke consuming hooks.
+///
+/// # Example
+///
+/// Here is an example of a tool that simply counts the number of syscalls
+/// intercepted for each thread:
+/// ```
+/// use reverie::syscalls::*;
+/// use reverie::*;
+///
+/// /// Our process-level state.
+/// #[derive(Debug, Default, Clone)]
+/// struct MyTool;
+///
+/// #[reverie::tool]
+/// impl Tool for MyTool {
+///     /// The global state type.
+///     type GlobalState = ();
+///     /// Count of syscalls.
+///     type ThreadState = u64;
+///
+///     async fn handle_syscall_event<T: Guest<Self>>(
+///         &self,
+///         guest: &mut T,
+///         syscall: Syscall,
+///     ) -> Result<i64, Error> {
+///         *guest.thread_state_mut() += 1;
+///
+///         // Inject the syscall. If we don't do this, the syscall will be
+///         // supressed.
+///         let ret = guest.inject(syscall).await?;
+///
+///         Ok(ret)
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait Tool: Send + Sync + Default {
+    /// The type of the global half that goes along with this Local tool. By
+    /// including this type, the Tool is actually a complete specification for an
+    /// instrumentation tool.
+    type GlobalState: GlobalTool;
+
+    /// Tool-state specific to each guest thread. If unset, this defaults to the
+    /// unit type `()`, indicating that the tool does not have thread-level
+    /// state.
+    ///
+    /// Both thread-local and process-local state may have to be migrated between
+    /// address spaces by a Reverie backend. Hence the `ThreadState` type must
+    /// implement [`Serialize`] and [`DeserializeOwned`].
+    ///
+    /// The thread-local storage must be in a good, consistent state when each
+    /// handler returns, and also when handlers yield.
+    ///
+    /// [`Serialize`]: serde::Serialize
+    /// [`DeserializeOwned`]: serde::de::DeserializeOwned
+    type ThreadState: Serialize + DeserializeOwned + Default + Send + Sync;
+
+    /// A common constructor that initializes state when a process is created,
+    /// including the guest's initial, root process. Of course, every process
+    /// includes at least one thread, but the process level state is allocated
+    /// before thread level-state for the process's main thread is allocated.
+    ///
+    /// For now this method assumes access to the global state, but that may
+    /// change.
+    fn new(_pid: Pid, _cfg: &<Self::GlobalState as GlobalTool>::Config) -> Self {
+        Default::default()
+    }
+
+    /// Events the tool subscribes to. This is only called *once* for the entire
+    /// tree. By default, all syscalls are traced (but CPUID/RDTSC instructions

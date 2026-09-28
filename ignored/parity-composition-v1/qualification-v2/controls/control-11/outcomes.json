@@ -1,0 +1,24 @@
+{
+  "started": [
+    "cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.08022993
+    }
+  ]
+}

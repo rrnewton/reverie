@@ -1,0 +1,20 @@
+{
+  "setup_sha256": "373618ca411403dc2edf57a23acfd0ed0abd4fd83767596480b851f5a5f7975d",
+  "lanes": [
+    {
+      "lane": "claude",
+      "files": 5974,
+      "aliases": 7,
+      "all_inputs_unchanged": true,
+      "prompt_and_launchers_read": true
+    },
+    {
+      "lane": "native",
+      "files": 5974,
+      "aliases": 7,
+      "all_inputs_unchanged": true,
+      "prompt_and_launchers_read": true
+    }
+  ],
+  "no_launch": true
+}

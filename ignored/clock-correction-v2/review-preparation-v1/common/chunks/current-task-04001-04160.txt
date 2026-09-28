@@ -1,0 +1,160 @@
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            Sysno::mmap => {
+                if let Ok(start) = u64::try_from(result) {
+                    state.invalidate_attempted_pages(start, args.arg1 as u64, page_size);
+                }
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            Sysno::munmap | Sysno::mprotect | Sysno::pkey_mprotect => {
+                state.invalidate_attempted_pages(args.arg0 as u64, args.arg1 as u64, page_size);
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            Sysno::mremap => {
+                state.invalidate_attempted_pages(args.arg0 as u64, args.arg1 as u64, page_size);
+                if let Ok(start) = u64::try_from(result) {
+                    state.invalidate_attempted_pages(start, args.arg2 as u64, page_size);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_liteinst_mapping_syscall(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<Wait, Error> {
+        let tid = self.tid();
+        if self.validate_liteinst_mapping_execution(nr, args).is_err() {
+            return Err(Error::runtime(
+                tid,
+                "validate LiteInst mapping mutation",
+                format!("{nr} overlaps an active LiteInst hook footprint"),
+            ));
+        }
+        let wait = self
+            .syscall_stopped(task, None)
+            .tracee_context(tid, "resume controller-observed mapping syscall")?
+            .next_state()
+            .await
+            .tracee_context(tid, "wait for controller-observed mapping syscall")?;
+        self.arm_liteinst_wait(&wait);
+        match wait {
+            Wait::Stopped(stopped, Event::Syscall) => {
+                let regs = stopped
+                    .getregs()
+                    .tracee_context(tid, "read controller-observed mapping result")?;
+                let result = Errno::from_ret(regs.ret() as usize).map(|value| value as i64);
+                self.observe_liteinst_mapping_result(nr, args, result);
+                self.resume_stopped(stopped, None)
+                    .tracee_context(tid, "resume after controller-observed mapping syscall")?
+                    .next_state()
+                    .await
+                    .tracee_context(tid, "wait after controller-observed mapping syscall")
+            }
+            Wait::Stopped(_, event) => Err(Error::runtime(
+                tid,
+                "observe LiteInst mapping syscall",
+                format!("unexpected stopped event: {event:?}"),
+            )),
+            Wait::Exited(_, exit_status) => self.exit(exit_status).await,
+        }
+    }
+
+    async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
+        let tid = self.tid();
+        let syscall = self
+            .get_syscall(&task)
+            .tracee_context(tid, "read registers at seccomp stop")?;
+        let (nr, args) = syscall.into_parts();
+        let tool_subscribed = self
+            .global_state
+            .subscriptions
+            .iter_syscalls()
+            .any(|subscribed| subscribed == nr);
+        if is_liteinst_mapping_syscall(nr) && !tool_subscribed {
+            return self.handle_liteinst_mapping_syscall(task, nr, args).await;
+        }
+        self.record_retained_liteinst_fallback_hit(&task);
+        let (installed_task, syscall_already_skipped, liteinst_resume_rip) =
+            self.maybe_install_liteinst_site(task, nr).await?;
+        task = installed_task;
+        #[cfg(target_arch = "x86_64")]
+        let is_legacy_vsyscall = !syscall_already_skipped
+            && is_legacy_vsyscall_ip(
+                task.getregs()
+                    .tracee_context(tid, "identify legacy vsyscall stop")?
+                    .ip(),
+            );
+        #[cfg(not(target_arch = "x86_64"))]
+        let is_legacy_vsyscall = false;
+        let span = tracing::trace_span!(
+            target: "reverie_ptrace::syscall",
+            "syscall.intercept",
+            tid = %tid,
+            syscall = %nr,
+            args = ?SyscallArgsForLog {
+                nr,
+                args,
+                command_bootstrap: self.command_bootstrap,
+            },
+        );
+
+        async {
+            tracing::trace!(
+                target: "reverie_ptrace::syscall",
+                "intercepting guest syscall"
+            );
+            self.pending_syscall = Some((nr, args));
+            self.pending_syscall_already_skipped = syscall_already_skipped;
+
+            let retval = cancellable(self.cancel_handler.clone(), async {
+                self.process_state
+                    .clone()
+                    .handle_syscall_event(self, syscall)
+                    .await
+            })
+            .await;
+
+            // A returned emulation must consume its original stop just like an
+            // injection. Keeping Some after skipping would let a later signal
+            // or timer callback mistake an ordinary stop for a seccomp entry.
+            let pending_syscall = self.pending_syscall.take();
+            let emulate_legacy_vsyscall = is_legacy_vsyscall && pending_syscall.is_some();
+            // The kernel owns the synthetic `ret` from the fixed vsyscall
+            // page. That path stays at its seccomp stop and is marked skipped
+            // below, so the kernel returns without stepping the caller.
+            if pending_syscall.is_some() && !syscall_already_skipped && !emulate_legacy_vsyscall {
+                task = self
+                    .skip_seccomp_syscall(task)
+                    .await
+                    .tracee_context(tid, "skip intercepted syscall")?;
+            }
+
+            self.timer.finalize_requests();
+
+            if let Some(retval) = retval {
+                let ret = match retval {
+                    Ok(x) => x as u64,
+                    Err(err) => (-(err.into_errno()?.into_raw() as i64)) as u64,
+                };
+
+                #[cfg(target_arch = "x86_64")]
+                if emulate_legacy_vsyscall {
+                    let mut regs = task
+                        .getregs()
+                        .tracee_context(tid, "read legacy-vsyscall registers")?;
+                    *regs.orig_syscall_mut() = -1i64 as u64;
+                    *regs.ret_mut() = ret;
+                    task.setregs(&regs)
+                        .tracee_context(tid, "set legacy-vsyscall result")?;
+                } else {
+                    set_ret(&task, ret).tracee_context(tid, "set intercepted syscall result")?;
+                }
+
+                #[cfg(not(target_arch = "x86_64"))]
+                set_ret(&task, ret).tracee_context(tid, "set intercepted syscall result")?;
+            }
+
+            self.pending_syscall_already_skipped = false;

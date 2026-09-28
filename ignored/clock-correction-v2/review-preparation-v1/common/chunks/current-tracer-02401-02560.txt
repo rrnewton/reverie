@@ -1,0 +1,160 @@
+                // has constructed the stopped child's clock and resumed it.
+                #[cfg(all(test, target_arch = "x86_64"))]
+                if clock_test_launcher_branches != 0 {
+                    core::arch::asm!(
+                        "2:",
+                        "dec {count}",
+                        "jnz 2b",
+                        count = inout(reg) clock_test_launcher_branches => _,
+                        options(nomem, nostack),
+                    );
+                }
+                Ok(())
+            });
+        }
+
+        command.seccomp(seccomp_filter(&traced_events));
+
+        let mut child = command.spawn().context("Failed to spawn tracee")?;
+        let guest_pid = child.id();
+        if let Some(runtime) = self.liteinst_runtime.as_ref() {
+            // Publish the session root before any task can observe the config.
+            // Everything LiteInst-root-scoped keys off this exact TID rather
+            // than the `tid == pid` shape, which a forked child also has.
+            runtime
+                .root_tid
+                .set(guest_pid)
+                .expect("LiteInst root TID is published exactly once per spawn");
+        }
+        let running_child = Running::new(guest_pid);
+        let liteinst_newborn_tracees = self
+            .liteinst_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.newborn_tracees));
+        let liteinst_held_root_stop = self
+            .liteinst_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let liteinst_instrumentation_stats = self
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.instrumentation_stats.as_ref().map(Arc::clone));
+        #[cfg(test)]
+        let fail_discovery_once = self
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.fail_discovery_once.clone());
+        #[cfg(test)]
+        let fail_after_scan_once = self
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.fail_after_scan_once.clone());
+        #[cfg(test)]
+        let force_task_scan_once = self
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.force_task_scan_once.clone());
+        let mut liteinst_cleanup = if liteinst_fail_closed {
+            match LiteinstTraceeCleanup::new(
+                guest_pid,
+                liteinst_newborn_tracees.expect("LiteInst runtime config must exist"),
+                liteinst_held_root_stop.expect("LiteInst runtime config must exist"),
+            ) {
+                Ok(cleanup) => {
+                    #[cfg(test)]
+                    let cleanup = {
+                        let mut cleanup = cleanup;
+                        cleanup.fail_discovery_once = fail_discovery_once;
+                        cleanup.fail_after_scan_once = fail_after_scan_once;
+                        cleanup.force_task_scan_once = force_task_scan_once;
+                        cleanup
+                    };
+                    Some(cleanup)
+                }
+                Err(error) => {
+                    // pidfd is a required LiteInst cleanup capability. The
+                    // just-spawned, unreaped PID cannot have been reused yet,
+                    // so a one-time numeric kill is safe only on this setup
+                    // failure path; all active guards signal through pidfd.
+                    let kill_result = unsafe { libc::kill(guest_pid.as_raw(), libc::SIGKILL) };
+                    let kill_error = (kill_result == -1).then(Errno::last);
+                    let drain_result = drain_unregistered_child(Running::new(guest_pid));
+                    return Err(liteinst_pidfd_setup_error(
+                        guest_pid,
+                        error,
+                        kill_error,
+                        drain_result,
+                    )
+                    .into());
+                }
+            }
+        } else {
+            None
+        };
+
+        // Configure the gdb server (if any).
+        let gdbserver = match self.gdbserver {
+            None => None,
+            Some(connection) => {
+                let server = match connection {
+                    GdbConnection::Addr(addr) => GdbServer::from_addr(addr).await,
+                    GdbConnection::Path(path) => GdbServer::from_path(&path).await,
+                };
+
+                let mut server = server.with_context(|| {
+                    format!("failed to start GDB server for tracee {guest_pid}")
+                })?;
+
+                if self.sequentialized_guest {
+                    server.sequentialized_guest();
+                }
+
+                Some(server)
+            }
+        };
+
+        // From this point on, every wait status belongs to safeptrace's
+        // notifier. Cancellation and initialization errors must request
+        // termination through the guard and await notifier unregistration;
+        // they must never call raw waitpid for this PID.
+        if let Some(cleanup) = liteinst_cleanup.as_mut() {
+            cleanup.register_notifier(&running_child);
+        }
+
+        let tracer = match postspawn::<T>(
+            running_child,
+            gref.clone(),
+            config,
+            TracedTaskOptions {
+                command_bootstrap: true,
+                events: &events,
+                injected_syscall_trap: self.injected_syscall_trap,
+                liteinst_runtime: self.liteinst_runtime,
+                backend_stats: backend_stats.clone(),
+            },
+            gdbserver,
+        )
+        .await
+        {
+            Ok(tracer) => tracer,
+            Err(err) => {
+                let error = initialization_error(guest_pid, err).await;
+                if let Some(cleanup) = liteinst_cleanup.as_mut()
+                    && let Err(cleanup_error) = cleanup.terminate_and_confirm()
+                {
+                    return Err(anyhow::anyhow!(
+                        "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
+                    )
+                    .into());
+                }
+                return Err(error);
+            }
+        };
+
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        // Don't let the drop logic run for the child. Tokio will add the child to a
+        // "orphan queue" that will try to call `waitpid` on the process when a
+        // `SIGCHLD` signal is received. This interferes with our own process

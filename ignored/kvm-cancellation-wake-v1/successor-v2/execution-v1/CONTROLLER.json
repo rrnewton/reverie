@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "ignored/kvm-cancellation-wake-v1/successor-v2/execution-v1/execute.py"
+  ],
+  "pid": 454376,
+  "started_utc": "2026-09-19T11:23:31.242694+00:00",
+  "phases": [
+    "compile",
+    "inventory",
+    "new-tests",
+    "exec-rearm",
+    "poisoned-state",
+    "late-start",
+    "format-check"
+  ],
+  "outer_phase_guard": "frozen phase wall + 60 seconds; bounded stop/terminate/kill on controller refusal",
+  "caller_output_cap_bytes": 2097152,
+  "python_optimize": "0"
+}

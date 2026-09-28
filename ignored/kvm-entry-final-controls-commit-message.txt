@@ -1,0 +1,20 @@
+Exercise remaining KVM entry and memory ownership boundaries
+
+[hermit2, degraded-dev-hermit-14, gpt-6-astra, devbig014, role=impl]
+
+Cover actual pending signals before KVM_RUN and counted user execution across
+an interruption, sparse snapshot/copy ordering, thread registration while
+entry admission is closed, retained Host futex operands and allocation-held
+mmap file reads. Keep exact branch totals, bytes, ownership and dispositions.
+Explain the terminal trampoline and first helper-error contracts in source.
+
+Validation: all 258 selected declarations passed across 87 test launches
+(11.550 seconds summed test wall), plus normal compilation, formatting and
+strict all-target Clippy. Source manifest 01b84ec45642ecb3e35c2b213d3fbf1d1547b1cf2931770d228672014ca49a3e;
+evidence target 9ec84d5133be69f6a1de57993b83731c5b3a1e6929a315a4a746a4b95dae2c97.
+The first attempt's two fixture failures remain recorded: integer array
+inference at byte syscalls and a kernel-mode program excluded by the counter.
+
+The 13 strict Hermit consumer cases passed on the earlier source, while the
+three census cells retained their failures. Those results do not qualify
+this rebased head or establish full parity. Final external addendum pending.

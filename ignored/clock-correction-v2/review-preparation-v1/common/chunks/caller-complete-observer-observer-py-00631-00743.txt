@@ -1,0 +1,113 @@
+            require(launch['observer_sources'] == {name: digest(HERE / name) for name in launch['observer_sources']}, 'observer source changed during capture')
+            require(int(result['final_report']['bytes_written']) <= log_bytes, 'stderr byte count exceeds applied limit')
+            meta_path = Path(result['final_report']['log_file'] + '.meta')
+            meta = dict(line.split('=', 1) for line in meta_path.read_text().splitlines())
+            require(meta.get('cap') == str(log_bytes) and meta.get('truncated') == result['final_report']['truncated']
+                    and meta.get('bytes_written') == result['final_report']['bytes_written'], 'retained stderr receipt disagrees with report')
+            result['stderr_receipt_sha256'] = digest(meta_path)
+            result['loaded_systemd_library_after'] = loaded_systemd_library(reference)
+            require(result['loaded_systemd_library_after'] == result['loaded_systemd_library_before'], 'loaded systemd library identity changed during observation')
+            result['accounting_complete'] = True
+            result['comparison_eligible'] = (result['wrapper_exit_code'] == 0 and result['stop_reason'] is None
+                                             and result['final_report']['truncated'] == 'false'
+                                             and result['final_report']['unit_result'] == 'success')
+    except BaseException as error:
+        result['observer_error'] = type(error).__name__ + ': ' + str(error)
+    finally:
+        # Closing the private protocol refuses any waiting helper even when the
+        # wrapper reported no unit. No authorization was sent on those paths.
+        for channel in [connection, listener]:
+            if channel is not None:
+                channel.close()
+        if directory_fd is not None:
+            os.close(directory_fd)
+        if process is not None and process.poll() is None:
+            if unit is None:
+                # Stop only our fresh wrapper session before it can submit a late
+                # service. The bound wrapper emits its complete report before
+                # systemd-run; a submitted service therefore already has a report.
+                try:
+                    os.killpg(process.pid, signal.SIGSTOP)
+                    fields = report_fields(report)
+                    if 'env.forwarded' in fields:
+                        unit = authenticate_report(fields, launch)
+                except Exception as error:
+                    result['cleanup_identity_error'] = repr(error)
+                finally:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    result['wrapper_forced_cleanup'] = True
+            if unit is not None:
+                try:
+                    kill_owned_unit(unit, result['kill_commands'])
+                except Exception as error:
+                    result['cleanup_error'] = repr(error)
+            try:
+                result['wrapper_exit_code'] = process.wait(timeout=FINAL_SECONDS)
+            except subprocess.TimeoutExpired:
+                # The direct wrapper's fresh session is ours; never target another shell/service.
+                os.killpg(process.pid, signal.SIGKILL)
+                result['wrapper_exit_code'] = process.wait(timeout=2)
+                result['wrapper_forced_cleanup'] = True
+        if process is not None and result['wrapper_exit_code'] is None:
+            result['wrapper_exit_code'] = process.poll()
+        if reference is not None and reference.held and initial is not None and group is not None and result['final_accounting'] is None:
+            try:
+                values = unit_properties(reference, time.monotonic() + FINAL_SECONDS, final=True)
+                result['refusal_final_accounting'] = final_accounting(values, initial, unit, group, maximum_usage)
+            except Exception as error:
+                result['refusal_final_accounting_error'] = repr(error)
+        if reference is not None:
+            try:
+                result['loaded_systemd_library_final_readback'] = loaded_systemd_library(reference)
+                require(result['loaded_systemd_library_final_readback'] == result.get('loaded_systemd_library_before'), 'loaded systemd library changed at cleanup')
+            except Exception as error:
+                result['library_readback_error'] = repr(error)
+                result['comparison_eligible'] = False
+            try:
+                reference.close()
+            except Exception as error:
+                result['reference_cleanup_error'] = repr(error)
+                result['comparison_eligible'] = False
+            result['systemd_calls'] = reference.calls
+        result['sample_count'] = sample_count
+        result['maximum_sampled_usage_usec'] = maximum_usage if sample_count else None
+        result['completed_monotonic_ns'] = time.monotonic_ns()
+        result['elapsed_seconds'] = (result['completed_monotonic_ns'] - launch['monotonic_ns']) / 1e9
+        if report.exists():
+            result['safehermit_report_sha256'] = digest(report)
+        write_new(out / 'result.json', result)
+    return result
+
+
+def harden_observer():
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2,) * 2)
+    require(ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0, 'could not disable observer dumpability')
+    os.umask(0o077)
+
+
+def main():
+    harden_observer()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--out', required=True)
+    parser.add_argument('--cpu-usec', type=int, required=True)
+    parser.add_argument('--wall-seconds', type=int, required=True)
+    parser.add_argument('--log-bytes', type=int, default=67108864)
+    parser.add_argument('--memory-bytes', type=int, choices=[4 * 1024**3, 16 * 1024**3], default=16 * 1024**3)
+    parser.add_argument('binary')
+    parser.add_argument('arguments', nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    observer_bound = STARTUP_SECONDS + args.wall_seconds + 2 * FINAL_SECONDS + 5
+    require(observer_bound > 0, 'invalid observer bound')
+    resource.setrlimit(resource.RLIMIT_CPU, (observer_bound, observer_bound))
+    def expired(_number, _frame):
+        raise Refusal('independent observer wall bound expired')
+    signal.signal(signal.SIGALRM, expired)
+    signal.alarm(observer_bound)
+    result = observe(args.out, args.binary, args.arguments, args.cpu_usec, args.wall_seconds, args.log_bytes, args.memory_bytes)
+    print(json.dumps({key: result[key] for key in ['wrapper_exit_code', 'stop_reason', 'observer_error', 'accounting_complete', 'comparison_eligible', 'elapsed_seconds']}))
+    return 0 if result['comparison_eligible'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

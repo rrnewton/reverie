@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.061156913
+    }
+  ]
+}

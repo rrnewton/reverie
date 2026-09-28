@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/usr/local/fbcode/platform010/bin/python3.12",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude/audit-final.py"
+  ],
+  "raw_exit_code": 1,
+  "elapsed_seconds": 0.6647694949060678,
+  "python_optimize": 0
+}

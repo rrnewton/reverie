@@ -1,0 +1,33 @@
+{
+  "base": "68569ed7fd5c3667456d1d3e0d74ba66264242f4",
+  "tree": "8e9a1d6b22b421992508e26855a568314a12bddf",
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source",
+  "manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/SOURCE-MANIFEST.json",
+    "bytes": 472053,
+    "sha256": "dfd21968df3b73ba28a7388f3504b8891e3f13035dab6f364e69fbe2947d1211",
+    "mode": 420
+  },
+  "linear_source_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/LINEAR-SOURCE-PLAN.json",
+    "bytes": 1883,
+    "sha256": "80b30e04ec017ba6cfe7e4d4ef7fcb289657031933d48f30c5c0e881a3de6fe8",
+    "mode": 420
+  },
+  "patches": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/01-cpuid-on-v7.patch",
+      "bytes": 75674,
+      "sha256": "c1c7add220f014f24079104386908c5aa3d8d964f5224fc67b0fb82379fc423b",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/02-capture-after-cpuid.patch",
+      "bytes": 57121,
+      "sha256": "83426cc72e517dee01139891a908c307719b0eb3ee57ca21fd25ac7954e663fc",
+      "mode": 420
+    }
+  ],
+  "qualified": false,
+  "source_reviewed": false
+}

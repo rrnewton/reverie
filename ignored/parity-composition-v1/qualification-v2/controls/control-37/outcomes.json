@@ -1,0 +1,24 @@
+{
+  "started": [
+    "static_elf_runs_glibc_clone3_thread_and_restores_parent_state"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.986468138
+    }
+  ]
+}

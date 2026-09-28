@@ -1,0 +1,160 @@
+                    std::thread::Builder::new().name(format!("reverie-kvm-guest-{child_tid}")),
+                    (
+                        child,
+                        child_executor,
+                        child_tool,
+                        child_thread_state,
+                        global_state,
+                        config,
+                        subscriptions,
+                    ),
+                    move |(
+                        mut child,
+                        mut child_executor,
+                        child_tool,
+                        child_thread_state,
+                        global_state,
+                        config,
+                        subscriptions,
+                    )| {
+                        let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || {
+                                let start = start_receiver.recv();
+                                let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                                let failure = match start {
+                                    Ok(command) => command.failure(),
+                                    Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+                                        "KVM guest thread {child_tid} lost its parent start gate"
+                                    ))),
+                                };
+                                let result = if cancel {
+                                    futures::executor::block_on(child.finish_unstarted_tool(
+                                        &mut child_executor,
+                                        child_tool,
+                                        (tgid, child_tid_pid),
+                                        global_state.as_ref(),
+                                        &config,
+                                        child_thread_state,
+                                        failure,
+                                    ))
+                                } else {
+                                    futures::executor::block_on(
+                                        child.run_static_elf_process_with_tool(
+                                            &mut child_executor,
+                                            tgid,
+                                            child_tid_pid,
+                                            child_tool,
+                                            child_thread_state,
+                                            global_state,
+                                            &config,
+                                            &subscriptions,
+                                            false,
+                                        ),
+                                    )
+                                };
+                                child.release_thread_slot();
+                                clear_tid_and_wake(
+                                    &mut child.memory,
+                                    child_executor.take_clear_child_tid(),
+                                );
+                                let peer_cancelled = crate::runtime::is_peer_cancelled_tool_worker(
+                                    (tgid, child_tid_pid),
+                                    !cancel,
+                                    &result,
+                                );
+                                if result.is_err() && !peer_cancelled {
+                                    child_executor.retire_failed_thread();
+                                    child.thread_group.record_worker_failure(child_tid);
+                                }
+                                if let Err(error) = &result
+                                    && !peer_cancelled
+                                    && child.thread_group.take_worker_error_report(child_tid)
+                                {
+                                    eprintln!(
+                                        "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+                                    );
+                                }
+                                result
+                            },
+                        ));
+                        match execution {
+                            Ok(result) => result,
+                            Err(payload) => child.finish_panicked_guest_worker(
+                                &mut child_executor,
+                                child_tid,
+                                payload,
+                            ),
+                        }
+                    },
+                );
+                let handle = match handle {
+                    Ok(handle) => handle,
+                    Err((
+                        error,
+                        (
+                            mut child,
+                            mut child_executor,
+                            child_tool,
+                            child_thread_state,
+                            global_state,
+                            config,
+                            _,
+                        ),
+                    )) => {
+                        return child
+                            .finish_unstarted_tool(
+                                &mut child_executor,
+                                child_tool,
+                                (tgid, child_tid_pid),
+                                global_state.as_ref(),
+                                &config,
+                                child_thread_state,
+                                Some(Error::HostIo(error)),
+                            )
+                            .await
+                            .map(|_| unreachable!("failed spawn completed successfully"));
+                    }
+                };
+                self.thread_group
+                    .add_unstarted_worker(child_tid, start_gate.clone(), handle);
+                pending_child_starts
+                    .lock()
+                    .expect("KVM child-start lock poisoned")
+                    .push(PendingChildStart::tool_thread(child_tid, start_gate));
+                Ok(ProcessActionOutcome::returned(i64::from(child_tid)))
+            }
+            other => self.run_process_action_inner(executor, other, park_syscall_return, fault),
+        }
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 2659..2759; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+        }))
+    }
+
+    pub(crate) fn set_rdtsc_interception(&mut self, enabled: bool) -> Result<()> {
+        crate::bootstrap::set_userspace_rdtsc_interception(&self.vcpu, enabled)?;
+        self.intercept_rdtsc = enabled;
+        Ok(())
+    }
+
+    pub(crate) fn set_cpuid_interception(&mut self, enabled: bool) -> Result<()> {
+        self.cpuid_interception.configure(&self.vcpu, enabled)
+    }
+
+    pub(crate) fn has_cpuid_interception(&self) -> bool {
+        self.cpuid_interception.enabled()
+    }
+
+    pub(crate) fn tool_instruction_exception(&self) -> Result<Option<ToolInstructionBoundary>> {
+        if let Some(boundary) = self.cpuid_instruction_exception()? {
+            return Ok(Some(ToolInstructionBoundary::Cpuid(boundary)));
+        }
+        Ok(self
+            .timestamp_counter_exception()?
+            .map(ToolInstructionBoundary::Timestamp))
+    }
+
+    fn cpuid_instruction_exception(&self) -> Result<Option<CpuidBoundary>> {
+        if !self.cpuid_interception.enabled() {
+            return Ok(None);
+        }

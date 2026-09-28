@@ -1,0 +1,79 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-control-v1/source-3/reverie-kvm/src/entry.rs	2026-09-19 04:12:40.894139043 -0700
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-control-v1/source-4/reverie-kvm/src/entry.rs	2026-09-19 04:13:35.596877812 -0700
+@@ -14,6 +14,9 @@
+ 
+ use std::collections::BTreeMap;
+ use std::marker::PhantomData;
++use std::panic::AssertUnwindSafe;
++use std::panic::catch_unwind;
++use std::panic::resume_unwind;
+ use std::rc::Rc;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+@@ -294,13 +297,27 @@
+         };
+         state.next_close = id;
+         state.admission = Admission::Closing(id);
+-        let send_error = state.members.values().find_map(|member| {
+-            if let Activity::Running(thread) = member.activity {
+-                send(thread).err()
+-            } else {
+-                None
++        // Keep an operation's unwind from poisoning the registry mutex:
++        // entry destructors still need it to withdraw and retire their target.
++        let send_error = catch_unwind(AssertUnwindSafe(|| {
++            state.members.values().find_map(|member| {
++                if let Activity::Running(thread) = member.activity {
++                    send(thread).err()
++                } else {
++                    None
++                }
++            })
++        }));
++        let send_error = match send_error {
++            Ok(result) => result,
++            Err(payload) => {
++                state.fail(None, protocol_failure("interrupt running vCPU unwound"));
++                let sender = state.changed();
++                drop(state);
++                notify(sender);
++                resume_unwind(payload);
+             }
+-        });
++        };
+         let result = match send_error {
+             Some(error) => Err(state.fail(None, failure("interrupt running vCPU", error))),
+             None => Ok(Some(Closing {
+@@ -415,7 +432,7 @@
+     }
+ }
+ 
+-/// This guard cannot move between pthreads or survive an async suspension.
++/// This guard cannot move between pthreads and must not cross an async suspension.
+ /// Its caller owns signal blocking/restoration and clock cleanup. A lost guard
+ /// leaves failed accounting; it cannot manufacture a successful fence.
+ pub(crate) struct Entry<'a> {
+@@ -441,7 +458,22 @@
+         if state.admission != Admission::Open {
+             return Ok(false);
+         }
+-        if let Err(error) = install_mask() {
++        let installed = catch_unwind(AssertUnwindSafe(install_mask));
++        let installed = match installed {
++            Ok(result) => result,
++            Err(payload) => {
++                let origin = state.members[&self.participant.id].origin.clone();
++                state.fail(
++                    origin,
++                    protocol_failure("install KVM temporary signal mask unwound"),
++                );
++                let sender = state.changed();
++                drop(state);
++                notify(sender);
++                resume_unwind(payload);
++            }
++        };
++        if let Err(error) = installed {
+             let origin = state.members[&self.participant.id].origin.clone();
+             let error = state.fail(origin, error);
+             let sender = state.changed();

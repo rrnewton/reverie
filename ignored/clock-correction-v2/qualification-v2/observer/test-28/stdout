@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "tracer::tests::child_death_before_initialization_error_does_not_hang" }
+{ "type": "test", "name": "tracer::tests::child_death_before_initialization_error_does_not_hang", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.001271119 }

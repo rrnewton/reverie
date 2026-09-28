@@ -1,0 +1,9 @@
+{
+  "operation": "read-only final input authentication",
+  "raw_status": 1,
+  "error": "not a regular file: /usr/bin/python3",
+  "cause": "Historical observer source index records a literal alias with resolved-content hash; freezer initially treated every row as a regular file.",
+  "correction": "Bind literal symlink plus authenticated resolved target, retaining exact source index unchanged.",
+  "no_payload_or_lease_admission": true,
+  "no_source_or_caller_algorithm_change": true
+}

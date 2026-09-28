@@ -1,0 +1,160 @@
++    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
++    assert_eq!(unsafe { libc::fstat(fd, stat.as_mut_ptr()) }, 0);
++    unsafe { stat.assume_init() }
++}
++
++#[test]
++fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
++    let root = TestDir::new();
++    let mut state = test_state(&root.0);
++    let mut memory = GuestMemory::new(0, 0x4000).unwrap();
++    let mut output = CapturedOutput::try_new().unwrap();
++    assert_eq!(
++        syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_pipe2,
++            [0x1800, 0, 0, 0, 0, 0]
++        ),
++        0
++    );
++    let pipe: [i32; 2] = read_struct(&memory, 0x1800);
++    let native_pipe = capture_native_stat(state.files[&pipe[0]].as_raw_fd());
++    let ordinary =
++        assert_descriptor_stat_routes(&mut memory, &mut state, pipe[0], Some(&mut output));
++    assert_eq!(
++        (ordinary.st_dev, ordinary.st_ino),
++        (native_pipe.st_dev, native_pipe.st_ino)
++    );
++    let mut captured_inodes = Vec::new();
++    for (fd, keeper) in [1, 2].into_iter().zip(output.identities.descriptors()) {
++        let native_capture = capture_native_stat(keeper);
++        assert_eq!(
++            unsafe { libc::fcntl(keeper, libc::F_GETFD) },
++            libc::FD_CLOEXEC
++        );
++        let captured =
++            assert_descriptor_stat_routes(&mut memory, &mut state, fd, Some(&mut output));
++        assert_eq!(
++            captured.st_dev, native_pipe.st_dev,
++            "capture and guest pipe must share pipefs"
++        );
++        assert_eq!(
++            (captured.st_dev, captured.st_ino),
++            (native_capture.st_dev, native_capture.st_ino)
++        );
++        assert_ne!(
++            captured.st_ino, native_pipe.st_ino,
++            "the reserved capture inode is a distinct live pipe"
++        );
++        captured_inodes.push(captured.st_ino);
++        write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
++        for (number, args) in [
++            (
++                libc::SYS_newfstatat,
++                [
++                    libc::AT_FDCWD as u64,
++                    0x100,
++                    0x800,
++                    libc::AT_SYMLINK_NOFOLLOW as u64,
++                    0,
++                    0,
++                ],
++            ),
++            (
++                libc::SYS_statx,
++                [
++                    libc::AT_FDCWD as u64,
++                    0x100,
++                    libc::AT_SYMLINK_NOFOLLOW as u64,
++                    libc::STATX_BASIC_STATS as u64,
++                    0x1000,
++                    0,
++                ],
++            ),
++        ] {
++            assert_eq!(
++                metadata_call(&mut memory, &mut state, Some(&mut output), number, args),
++                0
++            );
++        }
++        let link: libc::stat = read_struct(&memory, 0x800);
++        let linkx: libc::statx = read_struct(&memory, 0x1000);
++        assert_eq!(link.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
++        assert_eq!(link.st_mode & libc::S_IFMT, libc::S_IFLNK);
++        assert_eq!(
++            (linkx.stx_dev_major, linkx.stx_dev_minor, linkx.stx_ino),
++            (
++                libc::major(link.st_dev),
++                libc::minor(link.st_dev),
++                link.st_ino
++            )
++        );
++        assert_eq!(linkx.stx_mode & libc::S_IFMT as u16, libc::S_IFLNK as u16);
++        let expected = format!("pipe:[{}]", captured.st_ino);
++        let count = metadata_call(
++            &mut memory,
++            &mut state,
++            Some(&mut output),
++            libc::SYS_readlink,
++            [0x100, 0x2000, 256, 0, 0, 0],
++        );
++        assert_eq!(count as usize, expected.len());
++        let mut bytes = vec![0; count as usize];
++        memory.read(0x2000, &mut bytes).unwrap();
++        assert_eq!(bytes, expected.as_bytes());
++    }
++    assert_ne!(captured_inodes[0], captured_inodes[1]);
++}
++
++fn capture_executor_stat(executor: &mut ElfExecutor, memory: &GuestMemory, fd: i32) -> (u64, u64) {
++    assert_eq!(
++        executor.execute(
++            &SyscallRequest::new(libc::SYS_fstat as u64, [fd as u64, 0x800, 0, 0, 0, 0]),
++            memory
++        ),
++        0
++    );
++    let stat: libc::stat = read_struct(memory, 0x800);
++    (stat.st_dev, stat.st_ino)
++}
++
++#[test]
++fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
++    let root = TestDir::new();
++    let owner = CapturedOutput::try_new().unwrap();
++    let mut state = test_state(&root.0);
++    let regular = std::fs::File::open("/dev/null").unwrap();
++    let raw = capture_native_stat(regular.as_raw_fd());
++    let ordinary = insert_file_with_flags(&mut state, regular, false, None) as i32;
++    assert!(ordinary >= 3);
++    let mut parent = ElfExecutor::with_output(state, Some(owner.clone()));
++    let mut memory = GuestMemory::new(0, 0x4000).unwrap();
++    let stdout = capture_executor_stat(&mut parent, &memory, 1);
++    let stderr = capture_executor_stat(&mut parent, &memory, 2);
++    assert_eq!(stdout.0, stderr.0);
++    assert_ne!(stdout.1, stderr.1);
++    let alias = parent.execute(
++        &SyscallRequest::new(libc::SYS_dup as u64, [1, 0, 0, 0, 0, 0]),
++        &memory,
++    ) as i32;
++    assert!(alias >= 3);
++    let fcntl_alias = parent.execute(
++        &SyscallRequest::new(
++            libc::SYS_fcntl as u64,
++            [alias as u64, libc::F_DUPFD as u64, 20, 0, 0, 0],
++        ),
++        &memory,
++    ) as i32;
++    assert!(fcntl_alias >= 20);
++    write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{alias}"));
++    let reopened = parent.execute(
++        &SyscallRequest::new(
++            libc::SYS_open as u64,
++            [0x100, libc::O_WRONLY as u64, 0, 0, 0, 0],
++        ),
++        &memory,
++    ) as i32;
++    assert!(reopened >= 3);
++    for fd in [alias, fcntl_alias, reopened] {
++        assert_eq!(capture_executor_stat(&mut parent, &memory, fd), stdout);

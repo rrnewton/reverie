@@ -1,0 +1,21 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/run.py
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/run.py
+@@ -1,6 +1,6 @@
+ import hashlib,json,os,pathlib,re,selectors,shutil,subprocess,sys,time
+ root=pathlib.Path('/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918')
+-owned=root/'ignored/kvm-cancellation-wake-v1'
++owned=root/'ignored/kvm-cancellation-wake-v1/successor-v2'
+ contract=json.loads((owned/'CALLER-CONTRACT.json').read_text())
+ def digest(path):
+  with open(path,'rb') as stream: return hashlib.file_digest(stream,'sha256').hexdigest()
+@@ -59,7 +59,10 @@
+   refusal='outer deadline'; subprocess.run(['/usr/bin/systemctl','--user','stop',unit],check=False)
+ for f in streams.values(): f.close()
+ rc=p.wait(); result={'raw_status':rc,'elapsed_seconds':time.monotonic()-started,'stream_bytes':counts,'refusal':refusal}
++(out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+ check_sources()
++if phase in ['inventory',*contract['tests']]:
++ assert executable.stat().st_size==binding['bytes'] and digest(executable)==binding['sha256']
+ result['source_unchanged']=True
+ (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+ if rc==0 and refusal is None:

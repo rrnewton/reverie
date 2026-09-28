@@ -1,0 +1,160 @@
+                                    .with_cleanup(hidden.err().into_iter().collect()));
+                                }
+                            };
+                            hidden?;
+                            if process_completed {
+                                return Err(Error::UnexpectedVcpuExit(
+                                    "instruction callback changed the process continuation"
+                                        .to_owned(),
+                                ));
+                            }
+                            if let Some((segment, address)) = executor.take_segment() {
+                                set_user_segment_base(&self.vcpu, segment, address)?;
+                            }
+                            self.resume_tool_instruction(boundary, value)?;
+                            continue;
+                        }
+                        if self.try_resume_vmware_backdoor_probe()? {
+                            continue;
+                        }
+                        let Some(fault) = self.capture_page_zero_fault(executor)? else {
+                            return Err(self.static_elf_halt_error()?);
+                        };
+                        executor.prepare_captured_page_zero_fault();
+                        executor.set_current_user_stack_pointer(fault.registers.rsp);
+                        let pending = self
+                            .filter_next_pending_signal_with_tool(
+                                executor,
+                                pid,
+                                tid,
+                                &tool,
+                                &memory,
+                                &auxv,
+                                fault.registers,
+                                u64::MAX,
+                                self.syscall_frame_address,
+                                &mut thread_state,
+                                &global_state,
+                                config,
+                                subscriptions,
+                                &stack_checked_out,
+                                Some(&fault),
+                                false,
+                            )
+                            .await?;
+                        let pending = match pending {
+                            CallbackOutcome::Completed(pending) => pending,
+                            CallbackOutcome::ThreadCancelled => {
+                                return Ok(self.cancelled_tool_thread_status(executor));
+                            }
+                        };
+                        if let Some((segment, address)) = executor.take_segment() {
+                            set_user_segment_base(&self.vcpu, segment, address)?;
+                        }
+                        if !executor.has_pending_exit() {
+                            if let Some(pending) = pending {
+                                self.deliver_page_zero_fault(executor, &fault, pending)?;
+                            } else {
+                                fault.resume_user(self, fault.registers)?;
+                            }
+                        }
+                        if let Some(exit) = executor.take_exit() {
+                            self.discard_process_clear_tid_at_signal_return(executor);
+                            if exit.group {
+                                self.request_guest_thread_group_exit(exit.status);
+                            }
+                            return Ok(exit.into());
+                        }
+                        continue;
+                    }
+                    exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+                };
+                // A CLONE_THREAD worker runs on its own vCPU with a per-thread
+                // syscall area, so the transported frame is `self.syscall_frame_address`
+                // (equal to the root constant for the process leader, distinct for
+                // each worker), not the fixed root `SYSCALL_FRAME_ADDRESS`.
+                if frame_address != self.syscall_frame_address {
+                    return Err(Error::UnexpectedVcpuExit(format!(
+                        "syscall frame is at unexpected address {frame_address:#x}"
+                    )));
+                }
+                let registers = self.vcpu.get_regs()?;
+                let request = SyscallRequest::read_from(&memory, frame_address)?;
+                // The KVM_RUN hypercall return slot is one-shot storage. Publish
+                // its unused value exactly once while this decoded exit is live;
+                // process actions may re-enter the vCPU before the Tool callback
+                // returns, after which this pointer must never be reused.
+                unsafe {
+                    (return_slot as *mut u64).write(0);
+                }
+                let userspace =
+                    process_syscall_return_registers(&memory, registers, frame_address, 0, None)?;
+                executor.set_current_user_stack_pointer(userspace.rsp);
+                if request.number() == libc::SYS_rt_sigreturn as u64 {
+                    // `rt_sigreturn` is backend-owned: its apparent syscall result
+                    // is the register file restored from the guest frame, not an
+                    // ordinary scalar return value that a Tool can replace.
+                    let mut signal_exit = None;
+                    if let Some(restored) = self.restore_rt_sigreturn(executor, frame_address)? {
+                        executor.set_current_user_stack_pointer(restored.rsp);
+                        let pending = self
+                            .filter_one_pending_signal_with_tool(
+                                executor,
+                                pid,
+                                tid,
+                                &tool,
+                                &memory,
+                                &auxv,
+                                restored,
+                                request.number(),
+                                frame_address,
+                                &mut thread_state,
+                                &global_state,
+                                config,
+                                subscriptions,
+                                &stack_checked_out,
+                                false,
+                            )
+                            .await?;
+                        let pending = match pending {
+                            CallbackOutcome::Completed(pending) => pending,
+                            CallbackOutcome::ThreadCancelled => {
+                                return Ok(self.cancelled_tool_thread_status(executor));
+                            }
+                        };
+                        if let Some((segment, address)) = executor.take_segment() {
+                            set_user_segment_base(&self.vcpu, segment, address)?;
+                        }
+                        signal_exit = executor.take_exit();
+                        let delivered = if signal_exit.is_none()
+                            && let Some(pending) = pending
+                        {
+                            self.deliver_selected_signal_from_registers(
+                                executor,
+                                frame_address,
+                                restored,
+                                pending,
+                            )?
+                        } else {
+                            false
+                        };
+                        signal_exit = signal_exit.or_else(|| executor.take_exit());
+                        if !delivered && signal_exit.is_none() {
+                            stage_process_syscall_return(
+                                &mut memory,
+                                &self.vcpu,
+                                frame_address,
+                                restored,
+                            )?;
+                        }
+                    }
+                    signal_exit = signal_exit.or_else(|| executor.take_exit());
+                    if let Some(exit) = signal_exit {
+                        self.discard_process_clear_tid_at_signal_return(executor);
+                        if exit.group {
+                            self.request_guest_thread_group_exit(exit.status);
+                        }
+                        return Ok(exit.into());
+                    }
+                    continue;
+                }

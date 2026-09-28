@@ -1,0 +1,146 @@
+            elf[header + 32..header + 40].copy_from_slice(&length.to_le_bytes());
+            elf[header + 40..header + 48].copy_from_slice(&length.to_le_bytes());
+            elf[header + 48..header + 56].copy_from_slice(&0x1000u64.to_le_bytes());
+        }
+        elf[0x1000..0x1000 + code.len()].copy_from_slice(&code);
+        elf[0x2008..0x200a].copy_from_slice(b"OR");
+        let shared = if mode == Mode::PostExecTail {
+            let shared = path.with_extension("shared-word");
+            let mut data = vec![0u8; 4096];
+            data[8..10].copy_from_slice(b"OR");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&shared)
+                .unwrap();
+            file.write_all(&data).unwrap();
+            drop(file);
+            let name = shared.as_os_str().as_bytes();
+            assert!(name.len() + 65 < 4096);
+            elf[0x2040..0x2040 + name.len()].copy_from_slice(name);
+            Some(shared)
+        } else {
+            None
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&elf).unwrap();
+        file.set_permissions(std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        drop(file);
+        Self {
+            path,
+            shared,
+            timestamp_rip,
+        }
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).unwrap();
+        if let Some(path) = &self.shared {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+async fn run(mode: Mode) {
+    let fixture = Fixture::new(mode);
+    let mut command = Command::new(&fixture.path);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let tracer = TracerBuilder::<StopTool>::new(command)
+        .config(Config {
+            mode,
+            timestamp_rip: fixture.timestamp_rip,
+        })
+        .spawn()
+        .await
+        .unwrap();
+    let (output, log) = tokio::time::timeout(Duration::from_secs(5), tracer.wait_with_output())
+        .await
+        .expect("injection stop control hung")
+        .unwrap();
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(if mode == Mode::PostExecTail { 27 } else { 0 })
+    );
+    let expected_stdout: &[u8] = match mode {
+        Mode::Replace | Mode::TailOther | Mode::PostExecTail => b"R",
+        Mode::SameThenPrivate => b"OR",
+        Mode::TailSame => b"O",
+        _ => b"",
+    };
+    assert_eq!(output.stdout, expected_stdout);
+    if let Some(path) = &fixture.shared {
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(bytes.len(), 4096);
+        assert_eq!(
+            u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            0,
+            "tail injection executed entry before exiting"
+        );
+        assert_eq!(&bytes[8..10], b"OR");
+    }
+    assert!(
+        output.stderr.is_empty(),
+        "guest stderr: {:?}",
+        output.stderr
+    );
+    let expected = match mode {
+        Mode::PostExec => vec![Observation::PostExec, Observation::Boundary(1)],
+        Mode::PostExecTail => vec![Observation::PostExec],
+        Mode::Emulate | Mode::EmulateErrno => vec![
+            Observation::PostExec,
+            Observation::Emulated,
+            Observation::Timestamp,
+            Observation::Boundary(2),
+        ],
+        _ => vec![
+            Observation::PostExec,
+            Observation::Write,
+            Observation::Boundary(2),
+        ],
+    };
+    assert_eq!(log.0.into_inner().unwrap(), expected);
+    eprintln!("INJECTION_STOP_COMPLETE {mode:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn post_exec_injections_leave_entry_memory_untouched() {
+    run(Mode::PostExec).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn seccomp_replacement_suppresses_original_write_once() {
+    run(Mode::Replace).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn same_reinjection_then_private_injection_does_not_step_guest() {
+    run(Mode::SameThenPrivate).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn same_tail_injection_preserves_original_kernel_call() {
+    run(Mode::TailSame).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn different_tail_injection_replaces_original_once() {
+    run(Mode::TailOther).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn post_exec_tail_exit_leaves_entry_unexecuted() {
+    run(Mode::PostExecTail).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn emulated_return_consumes_stop_before_instruction_callback() {
+    run(Mode::Emulate).await;
+    run(Mode::EmulateErrno).await;
+}

@@ -1,0 +1,160 @@
++    code.extend_from_slice(&[0x0f, 0xa2]);
++    let mut failures = Vec::new();
++    for (register, value) in [0_u8, 3, 1, 2].into_iter().zip(values) {
++        code.extend_from_slice(&[0x49, 0xba]);
++        code.extend_from_slice(&u64::from(value).to_le_bytes());
++        code.extend_from_slice(&[0x4c, 0x39, 0xd0 | register]);
++        append_jne_failure(&mut code, &mut failures);
++    }
++    append_stats_exit(&mut code, true);
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 20, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    code
++}
++
++#[test]
++fn unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy() {
++    for (leaf, subleaf, expected) in [
++        (0x80000001, 0, [0x663, 0, 1, 0x20100800]),
++        (0xd, 1, [0; 4]),
++        (0xd, 17, [0; 4]),
++        (0xd, 19, [0; 4]),
++    ] {
++        let (log, status) = run_cpuid(
++            &table_program(leaf, subleaf, expected),
++            (false, 0),
++            ThreadOwnership::Tool,
++        );
++        assert_eq!(status, 0, "leaf={leaf:#x}, subleaf={subleaf}");
++        assert!(log.calls.lock().unwrap().is_empty());
++    }
++}
++
++#[test]
++fn cpuid_dispatch_survives_real_fork_and_same_pid_exec() {
++    let directory = TestDirectory::new();
++    let executable = directory.0.join("cpuid-exec-target");
++    let child_image = static_elf(&assertion_program(&[], 1, false));
++    std::fs::write(&executable, &child_image).unwrap();
++    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
++    let mut code = Vec::new();
++    let mut failures = Vec::new();
++    append_cpuid(&mut code, &[], 0, &mut failures);
++    code.extend_from_slice(&[
++        0xb8, 57, 0, 0, 0, 0x0f, 0x05, 0x85, 0xc0, 0x0f, 0x84, 0, 0, 0, 0,
++    ]);
++    let child_jump = code.len() - 4;
++    code.extend_from_slice(&[0x0f, 0x88]);
++    failures.push(code.len());
++    code.extend_from_slice(&0_i32.to_le_bytes());
++    code.extend_from_slice(&[
++        0x49, 0x89, 0xc5, // mov r13,rax: exact child identity
++        0x48, 0x89, 0xc7, // mov rdi,rax: wait for that child
++        0x48, 0x83, 0xec, 0x10, // sub rsp,16: real writable guest stack
++        0x48, 0x89, 0xe6, // mov rsi,rsp: wait status
++        0xc7, 0x06, 0xff, 0xff, 0xff, 0xff, // status sentinel, overwritten by wait4
++    ]);
++    code.extend_from_slice(&[
++        0x31, 0xd2, 0x45, 0x31, 0xd2, 0xb8, 61, 0, 0, 0, 0x0f, 0x05, 0x4c, 0x39, 0xe8,
++    ]);
++    append_jne_failure(&mut code, &mut failures);
++    code.extend_from_slice(&[0x83, 0x3e, 0]);
++    append_jne_failure(&mut code, &mut failures);
++    append_stats_exit(&mut code, true);
++    let child = code.len();
++    patch_stats_jump(&mut code, child_jump, child);
++    append_cpuid(&mut code, &[], 0, &mut failures);
++    code.extend_from_slice(&[0x48, 0xbf]);
++    let path_operand = code.len();
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    code.extend_from_slice(&[0x48, 0xbe]);
++    let argv_operand = code.len();
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    code.extend_from_slice(&[0x31, 0xd2, 0xb8, 59, 0, 0, 0, 0x0f, 0x05]); // a returned exec is failure
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 21, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    while !code.len().is_multiple_of(8) {
++        code.push(0);
++    }
++    let path = LOAD_ADDRESS + code.len() as u64;
++    code.extend_from_slice(executable.to_str().unwrap().as_bytes());
++    code.push(0);
++    while !code.len().is_multiple_of(8) {
++        code.push(0);
++    }
++    let argv = LOAD_ADDRESS + code.len() as u64;
++    code.extend_from_slice(&path.to_le_bytes());
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    for (operand, value) in [(path_operand, path), (argv_operand, argv)] {
++        code[operand..operand + 8].copy_from_slice(&value.to_le_bytes());
++    }
++    let (log, status) = run_cpuid(&code, (true, 0), ThreadOwnership::Tool);
++    assert_eq!(status, 0);
++    assert_eq!(
++        log.calls
++            .lock()
++            .unwrap()
++            .iter()
++            .map(|call| (call.0.as_raw(), call.1, call.2))
++            .collect::<Vec<_>>(),
++        vec![(1, 7, 2), (2, 7, 2), (2, 7, 2)]
++    );
++}
++
++#[test]
++fn cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges() {
++    let mut code = Vec::new();
++    let mut failures = Vec::new();
++    append_cpuid(&mut code, &[], 0, &mut failures);
++    // Retain the existing complete RDTSC/RDTSCP guest result and AUX checks.
++    // Its relative jumps remain local when placed after the CPUID assertion.
++    code.extend_from_slice(&timestamp_assertion_program());
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 22, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    let (log, status) = run_cpuid(&code, (true, 3), ThreadOwnership::Tool);
++    assert_eq!(status, 0);
++    let calls = log.calls.lock().unwrap();
++    assert_eq!(
++        calls
++            .iter()
++            .map(|call| (call.0.as_raw(), call.1, call.2))
++            .collect::<Vec<_>>(),
++        vec![(1, 7, 2), (1, u32::MAX, 0), (1, u32::MAX, 1)]
++    );
++    assert!(calls.windows(2).all(|pair| pair[1].3 > pair[0].3));
++}
+--- /dev/null
++++ b/reverie-kvm/tests/support/cpuid_terminal.rs
+@@ -0,0 +1,360 @@
++// Actual CPUID terminal transitions. These controls exercise the real
++// Tool/Guest/driver and consuming hooks; they do not model Detcore's clock RPC.
++use futures::channel::oneshot;
++
++use super::*;
++
++#[derive(Debug, Default)]
++struct SiblingGates {
++    entered: bool,
++    leader_entry: Option<oneshot::Sender<()>>,
++    worker_terminal: Option<oneshot::Sender<()>>,
++    leader_exit: Option<oneshot::Sender<()>>,
++}
++
++#[derive(Debug, Default)]
++struct TerminalLog {
++    events: Mutex<Vec<(u8, i32, ExitStatus)>>,

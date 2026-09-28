@@ -1,0 +1,160 @@
+    }
+    let siginfo = task.getsiginfo()?;
+    if !matches!(siginfo.si_code, libc::TRAP_TRACE | libc::TRAP_BRKPT) {
+        return Ok(false);
+    }
+
+    // Some x86 kernels report PTRACE_SINGLESTEP completion after `syscall` as
+    // TRAP_BRKPT rather than TRAP_TRACE. In either case, the private page is
+    // RWX and therefore guest-mutable, so accept the stop only while the exact
+    // controller-installed `syscall; ud2` stub remains intact.
+    #[cfg(target_arch = "x86_64")]
+    let expected_stub = [0x0f, 0x05, 0x0f, 0x0b];
+    #[cfg(target_arch = "aarch64")]
+    let expected_stub = [
+        0x01, 0x00, 0x00, 0xd4, // svc 0
+        0xad, 0xde, 0x00, 0x00, // udf 0xdead
+    ];
+    let mut observed_stub = [0; cp::SYSCALL_INSTR_SIZE * 2];
+    task.read_exact(cp::PRIVATE_PAGE_OFFSET, &mut observed_stub)?;
+    Ok(observed_stub == expected_stub)
+}
+
+enum NestedTrapExpectation {
+    None,
+    SyscallSkip { pre_rip: u64 },
+    Breakpoint(u64),
+    PrivateSyscall(u64),
+}
+#[derive(Clone)]
+pub(crate) struct InjectedSyscallTrap {
+    pub(crate) marker: u64,
+    pub(crate) rip: u64,
+    pub(crate) provenance: Option<InjectedSyscallProvenance>,
+}
+
+#[derive(Clone)]
+pub(crate) struct InjectedSyscallProvenance {
+    pub(crate) image: PathBuf,
+    pub(crate) image_inode: u64,
+    pub(crate) image_entry_address: u64,
+    pub(crate) patched_site_addresses: Arc<[u64]>,
+}
+
+#[derive(Debug)]
+struct GuestMap {
+    start: u64,
+    end: u64,
+    offset: u64,
+    device_major: u64,
+    device_minor: u64,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+    shared: bool,
+    inode: u64,
+    path: Option<PathBuf>,
+}
+
+impl GuestMap {
+    fn contains(&self, address: u64) -> bool {
+        self.start <= address && address < self.end
+    }
+
+    fn contains_range(&self, range: GuestRange) -> bool {
+        self.start <= range.start && range.end <= self.end
+    }
+}
+
+fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
+    let maps = std::fs::read(format!("/proc/{pid}/maps")).ok()?;
+    Some(
+        maps.split(|byte| *byte == b'\n')
+            .filter_map(parse_guest_map)
+            .collect(),
+    )
+}
+
+fn next_proc_maps_field<'a>(line: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
+    while line.get(*cursor).is_some_and(u8::is_ascii_whitespace) {
+        *cursor += 1;
+    }
+    let start = *cursor;
+    while line
+        .get(*cursor)
+        .is_some_and(|byte| !byte.is_ascii_whitespace())
+    {
+        *cursor += 1;
+    }
+    (start < *cursor).then(|| &line[start..*cursor])
+}
+
+fn parse_guest_map(line: &[u8]) -> Option<GuestMap> {
+    let mut cursor = 0;
+    let range = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
+    let permissions = next_proc_maps_field(line, &mut cursor)?;
+    let offset = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
+    let device = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
+    let inode = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
+
+    let (start, end) = range.split_once('-')?;
+    let start = u64::from_str_radix(start, 16).ok()?;
+    let end = u64::from_str_radix(end, 16).ok()?;
+    let offset = u64::from_str_radix(offset, 16).ok()?;
+    let (device_major, device_minor) = device.split_once(':')?;
+    let device_major = u64::from_str_radix(device_major, 16).ok()?;
+    let device_minor = u64::from_str_radix(device_minor, 16).ok()?;
+    let inode = inode.parse::<u64>().ok()?;
+
+    while line.get(cursor) == Some(&b' ') {
+        cursor += 1;
+    }
+    let path = (cursor < line.len()).then(|| decode_proc_maps_path(&line[cursor..]));
+    Some(GuestMap {
+        start,
+        end,
+        offset,
+        device_major,
+        device_minor,
+        readable: permissions.first() == Some(&b'r'),
+        writable: permissions.get(1) == Some(&b'w'),
+        executable: permissions.get(2) == Some(&b'x'),
+        shared: permissions.get(3) == Some(&b's'),
+        inode,
+        path,
+    })
+}
+
+fn decode_proc_maps_path(bytes: &[u8]) -> PathBuf {
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1..index + 4]
+                .iter()
+                .all(|byte| matches!(byte, b'0'..=b'7'))
+        {
+            let value = u16::from(bytes[index + 1] - b'0') * 64
+                + u16::from(bytes[index + 2] - b'0') * 8
+                + u16::from(bytes[index + 3] - b'0');
+            if let Ok(value) = u8::try_from(value) {
+                decoded.push(value);
+                index += 4;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    PathBuf::from(OsString::from_vec(decoded))
+}
+
+fn guest_auxv_entry(pid: Pid, key: u64) -> Option<u64> {
+    let bytes = std::fs::read(format!("/proc/{pid}/auxv")).ok()?;
+    bytes.as_chunks::<16>().0.iter().find_map(|entry| {
+        let entry_key = u64::from_ne_bytes(entry[..8].try_into().ok()?);
+        let value = u64::from_ne_bytes(entry[8..].try_into().ok()?);
+        (entry_key == key).then_some(value)
+    })
+}

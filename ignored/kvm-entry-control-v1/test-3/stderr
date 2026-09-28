@@ -1,0 +1,473 @@
+Running as unit: kvm-entry-test-3-4193718.service
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193789) panicked at reverie-kvm/src/entry.rs:823:13:
+mask: status=signal: 6 (SIGABRT) (core dumped)
+
+running 1 test
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193791) panicked at reverie-kvm/src/entry.rs:877:25:
+mask operation unwound
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193791) panicked at reverie-kvm/src/entry.rs:463:60:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+stack backtrace:
+   0:     0x55e390dcba51 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:     0x55e390dcba51 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::trace_unsynchronized::<std[74eb2aff46e51e81]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:     0x55e390dcba51 - std[74eb2aff46e51e81]::sys::backtrace::_print_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:74:9
+   3:     0x55e390dcba51 - <<std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[7aff35c028b048a4]::fmt::Display>::fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:44:26
+   4:     0x55e390de1bea - <core[7aff35c028b048a4]::fmt::rt::Argument>::fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/fmt/rt.rs:152:76
+   5:     0x55e390de1bea - core[7aff35c028b048a4]::fmt::write
+   6:     0x55e390dd1c6c - core[7aff35c028b048a4]::io::write::default_write_fmt::<std[74eb2aff46e51e81]::sys::stdio::unix::Stderr>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:402:11
+   7:     0x55e390dd1c6c - <std[74eb2aff46e51e81]::sys::stdio::unix::Stderr as core[7aff35c028b048a4]::io::write::Write>::write_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:335:13
+   8:     0x55e390da3bc6 - <std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:47:9
+   9:     0x55e390da3bc6 - std[74eb2aff46e51e81]::panicking::default_hook::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:292:27
+  10:     0x55e390dc1681 - std[74eb2aff46e51e81]::panicking::default_hook
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:319:9
+  11:     0x55e390dc19ab - std[74eb2aff46e51e81]::panicking::panic_with_hook
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:815:13
+  12:     0x55e390da3c72 - std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:688:13
+  13:     0x55e390d9b7d9 - std[74eb2aff46e51e81]::sys::backtrace::__rust_end_short_backtrace::<std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:182:18
+  14:     0x55e390da4bfd - __rustc[49844a0cf2bb6b0d]::rust_begin_unwind
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:679:5
+  15:     0x55e390de23dc - core[7aff35c028b048a4]::panicking::panic_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:80:14
+  16:     0x55e390de2132 - core[7aff35c028b048a4]::result::unwrap_failed
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/result.rs:1870:5
+  17:     0x55e390355288 - <core[7aff35c028b048a4]::result::Result<std[74eb2aff46e51e81]::sync::poison::mutex::MutexGuard<reverie_kvm[ea5205b0de9d2cc4]::entry::State>, std[74eb2aff46e51e81]::sync::poison::PoisonError<std[74eb2aff46e51e81]::sync::poison::mutex::MutexGuard<reverie_kvm[ea5205b0de9d2cc4]::entry::State>>>>::unwrap
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/result.rs:1231:23
+  18:     0x55e390355288 - <reverie_kvm[ea5205b0de9d2cc4]::entry::Entry>::withdraw
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:463:60
+  19:     0x55e3903555f0 - <reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry>::cleanup
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:525:15
+  20:     0x55e39058cf8c - <reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry as core[7aff35c028b048a4]::ops::drop::Drop>::drop
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:538:26
+  21:     0x55e390570833 - core[7aff35c028b048a4]::ptr::drop_glue::<reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ptr/mod.rs:828:1
+  22:     0x55e3907c411d - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:892:9
+  23:     0x55e3905a21c6 - <reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  24:     0x55e39053cc78 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  25:     0x55e390c189aa - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  26:     0x55e390641deb - __rust_try
+  27:     0x55e390641c12 - std[74eb2aff46e51e81]::panicking::catch_unwind::<!, core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  28:     0x55e390641c12 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  29:     0x55e390ad334c - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:867:23
+  30:     0x55e3907c3c67 - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:797:67
+  31:     0x55e3905a2156 - <reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  32:     0x55e390c997cb - <fn() -> core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  33:     0x55e390c997cb - test[7d46d2f4bcd6c159]::__rust_begin_short_backtrace::<core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>, fn() -> core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:733:18
+  34:     0x55e390ca6e45 - test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:74
+  35:     0x55e390ca6e45 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  36:     0x55e390ca6e45 - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>, core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  37:     0x55e390ca6e45 - std[74eb2aff46e51e81]::panicking::catch_unwind::<core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>, core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  38:     0x55e390ca6e45 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>, core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  39:     0x55e390ca6e45 - test[7d46d2f4bcd6c159]::run_test_in_process
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:27
+  40:     0x55e390ca6e45 - test[7d46d2f4bcd6c159]::run_test::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:677:43
+  41:     0x55e390ca0834 - test[7d46d2f4bcd6c159]::run_test::{closure#1}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:707:41
+  42:     0x55e390ca0834 - std[74eb2aff46e51e81]::sys::backtrace::__rust_begin_short_backtrace::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:166:18
+  43:     0x55e390ca9f92 - std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:70:13
+  44:     0x55e390ca9f92 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  45:     0x55e390ca9f92 - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  46:     0x55e390ca9f92 - std[74eb2aff46e51e81]::panicking::catch_unwind::<(), core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  47:     0x55e390ca9f92 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  48:     0x55e390ca9f92 - std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:68:26
+  49:     0x55e390ca9f92 - <std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  50:     0x55e390dca95f - <alloc[d942cadc3c119bf]::boxed::Box<dyn core[7aff35c028b048a4]::ops::function::FnOnce<(), Output = ()> + core[7aff35c028b048a4]::marker::Send> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/alloc/src/boxed.rs:2326:9
+  51:     0x55e390dca95f - <std[74eb2aff46e51e81]::sys::thread::unix::Thread>::new::thread_start
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/thread/unix.rs:123:17
+  52:     0x7eff00c8b569 - start_thread
+  53:     0x7eff00d10760 - __clone3
+  54:                0x0 - <unknown>
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193791) panicked at reverie-kvm/src/entry.rs:499:64:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+stack backtrace:
+   0:     0x55e390dcba51 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:     0x55e390dcba51 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::trace_unsynchronized::<std[74eb2aff46e51e81]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:     0x55e390dcba51 - std[74eb2aff46e51e81]::sys::backtrace::_print_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:74:9
+   3:     0x55e390dcba51 - <<std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[7aff35c028b048a4]::fmt::Display>::fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:44:26
+   4:     0x55e390de1bea - <core[7aff35c028b048a4]::fmt::rt::Argument>::fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/fmt/rt.rs:152:76
+   5:     0x55e390de1bea - core[7aff35c028b048a4]::fmt::write
+   6:     0x55e390dd1c6c - core[7aff35c028b048a4]::io::write::default_write_fmt::<std[74eb2aff46e51e81]::sys::stdio::unix::Stderr>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:402:11
+   7:     0x55e390dd1c6c - <std[74eb2aff46e51e81]::sys::stdio::unix::Stderr as core[7aff35c028b048a4]::io::write::Write>::write_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:335:13
+   8:     0x55e390da3bc6 - <std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:47:9
+   9:     0x55e390da3bc6 - std[74eb2aff46e51e81]::panicking::default_hook::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:292:27
+  10:     0x55e390dc1681 - std[74eb2aff46e51e81]::panicking::default_hook
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:319:9
+  11:     0x55e390dc19ab - std[74eb2aff46e51e81]::panicking::panic_with_hook
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:815:13
+  12:     0x55e390da3c72 - std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:688:13
+  13:     0x55e390d9b7d9 - std[74eb2aff46e51e81]::sys::backtrace::__rust_end_short_backtrace::<std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:182:18
+  14:     0x55e390da4bfd - __rustc[49844a0cf2bb6b0d]::rust_begin_unwind
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:679:5
+  15:     0x55e390de23dc - core[7aff35c028b048a4]::panicking::panic_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:80:14
+  16:     0x55e390de2132 - core[7aff35c028b048a4]::result::unwrap_failed
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/result.rs:1870:5
+  17:     0x55e39058670a - <core[7aff35c028b048a4]::result::Result<std[74eb2aff46e51e81]::sync::poison::mutex::MutexGuard<reverie_kvm[ea5205b0de9d2cc4]::entry::State>, std[74eb2aff46e51e81]::sync::poison::PoisonError<std[74eb2aff46e51e81]::sync::poison::mutex::MutexGuard<reverie_kvm[ea5205b0de9d2cc4]::entry::State>>>>::unwrap
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/result.rs:1231:23
+  18:     0x55e39058670a - <reverie_kvm[ea5205b0de9d2cc4]::entry::Entry as core[7aff35c028b048a4]::ops::drop::Drop>::drop
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:499:64
+  19:     0x55e3905706aa - core[7aff35c028b048a4]::ptr::drop_glue::<reverie_kvm[ea5205b0de9d2cc4]::entry::Entry>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ptr/mod.rs:828:1
+  20:     0x55e390355beb - <reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry>::cleanup
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:532:5
+  21:     0x55e39058cf8c - <reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry as core[7aff35c028b048a4]::ops::drop::Drop>::drop
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:538:26
+  22:     0x55e390570833 - core[7aff35c028b048a4]::ptr::drop_glue::<reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ptr/mod.rs:828:1
+  23:     0x55e3907c411d - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:892:9
+  24:     0x55e3905a21c6 - <reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  25:     0x55e39053cc78 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  26:     0x55e390c189aa - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  27:     0x55e390641deb - __rust_try
+  28:     0x55e390641c12 - std[74eb2aff46e51e81]::panicking::catch_unwind::<!, core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  29:     0x55e390641c12 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  30:     0x55e390ad334c - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:867:23
+  31:     0x55e3907c3c67 - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:797:67
+  32:     0x55e3905a2156 - <reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  33:     0x55e390c997cb - <fn() -> core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  34:     0x55e390c997cb - test[7d46d2f4bcd6c159]::__rust_begin_short_backtrace::<core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>, fn() -> core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:733:18
+  35:     0x55e390ca6e45 - test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:74
+  36:     0x55e390ca6e45 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  37:     0x55e390ca6e45 - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>, core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  38:     0x55e390ca6e45 - std[74eb2aff46e51e81]::panicking::catch_unwind::<core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>, core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  39:     0x55e390ca6e45 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>, core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  40:     0x55e390ca6e45 - test[7d46d2f4bcd6c159]::run_test_in_process
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:27
+  41:     0x55e390ca6e45 - test[7d46d2f4bcd6c159]::run_test::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:677:43
+  42:     0x55e390ca0834 - test[7d46d2f4bcd6c159]::run_test::{closure#1}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:707:41
+  43:     0x55e390ca0834 - std[74eb2aff46e51e81]::sys::backtrace::__rust_begin_short_backtrace::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:166:18
+  44:     0x55e390ca9f92 - std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:70:13
+  45:     0x55e390ca9f92 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  46:     0x55e390ca9f92 - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  47:     0x55e390ca9f92 - std[74eb2aff46e51e81]::panicking::catch_unwind::<(), core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  48:     0x55e390ca9f92 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  49:     0x55e390ca9f92 - std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:68:26
+  50:     0x55e390ca9f92 - <std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  51:     0x55e390dca95f - <alloc[d942cadc3c119bf]::boxed::Box<dyn core[7aff35c028b048a4]::ops::function::FnOnce<(), Output = ()> + core[7aff35c028b048a4]::marker::Send> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/alloc/src/boxed.rs:2326:9
+  52:     0x55e390dca95f - <std[74eb2aff46e51e81]::sys::thread::unix::Thread>::new::thread_start
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/thread/unix.rs:123:17
+  53:     0x7eff00c8b569 - start_thread
+  54:     0x7eff00d10760 - __clone3
+  55:                0x0 - <unknown>
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193791) panicked at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:233:5:
+panic in a destructor during cleanup
+thread caused non-unwinding panic. aborting.
+
+send: status=signal: 6 (SIGABRT) (core dumped)
+
+running 1 test
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193983) panicked at reverie-kvm/src/entry.rs:886:25:
+send operation unwound
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193983) panicked at reverie-kvm/src/entry.rs:463:60:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+stack backtrace:
+   0:     0x55ccf5347a51 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:     0x55ccf5347a51 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::trace_unsynchronized::<std[74eb2aff46e51e81]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:     0x55ccf5347a51 - std[74eb2aff46e51e81]::sys::backtrace::_print_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:74:9
+   3:     0x55ccf5347a51 - <<std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[7aff35c028b048a4]::fmt::Display>::fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:44:26
+   4:     0x55ccf535dbea - <core[7aff35c028b048a4]::fmt::rt::Argument>::fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/fmt/rt.rs:152:76
+   5:     0x55ccf535dbea - core[7aff35c028b048a4]::fmt::write
+   6:     0x55ccf534dc6c - core[7aff35c028b048a4]::io::write::default_write_fmt::<std[74eb2aff46e51e81]::sys::stdio::unix::Stderr>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:402:11
+   7:     0x55ccf534dc6c - <std[74eb2aff46e51e81]::sys::stdio::unix::Stderr as core[7aff35c028b048a4]::io::write::Write>::write_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:335:13
+   8:     0x55ccf531fbc6 - <std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:47:9
+   9:     0x55ccf531fbc6 - std[74eb2aff46e51e81]::panicking::default_hook::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:292:27
+  10:     0x55ccf533d681 - std[74eb2aff46e51e81]::panicking::default_hook
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:319:9
+  11:     0x55ccf533d9ab - std[74eb2aff46e51e81]::panicking::panic_with_hook
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:815:13
+  12:     0x55ccf531fc72 - std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:688:13
+  13:     0x55ccf53177d9 - std[74eb2aff46e51e81]::sys::backtrace::__rust_end_short_backtrace::<std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:182:18
+  14:     0x55ccf5320bfd - __rustc[49844a0cf2bb6b0d]::rust_begin_unwind
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:679:5
+  15:     0x55ccf535e3dc - core[7aff35c028b048a4]::panicking::panic_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:80:14
+  16:     0x55ccf535e132 - core[7aff35c028b048a4]::result::unwrap_failed
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/result.rs:1870:5
+  17:     0x55ccf48d1288 - <core[7aff35c028b048a4]::result::Result<std[74eb2aff46e51e81]::sync::poison::mutex::MutexGuard<reverie_kvm[ea5205b0de9d2cc4]::entry::State>, std[74eb2aff46e51e81]::sync::poison::PoisonError<std[74eb2aff46e51e81]::sync::poison::mutex::MutexGuard<reverie_kvm[ea5205b0de9d2cc4]::entry::State>>>>::unwrap
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/result.rs:1231:23
+  18:     0x55ccf48d1288 - <reverie_kvm[ea5205b0de9d2cc4]::entry::Entry>::withdraw
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:463:60
+  19:     0x55ccf48d15f0 - <reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry>::cleanup
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:525:15
+  20:     0x55ccf4b08f8c - <reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry as core[7aff35c028b048a4]::ops::drop::Drop>::drop
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:538:26
+  21:     0x55ccf4aec833 - core[7aff35c028b048a4]::ptr::drop_glue::<reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ptr/mod.rs:828:1
+  22:     0x55ccf4d4011d - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:892:9
+  23:     0x55ccf4b1e1c6 - <reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  24:     0x55ccf4ab8c78 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  25:     0x55ccf51949aa - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  26:     0x55ccf4bbddeb - __rust_try
+  27:     0x55ccf4bbdc12 - std[74eb2aff46e51e81]::panicking::catch_unwind::<!, core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  28:     0x55ccf4bbdc12 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  29:     0x55ccf504f34c - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:867:23
+  30:     0x55ccf4d3fc67 - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:797:67
+  31:     0x55ccf4b1e156 - <reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  32:     0x55ccf52157cb - <fn() -> core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  33:     0x55ccf52157cb - test[7d46d2f4bcd6c159]::__rust_begin_short_backtrace::<core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>, fn() -> core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:733:18
+  34:     0x55ccf5222e45 - test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:74
+  35:     0x55ccf5222e45 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  36:     0x55ccf5222e45 - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>, core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  37:     0x55ccf5222e45 - std[74eb2aff46e51e81]::panicking::catch_unwind::<core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>, core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  38:     0x55ccf5222e45 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>, core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  39:     0x55ccf5222e45 - test[7d46d2f4bcd6c159]::run_test_in_process
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:27
+  40:     0x55ccf5222e45 - test[7d46d2f4bcd6c159]::run_test::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:677:43
+  41:     0x55ccf521c834 - test[7d46d2f4bcd6c159]::run_test::{closure#1}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:707:41
+  42:     0x55ccf521c834 - std[74eb2aff46e51e81]::sys::backtrace::__rust_begin_short_backtrace::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:166:18
+  43:     0x55ccf5225f92 - std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:70:13
+  44:     0x55ccf5225f92 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  45:     0x55ccf5225f92 - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  46:     0x55ccf5225f92 - std[74eb2aff46e51e81]::panicking::catch_unwind::<(), core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  47:     0x55ccf5225f92 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  48:     0x55ccf5225f92 - std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:68:26
+  49:     0x55ccf5225f92 - <std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  50:     0x55ccf534695f - <alloc[d942cadc3c119bf]::boxed::Box<dyn core[7aff35c028b048a4]::ops::function::FnOnce<(), Output = ()> + core[7aff35c028b048a4]::marker::Send> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/alloc/src/boxed.rs:2326:9
+  51:     0x55ccf534695f - <std[74eb2aff46e51e81]::sys::thread::unix::Thread>::new::thread_start
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/thread/unix.rs:123:17
+  52:     0x7f4e9128b569 - start_thread
+  53:     0x7f4e91310760 - __clone3
+  54:                0x0 - <unknown>
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193983) panicked at reverie-kvm/src/entry.rs:499:64:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+stack backtrace:
+   0:     0x55ccf5347a51 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::libunwind::trace
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+   1:     0x55ccf5347a51 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::trace_unsynchronized::<std[74eb2aff46e51e81]::sys::backtrace::_print_fmt::{closure#1}>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+   2:     0x55ccf5347a51 - std[74eb2aff46e51e81]::sys::backtrace::_print_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:74:9
+   3:     0x55ccf5347a51 - <<std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[7aff35c028b048a4]::fmt::Display>::fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:44:26
+   4:     0x55ccf535dbea - <core[7aff35c028b048a4]::fmt::rt::Argument>::fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/fmt/rt.rs:152:76
+   5:     0x55ccf535dbea - core[7aff35c028b048a4]::fmt::write
+   6:     0x55ccf534dc6c - core[7aff35c028b048a4]::io::write::default_write_fmt::<std[74eb2aff46e51e81]::sys::stdio::unix::Stderr>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:402:11
+   7:     0x55ccf534dc6c - <std[74eb2aff46e51e81]::sys::stdio::unix::Stderr as core[7aff35c028b048a4]::io::write::Write>::write_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:335:13
+   8:     0x55ccf531fbc6 - <std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:47:9
+   9:     0x55ccf531fbc6 - std[74eb2aff46e51e81]::panicking::default_hook::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:292:27
+  10:     0x55ccf533d681 - std[74eb2aff46e51e81]::panicking::default_hook
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:319:9
+  11:     0x55ccf533d9ab - std[74eb2aff46e51e81]::panicking::panic_with_hook
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:815:13
+  12:     0x55ccf531fc72 - std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:688:13
+  13:     0x55ccf53177d9 - std[74eb2aff46e51e81]::sys::backtrace::__rust_end_short_backtrace::<std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:182:18
+  14:     0x55ccf5320bfd - __rustc[49844a0cf2bb6b0d]::rust_begin_unwind
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:679:5
+  15:     0x55ccf535e3dc - core[7aff35c028b048a4]::panicking::panic_fmt
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:80:14
+  16:     0x55ccf535e132 - core[7aff35c028b048a4]::result::unwrap_failed
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/result.rs:1870:5
+  17:     0x55ccf4b0270a - <core[7aff35c028b048a4]::result::Result<std[74eb2aff46e51e81]::sync::poison::mutex::MutexGuard<reverie_kvm[ea5205b0de9d2cc4]::entry::State>, std[74eb2aff46e51e81]::sync::poison::PoisonError<std[74eb2aff46e51e81]::sync::poison::mutex::MutexGuard<reverie_kvm[ea5205b0de9d2cc4]::entry::State>>>>::unwrap
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/result.rs:1231:23
+  18:     0x55ccf4b0270a - <reverie_kvm[ea5205b0de9d2cc4]::entry::Entry as core[7aff35c028b048a4]::ops::drop::Drop>::drop
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:499:64
+  19:     0x55ccf4aec6aa - core[7aff35c028b048a4]::ptr::drop_glue::<reverie_kvm[ea5205b0de9d2cc4]::entry::Entry>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ptr/mod.rs:828:1
+  20:     0x55ccf48d1beb - <reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry>::cleanup
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:532:5
+  21:     0x55ccf4b08f8c - <reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry as core[7aff35c028b048a4]::ops::drop::Drop>::drop
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:538:26
+  22:     0x55ccf4aec833 - core[7aff35c028b048a4]::ptr::drop_glue::<reverie_kvm[ea5205b0de9d2cc4]::entry::RunEntry>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ptr/mod.rs:828:1
+  23:     0x55ccf4d4011d - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:892:9
+  24:     0x55ccf4b1e1c6 - <reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  25:     0x55ccf4ab8c78 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  26:     0x55ccf51949aa - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  27:     0x55ccf4bbddeb - __rust_try
+  28:     0x55ccf4bbdc12 - std[74eb2aff46e51e81]::panicking::catch_unwind::<!, core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  29:     0x55ccf4bbdc12 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}>, !>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  30:     0x55ccf504f34c - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:867:23
+  31:     0x55ccf4d3fc67 - reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0}
+                               at /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs:797:67
+  32:     0x55ccf4b1e156 - <reverie_kvm[ea5205b0de9d2cc4]::entry::tests::unwinding_control_operations_preserve_cleanup_and_failure::{closure#0} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  33:     0x55ccf52157cb - <fn() -> core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  34:     0x55ccf52157cb - test[7d46d2f4bcd6c159]::__rust_begin_short_backtrace::<core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>, fn() -> core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:733:18
+  35:     0x55ccf5222e45 - test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:74
+  36:     0x55ccf5222e45 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  37:     0x55ccf5222e45 - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>, core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  38:     0x55ccf5222e45 - std[74eb2aff46e51e81]::panicking::catch_unwind::<core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>, core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  39:     0x55ccf5222e45 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<test[7d46d2f4bcd6c159]::run_test_in_process::{closure#0}>, core[7aff35c028b048a4]::result::Result<(), alloc[d942cadc3c119bf]::string::String>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  40:     0x55ccf5222e45 - test[7d46d2f4bcd6c159]::run_test_in_process
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:27
+  41:     0x55ccf5222e45 - test[7d46d2f4bcd6c159]::run_test::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:677:43
+  42:     0x55ccf521c834 - test[7d46d2f4bcd6c159]::run_test::{closure#1}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:707:41
+  43:     0x55ccf521c834 - std[74eb2aff46e51e81]::sys::backtrace::__rust_begin_short_backtrace::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:166:18
+  44:     0x55ccf5225f92 - std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:70:13
+  45:     0x55ccf5225f92 - <core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  46:     0x55ccf5225f92 - std[74eb2aff46e51e81]::panicking::catch_unwind::do_call::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  47:     0x55ccf5225f92 - std[74eb2aff46e51e81]::panicking::catch_unwind::<(), core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  48:     0x55ccf5225f92 - std[74eb2aff46e51e81]::panic::catch_unwind::<core[7aff35c028b048a4]::panic::unwind_safe::AssertUnwindSafe<std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  49:     0x55ccf5225f92 - std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked::<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:68:26
+  50:     0x55ccf5225f92 - <std[74eb2aff46e51e81]::thread::lifecycle::spawn_unchecked<test[7d46d2f4bcd6c159]::run_test::{closure#1}, ()>::{closure#1} as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  51:     0x55ccf534695f - <alloc[d942cadc3c119bf]::boxed::Box<dyn core[7aff35c028b048a4]::ops::function::FnOnce<(), Output = ()> + core[7aff35c028b048a4]::marker::Send> as core[7aff35c028b048a4]::ops::function::FnOnce<()>>::call_once
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/alloc/src/boxed.rs:2326:9
+  52:     0x55ccf534695f - <std[74eb2aff46e51e81]::sys::thread::unix::Thread>::new::thread_start
+                               at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/thread/unix.rs:123:17
+  53:     0x7f4e9128b569 - start_thread
+  54:     0x7f4e91310760 - __clone3
+  55:                0x0 - <unknown>
+
+thread 'entry::tests::unwinding_control_operations_preserve_cleanup_and_failure' (4193983) panicked at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:233:5:
+panic in a destructor during cleanup
+thread caused non-unwinding panic. aborting.
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 859ms
+             CPU time consumed: 123ms
+                   Memory peak: 32.7M (swap: 0B)

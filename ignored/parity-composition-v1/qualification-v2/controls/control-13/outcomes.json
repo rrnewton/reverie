@@ -1,0 +1,24 @@
+{
+  "started": [
+    "cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.476023688
+    }
+  ]
+}

@@ -1,0 +1,160 @@
+                        enable_failures.join("; ")
+                    );
+                    if !restore_failures.is_empty() {
+                        message.push_str(&format!(
+                            "; restore original TSC policy after enable failure: {}",
+                            restore_failures.join("; ")
+                        ));
+                    }
+                    (task, Err(message))
+                }
+            }
+            Ok(Ok(state)) => (
+                task,
+                Err(format!("PR_GET_TSC returned unexpected state {state}")),
+            ),
+            // EINVAL is the documented prctl response when this option is not
+            // supported by the running kernel/architecture.
+            Ok(Err(Errno::EINVAL)) => (task, Ok(LiteinstTscPolicy::Unsupported)),
+            Ok(Err(error)) => (task, Err(format!("PR_GET_TSC: {error}"))),
+            Err(error) => (task, Err(error)),
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn restore_liteinst_helper_state(
+        &mut self,
+        task: Stopped,
+        saved: &LiteinstHelperSavedState,
+    ) -> (Stopped, Vec<String>) {
+        let (task, mut failures) = match saved.tsc_policy {
+            LiteinstTscPolicy::Unsupported => (task, Vec::new()),
+            LiteinstTscPolicy::RestoreFaulting => {
+                let (task, failures) = self
+                    .set_and_verify_liteinst_tsc_state(
+                        task,
+                        saved.stack_address,
+                        libc::PR_TSC_SIGSEGV,
+                    )
+                    .await;
+                (
+                    task,
+                    failures
+                        .into_iter()
+                        .map(|failure| format!("TSC policy: {failure}"))
+                        .collect(),
+                )
+            }
+            LiteinstTscPolicy::UnchangedEnabled => {
+                let (task, failures) = self
+                    .verify_liteinst_tsc_state(task, saved.stack_address, libc::PR_TSC_ENABLE)
+                    .await;
+                (
+                    task,
+                    failures
+                        .into_iter()
+                        .map(|failure| format!("TSC policy: {failure}"))
+                        .collect(),
+                )
+            }
+        };
+        let (mut task, cpuid_failures) = match saved.cpuid_policy {
+            LiteinstCpuidPolicy::Unsupported => (task, Vec::new()),
+            LiteinstCpuidPolicy::RestoreDisabled => {
+                let (task, failures) = self.set_and_verify_liteinst_cpuid_state(task, 0).await;
+                (
+                    task,
+                    failures
+                        .into_iter()
+                        .map(|failure| format!("CPUID policy: {failure}"))
+                        .collect(),
+                )
+            }
+            LiteinstCpuidPolicy::UnchangedEnabled => {
+                let (task, failures) = self.verify_liteinst_cpuid_state(task, 1).await;
+                (
+                    task,
+                    failures
+                        .into_iter()
+                        .map(|failure| format!("CPUID policy: {failure}"))
+                        .collect(),
+                )
+            }
+        };
+        failures.extend(cpuid_failures);
+        match AddrMut::from_raw(saved.stack_address) {
+            Some(address) => {
+                if let Err(error) = task.write_value(address, &saved.stack_value) {
+                    failures.push(format!("helper stack: {error}"));
+                }
+            }
+            None => failures.push("helper stack: invalid restore address".to_owned()),
+        }
+        if let Err(error) = task.setxstate(&saved.xstate) {
+            failures.push(format!("XSTATE: {error}"));
+        }
+        if let Err(error) = task.setregs(&saved.regs) {
+            failures.push(format!("general registers: {error}"));
+        }
+        (task, failures)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn rollback_liteinst_helper_error(
+        &mut self,
+        task: Stopped,
+        saved: &LiteinstHelperSavedState,
+        original: Error,
+    ) -> Error {
+        let (_, rollback_failures) = self.restore_liteinst_helper_state(task, saved).await;
+        self.liteinst_helper_failure(original, rollback_failures)
+    }
+
+    fn liteinst_helper_failure(&self, original: Error, rollback_failures: Vec<String>) -> Error {
+        if rollback_failures.is_empty() {
+            original
+        } else {
+            Error::runtime(
+                self.tid(),
+                "restore LiteInst patch-helper state",
+                format!(
+                    "original failure: {original}; rollback failures: {}",
+                    rollback_failures.join("; ")
+                ),
+            )
+        }
+    }
+
+    fn record_liteinst_fallback_stats(
+        &self,
+        task: &Stopped,
+        frame: LiteinstHandshakeFrame,
+        site: u64,
+    ) {
+        let stats = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|config| config.instrumentation_stats.as_ref());
+        crate::liteinst_stats::with_liteinst_stats(stats, |stats| {
+            let shape = Addr::from_raw(frame.install_result as usize)
+                .and_then(|address| {
+                    let result: LiteinstInstallResult = task.read_value(address).ok()?;
+                    Some(result)
+                })
+                .and_then(|result| {
+                    let instruction_len = usize::try_from(result.instruction_len).ok()?;
+                    let straddle_prefix = usize::try_from(result.straddle_prefix).ok()?;
+                    (result.version == 2
+                        && result.complete == 0
+                        && result.site_start == site
+                        && result.site_len == 8
+                        && (1..=15).contains(&instruction_len)
+                        && straddle_prefix < instruction_len.min(5))
+                    .then_some((
+                        instruction_len,
+                        (straddle_prefix != 0).then_some(straddle_prefix),
+                    ))
+                });
+            let outcome = if shape.as_ref().is_some_and(|(_, prefix)| prefix.is_some()) {
+                LiteinstPatchOutcome::PtraceStraddlerBail

@@ -1,0 +1,160 @@
+    /// context of the child process (which has a copy-on-write view of the
+    /// parent's virtual memory). Thus, the parent's version isn't actually
+    /// modified.
+    pub(super) fn setup(
+        &mut self,
+        context: &ChildContext,
+        pre_exec: &mut [Box<dyn FnMut() -> Result<(), Errno> + Send + Sync>],
+    ) -> Result<(), Error> {
+        // NOTE: This function MUST NOT allocate or deallocate any memory! Doing
+        // so can cause random, difficult to diagnose deadlocks.
+
+        if let Some(pty) = self.pty.take() {
+            // NOTE: This is done *before* setting the stdio streams so that the
+            // user can still override individual streams if they only want them
+            // to be partially attached to the tty.
+            pty.login().context(Context::Tty)?;
+        }
+
+        if let Some(fd) = context.stdin {
+            fd.dup2(libc::STDIN_FILENO)
+                .context(Context::Stdio)?
+                .leave_open();
+        }
+        if let Some(fd) = context.stdout {
+            fd.dup2(libc::STDOUT_FILENO)
+                .context(Context::Stdio)?
+                .leave_open();
+        }
+        if let Some(fd) = context.stderr {
+            fd.dup2(libc::STDERR_FILENO)
+                .context(Context::Stdio)?
+                .leave_open();
+        }
+
+        unsafe { reset_signal_handling() }.context(Context::ResetSignals)?;
+
+        // Set up UID and GID maps.
+        if !context.uid_map.is_empty() {
+            context.map_uid().context(Context::MapUid)?;
+        }
+
+        if !context.gid_map.is_empty() {
+            context.setgroups(false).context(Context::MapGid)?;
+            context.map_gid().context(Context::MapGid)?;
+        }
+
+        // Set host name, if any.
+        if let Some(name) = &self.hostname {
+            Error::result(
+                unsafe { libc::sethostname(name.as_bytes().as_ptr() as *const _, name.len()) },
+                Context::Hostname,
+            )?;
+        }
+
+        // Set domain name, if any.
+        if let Some(name) = &self.domainname {
+            Error::result(
+                unsafe { libc::setdomainname(name.as_bytes().as_ptr() as *const _, name.len()) },
+                Context::Domainname,
+            )?;
+        }
+
+        // Mount all the things.
+        for mount in &mut self.mounts {
+            mount.mount().context(Context::Mount)?;
+        }
+
+        // Change root directory. Note that we do this *after* mounting anything
+        // so that bind mounts sources that live outside of the chroot directory
+        // can work.
+        if let Some(chroot) = &self.chroot {
+            Error::result(unsafe { libc::chroot(chroot.as_ptr()) }, Context::Chroot)?;
+        }
+
+        // Set working directory, if any.
+        if let Some(current_dir) = &self.current_dir {
+            Error::result(unsafe { libc::chdir(current_dir.as_ptr()) }, Context::Chdir)?;
+        }
+
+        // Configure networking.
+        // TODO: Generalize this a bit to allow more complex configuration.
+        if self.local_networking_only {
+            // Need a socket to access the network interface.
+            let sock = Fd::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_IP)
+                .context(Context::Network)?;
+
+            let loopback = IfName::LOOPBACK;
+
+            // Bring up the loopback interface in the newly mounted sysfs.
+            let flags = loopback.get_flags(&sock).context(Context::Network)?;
+            let flags = flags | libc::IFF_UP as i16;
+            loopback.set_flags(&sock, flags).context(Context::Network)?;
+        }
+
+        if let Some(cpu) = self.affinity {
+            let mut cpu_set = CpuSet::new();
+            cpu_set.set(cpu).context(Context::Affinity)?;
+            sched_setaffinity(nix::unistd::Pid::from_raw(0), &cpu_set)
+                .context(Context::Affinity)?;
+        }
+
+        // NOTE: We must call our pre_exec callbacks BEFORE installing the
+        // seccomp filter because our callbacks could be calling syscalls that
+        // our seccomp filter may be intending to block.
+        for f in pre_exec {
+            f().context(Context::PreExec)?;
+        }
+
+        // Set up the seccomp filter, if any.
+        if let Some(filter) = &self.seccomp {
+            use core::sync::atomic::Ordering;
+
+            // no_new_privs must be set or seccomp will not work.
+            Error::result(
+                unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+                Context::Seccomp,
+            )?;
+
+            // NOTE: If the supervisor (parent process) wants to listen for
+            // seccomp notifications, we need to be able to pass the file
+            // descriptor to the parent. The most common way to do this is to
+            // set up a socket connection and send the file descriptor. However,
+            // since we just set up a seccomp filter, the filter could apply to
+            // any syscalls we make from here on out. This is especially
+            // troublesome if we're also ptracing this child because our syscall
+            // could result in a premature seccomp stop and cause a deadlock.
+            // Thus, instead, we should pass the file descriptor to the parent
+            // process without making any syscalls. The only way to do that is
+            // to create some shared memory and atomically set an integer.
+            if let Some(shared_fd) = context.seccomp_fd {
+                use std::os::unix::io::IntoRawFd;
+
+                let fd = filter
+                    .load_and_listen()
+                    .context(Context::Seccomp)?
+                    .into_raw_fd();
+
+                shared_fd.store(fd, Ordering::Relaxed);
+
+                // Wait until the parent changes the value back. The parent only
+                // does this after it calls pidfd_getfd to copy the file
+                // descriptor into its own file descriptor table. After this,
+                // the file descriptor can be safely closed, but we won't do
+                // that in order to avoid doing a syscall. The fd will be closed
+                // automatically when execve happens anyway.
+                //
+                // NOTE: Again, we must not perform any syscalls after the
+                // seccomp filter has been installed (except for execve of
+                // course).
+                while shared_fd.load(Ordering::Relaxed) == fd {
+                    // Spin spin spin
+                }
+            } else {
+                filter.load().context(Context::Seccomp)?;
+            }
+        }
+
+        Ok(())
+    }
+

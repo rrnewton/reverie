@@ -1,0 +1,160 @@
+    PMU_CONFIG.set(config)
+}
+
+/// Returns true if the current CPU supports precise_ip.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn has_precise_ip() -> bool {
+    let cpu = raw_cpuid::CpuId::new();
+    let feature_info = cpu.get_feature_info();
+    let has_debug_store = feature_info.as_ref().is_some_and(|info| info.has_ds());
+
+    // Identify the CPU by vendor and model only. Debug-printing the whole
+    // `CpuId` (or a whole `FeatureInfo`) also dumps per-core topology --
+    // `initial_local_apic_id`, `x2apic_id`, `core_id` -- which reflects
+    // whichever core this thread happens to be scheduled on, not any property
+    // of the machine. That made this line differ between otherwise identical
+    // runs even though the decision below is a pure function of `has_ds()`.
+    debug!(
+        "Setting precise_ip to {} for cpu vendor {} family {:?} model {:?} stepping {:?}",
+        has_debug_store,
+        cpu.get_vendor_info()
+            .map_or_else(|| "unknown".to_string(), |v| v.as_str().to_string()),
+        feature_info.as_ref().map(|i| i.family_id()),
+        feature_info.as_ref().map(|i| i.model_id()),
+        feature_info.as_ref().map(|i| i.stepping_id()),
+    );
+
+    has_debug_store
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn has_precise_ip() -> bool {
+    // Assume, for now, that aarch64 can use precise_ip.
+    true
+}
+
+/// A timer monitoring a single thread. The underlying implementation is eagerly
+/// initialized, but left empty if perf is not supported. In that case, any
+/// methods with semantics that require a functioning clock or timer will panic.
+#[derive(Debug)]
+pub struct Timer {
+    inner: Option<TimerImpl>,
+}
+
+/// Data requires to request a timer event
+#[derive(Debug, Copy, Clone)]
+pub enum TimerEventRequest {
+    /// Event should fire after precisely this many RCBs.
+    Precise(u64),
+
+    /// Event should fire after at least this many RCBs.
+    Imprecise(u64),
+
+    /// Event should fire after precisely this many RCBS and this many instructions
+    PreciseInstruction(u64, u64),
+}
+
+/// The possible results of handling a timer signal.
+#[derive(Error, Debug, Eq, PartialEq)]
+pub enum HandleFailure {
+    #[error(transparent)]
+    TraceError(#[from] TraceError),
+
+    #[error("Unexpected event while single stepping")]
+    Event(Wait),
+
+    /// The timer signal was for a timer event that was otherwise cancelled. The
+    /// task is returned unchanged.
+    #[error("Timer event was cancelled and should not fire")]
+    Cancelled(Stopped),
+
+    /// The signal causing the signal-delivery stop was not actually meant for
+    /// this timer. The task is returned unchanged.
+    #[error("Pending signal was not for this timer")]
+    ImproperSignal(Stopped),
+}
+
+impl Timer {
+    /// Create a new timer monitoring the specified thread.
+    pub fn new(guest_pid: Pid, guest_tid: Tid) -> Self {
+        Self::with_initial_command(guest_pid, guest_tid, false)
+    }
+
+    pub(crate) fn for_initial_command(guest_pid: Pid, guest_tid: Tid) -> Self {
+        Self::with_initial_command(guest_pid, guest_tid, true)
+    }
+
+    fn with_initial_command(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Self {
+        // No errors are exposed here, as the construction should be
+        // bullet-proof, and if it wasn't, consumers wouldn't be able to
+        // meaningfully handle the error anyway.
+        Self {
+            inner: if is_perf_supported() {
+                Some(
+                    TimerImpl::new(guest_pid, guest_tid, initial_command).unwrap_or_else(|err| {
+                        panic!(
+                            "failed to initialize perf timer for tracee {guest_tid} \
+                         in process {guest_pid}: {err}"
+                        )
+                    }),
+                )
+            } else {
+                None
+            },
+        }
+    }
+
+    fn inner(&self) -> &TimerImpl {
+        self.inner.as_ref().expect("Perf support required")
+    }
+
+    fn inner_noinit(&self) -> Option<&TimerImpl> {
+        self.inner.as_ref()
+    }
+
+    fn inner_mut_noinit(&mut self) -> Option<&mut TimerImpl> {
+        self.inner.as_mut()
+    }
+
+    /// Both ordinary and injected initial exec stops use this transition.
+    /// The kernel has already started the clock, but notifications remain held
+    /// through the backend's existing post-exec initialization.
+    pub(crate) fn begin_initial_exec(&mut self) {
+        if let Some(timer) = self.inner_mut_noinit() {
+            timer.begin_initial_exec();
+        }
+    }
+
+    /// Release the notification hold before the first Tool post-exec callback.
+    /// No pre-exec request is replayed or physically armed here.
+    pub(crate) fn finish_initial_exec(&mut self) {
+        if let Some(timer) = self.inner_mut_noinit() {
+            timer.finish_initial_exec();
+        }
+    }
+
+    /// Read the thread-local deterministic clock. Represents total elapsed RCBs
+    /// on this thread since the timer was constructed, which should be at or
+    /// near thread creation time.
+    pub fn read_clock(&self) -> u64 {
+        self.inner().read_clock()
+    }
+
+    /// Approximately convert a duration to the internal notion of timer ticks.
+    pub fn as_ticks(dur: core::time::Duration) -> u64 {
+        // assumptions: 10% conditional branches, 3 GHz, avg 2 IPC
+        // this gives: 0.6B branch / sec = 0.6 branch / ns
+        (dur.as_secs() * 600_000_000) + (u64::from(dur.subsec_nanos()) * 6 / 10)
+    }
+
+    /// Return the signal type sent by the timer. This is intended to allow
+    /// pre-filtering signals without the full overhead of gathering signal info
+    /// to pass to ['Timer::generated_signal`].
+    pub fn signal_type() -> Signal {
+        MARKER_SIGNAL
+    }
+
+    /// Request a timer event to occur in the future at a time specified by
+    /// `evt`.
+    ///
+    /// This is *not* idempotent and will replace the outstanding request. If it

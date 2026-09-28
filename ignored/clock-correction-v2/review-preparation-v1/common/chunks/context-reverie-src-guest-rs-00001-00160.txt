@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Guest (i.e. thread) structure and traits
+
+use async_trait::async_trait;
+use reverie_syscalls::Errno;
+use reverie_syscalls::MemoryAccess;
+use reverie_syscalls::SyscallInfo;
+
+use crate::Never;
+use crate::Pid;
+use crate::SignalEvent;
+use crate::auxv::Auxv;
+use crate::backtrace::Backtrace;
+use crate::error::Error;
+use crate::stack::Stack;
+use crate::timer::TimerSchedule;
+use crate::tool::GlobalRPC;
+use crate::tool::GlobalTool;
+use crate::tool::Tool;
+
+/// The logical kind of a guest memory region reported by
+/// [`Guest::detlog_memory_regions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetlogRegionKind {
+    /// The current thread's user stack.
+    Stack,
+    /// The program-break heap.
+    Heap,
+}
+
+/// A guest-address-space memory region a backend can expose for deterministic
+/// memory-map logging (`--detlog-stack` / `--detlog-heap`).
+///
+/// The `[start, end)` bounds are guest virtual addresses readable through
+/// [`Guest::memory`]. This exists for out-of-process backends (for example the
+/// KVM backend) where [`Guest::pid`] is the host VMM process rather than a
+/// process whose `/proc/<pid>/maps` describes the guest's own address space, so
+/// the default `/proc`-based enumeration would read the wrong process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetlogMemoryRegion {
+    /// Which logical region this is.
+    pub kind: DetlogRegionKind,
+    /// Inclusive start guest virtual address.
+    pub start: u64,
+    /// Exclusive end guest virtual address.
+    pub end: u64,
+}
+
+/// A representation of a guest task (thread).
+#[async_trait]
+pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
+    /// Access to guest memory
+    type Memory: MemoryAccess + Send;
+
+    /// Access to guest stack
+    type Stack: Send + Stack;
+
+    /// Thread ID of the guest task.
+    fn tid(&self) -> Pid;
+
+    /// Process ID of the process containing the guest task.
+    fn pid(&self) -> Pid;
+
+    /// Process ID of the parent process. Returns `None` if this is the root of
+    /// the traced process tree. A return value of `None` does not necessarily
+    /// mean it is the root process in the system.
+    fn ppid(&self) -> Option<Pid>;
+
+    /// Returns true if this thread is the thread group leader (i.e., the main
+    /// thread).
+    fn is_main_thread(&self) -> bool {
+        self.tid() == self.pid()
+    }
+
+    /// Returns true if this is considered the root process of the traced task
+    /// tree (i.e., if `getppid()` returns `None`).
+    fn is_root_process(&self) -> bool {
+        self.ppid().is_none()
+    }
+
+    /// Returns true if this is considered the root thread of the traced task
+    /// tree (i.e., if `getppid()` returns `None` and `is_main_thread` returns
+    /// true).
+    fn is_root_thread(&self) -> bool {
+        self.is_root_process() && self.is_main_thread()
+    }
+
+    /// Whether this task is still executing the launcher for a spawned Command.
+    ///
+    /// This is logging provenance, not a guest identity or execution-mode test.
+    /// A backend may return true only for its Command-launch root before the
+    /// first successful exec replaces the inherited launcher address space.
+    /// Function tests, attached tasks, descendants and post-exec guest tasks
+    /// must return false. Callers must additionally establish the type of any
+    /// value before formatting a launch-image pointer as a host address.
+    fn is_command_bootstrap(&self) -> bool {
+        false
+    }
+
+    /// Reads and returns the auxv table for this process.
+    fn auxv(&self) -> Auxv {
+        Auxv::new(self.pid()).expect("failed to read auxv table")
+    }
+
+    /// Returns a representation of the address space associated with this guest
+    /// thread.
+    fn memory(&self) -> Self::Memory;
+
+    /// Returns a mutable reference to thread state.
+    fn thread_state_mut(&mut self) -> &mut T::ThreadState;
+
+    /// Returns an immutable reference to thread state.
+    fn thread_state(&self) -> &T::ThreadState;
+
+    /// Returns the current register values of the guest thread.
+    async fn regs(&mut self) -> libc::user_regs_struct;
+
+    /// Overwrites the register values of the guest thread. This is the write
+    /// counterpart to [`Guest::regs`].
+    ///
+    /// This is a generic, determinism-agnostic mechanism: it lets a tool control
+    /// the guest's register file at a stop, and the tool decides what values to
+    /// write. For example, a determinism tool can use it to canonicalize
+    /// registers that the syscall instruction clobbers (`%rcx`/`%r11` on
+    /// x86-64) so that even a misbehaving guest observes deterministic state.
+    ///
+    /// Preconditions: the guest is in a stopped state and Reverie is currently
+    /// running a handler on that guest thread's behalf.
+    ///
+    /// The default implementation returns [`Errno::ENOSYS`] for backends that
+    /// cannot write guest registers.
+    async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        let _ = regs;
+        Err(Errno::ENOSYS.into())
+    }
+
+    /// Returns the current stack pointer with this guest thread.
+    async fn stack(&mut self) -> Self::Stack;
+
+    /// Task is trying to become a daemon. The tracer may choose to kill all
+    /// remaining tasks when daemons are the only ones left.
+    async fn daemonize(&mut self);
+
+    /// Inject a system call into the guest and wait for the return value. This
+    /// function dirties the register file while its executing, but restores at
+    /// the end.
+    ///
+    /// Preconditions: the guest is in a stopped state and Reverie is currently
+    /// running a handler on that guest thread's behalf.
+    ///
+    /// Postconditions: the register file is the same as before the call to this
+    /// function. However, any side effects, including to guest memory, persist
+    /// after the injected call.

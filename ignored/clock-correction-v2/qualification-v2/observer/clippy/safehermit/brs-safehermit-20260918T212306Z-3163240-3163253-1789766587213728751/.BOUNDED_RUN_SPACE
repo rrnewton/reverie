@@ -1,0 +1,5 @@
+bounded-run-space/v1
+directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/clippy/safehermit/brs-safehermit-20260918T212306Z-3163240-3163253-1789766587213728751
+device_inode=10486014:256
+subvolume_id=3035
+limit_bytes=8000000000

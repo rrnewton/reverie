@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.003440819
+    }
+  ]
+}

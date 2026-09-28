@@ -1,0 +1,160 @@
+        let Some(exception) = self.static_elf_exception()? else {
+            return Ok(None);
+        };
+        // CPUID is never an emulated #UD. LOCK and unrelated faults retain
+        // their genuine exception, even when this Tool subscribes to CPUID.
+        if exception.vector != 13 {
+            return Ok(None);
+        }
+        self.cpuid_interception.verify(&self.vcpu)?;
+        let halted = self.vcpu.get_regs()?;
+        let special = self.vcpu.get_sregs()?;
+        if special.cr0 & (1 << 31) == 0
+            || special.efer & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            || special.cr4 & (1 << 12) != 0
+        {
+            return Ok(None);
+        }
+        let mut frame = [0; 6 * 8];
+        self.memory.read_raw(halted.rsp, &mut frame)?;
+        let word = |index: usize| {
+            u64::from_le_bytes(
+                frame[index * 8..index * 8 + 8]
+                    .try_into()
+                    .expect("exception frame word"),
+            )
+        };
+        let cs = word(2);
+        let ss = word(5);
+        if word(0) != 0
+            || cs != u64::from(crate::signal::USER_CODE_SELECTOR)
+            || ![
+                u64::from(crate::signal::USER_DATA_SELECTOR),
+                u64::from(crate::signal::USER_DATA_SELECTOR & !3),
+            ]
+            .contains(&ss)
+        {
+            return Ok(None);
+        }
+        let Some(instruction) = crate::cpuid_instruction::decode(|offset| {
+            let address = exception
+                .instruction_pointer
+                .checked_add(u64::from(offset))?;
+            crate::timestamp::fetch_user_byte(&self.memory, special.cr3, address)
+        }) else {
+            return Ok(None);
+        };
+        let mut registers = halted;
+        registers.rip = exception.instruction_pointer;
+        registers.rsp = exception.stack_pointer;
+        registers.rflags = exception.rflags;
+        Ok(Some(CpuidBoundary {
+            registers,
+            instruction,
+            special_registers: special,
+            code_segment: cs as u16,
+            stack_segment: ss as u16,
+        }))
+    }
+
+    pub(crate) fn timestamp_counter_exception(&self) -> Result<Option<TimestampBoundary>> {
+        // This guard precedes even reading the fault frame: an unsubscribed
+        // RDTSCP #UD is a genuine guest fault, not an unsolicited callback.
+        if !self.intercept_rdtsc {
+            return Ok(None);
+        }
+        let Some(exception) = self.static_elf_exception()? else {
+            return Ok(None);
+        };
+        if !matches!(exception.vector, 6 | 13) {
+            return Ok(None);
+        }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 2816..2884; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+    }
+
+    pub(crate) fn resume_timestamp_counter(
+        &mut self,
+        boundary: TimestampBoundary,
+        result: reverie::RdtscResult,
+    ) -> Result<()> {
+        let registers =
+            crate::timestamp::result_registers(boundary.registers, boundary.instruction, result)
+                .ok_or_else(|| Error::UnexpectedVcpuExit("timestamp RIP overflow".to_owned()))?;
+        self.resume_instruction_registers(boundary, registers)
+    }
+
+    pub(crate) fn resume_tool_instruction(
+        &mut self,
+        boundary: ToolInstructionBoundary,
+        result: ToolInstructionResult,
+    ) -> Result<()> {
+        match (boundary, result) {
+            (
+                ToolInstructionBoundary::Timestamp(boundary),
+                ToolInstructionResult::Timestamp(result),
+            ) => self.resume_timestamp_counter(boundary, result),
+            (ToolInstructionBoundary::Cpuid(boundary), ToolInstructionResult::Cpuid(result)) => {
+                let registers = crate::cpuid_instruction::result_registers(
+                    boundary.registers,
+                    boundary.instruction,
+                    result,
+                )
+                .ok_or_else(|| Error::UnexpectedVcpuExit("CPUID RIP overflow".to_owned()))?;
+                self.resume_instruction_registers(boundary, registers)
+            }
+            _ => Err(Error::UnexpectedVcpuExit(
+                "instruction callback result kind changed".to_owned(),
+            )),
+        }
+    }
+
+    fn resume_instruction_registers<I>(
+        &mut self,
+        boundary: InstructionBoundary<I>,
+        registers: kvm_regs,
+    ) -> Result<()> {
+        // Exception stubs preserve every GPR. Returning host-side injections
+        // cannot supply a replacement user register file. Preserve the saved
+        // instruction state, and any intentional injected FS/GS-base effect.
+        let previous = self.vcpu.get_sregs()?;
+        configure_user_segments(&self.vcpu)?;
+        let mut special = self.vcpu.get_sregs()?;
+        special.cs.selector = boundary.code_segment;
+        special.ss.selector = boundary.stack_segment;
+        special.ds = previous.ds;
+        special.es = previous.es;
+        special.fs = previous.fs;
+        special.gs = previous.gs;
+        self.vcpu.set_sregs(&special)?;
+        self.vcpu.set_regs(&registers)?;
+        if registers.rflags & (1 << 8) != 0 {
+            // The instruction has now retired. Preserve this backend's existing
+            // typed #DB boundary here, before another guest instruction can
+            // run; resuming with TF would report the following instruction.
+            return Err(Error::GuestException {
+                vector: 1,
+                instruction_pointer: registers.rip,
+                fault_address: special.cr2,
+            });
+        }
+        Ok(())
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 3317..3557; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+    /// Runs the installed static ELF and its forked children until the root exits.
+    pub fn run_static_elf(&mut self) -> Result<i32> {
+        let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+        let mut executor = ElfExecutor::with_output(loaded, None);
+        let (status, _, _) = self.run_static_elf_process(&mut executor)?;
+        Ok(conventional_exit_code(status))
+    }
+
+    /// Runs the installed ELF process tree and captures its standard output streams.
+    pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        // Declared before the executor so its private pipe identities outlive
+        // executor/child cleanup, including early-return and unwind paths.
+        let capture_owner = self.prepare_captured_output(true)?;
+        let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+        let (status, stdout, stderr) = self.run_static_elf_process(&mut executor)?;

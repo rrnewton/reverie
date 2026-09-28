@@ -1,0 +1,160 @@
+#[cfg(test)]
+mod support_test {
+    use super::*;
+
+    #[test]
+    fn perf_event_open_errors_mean_pmu_is_unsupported() {
+        for errno in [
+            Errno::ENOENT,
+            Errno::EPERM,
+            Errno::EACCES,
+            Errno::ENOSYS,
+            Errno::EINVAL,
+        ] {
+            assert!(!handle_perf_pmu_error(errno));
+        }
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "perf/tests.rs"]
+mod paused_tests;
+
+// NOTE: aarch64 doesn't work with
+// `Event::Hardware(HardwareEvent::BranchInstructions)`, so these tests are
+// disabled for that architecture. Most likely, we need to use `Event::Raw`
+// instead to enable these tests.
+#[cfg(all(test, target_arch = "x86_64"))]
+mod test {
+    use nix::unistd::gettid;
+
+    use super::*;
+
+    #[test]
+    fn test_do_branches() {
+        do_branches(1000);
+    }
+
+    #[test]
+    fn trace_self() {
+        ret_without_perf!();
+        let pc = Builder::new(gettid().as_raw(), -1)
+            .sample_period(PerfCounter::DISABLE_SAMPLE_PERIOD)
+            .event(Event::Hardware(HardwareEvent::BranchInstructions))
+            .create()
+            .expect("perf test operation should succeed");
+        pc.reset().expect("perf test operation should succeed");
+        pc.enable().expect("perf test operation should succeed");
+        const ITERS: u64 = 10000;
+        do_branches(ITERS);
+        pc.disable().expect("perf test operation should succeed");
+        let ctr = pc.ctr_value().expect("perf test operation should succeed");
+        assert!(ctr >= ITERS);
+        assert!(ctr <= ITERS + 100); // `.disable()` overhead
+    }
+
+    /// The in-guest `rdpmc` read must agree with the syscall read. Because the
+    /// counter is live, we can't assert exact equality; instead we bracket the
+    /// rdpmc read between two syscall reads on the same (monotonic) thread and
+    /// require `before <= rdpmc <= after`.
+    #[test]
+    fn rdpmc_read_agrees_with_syscall_read() {
+        ret_without_perf!();
+        let pc = Builder::new(gettid().as_raw(), -1)
+            .sample_period(PerfCounter::DISABLE_SAMPLE_PERIOD)
+            .event(Event::Hardware(HardwareEvent::BranchInstructions))
+            .fast_reads(true)
+            .create()
+            .expect("perf test operation should succeed");
+        pc.reset().expect("perf test operation should succeed");
+        pc.enable().expect("perf test operation should succeed");
+
+        // Repeat so we exercise the live (`index != 0`) case, which requires the
+        // counter to be scheduled on this core when we read it.
+        for _ in 0..1000 {
+            do_branches(1000);
+            let before = pc.ctr_value().expect("syscall read");
+            let via_rdpmc = pc.ctr_value_rdpmc().expect("rdpmc read");
+            let after = pc.ctr_value().expect("syscall read");
+            assert!(
+                before <= via_rdpmc && via_rdpmc <= after,
+                "rdpmc read {via_rdpmc} not in bracket [{before}, {after}]"
+            );
+        }
+    }
+
+    /// Microbenchmark: cost of a single counter read via `rdpmc` (in-guest,
+    /// same-core, `index != 0` live case) versus the `read(2)` syscall fallback.
+    ///
+    /// Ignored by default because it prints timings rather than asserting on
+    /// them (timing is host-dependent). Run with:
+    ///   `cargo test -p reverie-ptrace --release perf::test::bench_rdpmc_vs_read \
+    ///        -- --ignored --nocapture`
+    ///
+    /// The counter self-monitors this thread, so it stays scheduled on this
+    /// core (`index != 0`) throughout — the exact case the ptrace fast path
+    /// deliberately punts to the syscall. If rdpmc had silently fallen back to
+    /// the syscall, the two timings would be equal; a large gap is itself proof
+    /// the rdpmc path was taken.
+    #[test]
+    #[ignore]
+    fn bench_rdpmc_vs_read() {
+        use std::time::Instant;
+        ret_without_perf!();
+        const LOOP: usize = 100_000; // reads per timed sample
+        const REPS: usize = 25; // independent timed samples
+        const WARMUP: usize = 5;
+
+        let pc = Builder::new(gettid().as_raw(), -1)
+            .sample_period(PerfCounter::DISABLE_SAMPLE_PERIOD)
+            .event(Event::Hardware(HardwareEvent::BranchInstructions))
+            .fast_reads(true)
+            .create()
+            .expect("perf create");
+        pc.reset().expect("perf reset");
+        pc.enable().expect("perf enable");
+
+        let time_loop = |read: &dyn Fn() -> u64| -> Vec<f64> {
+            let mut samples = Vec::with_capacity(REPS);
+            for rep in 0..(WARMUP + REPS) {
+                let start = Instant::now();
+                let mut acc = 0u64;
+                for _ in 0..LOOP {
+                    acc = acc.wrapping_add(std::hint::black_box(read()));
+                }
+                std::hint::black_box(acc);
+                let ns_per_op = start.elapsed().as_nanos() as f64 / LOOP as f64;
+                if rep >= WARMUP {
+                    samples.push(ns_per_op);
+                }
+            }
+            samples
+        };
+
+        let median = |mut v: Vec<f64>| -> f64 {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        let min = |v: &[f64]| v.iter().cloned().fold(f64::INFINITY, f64::min);
+
+        let rdpmc_s = time_loop(&|| pc.ctr_value_rdpmc().expect("rdpmc"));
+        let read_s = time_loop(&|| pc.ctr_value().expect("read"));
+
+        let rdpmc_med = median(rdpmc_s.clone());
+        let read_med = median(read_s.clone());
+        eprintln!("=== rdpmc vs read() microbenchmark ===");
+        eprintln!("host: self-monitoring thread, BranchInstructions, fast_reads=true");
+        eprintln!("loop size (reads/sample): {LOOP}");
+        eprintln!("reps (timed samples): {REPS} (+{WARMUP} warmup, discarded)");
+        eprintln!(
+            "rdpmc  (index!=0 live): min={:.1} ns  median={:.1} ns",
+            min(&rdpmc_s),
+            rdpmc_med
+        );
+        eprintln!(
+            "read() (syscall fallback): min={:.1} ns  median={:.1} ns",
+            min(&read_s),
+            read_med
+        );
+        eprintln!(
+            "gap (median read / median rdpmc): {:.1}x",

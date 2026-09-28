@@ -1,0 +1,160 @@
+    /// the ptrace backend, where `pid()` is the guest process and its
+    /// `/proc/<pid>/maps` correctly describes the guest address space.
+    ///
+    /// Out-of-process backends whose `pid()` is not the guest (for example the
+    /// KVM backend, where it is the host VMM process) override this to return
+    /// real guest stack/heap ranges readable through [`Guest::memory`], so the
+    /// determinism engine hashes the guest's memory instead of the VMM's.
+    fn detlog_memory_regions(&self) -> Option<Vec<DetlogMemoryRegion>> {
+        None
+    }
+}
+
+/// Wraps a `Guest<T>` such that it implements `Guest<U>`.
+///
+/// # Limitations
+///
+/// `T` and `U` must have the same global state. This limitation may be removed
+/// in the future.
+pub struct IntoGuest<'a, G: ?Sized, U> {
+    inner: &'a mut G,
+    _phantom: core::marker::PhantomData<U>,
+}
+
+impl<'a, G: ?Sized, U> IntoGuest<'a, G, U> {
+    /// Creates a new `IntoGuest`.
+    pub fn new(guest: &'a mut G) -> Self {
+        Self {
+            inner: guest,
+            _phantom: core::marker::PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<'a, G, U> GlobalRPC<U::GlobalState> for IntoGuest<'a, G, U>
+where
+    G: Guest<U> + ?Sized,
+    U: Tool,
+{
+    async fn send_rpc(
+        &self,
+        message: <U::GlobalState as GlobalTool>::Request,
+    ) -> <U::GlobalState as GlobalTool>::Response {
+        self.inner.send_rpc(message).await
+    }
+
+    fn config(&self) -> &<U::GlobalState as GlobalTool>::Config {
+        self.inner.config()
+    }
+}
+
+#[async_trait]
+impl<'a, G, U, L> Guest<L> for IntoGuest<'a, G, U>
+where
+    G: Guest<U> + ?Sized,
+    L: Tool<GlobalState = U::GlobalState>,
+    U: Tool + AsMut<L>,
+    U::ThreadState: AsRef<L::ThreadState> + AsMut<L::ThreadState>,
+{
+    type Memory = G::Memory;
+    type Stack = G::Stack;
+
+    fn tid(&self) -> Pid {
+        self.inner.tid()
+    }
+
+    fn pid(&self) -> Pid {
+        self.inner.pid()
+    }
+
+    fn ppid(&self) -> Option<Pid> {
+        self.inner.ppid()
+    }
+
+    fn is_command_bootstrap(&self) -> bool {
+        self.inner.is_command_bootstrap()
+    }
+
+    fn is_main_thread(&self) -> bool {
+        self.inner.is_main_thread()
+    }
+
+    fn is_root_process(&self) -> bool {
+        self.inner.is_root_process()
+    }
+
+    fn is_root_thread(&self) -> bool {
+        self.inner.is_root_thread()
+    }
+
+    fn memory(&self) -> Self::Memory {
+        self.inner.memory()
+    }
+
+    fn thread_state_mut(&mut self) -> &mut L::ThreadState {
+        self.inner.thread_state_mut().as_mut()
+    }
+
+    fn thread_state(&self) -> &L::ThreadState {
+        self.inner.thread_state().as_ref()
+    }
+
+    async fn regs(&mut self) -> libc::user_regs_struct {
+        self.inner.regs().await
+    }
+
+    async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        self.inner.set_regs(regs).await
+    }
+
+    async fn stack(&mut self) -> Self::Stack {
+        self.inner.stack().await
+    }
+
+    async fn daemonize(&mut self) {
+        self.inner.daemonize().await
+    }
+
+    async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
+        self.inner.inject(syscall).await
+    }
+
+    async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        #![allow(unreachable_code)]
+        self.inner.tail_inject(syscall).await
+    }
+
+    async fn cancel_current_thread(&mut self) -> Never {
+        self.inner.cancel_current_thread().await
+    }
+
+    async fn defer_signal_delivery(&mut self, event: SignalEvent) -> Result<(), Error> {
+        self.inner.defer_signal_delivery(event).await
+    }
+
+    async fn queue_child_exit_signal(
+        &mut self,
+        event: SignalEvent,
+    ) -> crate::ChildExitSignalOutcome {
+        self.inner.queue_child_exit_signal(event).await
+    }
+
+    async fn queue_process_alarm_signal(
+        &mut self,
+        event: SignalEvent,
+    ) -> crate::ProcessAlarmSignalOutcome {
+        self.inner.queue_process_alarm_signal(event).await
+    }
+
+    fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
+        self.inner.signal_task_identity()
+    }
+    fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
+        self.inner.parked_signal_site()
+    }
+    fn captured_write_signal_site(
+        &self,
+        call: crate::syscalls::Write,
+    ) -> Option<crate::CallbackSignalSite> {
+        self.inner.captured_write_signal_site(call)

@@ -1,0 +1,160 @@
+    tid: Pid,
+
+    /// Process ID.
+    pid: Pid,
+
+    /// Parent process ID.
+    ppid: Option<Pid>,
+
+    /// State associated with the thread. Unique for each thread.
+    thread_state: L::ThreadState,
+
+    /// State associated with the process. This is shared among threads in the
+    /// same thread group.
+    process_state: Arc<L>,
+
+    /// Global state. This is shared among all threads in a process tree.
+    global_state: GlobalState<L::GlobalState>,
+
+    /// True only for TracerBuilder::spawn's Command root until successful exec.
+    /// Descendants and spawn_fn never inherit this logging provenance.
+    command_bootstrap: bool,
+
+    /// True if we can intercept CPUID, false otherwise.
+    has_cpuid_interception: bool,
+
+    /// Original call still owned by the current syscall callback. Only an
+    /// ordinary, unconverted seccomp callback owns a kernel entry to skip;
+    /// an injected frame and an already-skipped call are logical operations.
+    /// Taking this record consumes that authority, including fast tail injection
+    /// which transfers the original call to the callback's final resume.
+    pending_syscall: Option<(Sysno, SyscallArgs)>,
+
+    /// The pending syscall was converted out of its seccomp stop before Tool dispatch.
+    pending_syscall_already_skipped: bool,
+
+    /// Address of the writable e9tool register frame for the active event.
+    injected_syscall_frame: Option<usize>,
+
+    /// Per-process dynamic LiteInst handshake and patched-site state.
+    liteinst_runtime: Arc<StdMutex<LiteinstRuntimeState>>,
+
+    /// Controller-owned breakpoint preventing the executable entry before Ready.
+    liteinst_entry_guard: Option<LiteinstEntryGuard>,
+
+    /// Original typed fail-closed error retained while the exit waiter reaps root.
+    liteinst_failure: Option<LiteinstActivationFailure>,
+
+    /// pending signal to deliver. This can happen when
+    /// syscall got interrupted (by signal)
+    pending_signal: Option<Signal>,
+
+    /// A channel to allow short-circuiting the next state to main run loop. This
+    /// is useful inside of `inject` or `tail_inject` where we might need to
+    /// cancel a future early.
+    next_state: mpsc::Sender<Result<Wait, TraceError>>,
+
+    /// The receiving end of the next_state channel.
+    next_state_rx: Option<mpsc::Receiver<Result<Wait, TraceError>>>,
+
+    /// The timer tracking this task. Used to trigger RCB-based `timeouts`.
+    timer: Timer,
+
+    /// Set when `tail_inject` needs to cancel the current tool handler.
+    cancel_handler: Arc<AtomicBool>,
+
+    /// Child processes to wait on. When one of the children exits, it should be
+    /// removed from this list.
+    child_procs: Arc<Mutex<Children>>,
+
+    /// Child threads to wait on. When one of the child threads exits, it should
+    /// be removed from this list.
+    child_threads: Arc<Mutex<Children>>,
+
+    /// Channel to send child processes to that are left over by the time this
+    /// task exits.
+    orphanage: mpsc::Sender<Child>,
+
+    /// broadcast to kill all daemons
+    daemon_kill_switch: broadcast::Sender<()>,
+
+    /// Channel to damonize a process
+    daemonizer: mpsc::Sender<broadcast::Receiver<()>>,
+
+    /// The rx end of `daemonizer`.
+    daemonizer_rx: Option<mpsc::Receiver<broadcast::Receiver<()>>>,
+
+    /// Total number of tasks
+    ntasks: Arc<AtomicUsize>,
+
+    /// Total number of daemons
+    ndaemons: Arc<AtomicUsize>,
+
+    /// Task is a daemon
+    is_a_daemon: bool,
+
+    /// Software breakpoints.
+    // NB: For multi-threaded programs, sw breakpoints apply to all threads
+    // because they're in the same address space. Hence removing sw
+    // breakpoint in one thread also remove it for the rest of the threads
+    // in the same process group. *However*, our model is slightly different
+    // because we use different tx/rx channels even the threads are in the
+    // same process group, hence each threads owns `breakpoints: HashMap`
+    // instead of `Arc<Mutex<..>>`.
+    breakpoints: HashMap<u64, u64>,
+
+    /// Notify gdbserver start accepting incoming packets.
+    gdbserver_start_tx: Option<oneshot::Sender<()>>,
+
+    /// task is suspended (received SIGSTOP)
+    suspended: Arc<AtomicBool>,
+
+    /// Notify gdbserver there's a new stop event.
+    gdb_stop_tx: Option<mpsc::Sender<StoppedInferior>>,
+
+    /// Task is attached by gdb.
+    // NB: gdb doesn't always attach everything, when fork/clone is called.
+    // gdb also allows detach from a task, and re-attach again.
+    attached_by_gdb: bool,
+
+    /// Task is resumed by gdb.
+    // NB: gdb doesn't always attach everything, when fork/clone is called.
+    // gdb also allows detach from a task, and re-attach again.
+    resumed_by_gdb: Option<ResumeAction>,
+
+    /// GDB resume request, gdbstub is the sender
+    gdb_resume_tx: Option<mpsc::Sender<ResumeInferior>>,
+
+    /// GDB resume request, reverie is the receiver
+    gdb_resume_rx: Option<mpsc::Receiver<ResumeInferior>>,
+
+    /// Request sent by gdb. the tx channel is used by gdb instead of
+    /// `TracedTask`.
+    gdb_request_tx: Option<mpsc::Sender<GdbRequest>>,
+
+    /// Receiver to receive gdb request.
+    gdb_request_rx: Option<mpsc::Receiver<GdbRequest>>,
+
+    /// Wait to be resumed when in sigstop due to all stop mode.
+    exit_suspend_tx: Option<mpsc::Sender<Pid>>,
+
+    /// Wait to be resumed when in sigstop due to all stop mode.
+    exit_suspend_rx: Option<mpsc::Receiver<Pid>>,
+
+    /// Suspended task when hitting swbp. This is used to implement gdb's
+    /// all stop mode.
+    suspended_tasks: BTreeMap<Pid, Suspended>,
+
+    /// Task needs (single) step over the swbp instruciton when a swbp is
+    /// hit. unless this is done, if is not safe for other threads running
+    /// in parallel to report breakpoint, otherwise there're could be an
+    /// interleaved step-over, which might remove the breakpoint, hence
+    /// causing others to miss the breakpoint.
+    needs_step_over: Arc<Mutex<()>>,
+
+    /// Whether or not the tool is currently holding a handle on the guest Stack (and thus
+    /// potentially using actual stack memory within the guest).
+    stack_checked_out: Arc<AtomicBool>,
+}
+
+impl<L: Tool> fmt::Debug for TracedTask<L> {

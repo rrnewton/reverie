@@ -1,0 +1,20 @@
+safehermit: run_id=20260918T201324Z-3572040
+safehermit: binary=/usr/bin/python3
+safehermit: binary_source=argv:positional-path
+safehermit: binary_sha256=9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576
+safehermit: log_dir=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-48/safehermit/brs-safehermit-20260918T201324Z-3572040-3572070-1789762404535110877
+safehermit: log_file=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-48/safehermit/brs-safehermit-20260918T201324Z-3572040-3572070-1789762404535110877/hermit.log
+safehermit: unit=safehermit-20260918T201324Z-3572040
+safehermit: bound.wall=APPLIED:60s
+safehermit: bound.cgroup=APPLIED:MemoryMax=16G MemorySwapMax=0
+safehermit: bound.disk=APPLIED:8G for log_dir only; guest paths and explicit log files elsewhere are outside this bound
+safehermit: bound.bytes=APPLIED:16777216 (LETHAL: the run is cgroup-killed at the cap)
+safehermit: bound.logfilter=NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires
+safehermit: env.forwarded=APPLIED:29 variables forwarded
+safehermit: note.run_record=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-48/safehermit/registry/20260918T201324Z-3572040.json (best-effort; nothing depends on it)
+safehermit: elapsed_secs=4
+safehermit: bytes_written=304
+safehermit: truncated=false
+safehermit: runner_exit_code=0
+safehermit: unit_result=success
+safehermit: exit_code=0

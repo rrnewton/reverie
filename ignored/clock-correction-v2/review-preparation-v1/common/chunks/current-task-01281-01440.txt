@@ -1,0 +1,160 @@
+        let (gdb_resume_tx, gdb_resume_rx) = mpsc::channel(1);
+        let (gdb_request_tx, gdb_request_rx) = mpsc::channel(1);
+        let (exit_suspend_tx, exit_suspend_rx) = mpsc::channel(16);
+        self.ntasks.fetch_add(1, Ordering::SeqCst);
+        Self {
+            tid: child,
+            pid: child,
+            ppid: Some(self.pid),
+            thread_state,
+            process_state,
+            global_state: self.global_state.clone(),
+            command_bootstrap: false,
+            has_cpuid_interception: self.has_cpuid_interception,
+            pending_syscall: None,
+            pending_syscall_already_skipped: false,
+            injected_syscall_frame: None,
+            liteinst_runtime: Arc::new(StdMutex::new(
+                self.liteinst_runtime.lock().unwrap().clone(),
+            )),
+            liteinst_entry_guard: None,
+            liteinst_failure: None,
+            next_state,
+            next_state_rx: Some(next_state_rx),
+            timer: Timer::new(child, child),
+            cancel_handler: Arc::new(AtomicBool::new(false)),
+            pending_signal: None,
+            child_procs: Arc::new(Mutex::new(Children::new())),
+            child_threads: Arc::new(Mutex::new(Children::new())),
+            orphanage: self.orphanage.clone(),
+            daemon_kill_switch: self.daemon_kill_switch.clone(),
+            daemonizer,
+            daemonizer_rx: Some(daemonizer_rx),
+            ntasks: self.ntasks.clone(),
+            ndaemons: self.ndaemons.clone(),
+            // NB: if daemon forks, then its child's parent pid is no longer 1.
+            is_a_daemon: false,
+            gdbserver_start_tx: None,
+            gdb_stop_tx: None,
+            attached_by_gdb: self.attached_by_gdb,
+            resumed_by_gdb: None,
+            gdb_resume_tx: Some(gdb_resume_tx),
+            gdb_resume_rx: Some(gdb_resume_rx),
+            breakpoints: self.breakpoints.clone(),
+            suspended: Arc::new(AtomicBool::new(false)),
+            gdb_request_tx: Some(gdb_request_tx),
+            gdb_request_rx: Some(gdb_request_rx),
+            exit_suspend_tx: Some(exit_suspend_tx),
+            exit_suspend_rx: Some(exit_suspend_rx),
+            needs_step_over: Arc::new(Mutex::new(())),
+            suspended_tasks: BTreeMap::new(),
+            stack_checked_out: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn read_injected_syscall_frame(
+        &self,
+        task: &Stopped,
+        address: usize,
+    ) -> Result<InjectedSyscallFrame, TraceError> {
+        let address = Addr::from_raw(address).ok_or(Errno::EFAULT)?;
+        Ok(task.read_value(address)?)
+    }
+
+    fn write_injected_syscall_frame(
+        &self,
+        task: &Stopped,
+        address: usize,
+        frame: &InjectedSyscallFrame,
+    ) -> Result<(), TraceError> {
+        let address = AddrMut::from_raw(address).ok_or(Errno::EFAULT)?;
+        let mut task = Stopped::new_unchecked(task.pid());
+        Ok(task.write_value(address, frame)?)
+    }
+
+    fn write_injected_syscall_result(
+        &self,
+        task: &Stopped,
+        result: Result<i64, Errno>,
+    ) -> Result<(), TraceError> {
+        let address = self.injected_syscall_frame.ok_or(Errno::EIO)?;
+        let mut frame = self.read_injected_syscall_frame(task, address)?;
+        let result = result.unwrap_or_else(|errno| -(errno.into_raw() as i64));
+        frame.set_result(result);
+        self.write_injected_syscall_frame(task, address, &frame)
+    }
+
+    fn read_guest_registers(&self, task: &Stopped) -> Result<libc::user_regs_struct, TraceError> {
+        let mut regs = task.getregs()?;
+        if let Some(address) = self.injected_syscall_frame {
+            let frame = self.read_injected_syscall_frame(task, address)?;
+            frame.copy_to_user_regs(&mut regs);
+        }
+        Ok(regs)
+    }
+
+    fn write_guest_registers(
+        &self,
+        task: &Stopped,
+        regs: &libc::user_regs_struct,
+    ) -> Result<(), TraceError> {
+        if let Some(address) = self.injected_syscall_frame {
+            let mut frame = self.read_injected_syscall_frame(task, address)?;
+            let current = self.read_guest_registers(task)?;
+            InjectedSyscallFrame::validate_user_regs_update(&current, regs)?;
+            if self.global_state.liteinst_runtime.is_some() {
+                validate_liteinst_user_regs_update(&current, regs)?;
+            }
+            frame.copy_from_user_regs(regs);
+            self.write_injected_syscall_frame(task, address, &frame)
+        } else {
+            task.setregs(regs)
+        }
+    }
+
+    fn get_syscall(&self, task: &Stopped) -> Result<Syscall, TraceError> {
+        let regs = task.getregs()?;
+        let nr = Sysno::from(regs.orig_syscall() as i32);
+
+        let args = regs.args();
+
+        Ok(Syscall::from_raw(
+            nr,
+            SyscallArgs::new(
+                args.0 as usize,
+                args.1 as usize,
+                args.2 as usize,
+                args.3 as usize,
+                args.4 as usize,
+                args.5 as usize,
+            ),
+        ))
+    }
+}
+
+fn set_ret(task: &Stopped, ret: Reg) -> Result<Reg, TraceError> {
+    let mut regs = task.getregs()?;
+    let old = regs.ret();
+    *regs.ret_mut() = ret;
+    task.setregs(&regs)?;
+    Ok(old)
+}
+
+/// Canonical marker emitted when a guest-thread task dies of a panic.
+///
+/// The token is what a harness greps for, in the same spirit as
+/// `HERMIT_SKID_OVERSHOOT`; keep it stable. It exists because an exit code
+/// alone cannot say *why* a run ended, and this failure mode was expensive
+/// precisely because it was unreadable: the run hung, so a panic was
+/// indistinguishable from a slow run to every harness that judges by wall time.
+const TASK_PANIC_MARKER: &str = "HERMIT_TASK_PANIC";
+
+/// Exit status used when a guest-thread task panics.
+///
+/// This is rustc's conventional panic status inside the tracer process. An
+/// embedding executable may normalize it at an outer process boundary, so the
+/// marker above remains the authoritative machine-readable diagnosis.
+const TASK_PANIC_EXIT_CODE: i32 = 101;
+
+/// Renders the one-line panic marker. Separate from the exit so it can be
+/// tested without ending the test process.

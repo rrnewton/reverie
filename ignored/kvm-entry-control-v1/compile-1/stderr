@@ -1,0 +1,54 @@
+Running as unit: kvm-entry-compile-1-3194959.service
+     Locking 263 packages to latest compatible versions
+      Adding addr2line v0.26.1 (available: v0.27.0)
+      Adding atomic v0.5.3 (available: v0.6.1)
+      Adding bincode v1.3.3 (available: v2.0.1)
+      Adding clap v3.2.25 (available: v4.6.7)
+      Adding colored v2.2.0 (available: v3.1.1)
+      Adding darling v0.14.4 (available: v0.24.1)
+      Adding derive_more v1.0.0 (available: v2.1.1)
+      Adding dirs v2.0.2 (available: v6.0.0)
+      Adding generic-array v0.14.7 (available: v0.14.9)
+      Adding heck v0.3.3 (available: v0.5.0)
+      Adding nix v0.30.1 (available: v0.31.3)
+      Adding object v0.36.7 (available: v0.39.1)
+      Adding perf-event-open-sys v5.0.0 (available: v6.0.0)
+      Adding sha2 v0.10.9 (available: v0.11.0)
+      Adding syn v1.0.109 (available: v3.0.6)
+   Compiling unicode-ident v1.0.26
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling derive_more-impl v1.0.0
+   Compiling serde_derive v1.0.229
+   Compiling serde v1.0.229
+   Compiling serde_repr v0.1.21
+   Compiling futures-macro v0.3.34
+   Compiling syscalls v0.6.18
+   Compiling futures-util v0.3.34
+   Compiling tokio-macros v2.7.2
+   Compiling thiserror-impl v2.0.20
+   Compiling thiserror v2.0.20
+   Compiling tokio v1.53.1
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-memory)
+   Compiling bincode v2.0.1
+   Compiling derive_more v1.0.0
+   Compiling scroll_derive v0.13.2
+   Compiling scroll v0.13.0
+   Compiling reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-syscalls)
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-process)
+   Compiling linked-hash-map v0.5.6
+   Compiling async-trait v0.1.92
+   Compiling goblin v0.10.7
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie)
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.99s
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 32.034s
+             CPU time consumed: 53.095s
+                   Memory peak: 1.9G (swap: 0B)
+                      IO Bytes: read 208.8M, written 383.3M

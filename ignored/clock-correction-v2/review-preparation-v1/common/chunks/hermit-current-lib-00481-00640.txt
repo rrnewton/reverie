@@ -1,0 +1,160 @@
+                }
+            }
+            thread_state.account_process_cpu_time();
+            thread_state.committed_clock_value = clock_value;
+
+            if thread_state.end_of_timeslice.is_some() {
+                if let Some(last_timer) = thread_state.last_rcb_timer
+                    && rcb_timer_overshot(delta_rcbs, last_timer)
+                    && precise_timers
+                {
+                    report_rcb_overshoot(
+                        self.cfg.panic_on_rcb_overshoot,
+                        clock_value,
+                        delta_rcbs,
+                        last_timer,
+                    );
+                    // Preserve timer state. `pre_handler_hook` will yield through the normal
+                    // scheduler path if the slice expired; `post_handler_hook` will otherwise
+                    // re-arm an overshot `interrupt_at` timer.
+                }
+                // Otherwise we're very early, at the prehook of handle_thread_start.
+            } else {
+                panic!(
+                    "Invariant violation: end_of_timeslice is None during update_logical_time_rcbs..."
+                )
+            }
+
+            trace!(
+                "[dtid {}] updated rcb clock, new logical time: {:?}, i.e. {}, timeslice end: {}, local rcb clock_value {:?}",
+                dettid,
+                &thread_state.thread_logical_time,
+                thread_state.thread_logical_time.as_nanos(),
+                thread_state
+                    .end_of_timeslice
+                    .map_or_else(|| "".to_string(), |x| format!("{}", x)),
+                clock_value,
+            );
+            if self.cfg.use_rcb_time() && self.cfg.should_trace_schedevent() {
+                let mut vec = Vec::new();
+                let ev = with_guest_time(
+                    guest,
+                    SchedEvent::branches(
+                        dettid,
+                        delta_rcbs
+                            .try_into()
+                            .expect("should not have more than 2^32 branches at once"),
+                    ),
+                );
+                let ev = if precise_branch {
+                    with_guest_rip(guest, ev).await
+                } else {
+                    ev
+                };
+
+                if delta_rcbs > 0 {
+                    // We don't fill the end_rip here, because the current rip is NOT precisely the
+                    // end of this block of branch events.  Other instructions may have occured
+                    // since the last branch.
+                    vec.push(ev)
+                } else {
+                    trace!(
+                        "[detcore, dtid {}] Refusing to record zero-braches event: {:?}",
+                        &ev.dettid, ev
+                    );
+                }
+                if !precise_branch {
+                    // This will ALWAYS record, even if the branches above are zero.
+                    let ev2 = with_guest_time(
+                        guest,
+                        SchedEvent {
+                            dettid,
+                            op: Op::OtherInstructions,
+                            count: 1,
+                            start_rip: None,
+                            end_rip: None,
+                            end_time: None,
+                        },
+                    );
+                    // Fill in end_rip because current rip represents the end of this event.
+                    let ev2 = with_guest_rip(guest, ev2).await;
+                    vec.push(ev2);
+                }
+                Some(vec)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// A common hook called at the start of *every* handler, just after we receive
+    /// control from the guest.
+    async fn pre_handler_hook<G: Guest<Self>>(&self, guest: &mut G, precise_branch: bool) {
+        let dettid = guest.thread_state().dettid;
+        let evs = self.update_logical_time_rcbs(guest, precise_branch).await;
+
+        if guest.thread_state().guest_past_first_execve() {
+            detlog_debug!(
+                "(pre) registers [dtid {}][rcbs {}]. {}",
+                dettid,
+                guest.thread_state().thread_logical_time.rcbs(),
+                guest.regs().await.display()
+            );
+        }
+        trace!(
+            "prehook [dtid {}] Updating rcbs and checking time remaining.",
+            dettid
+        );
+        if let Some(vec) = evs {
+            for ev in vec {
+                trace_schedevent(guest, ev, false).await;
+            }
+        }
+
+        self.end_timeslice_if_needed(guest).await;
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    /// Yield when accumulated logical time reaches the syscall-boundary target deadline.
+    async fn end_timeslice_if_needed<G: Guest<Self>>(&self, guest: &mut G) {
+        let thread_state = guest.thread_state();
+        let Some(slice_end) = thread_state.end_of_timeslice else {
+            return;
+        };
+        if !thread_state.timeslice_expired() {
+            return;
+        }
+
+        trace!(
+            "[dtid {}] logical time {} reached timeslice target {}",
+            thread_state.dettid,
+            thread_state.thread_logical_time.as_nanos(),
+            slice_end
+        );
+        self.end_timeslice(guest).await;
+    }
+
+    /// A common hook called at the end of *every* handler, just before returning control
+    /// to the guest. This enforces the logical target and resets the PMU maximum timer.
+    ///
+    /// However, note that the thread's timeslice (turn) may have expired DURING this handler.
+    /// Therefore the timeslice can end in the posthook as well as in the prehook.
+    async fn post_handler_hook<G: Guest<Self>>(&self, guest: &mut G) {
+        self.end_timeslice_if_needed(guest).await;
+
+        let dettid = guest.thread_state().dettid;
+        let mut current_time = guest.thread_state().thread_logical_time.as_nanos();
+
+        if let Some(mut max_timeslice_end) = guest.thread_state().max_timeslice_end {
+            assert!(guest.config().max_timeslice.is_some());
+            let mut replay_rcb_end = guest.thread_state().replay_rcb_end;
+            // TODO: get rid of fractional NANOS_PER_RCB so it's clear that this does not lose precision:
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-1151)
+            let clock_multiplier = guest.config().clock_multiplier.unwrap_or(1.0)
+                * guest.thread_state().rcb_time_multiplier().as_f64();
+            let epsilon = Duration::from_nanos((NANOS_PER_RCB * clock_multiplier).ceil() as u64);
+
+            if replay_rcb_end.is_none() && current_time + epsilon > max_timeslice_end {

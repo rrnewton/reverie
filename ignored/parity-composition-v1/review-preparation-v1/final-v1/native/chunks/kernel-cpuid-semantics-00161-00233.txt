@@ -1,0 +1,73 @@
+
+:Capability: basic (vcpu), KVM_CAP_GET_MSR_FEATURES (system)
+:Architectures: x86
+:Type: system ioctl, vcpu ioctl
+:Parameters: struct kvm_msrs (in/out)
+:Returns: number of msrs successfully returned;
+          -1 on error
+
+When used as a system ioctl:
+Reads the values of MSR-based features that are available for the VM.  This
+is similar to KVM_GET_SUPPORTED_CPUID, but it returns MSR indices and values.
+The list of msr-based features can be obtained using KVM_GET_MSR_FEATURE_INDEX_LIST
+in a system ioctl.
+
+When used as a vcpu ioctl:
+Reads model-specific registers from the vcpu.  Supported msr indices can
+be obtained using KVM_GET_MSR_INDEX_LIST in a system ioctl.
+
+::
+
+  struct kvm_msrs {
+	__u32 nmsrs; /* number of msrs in entries */
+	__u32 pad;
+
+	struct kvm_msr_entry entries[0];
+  };
+
+  struct kvm_msr_entry {
+	__u32 index;
+	__u32 reserved;
+	__u64 data;
+  };
+
+Application code should set the 'nmsrs' member (which indicates the
+size of the entries array) and the 'index' member of each array entry.
+kvm will fill in the 'data' member.
+
+
+4.19 KVM_SET_MSRS
+-----------------
+
+:Capability: basic
+:Architectures: x86
+:Type: vcpu ioctl
+:Parameters: struct kvm_msrs (in)
+:Returns: number of msrs successfully set (see below), -1 on error
+
+Writes model-specific registers to the vcpu.  See KVM_GET_MSRS for the
+data structures.
+
+Application code should set the 'nmsrs' member (which indicates the
+size of the entries array), and the 'index' and 'data' members of each
+array entry.
+
+It tries to set the MSRs in array entries[] one by one. If setting an MSR
+fails, e.g., due to setting reserved bits, the MSR isn't supported/emulated
+by KVM, etc..., it stops processing the MSR list and returns the number of
+MSRs that have been set successfully.
+
+
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/Documentation__virt__kvm__api.rst SHA256 553f0720999e53afe9f4d2f70778a3271017c3be70faf25ac499f8750c17645d lines 8112..8121
+7.15 KVM_CAP_MSR_PLATFORM_INFO
+------------------------------
+
+:Architectures: x86
+:Parameters: args[0] whether feature should be enabled or not
+
+With this capability, a guest may read the MSR_PLATFORM_INFO MSR. Otherwise,
+a #GP would be raised when the guest tries to access. Currently, this
+capability does not enable write permissions of this MSR for the guest.
+
+

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.238625641
+    }
+  ]
+}

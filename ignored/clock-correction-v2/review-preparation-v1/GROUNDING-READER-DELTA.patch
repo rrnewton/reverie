@@ -1,0 +1,33 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/prepare_grounding.py
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/prepare_grounding.py
+@@ -1,6 +1,6 @@
+ from pathlib import Path
+ import json,hashlib,stat,collections,re,subprocess,datetime
+-O=Path(__file__).parent;S=Path('/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored');H=O.parent.parent
++O=Path(__file__).parent;S=Path('/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored');H=Path('/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918')
+ C=S/'kvm-timer-review-grounding-v2-20260918';N=S/'kvm-timer-native-cli-review-v1-20260918'
+ SID={'claude':'5d98403d-b8e9-42bf-8e2f-da7e7b70809c','native':'01a0b38e-9e3c-7883-9816-65199c048935'}
+ def rec(p):
+@@ -12,9 +12,12 @@
+  r=rec(x['path']);assert all(r[k]==x[k] for k in ['bytes','sha256']);return r
+ g=json.loads((C/'GROUNDING.json').read_text());complete=json.loads((C/'COMPLETE.json').read_text());assert complete['complete'] and not complete['proposal_exposed'] and complete['session_id']==SID['claude']
+ ng=json.loads((S/'kvm-rdtsc-native-review-v1-20260918/GROUNDING_REUSE.json').read_text());assert ng['session']==SID['native']
+-hashcmd=['git','-C',str(H),'show','39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435:detcore/src/scheduler.rs'];proc=subprocess.run(hashcmd,capture_output=True,timeout=30);assert proc.returncode==0
+-scheduler=O/'common/hermit-39ac/detcore/src/scheduler.rs';scheduler.parent.mkdir(parents=True,exist_ok=True);scheduler.write_bytes(proc.stdout)
++hashcmd=['git','-C',str(H),'show','97c39b308efd854693038f24962484182d932f27:detcore/src/scheduler.rs'];proc=subprocess.run(hashcmd,capture_output=True,timeout=30);assert proc.returncode==0
++scheduler=O/'common/hermit-97c/detcore/src/scheduler.rs';scheduler.parent.mkdir(parents=True,exist_ok=True);scheduler.write_bytes(proc.stdout)
+ assert rec(scheduler)['sha256']=='a5da44ec706ad656230cf78aa5742fc40c5339a14aad30410b880dc18b576fa3'
++for canonical, stage in [(Path('/home/newton/work/dev-hermit/PROJECT_VISION.md'), 2), (Path('/home/newton/work/dev-hermit/ai_docs/hermit-v2-roadmap.md'), 3)]:
++ assert canonical.read_bytes() == Path(g['stages'][stage]['source']['path']).read_bytes(), str(canonical)
++assert __debug__
+ for lane in ['claude','native']:
+  d=O/lane;d.mkdir();stages=[];records={};last_end=None
+  def bind(p):
+@@ -62,6 +65,6 @@
+   if stage=='02-scheduler':assert Path(source['path']).read_bytes()==scheduler.read_bytes()
+  for p in ([C/'GROUNDING.json',C/'COMPLETE.json',C/'ROOT-READBACK.json'] if lane=='claude' else [N/'SESSION_IDENTITY.json',N/'GROUNDING_READBACK.json']):bind(p)
+  bind(scheduler)
+- proof={'session_id':SID[lane],'scope':'Own actual reviewer ordered grounding only; no author or peer grounding/approval borrowed','all_39_chunks_reauthenticated_from_own_model_visible_reads':sum(len(x['literal_matches']) for x in stages)==39,'stages_in_order':stages,'current_hermit':'39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435','scheduler':rec(scheduler),'scheduler_git_blob':'20c3c4296223d1aa03ca28e2f45514ad0a72bff6','scheduler_equals_own_original_complete_reading':True,'raw_git_command':hashcmd,'raw_git_status':proc.returncode,'policy_limit':'Native initial paper/scheduler requested never but effectively on-request/read-only; that historical discrepancy remains preserved. Future actual context must prove never/read-only.' if lane=='native' else 'Own complete initial Claude stages were plan-mode Read-only. Recheck actual session/mode/model/tools at new launch.','prior_verdicts':'Separate prior reports remain untouched and are not evidence of approval for this clock design.'}
++ proof={'session_id':SID[lane],'scope':'Own actual reviewer ordered grounding only; no author or peer grounding/approval borrowed','all_39_chunks_reauthenticated_from_own_model_visible_reads':sum(len(x['literal_matches']) for x in stages)==39,'stages_in_order':stages,'current_hermit':'97c39b308efd854693038f24962484182d932f27','scheduler':rec(scheduler),'scheduler_git_blob':'20c3c4296223d1aa03ca28e2f45514ad0a72bff6','scheduler_equals_own_original_complete_reading':True,'raw_git_command':hashcmd,'raw_git_status':proc.returncode,'policy_limit':'Native initial paper/scheduler requested never but effectively on-request/read-only; that historical discrepancy remains preserved. Future actual context must prove never/read-only.' if lane=='native' else 'Own complete initial Claude stages were plan-mode Read-only. Recheck actual session/mode/model/tools at new launch.','prior_verdicts':'Separate prior reports remain untouched and are not evidence of approval for this clock implementation.'}
+  put(d/'GROUNDING_AUTHENTICATION.json',proof);put(d/'GROUNDING_INPUTS.json',list(records.values()))
+  print(lane,rec(d/'GROUNDING_AUTHENTICATION.json'))

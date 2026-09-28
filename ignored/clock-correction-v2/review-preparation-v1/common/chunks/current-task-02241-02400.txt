@@ -1,0 +1,160 @@
+            target: "reverie_ptrace::syscall",
+            "syscall.intercept",
+            tid = %self.tid(),
+            syscall = %nr,
+            args = ?args,
+            source = "injected-trap",
+        );
+
+        async {
+            self.injected_syscall_frame = Some(frame_address);
+            self.pending_syscall = Some((nr, args));
+            self.pending_syscall_already_skipped = false;
+
+            let retval = cancellable(self.cancel_handler.clone(), async {
+                self.process_state
+                    .clone()
+                    .handle_syscall_event(self, syscall)
+                    .await
+            })
+            .await;
+
+            self.timer.finalize_requests();
+
+            if let Some(retval) = retval {
+                let result = match retval {
+                    Ok(value) => value,
+                    Err(error) => -(error.into_errno().unwrap_or(Errno::EIO).into_raw() as i64),
+                };
+                self.write_injected_syscall_result(&task, Ok(result))?;
+            }
+
+            self.pending_syscall = None;
+            self.pending_syscall_already_skipped = false;
+            self.injected_syscall_frame = None;
+            let signal = self.take_pending_signal_for_resume(
+                LiteinstActivationOperation::ResumeInterceptedInjectedSyscall,
+            )?;
+            let wait = self.resume_stopped(task, signal)?.next_state().await?;
+            tracing::trace!(
+                target: "reverie_ptrace::syscall",
+                "completed injected syscall interception"
+            );
+            Ok(wait)
+        }
+        .instrument(span)
+        .await
+    }
+
+    fn validate_liteinst_handshake(
+        &self,
+        task: &Stopped,
+        frame_address: usize,
+        trap_rip: u64,
+        ready: bool,
+    ) -> Option<LiteinstHandshakeFrame> {
+        let config = self.global_state.liteinst_runtime.as_ref()?;
+        let address = Addr::from_raw(frame_address)?;
+        let frame: LiteinstHandshakeFrame = task.read_value(address).ok()?;
+        if frame.version != 4
+            || frame.helper_stack_top < 8
+            || frame.helper_stack_top & 0xf != 0
+            || trap_rip
+                != if ready {
+                    frame.ready_rip
+                } else {
+                    frame.begin_rip
+                }
+        {
+            return None;
+        }
+        let maps = guest_maps(task.pid())?;
+        let preload_code = |address| {
+            maps.iter().any(|mapping| {
+                mapping.executable
+                    && mapping.path.as_ref() == Some(&config.preload)
+                    && mapping.contains(address)
+            })
+        };
+        if ![
+            frame.begin_rip,
+            frame.ready_rip,
+            frame.install_helper,
+            frame.helper_return,
+            frame.helper_return_rip,
+            frame.syscall_trap_rip,
+            frame.syscall_trap_return_rip,
+        ]
+        .into_iter()
+        .all(preload_code)
+        {
+            return None;
+        }
+        let frame_readable = maps
+            .iter()
+            .any(|mapping| mapping.readable && mapping.contains(frame_address as u64));
+        let helper_stack_map = maps.iter().find(|mapping| {
+            mapping.writable && mapping.contains(frame.helper_stack_top.saturating_sub(8))
+        });
+        let install_result = GuestRange::new(
+            frame.install_result,
+            core::mem::size_of::<LiteinstInstallResult>() as u64,
+        )?;
+        let install_result_writable = maps.iter().any(|mapping| {
+            Some((mapping.start, mapping.end))
+                == helper_stack_map.map(|stack| (stack.start, stack.end))
+                && mapping.readable
+                && mapping.writable
+                && mapping.contains_range(install_result)
+        });
+        (frame_readable && helper_stack_map.is_some() && install_result_writable).then_some(frame)
+    }
+
+    fn install_liteinst_entry_guard(&mut self, task: &mut Stopped) -> Result<(), TraceError> {
+        if self.global_state.liteinst_runtime.is_none() {
+            return Ok(());
+        }
+        if self.liteinst_entry_guard.is_some() {
+            return Err(Errno::EALREADY.into());
+        }
+        let address = guest_auxv_entry(task.pid(), libc::AT_ENTRY).ok_or(Errno::ENOEXEC)?;
+        let range =
+            GuestRange::new(address, core::mem::size_of::<u64>() as u64).ok_or(Errno::ENOEXEC)?;
+        if !guest_maps(task.pid()).is_some_and(|maps| {
+            maps.iter().any(|mapping| {
+                mapping.readable && mapping.executable && mapping.contains_range(range)
+            })
+        }) {
+            return Err(Errno::ENOEXEC.into());
+        }
+        let read_address = Addr::<u64>::from_raw(address as usize).ok_or(Errno::EFAULT)?;
+        let guard_address = AddrMut::<u64>::from_raw(address as usize).ok_or(Errno::EFAULT)?;
+        let saved_instruction: u64 = task.read_value(read_address)?;
+        if saved_instruction as u8 == 0xcc {
+            return Err(Errno::EPROTO.into());
+        }
+        let guarded_instruction = (saved_instruction & !0xff) | 0xcc;
+        task.write_value(guard_address, &guarded_instruction)?;
+        let observed: u64 = task.read_value(read_address)?;
+        if observed != guarded_instruction {
+            let _ = task.write_value(guard_address, &saved_instruction);
+            return Err(Errno::EIO.into());
+        }
+        self.liteinst_entry_guard = Some(LiteinstEntryGuard {
+            address,
+            saved_instruction,
+        });
+        Ok(())
+    }
+
+    fn restore_liteinst_entry_guard(&mut self, task: &mut Stopped) -> Result<(), TraceError> {
+        let guard = self.liteinst_entry_guard.ok_or(Errno::EPROTO)?;
+        let read_address = Addr::<u64>::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
+        let address = AddrMut::<u64>::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
+        let guarded_instruction = (guard.saved_instruction & !0xff) | 0xcc;
+        let observed: u64 = task.read_value(read_address)?;
+        if observed != guarded_instruction {
+            return Err(Errno::EPROTO.into());
+        }
+        task.write_value(address, &guard.saved_instruction)?;
+        let restored: u64 = task.read_value(read_address)?;

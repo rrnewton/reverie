@@ -1,0 +1,38 @@
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/source-before.json",
+      "bytes": 168366,
+      "sha256": "6f835d1c02b40ef163543200bdda2820805443dcb04986f7e72c89c930755523",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/source-after.json",
+      "bytes": 168366,
+      "sha256": "6f835d1c02b40ef163543200bdda2820805443dcb04986f7e72c89c930755523",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/ROOT-TRANSCRIPT-READBACK.json",
+      "bytes": 30417,
+      "sha256": "0a49b069498fe5b9bc223491f4fdcbbc64cd0b71b597bfb5ca0a3be16397bde8",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/ASSISTANT-TEXT-EVENTS.json",
+      "bytes": 12343,
+      "sha256": "1160f6f351a9796640fc7eea74b1add75f80cbc08a58619ed317fdd714e191c8",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/TERMINAL-RESULT.json",
+      "bytes": 13901,
+      "sha256": "44530c53aba16a2df3840cce0cff95cb8bd40b818a10612e92092c33be2fcbf8",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/CLAUDE-CORRECTION-REPORT.md",
+      "bytes": 11630,
+      "sha256": "b010dd1e517d34ced307d4aa85383f68803a76380151de6c5d7e7aa97f9fe99d",
+      "mode": 420
+    }
+  ]
+}

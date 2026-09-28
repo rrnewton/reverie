@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "apply",
+    "--exclude=*tests/static_elf.rs",
+    "--directory=ignored/parity-composition-v1/source",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/SOURCE.patch"
+  ],
+  "returncode": 0,
+  "stdout": "",
+  "stderr": ""
+}

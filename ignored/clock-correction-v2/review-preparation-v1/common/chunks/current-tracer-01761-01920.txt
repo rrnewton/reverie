@@ -1,0 +1,160 @@
+                        }
+                    }
+                }
+            }
+        })
+        .await;
+}
+
+/// Runs the task tree to completion and returns the exit status of the root
+/// task.
+async fn run_task_tree<T: Tool + 'static>(
+    root: TracedTask<T>,
+    child: Stopped,
+    orphanage: mpsc::Receiver<Child>,
+    liteinst_fail_closed: bool,
+) -> Result<ExitStatus, Error> {
+    let root = root.run(child);
+    let orphans = run_orphaned(orphanage);
+    futures::pin_mut!(root, orphans);
+    match future::select(root, orphans).await {
+        future::Either::Left((result, orphans)) => {
+            if result.is_ok() || !liteinst_fail_closed {
+                // A successful root, and every non-LiteInst backend, still
+                // owns orderly orphan completion.
+                orphans.await;
+            }
+            // A failed LiteInst root must return control to its session cleanup
+            // guard immediately. A failed descendant can retain an orphanage
+            // sender while its Tool exit callback is pending, and waiting for
+            // that channel to close would prevent the guard from terminating
+            // the exact tracee generations which make the callback pending.
+            result
+        }
+        future::Either::Right(((), root)) => root.await,
+    }
+}
+
+/// Helper function for everything after the child is spawned.
+#[tracing::instrument(
+    target = "reverie_ptrace::lifecycle",
+    name = "tracee.attach",
+    level = "debug",
+    skip_all,
+    fields(pid = %child.pid())
+)]
+async fn postspawn<L: Tool + 'static>(
+    child: Running,
+    gref: Arc<L::GlobalState>,
+    config: <L::GlobalState as GlobalTool>::Config,
+    options: TracedTaskOptions<'_>,
+    gdbserver: Option<GdbServer>,
+) -> Result<BoxFuture<'static, Result<ExitStatus, Error>>, TraceError> {
+    let pid = child.pid();
+
+    // Wait for the child to enter a stopped state. The child will enter a
+    // stopped state immediately after ptrace::traceme is called.
+    //
+    // NOTE: We may rarely get spurious signals here, like SIGWINCH, so we must
+    // skip past them.
+    let (mut child, event) = child
+        .wait_for_signal(Signal::SIGSTOP)
+        .await?
+        .assume_stopped();
+    assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+
+    child.setoptions(
+        ptrace::Options::PTRACE_O_TRACEEXEC
+            | ptrace::Options::PTRACE_O_EXITKILL
+            | ptrace::Options::PTRACE_O_TRACECLONE
+            | ptrace::Options::PTRACE_O_TRACEFORK
+            | ptrace::Options::PTRACE_O_TRACEVFORK
+            | ptrace::Options::PTRACE_O_TRACEVFORKDONE
+            | ptrace::Options::PTRACE_O_TRACEEXIT
+            | ptrace::Options::PTRACE_O_TRACESECCOMP
+            | ptrace::Options::PTRACE_O_TRACESYSGOOD,
+    )?;
+
+    let (orphan_sender, orphan_receiver) = mpsc::channel(1);
+    let (daemon_kill, _) = broadcast::channel(1);
+    let liteinst_fail_closed = options.liteinst_runtime.is_some();
+
+    // This is the root task, so there's no reason to make run its init routine
+    // asynchronously, as there isn't any other work to do.
+    let mut tracer = TracedTask::<L>::new(
+        pid,
+        config,
+        gref,
+        options,
+        orphan_sender,
+        daemon_kill,
+        gdbserver,
+    );
+
+    tracer.arm_liteinst_root_stop(&child, &Event::Signal(Signal::SIGSTOP));
+    child = tracer.tracee_preinit(child).await?;
+
+    let tracer = Box::pin(run_task_tree(
+        tracer,
+        child,
+        orphan_receiver,
+        liteinst_fail_closed,
+    ));
+    Ok(tracer)
+}
+
+/// Creates the seccomp filter. This lets us control which syscalls are traced
+/// and which ones are allowed through.
+fn seccomp_filter(events: &Subscription) -> seccomp::Filter {
+    use reverie::process::seccomp::Action;
+
+    seccomp::FilterBuilder::new()
+        // By default, all syscalls are allowed through untraced. Then, we can
+        // intercept only the syscalls we are interested in.
+        .default_action(Action::Allow)
+        .syscalls(
+            events
+                .iter_syscalls()
+                .map(|syscall| (syscall, Action::Trace(0))),
+        )
+        // rt_sigreturn must execute from Reverie's private page while restoring
+        // a signal frame. restart_syscall deliberately has no unconditional
+        // override: like every ordinary syscall, it is traced exactly when the
+        // Tool subscribes to it and otherwise falls through to the Allow default.
+        .syscall(Sysno::rt_sigreturn, Action::Allow)
+        // Allow untraced syscalls through without tracing them.
+        .ip_range(
+            (cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE) as u64,
+            (cp::TRAMPOLINE_BASE + cp::SYSCALL_INSTR_SIZE + cp::UD_INSTR_SIZE) as u64,
+            Action::Allow,
+        )
+        .build()
+}
+
+/// Specifies *how* the GDB server should listen for incoming connections.
+pub enum GdbConnection {
+    /// The server shall bind to and listen on the given socket address.
+    Addr(SocketAddr),
+
+    /// The server shall bind to and listen on the given unix domain socket. This
+    /// path must not exist, otherwise the bind will fail with `EADDRINUSE`.
+    Path(PathBuf),
+}
+
+impl From<SocketAddr> for GdbConnection {
+    fn from(addr: SocketAddr) -> Self {
+        Self::Addr(addr)
+    }
+}
+
+impl From<PathBuf> for GdbConnection {
+    fn from(path: PathBuf) -> Self {
+        Self::Path(path)
+    }
+}
+
+impl From<u16> for GdbConnection {
+    fn from(port: u16) -> Self {
+        Self::Addr(([127, 0, 0, 1], port).into())
+    }
+}

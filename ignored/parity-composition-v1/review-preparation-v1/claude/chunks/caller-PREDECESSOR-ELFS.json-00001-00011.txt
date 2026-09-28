@@ -1,0 +1,11 @@
+{
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/retained-binaries/BINDING.json",
+  "sha256": "405ad1b8b024472dee31473774de991936267fc7d82622cca3cc8c28fa3f4741",
+  "hashes": {
+    "lib": "498821b08acd61bc51039abc4bbd18d7ee88fafc23f2e4cc39450c283bb25105",
+    "static": "a8ea7bc11c7d01b9890228d51f85e6785fd054310d664e86e1c16e002f82b05e",
+    "vmcall": "43772bcde230ac8b33366c00312625655dcd46dcf2d002eefbb00c2e2011c605",
+    "read-clock": "747ab7aef568ee9e69ea937a8f761b3e76119c020146ce64c7623246e7f08709"
+  },
+  "purpose": "Require newly built composition harnesses distinct from qualified CPUID predecessor; no predecessor execution credit"
+}

@@ -1,0 +1,47 @@
+## Findings
+
+- High — injected exec can revive or physically arm a timer that the exec event must cancel. [REPORT.md](</home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/REPORT.md:25>) preserves existing observations while acknowledging that injected exec reaches `handle_exec_event` directly. Ordinary stops observe the event at [task.rs](</home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie-ptrace/src/task.rs:2114>), but injected exec bypasses that path at [task.rs](</home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie-ptrace/src/task.rs:5452>). The timer state advances only through `Scheduled → Armed → Cancelled` at [timer.rs](</home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie-ptrace/src/timer.rs:634>).
+
+  Reachable counterexample:
+
+  1. A Tool sets a timer during the intercepted exec syscall callback, after that stop’s observation.
+  2. Successful injected exec is consumed by `status_to_result`; no timer observation occurs.
+  3. The request remains `Scheduled`.
+  4. [REPORT.md](</home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/REPORT.md:27>) activates the “non-canceled” request before `handle_post_exec`.
+  5. Its hardware or artificial notification advances it to `Armed` and can deliver after exec, despite [Guest::set_timer](</home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie/src/guest.rs:396>) requiring other event delivery to cancel it.
+
+  A timer set by `handle_thread_start` instead reaches `Armed` at the execve seccomp stop. Activating that logically stale request can still introduce a false arming failure or interrupt Tool post-exec injection before the eventual cancellation signal.
+
+  Required correction: define an explicit, exactly-once initial-exec cancellation transition covering both normal and injected exec. All requests predating `handle_post_exec` must be retired without hardware/artificial activation; requests made by `handle_post_exec` then use ordinary active behavior. Add hard controls for timers requested both at thread start and inside the exec syscall callback, including an arming-failure seam proving stale requests are never armed.
+
+- Medium — the proposed oracle is observational rather than contractual. [PLAN.md](</home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/PLAN.md:11>) says to “record whether” exec cancels the request. Cancellation is already required by the Guest API. Both exec routes must assert cancellation and zero later callback, not merely report whichever behavior results.
+
+## Conclusions
+
+The following portions are otherwise sound to implement after that correction:
+
+- Explicit `command_bootstrap` provenance, rather than PID/path/counter heuristics.
+- One-shot `enable_on_exec` for the first command image only.
+- No reset, subtraction, rounding, or deadline extension.
+- Counting real entry and dynamic-loader branches, including the existing post-exec single step.
+- Holding only physical notifications through backend initialization, then releasing before arbitrary Tool work.
+- Preserving precommit exec failure, fatal post-point-of-no-return behavior, later-exec continuity, and immediate function/child clocks.
+
+Determinism and continuous time: the proposed clock-origin mechanism preserves continuous guest branch time and existing scheduler coordinates. The unresolved cancellation race can nevertheless create host-notification-dependent nested behavior or false failure, so the composed design is not yet deterministic enough to implement.
+
+Linux/POSIX: the upstream `enable_on_exec` ordering supports the clock-origin premise, but vendor behavior remains unqualified and needs the proposed actual-host witness. General attach, LiteInst and aarch64 parity are not established.
+
+Evidence: the current cross-backend comparison remains failed at record 11/turn 2 with ptrace ahead by 2,230 ns. The historical 2,270 ns figure was not separately sampled. Existing within-backend matches and focused controls do not qualify this unimplemented correction.
+
+Goalposts:
+
+- Assertion weakening: present in PLAN’s “record whether” cancellation oracle; correction required.
+- Tolerance/exemption widening: none found.
+- Comparator/skip relaxation: none; PMU early return remains nonqualifying and structured comparison remains required.
+- Relabeling/deleting checks: none; raw1 and accepted-false predecessors remain failures.
+
+Coverage: I read all 38 mandatory documents, 164 chunks and 23,797 lines. Two previously truncated log chunks were reread completely. One initial combined metadata output was not credited; two malformed `jq` queries failed and one wrong-field query returned blank rows, all corrected with bounded reads. No mandatory coverage remains incomplete. No builds, tests, guests, writes, network or delegation occurred.
+
+**CHANGES REQUESTED** for exact target `6e302d07efd4feb6e6c9116b964a945467073b09dea158ffc20c5a48227f6f93`.
+
+This is solely a design judgment; no source, runtime, parity, activation or landing approval is granted.

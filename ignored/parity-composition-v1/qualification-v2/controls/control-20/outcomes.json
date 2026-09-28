@@ -1,0 +1,24 @@
+{
+  "started": [
+    "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.071559882
+    }
+  ]
+}

@@ -1,0 +1,160 @@
+            subscription | T::subscriptions(config)
+        }
+    }
+
+    async fn handle_cpuid_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        eax: u32,
+        ecx: u32,
+    ) -> Result<CpuIdResult, Errno> {
+        trace!("handle_cpuid_event: eax: {}, ecx: {}", eax, ecx);
+        self.pre_handler_hook(guest, false).await;
+        let res = if self.cfg.virtualize_cpuid {
+            let dettid = guest.thread_state().dettid;
+            let time = &mut guest.thread_state_mut().thread_logical_time;
+            let intercepted = cpuid::InterceptedCpuid::new();
+            time.add_cpuid();
+            let nanos = time.as_nanos();
+            trace!(
+                "[dtid {}] inbound cpuid, new logical time: {:?}",
+                dettid, time
+            );
+            if self.cfg.should_trace_schedevent() {
+                trace_schedevent(
+                    guest,
+                    SchedEvent {
+                        dettid,
+                        op: Op::Cpuid,
+                        count: 1,
+                        start_rip: None,
+                        end_rip: None,
+                        end_time: Some(nanos),
+                    },
+                    true,
+                )
+                .await;
+            }
+            intercepted.cpuid(eax, ecx).unwrap_or_else(|| {
+                warn!(
+                    "[dtid {}] cpuid leaf 0x{:x} subleaf 0x{:x} not in deterministic table; returning zero result",
+                    dettid, eax, ecx
+                );
+                CpuIdResult {
+                    eax: 0,
+                    ebx: 0,
+                    ecx: 0,
+                    edx: 0,
+                }
+            })
+        } else {
+            cpuid!(eax, ecx)
+        };
+        self.post_handler_hook(guest).await;
+        Ok(res)
+    }
+
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        request: Rdtsc,
+    ) -> Result<RdtscResult, Errno> {
+        trace!("handle_rdtsc_event: {:?}", request);
+        self.pre_handler_hook(guest, false).await;
+        let result = if guest.config().virtualize_time {
+            let dettid = guest.thread_state().dettid;
+            guest.thread_state_mut().thread_logical_time.add_rdtsc();
+            info!(
+                "[dtid {}] inbound rdtsc, new logical time: {:?}",
+                dettid,
+                guest.thread_state().thread_logical_time
+            );
+            if self.cfg.should_trace_schedevent() {
+                let ev = with_guest_time(
+                    guest,
+                    SchedEvent {
+                        dettid,
+                        op: Op::Rdtsc,
+                        count: 1,
+                        start_rip: None,
+                        end_rip: None,
+                        end_time: None,
+                    },
+                );
+                trace_schedevent(guest, ev, true).await;
+            }
+            // The guest TSC must name the same instant as `clock_gettime`. Both
+            // now read the coordinator's clock through the shared per-process
+            // floor, so a guest comparing the two -- a clocksource watchdog, a
+            // delay loop calibrated against a device timer, a second vCPU
+            // reading the TSC -- sees one time base instead of two.
+            //
+            // The `add_rdtsc()` charge above is folded into global time by the
+            // same RPC that reads it back (`send_and_update_time` updates the
+            // coordinator before dispatching the request), so consecutive reads
+            // from one thread still advance.
+            let tsc = guest_clock_time(guest).await;
+            Ok(RdtscResult {
+                // We treat virtual cycles as equivalent to virtual nanoseconds.
+                tsc: tsc.as_nanos(),
+                aux: None,
+            })
+        } else {
+            self.record_or_replay
+                .handle_rdtsc_event(&mut guest.into_guest(), request)
+                .await
+        };
+        self.post_handler_hook(guest).await;
+        result
+    }
+
+    // Note: we will not see SIGSTKFLT used for timers.
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: Signal,
+    ) -> Result<Option<Signal>, Errno> {
+        if signal == Signal::SIGINT && self.cfg.sigint_instakill {
+            warn!("Fatal: Exiting hermit container immediately upon SIGINT");
+            // ⚠️ NOT A REFUSAL. The operator interrupted the run; hermit examined
+            // nothing and decided nothing. Reporting `128 + SIGINT` is what every
+            // other tool reports for this, and it keeps 122 meaning one thing.
+            unrecoverable_shutdown(guest, detcore_model::HERMIT_SIGINT_DEATH_EXIT).await
+        } else {
+            self.pre_handler_hook(guest, false).await;
+
+            let dettid = guest.thread_state().dettid;
+            let mycount = guest.thread_state().stats.signal_count;
+            info!(
+                "[dtid {}] handling inbound signal (#{}) {}",
+                dettid, mycount, signal
+            );
+            guest.thread_state_mut().stats.count_signal();
+            let time = &guest.thread_state().thread_logical_time;
+            let nanos = time.as_nanos();
+
+            if self.cfg.sequentialize_threads && self.cfg.should_trace_schedevent() {
+                trace_schedevent(
+                    guest,
+                    SchedEvent {
+                        dettid,
+                        op: Op::SignalReceived(signal.into()),
+                        count: 1,
+                        start_rip: None,
+                        end_rip: None,
+                        end_time: Some(nanos),
+                    },
+                    true,
+                )
+                .await;
+            }
+
+            let request = guest.thread_state_mut().mk_request(
+                ResourceID::InboundSignal(SigWrapper::from(signal)),
+                Permission::RW,
+            );
+            resource_request(guest, request).await;
+            // A delivered signal may be caught, ignored, or terminate the
+            // thread group. Reading the lists is harmless; the collected
+            // wakes remain inert unless the ptrace exit callback later reports
+            // that this exact signal caused physical exit.

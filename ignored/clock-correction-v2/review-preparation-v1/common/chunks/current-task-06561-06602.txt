@@ -1,0 +1,42 @@
+        // them stable.
+        let line = format_task_panic_marker(
+            Pid::from_raw(4242),
+            &"Clock perf counter exceeds target value" as &(dyn std::any::Any + Send),
+        );
+        assert_eq!(
+            line,
+            "HERMIT_TASK_PANIC tid=4242 exit=101 \
+             message=Clock perf counter exceeds target value"
+        );
+        assert!(line.starts_with(TASK_PANIC_MARKER));
+        assert_eq!(TASK_PANIC_MARKER, "HERMIT_TASK_PANIC");
+        assert_eq!(TASK_PANIC_EXIT_CODE, 101);
+    }
+
+    #[test]
+    fn task_panic_marker_is_always_one_greppable_line() {
+        // A `panic!` with a formatted message arrives as `String`, and a
+        // multi-line message would otherwise split the marker across lines and
+        // make it unmatchable.
+        let payload = String::from("first line\nsecond line\r\nthird");
+        let line =
+            format_task_panic_marker(Pid::from_raw(7), &payload as &(dyn std::any::Any + Send));
+        assert_eq!(line.lines().count(), 1);
+        assert_eq!(
+            line,
+            "HERMIT_TASK_PANIC tid=7 exit=101 message=first line second line  third"
+        );
+    }
+
+    #[test]
+    fn task_panic_marker_survives_a_non_string_payload() {
+        // `panic_any(42)` carries no string. The marker must still be emitted:
+        // an unreadable reason is not a reason to go back to hanging.
+        let line =
+            format_task_panic_marker(Pid::from_raw(9), &42u32 as &(dyn std::any::Any + Send));
+        assert_eq!(
+            line,
+            "HERMIT_TASK_PANIC tid=9 exit=101 message=<non-string panic payload>"
+        );
+    }
+}

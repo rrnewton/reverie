@@ -1,0 +1,160 @@
+                    registers,
+                    &mut thread_state,
+                    &mut guest_executor,
+                    global_state.as_ref(),
+                    Some(global_state.clone()),
+                    config,
+                    subscriptions,
+                    handler_signal.clone(),
+                    pending_child_starts.clone(),
+                    tool_stack_top,
+                    stack_checked_out.clone(),
+                );
+                drive_handler(
+                    tool.handle_thread_start(&mut guest),
+                    handler_signal,
+                    pending_child_starts.clone(),
+                    wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+                )
+                .await
+            };
+            hide_tool_scratch(&memory, tool_stack_top)?;
+            match start_outcome {
+                HandlerOutcome::ThreadCancelled => {
+                    self.start_pending_tool_children(executor, &pending_child_starts)?;
+                    return Ok(self.cancelled_tool_thread_status(executor));
+                }
+                HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                HandlerOutcome::ParkedFatal(_) | HandlerOutcome::ParkedCancelled(_) => {
+                    return Err(Error::UnexpectedVcpuExit(
+                        "parked outcome outside its original syscall callback".to_owned(),
+                    ));
+                }
+                HandlerOutcome::RuntimeError(error) => return Err(error),
+                HandlerOutcome::TailInjected { .. } => {}
+            }
+            if self.guest_thread_is_cancelled() {
+                // The parent releases the start gate after it has begun scheduler
+                // registration. handle_thread_start completes the child-side
+                // ordering. Preserve handle_thread_start -> on_exit ordering,
+                // but do not execute post-exec hooks or a guest instruction after
+                // cancellation. Clear CHILD_CLEARTID immediately before the Tool
+                // exit callback; the worker wrapper then observes that the address
+                // has already been consumed.
+                return Ok(self.cancelled_tool_thread_status(executor));
+            }
+            auxv = executor.auxv().to_vec();
+            if let Some(exit) = executor.take_exit() {
+                if exit.group {
+                    self.request_guest_thread_group_exit(exit.status);
+                }
+                return Ok(exit.into());
+            }
+
+            if initial_post_exec {
+                // The root ELF image is already installed when this backend begins.
+                // Present the same initial exec syscall and successful-exec lifecycle
+                // boundaries as ptrace without loading the installed image twice.
+                if subscriptions
+                    .iter_syscalls()
+                    .any(|number| number == reverie::syscalls::Sysno::execve)
+                {
+                    let initial_outcome = run_initial_exec_handler(
+                        self,
+                        &tool,
+                        pid,
+                        &memory,
+                        &auxv,
+                        &mut thread_state,
+                        executor,
+                        &global_state,
+                        config,
+                        subscriptions,
+                        &stack_checked_out,
+                    )
+                    .await?;
+                    if matches!(initial_outcome, CallbackOutcome::ThreadCancelled) {
+                        return Ok(self.cancelled_tool_thread_status(executor));
+                    }
+                    auxv = executor.auxv().to_vec();
+                    if let Some(exit) = executor.take_exit() {
+                        if exit.group {
+                            self.request_guest_thread_group_exit(exit.status);
+                        }
+                        return Ok(exit.into());
+                    }
+                }
+                let post_exec_outcome = run_post_exec_handler(
+                    self,
+                    &tool,
+                    pid,
+                    &memory,
+                    &mut auxv,
+                    &mut thread_state,
+                    executor,
+                    global_state.clone(),
+                    config,
+                    subscriptions,
+                    &stack_checked_out,
+                )
+                .await;
+                let post_exec_error = match post_exec_outcome {
+                    Ok(CallbackOutcome::ThreadCancelled) => {
+                        return Ok(self.cancelled_tool_thread_status(executor));
+                    }
+                    Ok(CallbackOutcome::Completed(())) => None,
+                    Err(error) => Some(error),
+                };
+                if let Some(error) = post_exec_error {
+                    return Err(error);
+                }
+            }
+
+            // CLONE_THREAD has a complete user continuation before its first
+            // KVM_RUN. Admission comes first; then deliver an already queued event
+            // without executing a synthetic guest syscall or the child's first
+            // instruction. Root/exec lifecycle contexts keep their existing limit.
+            if pid != tid && executor.has_eligible_pending_signal() {
+                let entry_registers = self.vcpu.get_regs()?;
+                executor.set_current_user_stack_pointer(entry_registers.rsp);
+                let pending = self
+                    .filter_one_pending_signal_with_tool(
+                        executor,
+                        pid,
+                        tid,
+                        &tool,
+                        &memory,
+                        &auxv,
+                        entry_registers,
+                        u64::MAX,
+                        self.syscall_frame_address,
+                        &mut thread_state,
+                        &global_state,
+                        config,
+                        subscriptions,
+                        &stack_checked_out,
+                        true,
+                    )
+                    .await?;
+                let pending = match pending {
+                    CallbackOutcome::Completed(pending) => pending,
+                    CallbackOutcome::ThreadCancelled => {
+                        return Ok(self.cancelled_tool_thread_status(executor));
+                    }
+                };
+                if !executor.has_pending_exit()
+                    && let Some(pending) = pending
+                {
+                    self.deliver_selected_signal_before_thread_entry(
+                        executor,
+                        entry_registers,
+                        pending,
+                    )?;
+                }
+            }
+
+            if let Some((segment, address)) = executor.take_segment() {
+                set_user_segment_base(&self.vcpu, segment, address)?;
+            }
+            if let Some(exit) = executor.take_exit() {

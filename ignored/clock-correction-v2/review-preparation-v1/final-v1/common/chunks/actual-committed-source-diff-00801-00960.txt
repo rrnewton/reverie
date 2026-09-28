@@ -1,0 +1,160 @@
++    );
++    let expected_stdout: &[u8] = match mode {
++        Mode::Replace | Mode::TailOther | Mode::PostExecTail => b"R",
++        Mode::SameThenPrivate => b"OR",
++        Mode::TailSame => b"O",
++        _ => b"",
++    };
++    assert_eq!(output.stdout, expected_stdout);
++    if let Some(path) = &fixture.shared {
++        let bytes = std::fs::read(path).unwrap();
++        assert_eq!(bytes.len(), 4096);
++        assert_eq!(
++            u64::from_le_bytes(bytes[..8].try_into().unwrap()),
++            0,
++            "tail injection executed entry before exiting"
++        );
++        assert_eq!(&bytes[8..10], b"OR");
++    }
++    assert!(
++        output.stderr.is_empty(),
++        "guest stderr: {:?}",
++        output.stderr
++    );
++    let expected = match mode {
++        Mode::PostExec => vec![Observation::PostExec, Observation::Boundary(1)],
++        Mode::PostExecTail => vec![Observation::PostExec],
++        Mode::Emulate | Mode::EmulateErrno => vec![
++            Observation::PostExec,
++            Observation::Emulated,
++            Observation::Timestamp,
++            Observation::Boundary(2),
++        ],
++        _ => vec![
++            Observation::PostExec,
++            Observation::Write,
++            Observation::Boundary(2),
++        ],
++    };
++    assert_eq!(log.0.into_inner().unwrap(), expected);
++    eprintln!("INJECTION_STOP_COMPLETE {mode:?}");
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn post_exec_injections_leave_entry_memory_untouched() {
++    run(Mode::PostExec).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn seccomp_replacement_suppresses_original_write_once() {
++    run(Mode::Replace).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn same_reinjection_then_private_injection_does_not_step_guest() {
++    run(Mode::SameThenPrivate).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn same_tail_injection_preserves_original_kernel_call() {
++    run(Mode::TailSame).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn different_tail_injection_replaces_original_once() {
++    run(Mode::TailOther).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn post_exec_tail_exit_leaves_entry_unexecuted() {
++    run(Mode::PostExecTail).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn emulated_return_consumes_stop_before_instruction_callback() {
++    run(Mode::Emulate).await;
++    run(Mode::EmulateErrno).await;
++}
+diff --git a/reverie-ptrace/src/perf.rs b/reverie-ptrace/src/perf.rs
+index 56bf62c7..9fbd2ac5 100644
+--- a/reverie-ptrace/src/perf.rs
++++ b/reverie-ptrace/src/perf.rs
+@@ -121,6 +121,7 @@ pub struct Builder {
+     sample_period: u64,
+     precise_ip: u32,
+     fast_reads: bool,
++    enable_on_exec: bool,
+ }
+ 
+ impl Builder {
+@@ -145,6 +146,7 @@ impl Builder {
+             sample_period: 0,
+             precise_ip: 0,
+             fast_reads: false,
++            enable_on_exec: false,
+         }
+     }
+ 
+@@ -195,6 +197,14 @@ impl Builder {
+         self
+     }
+ 
++    /// Start this disabled counter when its task first commits exec. The
++    /// kernel clears the attribute at that transition; later execs keep the
++    /// existing continuous count.
++    pub(crate) fn enable_on_exec(&mut self) -> &mut Self {
++        self.enable_on_exec = true;
++        self
++    }
++
+     /// Render the builder into a `PerfCounter`. Created counters begin in a
+     /// disabled state. Additional initialization steps should be performed,
+     /// followed by a call to [`PerfCounter::enable`].
+@@ -218,7 +228,8 @@ impl Builder {
+         attr.type_ = self.evt.attr_type();
+         attr.config = self.evt.attr_config();
+         attr.__bindgen_anon_1.sample_period = self.sample_period;
+-        attr.set_disabled(1); // user must enable later
++        attr.set_disabled(1); // manual enable, or the initial command exec transition
++        attr.set_enable_on_exec(u64::from(self.enable_on_exec));
+         attr.set_exclude_kernel(1); // we only care about user code
+         attr.set_exclude_guest(1);
+         attr.set_exclude_hv(1); // unlikely this is supported, but it doesn't hurt
+diff --git a/reverie-ptrace/src/task.rs b/reverie-ptrace/src/task.rs
+index 66f46b2f..20fd9fba 100644
+--- a/reverie-ptrace/src/task.rs
++++ b/reverie-ptrace/src/task.rs
+@@ -983,7 +983,11 @@ pub struct TracedTask<L: Tool> {
+     /// True if we can intercept CPUID, false otherwise.
+     has_cpuid_interception: bool,
+ 
+-    /// Set to `Some` if the syscall has not been injected yet. `None` if it has.
++    /// Original call still owned by the current syscall callback. Only an
++    /// ordinary, unconverted seccomp callback owns a kernel entry to skip;
++    /// an injected frame and an already-skipped call are logical operations.
++    /// Taking this record consumes that authority, including fast tail injection
++    /// which transfers the original call to the callback's final resume.
+     pending_syscall: Option<(Sysno, SyscallArgs)>,
+ 
+     /// The pending syscall was converted out of its seccomp stop before Tool dispatch.
+@@ -1172,7 +1176,11 @@ impl<L: Tool> TracedTask<L> {
+             liteinst_failure: None,
+             next_state,
+             next_state_rx: Some(next_state_rx),
+-            timer: Timer::new(tid, tid),
++            timer: if options.command_bootstrap {
++                Timer::for_initial_command(tid, tid)
++            } else {
++                Timer::new(tid, tid)
++            },
+             cancel_handler: Arc::new(AtomicBool::new(false)),
+             pending_signal: None,
+             child_procs: Arc::new(Mutex::new(Children::new())),
+@@ -2871,6 +2879,10 @@ impl<L: Tool + 'static> TracedTask<L> {
+     ) -> Result<Wait, TraceError> {
+         // PTRACE_EVENT_EXEC proves replacement succeeded. Clear before any
+         // post-exec Tool callback; failed exec attempts retain launch provenance.
++        let initial_command = self.command_bootstrap;
++        if initial_command {
++            self.timer.begin_initial_exec();
++        }

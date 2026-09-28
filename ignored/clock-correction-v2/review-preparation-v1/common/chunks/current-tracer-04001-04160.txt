@@ -1,0 +1,160 @@
+        assert!(
+            message.contains("failed to open pidfd for LiteInst tracee 42"),
+            "genuine pidfd failure lost its cause: {message}"
+        );
+        assert!(
+            message.contains("EMFILE"),
+            "missing pidfd failure: {message}"
+        );
+        assert!(message.contains("EIO"), "missing drain failure: {message}");
+    }
+
+    #[test]
+    fn pidfd_setup_timeout_names_thread_group_leader_retry_exhaustion() {
+        let message = liteinst_pidfd_setup_error(Pid::from_raw(42), Errno::ETIMEDOUT, None, Ok(()))
+            .to_string();
+        assert!(
+            message.contains(
+                "root identity did not become a stable traced thread-group leader with a pidfd within the 2,000-attempt retry budget"
+            ),
+            "missing root-identity retry exhaustion: {message}"
+        );
+        assert!(
+            !message.contains("failed to open pidfd"),
+            "timeout still blames pidfd_open: {message}"
+        );
+    }
+
+    #[test]
+    fn tracee_generation_survives_zombie_until_real_reap() {
+        let pid = fork_paused_child();
+        let identity = untraced_process_identity(pid);
+        identity
+            .send_signal(Signal::SIGKILL)
+            .expect("kill child through pidfd");
+
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid.as_raw() as libc::id_t,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(result, 0, "observe child zombie without reaping");
+        assert!(identity.same_process(), "zombie lost generation identity");
+        assert!(
+            !identity.is_our_tracee(),
+            "untraced zombie became active tracee"
+        );
+        assert!(
+            !terminal_descendant_remains_owned(&identity),
+            "terminal cleanup retained a zombie after its ptrace relationship ended"
+        );
+
+        Running::new(pid).wait().expect("reap child");
+        assert!(
+            !identity.same_process(),
+            "reaped child still matched identity"
+        );
+    }
+
+    #[test]
+    fn terminal_descendant_retention_does_not_touch_an_untraced_process() {
+        let (traced_pid, stopped) = spawn_held_stop_child("terminal descendant retention child");
+        let traced_identity =
+            TraceeIdentity::open_root(traced_pid).expect("capture traced child identity");
+        assert!(
+            terminal_descendant_remains_owned(&traced_identity),
+            "cleanup dropped a live tracee"
+        );
+        let wait = stopped
+            .resume(None)
+            .expect("resume traced child")
+            .wait()
+            .expect("reap traced child");
+        assert_eq!(wait.assume_exited().1, ExitStatus::Exited(0));
+
+        let unrelated_pid = fork_paused_child();
+        let unrelated_identity = untraced_process_identity(unrelated_pid);
+        assert!(
+            !terminal_descendant_remains_owned(&unrelated_identity),
+            "cleanup treated an untraced process as its descendant"
+        );
+        assert_eq!(unsafe { libc::kill(unrelated_pid.as_raw(), 0) }, 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(unrelated_pid.as_raw(), &mut status, libc::WNOHANG) },
+            0,
+            "retention check changed an unrelated process"
+        );
+
+        unsafe { libc::kill(unrelated_pid.as_raw(), libc::SIGKILL) };
+        Running::new(unrelated_pid)
+            .wait()
+            .expect("reap unrelated child");
+    }
+
+    #[test]
+    fn terminal_descendant_remains_owned_until_recorded_parent_exits() {
+        let (parent_pid, descendant_pid, mut control) = fork_paused_grandchild();
+        ptrace::attach(descendant_pid.into()).expect("attach retained descendant");
+        let (stopped, event) = Running::new(descendant_pid)
+            .wait()
+            .expect("wait for retained descendant attach")
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        let identity = TraceeIdentity::capture(
+            descendant_pid,
+            Some((parent_pid, Some(ChildOp::Fork))),
+            true,
+        )
+        .expect("capture production-shaped descendant identity");
+        stopped
+            .detach(None)
+            .expect("detach retained descendant after identity capture");
+
+        assert!(identity.same_process(), "descendant identity changed");
+        assert!(
+            !identity.is_our_tracee(),
+            "detached descendant still reports this process as tracer"
+        );
+        assert_eq!(
+            tracee_snapshot(descendant_pid)
+                .expect("read retained descendant parent")
+                .ppid,
+            parent_pid
+        );
+        let retained_while_parent_alive = terminal_descendant_remains_owned(&identity);
+
+        control.write_all(&[1]).expect("release recorded parent");
+        drop(control);
+        Running::new(parent_pid)
+            .wait()
+            .expect("reap recorded parent");
+        for _ in 0..2_000 {
+            if tracee_snapshot(descendant_pid).is_ok_and(|snapshot| snapshot.ppid != parent_pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_ne!(
+            tracee_snapshot(descendant_pid)
+                .expect("read reparented descendant")
+                .ppid,
+            parent_pid,
+            "descendant did not leave its recorded parent"
+        );
+        let released_after_reparenting = !terminal_descendant_remains_owned(&identity);
+
+        identity
+            .send_signal(Signal::SIGKILL)
+            .expect("kill reparented descendant through pidfd");
+        for _ in 0..2_000 {
+            let mut status = 0;
+            let waited = unsafe {
+                libc::waitpid(
+                    descendant_pid.as_raw(),
+                    &mut status,
+                    libc::WNOHANG | libc::__WALL,

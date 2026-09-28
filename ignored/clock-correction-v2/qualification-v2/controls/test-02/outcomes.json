@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.006243329
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+  "own_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rdtsc-v7-claude-verdict-followup-v1/claude/CLAUDE-REPORT.md",
+    "bytes": 28158,
+    "sha256": "996efaa5979e5a7881419df315f430f31abaa81bb690380fd2c1e3d09583242b",
+    "mode": 420
+  },
+  "own_terminal_audit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rdtsc-v7-claude-verdict-followup-v1/claude/FINAL-READBACK.json",
+    "bytes": 27636,
+    "sha256": "80052ceb7d05378a1bd9cdcd100c9691ac2237dfb9fc937761c14424bedc22e4",
+    "mode": 420
+  },
+  "own_grounding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/GROUNDING_AUTHENTICATION.json",
+    "bytes": 25163,
+    "sha256": "f2b0b8fd2e662f67f6510100a7d1eb4856b5314d4398d4ebdfd9afc00e5341b7",
+    "mode": 420
+  },
+  "prior_scope": "Timestamp PR at 68569; no approval of new CPUID/capture code transferred",
+  "peer_reports_supplied": false,
+  "source_read_order": "Prior source reading order limits remain in own original audit; canonical grounding separately authenticated"
+}

@@ -1,0 +1,160 @@
++        code.push(0x3d); // cmp eax,S_IFIFO
++        code.extend_from_slice(&libc::S_IFIFO.to_le_bytes());
++        append_jne_failure(&mut code, &mut failures);
++    }
++    code.extend_from_slice(&[0x41, 0x8b, 0x3e]);
++    syscall_zero(&mut code, &mut failures, libc::SYS_close as u32);
++    code.extend_from_slice(&[0x41, 0x8b, 0x7e, 0x04]);
++    syscall_zero(&mut code, &mut failures, libc::SYS_close as u32);
++    let message = b"capture-pipe-ok\n";
++    code.extend_from_slice(&[0xbf, 1, 0, 0, 0, 0x48, 0xbe]);
++    let message_operand = code.len();
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    code.push(0xba);
++    code.extend_from_slice(&(message.len() as u32).to_le_bytes());
++    code.extend_from_slice(&[0xb8, 1, 0, 0, 0, 0x0f, 0x05, 0x48, 0x3d]);
++    code.extend_from_slice(&(message.len() as u32).to_le_bytes());
++    append_jne_failure(&mut code, &mut failures);
++    append_stats_exit(&mut code, true);
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 91, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    let message_address = LOAD_ADDRESS + code.len() as u64;
++    code[message_operand..message_operand + 8].copy_from_slice(&message_address.to_le_bytes());
++    code.extend_from_slice(message);
++    code
++}
++
++#[test]
++fn direct_and_tool_capture_share_device_with_anonymous_pipe() {
++    if !kvm_available("captured output native pipe identity") {
++        return;
++    }
++    let image = static_elf(&capture_identity_program());
++    for with_tool in [false, true] {
++        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++        backend
++            .install_static_elf(&image, "/bin/capture-identity")
++            .unwrap();
++        let (status, stdout, stderr) = if with_tool {
++            let ((), status, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<CaptureIdentityTool>((), true),
++            )
++            .unwrap();
++            (status, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        };
++        assert_eq!(status, 0, "with_tool={with_tool}");
++        assert_eq!(stdout, b"capture-pipe-ok\n", "with_tool={with_tool}");
++        assert!(stderr.is_empty());
++    }
++}
+--- /dev/null
++++ b/reverie-kvm/tests/support/cpuid_dispatch.rs
+@@ -0,0 +1,561 @@
++// Real CPUID Tool dispatch controls. All guest fixtures are loader-free unless
++// a test explicitly installs an executable image for its exec transition.
++use reverie::CpuIdResult;
++
++use super::*;
++
++const OUTPUTS: [u32; 4] = [0xf1234567, 0xe2345678, 0xd3456789, 0xc456789a];
++
++#[derive(Debug, Default)]
++struct CpuidLog {
++    calls: Mutex<Vec<(Pid, u32, u32, u64)>>,
++}
++
++#[reverie::global_tool]
++impl GlobalTool for CpuidLog {
++    type Config = (bool, u8);
++    type Request = (u32, u32, u64);
++    type Response = ();
++    async fn receive_rpc(&self, from: Pid, (eax, ecx, clock): Self::Request) {
++        self.calls.lock().unwrap().push((from, eax, ecx, clock));
++    }
++}
++
++#[derive(Default)]
++struct CpuidTool;
++
++#[reverie::tool]
++impl Tool for CpuidTool {
++    type GlobalState = CpuidLog;
++    type ThreadState = u32;
++
++    fn subscriptions(config: &(bool, u8)) -> Subscription {
++        let mut subscription = Subscription::none();
++        if config.0 {
++            subscription.cpuid();
++        }
++        if config.1 == 3 {
++            subscription.rdtsc();
++        }
++        subscription
++    }
++
++    async fn handle_thread_start<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++    ) -> Result<(), reverie::Error> {
++        assert_eq!(guest.has_cpuid_interception(), guest.config().0);
++        Ok(())
++    }
++
++    async fn handle_rdtsc_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        request: Rdtsc,
++    ) -> Result<RdtscResult, Errno> {
++        assert_eq!(guest.config().1, 3);
++        assert!(guest.has_cpuid_interception());
++        let before = guest.read_clock().expect("actual mixed-instruction clock");
++        let (kind, result) = match request {
++            Rdtsc::Tsc => (
++                0,
++                RdtscResult {
++                    tsc: RDTSC_SENTINEL,
++                    aux: None,
++                },
++            ),
++            Rdtsc::Tscp => (
++                1,
++                RdtscResult {
++                    tsc: RDTSCP_SENTINEL,
++                    aux: Some(RDTSCP_AUX_SENTINEL),
++                },
++            ),
++        };
++        guest.send_rpc((u32::MAX, kind, before)).await;
++        assert_eq!(guest.read_clock().unwrap(), before);
++        Ok(result)
++    }
++
++    async fn handle_cpuid_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        eax: u32,
++        ecx: u32,
++    ) -> Result<CpuIdResult, Errno> {
++        assert!(guest.has_cpuid_interception());
++        let registers = guest.regs().await;
++        assert_eq!((registers.rax as u32, registers.rcx as u32), (eax, ecx));
++        let before = guest.read_clock().expect("actual guest clock");
++        assert_eq!(
++            guest.inject(reverie::syscalls::Getpid::new()).await?,
++            i64::from(guest.pid().as_raw())
++        );
++        assert_eq!(guest.inject(Fork::new()).await, Err(Errno::ENOSYS));
++        guest.send_rpc((eax, ecx, before)).await;
++        assert_eq!(
++            guest.read_clock().unwrap(),
++            before,
++            "host RPC/injection must not retire guest branches"
++        );
++        let ordinal = *guest.thread_state();

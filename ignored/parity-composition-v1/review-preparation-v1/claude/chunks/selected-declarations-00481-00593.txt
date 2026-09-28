@@ -1,0 +1,113 @@
+      "artifact": "lib",
+      "name": "executor::tests::forked_executors_share_captured_output_order",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-70",
+      "artifact": "lib",
+      "name": "executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-71",
+      "artifact": "lib",
+      "name": "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-72",
+      "artifact": "lib",
+      "name": "executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-73",
+      "artifact": "lib",
+      "name": "executor::tests::captured_write_site_uses_current_table_and_full_callback_identity",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-74",
+      "artifact": "lib",
+      "name": "executor::tests::inherited_stdin_epoll_preserves_local_and_authoritative_handles",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-75",
+      "artifact": "lib",
+      "name": "executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-76",
+      "artifact": "lib",
+      "name": "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-77",
+      "artifact": "lib",
+      "name": "executor::tests::descriptor_retirement_close_and_dup_release_both_guards",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-78",
+      "artifact": "lib",
+      "name": "executor::tests::descriptor_retirement_exec_and_exit_release_both_guards",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-79",
+      "artifact": "lib",
+      "name": "executor::tests::descriptor_retirement_install_error_releases_both_guards",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-80",
+      "artifact": "lib",
+      "name": "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-81",
+      "artifact": "lib",
+      "name": "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions",
+      "source": "reverie-kvm/src/executor.rs",
+      "purpose": "ordinary/native metadata, original stdin/table/retirement and capture neighbors"
+    },
+    {
+      "phase": "control-82",
+      "artifact": "lib",
+      "name": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections",
+      "source": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "purpose": null
+    },
+    {
+      "phase": "control-83",
+      "artifact": "static",
+      "name": "timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once",
+      "source": "reverie-kvm/tests/support/timestamp_terminal.rs",
+      "purpose": null
+    }
+  ],
+  "counts": {
+    "lib": 43,
+    "static": 34,
+    "vmcall": 2,
+    "read-clock": 4
+  },
+  "planned_only": true,
+  "qualification_results_pending": true
+}

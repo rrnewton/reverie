@@ -1,0 +1,13 @@
+Dispatch KVM CPUID instructions through Tool callbacks
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Enable CPUID faulting for each vCPU and route guest CPUID instructions to
+Tool::handle_cpuid. Preserve the previous vCPU MSR values and restore them
+on initialization failure and teardown. Keep host-owned execution separate
+from guest instruction dispatch and preserve cancellation at callback exits.
+
+Add instruction, callback, fork/exec, terminal, and worker-exit coverage.
+The composed CPUID and captured-pipe changes passed 83 exact KVM tests,
+formatting, core/ptrace checks, and Clippy. This is component evidence;
+full Hermit parity and clock-accounting failures remain open.

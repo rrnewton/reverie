@@ -1,0 +1,160 @@
+
+/// A builder for creating a tracer.
+pub struct TracerBuilder<T: Tool + 'static> {
+    /// The program to execute that will be traced.
+    command: Command,
+
+    /// The global state static config.
+    config: Option<<T::GlobalState as GlobalTool>::Config>,
+
+    /// Set to `Some` if we should spawn a GDB server.
+    gdbserver: Option<GdbConnection>,
+
+    /// Indicates that the guest's scheduling will be serialized by the Reverie
+    /// tool. This is only relevant for the GDB server.
+    sequentialized_guest: bool,
+
+    /// Marker and exact RIP identifying an injected syscall trap, when enabled.
+    injected_syscall_trap: Option<InjectedSyscallTrap>,
+
+    /// Dynamic LiteInst runtime handshake and hot-site configuration.
+    liteinst_runtime: Option<LiteinstRuntimeConfig>,
+
+    /// Whether to collect general ptrace activity statistics.
+    backend_stats_request: BackendStatsRequest,
+
+    #[cfg(all(test, target_arch = "x86_64"))]
+    clock_test_launcher_branches: u64,
+}
+
+impl<T: Tool + 'static> TracerBuilder<T> {
+    /// Creates the builder with the given command.
+    pub fn new(command: Command) -> Self {
+        Self {
+            command,
+            config: None,
+            gdbserver: None,
+            sequentialized_guest: false,
+            injected_syscall_trap: None,
+            liteinst_runtime: None,
+            backend_stats_request: BackendStatsRequest::DISABLED,
+            #[cfg(all(test, target_arch = "x86_64"))]
+            clock_test_launcher_branches: 0,
+        }
+    }
+
+    /// Returns a reference to the command to be traced.
+    pub fn command(&self) -> &Command {
+        &self.command
+    }
+
+    /// Sets the static configuration that will be made available to the tool.
+    pub fn config(mut self, config: <T::GlobalState as GlobalTool>::Config) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Configures the tracer to create a GDB server and listen for incoming
+    /// connections. The tracer will start in a stopped state and will not
+    /// proceed until a connection is made. This allows the GDB client to observe
+    /// the full execution of the guest.
+    pub fn gdbserver<C: Into<GdbConnection>>(mut self, connection: C) -> Self {
+        self.gdbserver = Some(connection.into());
+        self
+    }
+
+    /// Make the GDB server aware that guest threads are sequentialized. This is
+    /// needed when the Reverie tool has full control of scheduling and already
+    /// sequentializes thread execution. This helps avoid deadlocks.
+    pub fn sequentialized_guest(mut self) -> Self {
+        self.sequentialized_guest = true;
+        self
+    }
+
+    /// Enables or disables general ptrace activity statistics for this run.
+    pub fn backend_stats(mut self, request: BackendStatsRequest) -> Self {
+        self.backend_stats_request = request;
+        self
+    }
+
+    /// Routes matching `SIGTRAP` stops through `Tool::handle_syscall_event`.
+    ///
+    /// A binary rewriter must place `marker` in RAX, an e9tool-compatible
+    /// writable `state` frame pointer in RDI, and execute `int3` at `rip - 1`.
+    /// All other traps retain their normal signal/debugger semantics.
+    // TODO-HUMAN-REVIEW(PR-103): Review the injected syscall event provenance API.
+    pub fn injected_syscall_trap(mut self, marker: u64, rip: u64) -> Self {
+        self.injected_syscall_trap = Some(InjectedSyscallTrap {
+            marker,
+            rip,
+            provenance: None,
+        });
+        self
+    }
+
+    /// Enables the dynamic LiteInst runtime handshake and injected hot-site path.
+    ///
+    /// The preload path validates handshake instruction pointers against the
+    /// expected executable mapping. Distinct markers, exact return sites, and
+    /// mapping generations reject accidental collisions; they are not a
+    /// security boundary against arbitrary code already running in the tracee.
+    /// Dynamic mode follows threads and child processes under the ordinary
+    /// ptrace lifecycle, but hook installation is single-task only: the patch
+    /// helper runs on a process-global stack and the installer is not
+    /// re-entrant across tasks, so the hook set freezes at the first task
+    /// creation. It still fails closed on a vfork child and on an exec after
+    /// start, neither of which can preserve the preload runtime.
+    // TODO-HUMAN-REVIEW(PR-270): Review dynamic LiteInst provenance API.
+    pub fn liteinst_runtime(
+        self,
+        preload: impl Into<PathBuf>,
+        begin_marker: u64,
+        ready_marker: u64,
+        helper_return_marker: u64,
+        syscall_marker: u64,
+    ) -> Self {
+        self.liteinst_runtime_with_stats(
+            preload,
+            begin_marker,
+            ready_marker,
+            helper_return_marker,
+            syscall_marker,
+            BackendStatsRequest::DISABLED,
+        )
+    }
+
+    /// Enables the dynamic LiteInst runtime and optionally collects patch statistics.
+    pub fn liteinst_runtime_with_stats(
+        mut self,
+        preload: impl Into<PathBuf>,
+        begin_marker: u64,
+        ready_marker: u64,
+        helper_return_marker: u64,
+        syscall_marker: u64,
+        stats_request: BackendStatsRequest,
+    ) -> Self {
+        self.liteinst_runtime = Some(LiteinstRuntimeConfig {
+            preload: preload.into(),
+            begin_marker,
+            ready_marker,
+            helper_return_marker,
+            syscall_marker,
+            newborn_tracees: Arc::new(StdMutex::new(HashMap::new())),
+            held_root_stop: Arc::new(StdMutex::new(None)),
+            root_tid: Arc::new(StdOnceLock::new()),
+            multi_task: Arc::new(AtomicBool::new(false)),
+            session_failure: Arc::new(StdMutex::new(None)),
+            session_failure_changed: Arc::new(tokio::sync::Notify::new()),
+            instrumentation_stats: stats_request
+                .is_enabled()
+                .then(|| Arc::new(StdMutex::new(LiteinstInstrumentationStats::default()))),
+            #[cfg(test)]
+            fail_preinit: false,
+            #[cfg(test)]
+            fail_new_task: false,
+            #[cfg(test)]
+            pause_new_task: None,
+            #[cfg(test)]
+            pause_after_new_task: false,
+            #[cfg(test)]
+            pause_before_new_task: None,

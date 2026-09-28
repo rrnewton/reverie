@@ -1,0 +1,160 @@
+                error = ?pmu_error,
+                "PMU validation failed; RCB timers may be unreliable"
+            );
+        }
+        self
+    }
+}
+
+impl PerfCounter {
+    /// Perf counters cannot be switched from sampling to non-sampling, so
+    /// setting their period to this large value effectively disables overflows
+    /// and sampling.
+    pub const DISABLE_SAMPLE_PERIOD: u64 = 1 << 60;
+
+    /// Call the `PERF_EVENT_IOC_ENABLE` ioctl. Enables increments of the
+    /// counter and event generation.
+    pub fn enable(&self) -> Result<(), Errno> {
+        if let Some(raw_syscall) = self.raw_syscall {
+            Errno::from_ret(unsafe {
+                raw_syscall(
+                    libc::SYS_ioctl,
+                    [self.fd as u64, perf::ENABLE as u64, 0, 0, 0, 0],
+                ) as usize
+            })
+            .and(Ok(()))
+        } else {
+            Errno::result(unsafe { ioctls::ENABLE(self.fd, 0) }).and(Ok(()))
+        }
+    }
+
+    /// Call the `PERF_EVENT_IOC_ENABLE` ioctl. Disables increments of the
+    /// counter and event generation.
+    pub fn disable(&self) -> Result<(), Errno> {
+        Errno::result(unsafe { ioctls::DISABLE(self.fd, 0) }).and(Ok(()))
+    }
+
+    /// Corresponds exactly to the `PERF_EVENT_IOC_REFRESH` ioctl.
+    #[allow(dead_code)]
+    pub fn refresh(&self, count: libc::c_int) -> Result<(), Errno> {
+        assert!(count != 0); // 0 is undefined behavior
+        Errno::result(unsafe { ioctls::REFRESH(self.fd, 0) }).and(Ok(()))
+    }
+
+    /// Call the `PERF_EVENT_IOC_RESET` ioctl. Resets the counter value to 0,
+    /// which results in delayed overflow events.
+    pub fn reset(&self) -> Result<(), Errno> {
+        if let Some(raw_syscall) = self.raw_syscall {
+            Errno::from_ret(unsafe {
+                raw_syscall(
+                    libc::SYS_ioctl,
+                    [self.fd as u64, perf::RESET as u64, 0, 0, 0, 0],
+                ) as usize
+            })
+            .and(Ok(()))
+        } else {
+            Errno::result(unsafe { ioctls::RESET(self.fd, 0) }).and(Ok(()))
+        }
+    }
+
+    /// Call the `PERF_EVENT_IOC_PERIOD` ioctl. This causes the counter to
+    /// behave as if `ticks` was the original argument to `sample_period` in
+    /// the builder.
+    pub fn set_period(&self, ticks: u64) -> Result<(), Errno> {
+        // The bindings are wrong for this ioctl. The method signature takes a
+        // u64, but the actual ioctl expects a pointer to a u64. Thus, we use
+        // the constant manually.
+
+        // This ioctl shouldn't mutate it's argument per its API. But in case it
+        // does, create a mutable copy to avoid Rust UB.
+        let mut ticks = ticks;
+        Errno::result(unsafe { libc::ioctl(self.fd, perf::PERIOD as _, &mut ticks as *mut u64) })
+            .and(Ok(()))
+    }
+
+    /// Call the `PERF_EVENT_IOC_ID` ioctl. Returns a unique identifier for this
+    /// perf counter.
+    #[allow(dead_code)]
+    pub fn id(&self) -> Result<u64, Errno> {
+        let mut res = 0u64;
+        Errno::result(unsafe { ioctls::ID(self.fd, &mut res as *mut u64) })?;
+        Ok(res)
+    }
+
+    /// Sets up overflow events to deliver a `SIGPOLL`-style signal, with the
+    /// signal number specified in `signal`, to the specified `thread`.
+    ///
+    /// There is no reason this couldn't be called at any point, but typial use
+    /// cases will set up signal delivery once or not at all.
+    pub fn set_signal_delivery(&self, thread: Tid, signal: Signal) -> Result<(), Errno> {
+        let owner = f_owner_ex {
+            type_: F_OWNER_TID,
+            pid: thread.as_raw(),
+        };
+        Errno::result(unsafe { libc::fcntl(self.fd, F_SETOWN_EX, &owner as *const _) })?;
+        Errno::result(unsafe { libc::fcntl(self.fd, libc::F_SETFL, libc::O_ASYNC) })?;
+        Errno::result(unsafe { libc::fcntl(self.fd, F_SETSIG, signal as i32) })?;
+        Ok(())
+    }
+
+    /// Read the current value of the counter.
+    pub fn ctr_value(&self) -> Result<u64, Errno> {
+        let mut value = 0u64;
+        let expected_bytes = std::mem::size_of_val(&value);
+        loop {
+            let res = if let Some(raw_syscall) = self.raw_syscall {
+                match Errno::from_ret(unsafe {
+                    raw_syscall(
+                        libc::SYS_read,
+                        [
+                            self.fd as u64,
+                            (&raw mut value) as u64,
+                            expected_bytes as u64,
+                            0,
+                            0,
+                            0,
+                        ],
+                    ) as usize
+                }) {
+                    Ok(value) => value as isize,
+                    Err(Errno::EINTR) => continue,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                unsafe { libc::read(self.fd, (&raw mut value).cast(), expected_bytes) }
+            };
+            if res == -1 {
+                let errno = Errno::last();
+                if errno != Errno::EINTR {
+                    return Err(errno);
+                }
+            }
+            if res == 0 {
+                // EOF: this only occurs when attr.pinned = 1 and our event was descheduled.
+                // This unrecoverably gives us innacurate counts.
+                panic!("pinned perf event descheduled!")
+            }
+            if res == expected_bytes as isize {
+                break;
+            }
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn ctr_value_paused_once(&self) -> Result<u64, Errno> {
+        use std::ptr::addr_of;
+        use std::ptr::addr_of_mut;
+        use std::ptr::read_volatile;
+
+        let mapping = self.mmap.ok_or(Errno::EOPNOTSUPP)?;
+        let gate = self.raw_syscall.ok_or(Errno::EOPNOTSUPP)?;
+        let page = mapping.as_ptr();
+        let sequence = unsafe { read_once(addr_of_mut!((*page).lock)) };
+        if sequence & 1 != 0 {
+            return Err(Errno::EAGAIN);
+        }
+        smp_rmb();
+        let (index, enabled, running) = unsafe {
+            (
+                read_volatile(addr_of!((*page).index)),
+                read_volatile(addr_of!((*page).time_enabled)),

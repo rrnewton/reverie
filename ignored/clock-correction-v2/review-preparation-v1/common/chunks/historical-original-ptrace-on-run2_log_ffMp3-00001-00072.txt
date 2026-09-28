@@ -1,0 +1,72 @@
+2026-09-18T17:08:28.380333Z  INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: seeding scheduler runqueue with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.380470Z  INFO detcore::tool_global: [scheduler] daemon task starting up, waiting for guest thread start..
+2026-09-18T17:08:28.382611Z  INFO detcore::tool_local: DETLOG USER RAND: seeding PRNG for root thread with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.382639Z  INFO detcore::tool_local: DETLOG CHAOSRAND: seeding chaos scheduler with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.384820Z  INFO detcore::scheduler: [scheduler] guest in queue, scheduler proceeding..
+2026-09-18T17:08:28.384990Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 0, dettid 3 using resources {ParentContinue { parent: DetPid(3), child: DetPid(3) }: W}, on previously committed 1_767_225_600.000_000_000s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":0,"virtual_nanoseconds":1767225600000000000,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.385187Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 1, dettid 3 using resources {MemAddrSpace(DetPid(3)): RW}, on previously committed 1_767_225_600.000_500_000s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":1,"virtual_nanoseconds":1767225600000500000,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.385217Z  INFO detcore::tool_global: [detcore, dtid 3] New thread given go-ahead to proceed via <ivar Go(None)>
+2026-09-18T17:08:28.387293Z  INFO detcore::random: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242] DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.387536Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(1, 0x402000, 19) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.387759Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 2, dettid 3 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.001_262_230s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":2,"virtual_nanoseconds":1767225600001262230,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.387922Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #2: write(1, 0x402000, 19) = Ok(19) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":2}}
+2026-09-18T17:08:28.387988Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=1 0x402000+19->c380030c829f1cc0bd2fcd1cec1f5954e417a96c5141037c972b3ac35157a31c DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.388080Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: sched_yield() = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.388103Z  INFO detcore: [detcore, dtid 3] ending timeslice T1. 3 syscalls and 0 signals this timeslice.
+2026-09-18T17:08:28.388186Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 3, dettid 3 using resources {SchedYield: W}, on previously committed 1_767_225_600.001_767_230s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":3,"virtual_nanoseconds":1767225600001767230,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.388252Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #3: sched_yield() = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":3}}
+2026-09-18T17:08:28.388352Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(1, 0x402000, 19) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.388466Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 4, dettid 3 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.002_277_240s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":4,"virtual_nanoseconds":1767225600002277240,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.388609Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #4: write(1, 0x402000, 19) = Ok(19) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":4}}
+2026-09-18T17:08:28.388650Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=1 0x402000+19->c380030c829f1cc0bd2fcd1cec1f5954e417a96c5141037c972b3ac35157a31c DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.388746Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: sched_yield() = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.388759Z  INFO detcore: [detcore, dtid 3] ending timeslice T2. 2 syscalls and 0 signals this timeslice.
+2026-09-18T17:08:28.388841Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 5, dettid 3 using resources {SchedYield: W}, on previously committed 1_767_225_600.002_782_240s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":5,"virtual_nanoseconds":1767225600002782240,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.388895Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #5: sched_yield() = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":5}}
+2026-09-18T17:08:28.389021Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(1, 0x402000, 19) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.389114Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 6, dettid 3 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.003_292_250s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":6,"virtual_nanoseconds":1767225600003292250,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.389242Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #6: write(1, 0x402000, 19) = Ok(19) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":6}}
+2026-09-18T17:08:28.389275Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=1 0x402000+19->c380030c829f1cc0bd2fcd1cec1f5954e417a96c5141037c972b3ac35157a31c DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.389370Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: sched_yield() = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.389382Z  INFO detcore: [detcore, dtid 3] ending timeslice T3. 2 syscalls and 0 signals this timeslice.
+2026-09-18T17:08:28.389454Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 7, dettid 3 using resources {SchedYield: W}, on previously committed 1_767_225_600.003_797_250s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":7,"virtual_nanoseconds":1767225600003797250,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.389505Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #7: sched_yield() = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":7}}
+2026-09-18T17:08:28.389624Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(1, 0x402000, 19) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.389715Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 8, dettid 3 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.004_307_260s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":8,"virtual_nanoseconds":1767225600004307260,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.389846Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #8: write(1, 0x402000, 19) = Ok(19) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":8}}
+2026-09-18T17:08:28.389879Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=1 0x402000+19->c380030c829f1cc0bd2fcd1cec1f5954e417a96c5141037c972b3ac35157a31c DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.389978Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: sched_yield() = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.389994Z  INFO detcore: [detcore, dtid 3] ending timeslice T4. 2 syscalls and 0 signals this timeslice.
+2026-09-18T17:08:28.390071Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 9, dettid 3 using resources {SchedYield: W}, on previously committed 1_767_225_600.004_812_260s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":9,"virtual_nanoseconds":1767225600004812260,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.390125Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #9: sched_yield() = Ok(0) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":9}}
+2026-09-18T17:08:28.390245Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(1, 0x402000, 19) = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.390337Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 10, dettid 3 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.005_322_270s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":10,"virtual_nanoseconds":1767225600005322270,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-18T17:08:28.390459Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #10: write(1, 0x402000, 19) = Ok(19) DETLOG_RECORD={"schema":1,"event":{"kind":"syscall_result","finished_syscall_number":10}}
+2026-09-18T17:08:28.390491Z  INFO detcore::io_buffers: DETLOG [iobuf][dtid 3] write out fd=1 0x402000+19->c380030c829f1cc0bd2fcd1cec1f5954e417a96c5141037c972b3ac35157a31c DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-18T17:08:28.390581Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: sched_yield() = ? DETLOG_RECORD={"schema":1,"event":{"kind":"syscall"}}
+2026-09-18T17:08:28.390593Z  INFO detcore: [detcore, dtid 3] ending timeslice T5. 2 syscalls and 0 signals this timeslice.
+2026-09-18T17:08:28.390664Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 11, dettid 3 using resources {SchedYield: W}, on previously committed 1_767_225_600.005_827_270s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":11,"virtual_nanoseconds":1767225600005827270,"internal_io_poll":false,"runtime_maps_read":false}}

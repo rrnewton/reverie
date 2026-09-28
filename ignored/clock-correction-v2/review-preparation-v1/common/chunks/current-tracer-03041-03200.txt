@@ -1,0 +1,160 @@
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_exit_path_supersedes_preempted_same_generation_lease() {
+        let (_pid, stopped) = spawn_held_stop_child("async exit supersession child");
+        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
+            &stopped,
+            &Event::Signal(Signal::SIGSTOP),
+        ))));
+
+        let status =
+            TracedTask::<InitFailureTool>::handle_exit_event(stopped, Some(Arc::clone(&slot)))
+                .await
+                .expect("async exit path rejected same-generation lease supersession");
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "async exit path left its superseded lease armed"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_stop_rejects_mismatched_generation_without_replacement() {
+        for _ in 0..16 {
+            let (_first_pid, first) = spawn_held_stop_child("first generation child");
+            let (_second_pid, second) = spawn_held_stop_child("second generation child");
+            let first_generation = first.terminal_cleanup();
+            let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
+                &first,
+                &Event::Signal(Signal::SIGSTOP),
+            ))));
+
+            assert_eq!(
+                HeldRootStop::supersede_with_exit(&slot, &second),
+                Err(TraceError::Errno(Errno::EINVAL))
+            );
+            {
+                let held = slot.lock().unwrap();
+                let held = held.as_ref().expect("mismatch removed the original lease");
+                assert!(held.terminal.same_generation(&first_generation));
+                assert!(matches!(
+                    held.status,
+                    HeldRootStopStatus::Signal(Signal::SIGSTOP)
+                ));
+            }
+
+            slot.lock().unwrap().take();
+            resume_held_stop_child("first generation child", first).await;
+            resume_held_stop_child("second generation child", second).await;
+        }
+    }
+
+    #[derive(Default)]
+    struct InitFailureTool;
+
+    #[reverie::tool]
+    impl Tool for InitFailureTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::none()
+        }
+    }
+
+    #[test]
+    fn liteinst_stats_collector_is_allocated_only_when_requested() {
+        let disabled = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4);
+        assert!(
+            disabled
+                .liteinst_runtime
+                .as_ref()
+                .unwrap()
+                .instrumentation_stats
+                .is_none()
+        );
+
+        let enabled = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime_with_stats(
+                PathBuf::from("/not/used.so"),
+                1,
+                2,
+                3,
+                4,
+                BackendStatsRequest::ENABLED,
+            );
+        assert!(
+            enabled
+                .liteinst_runtime
+                .as_ref()
+                .unwrap()
+                .instrumentation_stats
+                .is_some()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn liteinst_runtime_rejects_gdbserver_before_spawning_tracee() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock predates Unix epoch")
+            .as_nanos();
+        let side_effect = std::env::temp_dir().join(format!(
+            "reverie-liteinst-gdb-rejected-{}-{nonce}",
+            std::process::id()
+        ));
+        let socket = side_effect.with_extension("sock");
+        assert!(!side_effect.exists());
+        assert!(!socket.exists());
+        let mut command = Command::new("/usr/bin/touch");
+        command.arg(&side_effect);
+
+        let error = match TracerBuilder::<InitFailureTool>::new(command)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .gdbserver(socket.clone())
+            .spawn()
+            .await
+        {
+            Ok(_) => panic!("LiteInst plus GDB unexpectedly spawned a tracee"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("ENOTSUPP"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("executable-entry software breakpoint"),
+            "{error}"
+        );
+        assert!(
+            !side_effect.exists(),
+            "rejected configuration ran the tracee"
+        );
+        assert!(
+            !socket.exists(),
+            "rejected configuration opened a GDB server"
+        );
+    }
+
+    #[derive(Default)]
+    struct RootStopTool;
+
+    #[reverie::tool]
+    impl Tool for RootStopTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::getpid].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            Ok(guest.inject(syscall).await?)
+        }
+    }

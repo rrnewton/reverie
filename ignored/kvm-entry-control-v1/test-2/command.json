@@ -1,0 +1,81 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-control-v1/retained-lib-test-2",
+    "entry::",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "environment": {
+    "HOME": "/home/newton",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_TERM_COLOR": "never",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TZ": "UTC",
+    "RUSTUP_TOOLCHAIN": "nightly-2026-07-29",
+    "RUSTUP_AUTO_INSTALL": "0"
+  },
+  "service": [
+    "/usr/bin/systemd-run",
+    "--user",
+    "--wait",
+    "--pipe",
+    "--collect",
+    "--unit",
+    "kvm-entry-test-2-3503176",
+    "--property=CPUQuota=200%",
+    "--property=MemoryMax=12G",
+    "--property=MemorySwapMax=0",
+    "--property=RuntimeMaxSec=60",
+    "--property=TimeoutStopSec=10",
+    "--property=KillMode=control-group",
+    "--working-directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+    "/usr/bin/env",
+    "-i",
+    "HOME=/home/newton",
+    "PATH=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin",
+    "CARGO_HOME=/home/newton/.cargo",
+    "CARGO_TARGET_DIR=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1",
+    "RUSTC=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_BUILD_JOBS=2",
+    "CARGO_NET_OFFLINE=true",
+    "CARGO_TERM_COLOR=never",
+    "LANG=C",
+    "LC_ALL=C",
+    "TZ=UTC",
+    "RUSTUP_TOOLCHAIN=nightly-2026-07-29",
+    "RUSTUP_AUTO_INSTALL=0",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-control-v1/retained-lib-test-2",
+    "entry::",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "source": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 30668,
+      "sha256": "d9f03d0dfb9c9bdb67e8fa1b375dc8fc4d329edd30a46050d4b37beef6eb375e"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    }
+  },
+  "wall_seconds": 60,
+  "stream_cap_bytes": 16777216,
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe"
+}

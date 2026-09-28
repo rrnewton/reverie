@@ -1,0 +1,15 @@
+{
+  "source_inputs_match": true,
+  "exact_base_and_branch_match": true,
+  "owned_vm_matches_frozen_copy": true,
+  "preserved_four_component_hashes": true,
+  "runner_ast_parse": true,
+  "predecessor_environment_byte_equal": true,
+  "retained_original_service_and_stream_loop": true,
+  "selected_new_names": 4,
+  "selected_existing_names": 3,
+  "phase_directories_absent": true,
+  "no_product_execution": true,
+  "raw_status_preserved_before_post_run_input_refusal": true,
+  "test_elf_reauthenticated_before_and_after": true
+}

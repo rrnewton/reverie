@@ -1,0 +1,156 @@
+mod tests {
+    use kvm_bindings::CpuId;
+    use kvm_bindings::kvm_cpuid_entry2;
+
+    use super::*;
+
+    fn entry(function: u32, index: u32) -> kvm_cpuid_entry2 {
+        kvm_cpuid_entry2 {
+            function,
+            index,
+            eax: u32::MAX,
+            ebx: u32::MAX,
+            ecx: u32::MAX,
+            edx: u32::MAX,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn deterministic_policy_replaces_host_identity_and_features() {
+        let mut minimum_host_entries = [
+            entry(0, 0),
+            entry(1, 0),
+            entry(7, 0),
+            entry(7, 1),
+            entry(0xd, 0),
+            entry(0x8000_0000, 0),
+            entry(0x8000_0001, 0),
+        ];
+        minimum_host_entries[1].ecx = DETERMINISTIC_STANDARD_CPUIDS[1][2] & !bit(27);
+        minimum_host_entries[1].edx = DETERMINISTIC_STANDARD_CPUIDS[1][3];
+        minimum_host_entries[2].ebx = 0;
+        minimum_host_entries[2].ecx = 0;
+        minimum_host_entries[2].edx = 0;
+        minimum_host_entries[6].ecx = DETERMINISTIC_EXTENDED_CPUIDS[1][2];
+        minimum_host_entries[6].edx = DETERMINISTIC_EXTENDED_CPUIDS[1][3];
+        let mut first_host = CpuId::from_entries(&minimum_host_entries).unwrap();
+        let mut superset_host_entries = minimum_host_entries;
+        for entry in &mut superset_host_entries {
+            entry.ecx |= bit(31);
+            entry.edx |= bit(31);
+        }
+        let mut second_host = CpuId::from_entries(&superset_host_entries).unwrap();
+
+        CpuidPolicy::deterministic().apply(&mut first_host).unwrap();
+        CpuidPolicy::deterministic()
+            .apply(&mut second_host)
+            .unwrap();
+
+        assert_eq!(first_host, second_host);
+        let entries = first_host.as_slice();
+        assert_eq!(
+            entries.len(),
+            DETERMINISTIC_STANDARD_CPUIDS
+                .iter()
+                .chain(DETERMINISTIC_EXTENDED_CPUIDS)
+                .filter(|registers| **registers != [0; 4])
+                .count()
+                + DETERMINISTIC_XSTATE_CPUIDS.len()
+        );
+        let leaf = |function, index| {
+            entries
+                .iter()
+                .find(|entry| entry.function == function && entry.index == index)
+                .unwrap()
+        };
+        assert_eq!(leaf(0, 0).eax, 0x0000_000d);
+        assert_eq!(leaf(0, 0).ebx, u32::from_le_bytes(*b"Genu"));
+        assert_eq!(leaf(0, 0).ecx, u32::from_le_bytes(*b"ntel"));
+        assert_eq!(leaf(0, 0).edx, u32::from_le_bytes(*b"ineI"));
+        assert_eq!(leaf(1, 0).eax, 0x0000_0663);
+        assert_eq!(leaf(1, 0).ecx & bit(30), 0);
+        assert_eq!(
+            leaf(1, 0).ecx & (bit(26) | bit(27) | bit(28)),
+            bit(26) | bit(27) | bit(28)
+        );
+        assert_eq!(leaf(4, 0).flags, KVM_CPUID_FLAG_SIGNIFCANT_INDEX);
+        assert!(entries.iter().all(|entry| entry.function != 7));
+        assert_eq!(leaf(0xb, 0).flags, KVM_CPUID_FLAG_SIGNIFCANT_INDEX);
+        assert_eq!(leaf(0xd, 0).eax & 0x7, 0x7);
+        assert_eq!(leaf(0x8000_0000, 0).eax, 0x8000_000a);
+        assert_eq!(leaf(0x8000_0000, 0).ebx, u32::from_le_bytes(*b"Genu"));
+        assert_eq!(leaf(0x8000_0000, 0).ecx, u32::from_le_bytes(*b"ntel"));
+        assert_eq!(leaf(0x8000_0000, 0).edx, u32::from_le_bytes(*b"ineI"));
+        // Unsubscribed RDTSCP must remain a genuine unsupported-instruction fault.
+        assert_eq!(leaf(0x8000_0001, 0).edx & bit(27), 0);
+    }
+
+    #[test]
+    fn deterministic_xstate_subleaves_are_indexed_and_unique() {
+        let cpuid = deterministic_cpuid_table();
+        let entries = cpuid.as_slice();
+
+        assert_unique_function_indices(entries);
+        let xstate = entries
+            .iter()
+            .filter(|entry| entry.function == 0xd)
+            .collect::<Vec<_>>();
+        assert_eq!(xstate.len(), DETERMINISTIC_XSTATE_CPUIDS.len());
+        for (entry, (index, registers)) in xstate.iter().zip(DETERMINISTIC_XSTATE_CPUIDS) {
+            assert_eq!(entry.index, *index);
+            assert_eq!(entry.flags, KVM_CPUID_FLAG_SIGNIFCANT_INDEX);
+            assert_eq!([entry.eax, entry.ebx, entry.ecx, entry.edx], *registers);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate leaf 0xd, subleaf 0x0")]
+    fn deterministic_cpuid_table_rejects_duplicate_function_index() {
+        let mut standard = DETERMINISTIC_STANDARD_CPUIDS.to_vec();
+        standard[0xd] = [0x0000_0007, 0x0000_0340, 0x0000_0340, 0x0000_0000];
+
+        build_deterministic_cpuid_table(
+            &standard,
+            DETERMINISTIC_XSTATE_CPUIDS,
+            DETERMINISTIC_EXTENDED_CPUIDS,
+        );
+    }
+
+    #[test]
+    fn deterministic_policy_rejects_missing_required_features() {
+        let mut unsupported = CpuId::from_entries(&[
+            kvm_cpuid_entry2 {
+                function: 1,
+                ..Default::default()
+            },
+            kvm_cpuid_entry2 {
+                function: 0x8000_0001,
+                ..Default::default()
+            },
+        ])
+        .unwrap();
+
+        let error = CpuidPolicy::deterministic()
+            .apply(&mut unsupported)
+            .unwrap_err();
+
+        assert!(matches!(error, Error::UnsupportedCpuidProfile(_)));
+    }
+
+    #[test]
+    fn host_supported_policy_preserves_entries() {
+        let entries = [
+            entry(0, 0),
+            entry(1, 0),
+            entry(7, 0),
+            entry(7, 1),
+            entry(0xd, 0),
+        ];
+        let mut cpuid = CpuId::from_entries(&entries).unwrap();
+
+        CpuidPolicy::host_supported().apply(&mut cpuid).unwrap();
+
+        assert_eq!(cpuid.as_slice(), entries);
+    }
+}

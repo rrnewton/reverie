@@ -1,0 +1,160 @@
+    ///
+    /// # Caveats
+    ///
+    /// A few syscalls are special and behave differently from the rest:
+    ///  - `exit` or `exit_group` will never return when injected. Since these
+    ///    syscalls will cause the current thread or process to exit, no code that
+    ///    comes after can be executed.
+    ///  - `execve` will never return when *successfully* injected. If you wish to
+    ///    handle successful calls to `execve`, use [`Tool::handle_post_exec`].
+    ///    Failed calls to `execve` will still return, however. Thus, it is safe to
+    ///    use [`Result::unwrap_err`] on the result of the `inject`.
+    async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno>;
+
+    /// Similar to [`Guest::inject`], except that it never returns. Since it does
+    /// not return to the caller, the syscall return value cannot be altered or
+    /// inspected. This method exists as an optimization for the `ptrace`
+    /// backend, so that we can avoid interrupting the guest if we don't care
+    /// about the syscall return value.
+    ///
+    /// # Caveats
+    ///
+    /// This method comes with a major footgun. Any code written after
+    /// `tail_inject` will never be executed:
+    ///
+    /// ```no_run
+    /// use reverie::syscalls::*;
+    /// use reverie::*;
+    ///
+    /// #[derive(Debug, Default, Clone)]
+    /// struct MyTool;
+    ///
+    /// #[reverie::tool]
+    /// impl Tool for MyTool {
+    ///     /// Global state is unused
+    ///     type GlobalState = ();
+    ///     /// Count of successful syscalls.
+    ///     type ThreadState = u64;
+    ///
+    ///     async fn handle_syscall_event<T: Guest<Self>>(
+    ///         &self,
+    ///         guest: &mut T,
+    ///         syscall: Syscall,
+    ///     ) -> Result<i64, Error> {
+    ///         let ret = match syscall {
+    ///             Syscall::Open(syscall) => guest.tail_inject(syscall).await,
+    ///             _ => guest.inject(syscall).await?,
+    ///         };
+    ///
+    ///         // This is never called if we got the `open` syscall above!!
+    ///         *guest.thread_state_mut() += 1;
+    ///
+    ///         Ok(ret)
+    ///     }
+    /// }
+    /// ```
+    async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never;
+
+    /// Terminates the current guest thread with status zero after the Tool has
+    /// determined that this thread must never resume guest execution.
+    ///
+    /// This abandons the current callback and runs the backend's consuming
+    /// thread-exit cleanup exactly once. It accepts no syscall and does not
+    /// authorize other nonreturning injections from restricted callbacks.
+    /// It does not request termination of other live threads. Backends whose
+    /// ordinary exit injection already provides this contract use that path.
+    /// An already-established backend exit retains its status.
+    ///
+    /// Backend process-lifetime limits still apply. Explicit KVM leader cancellation
+    /// cancels live siblings, while normal raw leader `SYS_exit` leaves them running.
+    /// Nonleader cancellation also leaves live siblings running.
+    async fn cancel_current_thread(&mut self) -> Never {
+        self.tail_inject(reverie_syscalls::Exit::default()).await
+    }
+
+    /// Defers one already-selected signal for delivery by the backend at its
+    /// next safe return-to-userspace boundary.
+    ///
+    /// Backends may return `ENOSYS` when the current callback has no resumable
+    /// userspace register context (for example, a lifecycle callback), when
+    /// signal provenance is unsupported, or when deterministic recipient
+    /// selection is not available. Callers must handle that refusal rather
+    /// than assuming the event was queued.
+    ///
+    /// This is additive to the historical host-signal path. Backends that do
+    /// not own a virtual guest signal frame retain the default explicit
+    /// `ENOSYS`; adding this method does not change ptrace signal delivery.
+    async fn defer_signal_delivery(&mut self, _event: SignalEvent) -> Result<(), Error> {
+        Err(Errno::ENOSYS.into())
+    }
+
+    /// Queues a Tool-selected normal child-exit event for the current process.
+    ///
+    /// The caller supplies a complete process-directed `SIGCHLD`/`CLD_EXITED`
+    /// event and owns its child-status provenance and deterministic ordering.
+    /// The backend validates the receiver and metadata, preserves process-wide
+    /// pending ownership and first-siginfo coalescing, and reports whether queue
+    /// publication preceded any failure. Wait status and child reaping remain
+    /// independent. This operation never recursively invokes a Tool hook or
+    /// resumes guest instructions; normal receiver boundaries own delivery.
+    ///
+    /// Backends may refuse unsupported contexts or process lifetimes. In
+    /// particular, KVM initially supports only a live single-thread parent at
+    /// a transported return-to-user boundary. The historical private deferral
+    /// operation and its refusal policy are unchanged.
+    async fn queue_child_exit_signal(
+        &mut self,
+        _event: SignalEvent,
+    ) -> crate::ChildExitSignalOutcome {
+        crate::ChildExitSignalOutcome::RejectedBeforeCommit {
+            kind: crate::ChildExitSignalErrorKind::Unsupported,
+            errno: Errno::ENOSYS,
+        }
+    }
+
+    /// Publishes a Tool-selected process alarm at this stopped task's boundary.
+    ///
+    /// The caller owns deterministic ordering and supplies the complete normal
+    /// Linux SIGALRM/SI_KERNEL siginfo (zero except for signo and code). KVM
+    /// supports only the current sole live receiver, with no pending process
+    /// action and a resumable transported boundary that has not completed an
+    /// injected process action. The operation preserves
+    /// shared pending ownership and first siginfo, including when blocked or
+    /// ignored. Installing SIG_IGN later invalidates older pending generations.
+    ///
+    /// No Tool hook, guest instruction, timer operation, or wait completion is
+    /// performed. The receipt is only pending-state publication. The historical
+    /// private [`Guest::defer_signal_delivery`] operation remains independent.
+    async fn queue_process_alarm_signal(
+        &mut self,
+        _event: SignalEvent,
+    ) -> crate::ProcessAlarmSignalOutcome {
+        crate::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
+            kind: crate::ProcessAlarmSignalErrorKind::Unsupported,
+            errno: Errno::ENOSYS,
+        }
+    }
+
+    /// Backend process/task lifetime identity, including at thread start.
+    fn signal_task_identity(&self) -> Option<crate::SignalTaskIdentity> {
+        None
+    }
+
+    /// Current parked-observation capability, bound to this exact callback.
+    fn parked_signal_site(&self) -> Option<crate::CallbackSignalSite> {
+        None
+    }
+
+    /// Authenticates the current original scalar write to backend-captured output.
+    ///
+    /// This read-only query returns the full callback identity only when `call`
+    /// is the exact unconsumed original syscall (including all raw arguments)
+    /// and its current descriptor aliases an enabled captured stdout/stderr
+    /// stream. It does not execute the write, publish or consume a signal,
+    /// validate the buffer, or promise a successful byte count.
+    ///
+    /// The caller must query again with the identical call immediately before
+    /// publication and require the same identity, without an intervening guest
+    /// operation or injection. KVM additionally requires its existing sole-live-
+    /// leader boundary, no prior injected execution, and no active observation
+    /// or checked-out stack. Ordinary files, pipes, sockets and uncaptured host

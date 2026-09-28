@@ -1,0 +1,24 @@
+{
+  "started": [
+    "cpuid_instruction::tests::actual_cpuid_interception_is_owned_and_restores_original_msr_state"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "cpuid_instruction::tests::actual_cpuid_interception_is_owned_and_restores_original_msr_state",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.233893931
+    }
+  ]
+}

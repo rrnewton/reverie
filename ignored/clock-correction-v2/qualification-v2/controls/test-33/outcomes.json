@@ -1,0 +1,24 @@
+{
+  "started": [
+    "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.000230466
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+Prepare one supplemental same-session review. No launch is authorized by this packet itself.
+
+The exact source/head and original qualification stay unchanged. Sixteen missing raw chunks plus the exact trigger-rule paragraph are the only required new reads. The original 224 complete chunks and all changed source reads retain their own actual-output provenance. Original failed audit and incomplete report remain untouched; the combined audit must say 224 + 16 rather than rewriting history as an initial complete pass.
+
+Command after coordinator authorization:
+with-proxy env PYTHONOPTIMIZE=0 /usr/bin/python3 -B /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/launch-review.py
+
+The launcher is the previously inspected helper with exactly two literal changes: timeout 1800s to 600s and recorded wall_seconds 1800 to 600. It retains TERM then 10-second KILL, 64 MiB per-output-file RLIMIT_FSIZE, explicit plan permission, requested Read/Grep/Glob tools, exact existing session, no model override, entire CLI invocation with-proxy, before/after input authentication, fresh all-UID cap-15 census and no parallel resume. Outer Python optimize=0 is explicit. Current expected model is claude-opus-5[1m]; inspect actual init/model/session/plan before inferring conformance. Availability and actual tool use are distinct.
+
+The frozen audit-final.py is byte-identical to the original. It will check all 17 new required reads literally, every held input/alias, terminal status and actual tools. A separate append-only union readback will then compare these sixteen original paths/hashes against the original missing set, require all original 240 chunks complete across distinct invocations, and preserve the first audit failure/order limitations. No audit relaxation, reviewer model change, source change, product run or external write is requested. Stop on capacity, policy, input, timeout or coverage refusal; do not retry automatically.

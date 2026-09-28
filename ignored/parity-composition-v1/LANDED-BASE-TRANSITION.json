@@ -1,0 +1,9 @@
+{
+  "previous_head": "68569ed7fd5c3667456d1d3e0d74ba66264242f4",
+  "landed_base": "6e3915b70a71657a08f0028b3f70d6074116206a",
+  "branch": "codex/kvm-parity-land-20260918",
+  "rescue_ref": "refs/rescue/kvm-parity-land-before-successor-20260918",
+  "remote_branch_unchanged": true,
+  "source_tree_unchanged": true,
+  "qualification_completed_before_transition": true
+}

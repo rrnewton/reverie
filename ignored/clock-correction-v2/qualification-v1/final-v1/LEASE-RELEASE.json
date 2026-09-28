@@ -1,0 +1,18 @@
+{
+  "lease_snapshot": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/lane.lease",
+    "bytes": 97,
+    "mode": 384,
+    "sha256": "cefe3c68911acf3677d51622cdcf19cd83e603788026e82b580c32c2389efffe"
+  },
+  "exclusive_lock_obtainable": true,
+  "inspection_read_only": true,
+  "token_retained": true,
+  "normal_completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/lease-state/a8479bd21916aa958dfbfa9daf88a597b21c526ed9da772a79e046af0cf4b106.json",
+    "bytes": 387,
+    "mode": 420,
+    "sha256": "cbcdf7bb9eca15882541c904a507252522b4d1924b608ee4159ba3e836eaf5a0"
+  },
+  "old_unresolved_C_lease_not_opened": true
+}

@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease" }
+{ "type": "test", "name": "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.00151153 }

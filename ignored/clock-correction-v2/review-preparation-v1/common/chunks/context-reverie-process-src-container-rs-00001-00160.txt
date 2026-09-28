@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::ffi::CString;
+use std::ffi::OsStr;
+use std::ffi::OsString;
+use std::io::Read;
+use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::io::AsRawFd;
+use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+
+use nix::sched::CpuSet;
+use nix::sched::sched_setaffinity;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use syscalls::Errno;
+
+use super::clone::child_stack;
+use super::clone::clone_with_stack;
+use super::env::Env;
+use super::error::AddContext;
+use super::error::Context;
+use super::error::Error;
+use super::exit_status::ExitStatus;
+use super::fd::Fd;
+use super::fd::pipe;
+use super::fd::write_bytes;
+use super::id_map::make_id_map;
+use super::mount::Mount;
+use super::namespace::Namespace;
+use super::net::IfName;
+use super::pid::Pid;
+use super::pty::PtyChild;
+use super::seccomp;
+use super::stdio::Stdio;
+use super::util::reset_signal_handling;
+use super::util::to_cstring;
+
+/// A `Container` is a configuration of how a process shall be spawned. It can,
+/// but doesn't have to, include Linux namespace configuration.
+///
+/// NOTE: Configuring resource limits via cgroups is not yet supported.
+pub struct Container {
+    pub(super) env: Env,
+    current_dir: Option<CString>,
+    chroot: Option<CString>,
+    pub(super) namespace: Namespace,
+    pub(super) stdin: Stdio,
+    pub(super) stdout: Stdio,
+    pub(super) stderr: Stdio,
+    pub(super) uid_map: Vec<(libc::uid_t, libc::uid_t, u32)>,
+    pub(super) gid_map: Vec<(libc::uid_t, libc::uid_t, u32)>,
+    mounts: Vec<Mount>,
+    local_networking_only: bool,
+    hostname: Option<OsString>,
+    domainname: Option<OsString>,
+    pub(super) seccomp: Option<seccomp::Filter>,
+    pub(super) seccomp_notify: bool,
+    pub(super) pty: Option<PtyChild>,
+    /// The core number to which the new process, and descendents, will be
+    /// pinned.
+    affinity: Option<usize>,
+}
+
+impl Default for Container {
+    fn default() -> Self {
+        Self {
+            env: Default::default(),
+            current_dir: None,
+            chroot: None,
+            namespace: Default::default(),
+            stdin: Stdio::inherit(),
+            stdout: Stdio::inherit(),
+            stderr: Stdio::inherit(),
+            uid_map: Vec::new(),
+            gid_map: Vec::new(),
+            mounts: Vec::new(),
+            local_networking_only: false,
+            hostname: None,
+            domainname: None,
+            seccomp: None,
+            seccomp_notify: false,
+            pty: None,
+            affinity: None,
+        }
+    }
+}
+
+impl Container {
+    /// Returns the configured features that cannot be represented by
+    /// `std::process::Command`.
+    pub(super) fn std_conversion_blockers(&self) -> Vec<&'static str> {
+        // Keep this exhaustive: adding Container state must fail to compile
+        // until the standard-command conversion explicitly classifies it.
+        let Self {
+            env: _,
+            current_dir: _,
+            chroot,
+            namespace,
+            stdin: _,
+            stdout: _,
+            stderr: _,
+            uid_map,
+            gid_map,
+            mounts,
+            local_networking_only,
+            hostname,
+            domainname,
+            seccomp,
+            seccomp_notify,
+            pty,
+            affinity,
+        } = self;
+
+        let mut blockers = Vec::new();
+
+        if chroot.is_some() {
+            blockers.push("chroot");
+        }
+        if !namespace.is_empty() {
+            blockers.push("Linux namespaces");
+        }
+        if !uid_map.is_empty() {
+            blockers.push("user ID mappings");
+        }
+        if !gid_map.is_empty() {
+            blockers.push("group ID mappings");
+        }
+        if !mounts.is_empty() {
+            blockers.push("mounts");
+        }
+        if *local_networking_only {
+            blockers.push("local-only networking");
+        }
+        if hostname.is_some() {
+            blockers.push("hostname");
+        }
+        if domainname.is_some() {
+            blockers.push("domain name");
+        }
+        if seccomp.is_some() {
+            blockers.push("seccomp filter");
+        }
+        if *seccomp_notify {
+            blockers.push("seccomp notification");
+        }
+        if pty.is_some() {
+            blockers.push("pseudoterminal");
+        }
+        if affinity.is_some() {

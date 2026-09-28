@@ -1,0 +1,268 @@
+[
+  {
+    "name": "malformed_json_control",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/malformed_json_control.stdout",
+      "bytes": 9138,
+      "mode": 420,
+      "sha256": "4e798a685ffa11727dbc1cee4cc4ec01be87b54380b9f298e693c64602b7b6fa"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/malformed_json_control.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "JSONDecodeError('Expecting property name enclosed in double quotes: line 1 column 16 (char 15)')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "duplicate_start",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/duplicate_start.stdout",
+      "bytes": 9307,
+      "mode": 420,
+      "sha256": "c4de9345f2089a31a0f9539bc6617722e0ac64faf48d182352e15fde79cb2b37"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/duplicate_start.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('exactly four libtest lifecycle records required')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "ignored_outcome",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/ignored_outcome.stdout",
+      "bytes": 9217,
+      "mode": 420,
+      "sha256": "bcadeb4bb32e3015cd9ae6cd01169ffbc69619451872115dfa01e8f5045496d9"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/ignored_outcome.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('started/name/outcome lifecycle mismatch')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "wrong_test_name",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/wrong_test_name.stdout",
+      "bytes": 9218,
+      "mode": 420,
+      "sha256": "c528816eaea49f7e4195a92578c3fc295bda52de48e7946e96b4482d59c18366"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/wrong_test_name.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('started/name/outcome lifecycle mismatch')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "mismatched_suite_count",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/mismatched_suite_count.stdout",
+      "bytes": 9212,
+      "mode": 420,
+      "sha256": "8c8915fdf90637750ad0a29aaa843b874b012feccbd2e2dd0d0aae0c6b7bd279"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/mismatched_suite_count.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('suite count differs: passed')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "ansi_wrapped_malformed_control",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/ansi_wrapped_malformed_control.stdout",
+      "bytes": 9146,
+      "mode": 420,
+      "sha256": "0bb5977980fbb8cbfc7db4a9e7eae1d23c8fa64813f9e6305f5b4b86e13cd4f2"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/ansi_wrapped_malformed_control.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('tracing prefix/context/target mismatch')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "duplicate_terminal_record",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/duplicate_terminal_record.stdout",
+      "bytes": 9347,
+      "mode": 420,
+      "sha256": "c765e77a14a3b98bb16e59b0005ea0b90b103846148b33c8df3f8295640521a7"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/duplicate_terminal_record.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('exactly four libtest lifecycle records required')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "missing_suite_completion",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/missing_suite_completion.stdout",
+      "bytes": 9077,
+      "mode": 420,
+      "sha256": "21404937ee0b3fe3eaabfad053d855172479d57ea9850361485e9371626d708e"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/missing_suite_completion.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('exactly four libtest lifecycle records required')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "unframed_diagnostic",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/unframed_diagnostic.stdout",
+      "bytes": 9238,
+      "mode": 420,
+      "sha256": "b3b22bf619b1a706f11e9d8d34df43d0f6e254e18c2f901ff4b17c95b7aa42c3"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/unframed_diagnostic.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('unrecognized non-JSON record')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "cursor_control_in_trace",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/cursor_control_in_trace.stdout",
+      "bytes": 9216,
+      "mode": 420,
+      "sha256": "0ba5c44837993ac3c41e982b1a8910456e2abbff482f88ae8aac42261c1151fd"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/cursor_control_in_trace.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('unrecognized non-JSON record')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "missing_time_effect",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/missing_time_effect.stdout",
+      "bytes": 9216,
+      "mode": 420,
+      "sha256": "9f9ab598975256a9645d53241465134b72de83703a71c32381a9cddf74d4dff0"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/missing_time_effect.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('real time interception pair absent')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "nonzero_raw_status",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/nonzero_raw_status.stdout",
+      "bytes": 9212,
+      "mode": 420,
+      "sha256": "93f5db94149307a43c43f25c5781140e278f2c71269877c54880874232250356"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/nonzero_raw_status.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 101,
+    "refused": true,
+    "reason": "RuntimeError('nonzero actual payload status')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "skip_marker_in_stderr",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/skip_marker_in_stderr.stdout",
+      "bytes": 9212,
+      "mode": 420,
+      "sha256": "93f5db94149307a43c43f25c5781140e278f2c71269877c54880874232250356"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/skip_marker_in_stderr.stderr",
+      "bytes": 62,
+      "mode": 420,
+      "sha256": "6d44dff7f32d08b98a0704de89238717e43aab5a2c1fa4be9233c203c6a06c96"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('unexpected stderr, including any skip marker')",
+    "synthetic_offline_evidence": true
+  },
+  {
+    "name": "duplicate_json_event",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/duplicate_json_event.stdout",
+      "bytes": 9222,
+      "mode": 420,
+      "sha256": "0867c33c81d3df534c5994af9b88b1f2ca58e2ee3a1207de6002cd573d89e113"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/negative-transcripts/duplicate_json_event.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw_status": 0,
+    "refused": true,
+    "reason": "RuntimeError('duplicate JSON key event')",
+    "synthetic_offline_evidence": true
+  }
+]

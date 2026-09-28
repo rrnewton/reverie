@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/control-58-plan.json",
+      "fbff80a1ce3d1db43c17f9cd542ac8c5404d0d66f433f188db479a1f793da7db"
+    ]
+  },
+  "pid": 3722618,
+  "start_ticks": 192139832,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "0beafa9e1e7f5576c577bdf10ed81c51a7cd6a6e8b8eeb7f6f173ecc5f26226c",
+  "monotonic_ns": 1921398379989296,
+  "note": "Written before exec; this is not proof that the payload started."
+}

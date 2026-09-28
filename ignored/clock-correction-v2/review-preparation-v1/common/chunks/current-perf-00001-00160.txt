@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Provides a more rustic interface to a minimal set of `perf` functionality.
+//!
+//! Explicitly missing (because they are unnecessary) perf features include:
+//! * Grouping
+//! * Sample type flags
+//! * Reading any kind of sample events
+//! * BPF
+//! * Hardware breakpoints
+//!
+//! The arguments and behaviors in this module generally correspond exactly to
+//! those of `perf_event_open(2)`. No attempts are made to paper over the
+//! non-determinism/weirndess of `perf`. For example, counter increments are
+//! dropped whenever an event fires on a running thread.
+//! [`PerfCounter::DISABLE_SAMPLE_PERIOD`] can be used to avoid this for sampling.
+//! events.
+
+use core::ptr::NonNull;
+#[allow(unused_imports)] // only used if we have an error
+use std::compile_error;
+use std::sync::LazyLock;
+
+use nix::sys::signal::Signal;
+use nix::unistd::SysconfVar;
+use nix::unistd::sysconf;
+use perf_event_open_sys::bindings as perf;
+use perf_event_open_sys::ioctls;
+use reverie::Errno;
+use reverie::Tid;
+use tracing::error;
+use tracing::warn;
+
+use crate::validation::PmuValidationError;
+use crate::validation::check_for_pmu_bugs;
+
+static PMU_BUG: LazyLock<Result<(), PmuValidationError>> = LazyLock::new(check_for_pmu_bugs);
+
+// Not available in the libc crate
+const F_SETOWN_EX: libc::c_int = 15;
+const F_SETSIG: libc::c_int = 10;
+const F_OWNER_TID: libc::c_int = 0;
+#[repr(C)]
+struct f_owner_ex {
+    pub type_: libc::c_int,
+    pub pid: libc::pid_t,
+}
+
+/// An incomplete enumeration of events perf can monitor
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    #[allow(dead_code)] // used in tests
+    /// A perf-supported hardware event.
+    Hardware(HardwareEvent),
+    /// A perf-supported software event.
+    Software(SoftwareEvent),
+    /// A raw CPU event. The inner value will have a CPU-specific meaning.
+    Raw(u64),
+}
+
+/// An incomplete enumeration of hardware events perf can monitor.
+#[allow(dead_code)] // used in tests
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum HardwareEvent {
+    /// Count retired instructions. Can be affected by hardware interrupt counts.
+    Instructions,
+    /// Count retired branch instructions.
+    BranchInstructions,
+}
+
+/// An incomplete enumeration of software events perf can monitor.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SoftwareEvent {
+    /// A placeholder event that counts nothing.
+    Dummy,
+}
+
+/// A perf counter with a very limited range of configurability.
+/// Construct via [`Builder`].
+#[derive(Debug)]
+pub struct PerfCounter {
+    fd: libc::c_int,
+    mmap: Option<NonNull<perf::perf_event_mmap_page>>,
+    raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+}
+
+impl Event {
+    fn attr_type(self) -> u32 {
+        match self {
+            Event::Hardware(_) => perf::PERF_TYPE_HARDWARE,
+            Event::Software(_) => perf::PERF_TYPE_SOFTWARE,
+            Event::Raw(_) => perf::PERF_TYPE_RAW,
+        }
+    }
+
+    fn attr_config(self) -> u64 {
+        match self {
+            Event::Raw(x) => x,
+            Event::Hardware(HardwareEvent::Instructions) => perf::PERF_COUNT_HW_INSTRUCTIONS.into(),
+            Event::Hardware(HardwareEvent::BranchInstructions) => {
+                perf::PERF_COUNT_HW_BRANCH_INSTRUCTIONS.into()
+            }
+            Event::Software(SoftwareEvent::Dummy) => perf::PERF_COUNT_SW_DUMMY.into(),
+        }
+    }
+}
+
+/// Builder for a PerfCounter. Contains only the subset of the attributes that
+/// this API allows manipulating set to non-defaults.
+#[derive(Debug, Clone)]
+pub struct Builder {
+    pid: libc::pid_t,
+    cpu: libc::c_int,
+    evt: Event,
+    sample_period: u64,
+    precise_ip: u32,
+    fast_reads: bool,
+    enable_on_exec: bool,
+}
+
+impl Builder {
+    /// Initialize the builder. The initial configuration is for a software
+    /// counting event that never increments.
+    ///
+    /// `pid` accepts a *TID* from `gettid(2)`. Passing `getpid(2)` will
+    /// monitor the main thread of the calling thread group. Passing `0`
+    /// monitors the calling thread. Passing `-1` monitors all threads on
+    /// the specified CPU.
+    ///
+    /// `cpu` should almost always be `-1`, which tracks the specified `pid`
+    /// across all CPUs. Non-negative integers track only the specified `pid`
+    /// on that CPU.
+    ///
+    /// Passing `-1` for both `pid` and `cpu` will result in an error.
+    pub fn new(pid: libc::pid_t, cpu: libc::c_int) -> Self {
+        Self {
+            pid,
+            cpu,
+            evt: Event::Software(SoftwareEvent::Dummy),
+            sample_period: 0,
+            precise_ip: 0,
+            fast_reads: false,
+            enable_on_exec: false,
+        }
+    }
+
+    /// Select the event to monitor.
+    pub fn event(&mut self, evt: Event) -> &mut Self {
+        self.evt = evt;
+        self
+    }
+
+    /// Set the period for sample collection. Default is 0, which creates a
+    /// counting event.

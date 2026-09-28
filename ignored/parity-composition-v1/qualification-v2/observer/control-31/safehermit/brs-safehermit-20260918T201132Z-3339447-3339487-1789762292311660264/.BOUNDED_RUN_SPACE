@@ -1,0 +1,5 @@
+bounded-run-space/v1
+directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-31/safehermit/brs-safehermit-20260918T201132Z-3339447-3339487-1789762292311660264
+device_inode=10485938:256
+subvolume_id=2958
+limit_bytes=8000000000

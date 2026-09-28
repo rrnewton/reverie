@@ -1,0 +1,160 @@
+    async fn freeze_all(&mut self) -> Result<(), TraceError> {
+        // The tool have chosen to sequentialize thread execution, gdbserver
+        // should avoid doing its own thread serialization, otherwise this
+        // could lead to deadlock.
+        if *self.global_state.sequentialized_guest {
+            return Ok(());
+        }
+        let (stop_tx, mut stop_rx) = mpsc::channel(1);
+        for child in self.child_threads.lock().await.deref_mut().into_iter() {
+            if child.id() != self.tid() && !child.suspended.load(Ordering::SeqCst) {
+                let killed = Errno::result(unsafe {
+                    libc::syscall(libc::SYS_tgkill, self.pid(), child.id(), Signal::SIGSTOP)
+                });
+                if killed.is_ok() {
+                    child.suspended.store(true, Ordering::SeqCst);
+                    child.wait_all_stop_tx = Some(stop_tx.clone());
+                }
+            }
+        }
+        drop(stop_tx);
+        while let Some((pid, suspended_task)) = stop_rx.recv().await {
+            self.suspended_tasks.insert(pid, suspended_task);
+        }
+        Ok(())
+    }
+
+    async fn remove_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
+        let insn = self.breakpoints.remove(&addr).ok_or(Errno::ENOENT)?;
+        let mut task = self.assume_stopped();
+        if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
+            task.write_value(bkpt_addr, &insn)?;
+        }
+        Ok(())
+    }
+
+    fn read_inferior_memory(&self, addr: u64, mut size: usize) -> Result<Vec<u8>, TraceError> {
+        let task = self.assume_stopped();
+
+        // NB: dont' trust size to be sane blindly.
+        if size > 0x8000 {
+            size = 0x8000;
+        }
+
+        let mut res = vec![0; size];
+        if let Some(addr) = Addr::from_raw(addr as usize) {
+            let nb = task.read(addr, &mut res)?;
+            res.resize(nb, 0);
+        }
+
+        // There could be a software breakpoint within the address requested,
+        // we should return the orignal contents without the breakpoint insn.
+        // This is *not* documented in gdb remote protocol, however, both
+        // gdbserver and rr does this. see:
+        // rr: https://github.com/rr-debugger/rr/blob/master/src/GdbServer.cc#L561
+        // gdbserver: https://github.com/bminor/binutils-gdb/blob/master/gdbserver/mem-break.cc#L1914
+        for (bkpt, saved_insn) in self.breakpoints.iter() {
+            if (addr..addr + res.len() as u64).contains(bkpt) {
+                // This abuses bkpt insn 0xcc is single byte.
+                res[*bkpt as usize - addr as usize] = *saved_insn as u8;
+            }
+        }
+
+        Ok(res)
+    }
+
+    fn write_inferior_memory(
+        &self,
+        addr: u64,
+        size: usize,
+        data: Vec<u8>,
+    ) -> Result<(), TraceError> {
+        let mut task = self.assume_stopped();
+        let size = std::cmp::min(size, data.len());
+        let addr = AddrMut::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
+        task.write(addr, &data[..size])?;
+        Ok(())
+    }
+
+    fn read_registers(&self) -> Result<CoreRegs, TraceError> {
+        let task = self.assume_stopped();
+        let regs = task.getregs()?;
+        let fpregs = task.getfpregs()?;
+        let core_regs = CoreRegs::from_parts(regs, fpregs);
+        Ok(core_regs)
+    }
+
+    fn write_registers(&self, core_regs: CoreRegs) -> Result<(), TraceError> {
+        let task = self.assume_stopped();
+        let (regs, fpregs) = core_regs.into_parts();
+        task.setregs(&regs)?;
+        task.setfpregs(&fpregs)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
+    type Memory = Stopped;
+    type Stack = GuestStack;
+
+    #[inline]
+    fn tid(&self) -> Pid {
+        self.tid
+    }
+
+    #[inline]
+    fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    #[inline]
+    fn ppid(&self) -> Option<Pid> {
+        self.ppid
+    }
+
+    fn is_command_bootstrap(&self) -> bool {
+        self.command_bootstrap
+    }
+
+    fn memory(&self) -> Self::Memory {
+        self.assume_stopped()
+    }
+
+    async fn regs(&mut self) -> libc::user_regs_struct {
+        let task = self.assume_stopped();
+
+        match self.read_guest_registers(&task) {
+            Ok(ret) => ret,
+            Err(err) => self.abort(Err(err)).await,
+        }
+    }
+
+    async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), reverie::Error> {
+        let task = self.assume_stopped();
+
+        if let Err(err) = self.write_guest_registers(&task, &regs) {
+            // Mirror `regs()`: a ptrace register access failure aborts the task.
+            self.abort(Err(err)).await;
+        }
+        Ok(())
+    }
+
+    async fn stack(&mut self) -> Self::Stack {
+        match GuestStack::new(self.tid, self.stack_checked_out.clone()) {
+            Ok(ret) => ret,
+            Err(err) => self.abort(Err(err)).await,
+        }
+    }
+
+    fn thread_state_mut(&mut self) -> &mut L::ThreadState {
+        &mut self.thread_state
+    }
+
+    fn thread_state(&self) -> &L::ThreadState {
+        &self.thread_state
+    }
+
+    async fn daemonize(&mut self) {
+        let pid = self.pid();
+        self.ndaemons.fetch_add(1, Ordering::SeqCst);

@@ -1,0 +1,7 @@
+{
+  "original_interpreter_sha256": "fca5a9b5da067dab564c33fff28b312ecad9a71a6fb43a40a13cf9092becb3f6",
+  "prefix_sha256": "d8f14e7cf2d13807e20efd8443a7eb2c9dd2154d0c613ad51a2710841afbdf90",
+  "strict_reader_sha256": "e02723046ebec96fb72ac2d9633ef5a1e50140a7869f285f26bae40dc06fd6f2",
+  "reason": "Python dict equality considers true and 1.0 equal to integer 1. The original retained count is genuinely integer1, but proposed reader must explicitly reject corrupt count types.",
+  "no_original_artifact_change": true
+}

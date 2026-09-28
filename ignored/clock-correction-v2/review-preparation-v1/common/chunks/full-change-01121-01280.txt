@@ -1,0 +1,160 @@
++    /// through the backend's existing post-exec initialization.
++    pub(crate) fn begin_initial_exec(&mut self) {
++        if let Some(timer) = self.inner_mut_noinit() {
++            timer.begin_initial_exec();
++        }
++    }
++
++    /// Release the notification hold before the first Tool post-exec callback.
++    /// No pre-exec request is replayed or physically armed here.
++    pub(crate) fn finish_initial_exec(&mut self) {
++        if let Some(timer) = self.inner_mut_noinit() {
++            timer.finish_initial_exec();
++        }
+     }
+ 
+     /// Read the thread-local deterministic clock. Represents total elapsed RCBs
+@@ -568,11 +595,27 @@
+     /// Whether or not the active timer event requires an artificial signal
+     send_artificial_signal: bool,
+ 
++    initial_command: InitialCommand,
++
++    /// Requests made before the first post-exec callback have no physical
++    /// notification. Taking this record retires each request once.
++    held_initial_event: Option<ActiveEvent>,
++
++    #[cfg(test)]
++    fail_next_notification: Option<Errno>,
++
+     /// Pid (tgid) of the monitored thread
+     guest_pid: Pid,
+ 
+     /// Tid of the monitored thread
+     guest_tid: Tid,
++}
++
++#[derive(Debug, Copy, Clone, PartialEq, Eq)]
++enum InitialCommand {
++    WaitingForExec,
++    InitializingExec,
++    Ordinary,
+ }
+ 
+ /// Tracks cancellation status of a timer event in response to other reverie
+@@ -719,7 +762,7 @@
+ }
+ 
+ impl TimerImpl {
+-    pub fn new(guest_pid: Pid, guest_tid: Tid) -> Result<Self, Errno> {
++    pub fn new(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Result<Self, Errno> {
+         let evt = get_pmu_config().rcb_event();
+ 
+         // measure the target tid irrespective of CPU
+@@ -737,14 +780,20 @@
+         timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
+         timer.reset()?;
+         // measure the target tid irrespective of CPU
+-        let clock = Builder::new(guest_tid.as_raw(), -1)
++        let mut clock_builder = Builder::new(guest_tid.as_raw(), -1);
++        clock_builder
+             // counting event
+             .sample_period(0)
+             .event(evt)
+-            .fast_reads(true)
+-            .create()?;
++            .fast_reads(true);
++        if initial_command {
++            clock_builder.enable_on_exec();
++        }
++        let clock = clock_builder.create()?;
+         clock.reset()?;
+-        clock.enable()?;
++        if !initial_command {
++            clock.enable()?;
++        }
+ 
+         Ok(Self {
+             timer,
+@@ -755,6 +804,14 @@
+             },
+             timer_status: EventStatus::Cancelled,
+             send_artificial_signal: false,
++            initial_command: if initial_command {
++                InitialCommand::WaitingForExec
++            } else {
++                InitialCommand::Ordinary
++            },
++            held_initial_event: None,
++            #[cfg(test)]
++            fail_next_notification: None,
+             guest_pid,
+             guest_tid,
+         })
+@@ -769,6 +826,24 @@
+         };
+         if delivery == 0 {
+             return Err(Errno::EINVAL); // bail before setting timer
++        }
++        if self.initial_command != InitialCommand::Ordinary {
++            self.event = Self::event_at(evt, self.read_clock() + delivery);
++            self.held_initial_event = Some(self.event);
++            self.timer_status = EventStatus::Scheduled;
++            debug_assert!(!self.send_artificial_signal);
++            return Ok(());
++        }
++        self.prepare_notification(notification)?;
++        self.event = Self::event_at(evt, self.read_clock() + delivery);
++        self.timer_status = EventStatus::Scheduled;
++        Ok(())
++    }
++
++    fn prepare_notification(&mut self, notification: u64) -> Result<(), Errno> {
++        #[cfg(test)]
++        if let Some(error) = self.fail_next_notification.take() {
++            return Err(error);
+         }
+         self.send_artificial_signal = if notification <= SINGLESTEP_TIMEOUT_RCBS {
+             // If there's an existing event making use of the timer counter,
+@@ -782,8 +857,11 @@
+             self.timer.enable()?;
+             false
+         };
+-        let clock = self.read_clock() + delivery;
+-        self.event = match evt {
++        Ok(())
++    }
++
++    fn event_at(evt: TimerEventRequest, clock: u64) -> ActiveEvent {
++        match evt {
+             TimerEventRequest::Precise(_) => ActiveEvent::Precise {
+                 clock_target: clock,
+                 offset: 0,
+@@ -793,9 +871,29 @@
+                 offset: instr_offset,
+             },
+             TimerEventRequest::Imprecise(_) => ActiveEvent::Imprecise { clock_min: clock },
+-        };
+-        self.timer_status = EventStatus::Scheduled;
+-        Ok(())
++        }
++    }
++
++    fn retire_initial_event(&mut self) {
++        let _ = self.held_initial_event.take();
++        self.timer_status = EventStatus::Cancelled;
++        self.send_artificial_signal = false;
++    }
++
++    fn begin_initial_exec(&mut self) {
++        if self.initial_command == InitialCommand::WaitingForExec {
++            self.retire_initial_event();
++            self.initial_command = InitialCommand::InitializingExec;
++        }
++    }
++
++    fn finish_initial_exec(&mut self) {
++        if self.initial_command == InitialCommand::InitializingExec {
++            // Current setup makes no Tool callback in this interval. Retire
++            // any new internal request as well, without revisiting a taken one.
++            self.retire_initial_event();

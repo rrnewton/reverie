@@ -1,0 +1,103 @@
+{ "type": "test", "name": "cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.000365289 }
+END STREAM
+
+PHASE control-53 SELECTOR cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-53/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-54 SELECTOR cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-54/stdout SHA256 064a8177656387f9e9f6f1595bd7521a245250a5f6812468e1a5d030fbff0cba
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index" }
+{ "type": "test", "name": "cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.000433701 }
+END STREAM
+
+PHASE control-54 SELECTOR cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-54/stderr SHA256 a0445fd3a5c01e434f75762046304bd929807f9d3e246109fc9cac82d6dc321a
+
+thread 'cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index' (3670141) panicked at reverie-kvm/src/cpuid.rs:152:9:
+fixed CPUID profile contains duplicate leaf 0xd, subleaf 0x0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END STREAM
+
+PHASE control-55 SELECTOR dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-55/stdout SHA256 3ad39094da7bdfe8be6734f61502243e8e728d4db1fe629871122c1b991cad10
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding" }
+{ "type": "test", "name": "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.074820172 }
+END STREAM
+
+PHASE control-55 SELECTOR dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-55/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-56 SELECTOR executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-56/stdout SHA256 61c1af839c0c98d69c41fcea5dda44078c2a17d338059280bdca93dcf323d058
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks" }
+{ "type": "test", "name": "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.001525351 }
+END STREAM
+
+PHASE control-56 SELECTOR executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-56/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-57 SELECTOR executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-57/stdout SHA256 db2a2e46d5b431a886c4f10d53eece61db77fa543797da8028c4c94d7b42db59
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement" }
+{ "type": "test", "name": "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.002085492 }
+END STREAM
+
+PHASE control-57 SELECTOR executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-57/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-58 SELECTOR executor::tests::capture_identity_keeps_closed_standard_descriptors_closed STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-58/stdout SHA256 535f61bdbf7947e4a703d6ecd9b8af5dce7a0760c5c62295a3bede48dcad3014
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed" }
+{ "type": "test", "name": "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.00312209 }
+END STREAM
+
+PHASE control-58 SELECTOR executor::tests::capture_identity_keeps_closed_standard_descriptors_closed STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-58/stderr SHA256 35f63777bd44aadbc92fb77aa2b68038ecf0cc0d6d9a603d5ba15119c6bb05d1
+capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::capture_identity_keeps_closed_standard_descriptors_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 522 filtered out; finished in 0.00s
+
+
+stderr:
+capture closed standard descriptors completed
+
+END STREAM
+
+PHASE control-59 SELECTOR executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-59/stdout SHA256 7192c1e77d9a1daf02903b9a870b919972c0b9e7efac08051d0c44fb867bb838
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind" }
+{ "type": "test", "name": "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.003636203 }
+END STREAM
+
+PHASE control-59 SELECTOR executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-59/stderr SHA256 31bd781951a5092d2def3a3346eec8d60560c2297d731f065b8f34ae946d70b9
+capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 522 filtered out; finished in 0.00s
+
+
+stderr:
+
+thread 'executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind' (3738116) panicked at reverie-kvm/src/capture_identity_tests.rs:332:17:
+intentional capture cleanup unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+capture final owner cleanup completed
+
+END STREAM
+

@@ -1,0 +1,160 @@
+        &state.stderr_alias_fds,
+        is_open_standard(state, fd),
+    )
+}
+
+fn output_alias_from_sets(
+    fd: libc::c_int,
+    stdout: &std::collections::BTreeSet<i32>,
+    stderr: &std::collections::BTreeSet<i32>,
+    standard: bool,
+) -> Option<OutputAlias> {
+    if stdout.contains(&fd) || (fd == libc::STDOUT_FILENO && standard) {
+        Some(OutputAlias::Stdout)
+    } else if stderr.contains(&fd) || (fd == libc::STDERR_FILENO && standard) {
+        Some(OutputAlias::Stderr)
+    } else {
+        None
+    }
+}
+
+fn set_output_alias(state: &mut LoadedStaticElf, fd: libc::c_int, alias: Option<OutputAlias>) {
+    state.stdout_alias_fds.remove(&fd);
+    state.stderr_alias_fds.remove(&fd);
+    match alias {
+        Some(OutputAlias::Stdout) => {
+            state.stdout_alias_fds.insert(fd);
+        }
+        Some(OutputAlias::Stderr) => {
+            state.stderr_alias_fds.insert(fd);
+        }
+        None => {}
+    }
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 6896..6928; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+// TODO-HUMAN-REVIEW(PR-136): Review descriptor insertion and identity allocation.
+fn insert_file_with_flags(
+    state: &mut LoadedStaticElf,
+    file: std::fs::File,
+    close_on_exec: bool,
+    output_alias: Option<OutputAlias>,
+) -> i64 {
+    let Some(fd) = (0..GUEST_NOFILE_LIMIT)
+        .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
+    else {
+        state.file_retirement.retire([file]);
+        return negative_errno(libc::EMFILE);
+    };
+    let object_inode = match allocate_fd_object_inode(state, &file) {
+        Ok(inode) => inode,
+        Err(error) => {
+            state.file_retirement.retire([file]);
+            return error;
+        }
+    };
+    // The selected slot is vacant; this cannot retire a description,
+    // including when the caller holds signal_transaction.
+    let retired = state.insert_file(fd, file);
+    state.file_retirement.retire(retired);
+    state.fd_object_inodes.insert(fd, object_inode);
+    if close_on_exec {
+        state.cloexec_fds.insert(fd);
+    } else {
+        state.cloexec_fds.remove(&fd);
+    }
+    set_output_alias(state, fd, output_alias);
+    i64::from(fd)
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 7002..7169; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+fn duplicate_fd_at_or_above(
+    state: &mut LoadedStaticElf,
+    old_host_fd: RawFd,
+    raw_minimum: u64,
+    close_on_exec: bool,
+    source: DuplicateFdSource,
+) -> i64 {
+    let _retirement = state.file_retirement.hold();
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+    let minimum = raw_minimum as libc::c_int;
+    if !(0..GUEST_NOFILE_LIMIT).contains(&minimum) {
+        return negative_errno(libc::EINVAL);
+    }
+    let Some(fd) = (minimum..GUEST_NOFILE_LIMIT)
+        .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
+    else {
+        return negative_errno(libc::EMFILE);
+    };
+
+    // SAFETY: old_host_fd is live. F_DUPFD_CLOEXEC returns an owned
+    // descriptor; guest CLOEXEC is modeled independently in cloexec_fds.
+    let duplicated = unsafe { libc::fcntl(old_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: fcntl returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    let retired = state.insert_file(fd, file);
+    state.fd_object_inodes.insert(fd, source.object_inode);
+    if source.is_random {
+        state.random_device_fds.insert(fd);
+    }
+    replace_signalfd_mask(state, fd, source.signalfd_mask);
+    if close_on_exec {
+        state.cloexec_fds.insert(fd);
+    } else {
+        state.cloexec_fds.remove(&fd);
+    }
+    if (0..=2).contains(&fd) {
+        state.closed_standard_fds.insert(fd);
+    } else {
+        state.closed_standard_fds.remove(&fd);
+    }
+    set_output_alias(state, fd, source.output_alias);
+    if let Some(inode) = source.proc_inode {
+        state.proc_files.insert(fd, inode);
+    }
+    if let Some(description) = source.fdinfo {
+        state.fdinfo_files.insert(fd, description);
+    }
+    drop(_transaction);
+    state.file_retirement.retire(retired);
+    i64::from(fd)
+}
+
+// TODO-HUMAN-REVIEW(PR-136): Review dup object-identity propagation.
+fn duplicate_fd(
+    state: &mut LoadedStaticElf,
+    raw_old_fd: u64,
+    raw_new_fd: Option<u64>,
+    raw_flags: u64,
+    is_dup3: bool,
+) -> i64 {
+    let _retirement = state.file_retirement.hold();
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+    let flags = raw_flags as libc::c_int;
+    if !is_dup3 && flags != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    if is_dup3 && flags & !libc::O_CLOEXEC != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let old_fd = raw_old_fd as libc::c_int;
+    let source_alias = output_alias(state, old_fd);
+    let source_proc_inode = state.proc_files.get(&old_fd).copied();
+    let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
+    let source_is_random = state.random_device_fds.contains(&old_fd);
+    let source_signalfd_mask = signalfd_mask(state, old_fd);
+    let Some(old_host_fd) = host_fd(state, old_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let source_object_inode = guest_fd_object_identity(state, old_fd);
+    let close_on_exec = is_dup3 && flags & libc::O_CLOEXEC != 0;
+
+    let new_fd = match raw_new_fd {
+        Some(raw_new_fd) => {
+            let new_fd = raw_new_fd as libc::c_int;
+            if !(0..GUEST_NOFILE_LIMIT).contains(&new_fd) {

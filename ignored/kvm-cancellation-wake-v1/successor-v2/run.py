@@ -1,0 +1,100 @@
+import hashlib,json,os,pathlib,re,selectors,shutil,subprocess,sys,time
+root=pathlib.Path('/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918')
+owned=root/'ignored/kvm-cancellation-wake-v1/successor-v2'
+contract=json.loads((owned/'CALLER-CONTRACT.json').read_text())
+def digest(path):
+ with open(path,'rb') as stream: return hashlib.file_digest(stream,'sha256').hexdigest()
+def check_sources():
+ for name,record in contract['source'].items():
+  path=root/name
+  assert path.stat().st_size==record['bytes'] and digest(path)==record['sha256'], name
+ assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()==contract['base']
+ assert subprocess.check_output(['git','branch','--show-current'],cwd=root,text=True).strip()==contract['branch']
+check_sources()
+out=owned/sys.argv[1]
+out.mkdir()
+toolchain=pathlib.Path('/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin')
+phase=sys.argv[1]
+expected=[]
+if phase=='compile':
+ argv=[str(toolchain/'cargo'),'test','--offline','-p','reverie-kvm','--lib','--no-run','--message-format=json','-j','2','--locked','--features','native-test-support']
+ wall=600
+elif phase=='format-check':
+ argv=[str(toolchain/'rustfmt'),'--check','--edition','2024','--config','skip_children=true','reverie-kvm/src/vm.rs']
+ wall=30
+elif phase in ['inventory',*contract['tests']]:
+ binding=json.loads((owned/'retained/BINDING.json').read_text())
+ executable=owned/'retained/reverie-kvm-tests'
+ assert binding['source']==contract['source']
+ assert executable.stat().st_size==binding['bytes'] and digest(executable)==binding['sha256']
+ if phase=='inventory':
+  argv=[str(executable),'--list']
+ else:
+  control=contract['tests'][phase]
+  argv=[str(executable),*control['arguments']]
+  expected=control['declarations']
+ wall=60
+else:
+ raise SystemExit('unknown phase')
+
+env={'HOME':'/home/newton','PATH':str(toolchain)+':/usr/bin:/bin','CARGO_HOME':'/home/newton/.cargo','CARGO_TARGET_DIR':str(root/'target/parity-composition-v1-cold-v1'),'RUSTC':str(toolchain/'rustc'),'RUSTDOC':str(toolchain/'rustdoc'),'CARGO_BUILD_JOBS':'2','CARGO_NET_OFFLINE':'true','CARGO_TERM_COLOR':'never','LANG':'C','LC_ALL':'C','TZ':'UTC','RUSTUP_TOOLCHAIN':'nightly-2026-07-29','RUSTUP_AUTO_INSTALL':'0'}
+unit='kvm-cancel-wake-'+phase+'-'+str(os.getpid())
+command=['/usr/bin/systemd-run','--user','--wait','--pipe','--collect','--unit',unit,'--property=CPUQuota=200%','--property=MemoryMax=12G','--property=MemorySwapMax=0','--property=LimitCORE=0','--property=RuntimeMaxSec='+str(wall),'--property=TimeoutStopSec=10','--property=KillMode=control-group','--working-directory='+str(root),'/usr/bin/env','-i']+[k+'='+v for k,v in env.items()]+argv
+source=contract['source']
+(out/'command.json').write_text(json.dumps({'argv':argv,'environment':env,'service':command,'source':source,'wall_seconds':wall,'stream_cap_bytes':16777216,'base':contract['base'],'expected_declarations':expected},indent=2)+'\n')
+started=time.monotonic(); p=subprocess.Popen(command,cwd=root,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+sel=selectors.DefaultSelector(); streams={}; counts={}
+for name,f in [('stdout',p.stdout),('stderr',p.stderr)]:
+ sel.register(f,selectors.EVENT_READ,name); streams[name]=(out/name).open('xb'); counts[name]=0
+refusal=None
+while sel.get_map():
+ for key,_ in sel.select(1):
+  b=os.read(key.fileobj.fileno(),65536)
+  if not b: sel.unregister(key.fileobj); continue
+  name=key.data; counts[name]+=len(b)
+  if counts[name] > 16777216 and refusal is None:
+   refusal='output limit'; subprocess.run(['/usr/bin/systemctl','--user','stop',unit],check=False)
+  if counts[name] <= 16777216: streams[name].write(b)
+ if time.monotonic()-started>wall+30 and refusal is None:
+  refusal='outer deadline'; subprocess.run(['/usr/bin/systemctl','--user','stop',unit],check=False)
+for f in streams.values(): f.close()
+rc=p.wait(); result={'raw_status':rc,'elapsed_seconds':time.monotonic()-started,'stream_bytes':counts,'refusal':refusal}
+(out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+check_sources()
+if phase in ['inventory',*contract['tests']]:
+ assert executable.stat().st_size==binding['bytes'] and digest(executable)==binding['sha256']
+result['source_unchanged']=True
+(out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+if rc==0 and refusal is None:
+ if phase=='compile':
+  messages=[json.loads(line) for line in (out/'stdout').read_text().splitlines() if line.startswith('{')]
+  assert any(row.get('reason')=='build-finished' and row.get('success') is True for row in messages)
+  artifacts=[row for row in messages if row.get('reason')=='compiler-artifact' and row.get('target',{}).get('name')=='reverie_kvm' and row.get('profile',{}).get('test') is True and row.get('executable')]
+  assert len(artifacts)==1, artifacts
+  artifact=artifacts[0]
+  origin=pathlib.Path(artifact['executable'])
+  retained=owned/'retained'
+  retained.mkdir()
+  executable=retained/'reverie-kvm-tests'
+  shutil.copyfile(origin,executable)
+  executable.chmod(0o500)
+  assert digest(origin)==digest(executable)
+  binding={'path':str(executable),'origin':str(origin),'sha256':digest(executable),'bytes':executable.stat().st_size,'source':source,'compiler_artifact':artifact,'compile_result':str(out/'result.json')}
+  (retained/'BINDING.json').write_text(json.dumps(binding,indent=2)+'\n')
+ elif phase=='inventory':
+  names=[line.removesuffix(': test') for line in (out/'stdout').read_text().splitlines() if line.endswith(': test')]
+  wanted=[name for control in contract['tests'].values() for name in control['declarations']]
+  assert all(names.count(name)==1 for name in wanted), wanted
+  prefix='vm::tests::cancellation_wake_tests::'
+  assert sorted(name for name in names if name.startswith(prefix))==sorted(contract['tests']['new-tests']['declarations'])
+  (out/'SELECTION.json').write_text(json.dumps({'discovered':len(names),'selected':wanted,'executed':False},indent=2)+'\n')
+ elif expected:
+  stdout=(out/'stdout').read_text()
+  successes=re.findall(r'^test (\S+) \.{3} ok$',stdout,re.M)
+  assert sorted(successes)==sorted(expected), successes
+  summary=f'test result: ok. {len(expected)} passed; 0 failed; 0 ignored; 0 measured;'
+  assert summary in stdout, stdout
+  assert not re.search(r'^test \S+ \.{3} (FAILED|ignored)',stdout,re.M)
+  (out/'ACCEPTANCE.json').write_text(json.dumps({'expected':expected,'succeeded':successes,'raw_status':rc,'ignored':0,'failed':0,'source_unchanged':True},indent=2)+'\n')
+print(json.dumps(result)); print((out/'stderr').read_text()[-10000:])
+sys.exit(rc if rc else (1 if refusal else 0))

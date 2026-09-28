@@ -1,0 +1,160 @@
+                pending_child_starts
+                    .lock()
+                    .expect("KVM child-start lock poisoned")
+                    .push(PendingChildStart::fork_process(
+                        raw_child_pid,
+                        start_gate.clone(),
+                    ));
+                executor.register_child_process_with_gate(
+                    raw_child_pid,
+                    start_gate,
+                    completion,
+                    handle,
+                );
+                configure_process_syscall_return(
+                    &self.memory,
+                    &self.vcpu,
+                    self.syscall_frame_address,
+                    i64::from(raw_child_pid),
+                    None,
+                )
+                .map(|()| ProcessActionOutcome::returned(i64::from(raw_child_pid)))
+            }
+            // `ThreadOwnership::Host`: CLONE_THREAD workers run uninstrumented on
+            // the direct backend personality with host-backed synchronization,
+            // exactly as `run_process_action`'s Thread branch does. Execution and
+            // `futex` ownership are both Host (a single `ThreadOwnership`), so the
+            // joiner's real host `FUTEX_WAIT` and the exiting worker's real host
+            // `CLONE_CHILD_CLEARTID` wake meet on the same futex word — no
+            // deadlock. (The split-brain that deadlocks a join — a Tool-executed
+            // worker whose `futex` is host-owned, so its logical CLEARTID wake
+            // never reaches the host waiter — is unrepresentable now that one
+            // enum drives both decisions.)
+            ProcessAction::Thread { .. } if self.thread_ownership.executes_on_host() => {
+                self.run_process_action_inner(executor, action, park_syscall_return, fault)
+            }
+            // `ThreadOwnership::Tool`: a CLONE_THREAD worker runs its own vCPU on
+            // a fresh OS thread but shares the guest address space, file table,
+            // and process Tool identity with its creator. It is driven through
+            // the same Tool loop as the process leader so Detcore sees its
+            // syscalls, shares its fd model, and schedules it; `futex` routes to
+            // Detcore (runtime.rs) so a join's logical `FUTEX_WAIT` is woken by
+            // the worker's logical `CLEARTID`. This mirrors the physical setup in
+            // `run_process_action`'s Thread branch, but spawns the Tool loop
+            // instead of the direct backend personality.
+            ProcessAction::Thread {
+                child_tid,
+                child_stack,
+                parent_tid,
+                child_tid_address,
+                clear_child_tid,
+                tls,
+            } => {
+                let parent_registers = self.vcpu.get_regs()?;
+                let parent_xsave = self.vcpu.get_xsave()?;
+                let (parent_fs, parent_gs) = executor.segment_bases();
+                let mut parent_syscall_frame = vec![0; FRAME_SIZE];
+                self.memory
+                    .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
+
+                if park_syscall_return {
+                    set_syscall_return_park(
+                        &mut self.memory,
+                        self.hypercall_instruction,
+                        self.syscall_trampoline_address,
+                        self.syscall_frame_address,
+                        true,
+                    )?;
+                    let vcpu_exit = self.vcpu.run()?;
+                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+                    let parked = match vcpu_exit {
+                        VcpuExit::Hlt => Ok(()),
+                        exit => Err(Error::UnexpectedVcpuExit(format!(
+                            "parent did not park at thread clone: {exit:?}"
+                        ))),
+                    };
+                    set_syscall_return_park(
+                        &mut self.memory,
+                        self.hypercall_instruction,
+                        self.syscall_trampoline_address,
+                        self.syscall_frame_address,
+                        false,
+                    )?;
+                    parked?;
+                }
+                let child_registers = self.vcpu.get_regs()?;
+
+                write_tid_best_effort(&mut self.memory, parent_tid, child_tid);
+                write_tid_best_effort(&mut self.memory, child_tid_address, child_tid);
+                let child_fs = tls.unwrap_or(parent_fs);
+                let mut child_executor = executor.thread_child(child_tid)?;
+                child_executor.set_thread_context(child_tid, child_fs, parent_gs);
+                child_executor.set_clear_child_tid(clear_child_tid);
+                let child_stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+                let mut child = Self::from_thread_state(
+                    self.memory.clone(),
+                    child_registers,
+                    parent_xsave,
+                    child_stdin,
+                    self.cpuid_policy,
+                    child_tid,
+                    self.thread_group.clone(),
+                )?;
+                // Thread children inherit the parent's thread ownership so
+                // execution and futex classification stay consistent.
+                self.debug_assert_thread_ownership_consistent();
+                child.thread_ownership = self.thread_ownership;
+                child.tool_failure = self.tool_failure.clone();
+                child.exit_collector = self.exit_collector.clone();
+                child
+                    .memory
+                    .write_raw(child.syscall_frame_address, &parent_syscall_frame)?;
+                set_user_segment_base(&child.vcpu, SegmentBase::Fs, child_fs)?;
+                set_user_segment_base(&child.vcpu, SegmentBase::Gs, parent_gs)?;
+                configure_process_syscall_return(
+                    &child.memory,
+                    &child.vcpu,
+                    child.syscall_frame_address,
+                    0,
+                    Some(child_stack),
+                )?;
+
+                if let Some(fault) = fault {
+                    fault.configure_child(&mut child, Some(child_stack))?;
+                }
+
+                // CLONE_THREAD shares the process (thread-group) identity, so the
+                // worker shares its creator's process Tool state, while the
+                // thread state is keyed on the new child tid. This
+                // mirrors reverie-ptrace's `cloned()`, where the child shares the
+                // process Tool identity and receives fresh per-thread state
+                // linked to the parent thread.
+                let tgid = context.pid;
+                let child_tid_pid = Pid::from_raw(child_tid);
+                let global_state = context.global_state.ok_or_else(|| {
+                    Error::UnexpectedVcpuExit(
+                        "KVM CLONE_THREAD worker requires shared global state".to_owned(),
+                    )
+                })?;
+                let config = context.config;
+                let subscriptions = context.subscriptions;
+
+                self.vcpu.set_regs(&parent_registers)?;
+                configure_process_syscall_return(
+                    &self.memory,
+                    &self.vcpu,
+                    self.syscall_frame_address,
+                    i64::from(child_tid),
+                    None,
+                )?;
+
+                let child_tool = context.process_state.clone();
+                let child_thread_state = child_tool
+                    .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
+                if let Some(failure) = &child.tool_failure {
+                    child.tool_failure = Some(failure.for_thread(child_tid_pid));
+                }
+                let pending_child_starts = context.pending_child_starts;
+                let (start_sender, start_receiver) = std::sync::mpsc::channel();
+                let start_gate = ChildStartGate::new(start_sender);
+                let handle = crate::failure::spawn_owned(

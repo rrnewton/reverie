@@ -1,0 +1,11 @@
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/bind_dependencies.py",
+        "bytes": 2386,
+        "mode": 420,
+        "sha256": "e9ec7d3b1abe2b9b5100dd3af05d1b2d95eadfa7e25694b3612b0cccc4c06e85"
+      },
+      "identical": true
+    }
+  ],
+  "all_eleven_identical": true,
+  "supervision_guards_parser_and_lease_algorithm_unchanged": true
+}
