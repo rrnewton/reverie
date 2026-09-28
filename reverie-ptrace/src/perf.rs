@@ -875,18 +875,10 @@ fn try_close_mmap(
 /// event with a different ID.
 #[cfg(test)]
 pub(crate) fn fd_no_longer_names_event(fd: libc::c_int, id: u64) -> bool {
-    match std::fs::read_link(format!("/proc/self/fd/{fd}")) {
-        Err(error) => return error.raw_os_error() == Some(libc::ENOENT),
-        Ok(target) if target.as_os_str() != "anon_inode:[perf_event]" => return true,
-        Ok(_) => {}
-    }
-    let mut current = 0u64;
-    // SAFETY: the pointer names a live, writable u64 for the ioctl's duration.
-    if unsafe { ioctls::ID(fd, &mut current as *mut u64) } == 0 {
-        return current != id;
-    }
-    // Closed or replaced by a non-perf file between the two probes.
-    matches!(Errno::last(), Errno::EBADF | Errno::ENOTTY)
+    // REVIEW VARIANT: the base's descriptor-number closure proof.
+    let _ = id;
+    (unsafe { libc::fcntl(fd, libc::F_GETFD) }) == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
 }
 
 impl Drop for PerfCounter {
