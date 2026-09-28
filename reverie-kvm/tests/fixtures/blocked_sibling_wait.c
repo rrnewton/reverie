@@ -39,13 +39,40 @@ static void fail(void) {
   syscall(SYS_exit_group, 90);
   __builtin_unreachable();
 }
-static void require(int condition) { if (!condition) fail(); }
-static void send_bytes(int fd, const void *p, size_t n) {
-  require(write(fd, p, n) == (ssize_t)n);
+static void operation_failure(const char *operation, int line, int fd,
+                              long result, int error, size_t expected) {
+  char text[256];
+  int length = snprintf(text, sizeof(text),
+      "blocked sibling operation=%s line=%d fd=%d result=%ld errno=%d expected=%zu\n",
+      operation, line, fd, result, error, expected);
+  if (length > 0 && (size_t)length < sizeof(text))
+    (void)write(2, text, (size_t)length);
+  fail();
 }
-static void receive_bytes(int fd, void *p, size_t n) {
-  require(read(fd, p, n) == (ssize_t)n);
+#define require(condition) do { \
+  int condition_ok = (condition); \
+  int condition_errno = errno; \
+  if (!condition_ok) \
+    operation_failure(#condition, __LINE__, -1, condition_ok, condition_errno, 1); \
+} while (0)
+static void send_bytes_at(int fd, const void *p, size_t n, int line) {
+  errno = 0;
+  ssize_t result = write(fd, p, n);
+  int error = errno;
+  if (result != (ssize_t)n)
+    operation_failure("write", line, fd, result, error, n);
+  require(result == (ssize_t)n);
 }
+static void receive_bytes_at(int fd, void *p, size_t n, int line) {
+  errno = 0;
+  ssize_t result = read(fd, p, n);
+  int error = errno;
+  if (result != (ssize_t)n)
+    operation_failure("read", line, fd, result, error, n);
+  require(result == (ssize_t)n);
+}
+#define send_bytes(fd, p, n) send_bytes_at((fd), (p), (n), __LINE__)
+#define receive_bytes(fd, p, n) receive_bytes_at((fd), (p), (n), __LINE__)
 static void say(const char *p, size_t n) { send_bytes(1, p, n); }
 
 static void no_child(pid_t pid) {
@@ -126,7 +153,11 @@ static void creator(void) {
      * sibling receives our PID while the creator is still inside fork. */
     child = getpid();
     send_bytes(c.announced[1], &child, sizeof(child));
+    errno = 0;
     int gate = open("child-gate", O_RDONLY | O_CLOEXEC);
+    int gate_errno = errno;
+    if (gate < 0)
+      operation_failure("open child-gate", __LINE__, gate, gate, gate_errno, 0);
     require(gate >= 0);
     char release = 0;
     receive_bytes(gate, &release, 1);

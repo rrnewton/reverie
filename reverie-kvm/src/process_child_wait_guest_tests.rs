@@ -612,6 +612,10 @@ mod blocking_wait_guest_tests {
                     child,
                     ready: _ready_owner,
                 } = gates;
+                // Keep the FIFO instance and writer alive until the backend
+                // has physically joined its independent child. Parent wait
+                // registration does not prove that the child opened this FIFO.
+                let child_gate_owner = child.try_clone().unwrap();
                 let observer =
                     std::thread::spawn(move || observe(registry, command, child, cancel));
                 let result = if tool {
@@ -635,6 +639,7 @@ mod blocking_wait_guest_tests {
                         .map(|(code, stdout, stderr)| (None, code, stdout, stderr))
                 };
                 let observation = observer.join().unwrap();
+                drop(child_gate_owner);
                 // Preserve both facts before either assertion can hide the other.
                 eprintln!("{arguments:?}: observer={observation:?}; backend={result:?}");
                 assert_eq!(observation, Ok(()), "{arguments:?}");
