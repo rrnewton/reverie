@@ -1,6 +1,6 @@
 //! Local association controls using actual ptrace callbacks and guest bytes.
 //! This bridge is not Hermit scheduler, native-file, or copy-exclusion proof.
-use reverie::syscalls::AddrSliceMut;
+use reverie::syscalls::RemoteIoVec;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -108,9 +108,8 @@ async fn observe_and_write<G: Guest<BridgeTool>>(
     let Some(read) = write else { return Ok(0) };
     assert_eq!(read.len(), 8);
     let mut memory = guest.memory();
-    let mut destination = unsafe { AddrSliceMut::from_raw_parts(read.buf().unwrap(), 8) };
     let local = [std::io::IoSlice::new(b"borrowed")];
-    let mut remote = unsafe { [destination.as_ioslice_mut()] };
+    let remote = [RemoteIoVec::new(read.buf().unwrap(), 8).unwrap()];
     if read.fd() == -902 {
         // Both real native boundaries reject a different target, with no copy.
         assert_eq!(
@@ -118,7 +117,7 @@ async fn observe_and_write<G: Guest<BridgeTool>>(
             Err(Errno::ESRCH)
         );
         assert_eq!(
-            memory.write_native_user_vectored(0, &local, &mut remote),
+            memory.write_native_user_vectored(0, &local, &remote),
             Err(Errno::ESRCH)
         );
         global.refusals.fetch_add(1, Ordering::SeqCst);
@@ -126,7 +125,7 @@ async fn observe_and_write<G: Guest<BridgeTool>>(
     }
     memory.validate_native_user_key0_write_access(tid.as_raw())?;
     assert_eq!(
-        memory.write_native_user_vectored(tid.as_raw(), &local, &mut remote),
+        memory.write_native_user_vectored(tid.as_raw(), &local, &remote),
         Ok(8)
     );
     global.writes.fetch_add(1, Ordering::SeqCst);

@@ -177,20 +177,33 @@ impl MemoryAccess for Stopped {
         &mut self,
         expected_tid: i32,
         local: &[io::IoSlice],
-        remote: &mut [io::IoSliceMut],
+        remote: &[reverie_memory::RemoteIoVec],
     ) -> Result<usize, Errno> {
         if expected_tid <= 0 || self.0.as_raw() != expected_tid {
             return Err(Errno::ESRCH);
         }
+        if remote.len() > 2 {
+            return Err(Errno::E2BIG);
+        }
+        let mut raw_remote = [libc::iovec {
+            iov_base: std::ptr::null_mut(),
+            iov_len: 0,
+        }; 2];
+        for (raw, span) in raw_remote.iter_mut().zip(remote) {
+            raw.iov_base = span.address() as *mut libc::c_void;
+            raw.iov_len = span.length();
+        }
         // Exactly one permission-respecting syscall. In particular an eight
         // byte operand never enters write()/PTRACE_POKEDATA, and EFAULT remains
-        // distinct from a native successful zero-byte result.
+        // distinct from a native successful zero-byte result. Remote addresses
+        // remain numeric kernel operands; no Rust reference into this process
+        // is formed for another process's mapping.
         Errno::result(unsafe {
             libc::process_vm_writev(
                 self.0.as_raw(),
                 local.as_ptr() as *const libc::iovec,
                 local.len() as libc::c_ulong,
-                remote.as_ptr() as *const libc::iovec,
+                raw_remote.as_ptr(),
                 remote.len() as libc::c_ulong,
                 0,
             )
@@ -388,9 +401,14 @@ mod test {
     use nix::unistd::fork;
     use quickcheck::QuickCheck;
     use quickcheck_macros::quickcheck;
+    use reverie_memory::RemoteIoVec;
     use reverie_process::Pid;
 
     use super::*;
+
+    fn remote(address: usize, length: usize) -> RemoteIoVec {
+        RemoteIoVec::new(AddrMut::from_raw(address).unwrap(), length).unwrap()
+    }
 
     // Helper function for spawning a child process in a stopped state. The
     // value `T` will be in the child's address space allowing us to read or
@@ -856,14 +874,8 @@ mod test {
                     io::IoSlice::new(&payload[..8]),
                     io::IoSlice::new(&payload[8..]),
                 ];
-                let mut first = unsafe {
-                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(address + 8).unwrap(), 7)
-                };
-                let mut second = unsafe {
-                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(address + 15).unwrap(), 9)
-                };
-                let mut remote = unsafe { [first.as_ioslice_mut(), second.as_ioslice_mut()] };
-                let result = memory.write_native_user_vectored(child.as_raw(), &local, &mut remote);
+                let remote = [remote(address + 8, 7), remote(address + 15, 9)];
+                let result = memory.write_native_user_vectored(child.as_raw(), &local, &remote);
                 let mut expected = [0xa5; 32];
                 expected[8..24].copy_from_slice(&payload);
                 result == Ok(16) && native_write_readback(&memory, address) == Some(expected)
@@ -892,13 +904,10 @@ mod test {
                 let source = Aligned([0, 1, 2, 3, 4, 5, 6, 7, 8]);
                 let payload = &source.0[1..];
                 let local = [io::IoSlice::new(payload)];
-                let mut target = unsafe {
-                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(address + 9).unwrap(), 8)
-                };
                 let result = memory.write_native_user_vectored(
                     child.as_raw(),
                     &local,
-                    &mut [unsafe { target.as_ioslice_mut() }],
+                    &[remote(address + 9, 8)],
                 );
                 let mut expected = [0xa5; 32];
                 expected[9..17].copy_from_slice(payload);
@@ -929,16 +938,10 @@ mod test {
                         let mut all_refused =
                             first_child != second_child && address == same_address;
                         for wrong in [second_child.as_raw(), 0, -1] {
-                            let mut target = unsafe {
-                                AddrSliceMut::from_raw_parts(
-                                    AddrMut::from_raw(address + 8).unwrap(),
-                                    8,
-                                )
-                            };
                             all_refused &= first.write_native_user_vectored(
                                 wrong,
                                 &local,
-                                &mut [unsafe { target.as_ioslice_mut() }],
+                                &[remote(address + 8, 8)],
                             ) == Err(Errno::ESRCH);
                         }
                         all_refused
@@ -966,13 +969,10 @@ mod test {
                 move |child, address| {
                     let mut memory = Stopped::new_unchecked(child);
                     let local = [io::IoSlice::new(b"newbytes")];
-                    let mut target = unsafe {
-                        AddrSliceMut::from_raw_parts(AddrMut::from_raw(address + 8).unwrap(), 8)
-                    };
                     let result = memory.write_native_user_vectored(
                         child.as_raw(),
                         &local,
-                        &mut [unsafe { target.as_ioslice_mut() }],
+                        &[remote(address + 8, 8)],
                     );
                     result == Err(Errno::EFAULT)
                         && native_write_readback(&memory, address) == Some([0xa5; 32])
@@ -1003,26 +1003,18 @@ mod test {
                 let mut memory = Stopped::new_unchecked(child);
                 let payload = *b"12345678";
                 let local = [io::IoSlice::new(&payload)];
-                let mut prefix =
-                    unsafe { AddrSliceMut::from_raw_parts(AddrMut::from_raw(address).unwrap(), 4) };
-                let mut tail = unsafe {
-                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(address + 4).unwrap(), 4)
-                };
-                let mut remote = unsafe { [prefix.as_ioslice_mut(), tail.as_ioslice_mut()] };
-                let first = memory.write_native_user_vectored(child.as_raw(), &local, &mut remote);
+                let remote = [remote(address, 4), remote(address + 4, 4)];
+                let first = memory.write_native_user_vectored(child.as_raw(), &local, &remote);
                 let mut expected = [0xa5; 32];
                 expected[8..12].copy_from_slice(&payload[..4]);
                 let after_prefix = native_write_readback(&memory, address - 8);
                 // A separate tail-only syscall must remain an actual EFAULT,
                 // not an automatic retry or a successful zero from the API.
                 let local_tail = [io::IoSlice::new(&payload[4..])];
-                let mut tail = unsafe {
-                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(address + 4).unwrap(), 4)
-                };
                 let second = memory.write_native_user_vectored(
                     child.as_raw(),
                     &local_tail,
-                    &mut [unsafe { tail.as_ioslice_mut() }],
+                    &[remote(address + 4, 4)],
                 );
                 first == Ok(4)
                     && after_prefix == Some(expected)
@@ -1048,20 +1040,17 @@ mod test {
             mapping as usize,
             move |child, address| {
                 let mut memory = Stopped::new_unchecked(child);
-                let mut target = unsafe {
-                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(address + 8).unwrap(), 8)
-                };
                 // A genuinely empty local vector succeeds without touching the
                 // protected target. The identical nonempty target must fault.
                 let zero = memory.write_native_user_vectored(
                     child.as_raw(),
                     &[],
-                    &mut [unsafe { target.as_ioslice_mut() }],
+                    &[remote(address + 8, 8)],
                 );
                 let error = memory.write_native_user_vectored(
                     child.as_raw(),
                     &[io::IoSlice::new(b"newbytes")],
-                    &mut [unsafe { target.as_ioslice_mut() }],
+                    &[remote(address + 8, 8)],
                 );
                 zero == Ok(0)
                     && error == Err(Errno::EFAULT)
@@ -1264,16 +1253,13 @@ mod test {
                         memory.validate_native_user_key0_write_access(wrong) == Err(Errno::ESRCH)
                     });
                 let access = memory.validate_native_user_key0_write_access(child.as_raw());
-                let mut target = unsafe {
-                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(address + 8).unwrap(), 8)
-                };
                 // Same memory instance and stopped task; no await or resume
                 // may separate this read-only check from its guarded write.
                 let result = access.and_then(|()| {
                     memory.write_native_user_vectored(
                         child.as_raw(),
                         &[io::IoSlice::new(b"newbytes")],
-                        &mut [unsafe { target.as_ioslice_mut() }],
+                        &[remote(address + 8, 8)],
                     )
                 });
                 let mut expected = [0xa5; 32];
@@ -1305,20 +1291,11 @@ mod test {
         let tid = unsafe { libc::syscall(libc::SYS_gettid) } as i32;
         let mut memory = Stopped::new_unchecked(Pid::from_raw(tid));
         let mut canary = [0xa5; 32];
-        let mut target = unsafe {
-            AddrSliceMut::from_raw_parts(
-                AddrMut::from_raw(canary.as_mut_ptr() as usize + 8).unwrap(),
-                8,
-            )
-        };
+        let remote = [remote(canary.as_mut_ptr() as usize + 8, 8)];
         let result = memory
             .validate_native_user_key0_write_access(tid)
             .and_then(|()| {
-                memory.write_native_user_vectored(
-                    tid,
-                    &[io::IoSlice::new(b"newbytes")],
-                    &mut [unsafe { target.as_ioslice_mut() }],
-                )
+                memory.write_native_user_vectored(tid, &[io::IoSlice::new(b"newbytes")], &remote)
             });
         assert!(result.is_err());
         assert_eq!(canary, [0xa5; 32]);
