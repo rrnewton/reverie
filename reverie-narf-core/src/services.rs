@@ -83,8 +83,12 @@ pub trait KernelServices: Send + Sync {
     /// Memory accessor for the current task's address space.
     fn memory(&self) -> Self::Memory;
 
-    /// Snapshot of the current task's user registers at syscall entry, with
-    /// `orig_rax` holding the wire number.
+    /// Snapshot of the current task's user registers. In a syscall callback
+    /// they are the registers at syscall entry, with `orig_rax` holding the
+    /// wire number. In an RDTSC callback they are the registers at the trap,
+    /// with `rip` at the instruction and `orig_rax` all ones, as for a task
+    /// outside a syscall. The guest's stack helper places Tool data below
+    /// `rsp`, past the red zone, so `rsp` must be the user stack pointer.
     fn regs(&self) -> libc::user_regs_struct;
 
     /// Run the intercepted original syscall. At most once per interceptor call.
@@ -126,21 +130,29 @@ pub trait KernelServices: Send + Sync {
 
     /// Whether the current task is ending: it was killed, or its process
     /// exited, during this callback, so it will not run user code again.
+    /// Once it answers `true` in a callback, it must keep answering `true`
+    /// until that callback returns.
     ///
     /// The core asks after a non-tail inject reports
-    /// [`NarfSyscallOutcome::ContextManaged`], and when an RDTSC callback
-    /// ends with the task context-managed. If the task is ending, the
+    /// [`NarfSyscallOutcome::ContextManaged`]. If the task is ending, the
     /// callback ends there: the kernel owns the task's context, and the core
     /// drops the Tool future. Otherwise the core treats the inject as parked,
-    /// which only a syscall callback survives, by keeping its future until
-    /// the guest's syscall is re-executed. A callback with no guest syscall
-    /// to re-execute, such as thread start or an RDTSC event, then fails
-    /// closed with [`NarfFatal::InjectParked`](crate::NarfFatal::InjectParked),
-    /// or, after a tail inject in an RDTSC event, with
-    /// [`NarfFatal::RdtscContextManaged`](crate::NarfFatal::RdtscContextManaged).
+    /// unless it ran `exit`, `exit_group`, `execve`, `execveat` or
+    /// `rt_sigreturn`, or it was the guest's own syscall, which the kernel
+    /// refused to run; those the core takes as the callback's terminal
+    /// transition instead. Only a syscall callback survives a parked inject, by keeping
+    /// its future until the guest's syscall is re-executed. A callback with
+    /// no guest syscall to re-execute, such as thread start or an RDTSC
+    /// event, fails closed with
+    /// [`NarfFatal::InjectParked`](crate::NarfFatal::InjectParked).
     ///
-    /// The default answers `false`, so every such inject is treated as
-    /// parked.
+    /// The core also asks at the end of every RDTSC callback whose task was
+    /// not killed during a wait. For a task that is ending, a callback that
+    /// ends without a value returns `RdtscOutcome::ContextManaged`;
+    /// otherwise it fails closed (see `NarfToolHost::handle_rdtsc`).
+    ///
+    /// The default answers `false`. A kernel that delivers RDTSC events must
+    /// answer in its RDTSC callbacks (see `NarfToolHost::new_delivering_rdtsc`).
     fn killed(&self) -> bool {
         false
     }
