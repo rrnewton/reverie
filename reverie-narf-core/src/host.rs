@@ -25,6 +25,10 @@ use reverie::ExitStatus;
 use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Pid;
+#[cfg(target_arch = "x86_64")]
+use reverie::Rdtsc;
+#[cfg(target_arch = "x86_64")]
+use reverie::RdtscResult;
 use reverie::ThreadOwnership;
 use reverie::Tool;
 use reverie::syscalls::Errno;
@@ -73,9 +77,9 @@ pub enum NarfFatal {
     /// transition.
     TransitionAfterTerminal,
     /// A non-tail `inject` of this wire number parked the task where the
-    /// Tool's continuation cannot be kept: in a lifecycle callback, which has
-    /// no guest syscall for the kernel to re-execute, or in a Tool that
-    /// completed without awaiting the parked inject.
+    /// Tool's continuation cannot be kept: in a lifecycle or RDTSC callback,
+    /// which has no guest syscall for the kernel to re-execute, or in a Tool
+    /// that completed without awaiting the parked inject.
     InjectParked {
         /// Wire number of the injected request.
         number: u32,
@@ -109,8 +113,9 @@ pub enum NarfFatal {
     ExitDuringCallback(Pid),
     /// A process's Tool was still shared when its last thread exited.
     ProcessToolShared(Pid),
-    /// The Tool subscribed to CPUID or RDTSC events, which Narf cannot yet
-    /// deliver.
+    /// The Tool subscribed to CPUID events, which Narf cannot yet deliver,
+    /// or to RDTSC events on a host not built with
+    /// `NarfToolHost::new_delivering_rdtsc`.
     UnsupportedSubscription,
     /// The Tool asked for host-owned threads, which this backend lacks.
     UnsupportedThreadOwnership,
@@ -121,9 +126,17 @@ pub enum NarfFatal {
     DaemonizeRefused(Errno),
     /// `handle_post_exec` failed with this errno.
     PostExec(Errno),
-    /// A lifecycle callback tail-injected a syscall that returned; there is
-    /// no guest syscall to deliver the value to.
+    /// A lifecycle or RDTSC callback tail-injected a syscall that returned;
+    /// there is no guest syscall to deliver the value to.
     TailInjectOutsideSyscall,
+    /// `handle_rdtsc_event` failed with this errno. reverie-ptrace fails the
+    /// run on the same error.
+    Rdtsc(Errno),
+    /// An RDTSC callback's transition made the task context-managed although
+    /// the task was not ending ([`KernelServices::killed`]): a tail inject
+    /// parked it, or an inject ended its context. No guest syscall exists
+    /// for the kernel to re-execute, and the instruction has no value.
+    RdtscContextManaged,
 }
 
 impl fmt::Debug for NarfFatal {
@@ -164,6 +177,8 @@ impl fmt::Debug for NarfFatal {
             }
             Self::PostExec(errno) => f.debug_tuple("PostExec").field(errno).finish(),
             Self::TailInjectOutsideSyscall => f.write_str("TailInjectOutsideSyscall"),
+            Self::Rdtsc(errno) => f.debug_tuple("Rdtsc").field(errno).finish(),
+            Self::RdtscContextManaged => f.write_str("RdtscContextManaged"),
         }
     }
 }
@@ -185,6 +200,19 @@ pub enum LifecycleOutcome {
     /// Let the task continue.
     Continue,
     /// A tail-injected syscall exited or redirected the task.
+    ContextManaged,
+}
+
+/// What the kernel does with an RDTSC or RDTSCP the Tool handled.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RdtscOutcome {
+    /// Complete the instruction with these values: the counter in `EDX:EAX`
+    /// and, for RDTSCP, `aux` (zero if `None`) in `ECX`, as reverie-ptrace
+    /// completes it.
+    Complete(RdtscResult),
+    /// The task is ending ([`KernelServices::killed`]); the kernel owns its
+    /// context and must not complete the instruction.
     ContextManaged,
 }
 
@@ -435,8 +463,20 @@ where
     /// Fails closed if the Tool needs an event source Narf cannot deliver, or
     /// if `init_global_state` does not complete in one poll.
     pub fn new(config: Config<T>) -> Result<Self, NarfFatal> {
+        Self::build(config, false)
+    }
+
+    /// Like [`Self::new`], but also accepts a Tool that subscribes to RDTSC
+    /// events, for a kernel that delivers every RDTSC and RDTSCP a hosted
+    /// task executes to [`Self::handle_rdtsc`] while the Tool subscribes.
+    #[cfg(target_arch = "x86_64")]
+    pub fn new_delivering_rdtsc(config: Config<T>) -> Result<Self, NarfFatal> {
+        Self::build(config, true)
+    }
+
+    fn build(config: Config<T>, delivers_rdtsc: bool) -> Result<Self, NarfFatal> {
         let subscription = T::subscriptions(&config);
-        if subscription.has_cpuid() || subscription.has_rdtsc() {
+        if subscription.has_cpuid() || (subscription.has_rdtsc() && !delivers_rdtsc) {
             return Err(NarfFatal::UnsupportedSubscription);
         }
         if T::thread_ownership(&config) != ThreadOwnership::Tool {
@@ -873,6 +913,98 @@ where
         checkin?;
         Ok(outcome)
     }
+
+    /// Delivers an RDTSC or RDTSCP the current task executed to the Tool's
+    /// `handle_rdtsc_event`, for a host built with
+    /// [`new_delivering_rdtsc`](Self::new_delivering_rdtsc). The kernel calls
+    /// this from the instruction's trap, before the instruction completes.
+    ///
+    /// The Tool may use the guest as in a syscall callback: it may inject
+    /// syscalls and wait for other tasks, which the host handles as
+    /// [`Self::handle_syscall`] does, a task killed during a wait included.
+    /// The event is not a syscall, though, so nothing re-executes a syscall
+    /// for it. Unless the task is ending ([`KernelServices::killed`]), an
+    /// inject that parks the task fails closed with
+    /// [`NarfFatal::InjectParked`], and a tail inject with
+    /// [`NarfFatal::TailInjectOutsideSyscall`] (or
+    /// [`NarfFatal::RdtscContextManaged`] if it made the task
+    /// context-managed).
+    ///
+    /// A Tool future suspended in a parked inject of this task is first
+    /// interrupted, as a new syscall entry would interrupt it: the task has
+    /// left the parked syscall (for a signal handler, say). A parked tail
+    /// transition is forgotten: the kernel discards its record of the parked
+    /// syscall when it delivers the event, so the syscall's restart arrives
+    /// as a new entry.
+    #[cfg(target_arch = "x86_64")]
+    pub fn handle_rdtsc<K>(&self, kernel: &mut K, request: Rdtsc) -> Result<RdtscOutcome, NarfFatal>
+    where
+        K: KernelServices,
+        K::Memory: 'static,
+    {
+        let tid = kernel.tid();
+        let Checkout {
+            tool,
+            mut state,
+            parked,
+        } = self.tasks.with(|table| table.checkout(tid))?;
+        let result = self.dispatch_rdtsc(&tool, kernel, request, &mut state, parked);
+        let checkin = self.tasks.with(|table| table.checkin(tid, state, None));
+        let outcome = result?;
+        checkin?;
+        Ok(outcome)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn dispatch_rdtsc<M: MemoryAccess + Send + 'static>(
+        &self,
+        tool: &Arc<T>,
+        kernel: &mut dyn KernelServices<Memory = M>,
+        request: Rdtsc,
+        state: &mut T::ThreadState,
+        suspended: Option<Suspended>,
+    ) -> Result<RdtscOutcome, NarfFatal> {
+        match suspended {
+            // The task left its parked syscall: the Tool's inject returns
+            // ERESTARTSYS first, as at a new syscall entry.
+            Some(Suspended::Continuation(continuation)) => {
+                self.interrupt(tool, kernel, state, *continuation)?;
+            }
+            // The kernel discarded its park record, so the syscall's restart
+            // arrives as a new entry and nothing is re-issued.
+            Some(Suspended::Parked(_)) | None => {}
+        }
+        let mut frame = Frame {
+            host: self,
+            kernel,
+            tool,
+            thread_state: state,
+            call: CallState::new(None),
+        };
+        let slot = Arc::new(FrameSlot::default());
+        let guest = NarfGuest::<T, L, M>::new(slot.clone());
+        let tool = tool.clone();
+        let mut future: Pin<Box<dyn Future<Output = Result<RdtscResult, Errno>> + Send>> =
+            Box::pin(async move {
+                let mut guest = guest;
+                tool.handle_rdtsc_event(&mut guest, request).await
+            });
+        let (poll, killed_in_wait) = match poll_repolling(&mut frame, &slot, &mut future) {
+            Some(poll) => (poll, false),
+            None => {
+                // Recorded before the drop, as `killed` records it.
+                frame.call.terminal = Some(Terminal {
+                    outcome: NarfSyscallOutcome::ContextManaged,
+                    parked: None,
+                });
+                (Poll::Pending, true)
+            }
+        };
+        // Drop glue may still reach the guest, so the frame stays published.
+        slot.enter(&mut frame, move || drop(future));
+        let ending = killed_in_wait || frame.kernel.killed();
+        settle_rdtsc(frame.call, poll, ending)
+    }
 }
 
 impl<T, L> NarfToolHost<T, L>
@@ -956,11 +1088,11 @@ fn exit_result(poll: Poll<Result<(), Error>>) -> Result<(), NarfFatal> {
 /// outside [`FrameSlot::enter`], so no frame is published while the task is
 /// switched out. Returns the last poll, or `None` if the task was killed
 /// during a wait.
-fn poll_repolling<T: Tool, L, M: MemoryAccess + Send>(
+fn poll_repolling<T: Tool, L, M: MemoryAccess + Send, O>(
     frame: &mut Frame<'_, T, L, M>,
     slot: &FrameSlot,
-    future: &mut ToolFuture,
-) -> Option<Poll<Result<i64, Error>>> {
+    future: &mut Pin<Box<dyn Future<Output = O> + Send>>,
+) -> Option<Poll<O>> {
     loop {
         let poll = slot.enter(frame, || poll_once(future.as_mut()));
         let call = &frame.call;
@@ -1066,6 +1198,42 @@ fn settle(
                 parked.map(Suspended::Parked),
             ),
             None => (Err(NarfFatal::ToolSuspended), None),
+        },
+    }
+}
+
+/// Turns one polled RDTSC callback into the kernel's outcome.
+///
+/// As in [`settle`], a recorded fatal error wins over anything the Tool
+/// returned. A pending future is accepted only if its task is ending. No
+/// inject awaits here: with no guest syscall to re-execute, a parked inject
+/// fails as [`NarfFatal::InjectParked`] instead.
+#[cfg(target_arch = "x86_64")]
+fn settle_rdtsc(
+    mut call: CallState,
+    poll: Poll<Result<RdtscResult, Errno>>,
+    ending: bool,
+) -> Result<RdtscOutcome, NarfFatal> {
+    if let Some(fatal) = call.fatal.take() {
+        return Err(fatal);
+    }
+    match poll {
+        Poll::Ready(Ok(result)) => Ok(RdtscOutcome::Complete(result)),
+        Poll::Ready(Err(errno)) => Err(NarfFatal::Rdtsc(errno)),
+        Poll::Pending => match call.terminal.take() {
+            Some(Terminal {
+                outcome: NarfSyscallOutcome::Returned(_),
+                ..
+            }) => Err(NarfFatal::TailInjectOutsideSyscall),
+            Some(Terminal {
+                outcome: NarfSyscallOutcome::ContextManaged,
+                ..
+            }) if ending => Ok(RdtscOutcome::ContextManaged),
+            Some(Terminal {
+                outcome: NarfSyscallOutcome::ContextManaged,
+                ..
+            }) => Err(NarfFatal::RdtscContextManaged),
+            None => Err(NarfFatal::ToolSuspended),
         },
     }
 }

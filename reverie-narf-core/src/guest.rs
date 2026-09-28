@@ -309,13 +309,23 @@ where
     ) -> Injected {
         match outcome {
             NarfSyscallOutcome::Returned(value) => Injected::Returned(value),
+            // A task that is ending will not re-execute anything: the
+            // callback ends here, even where no guest syscall could have been
+            // re-executed.
+            NarfSyscallOutcome::ContextManaged if self.kernel.killed() => {
+                self.call.terminal = Some(Terminal {
+                    outcome,
+                    parked: None,
+                });
+                Injected::Stopped
+            }
             NarfSyscallOutcome::ContextManaged
                 if !matches!(redo, Redo::Nothing) && !ends_context(request.linux_number()) =>
             {
                 // The kernel parked the task and will re-execute the guest's
                 // syscall. The host keeps the Tool's future and delivers the
-                // value then. A lifecycle callback has no guest syscall to
-                // re-execute, so its continuation cannot run.
+                // value then. A lifecycle or RDTSC callback has no guest
+                // syscall to re-execute, so its continuation cannot run.
                 match self.parked(request, redo) {
                     Some(parked) => {
                         self.call.awaiting = Some(parked);

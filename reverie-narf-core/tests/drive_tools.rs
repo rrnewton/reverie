@@ -1545,3 +1545,439 @@ fn exit_hooks_get_the_thread_and_process_statuses() {
         ]
     );
 }
+
+// ----------------------------------------------------------------------------
+// RDTSC events
+
+#[cfg(target_arch = "x86_64")]
+mod rdtsc_events {
+    use core::cell::RefCell;
+
+    use reverie::Rdtsc;
+    use reverie::RdtscResult;
+    use reverie_narf_core::RdtscOutcome;
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    use super::*;
+
+    /// What `TscScript` does with each RDTSC before it answers from the
+    /// global counter.
+    #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+    enum Plan {
+        #[default]
+        Count,
+        /// Fail with `EPERM`.
+        Fail,
+        /// Wait once for other tasks.
+        YieldOnce,
+        /// Never finish, holding a guard whose drop glue reads the tid.
+        Wait,
+        /// Inject `kill(getpid(), SIGKILL)`.
+        InjectKill,
+        /// Inject a read of the empty pipe, which parks.
+        InjectRead,
+        /// Tail-inject `getpid`.
+        TailGetpid,
+        /// Tail-inject a read of the empty pipe, which parks.
+        TailRead,
+        /// Tail-inject `kill(getpid(), SIGKILL)`.
+        TailKill,
+    }
+
+    /// The run's counter; each request returns it and counts one.
+    #[derive(Default)]
+    struct Ticks(AtomicU64);
+
+    #[async_trait]
+    impl GlobalTool for Ticks {
+        type Request = ();
+        type Response = u64;
+        type Config = Plan;
+
+        async fn receive_rpc(&self, _from: Pid, _request: ()) -> u64 {
+            self.0.fetch_add(1, Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Seen {
+        Inject(Result<i64, i32>),
+        Rdtsc(Rdtsc),
+    }
+
+    std::thread_local! {
+        /// What `TscScript` saw on this test's thread, in order.
+        static SEEN: RefCell<Vec<Seen>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn seen() -> Vec<Seen> {
+        SEEN.with_borrow(|seen| seen.clone())
+    }
+
+    /// Reads the calling task's tid through the guest from its drop glue.
+    struct TidOnDropTsc<'g, G: Guest<TscScript>>(&'g mut G);
+
+    impl<G: Guest<TscScript>> Drop for TidOnDropTsc<'_, G> {
+        fn drop(&mut self) {
+            DROP_TID.set(self.0.tid().as_raw());
+        }
+    }
+
+    /// Answers RDTSC from the global counter, with `aux` 7 for RDTSCP, after
+    /// its configured plan. Injects each `read`, recording the result; every
+    /// other syscall is unsubscribed.
+    #[derive(Default)]
+    struct TscScript;
+
+    #[async_trait]
+    impl Tool for TscScript {
+        type GlobalState = Ticks;
+        type ThreadState = ();
+
+        fn subscriptions(_cfg: &Plan) -> Subscription {
+            let mut subscription = Subscription::none();
+            subscription.syscall(Sysno::read).rdtsc();
+            subscription
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            let result = guest.inject(syscall).await;
+            SEEN.with_borrow_mut(|seen| {
+                seen.push(Seen::Inject(result.map_err(|errno| errno.into_raw())))
+            });
+            Ok(result?)
+        }
+
+        async fn handle_rdtsc_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            request: Rdtsc,
+        ) -> Result<RdtscResult, Errno> {
+            SEEN.with_borrow_mut(|seen| seen.push(Seen::Rdtsc(request)));
+            let pid = guest.pid().as_raw() as usize;
+            let kill = Syscall::from_raw(
+                Sysno::kill,
+                SyscallArgs::new(pid, reverie::Signal::SIGKILL as usize, 0, 0, 0, 0),
+            );
+            let read = Syscall::from_raw(
+                Sysno::read,
+                SyscallArgs::new(PIPE_FD as usize, BASE + 0x100, 1, 0, 0, 0),
+            );
+            let getpid = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+            match *guest.config() {
+                Plan::Count => {}
+                Plan::Fail => return Err(Errno::EPERM),
+                Plan::YieldOnce => YieldOnce(false).await,
+                Plan::Wait => {
+                    let _guard = TidOnDropTsc(guest);
+                    let _ = Forever.await;
+                    unreachable!("Forever never finishes");
+                }
+                Plan::InjectKill => {
+                    guest.inject(kill).await?;
+                }
+                Plan::InjectRead => {
+                    guest.inject(read).await?;
+                }
+                Plan::TailGetpid => guest.tail_inject(getpid).await,
+                Plan::TailRead => guest.tail_inject(read).await,
+                Plan::TailKill => guest.tail_inject(kill).await,
+            }
+            let tsc = guest.send_rpc(()).await;
+            let aux = match request {
+                Rdtsc::Tsc => None,
+                Rdtsc::Tscp => Some(7),
+            };
+            Ok(RdtscResult { tsc, aux })
+        }
+    }
+
+    /// Answers RDTSC from the global counter; every syscall is unsubscribed.
+    #[derive(Default)]
+    struct TscOnly;
+
+    #[async_trait]
+    impl Tool for TscOnly {
+        type GlobalState = Ticks;
+        type ThreadState = ();
+
+        fn subscriptions(_cfg: &Plan) -> Subscription {
+            let mut subscription = Subscription::none();
+            subscription.rdtsc();
+            subscription
+        }
+
+        async fn handle_rdtsc_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            _request: Rdtsc,
+        ) -> Result<RdtscResult, Errno> {
+            let tsc = guest.send_rpc(()).await;
+            Ok(RdtscResult { tsc, aux: None })
+        }
+    }
+
+    fn rdtsc_host<T: Tool<GlobalState = Ticks> + 'static>(plan: Plan) -> FakeHost<T> {
+        match FakeHost::<T>::new_delivering_rdtsc(plan) {
+            Ok(host) => host,
+            Err(fatal) => panic!("host: {fatal:?}"),
+        }
+    }
+
+    fn completed(result: Result<RdtscOutcome, NarfFatal>) -> RdtscResult {
+        match result {
+            Ok(RdtscOutcome::Complete(result)) => result,
+            other => panic!("expected a completed RDTSC, got {other:?}"),
+        }
+    }
+
+    fn ended(result: Result<RdtscOutcome, NarfFatal>) {
+        match result {
+            Ok(RdtscOutcome::ContextManaged) => {}
+            other => panic!("expected a context-managed RDTSC, got {other:?}"),
+        }
+    }
+
+    fn pipe_read() -> NarfSyscallRequest {
+        request(Sysno::read, [PIPE_FD, (BASE + 0x100) as u64, 1, 0, 0, 0])
+    }
+
+    fn self_kill() -> NarfSyscallRequest {
+        request(
+            Sysno::kill,
+            [1000, reverie::Signal::SIGKILL as u64, 0, 0, 0, 0],
+        )
+    }
+
+    #[test]
+    fn rdtsc_reaches_the_tool_and_syscalls_stay_native() {
+        let host = rdtsc_host::<TscScript>(Plan::Count);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let rdtsc = completed(kernel.rdtsc(&host, root, Rdtsc::Tsc));
+        assert_eq!(rdtsc, RdtscResult { tsc: 0, aux: None });
+        let rdtscp = completed(kernel.rdtsc(&host, root, Rdtsc::Tscp));
+        assert_eq!(
+            rdtscp,
+            RdtscResult {
+                tsc: 1,
+                aux: Some(7)
+            }
+        );
+        let getpid = request(Sysno::getpid, NONE);
+        assert_eq!(complete(kernel.syscall(&host, root, getpid)), 1000);
+
+        assert_eq!(seen(), [Seen::Rdtsc(Rdtsc::Tsc), Seen::Rdtsc(Rdtsc::Tscp)]);
+        assert_eq!(
+            kernel.natives(),
+            [Native {
+                tid: 1000,
+                request: getpid,
+                via: Via::Original
+            }],
+            "only the unsubscribed syscall ran natively"
+        );
+        assert_eq!(kernel.repoll_waits(), []);
+        assert_eq!(kernel.violations(), []);
+    }
+
+    #[test]
+    fn rdtsc_needs_a_host_that_delivers_it() {
+        assert!(matches!(
+            FakeHost::<TscScript>::new(Plan::Count),
+            Err(NarfFatal::UnsupportedSubscription)
+        ));
+        assert!(matches!(
+            FakeHost::<WantsCpuid>::new_delivering_rdtsc(()),
+            Err(NarfFatal::UnsupportedSubscription)
+        ));
+    }
+
+    #[test]
+    fn rdtsc_errno_fails_closed_and_checks_the_task_back_in() {
+        let host = rdtsc_host::<TscScript>(Plan::Fail);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let result = kernel.rdtsc(&host, root, Rdtsc::Tsc);
+        assert!(
+            matches!(result, Err(NarfFatal::Rdtsc(Errno::EPERM))),
+            "{result:?}"
+        );
+        assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+    }
+
+    #[test]
+    fn rdtsc_tool_waiting_for_other_tasks_is_polled_again() {
+        let host = rdtsc_host::<TscScript>(Plan::YieldOnce);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+        kernel.script_repoll(&[RepollWait::Yielded]);
+
+        let rdtsc = completed(kernel.rdtsc(&host, root, Rdtsc::Tsc));
+        assert_eq!(rdtsc, RdtscResult { tsc: 0, aux: None });
+        assert_eq!(kernel.repoll_waits(), [1000], "one wait, between the polls");
+        assert_eq!(kernel.violations(), []);
+    }
+
+    #[test]
+    fn rdtsc_tool_killed_while_waiting_is_dropped_under_its_frame() {
+        let host = rdtsc_host::<TscScript>(Plan::Wait);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+        kernel.script_repoll(&[RepollWait::Yielded, RepollWait::Killed]);
+
+        ended(kernel.rdtsc(&host, root, Rdtsc::Tsc));
+        assert_eq!(
+            FOREVER.get(),
+            (2, 1),
+            "polled before each wait, dropped once"
+        );
+        assert_eq!(DROP_TID.get(), 1000, "drop glue reached the guest");
+        assert_eq!(kernel.repoll_waits(), [1000, 1000]);
+        assert_eq!(kernel.natives(), [], "nothing ran natively");
+        assert_eq!(kernel.violations(), []);
+        assert_teardowns(&kernel, &[(1000, exited(true))]);
+    }
+
+    #[test]
+    fn rdtsc_inject_that_kills_the_task_ends_the_callback() {
+        let host = rdtsc_host::<TscScript>(Plan::InjectKill);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // Nothing re-executes a syscall for an RDTSC, but a killed task
+        // needs nothing re-executed: the callback ends without a value.
+        ended(kernel.rdtsc(&host, root, Rdtsc::Tsc));
+        assert_eq!(
+            kernel.natives(),
+            [Native {
+                tid: 1000,
+                request: self_kill(),
+                via: Via::Injected
+            }]
+        );
+        assert_eq!(host.global().0.load(Ordering::SeqCst), 0, "never counted");
+        assert_eq!(kernel.violations(), []);
+        assert_teardowns(&kernel, &[(1000, exited(true))]);
+    }
+
+    #[test]
+    fn rdtsc_inject_that_parks_fails_closed() {
+        let host = rdtsc_host::<TscScript>(Plan::InjectRead);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let result = kernel.rdtsc(&host, root, Rdtsc::Tsc);
+        let read = Sysno::read.id() as u32;
+        assert!(
+            matches!(result, Err(NarfFatal::InjectParked { number }) if number == read),
+            "{result:?}"
+        );
+        assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+        assert!(!kernel.exited(root));
+    }
+
+    #[test]
+    fn rdtsc_tail_inject_that_returns_is_refused() {
+        let host = rdtsc_host::<TscScript>(Plan::TailGetpid);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        let result = kernel.rdtsc(&host, root, Rdtsc::Tsc);
+        assert!(
+            matches!(result, Err(NarfFatal::TailInjectOutsideSyscall)),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn rdtsc_tail_inject_that_parks_fails_closed() {
+        let host = rdtsc_host::<TscScript>(Plan::TailRead);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // The read parked the task, which is not ending: nothing will
+        // re-execute it, and the instruction has no value.
+        let result = kernel.rdtsc(&host, root, Rdtsc::Tsc);
+        assert!(
+            matches!(result, Err(NarfFatal::RdtscContextManaged)),
+            "{result:?}"
+        );
+        assert!(!kernel.exited(root));
+    }
+
+    #[test]
+    fn rdtsc_tail_inject_that_kills_the_task_ends_the_callback() {
+        let host = rdtsc_host::<TscScript>(Plan::TailKill);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        ended(kernel.rdtsc(&host, root, Rdtsc::Tsc));
+        assert_eq!(kernel.violations(), []);
+        assert_teardowns(&kernel, &[(1000, exited(true))]);
+    }
+
+    #[test]
+    fn rdtsc_interrupts_a_parked_inject_before_the_tool_sees_it() {
+        let host = rdtsc_host::<TscScript>(Plan::Count);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // The Tool's inject of the read parks the task.
+        context_managed(kernel.syscall(&host, root, pipe_read()));
+        // A signal handler executes RDTSC before the read is re-executed:
+        // the inject returns ERESTARTSYS first, as a new syscall entry
+        // would make it return.
+        let rdtsc = completed(kernel.rdtsc(&host, root, Rdtsc::Tsc));
+        assert_eq!(rdtsc, RdtscResult { tsc: 0, aux: None });
+        let restart = Errno::ERESTARTSYS.into_raw();
+        assert_eq!(
+            seen(),
+            [Seen::Inject(Err(restart)), Seen::Rdtsc(Rdtsc::Tsc)]
+        );
+
+        // After the handler the kernel restarts the read as a new entry.
+        kernel.push_pipe(b"x");
+        assert_eq!(complete(kernel.syscall(&host, root, pipe_read())), 1);
+        assert_eq!(
+            seen(),
+            [
+                Seen::Inject(Err(restart)),
+                Seen::Rdtsc(Rdtsc::Tsc),
+                Seen::Inject(Ok(1))
+            ]
+        );
+        assert_eq!(kernel.peek(root, BASE + 0x100, 1), b"x");
+        assert_eq!(kernel.natives().len(), 2, "the parked read and its restart");
+        assert_eq!(kernel.violations(), []);
+    }
+
+    #[test]
+    fn rdtsc_forgets_a_parked_tail_transition() {
+        let host = rdtsc_host::<TscOnly>(Plan::Count);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // The unsubscribed read parks as the core's tail transition.
+        context_managed(kernel.syscall(&host, root, pipe_read()));
+        let rdtsc = completed(kernel.rdtsc(&host, root, Rdtsc::Tsc));
+        assert_eq!(rdtsc, RdtscResult { tsc: 0, aux: None });
+
+        // Narf dropped its park record at the instruction, so it never
+        // flags this read as a re-execution; if it did, the core would have
+        // nothing to re-issue.
+        let result = kernel.enter(&host, root, SyscallEntry::reexecution(pipe_read()));
+        assert!(
+            matches!(result, Err(NarfFatal::UnexpectedReexecution)),
+            "{result:?}"
+        );
+        assert_eq!(kernel.natives().len(), 1, "only the parked read ran");
+    }
+}
