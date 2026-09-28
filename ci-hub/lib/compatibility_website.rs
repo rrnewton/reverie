@@ -2247,6 +2247,7 @@ fn project_series_payload(
         failure_class,
         no_verdict_evidence,
         pressure_evidence,
+        declared_guest_exit,
         run_index,
         attempt,
         num_runs,
@@ -2268,6 +2269,7 @@ fn project_series_payload(
         failure_class,
         no_verdict_evidence,
         pressure_evidence,
+        declared_guest_exit,
         attempt,
         last_run_index,
         runtime,
@@ -2430,6 +2432,13 @@ fn project_series_environment_fields(
             "pressure_evidence".into(),
             serde_json::to_value(&payload.pressure_evidence)
                 .map_err(|error| format!("cannot project pressure_evidence: {error}"))?,
+        );
+    }
+    if raw.contains_key("declared_guest_exit") {
+        public.insert(
+            "declared_guest_exit".into(),
+            serde_json::to_value(&payload.declared_guest_exit)
+                .map_err(|error| format!("cannot project declared_guest_exit: {error}"))?,
         );
     }
     Ok(())
@@ -2684,6 +2693,7 @@ fn no_verdict_kind_name(value: &SeriesNoVerdictKind) -> &'static str {
         SeriesNoVerdictKind::MissingReportTimeout => "missing_report_timeout",
         SeriesNoVerdictKind::NoncanonicalMatch => "noncanonical_match",
         SeriesNoVerdictKind::NoncanonicalDivergence => "noncanonical_divergence",
+        SeriesNoVerdictKind::FailedMatch => "failed_match",
     }
 }
 
