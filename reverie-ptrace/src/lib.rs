@@ -55,7 +55,10 @@ mod validation;
 mod vdso;
 
 pub use backend::PtraceBackend;
+pub use in_guest::DisabledRcbEvent;
 pub use in_guest::InGuestRcbCounter;
+pub use in_guest::RcbEventDescription;
+pub use in_guest::RcbPmuProfile;
 pub use injected_syscall::InjectedSyscallFrame;
 pub use liteinst_stats::LiteinstInstrumentationStats;
 pub use liteinst_stats::LiteinstInstrumentationStatsHandle;

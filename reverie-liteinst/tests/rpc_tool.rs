@@ -1,9 +1,6 @@
 use std::process::Command;
 use std::process::Output;
-use std::process::Stdio;
-use std::thread;
 use std::time::Duration;
-use std::time::Instant;
 
 use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 
@@ -13,31 +10,19 @@ const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
 #[test]
 fn fallback_uses_owned_frames_after_guest_stack_revocation() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let mut reports = Vec::new();
     for on_alt_stack in [true, false] {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("coordinator.sock");
-        let mut coordinator = Command::new(binary)
-            .arg("coordinator")
-            .arg(&socket)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !socket.exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        let ready = socket.exists();
         let mut command = Command::new(binary);
         command
             .arg("owned-frame")
             .arg(&socket)
             .env_remove(STRADDLER_STALENESS_TICKS_ENV);
         reverie_liteinst::set_guest_alt_stack(&mut command, on_alt_stack);
-        let output = ready.then(|| owned_frame_output(command));
-        let _ = coordinator.kill();
-        let _ = coordinator.wait();
-        let output = output.expect("coordinator socket was not created");
+        let report = owned_frame_report(command);
+        let output = &report.output;
+
         assert!(output.stderr.is_empty(), "{output:?}");
         if output.status.code() == Some(77) {
             assert_eq!(output.stdout, b"owned frame: OSPKE unavailable\n");
@@ -45,7 +30,7 @@ fn fallback_uses_owned_frames_after_guest_stack_revocation() {
             continue;
         }
         assert!(output.status.success(), "{output:?}");
-        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stdout = String::from_utf8(output.stdout.clone()).unwrap();
         assert_eq!(
             stdout
                 .lines()
@@ -59,82 +44,33 @@ fn fallback_uses_owned_frames_after_guest_stack_revocation() {
             .expect("complete owned-frame observations").parse::<usize>().unwrap();
         assert!(bytes >= 576);
         println!("alt_stack={on_alt_stack}\n{stdout}");
+        reports.push(report);
     }
+    hardware_method_result(
+        "fallback_uses_owned_frames_after_guest_stack_revocation",
+        &reports,
+        0,
+        0,
+    );
 }
 
-fn owned_frame_output(mut command: Command) -> Output {
-    use std::io::Read;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering;
-    const LIMIT: u64 = 1024 * 1024;
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().unwrap();
-    let exceeded = Arc::new(AtomicBool::new(false));
-    let read = |pipe: Box<dyn Read + Send>, exceeded: Arc<AtomicBool>| {
-        thread::spawn(move || {
-            let mut bytes = Vec::new();
-            pipe.take(LIMIT + 1).read_to_end(&mut bytes).unwrap();
-            if bytes.len() as u64 > LIMIT {
-                exceeded.store(true, Ordering::Relaxed);
-            }
-            bytes
-        })
-    };
-    // Drain full raw XSTATE observations while the child runs. Waiting for
-    // exit before reading would deadlock on a full pipe, not test the runtime.
-    let stdout = read(Box::new(child.stdout.take().unwrap()), exceeded.clone());
-    let stderr = read(Box::new(child.stderr.take().unwrap()), exceeded.clone());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut bounded = false;
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= deadline || exceeded.load(Ordering::Relaxed) {
-            bounded = true;
-            child.kill().unwrap();
-            break child.wait().unwrap();
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let output = Output {
-        status,
-        stdout: stdout.join().unwrap(),
-        stderr: stderr.join().unwrap(),
-    };
-    assert!(
-        !bounded && !exceeded.load(Ordering::Relaxed),
-        "owned-frame child exceeded five seconds/one MiB: {output:?}"
-    );
-    output
+fn owned_frame_report(command: Command) -> supervised::Report {
+    supervised_report(command, Duration::from_secs(5), Some(1024 * 1024))
 }
 
 #[test]
 fn ordinary_tool_memory_and_scratch_work_with_protected_guest_state() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    let mut reports = Vec::new();
     for on_alt_stack in [true, false] {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("coordinator.sock");
-        let mut coordinator = Command::new(binary)
-            .arg("coordinator")
-            .arg(&socket)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !socket.exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        let ready = socket.exists();
         let mut command = Command::new(binary);
         command.arg("memory-access").arg(&socket);
         reverie_liteinst::set_guest_alt_stack(&mut command, on_alt_stack);
-        let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
-        let _ = coordinator.kill();
-        let _ = coordinator.wait();
-        let output = output.expect("coordinator socket was not created");
+        let report = report_with_timeout(command, Duration::from_secs(20));
+        let output = &report.output;
+
         assert!(output.stderr.is_empty(), "{output:?}");
         if output.status.code() == Some(77) {
             assert_eq!(output.stdout, b"memory access: OSPKE unavailable\n");
@@ -142,13 +78,20 @@ fn ordinary_tool_memory_and_scratch_work_with_protected_guest_state() {
             continue;
         }
         assert!(output.status.success(), "{output:?}");
-        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stdout = String::from_utf8(output.stdout.clone()).unwrap();
         let bytes = stdout.strip_prefix("memory access: rseq=unregistered native=2 Tool=2 pkru=0,1 xstate-bytes=")
             .and_then(|line| line.strip_suffix(" scratch=complete readlink=complete inspection=complete faults=EFAULT rpc=2 hooks=0 traps=2\n"))
             .expect("complete memory-access evidence").parse::<usize>().unwrap();
         assert!(bytes >= 576);
         println!("alt_stack={on_alt_stack} {stdout}");
+        reports.push(report);
     }
+    hardware_method_result(
+        "ordinary_tool_memory_and_scratch_work_with_protected_guest_state",
+        &reports,
+        0,
+        0,
+    );
 }
 
 #[test]
@@ -156,30 +99,23 @@ fn unpatchable_syscall_dispatches_tool_after_signal_return() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("coordinator.sock");
-    let mut coordinator = Command::new(binary)
-        .arg("coordinator")
-        .arg(&socket)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let ready = socket.exists();
     let mut command = Command::new(binary);
     command.arg("syscall-fallback").arg(&socket);
-    let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
-    let _ = coordinator.kill();
-    let _ = coordinator.wait();
-    let output = output.expect("coordinator socket was not created");
+    let report = report_with_timeout(command, Duration::from_secs(20));
+    let output = &report.output;
+
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         output.stdout,
         b"fallback: calls=6 rpc=7 hooks=0 bytes=unchanged abi=preserved\n"
     );
     assert!(output.stderr.is_empty(), "{output:?}");
+    hardware_method_result(
+        "unpatchable_syscall_dispatches_tool_after_signal_return",
+        &[report],
+        0,
+        0,
+    );
 }
 
 #[test]
@@ -187,27 +123,14 @@ fn unpatchable_syscall_preserves_xstate_with_native_controls() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("coordinator.sock");
-    let mut coordinator = Command::new(binary)
-        .arg("coordinator")
-        .arg(&socket)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let ready = socket.exists();
     let mut command = Command::new(binary);
     command.arg("syscall-fallback-xstate").arg(&socket);
-    let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
-    let _ = coordinator.kill();
-    let _ = coordinator.wait();
-    let output = output.expect("coordinator socket was not created");
+    let report = report_with_timeout(command, Duration::from_secs(20));
+    let output = &report.output;
+
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = String::from_utf8(output.stdout.clone()).unwrap();
     assert!(stdout.starts_with("fallback xstate: mask=0x"), "{stdout}");
     assert!(
         stdout.ends_with(" native=preserved clobber=detected tool=preserved\n"),
@@ -215,50 +138,52 @@ fn unpatchable_syscall_preserves_xstate_with_native_controls() {
     );
     assert_eq!(stdout.lines().count(), 1, "{stdout}");
     print!("{stdout}");
+    hardware_method_result(
+        "unpatchable_syscall_preserves_xstate_with_native_controls",
+        &[report],
+        0,
+        0,
+    );
 }
 
 #[test]
 fn unpatchable_syscall_preserves_protection_keys() {
-    protection_keys_with_signal_stack(true);
+    protection_keys_with_signal_stack(
+        true,
+        "unpatchable_syscall_preserves_protection_keys",
+    );
 }
 
 #[test]
 fn unpatchable_syscall_preserves_protection_keys_without_alt_stack() {
-    protection_keys_with_signal_stack(false);
+    protection_keys_with_signal_stack(
+        false,
+        "unpatchable_syscall_preserves_protection_keys_without_alt_stack",
+    );
 }
 
-fn protection_keys_with_signal_stack(on_alt_stack: bool) {
+fn protection_keys_with_signal_stack(on_alt_stack: bool, method: &str) {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("coordinator.sock");
-    let mut coordinator = Command::new(binary)
-        .arg("coordinator")
-        .arg(&socket)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let ready = socket.exists();
     let mut command = Command::new(binary);
     command.arg("syscall-fallback-pkey").arg(&socket);
     reverie_liteinst::set_guest_alt_stack(&mut command, on_alt_stack);
-    let output = ready.then(|| output_with_timeout(command, Duration::from_secs(20)));
-    let _ = coordinator.kill();
-    let _ = coordinator.wait();
-    let output = output.expect("coordinator socket was not created");
+    let report = report_with_timeout(command, Duration::from_secs(20));
+    let output = &report.output;
+
     if output.status.code() == Some(77) {
         assert_eq!(output.stdout, b"fallback pkeys: OSPKE unavailable\n");
         assert!(output.stderr.is_empty(), "{output:?}");
         eprintln!("pkey control unavailable: OSPKE is not enabled");
+        #[cfg(feature = "rcb-qualification")]
+        panic!("{method}: selected hardware method has no counter result");
+        #[cfg(not(feature = "rcb-qualification"))]
         return;
     }
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = String::from_utf8(output.stdout.clone()).unwrap();
     assert!(stdout.contains(" pkru=0: state=preserved\n"), "{stdout}");
     assert!(stdout.contains(" pkru=1: state=preserved\n"), "{stdout}");
     assert!(
@@ -273,6 +198,7 @@ fn protection_keys_with_signal_stack(on_alt_stack: bool) {
     );
     println!("alt_stack={on_alt_stack}");
     print!("{stdout}");
+    hardware_method_result(method, &[report], 0, 0);
 }
 
 #[test]
@@ -280,28 +206,17 @@ fn fork_child_accounts_for_fallback_and_installed_dispatch() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("coordinator.sock");
-    let mut coordinator = Command::new(binary)
-        .arg("coordinator")
-        .arg(&socket)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let ready = socket.exists();
-    let outputs = ready.then(|| {
+    let reports = {
         ["installed", "fallback"].map(|kind| {
             let mut command = Command::new(binary);
             command.arg(format!("syscall-{kind}-fork")).arg(&socket);
-            output_with_timeout(command, Duration::from_secs(20))
+            report_with_timeout(command, Duration::from_secs(20))
         })
-    });
-    let _ = coordinator.kill();
-    let _ = coordinator.wait();
-    let [installed, fallback] = outputs.expect("coordinator socket was not created");
+    };
+
+    let [installed_report, fallback_report] = &reports;
+    let installed = &installed_report.output;
+    let fallback = &fallback_report.output;
     assert!(installed.status.success(), "{installed:?}");
     assert_eq!(installed.stdout, b"installed fork child: hooks=1 traps=0 fallback=0 syscall=0\ninstalled fork parent: hooks=2 traps=1 fallback=0 syscall=0\n");
     assert!(installed.stderr.is_empty(), "{installed:?}");
@@ -310,8 +225,14 @@ fn fork_child_accounts_for_fallback_and_installed_dispatch() {
     assert!(fallback.stderr.is_empty(), "{fallback:?}");
     print!(
         "{}{}",
-        String::from_utf8(installed.stdout).unwrap(),
-        String::from_utf8(fallback.stdout).unwrap()
+        String::from_utf8(installed.stdout.clone()).unwrap(),
+        String::from_utf8(fallback.stdout.clone()).unwrap()
+    );
+    hardware_method_result(
+        "fork_child_accounts_for_fallback_and_installed_dispatch",
+        &reports,
+        0,
+        0,
     );
 }
 
@@ -337,21 +258,185 @@ fn fallback_refusal_is_counted_separately_from_tool_errors() {
     }
 }
 
-fn output_with_timeout(mut command: Command, timeout: Duration) -> Output {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().unwrap();
-    let deadline = Instant::now() + timeout;
-    loop {
-        if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
+fn output_with_timeout(command: Command, timeout: Duration) -> Output {
+    supervised_output(command, timeout, None)
+}
+
+fn report_with_timeout(command: Command, timeout: Duration) -> supervised::Report {
+    supervised_report(command, timeout, None)
+}
+
+#[path = "common/supervisor.rs"]
+mod supervised;
+
+fn supervised_output(command: Command, timeout: Duration, output_limit: Option<u64>) -> Output {
+    supervised_report(command, timeout, output_limit).output
+}
+
+fn supervised_report(
+    command: Command,
+    timeout: Duration,
+    output_limit: Option<u64>,
+) -> supervised::Report {
+    supervised::run(command, timeout, output_limit)
+}
+
+#[cfg(feature = "rcb-qualification")]
+fn hardware_method_result(
+    method: &str,
+    reports: &[supervised::Report],
+    native_rows: usize,
+    mediated_rows: usize,
+) {
+    use std::collections::BTreeMap;
+
+    let expected_modes: &[&str] = match method {
+        "fallback_uses_owned_frames_after_guest_stack_revocation" =>
+            &["owned-frame", "owned-frame"],
+        "ordinary_tool_memory_and_scratch_work_with_protected_guest_state" =>
+            &["memory-access", "memory-access"],
+        "unpatchable_syscall_dispatches_tool_after_signal_return" => &["syscall-fallback"],
+        "unpatchable_syscall_preserves_xstate_with_native_controls" =>
+            &["syscall-fallback-xstate"],
+        "unpatchable_syscall_preserves_protection_keys"
+        | "unpatchable_syscall_preserves_protection_keys_without_alt_stack" =>
+            &["syscall-fallback-pkey"],
+        "fork_child_accounts_for_fallback_and_installed_dispatch" => &[
+            "syscall-fallback-fork",
+            "syscall-fallback-fork-child",
+            "syscall-installed-fork",
+            "syscall-installed-fork-child",
+        ],
+        "installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc" =>
+            &["clock-and-vdso-guest"],
+        "initial_and_child_config_callbacks_keep_private_sockets_protected" => &[
+            "bootstrap-admission",
+            "bootstrap-admission",
+            "bootstrap-admission-child",
+            "bootstrap-admission-child",
+        ],
+        _ => panic!("unselected hardware method {method}"),
+    };
+    let mut events = BTreeMap::new();
+    let mut results = BTreeMap::new();
+    for report in reports {
+        assert!(
+            report.counter_unavailable.is_empty(),
+            "{method}: unavailable counter observations: {:?}",
+            report.counter_unavailable
+        );
+        assert!(
+            !report.events.is_empty(),
+            "{method}: every supervised process needs an authenticated acquisition"
+        );
+        assert_eq!(
+            report.events.len(),
+            report.counter_results.len(),
+            "{method}: every supervised process needs its own counter results"
+        );
+        for event in &report.events {
+            assert_eq!(event[0], 1, "{method}: acquisition version");
+            assert_ne!(event[5], 0, "{method}: event identity");
+            assert_eq!(event[6], 4, "{method}: PERF_TYPE_RAW profile");
+            assert!(
+                matches!(event[7], 0x5101c4 | 0x5100d1),
+                "{method}: exact retired-conditional-branch profile"
+            );
+            assert!(event[8] <= i32::MAX as u64, "{method}: target CPU");
+            assert_eq!(event[9], 0, "{method}: event was acquired disabled");
+            assert!(
+                events.insert(event[5], *event).is_none(),
+                "{method}: duplicate acquisition event"
+            );
         }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            let output = child.wait_with_output().unwrap();
-            panic!("child exceeded {timeout:?}: {output:?}");
+        for result in &report.counter_results {
+            assert_ne!(result.event_id, 0, "{method}: counter result event identity");
+            assert!(result.fd <= i32::MAX as u64, "{method}: counter descriptor");
+            assert_ne!(result.owner, 0, "{method}: counter owner");
+            assert!(result.cpu <= i32::MAX as u64, "{method}: counter CPU");
+            assert!(result.clock > 0, "{method}: actual counter result");
+            assert!(
+                results.insert(result.event_id, result).is_none(),
+                "{method}: duplicate counter result"
+            );
         }
-        thread::sleep(Duration::from_millis(10));
     }
+    assert!(!events.is_empty(), "{method}: zero authenticated acquisitions");
+    assert_eq!(
+        results.len(),
+        events.len(),
+        "{method}: every acquisition needs its own actual counter result"
+    );
+    let mut owners = Vec::new();
+    let mut result_owners = Vec::new();
+    let mut event_types = Vec::new();
+    let mut configs = Vec::new();
+    let mut cpus = Vec::new();
+    let mut result_cpus = Vec::new();
+    let mut disabled = Vec::new();
+    let mut fds = Vec::new();
+    let mut counters = Vec::new();
+    let mut modes = Vec::new();
+    for (event_id, event) in &events {
+        let result = results
+            .get(event_id)
+            .unwrap_or_else(|| panic!("{method}: missing result for event {event_id}"));
+        assert_eq!(result.owner, event[4], "{method}: target owner join");
+        assert_eq!(result.cpu, event[8], "{method}: target CPU join");
+        owners.push(event[4]);
+        result_owners.push(result.owner);
+        event_types.push(event[6]);
+        configs.push(event[7]);
+        cpus.push(event[8]);
+        result_cpus.push(result.cpu);
+        disabled.push(event[9]);
+        fds.push(result.fd);
+        counters.push(result.clock);
+        modes.push(result.mode.as_str());
+    }
+    let mut observed_modes = modes.clone();
+    observed_modes.sort_unstable();
+    let mut expected_modes = expected_modes.to_vec();
+    expected_modes.sort_unstable();
+    assert_eq!(
+        observed_modes, expected_modes,
+        "{method}: counter results came from another guest mode"
+    );
+    let list = |values: &[u64]| {
+        values
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let event_ids = events.keys().copied().collect::<Vec<_>>();
+    let result_event_ids = results.keys().copied().collect::<Vec<_>>();
+    println!(
+        "liteinst hardware method: phase=run-liteinst-existing binary=rpc_tool method={method} events={} results={} event-ids={} result-event-ids={} owners={} result-owners={} event-types={} configs={} cpus={} result-cpus={} initially-disabled={} fds={} counters={} modes={} native-rows={native_rows} mediated-rows={mediated_rows}",
+        events.len(),
+        results.len(),
+        list(&event_ids),
+        list(&result_event_ids),
+        list(&owners),
+        list(&result_owners),
+        list(&event_types),
+        list(&configs),
+        list(&cpus),
+        list(&result_cpus),
+        list(&disabled),
+        list(&fds),
+        list(&counters),
+        modes.join(","),
+    );
+}
+
+#[cfg(not(feature = "rcb-qualification"))]
+fn hardware_method_result(
+    _method: &str,
+    _reports: &[supervised::Report],
+    _native_rows: usize,
+    _mediated_rows: usize,
+) {
 }
 
 #[test]
@@ -361,51 +446,38 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     std::fs::create_dir_all(&directory).unwrap();
     let socket = directory.join("coordinator.sock");
 
-    let mut coordinator = Command::new(binary)
-        .arg("coordinator")
-        .arg(&socket)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert!(socket.exists(), "coordinator socket was not created");
-
-    let rejected_handler = Command::new(binary)
-        .arg("preinstalled-handler")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let rejected_handler = {
+        let mut command = Command::new(binary);
+        command.arg("preinstalled-handler").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
     assert!(rejected_handler.status.success(), "{rejected_handler:?}");
     assert_eq!(rejected_handler.stdout, b"preinstalled-handler-reset\n");
 
-    let pending_sigsys = Command::new(binary)
-        .arg("pending-sigsys")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let pending_sigsys = {
+        let mut command = Command::new(binary);
+        command.arg("pending-sigsys").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
     assert_eq!(
         pending_sigsys.status.code(),
         Some(126),
         "{pending_sigsys:?}"
     );
 
-    let preblocked_sigsys = Command::new(binary)
-        .arg("preblocked-sigsys")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let preblocked_sigsys = {
+        let mut command = Command::new(binary);
+        command.arg("preblocked-sigsys").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
     assert!(preblocked_sigsys.status.success(), "{preblocked_sigsys:?}");
     assert_eq!(preblocked_sigsys.stdout, b"inherited-sigsys-unblocked\n");
 
-    let spoofed_sigsys = Command::new(binary)
-        .arg("spoof-sigsys")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let spoofed_sigsys = {
+        let mut command = Command::new(binary);
+        command.arg("spoof-sigsys").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
     assert_eq!(
         spoofed_sigsys.status.code(),
         Some(126),
@@ -471,19 +543,21 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let instruction_control_available = instruction_positives == 2;
 
     if instruction_control_available {
-        let nested_instruction_fork = Command::new(binary)
-            .arg("nested-instruction-fork")
-            .arg(&socket)
-            .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1")
-            .output()
-            .unwrap();
+        let nested_instruction_fork = {
+            let mut command = Command::new(binary);
+            command
+                .arg("nested-instruction-fork")
+                .arg(&socket)
+                .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1");
+            output_with_timeout(command, Duration::from_secs(20))
+        };
         assert!(
             nested_instruction_fork.status.success(),
             "{nested_instruction_fork:?}"
         );
         assert_eq!(
             nested_instruction_fork.stdout,
-            b"nested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0\n"
+            b"child-acquisition-cpuid=0 child-guest-cpuid-callbacks=1 virtual-cpuid-eax=0x11111111\nnested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0\n"
         );
         let nested_stderr = String::from_utf8(nested_instruction_fork.stderr).unwrap();
         let stage_count = |stage: &str| {
@@ -493,6 +567,8 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
                 .count()
         };
         for stage in [
+            "stage=fork-child-clock-acquire-begin",
+            "stage=fork-child-clock-acquire-complete",
             "stage=fork-child-thread-start-begin",
             "stage=fork-child-thread-start-complete",
         ] {
@@ -502,6 +578,22 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
                 "stage marker {stage:?} must appear exactly once: {nested_stderr}"
             );
         }
+        let lines: Vec<_> = nested_stderr.lines().collect();
+        let clock_begin = lines
+            .iter()
+            .position(|line| line.ends_with("stage=fork-child-clock-acquire-begin"))
+            .unwrap();
+        let clock_complete = lines
+            .iter()
+            .position(|line| line.ends_with("stage=fork-child-clock-acquire-complete"))
+            .unwrap();
+        assert!(clock_begin < clock_complete, "{nested_stderr}");
+        assert!(
+            lines[clock_begin + 1..clock_complete]
+                .iter()
+                .all(|line| !line.contains("cpuid")),
+            "fork-child profile import executed CPUID: {nested_stderr}"
+        );
         assert!(
             stage_count("stage=nested-instruction-native-cpuid") >= 1,
             "at least the planted nested CPUID must take the native path: {nested_stderr}"
@@ -522,32 +614,39 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         }
     }
 
-    let clock_and_vdso_guest = Command::new(binary)
-        .arg("clock-and-vdso-guest")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let clock_and_vdso_report = {
+        let mut command = Command::new(binary);
+        command.arg("clock-and-vdso-guest").arg(&socket);
+        report_with_timeout(command, Duration::from_secs(20))
+    };
+    let clock_and_vdso_guest = &clock_and_vdso_report.output;
     assert!(
         clock_and_vdso_guest.status.success(),
         "{clock_and_vdso_guest:?}"
     );
-    let clock_and_vdso_stdout = String::from_utf8(clock_and_vdso_guest.stdout).unwrap();
+    let clock_and_vdso_stdout =
+        String::from_utf8(clock_and_vdso_guest.stdout.clone()).unwrap();
     eprintln!("clock/vDSO evidence: {}", clock_and_vdso_stdout.trim_end());
     assert!(
-        clock_and_vdso_stdout == "rcb=unmeasured vdso-calls=1\n"
-            || clock_and_vdso_stdout.starts_with("rcb=measured "),
+        clock_and_vdso_stdout.starts_with("rcb=measured "),
         "{clock_and_vdso_stdout}"
     );
     assert!(
         clock_and_vdso_stdout.ends_with("vdso-calls=1\n"),
         "{clock_and_vdso_stdout}"
     );
+    hardware_method_result(
+        "installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc",
+        &[clock_and_vdso_report],
+        0,
+        0,
+    );
 
-    let unsubscribed_lifecycle = Command::new(binary)
-        .arg("unsubscribed-lifecycle")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let unsubscribed_lifecycle = {
+        let mut command = Command::new(binary);
+        command.arg("unsubscribed-lifecycle").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
     assert_eq!(
         unsubscribed_lifecycle.status.code(),
         Some(0x34),
@@ -562,11 +661,11 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         b"unsubscribed-thread=Exited(52)\nunsubscribed-process=Exited(52)\n"
     );
 
-    let injected_exit = Command::new(binary)
-        .arg("injected-exit")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let injected_exit = {
+        let mut command = Command::new(binary);
+        command.arg("injected-exit").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
     assert_eq!(injected_exit.status.code(), Some(0x34), "{injected_exit:?}");
     assert!(injected_exit.stdout.is_empty(), "{injected_exit:?}");
     assert_eq!(
@@ -574,11 +673,11 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         b"injected-thread=Exited(52)\ninjected-process=Exited(52)\n"
     );
 
-    let fork_guest = Command::new(binary)
-        .arg("fork-guest")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let fork_guest = {
+        let mut command = Command::new(binary);
+        command.arg("fork-guest").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
     assert!(fork_guest.status.success(), "{fork_guest:?}");
     let fork_stdout = String::from_utf8(fork_guest.stdout).unwrap();
     let mut fields = fork_stdout.split_whitespace();
@@ -603,11 +702,11 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     // `syscall(2)` sites produce. A `pthread_atfork`-based detector cannot see
     // this fork, so the child would silently keep sending on the parent's
     // inherited connection and the sender delta would be 0.
-    let raw_fork_guest = Command::new(binary)
-        .arg("raw-fork-guest")
-        .arg(&socket)
-        .output()
-        .unwrap();
+    let raw_fork_guest = {
+        let mut command = Command::new(binary);
+        command.arg("raw-fork-guest").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
     assert!(raw_fork_guest.status.success(), "{raw_fork_guest:?}");
     let raw_fork_stdout = String::from_utf8(raw_fork_guest.stdout).unwrap();
     let mut raw_fields = raw_fork_stdout.split_whitespace();
@@ -640,11 +739,11 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
             b"vfork=translated-cow-child sender-delta=1\n".as_slice(),
         ),
     ] {
-        let output = Command::new(binary)
-            .arg(mode)
-            .arg(&socket)
-            .output()
-            .unwrap();
+        let output = {
+            let mut command = Command::new(binary);
+            command.arg(mode).arg(&socket);
+            output_with_timeout(command, Duration::from_secs(20))
+        };
         assert!(output.status.success(), "{mode}: {output:?}");
         eprintln!(
             "process evidence: {}",
@@ -660,22 +759,21 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         ),
         ("tail-fork", b"tail-fork-reconstructed\n".as_slice()),
     ] {
-        let output = Command::new(binary)
-            .arg(mode)
-            .arg(&socket)
-            .output()
-            .unwrap();
+        let output = {
+            let mut command = Command::new(binary);
+            command.arg(mode).arg(&socket);
+            output_with_timeout(command, Duration::from_secs(20))
+        };
         assert!(output.status.success(), "{mode}: {output:?}");
         assert_eq!(output.stdout, expected, "{mode}: {output:?}");
     }
 
-    let guest = Command::new(binary)
-        .arg("guest")
-        .arg(&socket)
-        .output()
-        .unwrap();
-    let _ = coordinator.kill();
-    let _ = coordinator.wait();
+    let guest = {
+        let mut command = Command::new(binary);
+        command.arg("guest").arg(&socket);
+        output_with_timeout(command, Duration::from_secs(20))
+    };
+
     let _ = std::fs::remove_dir_all(&directory);
 
     assert!(
@@ -691,5 +789,47 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
             "calls=32 traps=1 hooks=32 rpc_delta=34 nested_traps=1 nested_hooks=33 mask_traps=1 mask_hooks=33 mask_result=-1 first_use_exec_result=-95 first_use_signal_result=-1 "
         ),
         "{stdout}"
+    );
+}
+
+#[test]
+fn initial_and_child_config_callbacks_keep_private_sockets_protected() {
+    let mut reports = Vec::new();
+    for use_alt_stack in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("coordinator.sock");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));
+        command.arg("bootstrap-admission").arg(&socket);
+        reverie_liteinst::set_guest_alt_stack(&mut command, use_alt_stack);
+        let report = supervised::run(command, Duration::from_secs(20), Some(1024 * 1024));
+        assert!(report.output.status.success(), "{:?}", report.output);
+        assert!(report.output.stderr.is_empty(), "{:?}", report.output);
+        let output = String::from_utf8(report.output.stdout.clone()).unwrap();
+        assert!(
+            output.contains(
+                "phases=15 rpc=3 mask=preserved native-messages=ok active-messages=ENOTSUP trusted-setup-rpc=ok bootstrap-signals="
+            ),
+            "{output}"
+        );
+        assert!(output.contains("admission child pid="), "{output}");
+        assert!(output.contains("phases=9 probes=2 rpc=2"), "{output}");
+        assert_eq!(report.events.len(), 2, "actual parent/child acquisitions");
+        assert_eq!(report.events[0][1], 1);
+        assert_eq!(report.events[1][2], 1);
+        assert_ne!(report.events[0][3], report.events[1][3]);
+        assert_ne!(report.events[0][5], 0);
+        assert_ne!(report.events[1][5], 0);
+        assert_ne!(report.events[0][5], report.events[1][5]);
+        println!(
+            "alt_stack={use_alt_stack} actual_events={:?}\n{output}",
+            report.events
+        );
+        reports.push(report);
+    }
+    hardware_method_result(
+        "initial_and_child_config_callbacks_keep_private_sockets_protected",
+        &reports,
+        0,
+        0,
     );
 }

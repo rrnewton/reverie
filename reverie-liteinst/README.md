@@ -6,24 +6,109 @@ and `reverie-rpc-transport`.
 
 ## Event path
 
-1. A tool-specific DSO calls `install_tool::<T>` from its preload constructor.
-   It connects to the coordinator and receives `T::GlobalState::Config` before
-   seccomp is active.
+1. A tool-specific DSO registers its preload constructor with
+   `tool_root_constructor!(initialize)` and calls `install_tool::<T>` only from
+   that constructor body. An ordinary executable fixture makes an explicit
+   unsafe call to `with_tool_root!` around the complete setup body instead.
 2. `reverie-preload` installs the SIGSYS handler, alternate stack, trusted
    syscall gate, and seccomp filter.
-3. The first syscall at an instruction reaches SIGSYS. The LiteInst dispatcher
+3. The launcher deterministically selects the lowest CPU in its allowed set and
+   installs that singleton affinity in the child before exec. `CoordinatorRpc`
+   then captures the root's native PMU type/config exactly once while CPUID is
+   still native and requires the authenticated supervisor EVENT (or unsupported
+   response) to match. The matched CPU/profile is inherited across fork and
+   checked against every child EVENT without executing CPUID while the child
+   Tool is rebuilt. Each separately launched exec image has a new RPC/event
+   lifetime and performs its own one capture after the previous process and
+   supervisor have torn down the prior event. No successful exec crosses a live
+   event: the event is `CLOEXEC`, and the current in-process runtime still
+   refuses a later guest `execve` before replacing the loaded runtime.
+4. The first syscall at an instruction reaches SIGSYS. The LiteInst dispatcher
    installs a replace-first hook and changes the saved signal-context RIP to the
    generated trampoline entry. An unpatchable syscall uses the deferred entry
    described below, leaving its instruction bytes intact.
-4. After `sigreturn`, the trampoline invokes `T::handle_syscall_event` in normal
+5. After `sigreturn`, the trampoline invokes `T::handle_syscall_event` in normal
    guest context. The first invocation and later patched invocations therefore
    use the same tool path; the first site trap is not also a tool execution.
-5. `LiteinstGuest<T>` supplies in-process memory/register access and syscall
+6. `LiteinstGuest<T>` supplies in-process memory/register access and syscall
    injection through the trusted gate. `CoordinatorRpc<G>` serializes
    `GlobalRPC` messages over the same UDS/bincode framing as
    `reverie-rpc-transport::RpcServer<G>`. The launcher accepts concurrent local
    connections against the one coordinator-owned global state and cancels any
    outstanding connection tasks when the guest run ends.
+
+The cross-crate counter bridge is private Rust API and its hidden native entry
+requires the address of a LiteInst-private process allocation that root entry
+binds before calling external setup. A wrong address is refused with `EPERM`.
+This boundary protects safe Rust consumers and separately loaded DSOs. Code
+already linked into the same DSO is trusted native code: it can read process
+memory and issue the same kernel operations directly, so the bridge does not
+claim to isolate a hostile object within that address space.
+
+Root assembly captures the exact incoming signal mask and blocks asynchronous
+signals before its first Rust call, global access, allocation, or frame
+publication. A constructor that does not select LiteInst restores that captured
+mask byte for byte. A selected runtime may clear only SIGSYS, plus SIGSEGV when
+instruction emulation installs its handler. The setup thunk uses the non-unwind
+`extern "C"` ABI, so a panic or panicking setup destructor aborts before the
+assembly frame can return to guest execution.
+
+Before the event can first become `RUNNING`, Tool mode resets inherited callable
+signal dispositions and the active filter refuses later callable actions and
+mask mutations. The runtime-owned SIGSYS action, and SIGSEGV action when
+instruction emulation is selected, install a full action mask. At every
+installed callback, SIGSYS entry, and runtime SIGSEGV entry, a straight-line
+initial-exec TLS lookup and direct `PERF_EVENT_IOC_DISABLE` occur before the
+first conditional branch. A failed disable while the record says `RUNNING`
+selects `exit_group` without a conditional branch and cannot produce a result.
+The entry then captures and blocks the incoming mask, keeps it blocked through
+Tool work, enables the event before publishing `RUNNING`, and restores the exact
+mask only after publication. The installed callback relies on the pre-activation
+callable-action refusal; kernel signal entry additionally has the full action
+mask before its first instruction. Synchronous fault delivery remains available.
+
+The signal qualification has two distinct causal edges. The supervisor sends
+a preblocked SIGWINCH after target assembly has published `RUNNING`; it must
+remain pending with zero handler entries until the PAUSED Tool callback releases
+it. The supervisor also asynchronously sends runtime-owned SIGSYS while
+`RUNNING`, before the wrapper's explicit mask syscall; the assembly entry must
+report PAUSED and the unchanged absolute first clock proves that no conditional
+handler branch retired before physical DISABLE. The older post-enable SIGUSR1
+edge remains and must observe `RUNNING`.
+
+The supervisor creates the event with both the authenticated target TID and the
+explicit selected CPU; perf's `pinned` attribute is not treated as task
+affinity. It validates the target's exact singleton mask immediately before and
+after `perf_event_open`, while the target checks both its mask and current CPU
+before profile capture, acquisition, root enable, and every later re-enable.
+The supervisor never discovers a PMU profile on its own CPU. Guest syscalls,
+nested Tool syscalls, and Tool-injected syscalls cannot change affinity. Fork
+inherits the CPU/profile and obtains a distinct child event on that CPU.
+Affinity interfaces wider than the authenticated 1024-bit representation are
+refused, and loss of the selected CPU before exec is a typed launch failure.
+
+Same-UID or privileged processes that can externally change target affinity,
+and host administration that changes cpusets, CPU online state, or PMU topology
+during a run, are outside the in-process trust boundary. The next checked
+boundary fails terminally, but branches could already have run uncounted after
+an external migration, so such a run earns no result or determinism credit.
+This design does not claim to prevent hostile host mutation.
+
+Linux stable v7.1.3 marks perf VMAs `VM_DONTCOPY`. Fork qualification binds the
+parent metadata address and requires the custom running kernel's child to
+report `ENOMEM` from `mincore`, `EFAULT` from self `process_vm_readv`, and zero
+overlap in `/proc/self/maps` before acquiring its new event. The parent must
+retain the same authenticated event ID and owner with an advancing clock. The
+copied Rust owner is intentionally invalidated without Drop after the child's
+single inherited-FD close, since there is no child VMA to unmap and the numeric
+slot may subsequently be reused.
+
+The CPUID-subscribed fork control deliberately virtualizes every guest CPUID to
+an unrecognized synthetic model. It requires zero Tool CPUID callbacks between
+the child acquisition begin/complete markers, then exactly one callback for the
+deliberate post-acquisition guest instruction. Separate corrupt-supervisor
+controls require root refusal for a false unsupported response and for a real
+event whose advertised type and config are each changed by one bit.
 
 The regression proof reports `calls=32 traps=1 hooks=32` and sends a real
 Reverie tool RPC for every callback.
@@ -118,7 +203,14 @@ uses `run_with_output_and_preload_data` instead, passing the coordinator
 path and selector in a sealed, dynamically allocated memfd that the preload
 discovers, validates, consumes, and closes before guest `main`.
 `REVERIE_LITEINST_TOOL_PRELOAD` must name a DSO that embeds the same concrete
-`T` and calls `install_tool::<T>`.
+`T`. Its author must register exactly one constructor with
+`reverie_liteinst::tool_root_constructor!(initialize)` and call
+`install_tool::<T>` or `install_tool_from_bootstrap::<T>` only inside that
+constructor's complete setup body. Selector decoding, bootstrap/result
+handling, and setup-owned destructors must all finish before `initialize`
+returns. A raw `.init_array` function or an unwrapped installer is rejected
+before the first process-global effect. Code after `with_tool_root!` is guest
+execution and must not perform another installation.
 
 Built-in `strace` and compatibility modes remain available through
 `configure_command`. They use the same shared preload and LiteInst hook path
@@ -230,6 +322,9 @@ trap path. Quiescent publication is never selected from this route.
   later callable handlers, and validates that SIGSYS came from seccomp.
   `SIG_DFL` and `SIG_IGN` remain supported; guest signal handlers remain
   unsupported.
+- The launch CPU is part of the counter contract. Guest and Tool
+  `sched_setaffinity` changes return `EPERM`; this intentionally differs from
+  Linux for a caller that would otherwise be permitted to change affinity.
 - Denying access to registered glibc rseq metadata can make native signal
   delivery fail in the kernel before any handler runs. A short native syscall
   can survive that denial, while LiteInst's mandatory SIGSYS interception
@@ -237,10 +332,20 @@ trap path. Quiescent publication is never selected from this route.
   unregisters its own rseq area for both native and Tool controls; the runtime
   does not unregister production guests. Direct installed-hook behavior for
   this registered-rseq case remains unmeasured.
-- Timer arming currently returns success without delivery. Clock reads use a
-  calling-thread RDPMC RCB counter and deduct branches retired inside active
-  LiteInst handlers. Hosts that deny perf-event access report the clock as
-  unsupported. This is not PMU preemption or complete scheduling support.
+- Timer arming currently returns success without delivery. Clock reads use the
+  supervisor-created, target-CPU RCB counter; physical entry boundaries pause
+  it around runtime work rather than estimating a subtraction. Only a locally
+  unsupported CPU profile is an unavailable clock. Permission, affinity,
+  open, transfer, control, or read failures are terminal. This is not PMU timer
+  delivery or complete scheduling support.
+- Hardware qualification gives result credit to a selected method only when
+  that method retains every `Report.events` record from its own supervised
+  processes and joins each event ID, owner and target CPU to a live in-guest
+  counter snapshot. The record also requires the exact raw retired conditional
+  branch profile and an event acquired physically disabled. Zero events,
+  missing or duplicate results, a result from another guest mode, unsupported
+  PMU success, `rcb=unmeasured`, and unavailable markers all fail the method.
+  The separate counter matrix cannot supply evidence for an `rpc_tool` method.
 - Rust tool futures must make progress synchronously. Coordinator RPC and guest
   syscall injection do so; a tool future that depends on an unrelated executor
   can stall.

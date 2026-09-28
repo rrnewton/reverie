@@ -160,6 +160,7 @@ struct Continuation {
     owner_tid: i64,
     generation: u64,
     phase: Phase,
+    clock_pause: Option<crate::rcb::PauseToken>,
     entries: u64,
     callbacks: u64,
     completions: u64,
@@ -189,6 +190,7 @@ pub(crate) fn initialize() -> io::Result<()> {
             owner_tid: current_tid(),
             generation: 0,
             phase: Phase::Idle,
+            clock_pause: None,
             entries: 0,
             callbacks: 0,
             completions: 0,
@@ -233,6 +235,7 @@ pub(crate) fn prepare_signal(
         return Err(FrameError);
     }
     owner.context = context_from_image(&owner.saved, instruction);
+    owner.clock_pause = crate::rcb::hold_signal_pause().map_err(|_| FrameError)?;
     owner.phase = Phase::Captured;
     frame.set_register(libc::REG_RSP as usize, (owner.stack.top & !15) as i64);
     frame.set_register(libc::REG_RDI as usize, pointer as i64);
@@ -308,12 +311,33 @@ pub(crate) fn rebind_fork_child() {
     if !pointer.is_null() {
         unsafe {
             (*pointer).owner_tid = current_tid();
+            // Parent event/token are inert in the COW child. Ordinary clock
+            // reconstruction supplies a fresh event and token below.
+            (*pointer).clock_pause = None;
             // The entry/callback happened in the parent. The child inherits
             // its active image but physically receives only its completion.
             (*pointer).entries = 0;
             (*pointer).callbacks = 0;
             (*pointer).completions = 0;
         }
+    }
+}
+
+/// Whether ordinary fork reconstruction must keep a new event disabled until
+/// this continuation's genuine completion. No whole-owner borrow crosses Tool.
+pub(crate) fn needs_paused_child_clock() -> bool {
+    let pointer = OWNER.get();
+    !pointer.is_null() && unsafe { (*pointer).phase == Phase::Running }
+}
+
+pub(crate) fn set_child_clock_pause(token: Option<crate::rcb::PauseToken>) {
+    let pointer = OWNER.get();
+    if pointer.is_null() {
+        if token.is_some() {
+            fatal()
+        }
+    } else {
+        unsafe { (*pointer).clock_pause = token };
     }
 }
 
@@ -384,6 +408,8 @@ pub(crate) fn complete(frame: &mut SignalFrame<'_>) -> Result<bool, FrameError> 
         return Err(FrameError);
     }
     frame.restore(&owner.saved)?;
+    crate::rcb::release_signal_pause(owner.clock_pause.take())
+        .map_err(|_| FrameError)?;
     owner.completions += 1;
     owner.phase = Phase::Idle;
     PENDING.set(None);
