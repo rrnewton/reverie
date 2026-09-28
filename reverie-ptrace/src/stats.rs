@@ -133,6 +133,8 @@ struct PtraceBackendStatsCollector {
     vfork_done_stops: AtomicU64,
     #[cfg(test)]
     stop_trace: std::sync::Mutex<Vec<(reverie::Pid, String)>>,
+    #[cfg(test)]
+    signal_trace: std::sync::Mutex<Vec<(reverie::Pid, String)>>,
 }
 
 /// Live source for a ptrace backend activity snapshot.
@@ -233,6 +235,64 @@ impl PtraceBackendStatsSource {
             .lock()
             .expect("stop trace lock poisoned")
             .push((pid, description));
+    }
+
+    /// Appends one signal-delivery stop, as the run loop is about to handle
+    /// it, to the test-only signal sequence: the signal, its siginfo (the
+    /// sender's pid and uid only for a signal a process sent, where they are
+    /// defined, and for SIGCHLD with its status), and the registers that show
+    /// where the stop took effect.
+    #[cfg(test)]
+    pub(crate) fn record_signal_stop(
+        &self,
+        stopped: &safeptrace::Stopped,
+        signal: nix::sys::signal::Signal,
+    ) {
+        let info = match stopped.getsiginfo() {
+            Ok(info) => {
+                let mut text = format!(
+                    "signo={} code={} errno={}",
+                    info.si_signo, info.si_code, info.si_errno
+                );
+                if info.si_code <= 0 || info.si_signo == libc::SIGCHLD {
+                    // SAFETY: these union members are defined for a signal a
+                    // process sent (si_code <= 0) and for SIGCHLD.
+                    let (pid, uid) = unsafe { (info.si_pid(), info.si_uid()) };
+                    text += &format!(" pid={pid} uid={uid}");
+                }
+                if info.si_signo == libc::SIGCHLD {
+                    // SAFETY: defined for SIGCHLD.
+                    text += &format!(" status={}", unsafe { info.si_status() });
+                }
+                text
+            }
+            Err(error) => format!("<getsiginfo failed: {error}>"),
+        };
+        #[cfg(target_arch = "x86_64")]
+        let registers = match stopped.getregs() {
+            Ok(regs) => format!(
+                " rip={:#x} rax={} orig_rax={}",
+                regs.rip, regs.rax as i64, regs.orig_rax as i64
+            ),
+            Err(error) => format!(" <getregs failed: {error}>"),
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let registers = String::new();
+        self.collector
+            .signal_trace
+            .lock()
+            .expect("signal trace lock poisoned")
+            .push((stopped.pid(), format!("{signal:?} {info}{registers}")));
+    }
+
+    /// Returns every recorded signal-delivery stop in arrival order.
+    #[cfg(test)]
+    pub(crate) fn signal_trace(&self) -> Vec<(reverie::Pid, String)> {
+        self.collector
+            .signal_trace
+            .lock()
+            .expect("signal trace lock poisoned")
+            .clone()
     }
 
     /// Marks `pid`'s most recent recorded wait as tracer-internal: a stop
