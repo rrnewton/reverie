@@ -1,0 +1,280 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 9d6e2082..ea27626a 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -5657,9 +5657,8 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
+ }
+ 
+ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux consumes only the low 32-bit descriptor word.
++    let fd = args[0] as libc::c_int;
+     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
+         return description.read(memory, args, false);
+     }
+@@ -5705,9 +5704,8 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
+ }
+ 
+ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux consumes only the low 32-bit descriptor word.
++    let fd = args[0] as libc::c_int;
+     if let Some(description) = state.fdinfo_files.get(&fd).cloned() {
+         return description.read(memory, args, true);
+     }
+@@ -33782,6 +33780,119 @@ mod tests {
+         assert_eq!(&unconsumed, b"abcd");
+     }
+ 
++    #[test]
++    fn read_and_pread64_consume_low_descriptor_words() {
++        const HIGH_WORD: u64 = 0x5a5a_5a5a_0000_0000;
++        const BIT31_LOW_WORD: u64 = HIGH_WORD | (1 << 31);
++        const READ_ADDRESS: u64 = 0x100;
++        const PREAD_ADDRESS: u64 = 0x200;
++        const NEXT_READ_ADDRESS: u64 = 0x300;
++
++        let root = TestDir::new();
++        let path = root.0.join("input");
++        std::fs::write(&path, b"abcdef").unwrap();
++        let mut state = test_state(&root.0);
++        state.files.insert(3, std::fs::File::open(&path).unwrap());
++        state.files.insert(4, std::fs::File::open(&path).unwrap());
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [HIGH_WORD | 3, u64::MAX, 1, 0, 0, 0],
++            ),
++            negative_errno(libc::EFAULT),
++            "buffer validation follows low-word descriptor decoding"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [HIGH_WORD | 3, READ_ADDRESS, 2, 0, 0, 0],
++            ),
++            2
++        );
++        let mut bytes = [0; 2];
++        memory.read(READ_ADDRESS, &mut bytes).unwrap();
++        assert_eq!(&bytes, b"ab");
++        assert_eq!(
++            state.files.get_mut(&3).unwrap().stream_position().unwrap(),
++            2
++        );
++
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pread64,
++                [HIGH_WORD | 4, PREAD_ADDRESS, 2, 2, 0, 0],
++            ),
++            2
++        );
++        memory.read(PREAD_ADDRESS, &mut bytes).unwrap();
++        assert_eq!(&bytes, b"cd");
++        assert_eq!(
++            state.files.get_mut(&4).unwrap().stream_position().unwrap(),
++            0,
++            "pread64 must not change the open-file position"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pread64,
++                [HIGH_WORD | 4, u64::MAX, 1, 0, 0, 0],
++            ),
++            negative_errno(libc::EFAULT),
++            "buffer validation follows low-word descriptor decoding"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pread64,
++                [HIGH_WORD | 4, PREAD_ADDRESS, 1, u64::MAX, 0, 0],
++            ),
++            negative_errno(libc::EINVAL),
++            "offset validation follows low-word descriptor decoding"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [HIGH_WORD | 4, NEXT_READ_ADDRESS, 2, 0, 0, 0],
++            ),
++            2
++        );
++        memory.read(NEXT_READ_ADDRESS, &mut bytes).unwrap();
++        assert_eq!(&bytes, b"ab", "pread64 and failed reads preserve position");
++
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [BIT31_LOW_WORD | 3, u64::MAX, 1, 0, 0, 0],
++            ),
++            negative_errno(libc::EBADF),
++            "invalid low descriptor word precedes a bad read buffer"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pread64,
++                [BIT31_LOW_WORD | 3, u64::MAX, 1, 0, 0, 0],
++            ),
++            negative_errno(libc::EBADF),
++            "invalid low descriptor word precedes a bad pread64 buffer"
++        );
++    }
++
+     #[test]
+     fn inherited_special_stdin_matches_linux_read_precedence() {
+         let root = TestDir::new();
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 59522cdd..f7b9d83b 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -16141,5 +16141,127 @@ int main(int argc, char **argv) {
+     }
+ }
+ 
++#[test]
++fn read_and_pread64_consume_low_descriptor_words_on_kvm() {
++    if !kvm_available("KVM read and pread64 fd low-word argument test") {
++        return;
++    }
++
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "read-pread-fd-low-word",
++        r#"
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#define HIGH_WORD UINT64_C(0x5a5a5a5a00000000)
++#define BIT31_LOW_WORD (HIGH_WORD | UINT64_C(0x80000000))
++
++static int failed_with(long result, int expected) {
++  return result == -1 && errno == expected;
++}
++
++int main(int argc, char **argv) {
++  if (argc != 2) return 1;
++  int fd = open(argv[1], O_CREAT | O_TRUNC | O_RDWR, 0600);
++  if (fd < 0 || write(fd, "abcdef", 6) != 6 || lseek(fd, 0, SEEK_SET) != 0)
++    return 2;
++
++  char bytes[2];
++  if (syscall(SYS_read, HIGH_WORD | (uint32_t)fd, bytes, 2) != 2 ||
++      bytes[0] != 'a' || bytes[1] != 'b') return 3;
++  if (syscall(SYS_pread64, HIGH_WORD | (uint32_t)fd, bytes, 2, 2) != 2 ||
++      bytes[0] != 'c' || bytes[1] != 'd') return 4;
++  if (lseek(fd, 0, SEEK_CUR) != 2) return 5;
++
++  errno = 0;
++  if (!failed_with(syscall(SYS_read, HIGH_WORD | (uint32_t)fd,
++                           (void *)(uintptr_t)UINT64_MAX, 1), EFAULT)) return 6;
++  if (syscall(SYS_read, HIGH_WORD | (uint32_t)fd, bytes, 2) != 2 ||
++      bytes[0] != 'c' || bytes[1] != 'd') return 7;
++  errno = 0;
++  if (!failed_with(syscall(SYS_pread64, HIGH_WORD | (uint32_t)fd,
++                           (void *)(uintptr_t)UINT64_MAX, 1, 0), EFAULT)) return 8;
++  errno = 0;
++  if (!failed_with(syscall(SYS_pread64, HIGH_WORD | (uint32_t)fd,
++                           bytes, 1, (int64_t)-1), EINVAL)) return 9;
++
++  uint64_t invalid = BIT31_LOW_WORD | (uint32_t)fd;
++  errno = 0;
++  if (!failed_with(syscall(SYS_read, invalid,
++                           (void *)(uintptr_t)UINT64_MAX, 1), EBADF)) return 10;
++  errno = 0;
++  if (!failed_with(syscall(SYS_pread64, invalid,
++                           (void *)(uintptr_t)UINT64_MAX, 1, 0), EBADF)) return 11;
++
++  if (close(fd) != 0) return 12;
++  puts("read-pread-low-word-ok");
++  return 0;
++}
++"#,
++    );
++
++    let native = std::process::Command::new(&executable)
++        .arg(directory.0.join("native-read-pread-low-word"))
++        .output()
++        .unwrap();
++    assert_eq!(
++        native.status.code(),
++        Some(0),
++        "native stdout={} stderr={}",
++        String::from_utf8_lossy(&native.stdout),
++        String::from_utf8_lossy(&native.stderr)
++    );
++    assert_eq!(native.stdout, b"read-pread-low-word-ok\n");
++    assert!(native.stderr.is_empty());
++
++    let image = std::fs::read(&executable).unwrap();
++    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
++        let executable = executable.to_str().unwrap();
++        let guest_path = directory.0.join(format!(
++            "guest-read-pread-low-word-{tool_owned}-{repetition}"
++        ));
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_with_context(
++                &image,
++                &[executable, guest_path.to_str().unwrap()],
++                &["PATH=/usr/bin:/bin"],
++                &directory.0,
++            )
++            .unwrap();
++        let (code, stdout, stderr) = if tool_owned {
++            let (_, code, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<StraceTool>((), true),
++            )
++            .unwrap();
++            (code, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        };
++        assert_eq!(
++            code,
++            0,
++            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
++            String::from_utf8_lossy(&stdout),
++            String::from_utf8_lossy(&stderr)
++        );
++        assert_eq!(
++            stdout, native.stdout,
++            "tool_owned={tool_owned} repetition={repetition}"
++        );
++        assert_eq!(
++            stderr, native.stderr,
++            "tool_owned={tool_owned} repetition={repetition}"
++        );
++    }
++}
++
+ #[path = "support/natural_retirement.rs"]
+ mod natural_retirement;

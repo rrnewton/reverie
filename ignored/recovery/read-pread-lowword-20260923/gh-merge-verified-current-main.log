@@ -1,0 +1,15 @@
+gh-merge-verified: running the byte-identical verifier from dev-hermit main 8c82b1306131 (463581578a60).
+  The modified working-tree copy is not admitting or merging this pull request.
+gh-merge-verified: pr head 03ce6d472df1 CORROBORATED against --expect-head 03ce6d472df1
+gh-merge-verified: PR 625 (rrnewton/reverie)
+  pr head    03ce6d472df1537b68fdc6ead5e2a89d5294a390  (corroborated against 03ce6d472df1)
+  origin/main 7bc49f4c4d63018adba61d49246e847569518e33
+  files changed by the branch: 2
+    arrived  (main == pr head): 2
+    absent   (main == merge base, change definitely not landed): 0
+    moved on (main matches neither, undecidable from blobs): 0
+  VERIFIED: every file the branch touches is byte-identical on origin/main.
+  ⚠️ over 2 file(s), derived from refs/pull/625/head. If this PR was
+  pushed seconds ago that ref can be STALE, making the file set too small and
+  this success true only of a subset. Confirm the count against the PR's real
+  file list, or re-run once the ref has converged.

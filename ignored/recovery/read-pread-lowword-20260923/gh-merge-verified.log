@@ -1,0 +1,13 @@
+gh-merge-verified: REFUSING TO MERGE -- this tool cannot prove it is the current version, so its admission check may not exist in this copy.
+    this copy is 4e90a65316ae, dev-hermit main has 463581578a60
+
+  A stale lander does not fail; it SKIPS the changes-request check and reports a
+  clean landing. That is indistinguishable from a checked one, which is why this
+  refuses rather than warning.
+
+  Run from a fresh checkout, or refresh this one (`make checkout-fresh` in dev-hermit).
+  If the reviewed pull request changes this file, pass --run-current-main-copy;
+  the modified copy will fetch and start the exact verifier from main, and only
+  that reviewed copy will perform admission and the merge.
+  Pass --verify-only only to prove an already-performed merge; it performs no
+  admission and is not a route for landing a change to this file.
