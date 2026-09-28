@@ -23,15 +23,15 @@ typedef struct {
 
 static pthread_barrier_t start_barrier;
 
-static void *nested_main(void *argument) {
-  worker_state_t *state = argument;
+static void* nested_main(void* argument) {
+  worker_state_t* state = argument;
   state->nested_tid = (pid_t)syscall(SYS_gettid);
   state->value += 1;
   return NULL;
 }
 
-static void *spawner_main(void *argument) {
-  worker_state_t *state = argument;
+static void* spawner_main(void* argument) {
+  worker_state_t* state = argument;
   pthread_t nested;
 
   state->spawner_tid = (pid_t)syscall(SYS_gettid);
@@ -39,9 +39,9 @@ static void *spawner_main(void *argument) {
     // The serial participant has no extra work; all spawners continue below.
   }
   if (pthread_create(&nested, NULL, nested_main, state) != 0)
-    return (void *)1;
+    return (void*)1;
   if (pthread_join(nested, NULL) != 0)
-    return (void *)2;
+    return (void*)2;
   state->value += 1;
   return NULL;
 }
@@ -49,10 +49,8 @@ static void *spawner_main(void *argument) {
 // TODO-HUMAN-REVIEW(PR-154): Review the concurrent native DBT pthread ratchet.
 int main(void) {
   pthread_t spawners[SPAWNERS];
-  worker_state_t states[SPAWNERS] = {{.value = 0},
-                                    {.value = 1},
-                                    {.value = 2},
-                                    {.value = 3}};
+  worker_state_t states[SPAWNERS] = {
+      {.value = 0}, {.value = 1}, {.value = 2}, {.value = 3}};
   pid_t tids[TOTAL_THREADS];
   int total = 0;
   int tid_count = 0;
@@ -60,12 +58,13 @@ int main(void) {
   if (pthread_barrier_init(&start_barrier, NULL, SPAWNERS) != 0)
     return 1;
   for (int index = 0; index < SPAWNERS; ++index) {
-    if (pthread_create(&spawners[index], NULL, spawner_main, &states[index]) != 0) {
+    if (pthread_create(&spawners[index], NULL, spawner_main, &states[index]) !=
+        0) {
       return 1;
     }
   }
   for (int index = 0; index < SPAWNERS; ++index) {
-    void *result = NULL;
+    void* result = NULL;
     if (pthread_join(spawners[index], &result) != 0 || result != NULL) {
       return 2;
     }
@@ -84,7 +83,7 @@ int main(void) {
         return 5;
   }
 
-  printf("threads=%d total=%d unique_tids=%d\n", TOTAL_THREADS, total,
-         tid_count);
+  printf(
+      "threads=%d total=%d unique_tids=%d\n", TOTAL_THREADS, total, tid_count);
   return 0;
 }

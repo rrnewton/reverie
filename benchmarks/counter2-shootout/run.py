@@ -223,7 +223,12 @@ def backend_command(
     backend: str, artifact: Path, arguments: list[str], root: Path, target: Path
 ) -> list[str]:
     if backend == "ptrace":
-        return [str(require_file(target / "counter2", "ptrace counter2")), "--", str(artifact), *arguments]
+        return [
+            str(require_file(target / "counter2", "ptrace counter2")),
+            "--",
+            str(artifact),
+            *arguments,
+        ]
     if backend == "kvm":
         if not Path("/dev/kvm").exists():
             fail("/dev/kvm is unavailable")
@@ -234,7 +239,9 @@ def backend_command(
         ]
     if backend == "liteinst":
         return [
-            str(require_file(target / "reverie-liteinst-examples", "LiteInst examples")),
+            str(
+                require_file(target / "reverie-liteinst-examples", "LiteInst examples")
+            ),
             "--tool",
             "counter2",
             "--",
@@ -243,7 +250,11 @@ def backend_command(
         ]
     if backend == "dbt":
         return [
-            str(require_file(target / "reverie-dbt-counter2-exact", "DBT exact counter2")),
+            str(
+                require_file(
+                    target / "reverie-dbt-counter2-exact", "DBT exact counter2"
+                )
+            ),
             "--",
             str(artifact),
             *arguments,
@@ -334,7 +345,9 @@ def main() -> None:
     root = Path(__file__).resolve().parents[2]
     target = root / "target" / args.profile
     selected = [item.strip() for item in args.backends.split(",") if item.strip()]
-    if len(set(selected)) != len(selected) or any(item not in BACKENDS for item in selected):
+    if len(set(selected)) != len(selected) or any(
+        item not in BACKENDS for item in selected
+    ):
         fail(f"invalid --backends value: {args.backends}")
     if not selected:
         fail("select at least one backend")
@@ -348,7 +361,10 @@ def main() -> None:
     )
     workloads = []
     for workload in manifest["workloads"]:
-        if requested_workloads is not None and workload["id"] not in requested_workloads:
+        if (
+            requested_workloads is not None
+            and workload["id"] not in requested_workloads
+        ):
             continue
         if all(backend in workload["backends"] for backend in selected):
             workloads.append(workload)
@@ -464,7 +480,9 @@ def main() -> None:
                 args.timeout_seconds,
                 root,
             )
-            check_outcome(execution, outcome, expected[(execution.workload, execution.variant)])
+            check_outcome(
+                execution, outcome, expected[(execution.workload, execution.variant)]
+            )
 
     schedule = [
         (repetition, execution)
@@ -482,7 +500,9 @@ def main() -> None:
                 args.timeout_seconds,
                 root,
             )
-            check_outcome(execution, outcome, expected[(execution.workload, execution.variant)])
+            check_outcome(
+                execution, outcome, expected[(execution.workload, execution.variant)]
+            )
             sample = {
                 "run_id": run_id,
                 "sequence": index,
@@ -522,7 +542,11 @@ def main() -> None:
         durations = [item["duration_ms"] for item in group]
         native_median = native_medians[(workload, variant)]
         counters = sorted(
-            {item["counter_total"] for item in group if item["counter_total"] is not None}
+            {
+                item["counter_total"]
+                for item in group
+                if item["counter_total"] is not None
+            }
         )
         summary_rows.append(
             {
@@ -582,7 +606,9 @@ def main() -> None:
         "timeout_seconds": args.timeout_seconds,
         "seed": args.seed,
     }
-    (output / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    (output / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n"
+    )
 
     lines = [
         "# Counter2 shootout",

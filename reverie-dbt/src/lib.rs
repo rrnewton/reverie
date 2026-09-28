@@ -2313,7 +2313,9 @@ mod tests {
             .split_once("static void post_syscall")
             .expect("end of identity preparation")
             .0;
-        assert!(prepare.contains("tail_injected ? blocking_positive_child_wait_target_argument"));
+        assert!(
+            prepare.contains("tail_injected\n      ? blocking_positive_child_wait_target_argument")
+        );
         assert!(prepare.contains("translated[wait_target_argument] != args[wait_target_argument]"));
         let target = source
             .split_once("static int blocking_positive_child_wait_target_argument")
@@ -2334,7 +2336,7 @@ mod tests {
         }
 
         let pre_syscall = source
-            .split_once("static bool pre_syscall(void *drcontext, int sysnum)")
+            .split_once("static bool pre_syscall(void* drcontext, int sysnum)")
             .expect("native pre_syscall definition")
             .1
             .split_once("static void thread_init")
@@ -2342,8 +2344,11 @@ mod tests {
             .0;
         assert_eq!(
             pre_syscall
-                .matches("prepare_original_identity_syscall(drcontext, counters,")
-                .count(),
+                .matches("prepare_original_identity_syscall(\n        drcontext, counters,")
+                .count()
+                + pre_syscall
+                    .matches("prepare_original_identity_syscall(\n      drcontext, counters,")
+                    .count(),
             3
         );
         assert_eq!(pre_syscall.matches("sysnum, args, true").count(), 1);
@@ -2364,7 +2369,7 @@ mod tests {
         assert!(!signal.contains("lookup_virtual_identity"));
 
         let post = source
-            .split_once("static void post_syscall(void *drcontext, int sysnum) {")
+            .split_once("static void post_syscall(void* drcontext, int sysnum) {")
             .expect("native post_syscall definition")
             .1
             .split_once("static bool pre_syscall")
@@ -3305,7 +3310,7 @@ mod tests {
     fn copied_vfork_first_syscall_uses_the_copied_child_path() {
         let source = include_str!("../native/client.c");
         let pre_syscall = source
-            .split_once("static bool pre_syscall(void *drcontext, int sysnum)")
+            .split_once("static bool pre_syscall(void* drcontext, int sysnum)")
             .expect("native pre_syscall definition")
             .1
             .split_once("static void thread_init")

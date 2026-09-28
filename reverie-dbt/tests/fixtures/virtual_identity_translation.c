@@ -11,20 +11,30 @@
 
 #include "virtual_identity.h"
 
-static int expect_translation(const virtual_identity_t *identities,
-                              size_t count, int32_t guest, int32_t expected) {
+static int expect_translation(
+    const virtual_identity_t* identities,
+    size_t count,
+    int32_t guest,
+    int32_t expected) {
   int32_t actual = host_identity_for_guest_entries(identities, count, guest);
   if (actual == expected)
     return 0;
 
-  fprintf(stderr, "guest identity %d resolved to %d, expected %d\n", guest,
-          actual, expected);
+  fprintf(
+      stderr,
+      "guest identity %d resolved to %d, expected %d\n",
+      guest,
+      actual,
+      expected);
   return 1;
 }
 
-static int expect_wait_translation(translated_child_wait_t *wait,
-                                   int32_t sysnum, int32_t physical_pid,
-                                   int32_t expected, int should_translate) {
+static int expect_wait_translation(
+    translated_child_wait_t* wait,
+    int32_t sysnum,
+    int32_t physical_pid,
+    int32_t expected,
+    int should_translate) {
   int32_t actual = physical_pid;
   int32_t translated;
   int did_translate =
@@ -34,11 +44,16 @@ static int expect_wait_translation(translated_child_wait_t *wait,
   if (did_translate == should_translate && actual == expected)
     return 0;
 
-  fprintf(stderr,
-          "child wait sysnum %d target %d translated=%d to %d, expected "
-          "translated=%d target=%d\n",
-          sysnum, physical_pid, did_translate, actual, should_translate,
-          expected);
+  fprintf(
+      stderr,
+      "child wait sysnum %d target %d translated=%d to %d, expected "
+      "translated=%d target=%d\n",
+      sysnum,
+      physical_pid,
+      did_translate,
+      actual,
+      should_translate,
+      expected);
   return 1;
 }
 
@@ -63,7 +78,8 @@ int main(void) {
     return 6;
 
   /* A signal before syscall entry has no translated-wait record. Even though
-   * guest PID 4 is also the host PID of virtual PID 3 above, it must remain 4. */
+   * guest PID 4 is also the host PID of virtual PID 3 above, it must remain 4.
+   */
   translated_child_wait_t wait = {0};
   if (expect_wait_translation(&wait, 61, 4, 4, 0) != 0)
     return 7;

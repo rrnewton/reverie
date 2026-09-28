@@ -14,8 +14,8 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-static void *observe_identity(void *argument) {
-  pid_t *observed = argument;
+static void* observe_identity(void* argument) {
+  pid_t* observed = argument;
   *observed = (pid_t)syscall(SYS_gettid);
   return NULL;
 }

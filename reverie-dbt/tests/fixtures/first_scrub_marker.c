@@ -56,15 +56,15 @@ static inline long syscall0(long number) {
   return result;
 }
 
-static void write_all(const char *bytes, unsigned long length) {
-  __asm__ volatile("syscall"
-                   :
-                   : "a"((long)SYS_write), "D"((long)STDOUT_FD), "S"(bytes),
-                     "d"(length)
-                   : "rcx", "r11", "memory");
+static void write_all(const char* bytes, unsigned long length) {
+  __asm__ volatile(
+      "syscall"
+      :
+      : "a"((long)SYS_write), "D"((long)STDOUT_FD), "S"(bytes), "d"(length)
+      : "rcx", "r11", "memory");
 }
 
-static void write_str(const char *text) {
+static void write_str(const char* text) {
   unsigned long length = 0;
   while (text[length] != '\0')
     ++length;
@@ -95,8 +95,9 @@ __attribute__((noreturn)) static void exit_with(int status) {
 }
 
 /* `volatile` throughout so the compiler cannot decide this memory is dead and
- * elide the writes or the reads: that memory is precisely what is under test. */
-static int surviving_marker_words(volatile const unsigned char *marker) {
+ * elide the writes or the reads: that memory is precisely what is under test.
+ */
+static int surviving_marker_words(volatile const unsigned char* marker) {
   int intact = 0;
   for (int word = 0; word < MARKER_WORDS; ++word) {
     bool whole = true;
@@ -118,8 +119,8 @@ void _start(void) {
   if (anchor <= MARKER_DEPTH_BYTES)
     exit_with(HARNESS_FAILURE);
 
-  volatile unsigned char *marker =
-      (volatile unsigned char *)(anchor - MARKER_DEPTH_BYTES);
+  volatile unsigned char* marker =
+      (volatile unsigned char*)(anchor - MARKER_DEPTH_BYTES);
 
   /* THE POINT OF THIS FIXTURE: planted before any syscall has been issued. */
   for (size_t at = 0; at < (size_t)MARKER_WORDS * sizeof(uintptr_t); ++at)
