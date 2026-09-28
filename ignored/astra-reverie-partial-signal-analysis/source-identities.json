@@ -1,0 +1,77 @@
+[
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "tests/c/preadv2_pwritev2_pipe.c",
+    "bytes": 30693,
+    "sha256": "0a3c446a8624d4b4e811b27de5c8585f25dc475d34f2ddd17a35c88eaa5bb4ab"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "hermit-cli/src/lib.rs",
+    "bytes": 194350,
+    "sha256": "6a1eca719d56de3fd76838ce2b4ececcc9cf081088c13a811295580ade83ce74"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "detcore-model/src/config.rs",
+    "bytes": 71658,
+    "sha256": "ea24ef42173088a9210c999dea7ae48486be82d009dd88ed4897201a0be709d2"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "detcore/src/tool_global.rs",
+    "bytes": 185861,
+    "sha256": "6683a2b4d80fce4c4d51f78db994d3fc05d8e99d800cfeb031f8625b6295e4ad"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "detcore/src/scheduler.rs",
+    "bytes": 345299,
+    "sha256": "e931eb57e72da829a95eba22e5864fa2427cb7994504daeb3f1526b30ddf6cb8"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "detcore/src/syscalls/threads.rs",
+    "bytes": 136529,
+    "sha256": "d252563caea59d2c497dd494986d36abf0528d71f111fb3d0650aacf16c481a3"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "detcore/src/syscalls/files.rs",
+    "bytes": 198024,
+    "sha256": "0d4dabeab3227dfe200d0f811b3c83c82513693d9e9433fd6658dc230d08e4f1"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "89a9f0217b2f3ab6106aac12ea2a650eee7972d6",
+    "path": "reverie-kvm/src/runtime.rs",
+    "bytes": 135379,
+    "sha256": "7436313ad455bef00b153c56a50e7802c5c3f81514c73beef779ca2d931f6760"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "89a9f0217b2f3ab6106aac12ea2a650eee7972d6",
+    "path": "reverie-kvm/src/vm.rs",
+    "bytes": 252605,
+    "sha256": "56f1a12f4fe17d9ef5b9c768c563ca0c6e114b4764910dc0d91c2c8b1fbac8b5"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "89a9f0217b2f3ab6106aac12ea2a650eee7972d6",
+    "path": "reverie-kvm/src/executor.rs",
+    "bytes": 1245723,
+    "sha256": "b67eda8a6da319d5168b749264817dce2c5e4e04935faa60bfe2fbee38a8af61"
+  },
+  {
+    "trace": "/tmp/astra-hermit-ready-vector-signal-traces/true-partial.stderr",
+    "bytes": 193379,
+    "sha256": "abec458ab23e47a57b69c36865bbe324eb849399a674f60188dc3290466dca24"
+  }
+]
