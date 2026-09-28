@@ -6168,6 +6168,22 @@ mod tests {
         ordinary_exec_owner_control(false, 1).await;
     }
 
+    /// The exec'ing thread's run loop, not its exit future, observes the
+    /// former TID's ECHILD first. A loaded tracer thread produces this order by
+    /// chance; the control forces it on every run.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::task::NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(|slot| slot.set(false));
+            }
+        }
+        let _reset = Reset;
+        crate::task::NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(|slot| slot.set(true));
+        ordinary_exec_owner_control(false, 1).await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_nonleader_exec_real_signal_cancels_postexec_timer() {
         ordinary_exec_owner_control(false, 2).await;
