@@ -549,11 +549,11 @@ impl fmt::Debug for Stopped {
 }
 
 /// Marks the one [`Stopped`] minted by an exit future for a published
-/// `PTRACE_EVENT_EXIT` stop. It is not part of the value's identity: equality
-/// and hashing ignore it.
+/// `PTRACE_EVENT_EXIT` stop, with the exit epoch that publication belongs to.
+/// It is not part of the value's identity: equality and hashing ignore it.
 #[derive(Clone, Copy, Default)]
 #[cfg_attr(not(feature = "notifier"), allow(dead_code))]
-struct ExitStopMark(bool);
+struct ExitStopMark(Option<usize>);
 
 impl PartialEq for ExitStopMark {
     fn eq(&self, _: &Self) -> bool {
@@ -586,8 +586,13 @@ impl Stopped {
     ///
     /// For more information, please see the "Death under ptrace" section
     /// in `man 2 ptrace`.
+    ///
+    /// On the capability for a published exit stop, ESRCH also retires the
+    /// statuses queued before that exit stop (see
+    /// [`Stopped::retire_statuses_before_exit_stop`]).
     fn map_err(&self, err: Errno) -> Error {
         if err == Errno::ESRCH {
+            self.retire_statuses_before_exit_stop();
             Error::Died(Zombie::from_token(self.0, self.1.clone()))
         } else {
             Error::Errno(err)
@@ -657,25 +662,41 @@ impl Stopped {
     }
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
-        Self(pid, token, ExitStopMark(false))
+        Self(pid, token, ExitStopMark(None))
     }
 
-    /// The capability for a published `PTRACE_EVENT_EXIT` stop. When a ptrace
-    /// request succeeds in moving it out of that stop, the statuses queued
-    /// before the exit stop are retired: the tracee had already left each of
-    /// those stops when it entered the exit stop.
+    /// The capability for the `PTRACE_EVENT_EXIT` stop published in exit
+    /// `epoch`. See [`Stopped::retire_statuses_before_exit_stop`] for when the
+    /// statuses queued before that exit stop are retired.
     #[cfg(feature = "notifier")]
-    fn from_exit_token(pid: Pid, token: TraceeToken) -> Self {
-        Self(pid, token, ExitStopMark(true))
+    fn from_exit_token(pid: Pid, token: TraceeToken, epoch: usize) -> Self {
+        Self(pid, token, ExitStopMark(Some(epoch)))
+    }
+
+    /// On the capability for a published exit stop, retires the statuses the
+    /// notifier queued before that exit stop. The tracee had already left
+    /// each of those stops when it entered the exit stop, so none of them
+    /// names a stop it can still be in.
+    ///
+    /// This runs on every terminal disposition of the capability: a ptrace
+    /// request that moves the tracee out of the exit stop, and an ESRCH from
+    /// any request on it (resume, step, GETEVENTMSG, ...), which means the
+    /// tracee is no longer in the exit stop. Statuses queued after the exit
+    /// stop, such as the Exec or the terminal wait status, are never removed.
+    /// A mark from an earlier exit epoch retires nothing, so a stale
+    /// capability cannot remove the prefix of a later exit stop. Does nothing
+    /// on any other capability.
+    fn retire_statuses_before_exit_stop(&self) {
+        #[cfg(feature = "notifier")]
+        if let Some(epoch) = self.2.0 {
+            self.1.event().retire_statuses_before_exit_stop(epoch);
+        }
     }
 
     /// Converts this capability into the running state after a successful
     /// ptrace request moved the tracee out of its stop.
     fn into_running(self) -> Running {
-        #[cfg(feature = "notifier")]
-        if self.2.0 {
-            self.1.event().retire_statuses_before_exit_stop();
-        }
+        self.retire_statuses_before_exit_stop();
         Running::from_token(self.0, self.1)
     }
 
@@ -864,7 +885,15 @@ impl Stopped {
     ) -> Result<Running, (Self, Errno)> {
         match result {
             Ok(()) => Ok(self.into_running()),
-            Err(error) => Err((self, Errno::new(error as i32))),
+            Err(error) => {
+                let errno = Errno::new(error as i32);
+                if errno == Errno::ESRCH {
+                    // The retained value keeps its ownership role, but the
+                    // tracee has left the exit stop this capability names.
+                    self.retire_statuses_before_exit_stop();
+                }
+                Err((self, errno))
+            }
         }
     }
 
