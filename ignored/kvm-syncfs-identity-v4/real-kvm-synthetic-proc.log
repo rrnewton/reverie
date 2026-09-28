@@ -1,0 +1,9 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.68s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-b2f134c8feedb841)
+
+running 1 test
+test real_kvm_synthetic_proc_snapshot_is_immutable_and_opath_correct ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 337 filtered out; finished in 0.13s
+

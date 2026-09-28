@@ -1,0 +1,134 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:7076:
+                     negative_errno(libc::ENOENT)
+                 }
+             }
+-            FdinfoPathTarget::MissingFinal { tid } => {
+-                fdinfo_task_generation(state, tid)
+-                    .map_or_else(|error| error, |_| negative_errno(libc::ENOENT))
+-            }
++            FdinfoPathTarget::MissingFinal { tid } => fdinfo_task_generation(state, tid)
++                .map_or_else(|error| error, |_| negative_errno(libc::ENOENT)),
+             FdinfoPathTarget::InvalidTask => negative_errno(libc::ENOENT),
+         };
+     }
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:19600:
+             // SAFETY: native_source is live. This is an explicitly
+             // credential-qualified native oracle; the guest assertion below
+             // remains unconditional under its fixed uid-0 identity.
+-            assert_eq!(unsafe { libc::fchmod(native_source.as_raw_fd(), 0o600) }, -1);
+             assert_eq!(
++                unsafe { libc::fchmod(native_source.as_raw_fd(), 0o600) },
++                -1
++            );
++            assert_eq!(
+                 std::io::Error::last_os_error().raw_os_error(),
+                 Some(libc::EPERM)
+             );
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:19753:
+             "classified carrier protection must not depend on its permissive host mode"
+         );
+         assert_eq!(
+-            std::fs::metadata(&carrier_path).unwrap().permissions().mode() & 0o777,
++            std::fs::metadata(&carrier_path)
++                .unwrap()
++                .permissions()
++                .mode()
++                & 0o777,
+             0o666,
+             "refused guest fchmod unexpectedly changed the permissive host control"
+         );
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:20634:
+             // memfd_create without MFD_ALLOW_SEALING starts with only
+             // F_SEAL_SEAL, so these generic carriers lack all mutation seals.
+             // SAFETY: host is a live generic virtual-file carrier.
+-            assert_eq!(unsafe { libc::fcntl(host, libc::F_GET_SEALS) }, libc::F_SEAL_SEAL);
++            assert_eq!(
++                unsafe { libc::fcntl(host, libc::F_GET_SEALS) },
++                libc::F_SEAL_SEAL
++            );
+ 
+             let procfd = format!("/proc/self/fd/{direct}");
+             let writable = open_with_flags(&mut memory, &mut state, &procfd, libc::O_RDWR);
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:29608:
+                 -1,
+                 libc::EINVAL,
+             ),
++            ("bad-pointer", info, native, bad_address, 1, 0, libc::ESPIPE),
+             (
+-                "bad-pointer",
+-                info,
+-                native,
+-                bad_address,
+-                1,
+-                0,
+-                libc::ESPIPE,
+-            ),
+-            (
+                 "invalid-fd",
+                 GUEST_NOFILE_LIMIT as i64,
+                 -1,
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:29662:
+             assert_eq!(
+                 fixture.call(
+                     libc::SYS_pwrite64,
+-                    [
+-                        guest_fd as u64,
+-                        address,
+-                        count as u64,
+-                        offset as u64,
+-                        0,
+-                        0,
+-                    ],
++                    [guest_fd as u64, address, count as u64, offset as u64, 0, 0,],
+                 ),
+                 negative_errno(expected),
+                 "guest fdinfo pwrite {label}"
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:29738:
+             libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+             libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+             libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+-            libc::O_RDONLY
+-                | libc::O_CREAT
+-                | libc::O_EXCL
+-                | libc::O_DIRECTORY
+-                | libc::O_NOFOLLOW,
++            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+         ] {
+             assert_fdinfo_rejection_does_not_allocate(
+                 &mut fixture,
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:29958:
+             libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+             libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+             libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+-            libc::O_RDONLY
+-                | libc::O_CREAT
+-                | libc::O_EXCL
+-                | libc::O_DIRECTORY
+-                | libc::O_NOFOLLOW,
++            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+         ] {
+             assert_eq!(
+                 fixture.open("/proc/self/fdinfo/", flags),
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:31598:
+             .unwrap()
+             .remove(f.executor.state.tid, f.executor.task_generation);
+         f.executor.release_files_on_exit();
+-        worker.state.regular_create_directory_policy =
+-            RegularCreateDirectoryPolicy::LegacyLookup;
++        worker.state.regular_create_directory_policy = RegularCreateDirectoryPolicy::LegacyLookup;
+         let leader_path = format!("/proc/1/fdinfo/{target}\0");
+         f.memory.write(0x100, leader_path.as_bytes()).unwrap();
+         for flags in [
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm/src/executor.rs:31606:
+             libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
+             libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
+             libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+-            libc::O_RDONLY
+-                | libc::O_CREAT
+-                | libc::O_EXCL
+-                | libc::O_DIRECTORY
+-                | libc::O_NOFOLLOW,
++            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+         ] {
+             assert_eq!(
+                 worker.execute(

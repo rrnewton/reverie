@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.02s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+
+thread 'executor::tests::file_mutation_guards_preserve_access_mode_and_memfd_seal_results' (1799911) panicked at reverie-kvm/src/executor.rs:18340:9:
+assertion `left == right` failed
+  left: 2035712
+ right: -1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::file_mutation_guards_preserve_access_mode_and_memfd_seal_results ... FAILED
+
+failures:
+
+failures:
+    executor::tests::file_mutation_guards_preserve_access_mode_and_memfd_seal_results
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 796 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

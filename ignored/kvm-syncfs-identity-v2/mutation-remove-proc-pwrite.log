@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.90s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+
+thread 'executor::tests::synthetic_proc_every_regular_surface_refuses_pwrite_with_espipe' (1732584) panicked at reverie-kvm/src/executor.rs:17773:13:
+assertion `left == right` failed: pwrite /proc/uptime
+  left: -9
+ right: -29
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::synthetic_proc_every_regular_surface_refuses_pwrite_with_espipe ... FAILED
+
+failures:
+
+failures:
+    executor::tests::synthetic_proc_every_regular_surface_refuses_pwrite_with_espipe
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 796 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

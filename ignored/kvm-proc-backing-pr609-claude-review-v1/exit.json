@@ -1,0 +1,59 @@
+{
+  "command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "2400s",
+    "with-proxy",
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "plan",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "Read,Grep,Glob"
+  ],
+  "completed_at": "2026-09-21T07:58:01.225718+00:00",
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/ignored/kvm-proc-backing-pr609-claude-review-v1",
+  "elapsed_seconds": 1495.7656544419006,
+  "exit_code": 0,
+  "inputs_sha256": "52e6bd40a5df25f32a821ccd0ddbc0eecf762f7404e701ff6689bebd1f64f80e",
+  "inputs_unchanged": true,
+  "kill_after_seconds": 10,
+  "launcher_sha256": "6d7b7c44638e01dec7dc8f321b142a3700b64f794d112da13280142964da5195",
+  "launcher_unchanged": true,
+  "output_bytes": 1461177,
+  "output_sha256": "7157ba0c9928e8f816da8eb6f03520e0b0fa4e9e7f74edbddab2809e56be1ba7",
+  "per_output_file_bytes": 67108864,
+  "prompt_sha256": "5cf8470fd0fcdb908bb204ec0df4e5c38b5c571e025c6142ba71cb88b60f5eb9",
+  "review_target": "96d0b5848f3a61bc7c4c1806bd8e64d25c5f7bb7",
+  "source_after": {
+    "branch": "codex/kvm-syncfs-identity-20260920",
+    "head": "96d0b5848f3a61bc7c4c1806bd8e64d25c5f7bb7",
+    "patch_sha256": "356462ca55635b56f572697db8d5e935a6915debb147350b7f587f4d148be0fb",
+    "remote_refs": {
+      "refs/heads/main": "b13ad926a34f27bb39a349429a1d08e812d741b4",
+      "refs/pull/609/head": "96d0b5848f3a61bc7c4c1806bd8e64d25c5f7bb7"
+    },
+    "remote_refs_raw": "b13ad926a34f27bb39a349429a1d08e812d741b4\trefs/heads/main\n96d0b5848f3a61bc7c4c1806bd8e64d25c5f7bb7\trefs/pull/609/head\n",
+    "source_sha256": {
+      "reverie-kvm/src/elf.rs": "3ef73519f6666c3108b746cbb6d21691cee1953b585a77b310cf85ee2567a3a6",
+      "reverie-kvm/src/executor.rs": "74b0e3732462aa83ef926dcd7e44a52802a63df1303bd62722e7fd7bb72df6a2",
+      "reverie-kvm/tests/static_elf.rs": "b51557a4ce47c007d58a1257b787c2ff8f60bba6bc9d49d98e5860b775d5ea9f"
+    },
+    "tree": "e5c35ee9e04aa5935d27c2ac82b918c2c976ad9b"
+  },
+  "source_entries": 209,
+  "source_input_bytes": 8689469,
+  "source_unchanged": true,
+  "started_at": "2026-09-21T07:33:05.459923+00:00",
+  "stderr_bytes": 93,
+  "stderr_sha256": "baa73543804294abc0f6c8fc48aeda5ae18986656b5edbc3c7f41677d79ac60e",
+  "tree": "e5c35ee9e04aa5935d27c2ac82b918c2c976ad9b",
+  "wall_seconds": 2400
+}

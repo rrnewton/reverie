@@ -1,0 +1,4 @@
+command=CARGO_INCREMENTAL=0 timeout 180s cargo test --locked -p reverie-kvm --lib executor::tests::synthetic_proc_readonly_tmpfile_precedes_every_path_and_descriptor_resolution -- --exact --nocapture
+expected=FAIL rc 101 after moving read-only O_TMPFILE validation below pathname copy
+actual_rc=101
+wall_time_seconds=22.83

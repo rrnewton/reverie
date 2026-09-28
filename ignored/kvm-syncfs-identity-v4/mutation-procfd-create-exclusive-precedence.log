@@ -1,0 +1,30 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+warning: unused variable: `create_exclusive`
+    --> reverie-kvm/src/executor.rs:7336:9
+     |
+7336 |     let create_exclusive = !path_only
+     |         ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_create_exclusive`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-kvm` (lib test) generated 1 warning (run `cargo fix --lib -p reverie-kvm --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.57s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-09c0d8956b925072)
+
+running 1 test
+
+thread 'executor::tests::synthetic_proc_procfd_access_gate_is_dac_independent_and_directory_specific' (3422384) panicked at reverie-kvm/src/executor.rs:18807:13:
+assertion `left == right` failed: guest proc-fd matrix case=create-exclusive-write
+  left: -13
+ right: -17
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::synthetic_proc_procfd_access_gate_is_dac_independent_and_directory_specific ... FAILED
+
+failures:
+
+failures:
+    executor::tests::synthetic_proc_procfd_access_gate_is_dac_independent_and_directory_specific
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 800 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

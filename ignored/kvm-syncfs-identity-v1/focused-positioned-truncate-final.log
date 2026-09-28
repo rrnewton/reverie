@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+test executor::tests::positioned_write_seek_truncate_and_sync_round_trip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 791 filtered out; finished in 0.00s
+
+real 0.14
+user 0.07
+sys 0.06
