@@ -91,6 +91,37 @@ fn bypasses_seccomp(orig_rax: u64) -> bool {
     SECCOMP_BYPASSING_NUMBERS.contains(&(orig_rax as i64 as i32))
 }
 
+/// The signals pending for thread `tid`, private and shared, as a mask with
+/// bit `n - 1` for signal `n` (`/proc/<tid>/status` `SigPnd` and `ShdPnd`).
+fn pending_signals(tid: i32) -> std::io::Result<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))?;
+    let mut pending = None::<u64>;
+    let mut shared = None::<u64>;
+    for line in status.lines() {
+        let field = |prefix: &str| {
+            line.strip_prefix(prefix)
+                .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+        };
+        if let Some(mask) = field("SigPnd:") {
+            pending = Some(mask);
+        } else if let Some(mask) = field("ShdPnd:") {
+            shared = Some(mask);
+        }
+    }
+    match (pending, shared) {
+        (Some(pending), Some(shared)) => Ok(pending | shared),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "no SigPnd/ShdPnd lines",
+        )),
+    }
+}
+
+/// The bit of signal `signal` in a `/proc` signal mask.
+fn signal_bit(signal: i32) -> u64 {
+    1 << (signal - 1)
+}
+
 fn nix_pid(pid: reverie::Pid) -> nix::unistd::Pid {
     nix::unistd::Pid::from_raw(pid.as_raw())
 }
@@ -676,43 +707,95 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.arm_liteinst_wait(&wait);
 
         // H2: the slot's (or the restored site's) own seccomp stop.
-        let task = match wait {
-            Wait::Stopped(task, Event::Seccomp) => {
-                let tag = task.getevent()?;
-                let regs = task.getregs()?;
-                if tag != expected_tag || regs.rip != expected_rip || regs.orig_rax != nr {
+        //
+        // The mask cannot hold SIGSTOP: one pending when H1 resumed the thread
+        // is dequeued on the way back to user mode, at the target, before the
+        // `syscall` there runs, whereas under plain ptrace it stays pending
+        // while the syscall runs and is delivered after it (P2-SPEC O1.4). Its
+        // delivery stop is suppressed here, with its siginfo kept, and H3
+        // raises it again. Each queue holds at most one SIGSTOP (legacy
+        // signals coalesce), and the kernel dequeues the thread's private
+        // queue before the shared one, so there are at most two, in that order.
+        let mut wait = wait;
+        let mut deferred = Vec::new();
+        let task = loop {
+            match wait {
+                Wait::Stopped(task, Event::Seccomp) => {
+                    let tag = task.getevent()?;
+                    let regs = task.getregs()?;
+                    if tag != expected_tag || regs.rip != expected_rip || regs.orig_rax != nr {
+                        return Err(self.trap_only_failure(
+                            "trap-only hop",
+                            TrapOnlyFailure::HopUnexpectedStop {
+                                phase: "H2 slot stop",
+                                site,
+                                stop: format!(
+                                    "seccomp stop tag {tag:#x} rip {:#x} orig_rax {}",
+                                    regs.rip, regs.orig_rax as i64
+                                ),
+                            },
+                        ));
+                    }
+                    break task;
+                }
+                wait @ (Wait::Exited(..) | Wait::Stopped(_, Event::Exit)) => {
+                    return Ok(HopOutcome::Other(wait));
+                }
+                Wait::Stopped(task, Event::Signal(nix::sys::signal::Signal::SIGSTOP))
+                    if deferred.len() < 2 =>
+                {
+                    let regs = task.getregs()?;
+                    if regs.rip != target || regs.orig_rax != -1i64 as u64 {
+                        return Err(self.trap_only_failure(
+                            "trap-only hop",
+                            TrapOnlyFailure::HopUnexpectedStop {
+                                phase: "H2 slot stop",
+                                site,
+                                stop: format!(
+                                    "SIGSTOP at rip {:#x} orig_rax {} (expected rip {target:#x})",
+                                    regs.rip, regs.orig_rax as i64
+                                ),
+                            },
+                        ));
+                    }
+                    let info = task.getsiginfo()?;
+                    #[cfg(test)]
+                    if let Some(trap_only) = self.trap_only.as_ref() {
+                        trap_only
+                            .shared
+                            .hooks
+                            .record(format!("slot SIGSTOP deferred code={}", info.si_code));
+                    }
+                    deferred.push(info);
+                    wait = self.resume_stopped(task, None)?.next_state().await?;
+                    self.arm_liteinst_wait(&wait);
+                }
+                Wait::Stopped(task, event) => {
+                    let rip = task.getregs().map(|regs| regs.rip).unwrap_or(0);
                     return Err(self.trap_only_failure(
                         "trap-only hop",
                         TrapOnlyFailure::HopUnexpectedStop {
                             phase: "H2 slot stop",
                             site,
-                            stop: format!(
-                                "seccomp stop tag {tag:#x} rip {:#x} orig_rax {}",
-                                regs.rip, regs.orig_rax as i64
-                            ),
+                            stop: format!("{event:?} at rip {rip:#x}"),
                         },
                     ));
                 }
-                task
-            }
-            wait @ (Wait::Exited(..) | Wait::Stopped(_, Event::Exit)) => {
-                return Ok(HopOutcome::Other(wait));
-            }
-            Wait::Stopped(task, event) => {
-                let rip = task.getregs().map(|regs| regs.rip).unwrap_or(0);
-                return Err(self.trap_only_failure(
-                    "trap-only hop",
-                    TrapOnlyFailure::HopUnexpectedStop {
-                        phase: "H2 slot stop",
-                        site,
-                        stop: format!("{event:?} at rip {rip:#x}"),
-                    },
-                ));
             }
         };
 
-        // H3: the original mask, then run the syscall to its exit stop.
+        // H3: the original mask, any SIGSTOP H2 deferred, then run the syscall
+        // to its exit stop. The SIGSTOP is pending again before the syscall
+        // starts, exactly as under plain ptrace: a blocking syscall is
+        // interrupted by it (and restarted after its suppressed delivery),
+        // and a syscall-exit stop precedes any signal delivery, so the
+        // syscall still completes before the stop takes effect.
         task.setsigmask(saved_mask)?;
+        #[cfg(test)]
+        self.pre_syscall_for_test(&view).await;
+        if !deferred.is_empty() {
+            self.trap_only_reraise_stops(site, deferred)?;
+        }
         let wait = self.syscall_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
 
@@ -775,6 +858,146 @@ impl<L: Tool + 'static> TracedTask<L> {
                     },
                 ))
             }
+        }
+    }
+
+    /// Raises again each SIGSTOP that H2 suppressed (in dequeue order), unless
+    /// a SIGCONT arrived since: under plain ptrace the SIGSTOP would still
+    /// have been pending, and the kernel discards pending stop signals when
+    /// SIGCONT is sent. A SIGCONT pending now arrived after H2 dequeued the
+    /// SIGSTOP, since sending a stop signal discards a pending SIGCONT and a
+    /// SIGCONT sent earlier would have discarded the SIGSTOP before H2.
+    ///
+    /// The re-raised SIGSTOP goes to the queue the original came from: the
+    /// private one for a thread-directed signal (`SI_TKILL`) or for the first
+    /// of two, and the shared one otherwise. Its delivery stop gets the
+    /// original siginfo back (`trap_only_restore_reraised_stop`).
+    ///
+    /// Residual differences from plain ptrace, none of them visible to the
+    /// Tool (plain reverie suppresses every SIGSTOP before the Tool sees it):
+    /// a SIGCONT sent between the pending-signal read below and the re-raise
+    /// is discarded by the re-raised SIGSTOP, where under plain ptrace it
+    /// would have discarded the SIGSTOP; a privately queued SIGSTOP that is
+    /// not `SI_TKILL` (from `rt_tgsigqueueinfo`, or kernel-generated) is
+    /// re-raised to the shared queue; and a thread-directed SIGSTOP from
+    /// another sender that arrives while a re-raised one waits in the shared
+    /// queue is delivered first and takes the re-raised siginfo, so the two
+    /// delivery stops' `PTRACE_GETSIGINFO` differ.
+    fn trap_only_reraise_stops(
+        &mut self,
+        site: u64,
+        deferred: Vec<libc::siginfo_t>,
+    ) -> Result<(), TraceError> {
+        let (tid, pid) = (self.tid.as_raw(), self.pid.as_raw());
+        let pending = match pending_signals(tid) {
+            // Gone (killed): the next ptrace request reports the death.
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+                self.trap_only_record_gone_reraise(deferred.len());
+                return Ok(());
+            }
+            result => result,
+        };
+        let pending = pending.map_err(|error| {
+            self.trap_only_failure(
+                "trap-only hop",
+                TrapOnlyFailure::HopUnexpectedStop {
+                    phase: "H3 deferred SIGSTOP",
+                    site,
+                    stop: format!("read the pending signals of {tid}: {error}"),
+                },
+            )
+        })?;
+        if pending & signal_bit(libc::SIGCONT) != 0 {
+            #[cfg(test)]
+            if let Some(trap_only) = self.trap_only.as_ref() {
+                trap_only.shared.hooks.record(format!(
+                    "deferred SIGSTOP x{} discarded by a SIGCONT",
+                    deferred.len()
+                ));
+            }
+            return Ok(());
+        }
+        let both = deferred.len() == 2;
+        for (index, info) in deferred.into_iter().enumerate() {
+            let private = if both {
+                index == 0
+            } else {
+                info.si_code == libc::SI_TKILL
+            };
+            // SAFETY: tgkill and kill take no pointers.
+            let result = unsafe {
+                if private {
+                    libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGSTOP)
+                } else {
+                    libc::kill(pid, libc::SIGSTOP) as libc::c_long
+                }
+            };
+            if result != 0 {
+                let errno = Errno::last();
+                if errno == Errno::ESRCH {
+                    // Gone: the next ptrace request reports the death.
+                    self.trap_only_record_gone_reraise(if both { 2 - index } else { 1 });
+                    return Ok(());
+                }
+                return Err(self.trap_only_failure(
+                    "trap-only hop",
+                    TrapOnlyFailure::HopUnexpectedStop {
+                        phase: "H3 deferred SIGSTOP",
+                        site,
+                        stop: format!("re-raise SIGSTOP to {pid}/{tid}: {errno}"),
+                    },
+                ));
+            }
+            #[cfg(test)]
+            if let Some(trap_only) = self.trap_only.as_ref() {
+                trap_only.shared.hooks.record(format!(
+                    "deferred SIGSTOP re-raised private={private} code={}",
+                    info.si_code
+                ));
+            }
+            if let Some(trap_only) = self.trap_only.as_mut() {
+                trap_only
+                    .reraised_stops
+                    .push_back(crate::liteinst_trap_only::ReraisedStop { info });
+            }
+        }
+        Ok(())
+    }
+
+    /// Test-only: records that the thread died before H3 could re-raise the
+    /// deferred SIGSTOPs (a SIGKILL during the hop).
+    fn trap_only_record_gone_reraise(&self, count: usize) {
+        #[cfg(test)]
+        if let Some(trap_only) = self.trap_only.as_ref() {
+            trap_only.shared.hooks.record(format!(
+                "deferred SIGSTOP x{count} dropped: the thread is gone"
+            ));
+        }
+        #[cfg(not(test))]
+        let _ = count;
+    }
+
+    /// At a SIGSTOP delivery stop, gives a SIGSTOP the hop re-raised its
+    /// original siginfo back (it now names the tracer as its sender).
+    pub(super) fn trap_only_restore_reraised_stop(
+        &mut self,
+        task: &Stopped,
+    ) -> Result<(), TraceError> {
+        let Some(reraised) = self
+            .trap_only
+            .as_mut()
+            .and_then(|trap_only| trap_only.reraised_stops.pop_front())
+        else {
+            return Ok(());
+        };
+        task.setsiginfo(&reraised.info)
+    }
+
+    /// Forgets re-raised SIGSTOPs that were not delivered before this task's
+    /// next seccomp stop (a SIGCONT discarded them).
+    pub(super) fn trap_only_forget_reraised_stops(&mut self) {
+        if let Some(trap_only) = self.trap_only.as_mut() {
+            trap_only.reraised_stops.clear();
         }
     }
 

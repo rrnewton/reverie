@@ -1653,15 +1653,229 @@ static void probe_nr(long nr) {
   }
 }
 
-/* A SIGSTOP pending when a patched site's hop resumes the thread. Plain
- * ptrace suppresses every SIGSTOP at its delivery stop (handle_sigstop), so
- * the call completes; trap-only has no SIGSTOP handling in the hop yet (the
- * deferred O1.4 step) and must fail closed instead. */
+/* A SIGSTOP the tracer sends (SI_TKILL) while a patched site's call is
+ * parked. Plain ptrace suppresses every SIGSTOP at its delivery stop
+ * (handle_sigstop), after the call completed; trap-only defers the one its
+ * hop dequeues at the slot and raises it again before the call runs. */
 static void mode_sigstop_hop(void) {
   warm();
   long r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_TAIL | SEND_SIGSTOP);
   say("sigstop tail getpid returned pid=%d\n", r == getpid());
-  site_bytes("sigstop");
+  r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_INJECT | SEND_SIGSTOP);
+  say("sigstop inject getpid returned pid=%d\n", r == getpid());
+}
+
+/* P2d-sigstop (P2-SPEC O1.4): a traced parent signals its child while the
+ * child's call at the patched shared site is parked. The Tool (at the
+ * site's seccomp stop, before trap-only's hop starts) and the tracer's
+ * pre-syscall hook (immediately before the call runs: plain ptrace's resume,
+ * trap-only's H3) each notify the parent with SIGUSR2 and wait until the
+ * signal the call's tag names has arrived, so the signal lands at the same
+ * logical point under both backends. */
+#define TOOL_PARK(sig) ((long)(sig) << 32)
+#define HOOK_PARK(sig) ((long)(sig) << 40)
+/* The Tool also notifies the parent when the kernel restarts the call. */
+#define NOTIFY_AGAIN 0x4000
+/* park_run: the site call is a blocking read (else a write). */
+#define PARK_READ 1
+/* park_run: the child blocks SIGCONT until the parent's token arrives, and
+ * the parent sends SIGCONT after reading the child's post-call output. */
+#define PARK_LATE_CONT 2
+/* park_run: the child handles SIGTSTP (else SIG_DFL). */
+#define PARK_TSTP_HANDLER 4
+
+struct park_rec {
+  int sig, code, from_parent;
+  long rip, rax;
+};
+static struct park_rec park_recs[8];
+static volatile int npark;
+
+static void park_handler(int sig, siginfo_t *si, void *uc_) {
+  ucontext_t *uc = uc_;
+  if (npark >= 8)
+    return;
+  struct park_rec *r = &park_recs[npark++];
+  r->sig = sig;
+  r->code = si->si_code;
+  r->from_parent = si->si_code <= 0 && si->si_pid == getppid();
+  r->rip = uc->uc_mcontext.gregs[REG_RIP];
+  r->rax = uc->uc_mcontext.gregs[REG_RAX];
+}
+
+static void park_child(const char *tag, long act, int how, int from_parent, int to_parent) {
+  install(SIGCONT, 0, park_handler);
+  if (how & PARK_TSTP_HANDLER)
+    install(SIGTSTP, 0, park_handler);
+  sigset_t mask;
+  sigemptyset(&mask);
+  if (how & PARK_LATE_CONT)
+    sigaddset(&mask, SIGCONT);
+  if (sigprocmask(SIG_SETMASK, &mask, NULL) != 0)
+    die("child sigprocmask");
+  char buf[8] = {0};
+  long r = how & PARK_READ ? SITEM(SYS_read, from_parent, buf, 1, 0, 0, act)
+                           : SITEM(SYS_write, to_parent, "data", 4, 0, 0, act);
+  if (write(to_parent, "after", 5) != 5)
+    die("child write after");
+  char token;
+  if (read(from_parent, &token, 1) != 1)
+    die("child read token");
+  sigemptyset(&mask);
+  if (sigprocmask(SIG_SETMASK, &mask, NULL) != 0)
+    die("child unblock");
+  say("%s child call ret=%ld byte=%d\n", tag, r, buf[0]);
+  for (int i = 0; i < npark; i++) {
+    struct park_rec *p = &park_recs[i];
+    say("%s child signal %d: sig=%d code=%d from-parent=%d rip=%s rax=%ld\n", tag, i, p->sig,
+        p->code, p->from_parent, where(p->rip), p->rax);
+  }
+  _exit(7);
+}
+
+/* Waits up to `seconds` for the next notification; 1 if it came. */
+static int park_notified(int seconds) {
+  sigset_t usr2;
+  sigemptyset(&usr2);
+  sigaddset(&usr2, SIGUSR2);
+  struct timespec timeout = {seconds, 0};
+  return sigtimedwait(&usr2, NULL, &timeout) == SIGUSR2;
+}
+
+/* Forks a child that runs one tagged call at the warmed shared site; the
+ * parent sends `kills` (one per notification), then reports what its
+ * waitpid(WUNTRACED | WCONTINUED) and SIGCHLD saw. */
+static void park_run(const char *tag, long act, int how, const int *kills, int nkills) {
+  int down[2], up[2];
+  if (pipe(down) != 0 || pipe(up) != 0)
+    die("pipe");
+  sigset_t block, old;
+  sigemptyset(&block);
+  sigaddset(&block, SIGUSR2);
+  sigaddset(&block, SIGCHLD);
+  if (sigprocmask(SIG_BLOCK, &block, &old) != 0)
+    die("sigprocmask");
+  pid_t child = fork();
+  if (child < 0)
+    die("fork");
+  if (child == 0) {
+    close(down[1]);
+    close(up[0]);
+    park_child(tag, act, how, down[0], up[1]);
+  }
+  close(down[0]);
+  close(up[1]);
+  int notified = 0;
+  for (int i = 0; i < nkills; i++) {
+    if (!park_notified(10))
+      break;
+    notified++;
+    if (kill(child, kills[i]) != 0)
+      die("kill");
+  }
+  char buf[8] = {0};
+  long data = -1;
+  int restarted = -1;
+  if (how & PARK_READ) {
+    /* A call interrupted by the SIGSTOP restarts; one that was not blocks
+     * until the parent gives up waiting and writes. */
+    restarted = park_notified(3);
+    if (write(down[1], "d", 1) != 1)
+      die("write data");
+  } else {
+    data = read(up[0], buf, 4);
+  }
+  long after = read(up[0], buf, 5);
+  if (after == 5) {
+    if (how & PARK_LATE_CONT)
+      kill(child, SIGCONT);
+    if (write(down[1], "t", 1) != 1)
+      die("write token");
+  }
+  char statuses[256] = "";
+  for (;;) {
+    int status;
+    pid_t w = waitpid(child, &status, WUNTRACED | WCONTINUED);
+    if (w != child)
+      die("waitpid");
+    char one[64];
+    if (WIFEXITED(status))
+      snprintf(one, sizeof one, " exited:%d", WEXITSTATUS(status));
+    else if (WIFSIGNALED(status))
+      snprintf(one, sizeof one, " signaled:%d", WTERMSIG(status));
+    else if (WIFSTOPPED(status))
+      snprintf(one, sizeof one, " stopped:%d", WSTOPSIG(status));
+    else if (WIFCONTINUED(status))
+      snprintf(one, sizeof one, " continued");
+    else
+      snprintf(one, sizeof one, " raw:%#x", status);
+    strncat(statuses, one, sizeof statuses - strlen(statuses) - 1);
+    if (WIFEXITED(status) || WIFSIGNALED(status))
+      break;
+  }
+  say("%s parent notified=%d data=%ld after=%ld restarted=%d waitpid%s\n", tag, notified, data,
+      after, restarted, statuses);
+  sigset_t chld;
+  sigemptyset(&chld);
+  sigaddset(&chld, SIGCHLD);
+  struct timespec none = {0, 0};
+  siginfo_t si;
+  while (sigtimedwait(&chld, &si, &none) == SIGCHLD)
+    say("%s parent SIGCHLD code=%d status=%d from-child=%d\n", tag, si.si_code, si.si_status,
+        si.si_pid == child);
+  close(down[1]);
+  close(up[0]);
+  /* Drop any notification that arrived after the parent stopped waiting. */
+  while (park_notified(0))
+    ;
+  if (sigprocmask(SIG_SETMASK, &old, NULL) != 0)
+    die("sigprocmask restore");
+}
+
+/* T1e: the parent stops its child at a patched write site, then continues
+ * it once the write and the child's next output arrived. */
+static void mode_sigstop_parent(void) {
+  static const int kills[] = {SIGSTOP};
+  warm();
+  park_run("tail", SHAPE_TAIL | TOOL_PARK(SIGSTOP), PARK_LATE_CONT, kills, 1);
+  park_run("inject", SHAPE_INJECT | TOOL_PARK(SIGSTOP), PARK_LATE_CONT, kills, 1);
+}
+
+/* A SIGCONT that arrives inside the window: after the SIGSTOP and before the
+ * call runs. It discards the pending SIGSTOP, so neither is a stop. */
+static void mode_sigstop_cont_window(void) {
+  static const int kills[] = {SIGSTOP, SIGCONT};
+  warm();
+  park_run("tail", SHAPE_TAIL | TOOL_PARK(SIGSTOP) | HOOK_PARK(SIGCONT), 0, kills, 2);
+  park_run("inject", SHAPE_INJECT | TOOL_PARK(SIGSTOP) | HOOK_PARK(SIGCONT), 0, kills, 2);
+}
+
+/* SIGTSTP with a handler installed: blockable, so the hop's mask holds it;
+ * handled after the call returns, never a stop. */
+static void mode_sigtstp_handler(void) {
+  static const int kills[] = {SIGTSTP};
+  warm();
+  park_run("tool", SHAPE_TAIL | TOOL_PARK(SIGTSTP), PARK_TSTP_HANDLER, kills, 1);
+  park_run("hook", SHAPE_TAIL | HOOK_PARK(SIGTSTP), PARK_TSTP_HANDLER, kills, 1);
+}
+
+/* SIGKILL at the site's stop, inside the hop, and inside the hop with a
+ * deferred SIGSTOP: the child dies without the call running. */
+static void mode_sigkill_hop(void) {
+  static const int kill_only[] = {SIGKILL}, stop_kill[] = {SIGSTOP, SIGKILL};
+  warm();
+  park_run("entry", SHAPE_TAIL | TOOL_PARK(SIGKILL), 0, kill_only, 1);
+  park_run("hop", SHAPE_TAIL | HOOK_PARK(SIGKILL), 0, kill_only, 1);
+  park_run("stop-hop", SHAPE_TAIL | TOOL_PARK(SIGSTOP) | HOOK_PARK(SIGKILL), 0, stop_kill, 2);
+}
+
+/* A SIGSTOP pending when a blocking read starts interrupts it: the read
+ * restarts after the suppressed stop, before any data arrived. */
+static void mode_sigstop_blocking_read(void) {
+  static const int kills[] = {SIGSTOP};
+  warm();
+  park_run("tail", SHAPE_TAIL | TOOL_PARK(SIGSTOP) | NOTIFY_AGAIN, PARK_READ, kills, 1);
+  park_run("inject", SHAPE_INJECT | TOOL_PARK(SIGSTOP) | NOTIFY_AGAIN, PARK_READ, kills, 1);
 }
 
 /* The unknown-number cases: each runs through its own warmed site. */
@@ -1841,6 +2055,16 @@ int main(int argc, char **argv) {
     mode_sigreturn_prot_none_frame();
   else if (!strcmp(m, "sigstop_hop"))
     mode_sigstop_hop();
+  else if (!strcmp(m, "sigstop_parent"))
+    mode_sigstop_parent();
+  else if (!strcmp(m, "sigstop_cont_window"))
+    mode_sigstop_cont_window();
+  else if (!strcmp(m, "sigtstp_handler"))
+    mode_sigtstp_handler();
+  else if (!strcmp(m, "sigkill_hop"))
+    mode_sigkill_hop();
+  else if (!strcmp(m, "sigstop_blocking_read"))
+    mode_sigstop_blocking_read();
   else if (!strcmp(m, "probe_uretprobe"))
     probe_nr(335);
   else if (!strcmp(m, "probe_uprobe"))

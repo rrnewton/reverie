@@ -52,6 +52,15 @@ const SEND_RESUME: u64 = 0x800;
 const ARM_TIMER: u64 = 0x1000;
 /// The Tool sends SIGSTOP to the calling thread while it is parked.
 const SEND_SIGSTOP: u64 = 0x2000;
+/// The Tool notifies the guest's parent again (SIGUSR2) when the kernel
+/// restarts the call.
+const NOTIFY_AGAIN: u64 = 0x4000;
+/// Bits 32-39: a signal the parent sends when the Tool, at the call's seccomp
+/// stop, notifies it; the Tool waits until the signal has arrived.
+const TOOL_PARK_SHIFT: u32 = 32;
+/// Bits 40-47: the same, from the pre-syscall hook (immediately before the
+/// call runs: plain ptrace's resume, trap-only's H3).
+const HOOK_PARK_SHIFT: u32 = 40;
 
 /// The P2 Tool's configuration.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -82,6 +91,9 @@ static STEP_BASE: Mutex<BTreeMap<i32, u64>> = Mutex::new(BTreeMap::new());
 /// The last tagged call (sequence number) each tid acted on, so that a call
 /// the kernel restarts does not send its signals again.
 static ACTED: Mutex<BTreeMap<i32, u64>> = Mutex::new(BTreeMap::new());
+/// The restarted tagged calls (tid, sequence) the Tool notified the parent of.
+static NOTIFIED: Mutex<std::collections::BTreeSet<(i32, u64)>> =
+    Mutex::new(std::collections::BTreeSet::new());
 
 fn steps(tid: Pid) -> u64 {
     let base = STEP_BASE
@@ -176,6 +188,76 @@ fn send_signals(pid: Pid, tid: Pid, action: u64) {
         // Coalesces with the pending SIGUSR1.
         send_queued(pid, tid, libc::SIGUSR1, 5, true);
     }
+}
+
+/// A field of `/proc/<tid>/status`, if the thread still exists.
+fn proc_status_field(tid: Pid, field: &str) -> Option<String> {
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(field))
+        .map(|value| value.trim().to_owned())
+}
+
+/// Notifies the (traced) parent of process `pid` with SIGUSR2.
+fn notify_parent(pid: Pid) {
+    let ppid: i32 = proc_status_field(pid, "PPid:")
+        .expect("the parked guest exists")
+        .parse()
+        .expect("a PPid");
+    let ppid = Pid::from_raw(ppid);
+    tgkill(ppid, ppid, libc::SIGUSR2);
+}
+
+/// Whether `signal` has arrived at thread `tid`: pending, or, for SIGKILL,
+/// already acted on (the thread is a zombie or gone).
+fn signal_arrived(tid: Pid, signal: i32) -> bool {
+    let state = proc_status_field(tid, "State:");
+    if state
+        .as_deref()
+        .is_none_or(|state| state.starts_with('Z') || state.starts_with('X'))
+    {
+        return signal == libc::SIGKILL;
+    }
+    let bit = 1u64 << (signal - 1);
+    ["SigPnd:", "ShdPnd:"].iter().any(|field| {
+        proc_status_field(tid, field)
+            .and_then(|mask| u64::from_str_radix(&mask, 16).ok())
+            .is_some_and(|mask| mask & bit != 0)
+    })
+}
+
+/// Notifies the parent of the parked `tid` (of process `pid`), then waits,
+/// without blocking the tracer's other tasks, until the signal the parent
+/// sends in response has arrived.
+async fn park_for(pid: Pid, tid: Pid, signal: i32) {
+    notify_parent(pid);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !signal_arrived(tid, signal) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "signal {signal} did not arrive at parked thread {tid}"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// The pre-syscall hook: parks each call tagged with a hook park signal once.
+fn park_hook() -> crate::task::PreSyscallForTest {
+    let fired = std::sync::Arc::new(Mutex::new(std::collections::BTreeSet::<(i32, u64)>::new()));
+    std::sync::Arc::new(move |tid: Pid, regs: &libc::user_regs_struct| {
+        let signal = ((regs.r9 >> HOOK_PARK_SHIFT) & 0xff) as i32;
+        let sequence = (regs.r9 & !TP_MAGIC_MASK) >> 16;
+        let park = regs.r9 & TP_MAGIC_MASK == TP_MAGIC
+            && signal != 0
+            && fired.lock().unwrap().insert((tid.as_raw(), sequence));
+        Box::pin(async move {
+            if park {
+                // The P2 fixture parks only single-threaded children.
+                park_for(tid, tid, signal).await;
+            }
+        })
+    })
 }
 
 fn errno_value(result: &Result<i64, Errno>) -> i64 {
@@ -273,6 +355,14 @@ impl Tool for P2Tool {
             let first = ACTED.lock().unwrap().insert(tid.as_raw(), sequence) != Some(sequence);
             if first {
                 send_signals(pid, tid, regs.r9 & 0xff00);
+                let park = ((regs.r9 >> TOOL_PARK_SHIFT) & 0xff) as i32;
+                if park != 0 {
+                    park_for(pid, tid, park).await;
+                }
+            } else if regs.r9 & NOTIFY_AGAIN != 0
+                && NOTIFIED.lock().unwrap().insert((tid.as_raw(), sequence))
+            {
+                notify_parent(pid);
             }
             if regs.r9 & ARM_TIMER != 0 {
                 guest
@@ -452,6 +542,9 @@ struct P2Run {
     tables: Vec<(String, SiteTable)>,
     /// Trap-only only: the root table at the end of the run.
     root_table: Option<SiteTable>,
+    /// Every signal-delivery stop the run loop handled: the signal, its
+    /// siginfo and where it took effect.
+    signals: BTreeMap<String, Vec<String>>,
 }
 
 impl P2Run {
@@ -563,7 +656,8 @@ async fn run_p2_options(
             partial: options.partial,
         })
         .backend_stats(BackendStatsRequest::ENABLED)
-        .final_resume_signal_for_test(resume_signal_hook(resumes.clone()));
+        .final_resume_signal_for_test(resume_signal_hook(resumes.clone()))
+        .pre_syscall_for_test(park_hook());
     if let Some(patching) = patching {
         builder = builder.liteinst_trap_only(patching);
         if options.skip_patch_write {
@@ -603,6 +697,36 @@ async fn run_p2_options(
     let mut resume_events = BTreeMap::<String, Vec<String>>::new();
     for (pid, event) in std::mem::take(&mut *resumes.lock().unwrap()) {
         resume_events
+            .entry(names.name(pid))
+            .or_default()
+            .push(rename_event(&names, &event));
+    }
+    let mut signals = BTreeMap::<String, Vec<String>>::new();
+    for (pid, event) in stats.signal_trace() {
+        // The tracer's own traps: a kernel SIGSEGV (si_code SI_KERNEL) is its
+        // rdtsc or cpuid trap, whose rax holds whatever the guest computed
+        // last, and SIGSTKFLT is its timer's perf overflow, which lands
+        // wherever the counter's skid left it (the timer event it leads to is
+        // a compared Tool event). Their registers are not compared.
+        let tracer_trap =
+            event.starts_with("SIGSEGV signo=11 code=128 ") || event.starts_with("SIGSTKFLT ");
+        let event = event
+            .split(' ')
+            .filter(|token| {
+                !(tracer_trap && (token.starts_with("rax=") || token.starts_with("rip=")))
+            })
+            .map(|token| match token.strip_prefix("rip=0x") {
+                Some(hex) => format!(
+                    "rip={}",
+                    code(u64::from_str_radix(hex, 16).expect("a hex rip"))
+                ),
+                // A signal the tracer (this process) sent.
+                None if token == format!("pid={}", std::process::id()) => "pid=tracer".to_owned(),
+                None => token.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        signals
             .entry(names.name(pid))
             .or_default()
             .push(rename_event(&names, &event));
@@ -650,6 +774,7 @@ async fn run_p2_options(
             })
             .unwrap_or_default(),
         root_table: handle.as_ref().map(|handle| handle.root_table()),
+        signals,
     })
 }
 
@@ -849,6 +974,11 @@ fn assert_equal_runs_except_report(trap_only: &P2Run, ptrace: &P2Run, internal: 
         trap_only.stops == ptrace.stops,
         "stop sequences diverged: {}",
         first_divergence(&trap_only.stops, &ptrace.stops)
+    );
+    assert!(
+        trap_only.signals == ptrace.signals,
+        "signal-delivery stops diverged: {}",
+        first_divergence(&trap_only.signals, &ptrace.signals)
     );
     assert!(
         ptrace.internal_stops.is_empty(),
@@ -1222,6 +1352,7 @@ fn clone_run(run: &P2Run) -> P2Run {
         lifecycle: run.lifecycle.clone(),
         tables: run.tables.clone(),
         root_table: run.root_table.clone(),
+        signals: run.signals.clone(),
     }
 }
 
@@ -1396,15 +1527,29 @@ fn lifecycle_has(run: &P2Run, prefix: &str) -> Option<usize> {
 }
 
 /// Masks the host TID an untraced clone returns, which no traced task names,
-/// wherever it appears: the Tool's return value, and the rax of the exit
-/// event and of the resume that follow it.
+/// wherever it appears: the Tool's return value, the rax of the exit event
+/// and of the resume that follow it, and the sender pid of the SIGCHLD an
+/// untraced fork child's death sends its parent. A tail-injected clone's
+/// result never reaches the Tool, so there the child's pid is taken from
+/// that SIGCHLD: a sender pid still numeric after renaming is one no traced
+/// task has.
 fn mask_untraced_tid(run: &P2Run) -> P2Run {
-    let tids: Vec<String> = run
+    let returned = run
         .tool_events
         .values()
         .flatten()
         .filter_map(|event| event.split_once("syscall clone = "))
-        .map(|(_, tid)| tid.to_string())
+        .map(|(_, tid)| tid.to_string());
+    let sigchld_senders = run
+        .signals
+        .values()
+        .flatten()
+        .filter(|event| event.starts_with("SIGCHLD "))
+        .flat_map(|event| event.split(' '))
+        .filter_map(|token| token.strip_prefix("pid="))
+        .map(str::to_string);
+    let tids: Vec<String> = returned
+        .chain(sigchld_senders)
         .filter(|tid| tid.parse::<i64>().is_ok_and(|tid| tid > 0))
         .collect();
     let mask = |events: &BTreeMap<String, Vec<String>>| {
@@ -1416,7 +1561,9 @@ fn mask_untraced_tid(run: &P2Run) -> P2Run {
                     .map(|event| match event.split_once("syscall clone = ") {
                         Some((head, _)) => format!("{head}syscall clone = <untraced>"),
                         None => tids.iter().fold(event.clone(), |event, tid| {
-                            event.replace(&format!(" rax={tid} "), " rax=<untraced> ")
+                            event
+                                .replace(&format!(" rax={tid} "), " rax=<untraced> ")
+                                .replace(&format!(" pid={tid} "), " pid=<untraced> ")
                         }),
                     })
                     .collect();
@@ -1427,6 +1574,7 @@ fn mask_untraced_tid(run: &P2Run) -> P2Run {
     P2Run {
         tool_events: mask(&run.tool_events),
         resumes: mask(&run.resumes),
+        signals: mask(&run.signals),
         ..clone_run(run)
     }
 }
@@ -2361,33 +2509,242 @@ async fn trap_only_p2_guest_trace_of_an_unknown_number_ends_the_run() {
     }
 }
 
-/// A SIGSTOP pending when the hop resumes a patched site's thread (sent by
-/// the Tool at the I386 stop, then `tail_inject`). Plain ptrace suppresses
-/// every SIGSTOP at its delivery stop (`handle_sigstop`), so the call
-/// completes. Trap-only does not implement the P2-SPEC O1.4 SIGSTOP deferral
-/// in this step (it is a separate stacked step that must land before P2e
-/// makes `SitePatching::On` public): the SIGSTOP delivery stop at the slot is
-/// an unexpected H2 stop and the run fails closed. This test pins that the
-/// gap fails closed rather than diverging silently; the O1.4 step replaces
-/// the trap-only half with an equality assertion.
+/// The trap-only lifecycle decisions that start with `prefix`.
+fn lifecycle_with<'a>(run: &'a P2Run, prefix: &str) -> Vec<&'a str> {
+    run.lifecycle
+        .iter()
+        .filter(|decision| decision.starts_with(prefix))
+        .map(String::as_str)
+        .collect()
+}
+
+/// Runs `mode` like `compare_mode`, and also requires both trap-only runs to
+/// have made exactly the `expected` SIGSTOP deferral decisions, so that the
+/// equality is not vacuous.
+async fn compare_sigstop_mode(mode: &str, expected: &[&str]) -> [P2Run; 4] {
+    let runs = compare_mode(mode).await;
+    for run in [&runs[1], &runs[3]] {
+        assert_patched(run, SiteState::Live);
+        let decisions: Vec<&str> = run
+            .lifecycle
+            .iter()
+            .map(String::as_str)
+            .filter(|decision| decision.contains(" SIGSTOP "))
+            .collect();
+        assert_eq!(decisions, expected, "{mode}: {:#?}", run.lifecycle);
+    }
+    runs
+}
+
+/// The signal-delivery stop of `signal` sent by `sender` with `code`, where
+/// the call at the shared site (orig_rax `nr`) returned `rax`.
+fn delivery_after_the_call(
+    run: &P2Run,
+    signal: &str,
+    code: i32,
+    sender: &str,
+    rax: &str,
+    nr: i64,
+) -> String {
+    let number = match signal {
+        "SIGSTOP" => libc::SIGSTOP,
+        "SIGCONT" => libc::SIGCONT,
+        "SIGTSTP" => libc::SIGTSTP,
+        _ => unreachable!("{signal}"),
+    };
+    format!(
+        "{signal} signo={number} code={code} errno=0 pid={sender} uid={} rip={:#x} rax={rax} orig_rax={nr}",
+        // SAFETY: getuid cannot fail.
+        unsafe { libc::getuid() },
+        run.site + 2
+    )
+}
+
+/// P2d-sigstop, from the tracer: a SIGSTOP the Tool sends to the thread
+/// (SI_TKILL) while a patched getpid is parked. Plain ptrace suppresses every
+/// SIGSTOP at its delivery stop (`handle_sigstop`), after getpid returned;
+/// trap-only's hop dequeues it at the slot, defers it and re-raises it to
+/// the thread before getpid runs, so its delivery stop comes at the same
+/// place, with the same siginfo, and the runs are equal.
 #[tokio::test(flavor = "current_thread")]
-async fn trap_only_p2_sigstop_in_the_hop_fails_closed_until_o1_4() {
-    let ptrace = run_p2("sigstop_hop", None, false).await;
-    assert_eq!(ptrace.status, ExitStatus::Exited(0), "{}", ptrace.report);
+async fn trap_only_p2_sigstop_from_the_tracer_is_deferred_past_the_call() {
+    let deferral = [
+        "slot SIGSTOP deferred code=-6",
+        "deferred SIGSTOP re-raised private=true code=-6",
+    ];
+    let [ptrace, ..] =
+        compare_sigstop_mode("sigstop_hop", &[&deferral[..], &deferral[..]].concat()).await;
     assert_report_has(
         &ptrace,
         &[
             "sigstop tail getpid returned pid=1",
-            "sigstop site bytes 0f 05",
+            "sigstop inject getpid returned pid=1",
         ],
     );
-    let error = run_p2_with("sigstop_hop", Some(SitePatching::On), false, false)
-        .await
-        .expect_err("a SIGSTOP inside the hop must end the run until O1.4 lands");
-    let text = format!("{error:#} {error:?}");
-    assert!(text.contains("TrapOnlyHopUnexpectedStop"), "{text}");
-    assert!(text.contains("H2 slot stop"), "{text}");
-    assert!(text.contains("SIGSTOP"), "{text}");
+    let stop = delivery_after_the_call(&ptrace, "SIGSTOP", libc::SI_TKILL, "tracer", "task#0", 39);
+    let stops: Vec<&String> = ptrace.signals["task#0"]
+        .iter()
+        .filter(|signal| signal.starts_with("SIGSTOP "))
+        .collect();
+    assert_eq!(stops, [&stop, &stop]);
+}
+
+/// T1e: the guest's (traced) parent sends SIGSTOP to its child parked at a
+/// patched write, then SIGCONT once the write's data and the child's next
+/// output arrived. The write lands before the stop takes effect: the SIGSTOP
+/// delivery stop is at the site's end with the write's result, carrying the
+/// parent's siginfo (SI_USER), under both backends. The parent's
+/// waitpid(WUNTRACED | WCONTINUED) statuses and SIGCHLD siginfo, and the
+/// child's SIGCONT, equal plain ptrace's; as plain ptrace suppresses the
+/// SIGSTOP, the parent never sees the child stopped or continued.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t1e_sigstop_from_the_parent_is_deferred_past_the_write() {
+    let deferral = [
+        "slot SIGSTOP deferred code=0",
+        "deferred SIGSTOP re-raised private=false code=0",
+    ];
+    let [ptrace, ..] =
+        compare_sigstop_mode("sigstop_parent", &[&deferral[..], &deferral[..]].concat()).await;
+    for tag in ["tail", "inject"] {
+        assert_report_has(
+            &ptrace,
+            &[
+                &format!("{tag} child call ret=4 byte=0"),
+                &format!("{tag} child signal 0: sig=18 code=0 from-parent=1 rip=other rax=0"),
+                &format!("{tag} parent notified=1 data=4 after=5 restarted=-1 waitpid exited:7"),
+                &format!("{tag} parent SIGCHLD code=1 status=7 from-child=1"),
+            ],
+        );
+    }
+    let stop = delivery_after_the_call(&ptrace, "SIGSTOP", libc::SI_USER, "task#0", "4", 1);
+    for child in ["task#1", "task#2"] {
+        let signals = &ptrace.signals[child];
+        assert_eq!(signals.len(), 2, "{signals:#?}");
+        assert_eq!(signals[0], stop);
+        assert!(
+            signals[1].starts_with("SIGCONT signo=18 code=0 errno=0 pid=task#0 "),
+            "{signals:#?}"
+        );
+    }
+}
+
+/// A SIGCONT that arrives inside the hop's window (after the SIGSTOP was
+/// dequeued at the slot, before the call runs): under plain ptrace it
+/// discards the still-pending SIGSTOP, so trap-only drops the deferred one.
+/// Neither backend has a SIGSTOP delivery stop; the SIGCONT is delivered
+/// after the write.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_sigcont_in_the_window_discards_the_deferred_sigstop() {
+    let deferral = [
+        "slot SIGSTOP deferred code=0",
+        "deferred SIGSTOP x1 discarded by a SIGCONT",
+    ];
+    let [ptrace, ..] = compare_sigstop_mode(
+        "sigstop_cont_window",
+        &[&deferral[..], &deferral[..]].concat(),
+    )
+    .await;
+    for tag in ["tail", "inject"] {
+        assert_report_has(
+            &ptrace,
+            &[
+                &format!("{tag} child call ret=4 byte=0"),
+                &format!("{tag} child signal 0: sig=18 code=0 from-parent=1 rip=tp_site_end rax=4"),
+                &format!("{tag} parent notified=2 data=4 after=5 restarted=-1 waitpid exited:7"),
+                &format!("{tag} parent SIGCHLD code=1 status=7 from-child=1"),
+            ],
+        );
+    }
+    let cont = delivery_after_the_call(&ptrace, "SIGCONT", libc::SI_USER, "task#0", "4", 1);
+    for child in ["task#1", "task#2"] {
+        assert_eq!(ptrace.signals[child], std::slice::from_ref(&cont));
+    }
+}
+
+/// SIGTSTP with a handler installed is blockable: the hop's mask holds it,
+/// whether it arrives at the site's stop or inside the hop, and it is handled
+/// after the write returned, never a stop. (A control: it passes without the
+/// SIGSTOP deferral too.)
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_sigtstp_with_a_handler_is_handled_after_the_write() {
+    let [ptrace, ..] = compare_sigstop_mode("sigtstp_handler", &[]).await;
+    for tag in ["tool", "hook"] {
+        assert_report_has(
+            &ptrace,
+            &[
+                &format!("{tag} child call ret=4 byte=0"),
+                &format!("{tag} child signal 0: sig=20 code=0 from-parent=1 rip=tp_site_end rax=4"),
+                &format!("{tag} parent notified=1 data=4 after=5 restarted=-1 waitpid exited:7"),
+            ],
+        );
+    }
+    let tstp = delivery_after_the_call(&ptrace, "SIGTSTP", libc::SI_USER, "task#0", "4", 1);
+    for child in ["task#1", "task#2"] {
+        assert_eq!(ptrace.signals[child], std::slice::from_ref(&tstp));
+    }
+}
+
+/// SIGKILL at the site's stop (before the hop), inside the hop, and inside
+/// the hop with a deferred SIGSTOP kills the child exactly as under plain
+/// ptrace: the write never lands, and the parent sees the same statuses and
+/// SIGCHLD. Whether H3 still finds the killed thread to re-raise the
+/// deferred SIGSTOP into is a race with its exit, and makes no difference.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_sigkill_in_the_hop_kills_as_plain_ptrace() {
+    let runs = compare_mode("sigkill_hop").await;
+    for run in [&runs[1], &runs[3]] {
+        assert_patched(run, SiteState::Live);
+        assert_eq!(
+            lifecycle_with(run, "slot SIGSTOP"),
+            ["slot SIGSTOP deferred code=0"],
+            "{:#?}",
+            run.lifecycle
+        );
+    }
+    for (tag, notified) in [("entry", 1), ("hop", 1), ("stop-hop", 2)] {
+        assert_report_has(
+            &runs[0],
+            &[
+                &format!(
+                    "{tag} parent notified={notified} data=0 after=0 restarted=-1 waitpid signaled:9"
+                ),
+                &format!("{tag} parent SIGCHLD code=2 status=9 from-child=1"),
+            ],
+        );
+    }
+    assert!(!runs[0].report.contains(" child "), "{}", runs[0].report);
+}
+
+/// A SIGSTOP pending when a blocking read starts interrupts it under plain
+/// ptrace (ERESTARTSYS at the delivery stop), and the read restarts after
+/// the suppressed stop, before any data arrived. This is why the hop
+/// re-raises the deferred SIGSTOP before the call runs rather than after it
+/// returns: the parent writes the data only once the restarted read reached
+/// the Tool (or after 3 s without it).
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_sigstop_interrupts_a_blocking_read_in_the_hop() {
+    let deferral = [
+        "slot SIGSTOP deferred code=0",
+        "deferred SIGSTOP re-raised private=false code=0",
+    ];
+    let [ptrace, ..] = compare_sigstop_mode(
+        "sigstop_blocking_read",
+        &[&deferral[..], &deferral[..]].concat(),
+    )
+    .await;
+    for tag in ["tail", "inject"] {
+        assert_report_has(
+            &ptrace,
+            &[
+                &format!("{tag} child call ret=1 byte=100"),
+                &format!("{tag} parent notified=1 data=-1 after=5 restarted=1 waitpid exited:7"),
+            ],
+        );
+    }
+    let stop = delivery_after_the_call(&ptrace, "SIGSTOP", libc::SI_USER, "task#0", "-512", 0);
+    for child in ["task#1", "task#2"] {
+        assert_eq!(ptrace.signals[child], std::slice::from_ref(&stop));
+    }
 }
 
 /// T4d: a timer single-step that reaches a patched site carrying an allowed
