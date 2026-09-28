@@ -205,7 +205,8 @@ class RescueReconcileTest(unittest.TestCase):
         verified one under refs/remotes/origin-rescue/. A drop sitting only in
         either location must still be reported, not silently unenumerated."""
         for location in ("refs/remotes/origin-rescue/auto-{short}",
-                         "refs/rescue/auto-{short}"):
+                         "refs/rescue/auto-{short}",
+                         "refs/archive/rescue/auto-{short}"):
             with self.subTest(location=location), tempfile.TemporaryDirectory() as tmp:
                 s = Scratch(tmp)
                 dropped = commit(s.repo, "a.txt", "A work\n", "agent A: real work")

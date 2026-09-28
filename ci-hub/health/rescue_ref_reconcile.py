@@ -45,7 +45,12 @@ fetch does not bring custom refs down; mirror another checkout's with
 This reads every location a rescue ref can be found locally: the mirror, a
 local ``refs/rescue/`` copy, and the legacy branch forms
 (``refs/remotes/origin/rescue/`` and ``refs/heads/rescue/``) so older rescues
-still reconcile. The same commit found at several locations is one row.
+still reconcile. The legacy ``rescue/*`` branches on origin were relocated to
+``refs/archive/rescue/*`` on 2026-09-28 (record:
+ai_docs/evidence/heads-to-archive-refs-20260928/); a checkout that fetched them
+with ``git fetch origin 'refs/archive/*:refs/archive/*'`` holds them there, so
+that location is read too. The same commit found at several locations is one
+row.
 """
 
 from __future__ import annotations
@@ -158,7 +163,8 @@ def rescue_ref_patterns(glob: str) -> list[str]:
     """Every local location a rescue ref named by `glob` (``rescue/...``) can occupy.
 
     Current: the verified mirror under refs/remotes/origin-rescue/ and a local
-    refs/rescue/ copy. Legacy: the fetched branch and a local branch.
+    refs/rescue/ copy. Legacy: the fetched branch, a local branch, and the
+    relocated archive copy under refs/archive/.
     """
     tail = glob.removeprefix("rescue/")
     return [
@@ -166,6 +172,7 @@ def rescue_ref_patterns(glob: str) -> list[str]:
         f"refs/{glob}",
         f"refs/remotes/origin/{glob}",
         f"refs/heads/{glob}",
+        f"refs/archive/{glob}",
     ]
 
 
