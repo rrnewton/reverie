@@ -81,3 +81,35 @@ fn wait_discarding_output_drains_piped_stdio() {
         Err(mpsc::RecvTimeoutError::Disconnected) => panic!("tracer thread panicked"),
     }
 }
+
+/// A forked guest exits through `_exit`, so the tracer flushes its buffered
+/// stdout first. If that flush fails the output is lost, and a guest function
+/// that returned normally must not be reported as a success: the child writes
+/// the reason to stderr and exits with status 1.
+#[test]
+fn forked_guest_exits_nonzero_when_stdout_flush_fails() {
+    let (output, ()) = reverie_ptrace::testing::test_fn::<(), _>(|| {
+        use std::os::fd::AsRawFd;
+
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .expect("open /dev/full");
+        // SAFETY: replaces fd 1 with a descriptor whose writes fail (ENOSPC).
+        assert_eq!(unsafe { libc::dup2(full.as_raw_fd(), 1) }, 1);
+        // No newline, so the line-buffered stdout keeps the text until the
+        // exit-time flush.
+        print!("unflushed");
+    })
+    .expect("run the guest");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(1),
+        "guest stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("failed to flush stdout"),
+        "guest stderr: {stderr}"
+    );
+}
