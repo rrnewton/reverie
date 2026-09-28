@@ -319,6 +319,7 @@ enum Notification {
     Error,
     PollPanic,
     PendingDropPanic,
+    ChildInjection,
 }
 
 #[derive(Default)]
@@ -348,12 +349,31 @@ impl Tool for CleanupTool {
 
     async fn handle_signal_dequeue<G: Guest<Self>>(
         &self,
-        _: &mut G,
+        guest: &mut G,
         _: reverie::SignalDequeue,
     ) -> std::result::Result<(), Errno> {
         assert_eq!(self.calls.fetch_add(1, Ordering::SeqCst), 0);
         match self.notification {
             Notification::Ready => Ok(()),
+            Notification::ChildInjection => {
+                assert_eq!(
+                    guest.inject(reverie::syscalls::Fork::new()).await,
+                    Err(Errno::ENOSYS)
+                );
+                assert_eq!(
+                    guest.inject(reverie::syscalls::Vfork::new()).await,
+                    Err(Errno::ENOSYS)
+                );
+                assert_eq!(
+                    guest.inject(reverie::syscalls::Clone::new()).await,
+                    Err(Errno::ENOSYS)
+                );
+                assert_eq!(
+                    guest.inject(reverie::syscalls::Clone3::new()).await,
+                    Err(Errno::ENOSYS)
+                );
+                Ok(())
+            }
             Notification::Error => Err(Errno::EIO),
             Notification::PollPanic => {
                 let payload = self.panic.lock().unwrap().take().unwrap();
@@ -443,7 +463,7 @@ fn check_actual_flush(notification: Notification) {
     assert!(executor.signal_dequeue_front().is_none());
     let panics = backend.tool_panic_owner().take();
     match notification {
-        Notification::Ready => {
+        Notification::Ready | Notification::ChildInjection => {
             assert!(result.is_ok());
             assert!(panics.is_empty());
             assert!(executor.signal_dequeue_failure().is_none());
@@ -490,6 +510,11 @@ fn check_actual_flush(notification: Notification) {
 #[test]
 fn actual_ready_signal_cleanup_keeps_success_after_run_failure() {
     check_actual_flush(Notification::Ready);
+}
+
+#[test]
+fn actual_signal_cleanup_refuses_every_child_creation_injection() {
+    check_actual_flush(Notification::ChildInjection);
 }
 
 #[test]
