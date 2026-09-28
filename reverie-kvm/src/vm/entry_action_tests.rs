@@ -467,6 +467,7 @@ pub(crate) mod entry_action_tests {
                     true,
                     None,
                     stop.as_mut(),
+                    None,
                 ))
             };
         let waker = futures::task::noop_waker();
