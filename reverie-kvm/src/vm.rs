@@ -1645,8 +1645,8 @@ impl KvmBackend {
         memory: &GuestMemory,
     ) -> Result<i64> {
         // Construct an observer only for the inherited-stdin zero-count
-        // candidate. Executor routing and every original precheck still
-        // decide whether this request reaches the host read at all.
+        // candidate. Executor routing decides whether it uses owned stdin;
+        // the host endpoint then applies its numeric-address/error checks.
         if request.number() == libc::SYS_read as u64
             && request.args()[0] as libc::c_int == libc::STDIN_FILENO
             && request.args()[2] == 0
