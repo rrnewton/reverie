@@ -56,12 +56,25 @@ const SEND_SIGSTOP: u64 = 0x2000;
 /// The Tool notifies the guest's parent again (SIGUSR2) when the kernel
 /// restarts the call.
 const NOTIFY_AGAIN: u64 = 0x4000;
-/// Bits 32-39: a signal the parent sends when the Tool, at the call's seccomp
+/// Bits 32-36: a signal the parent sends when the Tool, at the call's seccomp
 /// stop, notifies it; the Tool waits until the signal has arrived.
 const TOOL_PARK_SHIFT: u32 = 32;
-/// Bits 40-47: the same, from the pre-syscall hook (immediately before the
-/// call runs: plain ptrace's resume, trap-only's H3).
+/// Bit 38: after the call's inject returned, the Tool notifies the parent,
+/// waits until its SIGCONT has arrived, then sends SIGSTOP to the thread.
+const TOOL_AFTER_CONT: u64 = 0x40 << TOOL_PARK_SHIFT;
+/// Bits 40-44: the same as the Tool's park signal, from the pre-syscall hook
+/// (immediately before the call runs: plain ptrace's resume, trap-only's
+/// masked hop), at its `Early` point unless `HOOK_LATE`.
 const HOOK_PARK_SHIFT: u32 = 40;
+/// Bit 45: the hook parks at its `Late` point.
+const HOOK_LATE: u64 = 0x20 << HOOK_PARK_SHIFT;
+/// Bit 46: at its `Early` point the hook sends SIGSTOP to the process (the
+/// shared queue) and to the thread (its private queue).
+const HOOK_SEND_STOPS: u64 = 0x40 << HOOK_PARK_SHIFT;
+/// Bit 47: at its `Early` point the hook sends SIGKILL to the process and
+/// returns at once; at its `Late` point it waits until the kill has taken
+/// effect and stays parked.
+const HOOK_KILL: u64 = 0x80 << HOOK_PARK_SHIFT;
 
 /// The P2 Tool's configuration.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -218,8 +231,7 @@ fn notify_parent(pid: Pid) {
     tgkill(ppid, ppid, libc::SIGUSR2);
 }
 
-/// Whether `signal` has arrived at thread `tid`: pending, or, for SIGKILL,
-/// already acted on.
+/// Whether a SIGKILL has arrived at thread `tid` and taken effect.
 ///
 /// A pending SIGKILL is not enough: the killed thread leaves its ptrace stop
 /// and, with PTRACE_O_TRACEEXIT, stops again at PTRACE_EVENT_EXIT (measured
@@ -227,9 +239,9 @@ fn notify_parent(pid: Pid) {
 /// tracer makes in between fails with ESRCH, one made after it succeeds. The
 /// kill has taken effect once the thread is a zombie or gone, or is in a
 /// tracing stop again with its private SIGKILL dequeued (the process-wide
-/// bit stays set until the process is reaped). A Tool handler parked on a
-/// SIGKILL does not return after this (see its caller): the exit then races
-/// the handler inside the tracer, whatever this function observes.
+/// bit stays set until the process is reaped). A Tool handler or hook parked
+/// on a SIGKILL does not return after this (see their callers): the exit then
+/// races the handler inside the tracer, whatever this function observes.
 ///
 /// Each field is a separate read of `/proc/<tid>/status`, so the reads are
 /// ordered to be sound across the gaps: the process-wide bit first (the kill
@@ -239,61 +251,128 @@ fn notify_parent(pid: Pid) {
 /// state first, as a single read of the file also does, can pair the old
 /// stop's `t` with the dequeued bits of a thread that is still running to its
 /// exit stop.
-fn signal_arrived(tid: Pid, signal: i32) -> bool {
+fn kill_took_effect(tid: Pid) -> bool {
     let state = proc_status_field(tid, "State:");
     if state
         .as_deref()
         .is_none_or(|state| state.starts_with('Z') || state.starts_with('X'))
     {
-        return signal == libc::SIGKILL;
+        return true;
     }
-    let bit = 1u64 << (signal - 1);
+    let bit = 1u64 << (libc::SIGKILL - 1);
     let pending = |field: &str| {
         proc_status_field(tid, field)
             .and_then(|mask| u64::from_str_radix(&mask, 16).ok())
             .is_some_and(|mask| mask & bit != 0)
     };
-    if signal == libc::SIGKILL {
-        return pending("ShdPnd:")
-            && !pending("SigPnd:")
-            && proc_status_field(tid, "State:").is_some_and(|state| {
-                state.starts_with('t') || state.starts_with('Z') || state.starts_with('X')
-            });
-    }
-    pending("SigPnd:") || pending("ShdPnd:")
+    pending("ShdPnd:")
+        && !pending("SigPnd:")
+        && proc_status_field(tid, "State:").is_some_and(|state| {
+            state.starts_with('t') || state.starts_with('Z') || state.starts_with('X')
+        })
 }
 
-/// Notifies the parent of the parked `tid` (of process `pid`), then waits,
-/// without blocking the tracer's other tasks, until the signal the parent
-/// sends in response has arrived.
-async fn park_for(pid: Pid, tid: Pid, signal: i32) {
-    notify_parent(pid);
+/// The private and shared pending signals of thread `tid`, from one read.
+fn pending_masks(tid: Pid) -> (u64, u64) {
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
+        .unwrap_or_else(|error| panic!("read the status of parked thread {tid}: {error}"));
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|mask| u64::from_str_radix(mask.trim(), 16).ok())
+            .unwrap_or_else(|| panic!("no {name} for {tid}"))
+    };
+    (field("SigPnd:"), field("ShdPnd:"))
+}
+
+/// Waits, without blocking the tracer's other tasks, until `arrived`.
+async fn wait_until(what: &str, mut arrived: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !signal_arrived(tid, signal) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "signal {signal} did not arrive at parked thread {tid}"
-        );
+    while !arrived() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }
 
-/// The pre-syscall hook: parks each call tagged with a hook park signal once.
-fn park_hook() -> crate::task::PreSyscallForTest {
-    let fired = std::sync::Arc::new(Mutex::new(std::collections::BTreeSet::<(i32, u64)>::new()));
-    std::sync::Arc::new(move |tid: Pid, regs: &libc::user_regs_struct| {
-        let signal = ((regs.r9 >> HOOK_PARK_SHIFT) & 0xff) as i32;
-        let sequence = (regs.r9 & !TP_MAGIC_MASK) >> 16;
-        let park = regs.r9 & TP_MAGIC_MASK == TP_MAGIC
-            && signal != 0
-            && fired.lock().unwrap().insert((tid.as_raw(), sequence));
-        Box::pin(async move {
-            if park {
-                // The P2 fixture parks only single-threaded children.
-                park_for(tid, tid, signal).await;
-            }
-        })
+/// Notifies the parent of the parked `tid` (of process `pid`), then waits,
+/// without blocking the tracer's other tasks, until the signal the parent
+/// sends in response has arrived: for SIGKILL, until it has taken effect;
+/// for any other signal, until it is newly pending in either queue. The
+/// parked thread dequeues nothing meanwhile, so a bit that becomes set is the
+/// parent's signal; a test must not send one into a queue that already holds
+/// it (it would coalesce, and never be seen to arrive).
+async fn park_for(pid: Pid, tid: Pid, signal: i32) {
+    let what = format!("signal {signal} did not arrive at parked thread {tid}");
+    if signal == libc::SIGKILL {
+        notify_parent(pid);
+        return wait_until(&what, || kill_took_effect(tid)).await;
+    }
+    let bit = 1u64 << (signal - 1);
+    let (private, shared) = pending_masks(tid);
+    notify_parent(pid);
+    wait_until(&what, || {
+        let (now_private, now_shared) = pending_masks(tid);
+        ((now_private & !private) | (now_shared & !shared)) & bit != 0
     })
+    .await;
+}
+
+/// The pre-syscall hook: acts once on each call tagged with a hook action, at
+/// the point the tag names (see `HOOK_PARK_SHIFT` and the flags after it).
+fn park_hook() -> crate::task::PreSyscallForTest {
+    type Fired = std::collections::BTreeSet<(i32, u64, crate::task::PreSyscallPoint)>;
+    let fired = std::sync::Arc::new(Mutex::new(Fired::new()));
+    std::sync::Arc::new(
+        move |tid: Pid, regs: &libc::user_regs_struct, point: crate::task::PreSyscallPoint| {
+            use crate::task::PreSyscallPoint::Early;
+            use crate::task::PreSyscallPoint::Late;
+            let signal = ((regs.r9 >> HOOK_PARK_SHIFT) & 0x1f) as i32;
+            let park_point = if regs.r9 & HOOK_LATE != 0 {
+                Late
+            } else {
+                Early
+            };
+            let sequence = (regs.r9 & !TP_MAGIC_MASK) >> 16;
+            let tagged = regs.r9 & TP_MAGIC_MASK == TP_MAGIC
+                && regs.r9 & (0xff << HOOK_PARK_SHIFT) != 0
+                && fired
+                    .lock()
+                    .unwrap()
+                    .insert((tid.as_raw(), sequence, point));
+            // The P2 fixture parks only single-threaded children: pid == tid.
+            let (send_stops, kill, wait_kill, park) = (
+                tagged && point == Early && regs.r9 & HOOK_SEND_STOPS != 0,
+                tagged && point == Early && regs.r9 & HOOK_KILL != 0,
+                tagged && point == Late && regs.r9 & HOOK_KILL != 0,
+                tagged && point == park_point && signal != 0,
+            );
+            if send_stops {
+                // SAFETY: kill takes no pointers.
+                assert_eq!(unsafe { libc::kill(tid.as_raw(), libc::SIGSTOP) }, 0);
+                tgkill(tid, tid, libc::SIGSTOP);
+            }
+            if kill {
+                // SAFETY: kill takes no pointers.
+                assert_eq!(unsafe { libc::kill(tid.as_raw(), libc::SIGKILL) }, 0);
+            }
+            Box::pin(async move {
+                if park {
+                    park_for(tid, tid, signal).await;
+                }
+                if wait_kill || (park && signal == libc::SIGKILL) {
+                    if !park {
+                        let what = format!("the hook's SIGKILL did not take effect on {tid}");
+                        wait_until(&what, || kill_took_effect(tid)).await;
+                    }
+                    // Stay parked, so that the exit always wins the race
+                    // with the rest of the syscall (see the Tool's SIGKILL
+                    // park).
+                    std::future::pending::<()>().await;
+                }
+            })
+        },
+    )
 }
 
 fn errno_value(result: &Result<i64, Errno>) -> i64 {
@@ -409,7 +488,7 @@ impl Tool for P2Tool {
             let first = ACTED.lock().unwrap().insert(tid.as_raw(), sequence) != Some(sequence);
             if first {
                 send_signals(pid, tid, regs.r9 & 0xff00);
-                let park = ((regs.r9 >> TOOL_PARK_SHIFT) & 0xff) as i32;
+                let park = ((regs.r9 >> TOOL_PARK_SHIFT) & 0x1f) as i32;
                 if park != 0 {
                     park_for(pid, tid, park).await;
                 }
@@ -478,6 +557,10 @@ impl Tool for P2Tool {
             _ => {
                 assert_eq!(shape, SHAPE_INJECT, "unknown shape");
                 let result = guest.inject(call).await;
+                if tagged && regs.r9 & TOOL_AFTER_CONT != 0 {
+                    park_for(pid, tid, libc::SIGCONT).await;
+                    tgkill(pid, tid, libc::SIGSTOP);
+                }
                 let rendered = match result {
                     // The guest's parent is not traced, and differs per run.
                     Ok(value) if name == reverie::syscalls::Sysno::getppid && value > 0 => {
@@ -2787,8 +2870,8 @@ fn delivery_after_the_call(
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_sigstop_from_the_tracer_is_deferred_past_the_call() {
     let deferral = [
-        "slot SIGSTOP deferred code=-6",
-        "deferred SIGSTOP re-raised private=true code=-6",
+        "slot SIGSTOP deferred code=-6 queue=private",
+        "deferred SIGSTOP re-raised queue=private code=-6",
     ];
     let [ptrace, ..] =
         compare_sigstop_mode("sigstop_hop", &[&deferral[..], &deferral[..]].concat()).await;
@@ -2818,8 +2901,8 @@ async fn trap_only_p2_sigstop_from_the_tracer_is_deferred_past_the_call() {
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_t1e_sigstop_from_the_parent_is_deferred_past_the_write() {
     let deferral = [
-        "slot SIGSTOP deferred code=0",
-        "deferred SIGSTOP re-raised private=false code=0",
+        "slot SIGSTOP deferred code=0 queue=shared",
+        "deferred SIGSTOP re-raised queue=shared code=0",
     ];
     let [ptrace, ..] =
         compare_sigstop_mode("sigstop_parent", &[&deferral[..], &deferral[..]].concat()).await;
@@ -2854,7 +2937,7 @@ async fn trap_only_p2_t1e_sigstop_from_the_parent_is_deferred_past_the_write() {
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_sigcont_in_the_window_discards_the_deferred_sigstop() {
     let deferral = [
-        "slot SIGSTOP deferred code=0",
+        "slot SIGSTOP deferred code=0 queue=shared",
         "deferred SIGSTOP x1 discarded by a SIGCONT",
     ];
     let [ptrace, ..] = compare_sigstop_mode(
@@ -2905,23 +2988,31 @@ async fn trap_only_p2_sigtstp_with_a_handler_is_handled_after_the_write() {
 /// SIGKILL at the site's stop (before the hop), inside the hop, and inside
 /// the hop with a deferred SIGSTOP kills the child exactly as under plain
 /// ptrace: the write never lands, and the parent sees the same statuses and
-/// SIGCHLD. Whether H3 still finds the killed thread to re-raise the
-/// deferred SIGSTOP into is a race with its exit, and makes no difference.
+/// SIGCHLD.
+///
+/// Every parked Tool handler and hook stays parked once the kill has taken
+/// effect, so the exit wins in both backends (see the Tool's SIGKILL park).
+/// So the `entry` case (the parent's SIGKILL at the site's stop) never
+/// reaches the hop, and the `hop` and `stop-hop` cases (the parent's SIGKILL
+/// at the hop's early hook point) end inside that hook, before the hop reads
+/// the pending signals. Only `stop-kill`, where the tracer sends SIGKILL and
+/// the hook returns at once, reaches that read, which sees the thread dying
+/// and drops the deferred SIGSTOP; the hook's late point then stays parked.
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_sigkill_in_the_hop_kills_as_plain_ptrace() {
-    let runs = compare_mode("sigkill_hop").await;
-    for run in [&runs[1], &runs[3]] {
-        assert_patched(run, SiteState::Live);
-        assert_eq!(
-            lifecycle_with(run, "slot SIGSTOP"),
-            ["slot SIGSTOP deferred code=0"],
-            "{:#?}",
-            run.lifecycle
-        );
-    }
-    for (tag, notified) in [("entry", 1), ("hop", 1), ("stop-hop", 2)] {
+    let deferred = "slot SIGSTOP deferred code=0 queue=shared";
+    let [ptrace, ..] = compare_sigstop_mode(
+        "sigkill_hop",
+        &[
+            deferred,
+            deferred,
+            "deferred SIGSTOP x1 dropped: the thread is dying",
+        ],
+    )
+    .await;
+    for (tag, notified) in [("entry", 1), ("hop", 1), ("stop-hop", 2), ("stop-kill", 1)] {
         assert_report_has(
-            &runs[0],
+            &ptrace,
             &[
                 &format!(
                     "{tag} parent notified={notified} data=0 after=0 restarted=-1 waitpid signaled:9"
@@ -2930,7 +3021,243 @@ async fn trap_only_p2_sigkill_in_the_hop_kills_as_plain_ptrace() {
             ],
         );
     }
-    assert!(!runs[0].report.contains(" child "), "{}", runs[0].report);
+    assert!(!ptrace.report.contains(" child "), "{}", ptrace.report);
+}
+
+/// Several SIGSTOPs in one call, into both signal queues, some of them sent
+/// while the hop has already deferred others (P2-SPEC O1.4). Under plain
+/// ptrace each queue holds one pending SIGSTOP, with the siginfo of the first
+/// sent to it, and delivers it after the call: the private one first. The
+/// hop defers every SIGSTOP it dequeues (four, then three), with no bound,
+/// runs the slot again while one is pending at the slot stop, keeps each
+/// queue's first siginfo, and raises one SIGSTOP per queue into that queue.
+///
+/// `parent-kill`: the tracer's tgkill and the parent's kill at the site's
+/// stop, then the tracer's kill and tgkill at the hook's early point; the
+/// shared queue must keep the parent's siginfo, not the tracer's.
+/// `parent-tgkill`: the parent's tgkill at the site's stop, then the
+/// tracer's kill and tgkill; the private queue must keep the parent's.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_several_sigstops_in_one_hop_deliver_one_per_queue() {
+    let parent_kill = [
+        "slot SIGSTOP deferred code=-6 queue=private",
+        "slot SIGSTOP deferred code=0 queue=shared",
+        "slot SIGSTOP pending at the slot stop: run the slot again",
+        "slot SIGSTOP deferred code=-6 queue=private (coalesced)",
+        "slot SIGSTOP deferred code=0 queue=shared (coalesced)",
+        "deferred SIGSTOP re-raised queue=private code=-6",
+        "deferred SIGSTOP re-raised queue=shared code=0",
+    ];
+    let parent_tgkill = [
+        "slot SIGSTOP deferred code=-6 queue=private",
+        "slot SIGSTOP pending at the slot stop: run the slot again",
+        "slot SIGSTOP deferred code=-6 queue=private (coalesced)",
+        "slot SIGSTOP deferred code=0 queue=shared",
+        "deferred SIGSTOP re-raised queue=private code=-6",
+        "deferred SIGSTOP re-raised queue=shared code=0",
+    ];
+    let [ptrace, ..] = compare_sigstop_mode(
+        "sigstop_many",
+        &[
+            &parent_kill[..],
+            &parent_kill[..],
+            &parent_tgkill[..],
+            &parent_tgkill[..],
+        ]
+        .concat(),
+    )
+    .await;
+    for tag in [
+        "parent-kill-tail",
+        "parent-kill-inject",
+        "parent-tgkill-tail",
+        "parent-tgkill-inject",
+    ] {
+        assert_report_has(
+            &ptrace,
+            &[
+                &format!("{tag} child call ret=4 byte=0"),
+                &format!("{tag} parent notified=1 data=4 after=5 restarted=-1 waitpid exited:7"),
+                &format!("{tag} parent SIGCHLD code=1 status=7 from-child=1"),
+            ],
+        );
+    }
+    assert!(
+        !ptrace.report.contains(" child signal "),
+        "{}",
+        ptrace.report
+    );
+    let stop = |code, sender| delivery_after_the_call(&ptrace, "SIGSTOP", code, sender, "4", 1);
+    let parent_kill_stops = [
+        stop(libc::SI_TKILL, "tracer"),
+        stop(libc::SI_USER, "task#0"),
+    ];
+    let parent_tgkill_stops = [
+        stop(libc::SI_TKILL, "task#0"),
+        stop(libc::SI_USER, "tracer"),
+    ];
+    for (child, stops) in [
+        ("task#1", &parent_kill_stops),
+        ("task#2", &parent_kill_stops),
+        ("task#3", &parent_tgkill_stops),
+        ("task#4", &parent_tgkill_stops),
+    ] {
+        assert_eq!(&ptrace.signals[child], stops, "{child}");
+    }
+}
+
+/// The residual the hop cannot close (P2-SPEC O1.4): a SIGCONT sent after
+/// the hop's last read of the pending signals and before it raises the
+/// deferred SIGSTOP again. Under plain ptrace the SIGCONT discards the
+/// pending SIGSTOP and is delivered after the write, as in
+/// `trap_only_p2_sigcont_in_the_window_discards_the_deferred_sigstop`; under
+/// trap-only the re-raised SIGSTOP discards the SIGCONT. The Tool loses its
+/// SIGCONT event, the guest's SIGCONT handler does not run, and a SIGSTOP
+/// delivery stop happens instead. This pins the divergence exactly, so that
+/// it cannot grow unnoticed (and so that closing it shows up here).
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_sigcont_after_the_pending_read_is_lost() {
+    for tail in [false, true] {
+        let ptrace = run_p2("sigstop_cont_late", None, tail).await;
+        let trap_only = run_p2("sigstop_cont_late", Some(SitePatching::On), tail).await;
+        assert_eq!(ptrace.status, ExitStatus::Exited(0), "{}", ptrace.report);
+        assert_eq!(trap_only.status, ptrace.status, "{}", trap_only.report);
+        assert_patched(&trap_only, SiteState::Live);
+        let deferral = [
+            "slot SIGSTOP deferred code=0 queue=shared",
+            "deferred SIGSTOP re-raised queue=shared code=0",
+        ];
+        assert_eq!(
+            lifecycle_with(&trap_only, "")
+                .into_iter()
+                .filter(|decision| decision.contains(" SIGSTOP "))
+                .collect::<Vec<_>>(),
+            [&deferral[..], &deferral[..]].concat(),
+            "{:#?}",
+            trap_only.lifecycle
+        );
+        let cont = delivery_after_the_call(&ptrace, "SIGCONT", libc::SI_USER, "task#0", "4", 1);
+        let stop = delivery_after_the_call(&ptrace, "SIGSTOP", libc::SI_USER, "task#0", "4", 1);
+        for tag in ["tail", "inject"] {
+            let common = [
+                format!("{tag} child call ret=4 byte=0"),
+                format!("{tag} parent notified=2 data=4 after=5 restarted=-1 waitpid exited:7"),
+                format!("{tag} parent SIGCHLD code=1 status=7 from-child=1"),
+            ];
+            let common: Vec<&str> = common.iter().map(String::as_str).collect();
+            assert_report_has(&ptrace, &common);
+            assert_report_has(&trap_only, &common);
+            let handled =
+                format!("{tag} child signal 0: sig=18 code=0 from-parent=1 rip=tp_site_end rax=4");
+            assert_report_has(&ptrace, &[&handled]);
+            assert!(
+                !trap_only.report.contains(&format!("{tag} child signal ")),
+                "{}",
+                trap_only.report
+            );
+        }
+        for child in ["task#1", "task#2"] {
+            assert_eq!(ptrace.signals[child], std::slice::from_ref(&cont));
+            assert_eq!(trap_only.signals[child], std::slice::from_ref(&stop));
+            let sigcont_events = |run: &P2Run| {
+                run.tool_events[child]
+                    .iter()
+                    .filter(|event| event.starts_with("signal SIGCONT "))
+                    .count()
+            };
+            assert_eq!(sigcont_events(&ptrace), 1, "{:#?}", ptrace.tool_events);
+            assert_eq!(
+                sigcont_events(&trap_only),
+                0,
+                "{:#?}",
+                trap_only.tool_events
+            );
+        }
+    }
+}
+
+/// A SIGCONT that discards a SIGSTOP the hop re-raised, followed by a new
+/// SIGSTOP (the Tool's tgkill, after an injected write returned and before
+/// the thread returns to user mode): the new SIGSTOP's delivery stop keeps
+/// its own siginfo (SI_TKILL from the tracer), as under plain ptrace. The
+/// re-raise the SIGCONT discarded is still recorded then; it matches only a
+/// delivery stop that carries its own tag.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_a_discarded_reraise_leaves_a_later_sigstop_alone() {
+    let [ptrace, trap_only, _, trap_only_tail] = compare_sigstop_mode(
+        "sigstop_stale",
+        &[
+            "slot SIGSTOP deferred code=0 queue=shared",
+            "deferred SIGSTOP re-raised queue=shared code=0",
+        ],
+    )
+    .await;
+    for run in [&trap_only, &trap_only_tail] {
+        assert!(
+            run.all_events()
+                .iter()
+                .any(|event| event.starts_with("syscall write = 4")),
+            "{:#?}",
+            run.all_events()
+        );
+    }
+    assert_report_has(
+        &ptrace,
+        &[
+            "inject child call ret=4 byte=0",
+            "inject parent notified=2 data=4 after=5 restarted=-1 waitpid exited:7",
+        ],
+    );
+    assert!(
+        !ptrace.report.contains(" child signal "),
+        "{}",
+        ptrace.report
+    );
+    let stop = delivery_after_the_call(&ptrace, "SIGSTOP", libc::SI_TKILL, "tracer", "4", 1);
+    assert_eq!(ptrace.signals["task#1"], std::slice::from_ref(&stop));
+}
+
+/// A child with a second thread (which blocks every signal) parked at the
+/// shared site, with a SIGSTOP from its parent and a SIGCONT inside the
+/// window or after the write: the thread's creation retired every site of
+/// the child's address space (the hop reads only the hopping thread's
+/// pending signals, which settles a deferred SIGSTOP only for a single
+/// thread), so the call runs as under plain ptrace and nothing is deferred.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_a_threaded_child_never_defers_a_sigstop() {
+    let runs = compare_mode("sigstop_threaded").await;
+    for run in [&runs[1], &runs[3]] {
+        assert_patched(run, SiteState::Live);
+        assert!(
+            !run.lifecycle
+                .iter()
+                .any(|decision| decision.contains(" SIGSTOP ")),
+            "{:#?}",
+            run.lifecycle
+        );
+        // Each child's second thread restored every site of its address
+        // space before it was created.
+        let created = lifecycle_with(run, "creating clone3 ");
+        assert_eq!(created.len(), 2, "{:#?}", run.lifecycle);
+        assert!(
+            created
+                .iter()
+                .all(|decision| !decision.ends_with(" restored=0")),
+            "{created:#?}"
+        );
+    }
+    let ptrace = &runs[0];
+    assert_report_has(
+        ptrace,
+        &[
+            "window child call ret=4 byte=0",
+            "window child signal 0: sig=18 code=0 from-parent=1 rip=tp_site_end rax=4",
+            "window parent notified=2 data=4 after=5 restarted=-1 waitpid exited:7",
+            "late-cont child call ret=4 byte=0",
+            "late-cont child signal 0: sig=18 code=0 from-parent=1 rip=other rax=0",
+            "late-cont parent notified=1 data=4 after=5 restarted=-1 waitpid exited:7",
+        ],
+    );
 }
 
 /// A SIGSTOP pending when a blocking read starts interrupts it under plain
@@ -2938,12 +3265,12 @@ async fn trap_only_p2_sigkill_in_the_hop_kills_as_plain_ptrace() {
 /// the suppressed stop, before any data arrived. This is why the hop
 /// re-raises the deferred SIGSTOP before the call runs rather than after it
 /// returns: the parent writes the data only once the restarted read reached
-/// the Tool (or after 3 s without it).
+/// the Tool (or after 10 s without it).
 #[tokio::test(flavor = "current_thread")]
 async fn trap_only_p2_sigstop_interrupts_a_blocking_read_in_the_hop() {
     let deferral = [
-        "slot SIGSTOP deferred code=0",
-        "deferred SIGSTOP re-raised private=false code=0",
+        "slot SIGSTOP deferred code=0 queue=shared",
+        "deferred SIGSTOP re-raised queue=shared code=0",
     ];
     let [ptrace, ..] = compare_sigstop_mode(
         "sigstop_blocking_read",
