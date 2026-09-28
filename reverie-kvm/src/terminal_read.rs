@@ -529,8 +529,9 @@ impl ReadContext {
             .expect("prechecked stdin disappeared")
             .as_raw_fd();
         let mut error = 0;
-        // SAFETY: all arguments are scalar. For count zero, the original empty
-        // Vec's numeric staging pointer owns no allocation or Rust reference.
+        // SAFETY: all arguments are scalar and count is zero. The numeric
+        // address owns no allocation or Rust reference; the host read validates
+        // it without copying through it.
         let native = NonNull::new(unsafe { rvk_read_new(fd, address, count, &mut error) })
             .ok_or_else(|| Error::TerminalReadControl {
                 operation: "prepare C reader",
