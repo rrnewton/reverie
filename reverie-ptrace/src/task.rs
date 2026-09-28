@@ -6598,12 +6598,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                             .timer
                             .exec_test_identity()
                             .expect("read replacement perf identity");
+                        // Probe by event ID, not by descriptor number: other
+                        // tests in this process reuse a freed number at once.
                         let closed = displaced.as_ref().is_some_and(|old| {
-                            [old.clock_fd, old.timer_fd].into_iter().all(|fd| {
-                                (unsafe { libc::fcntl(fd, libc::F_GETFD) }) == -1
-                                    && std::io::Error::last_os_error().raw_os_error()
-                                        == Some(libc::EBADF)
-                            })
+                            [
+                                (old.clock_fd, old.clock_event_id),
+                                (old.timer_fd, old.timer_event_id),
+                            ]
+                            .into_iter()
+                            .all(|(fd, id)| crate::perf::fd_no_longer_names_event(fd, id))
                         });
                         EXEC_TIMER_TRANSFERS.with(|control| {
                             control.borrow().as_ref().unwrap().lock().unwrap().push(
