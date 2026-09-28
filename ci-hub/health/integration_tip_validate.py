@@ -86,7 +86,14 @@ DECIDER_HISTORY_KEEP = 48
 # on no other lane. validate-run already isolates itself the same way in
 # ci-hub/ci-hub. The cache path is fixed and is only used under tick.lock, which
 # every decider and dry run holds for its whole decision; it starts empty and
-# is removed afterwards.
+# is removed afterwards. Other tools write into it too: exact validate-status
+# runs ci-hub/ledger/validate_rows.py, whose ci-hub/ledger/ledger.py checker is
+# materialized under $XDG_CACHE_HOME with 0o555 directories whenever
+# DEV_HERMIT_TOOL_CACHE is unset. Only the operational tool exports that
+# variable, so a dry run started from an agent shell leaves such a tree here;
+# one was found 2026-09-28 after a hand-run validate-status in a private cache.
+# A plain rmtree cannot empty it, so remove_decision_cache makes the cache's own
+# directories writable first.
 DECISION_RUST_SCRIPT_CACHE = "decision-rust-script-cache"
 
 # An unreadable run handle blocks the launch unless its file last changed
@@ -1782,10 +1789,7 @@ def decision_rust_script_cache(settings: Settings) -> Iterator[Path]:
 
     root = settings.state_dir / DECISION_RUST_SCRIPT_CACHE
     try:
-        if root.is_symlink():
-            root.unlink()
-        elif root.exists():
-            shutil.rmtree(root)
+        remove_decision_cache(root)
         root.mkdir(parents=True)
     except OSError as error:
         raise ObservationUnavailable(
@@ -1800,7 +1804,33 @@ def decision_rust_script_cache(settings: Settings) -> Iterator[Path]:
             os.environ.pop("XDG_CACHE_HOME", None)
         else:
             os.environ["XDG_CACHE_HOME"] = previous
-        shutil.rmtree(root, ignore_errors=True)
+        try:
+            remove_decision_cache(root)
+        except OSError:
+            # Whatever survives is removed, or refused loudly, when the next
+            # decision starts; the finished decision's record stays as it was.
+            pass
+
+
+def remove_decision_cache(root: Path) -> None:
+    """Remove the decision cache, including read-only trees tools left in it.
+
+    Only real directories inside the cache are made writable. A symlink is
+    removed as an entry, and whatever it points at is never changed.
+    """
+
+    if root.is_symlink():
+        root.unlink()
+        return
+    if not root.exists():
+        return
+    os.chmod(root, 0o700)
+    for directory, names, _files in os.walk(root):
+        for name in names:
+            path = os.path.join(directory, name)
+            if not os.path.islink(path):
+                os.chmod(path, 0o700)
+    shutil.rmtree(root)
 
 
 def acquire_lock(lock: object, wait_seconds: float) -> bool:

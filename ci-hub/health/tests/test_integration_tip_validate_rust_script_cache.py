@@ -8,7 +8,9 @@ and 72.8s behind other lanes' script builds; decider
 These tests pin the isolation: every ci-hub child of a decider or dry run sees
 an empty cache owned by that decision, the cache is only used under tick.lock
 and is removed afterwards, a cache that cannot be emptied refuses the decision,
-and a live run still blocks the launch.
+and a live run still blocks the launch. The read-only checker tree that
+ci-hub/ledger/ledger.py writes under $XDG_CACHE_HOME when DEV_HERMIT_TOOL_CACHE
+is unset must neither survive a decision nor refuse the next one.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import stat
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -37,6 +40,20 @@ SPEC.loader.exec_module(driver)
 SHA = "1234567890abcdef1234567890abcdef12345678"
 DISPATCH = "20260928T180000Z-abcdef123456"
 WRAPPER = ROOT / "ci-hub" / "ci-hub"
+
+LEDGER_SPEC = importlib.util.spec_from_file_location(
+    "integration_tip_validate_rust_script_cache_ledger",
+    ROOT / "ci-hub" / "ledger" / "ledger.py",
+)
+ledger = importlib.util.module_from_spec(LEDGER_SPEC)
+assert LEDGER_SPEC.loader is not None
+sys.modules[LEDGER_SPEC.name] = ledger
+LEDGER_SPEC.loader.exec_module(ledger)
+
+ROOT_IGNORES_WRITE_BITS = pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="root ignores directory write bits, so a read-only tree cannot be reproduced",
+)
 
 # Stands in for rust-script behind the real ci-hub wrapper. It records the
 # cache each call was given and what that cache held, then answers
@@ -304,3 +321,76 @@ def test_a_symlinked_cache_is_replaced_and_its_target_is_left_alone(
     assert seen == [[str(cache_root(settings))]]
     assert (elsewhere / "keep").read_text() == "not ours"
     assert not cache_root(settings).exists()
+
+
+def materialize_ledger_checker(monkeypatch, cache: Path) -> Path:
+    """Have the real ledger producer write its read-only tree under `cache`."""
+
+    monkeypatch.delenv("DEV_HERMIT_TOOL_CACHE", raising=False)
+    monkeypatch.delenv("CI_HUB_LEDGER_EVENT_CHECKER_CACHE", raising=False)
+    monkeypatch.delenv("DEV_HERMIT_TOOL_AUTHORITY", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    checker = ledger._materialized_shared_type_checker()
+    assert checker.is_relative_to(cache), checker
+    content_root = checker.parents[2]
+    for directory in (content_root, checker.parent):
+        mode = stat.S_IMODE(directory.lstat().st_mode)
+        assert mode == 0o555, f"{directory} is {oct(mode)}; the producer changed shape"
+    return checker
+
+
+@ROOT_IGNORES_WRITE_BITS
+def test_a_read_only_ledger_checker_tree_neither_survives_nor_refuses_the_next_decision(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = configured(tmp_path)
+    root = cache_root(settings)
+    shared = tmp_path / "shared-user-cache"
+    root.mkdir(parents=True)
+    materialize_ledger_checker(monkeypatch, root)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(shared))
+    seen = []
+
+    def tick(received) -> int:
+        seen.append(child_cache(received))
+        materialize_ledger_checker(monkeypatch, cache_root(received))
+        driver.emit(state="in-progress", launched=0, summary="observed")
+        return 0
+
+    for dispatch in (DISPATCH, "20260928T190000Z-abcdef123456"):
+        assert driver.decide(settings, dispatch, tick=tick) == 0
+        record = json.loads(driver.decision_path(settings, dispatch).read_text())
+        assert record["exit_code"] == 0, record["fields"]["summary"]
+        assert record["fields"]["state"] == "in-progress"
+        assert not root.exists(), "the read-only tree the decision's tools wrote is gone"
+
+    assert seen == [[str(root)], [str(root)]], "each decision started from an empty cache"
+
+
+@ROOT_IGNORES_WRITE_BITS
+def test_removing_the_cache_never_changes_a_read_only_directory_it_links_to(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = configured(tmp_path)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "shared-user-cache"))
+    elsewhere = tmp_path / "someone-elses-read-only-tree"
+    elsewhere.mkdir()
+    (elsewhere / "keep").write_text("not ours")
+    elsewhere.chmod(0o555)
+    root = stale_cache(settings)
+    (root / "rust-script" / "link").symlink_to(elsewhere, target_is_directory=True)
+    (root / "rust-script").chmod(0o555)
+
+    def tick(_received) -> int:
+        driver.emit(state="in-progress", launched=0, summary="observed")
+        return 0
+
+    try:
+        assert driver.decide(settings, DISPATCH, tick=tick) == 0
+        record = json.loads(driver.decision_path(settings, DISPATCH).read_text())
+        assert record["exit_code"] == 0, record["fields"]["summary"]
+        assert not root.exists()
+        assert stat.S_IMODE(elsewhere.lstat().st_mode) == 0o555
+        assert (elsewhere / "keep").read_text() == "not ours"
+    finally:
+        elsewhere.chmod(0o755)
