@@ -2854,6 +2854,8 @@ fn delivery_after_the_call(
         "SIGSTOP" => libc::SIGSTOP,
         "SIGCONT" => libc::SIGCONT,
         "SIGTSTP" => libc::SIGTSTP,
+        "SIGTTIN" => libc::SIGTTIN,
+        "SIGTTOU" => libc::SIGTTOU,
         _ => unreachable!("{signal}"),
     };
     format!(
@@ -3174,6 +3176,63 @@ async fn trap_only_p2_sigcont_after_the_pending_read_is_lost() {
                 0,
                 "{:#?}",
                 trap_only.tool_events
+            );
+        }
+    }
+}
+
+/// A SIGCONT sent after the hop deferred a SIGSTOP, then a SIGTSTP, SIGTTIN
+/// or SIGTTOU (handled), both before the hop reads the pending signals. The
+/// stop signal discards the SIGCONT, which had discarded the SIGSTOP: under
+/// plain ptrace only the stop signal is delivered, after the write, and
+/// there is no SIGSTOP delivery stop and no SIGCONT. The read sees neither
+/// the SIGSTOP nor the SIGCONT; raising the SIGSTOP again would add its
+/// delivery stop (a signal event the Tool sees, and a restart of a blocking
+/// call it interrupts). The hop cannot tell this from a stop signal that
+/// followed no SIGCONT, so it fails closed, naming the stop signal.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_sigcont_then_a_stop_signal_fails_closed() {
+    for (mode, tag, name, signal) in [
+        ("sigstop_cont_tstp", "tstp", "SIGTSTP", libc::SIGTSTP),
+        ("sigstop_cont_ttin", "ttin", "SIGTTIN", libc::SIGTTIN),
+        ("sigstop_cont_ttou", "ttou", "SIGTTOU", libc::SIGTTOU),
+    ] {
+        let ptrace = run_p2(mode, None, false).await;
+        assert_eq!(ptrace.status, ExitStatus::Exited(0), "{}", ptrace.report);
+        assert_report_has(
+            &ptrace,
+            &[
+                &format!("{tag} child call ret=4 byte=0"),
+                &format!(
+                    "{tag} child signal 0: sig={signal} code=0 from-parent=1 rip=tp_site_end rax=4"
+                ),
+                &format!("{tag} parent notified=2 data=4 after=5 restarted=-1 waitpid exited:7"),
+                &format!("{tag} parent SIGCHLD code=1 status=7 from-child=1"),
+            ],
+        );
+        assert!(
+            !ptrace.report.contains(&format!("{tag} child signal 1:")),
+            "{}",
+            ptrace.report
+        );
+        let only = delivery_after_the_call(&ptrace, name, libc::SI_USER, "task#0", "4", 1);
+        assert_eq!(
+            ptrace.signals["task#1"],
+            std::slice::from_ref(&only),
+            "{mode}"
+        );
+        for tail in [false, true] {
+            let error = run_p2_with(mode, Some(SitePatching::On), tail, false)
+                .await
+                .expect_err("a deferred SIGSTOP behind a stop signal must end the run");
+            let text = format!("{error:#} {error:?}");
+            assert!(
+                text.contains(&format!(
+                    "TrapOnlyHopDeferredStopBehindStopSignal: site {:#x} deferred a SIGSTOP \
+                     while signal {signal} was pending",
+                    ptrace.site
+                )),
+                "{mode} tail={tail}: {text}"
             );
         }
     }
