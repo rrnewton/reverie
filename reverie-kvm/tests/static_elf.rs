@@ -5767,6 +5767,214 @@ int main(void) {
 }
 
 #[test]
+fn real_kvm_authenticated_proc_carrier_survives_sender_close_thread_fork_exec_and_reopen() {
+    if !kvm_available("authenticated synthetic-proc carrier transfer") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "authenticated-proc-carrier",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static int sockets[2];
+static int donated[2];
+
+static void *send_and_close(void *unused) {
+  (void)unused;
+  char byte = 'p';
+  char control[CMSG_SPACE(2 * sizeof(int))] = {0};
+  struct iovec vector = {.iov_base = &byte, .iov_len = 1};
+  struct msghdr message = {
+      .msg_iov = &vector,
+      .msg_iovlen = 1,
+      .msg_control = control,
+      .msg_controllen = sizeof(control),
+  };
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  header->cmsg_level = SOL_SOCKET;
+  header->cmsg_type = SCM_RIGHTS;
+  header->cmsg_len = CMSG_LEN(2 * sizeof(int));
+  memcpy(CMSG_DATA(header), donated, sizeof(donated));
+  int result = sendmsg(sockets[0], &message, 0);
+  int close0 = close(donated[0]);
+  int close1 = close(donated[1]);
+  return (void *)(long)(result == 1 && close0 == 0 && close1 == 0 ? 0 : 1);
+}
+
+static int receive_two(int result[2]) {
+  char byte = 0;
+  char control[CMSG_SPACE(2 * sizeof(int))] = {0};
+  struct iovec vector = {.iov_base = &byte, .iov_len = 1};
+  struct msghdr message = {
+      .msg_iov = &vector,
+      .msg_iovlen = 1,
+      .msg_control = control,
+      .msg_controllen = sizeof(control),
+  };
+  if (recvmsg(sockets[1], &message, 0) != 1 || byte != 'p' ||
+      (message.msg_flags & MSG_CTRUNC)) return 20;
+  struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+  if (!header || header->cmsg_level != SOL_SOCKET ||
+      header->cmsg_type != SCM_RIGHTS ||
+      header->cmsg_len != CMSG_LEN(2 * sizeof(int))) return 21;
+  memcpy(result, CMSG_DATA(header), 2 * sizeof(int));
+  return 0;
+}
+
+static int validate_carriers(int readable, int path_only) {
+  static const char expected[] = "0.00 0.00\n";
+  int readable_flags = fcntl(readable, F_GETFL);
+  int path_flags = fcntl(path_only, F_GETFL);
+  if (readable_flags < 0 || (readable_flags & O_ACCMODE) != O_RDONLY) return 30;
+  if (path_flags < 0 || !(path_flags & O_PATH) || !(path_flags & O_NOFOLLOW)) return 31;
+
+  struct stat first, second;
+  if (fstat(readable, &first) || fstat(path_only, &second)) return 32;
+  if (!S_ISREG(first.st_mode) || first.st_mode != second.st_mode ||
+      first.st_dev != second.st_dev || first.st_ino != second.st_ino ||
+      first.st_size != (off_t)(sizeof(expected) - 1) || first.st_size != second.st_size)
+    return 33;
+  struct statx sx;
+  memset(&sx, 0, sizeof(sx));
+  if (statx(path_only, "", AT_EMPTY_PATH, STATX_BASIC_STATS, &sx) ||
+      !(sx.stx_mask & STATX_INO) || sx.stx_ino != (unsigned long long)first.st_ino)
+    return 34;
+
+  char procfd[64], target[128];
+  if (snprintf(procfd, sizeof(procfd), "/proc/self/fd/%d", path_only) >= sizeof(procfd))
+    return 35;
+  ssize_t target_len = readlink(procfd, target, sizeof(target) - 1);
+  if (target_len <= 0 || target_len >= (ssize_t)sizeof(target)) return 36;
+  target[target_len] = 0;
+  if (strncmp(target, "/proc/", 6) || !strstr(target, "/uptime")) return 37;
+
+  if (lseek(readable, 0, SEEK_SET) != 0) return 38;
+  char observed[sizeof(expected)] = {0};
+  if (read(readable, observed, 4) != 4) return 39;
+  int alias = dup(readable);
+  if (alias < 0 || read(alias, observed + 4, sizeof(expected) - 1 - 4) !=
+                       (ssize_t)(sizeof(expected) - 1 - 4) ||
+      memcmp(observed, expected, sizeof(expected) - 1)) return 40;
+  close(alias);
+
+  if (snprintf(procfd, sizeof(procfd), "/proc/self/fd/%d", readable) >= sizeof(procfd))
+    return 41;
+  int reminted = open(procfd, O_RDONLY);
+  if (reminted < 0) return 42;
+  memset(observed, 0, sizeof(observed));
+  if (read(reminted, observed, sizeof(expected) - 1) != (ssize_t)(sizeof(expected) - 1) ||
+      memcmp(observed, expected, sizeof(expected) - 1) ||
+      lseek(readable, 0, SEEK_CUR) != (off_t)(sizeof(expected) - 1)) return 43;
+  struct stat reminted_stat;
+  if (fstat(reminted, &reminted_stat) || reminted_stat.st_ino != first.st_ino) return 44;
+  close(reminted);
+
+  errno = 0;
+  char byte = 0;
+  if (read(path_only, &byte, 1) != -1 || errno != EBADF) return 45;
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc == 4 && !strcmp(argv[1], "after-exec")) {
+    int result = validate_carriers(atoi(argv[2]), atoi(argv[3]));
+    if (result) return result;
+    puts("authenticated proc carrier ok");
+    return 0;
+  }
+
+  if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets)) return 10;
+  donated[0] = open("/proc/uptime", O_RDONLY);
+  donated[1] = open("/proc/uptime", O_PATH | O_NOFOLLOW);
+  if (donated[0] < 0 || donated[1] < 0) return 11;
+  pthread_t sender;
+  if (pthread_create(&sender, NULL, send_and_close, NULL)) return 12;
+  void *sender_result = NULL;
+  if (pthread_join(sender, &sender_result) || sender_result != NULL) return 13;
+
+  int received[2] = {-1, -1};
+  int receive_result = receive_two(received);
+  if (receive_result) return receive_result;
+  if (validate_carriers(received[0], received[1])) return 14;
+
+  pid_t child = fork();
+  if (child < 0) return 15;
+  if (child == 0) _exit(validate_carriers(received[0], received[1]));
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status))
+    return 16;
+
+  char readable[32], path_only[32];
+  snprintf(readable, sizeof(readable), "%d", received[0]);
+  snprintf(path_only, sizeof(path_only), "%d", received[1]);
+  char *next[] = {argv[0], "after-exec", readable, path_only, NULL};
+  execv(argv[0], next);
+  return 17;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let (stdout, stderr) =
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(stdout, b"authenticated proc carrier ok\n");
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+#[test]
+fn real_proc_uptime_scm_rights_preserves_identity_after_sender_close() {
+    if !kvm_available("fixed proc snapshot identity after SCM_RIGHTS sender close") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "proc-uptime-transfer",
+        include_str!("fixtures/proc_uptime_transfer.c"),
+        &["-Wall", "-Wextra", "-Werror"],
+    );
+    // The same fixture qualifies the Linux path/descriptor behavior first.
+    // Uptime bytes and stat sizes are not compared across native and KVM runs.
+    let native = std::process::Command::new(&executable).output().unwrap();
+    assert!(
+        native.status.success(),
+        "native status={} stdout={} stderr={}",
+        native.status,
+        String::from_utf8_lossy(&native.stdout),
+        String::from_utf8_lossy(&native.stderr),
+    );
+    assert_eq!(native.stdout, b"proc uptime transfer identity ok\n");
+    assert!(native.stderr.is_empty());
+
+    let executable = executable.to_str().unwrap();
+    let (stdout, stderr) =
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(stdout, b"proc uptime transfer identity ok\n");
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+#[test]
 fn worker_exit_group_terminates_the_root_with_its_status() {
     match Kvm::new() {
         Ok(_) => {}
