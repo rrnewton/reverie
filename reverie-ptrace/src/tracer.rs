@@ -3890,6 +3890,22 @@ async fn postspawn<L: Tool + 'static>(
     Ok((tracer, ordinary_session))
 }
 
+/// Whether a launch rewrites guest syscall sites: its trap-only configuration
+/// patches (`SitePatching::On`) *and* its Tool subscribes to every syscall
+/// except `rt_sigreturn` (P2 spec O4 rule 2). A patched site that carried an
+/// unsubscribed number would need an invisible run that plain ptrace performs
+/// without any stop, so a partial subscription never patches: it gets plain
+/// ptrace's filter and no per-task trap-only state
+/// (`LiteinstTrapOnlyConfig::root_task` records
+/// `Disabled(PartialSubscription)` in the root table).
+fn trap_only_rewrites_sites(
+    trap_only: Option<&crate::liteinst_trap_only::LiteinstTrapOnlyConfig>,
+    events: &Subscription,
+) -> bool {
+    trap_only.is_some_and(|trap_only| trap_only.patching().rewrites_sites())
+        && crate::liteinst_trap_only::has_full_subscription(events)
+}
+
 /// Creates the seccomp filter. This lets us control which syscalls are traced
 /// and which ones are allowed through.
 ///
@@ -4235,6 +4251,19 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         self
     }
 
+    /// Makes the masked hop see every slot exit stop's rip displaced by one
+    /// byte, so that H4 must fail closed.
+    #[cfg(test)]
+    fn liteinst_trap_only_displace_hop_exit_rip_for_test(self) -> Self {
+        self.liteinst_trap_only
+            .as_ref()
+            .expect("trap-only mode must be selected before displacing its hop exit rip")
+            .hooks
+            .displace_hop_exit_rip
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
     #[cfg(test)]
     fn fail_liteinst_preinit_for_test(mut self) -> Self {
         self.liteinst_runtime
@@ -4493,10 +4522,6 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             // An entry that changes rcx or r8-r11 refuses only site patching.
             require_ia32_emulation(trap_only.ia32_probe(), trap_only.patching())?;
         }
-        let trap_only_patching = self
-            .liteinst_trap_only
-            .as_ref()
-            .is_some_and(|trap_only| trap_only.patching().rewrites_sites());
         let liteinst_trap_only = self
             .liteinst_trap_only
             .as_ref()
@@ -4513,12 +4538,18 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         let global_state = <T::GlobalState as GlobalTool>::init_global_state(&config).await;
         let events = T::subscriptions(&config);
         // Only a patching run carries per-task trap-only state; with patching
-        // off every task runs the ordinary ptrace path unchanged.
+        // off every task runs the ordinary ptrace path unchanged. P2 spec O4
+        // rule 2: a run whose Tool does not subscribe to every syscall is
+        // treated exactly as patching Off (plain filter, no per-task state, no
+        // site ever patched), with the root table recording why.
+        let trap_only_patching =
+            trap_only_rewrites_sites(self.liteinst_trap_only.as_ref(), &events);
         let trap_only_task = self
             .liteinst_trap_only
             .as_ref()
             .filter(|trap_only| trap_only.patching().rewrites_sites())
-            .map(|trap_only| trap_only.root_task(&events));
+            .map(|trap_only| trap_only.root_task(&events))
+            .filter(|_| trap_only_patching);
         let mut traced_events = events.clone();
         if self.liteinst_runtime.is_some() {
             // Mapping operations are controller-only lifecycle observations:

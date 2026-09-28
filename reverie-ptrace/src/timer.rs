@@ -383,6 +383,13 @@ pub enum HandleFailure {
     #[error("Unexpected event while single stepping")]
     Event(Wait),
 
+    /// A single step ended at a seccomp stop: the stepped instruction entered
+    /// a traced syscall. The caller classifies it (trap-only refuses a patched
+    /// site carrying an allowed number, P2 spec O4 rule 4) and otherwise
+    /// dispatches it like [`HandleFailure::Event`].
+    #[error("Single step ended at a seccomp stop")]
+    SeccompStop(Stopped),
+
     /// The timer signal was for a timer event that was otherwise cancelled. The
     /// task is returned unchanged.
     #[error("Timer event was cancelled and should not fire")]
@@ -1270,6 +1277,9 @@ impl TimerImpl {
             task = match wait {
                 // a successful single step results in SIGTRAP stop
                 Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
+                Wait::Stopped(new_task, TraceEvent::Seccomp) => {
+                    return Err(HandleFailure::SeccompStop(new_task));
+                }
                 wait => return Err(HandleFailure::Event(wait)),
             };
             current.single_step_with_clock(self.read_clock());

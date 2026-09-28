@@ -126,6 +126,11 @@ pub(crate) enum RetiredReason {
     /// The guest enabled syscall user dispatch, which must never see an
     /// `int 0x80` entry that plain ptrace would not produce.
     Sud,
+    /// The site carried a number plain ptrace's filter allows without a stop
+    /// (`rt_sigreturn`, or a number the syscall table does not know). The
+    /// tracer ran that call invisibly and then restored the site, so the
+    /// allowed number never costs a stop again (P2 spec O4 rule 3).
+    AllowClass,
 }
 
 /// Whether a site's bytes are currently patched.
@@ -375,14 +380,36 @@ pub enum TrapOnlyFailure {
         /// The reported syscall number.
         orig_rax: i64,
     },
-    /// A patched site carried a number the tool does not subscribe to (or
-    /// `rt_sigreturn`). Running it invisibly is not implemented yet.
-    #[error("TrapOnlyAllowClassUnsupported: site {site:#x} carried unsubscribed syscall {nr}")]
-    AllowClassUnsupported {
+    /// A timer single-step ended at a patched site's `int 0x80` stop that
+    /// carries a number plain ptrace's filter allows without a stop (P2 spec
+    /// O4 rule 4). Under plain ptrace that step runs the syscall and ends
+    /// after it; reproducing that inside the timer's step loop is not
+    /// implemented, so the run fails closed instead of resuming the stop.
+    #[error(
+        "TrapOnlyAllowClassInTimerStep: a timer single-step reached site {site:#x} carrying allowed syscall {nr}"
+    )]
+    AllowClassInTimerStep {
+        /// The patched site.
+        site: u64,
+        /// The (sign-extended 32-bit) syscall number.
+        nr: i64,
+    },
+    /// At the syscall-exit stop of the masked hop the instruction pointer was
+    /// neither the hop target's return address nor, for `rt_sigreturn`, the
+    /// signal frame's saved instruction pointer (P2 spec O4, H4). Rewriting
+    /// the registers would resume the guest at an unknown address.
+    #[error(
+        "TrapOnlyHopExitRip: syscall {nr} for site {site:#x} left rip {rip:#x} at its exit stop, expected {expected}"
+    )]
+    HopExitRip {
         /// The patched site.
         site: u64,
         /// The syscall number.
         nr: i64,
+        /// The instruction pointer found at the exit stop.
+        rip: u64,
+        /// The accepted instruction pointer(s), rendered.
+        expected: String,
     },
     /// A second executing task appeared in an address space that still had
     /// live sites or still accepted new ones: the restore that must precede
@@ -499,6 +526,9 @@ pub(crate) fn site_mapping_is_patchable(
 pub(crate) struct TrapOnlyTestHooks {
     /// Skip every patch write, so the readback finds the original bytes.
     pub(crate) skip_patch_write: std::sync::atomic::AtomicBool,
+    /// Make H4 see the slot exit stop's rip one byte past where the kernel
+    /// left it (the tracee is not changed), to exercise `TrapOnlyHopExitRip`.
+    pub(crate) displace_hop_exit_rip: std::sync::atomic::AtomicBool,
     /// Every table the run created after the root one, labelled by how
     /// (`fork`, `share`, `exec`), so a test can inspect non-root tables.
     pub(crate) tables: Mutex<Vec<(String, Arc<Mutex<SiteTable>>)>>,
@@ -547,6 +577,11 @@ pub(crate) struct TrapOnlyTask {
     /// The clone flags of the task-creating syscall this task is parked at,
     /// decoded at its creating stop; consumed by the new-child stop.
     pub(crate) pending_clone_flags: Option<u64>,
+    /// Set when a timer single-step ended at this task's current seccomp
+    /// stop, and consumed by H0: the `syscall` that plain ptrace would have
+    /// executed under that step saves RFLAGS with TF set into r11, which the
+    /// kernel hides from `eflags` (TIF_FORCED_TF).
+    pub(crate) stepped_entry: bool,
 }
 
 impl TrapOnlyTask {
@@ -558,6 +593,7 @@ impl TrapOnlyTask {
             new_child_view: None,
             in_hop: false,
             pending_clone_flags: None,
+            stepped_entry: false,
         }
     }
 
@@ -773,10 +809,13 @@ pub struct Ia32EmulationUnavailable {
 /// preserved.
 ///
 /// A patched site runs its syscall through `int 0x80`, and the guest resumes
-/// with whatever that entry left in rcx and r8-r11. Linux 6.7 and later enter
-/// through `int80_emulation`, which preserves them; older entries clear
-/// r8-r11. A launch without site patching never executes a patched site and is
-/// not refused for this.
+/// with whatever that entry left in rcx and r8-r11. The IA-32 entry cleared
+/// r8-r11 only before Linux 4.17 (commit 8bb2610bc496); 4.17 through 6.6
+/// preserve them, and 6.7 and later enter through `int80_emulation`, which
+/// preserves them too. The launch probe checks the running kernel rather than
+/// trusting its version, so a kernel that clears them is refused. A launch
+/// without site patching never executes a patched site and is not refused for
+/// this.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("LiteInst trap-only launch with site patching {patching} refused: {observation}")]
 pub struct Ia32EntryClobbersRegisters {
@@ -969,9 +1008,11 @@ fn classify_probe_outcome(
 /// Trap-only patching turns a guest `syscall` into `int 0x80`. The guest then
 /// continues with whatever the IA-32 entry left in these registers, so the
 /// tracer can present the `syscall`-shaped values (rcx = next rip,
-/// r11 = rflags) only if the entry itself changes none of them. Linux 6.7 and
-/// later enter through `int80_emulation` and preserve every general-purpose
-/// register; older entries clobber r8-r11, so the probe fails closed there.
+/// r11 = rflags) only if the entry itself changes none of them. The IA-32
+/// entry cleared r8-r11 only before Linux 4.17 (commit 8bb2610bc496); 4.17
+/// through 6.6 preserve them, and 6.7 and later enter through
+/// `int80_emulation`, which preserves them too. The probe fails closed on any
+/// kernel whose entry changes one.
 #[cfg(target_arch = "x86_64")]
 const PRESERVED_REGISTERS: [&str; 5] = ["rcx", "r8", "r9", "r10", "r11"];
 
@@ -1587,7 +1628,7 @@ mod tests {
     }
 
     /// A correct getpid whose entry changed any of rcx, r8, r9, r10 or r11
-    /// (as IA-32 entries before Linux 6.7 do for r8-r11) is classified as a
+    /// (as IA-32 entries before Linux 4.17 do for r8-r11) is classified as a
     /// clobbering entry, naming the register, its sentinel and the value found.
     #[cfg(target_arch = "x86_64")]
     #[test]

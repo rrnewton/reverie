@@ -20,6 +20,11 @@ use safeptrace::ChildOp;
 use safeptrace::Event;
 use safeptrace::Wait;
 
+/// The prefix [`PtraceBackendStatsSource::mark_last_stop_internal`] puts on a
+/// recorded stop description.
+#[cfg(test)]
+pub(crate) const INTERNAL_STOP_PREFIX: &str = "internal ";
+
 /// Stable counts of lifecycle transitions observed by the ptrace run loops.
 ///
 /// Every field is supported by ptrace. A zero therefore means the named
@@ -218,6 +223,21 @@ impl PtraceBackendStatsSource {
             .lock()
             .expect("stop trace lock poisoned")
             .push((pid, description));
+    }
+
+    /// Marks `pid`'s most recent recorded wait as tracer-internal: a stop
+    /// plain ptrace never produces (a trap-only Allow-class entry), which the
+    /// P2 comparator accounts for explicitly instead of comparing.
+    #[cfg(test)]
+    pub(crate) fn mark_last_stop_internal(&self, pid: reverie::Pid) {
+        let mut trace = self
+            .collector
+            .stop_trace
+            .lock()
+            .expect("stop trace lock poisoned");
+        if let Some((_, description)) = trace.iter_mut().rev().find(|(stop, _)| *stop == pid) {
+            description.insert_str(0, INTERNAL_STOP_PREFIX);
+        }
     }
 
     /// Returns every recorded run-loop wait in arrival order.
