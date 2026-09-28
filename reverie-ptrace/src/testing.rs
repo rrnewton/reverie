@@ -34,6 +34,21 @@ pub fn liteinst_helper_timer_signals_discarded() -> u64 {
     crate::task::LITEINST_HELPER_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The number of timer overflow signals this process has taken at injected
+/// syscalls as the notification of a timer event that no stop had decided, to
+/// deliver the event. Concurrent tests in one process share the count.
+pub fn live_timer_signals_taken() -> u64 {
+    crate::task::LIVE_TIMER_SIGNALS_TAKEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Makes the precise timers this process creates from now on map no overflow
+/// records, as on a kernel that is or may be `PREEMPT_RT`. Timers already
+/// created keep theirs. For tests of the behaviour without records; a test
+/// binary that calls this should run nothing that expects records.
+pub fn disable_timer_overflow_records() {
+    crate::timer::OVERFLOW_RECORDS_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The number of times this process forgot timer overflow records because
 /// their notification had left the thread's pending queue. Concurrent tests
 /// in one process share the count.
