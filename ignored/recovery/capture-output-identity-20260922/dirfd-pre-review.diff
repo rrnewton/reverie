@@ -1,0 +1,408 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index c0e5e7e6..d2eab90e 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -7230,6 +7230,11 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
+         if state.proc_files.contains_key(&guest_fd) {
+             return negative_errno(libc::EACCES);
+         }
++        if is_captured_output_description(state, guest_fd) {
++            // The proc-fd path follows the guest's logical capture FIFO, not
++            // the supervisor object currently occupying raw fd 1/2.
++            return negative_errno(libc::EINVAL);
++        }
+         let Some(host_fd) = host_fd(state, guest_fd) else {
+             return negative_errno(libc::ENOENT);
+         };
+@@ -7594,6 +7599,12 @@ fn open_file(
+     if path.is_empty() {
+         return negative_errno(libc::ENOENT);
+     }
++    if captured_relative_dirfd(state, guest_dirfd, &path) {
++        // Captured stdout/stderr are logical FIFOs, never directory handles.
++        // Refuse before synthetic or host-relative lookup can inspect an
++        // unrelated directory occupying the supervisor's fd 1/2 slot.
++        return negative_errno(libc::ENOTDIR);
++    }
+     let relative_proc_path = synthetic_proc_relative_path(state, guest_dirfd, &path);
+     let path = relative_proc_path.as_deref().unwrap_or(&path);
+     let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
+@@ -7996,6 +8007,9 @@ fn guest_fd_descendant_error(
+     trailing_slash_errno: libc::c_int,
+     trailing_slash_only: bool,
+ ) -> i64 {
++    if is_captured_output_description(state, guest_fd) {
++        return negative_errno(libc::ENOTDIR);
++    }
+     let Some(host_fd) = host_fd(state, guest_fd) else {
+         return negative_errno(libc::ENOENT);
+     };
+@@ -8888,6 +8902,10 @@ fn output_alias(state: &LoadedStaticElf, fd: libc::c_int) -> Option<OutputAlias>
+     )
+ }
+ 
++fn is_captured_output_description(state: &LoadedStaticElf, fd: libc::c_int) -> bool {
++    state.capture_status_flags.contains_key(&fd) && output_alias(state, fd).is_some()
++}
++
+ fn output_alias_from_sets(
+     fd: libc::c_int,
+     stdout: &std::collections::BTreeSet<i32>,
+@@ -13991,6 +14009,12 @@ fn faccessat_impl(
+             negative_errno(libc::ENOENT)
+         };
+     }
++    if path.is_empty()
++        && flags & libc::AT_EMPTY_PATH != 0
++        && is_captured_output_description(state, guest_dirfd)
++    {
++        return captured_fifo_access_result(mode);
++    }
+     // Synthetic /proc files exist and are world-readable but never writable or
+     // executable, matching the read-only surface open_file serves.
+     if synthetic_proc_content(state, &path).is_some() {
+@@ -14019,6 +14043,11 @@ fn faccessat_impl(
+         // procfs permission hook as the exact and AT_EMPTY_PATH spellings.
+         return 0;
+     }
++    if let Some(metadata) = guest_path
++        && is_captured_output_description(state, metadata.guest_fd)
++    {
++        return captured_fifo_access_result(mode);
++    }
+     let opened_file;
+     let host_fd = if let Some(metadata) = guest_path {
+         metadata.host_fd
+@@ -14055,6 +14084,14 @@ fn faccessat_impl(
+     }
+ }
+ 
++fn captured_fifo_access_result(mode: libc::c_int) -> i64 {
++    if mode & libc::X_OK != 0 {
++        negative_errno(libc::EACCES)
++    } else {
++        0
++    }
++}
++
+ fn read_path_at(
+     memory: &GuestMemory,
+     state: &LoadedStaticElf,
+@@ -16260,6 +16297,9 @@ fn host_dirfd_and_path(
+             .map(|path| (state.cwd_fd.as_raw_fd(), path))
+             .map_err(|_| negative_errno(libc::EINVAL));
+     }
++    if captured_relative_dirfd(state, guest_dirfd, path) {
++        return Err(negative_errno(libc::ENOTDIR));
++    }
+     if !path.is_empty() && state.proc_fd_directories.contains_key(&guest_dirfd) {
+         return Err(negative_errno(libc::EACCES));
+     }
+@@ -16280,6 +16320,12 @@ fn host_dirfd_and_path(
+         .map_err(|_| negative_errno(libc::EINVAL))
+ }
+ 
++fn captured_relative_dirfd(state: &LoadedStaticElf, guest_dirfd: libc::c_int, path: &[u8]) -> bool {
++    !path.is_empty()
++        && !path.starts_with(b"/")
++        && is_captured_output_description(state, guest_dirfd)
++}
++
+ // TODO-HUMAN-REVIEW(PR-136): Review descriptor object-identity cleanup.
+ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
+     let transaction = state.signal_transaction.clone();
+@@ -17965,6 +18011,12 @@ fn readlink_at_impl(
+         if guest_dirfd == libc::AT_FDCWD {
+             return negative_errno(libc::ENOENT);
+         }
++        if is_captured_output_description(state, guest_dirfd) {
++            // readlinkat with an empty path succeeds only for an O_PATH handle
++            // to a symlink. A captured stream is a FIFO regardless of the
++            // supervisor object occupying the same numeric slot.
++            return negative_errno(libc::ENOENT);
++        }
+         let Some(host_fd) = host_fd(state, guest_dirfd) else {
+             return negative_errno(libc::EBADF);
+         };
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 2b229589..f49b5422 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -10619,6 +10619,7 @@ fn repair_prctl_required_kvm_is_not_optional() {
+         "anonymous_pipe_socket_identities_are_repeatable_on_kvm",
+         "captured_output_statfs_matches_native_and_is_repeatable_on_kvm",
+         "captured_aliases_ignore_reused_supervisor_stdio_on_kvm",
++        "captured_dirfds_reject_reused_supervisor_directories_on_kvm",
+     ] {
+         let output = std::process::Command::new(std::env::current_exe().unwrap())
+             .args([test, "--exact", "--test-threads=1", "--nocapture"])
+@@ -14786,6 +14787,269 @@ int main(int argc, char **argv) {
+     assert_eq!(results.3, results.2, "Tool KVM result changed");
+ }
+ 
++// A captured stdout/stderr description is a FIFO, so it can never resolve a
++// relative pathname. Bind physical host fd 1/2 to populated writable
++// directories and prove that direct and Tool KVM runs neither disclose nor
++// mutate those directories. This is output/exit/status repeat parity only, not
++// an L2-log or record/replay claim.
++#[test]
++fn captured_dirfds_reject_reused_supervisor_directories_on_kvm() {
++    const TEST: &str = "captured_dirfds_reject_reused_supervisor_directories_on_kvm";
++    if !leader_self_exec_bounded(TEST) {
++        return;
++    }
++
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "captured-dirfd-firewall",
++        r#"
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <time.h>
++#include <unistd.h>
++
++static int failed_with(long result, int error) {
++  return result == -1 && errno == error;
++}
++
++static int check_dirfd(int fd, int base) {
++  struct stat stat_buffer;
++  struct statx statx_buffer;
++  struct timespec times[2] = {
++      {.tv_sec = 1640995199, .tv_nsec = 0},
++      {.tv_sec = 1640995199, .tv_nsec = 0},
++  };
++  char output[64];
++
++  errno = 0;
++  if (!failed_with(openat(fd, "secret", O_RDONLY | O_CLOEXEC), ENOTDIR))
++    return base + 1;
++  errno = 0;
++  if (!failed_with(openat(fd, "created", O_WRONLY | O_CREAT | O_EXCL, 0600),
++                   ENOTDIR)) return base + 2;
++  errno = 0;
++  if (!failed_with(mkdirat(fd, "dir", 0700), ENOTDIR)) return base + 3;
++  errno = 0;
++  if (!failed_with(unlinkat(fd, "secret", 0), ENOTDIR)) return base + 4;
++  errno = 0;
++  if (!failed_with(renameat(fd, "secret", fd, "renamed"), ENOTDIR))
++    return base + 5;
++  errno = 0;
++  if (!failed_with(linkat(fd, "secret", fd, "linked", 0), ENOTDIR))
++    return base + 6;
++  errno = 0;
++  if (!failed_with(symlinkat("target", fd, "symlink"), ENOTDIR))
++    return base + 7;
++  errno = 0;
++  if (!failed_with(fchmodat(fd, "secret", 0600, 0), ENOTDIR))
++    return base + 8;
++  errno = 0;
++  if (!failed_with(mknodat(fd, "fifo", S_IFIFO | 0600, 0), ENOTDIR))
++    return base + 9;
++  errno = 0;
++  if (!failed_with(utimensat(fd, "secret", times, 0), ENOTDIR))
++    return base + 10;
++  errno = 0;
++  if (!failed_with(fchownat(fd, "secret", -1, -1, 0), ENOTDIR))
++    return base + 11;
++  errno = 0;
++  if (!failed_with(fstatat(fd, "secret", &stat_buffer, 0), ENOTDIR))
++    return base + 12;
++  errno = 0;
++  if (!failed_with(syscall(SYS_statx, fd, "secret", 0, STATX_BASIC_STATS,
++                           &statx_buffer), ENOTDIR)) return base + 13;
++  errno = 0;
++  if (!failed_with(syscall(SYS_faccessat2, fd, "secret", F_OK, 0), ENOTDIR))
++    return base + 14;
++  errno = 0;
++  if (!failed_with(readlinkat(fd, "secret", output, sizeof(output)), ENOTDIR))
++    return base + 15;
++  errno = 0;
++  if (!failed_with(readlinkat(fd, "", output, sizeof(output)), ENOENT))
++    return base + 16;
++
++  char proc_path[64], child_path[72];
++  if (snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd) >=
++      (int)sizeof(proc_path)) return base + 17;
++  if (snprintf(child_path, sizeof(child_path), "%s/child", proc_path) >=
++      (int)sizeof(child_path)) return base + 18;
++  errno = 0;
++  if (!failed_with(open(child_path, O_RDONLY | O_CLOEXEC), ENOTDIR))
++    return base + 19;
++  errno = 0;
++  if (!failed_with(readlink(child_path, output, sizeof(output)), ENOTDIR))
++    return base + 20;
++  errno = 0;
++  if (!failed_with(truncate(proc_path, 0), EINVAL)) return base + 21;
++  const int allowed_modes[] = {F_OK, R_OK, W_OK};
++  for (size_t index = 0; index < sizeof(allowed_modes) / sizeof(allowed_modes[0]);
++       ++index) {
++    if (syscall(SYS_faccessat2, AT_FDCWD, proc_path, allowed_modes[index], 0) != 0)
++      return base + 22;
++  }
++  errno = 0;
++  if (!failed_with(syscall(SYS_faccessat2, AT_FDCWD, proc_path, X_OK, 0),
++                   EACCES)) return base + 23;
++  if (syscall(SYS_faccessat2, AT_FDCWD, proc_path, X_OK,
++              AT_SYMLINK_NOFOLLOW) != 0) return base + 24;
++
++  int absolute = openat(fd, "/dev/null", O_RDONLY | O_CLOEXEC);
++  if (absolute < 0 || close(absolute) != 0) return base + 25;
++  return 0;
++}
++
++int main(void) {
++  int result = check_dirfd(STDOUT_FILENO, 10);
++  if (result) return result;
++  result = check_dirfd(STDERR_FILENO, 50);
++  if (result) return result;
++  puts("captured-dirfd-ok");
++  if (fputs("captured-dirfd-err\n", stderr) < 0) return 90;
++  return 0;
++}
++"#,
++    );
++
++    let native = std::process::Command::new(&executable)
++        .current_dir(&directory.0)
++        .output()
++        .unwrap();
++    assert_eq!(native.status.code(), Some(0), "native: {native:?}");
++    assert_eq!(native.stdout, b"captured-dirfd-ok\n");
++    assert_eq!(native.stderr, b"captured-dirfd-err\n");
++
++    let executable = executable.to_str().unwrap();
++    let run = |with_tool: bool| {
++        let image = std::fs::read(executable).unwrap();
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_with_context(
++                &image,
++                &[executable],
++                &["PATH=/usr/bin:/bin"],
++                &directory.0,
++            )
++            .unwrap();
++        if with_tool {
++            let (_, code, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<StraceTool>((), true),
++            )
++            .unwrap();
++            (code, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        }
++    };
++
++    struct RestoreStandardDescriptors {
++        stdout: std::fs::File,
++        stderr: std::fs::File,
++    }
++    impl Drop for RestoreStandardDescriptors {
++        fn drop(&mut self) {
++            use std::os::fd::AsRawFd;
++            assert_eq!(unsafe { libc::dup2(self.stdout.as_raw_fd(), 1) }, 1);
++            assert_eq!(unsafe { libc::dup2(self.stderr.as_raw_fd(), 2) }, 2);
++        }
++    }
++
++    let results = {
++        use std::os::fd::AsRawFd;
++        use std::os::fd::FromRawFd;
++        use std::os::unix::fs::MetadataExt;
++
++        let saved_stdout = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
++        let saved_stderr = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(saved_stdout >= 3 && saved_stderr >= 3);
++        let restore = RestoreStandardDescriptors {
++            stdout: unsafe { std::fs::File::from_raw_fd(saved_stdout) },
++            stderr: unsafe { std::fs::File::from_raw_fd(saved_stderr) },
++        };
++
++        let ambient_paths = [
++            directory.0.join("ambient-stdout-dir"),
++            directory.0.join("ambient-stderr-dir"),
++        ];
++        let mut ambient = Vec::new();
++        let mut snapshots = Vec::new();
++        for (index, path) in ambient_paths.iter().enumerate() {
++            std::fs::create_dir(path).unwrap();
++            let secret = path.join("secret");
++            std::fs::write(&secret, format!("secret-{index}")).unwrap();
++            let metadata = std::fs::metadata(&secret).unwrap();
++            snapshots.push((
++                std::fs::read(&secret).unwrap(),
++                metadata.mode(),
++                metadata.uid(),
++                metadata.gid(),
++                metadata.len(),
++                metadata.mtime(),
++                metadata.mtime_nsec(),
++            ));
++            ambient.push(std::fs::File::open(path).unwrap());
++        }
++        assert_eq!(unsafe { libc::dup2(ambient[0].as_raw_fd(), 1) }, 1);
++        assert_eq!(unsafe { libc::dup2(ambient[1].as_raw_fd(), 2) }, 2);
++
++        let direct = run(false);
++        let direct_repeat = run(false);
++        let tool = run(true);
++        let tool_repeat = run(true);
++
++        for (index, path) in ambient_paths.iter().enumerate() {
++            let secret = path.join("secret");
++            let metadata = std::fs::metadata(&secret).unwrap();
++            assert_eq!(
++                (
++                    std::fs::read(&secret).unwrap(),
++                    metadata.mode(),
++                    metadata.uid(),
++                    metadata.gid(),
++                    metadata.len(),
++                    metadata.mtime(),
++                    metadata.mtime_nsec(),
++                ),
++                snapshots[index],
++                "ambient directory {index} was mutated"
++            );
++            let mut names = std::fs::read_dir(path)
++                .unwrap()
++                .map(|entry| entry.unwrap().file_name())
++                .collect::<Vec<_>>();
++            names.sort();
++            assert_eq!(names, [std::ffi::OsString::from("secret")]);
++        }
++        drop(restore);
++        (direct, direct_repeat, tool, tool_repeat)
++    };
++
++    for (label, result) in [
++        ("direct", &results.0),
++        ("direct-repeat", &results.1),
++        ("tool", &results.2),
++        ("tool-repeat", &results.3),
++    ] {
++        assert_eq!(
++            result.0,
++            0,
++            "{label}: stdout={} stderr={}",
++            String::from_utf8_lossy(&result.1),
++            String::from_utf8_lossy(&result.2)
++        );
++        assert_eq!(result.1, native.stdout, "{label}");
++        assert_eq!(result.2, native.stderr, "{label}");
++    }
++    assert_eq!(results.1, results.0, "direct KVM result changed");
++    assert_eq!(results.2, results.0, "Tool and direct KVM results differ");
++    assert_eq!(results.3, results.2, "Tool KVM result changed");
++}
++
+ // Anonymous pipe/socket object numbers, including a fresh caller-supplied pipe
+ // stdin, are intentionally compared only among fresh KVM runs. Native Linux is
+ // the relationship oracle, but its allocator is host-global and therefore

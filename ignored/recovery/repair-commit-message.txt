@@ -1,0 +1,19 @@
+Correct KVM syncfs fdinfo parity evidence
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Match Linux by treating readable synthetic fdinfo descriptions as syncfs
+success without flushing their private carriers. Preserve PR610's authenticated
+proc and loginuid dependencies.
+
+Route production syncfs through a test-only raw syscall seam so dispatcher
+tests detect missing, duplicate, misdirected, and errno-collapsing host calls.
+Extend the required real-KVM fixture with native/KVM fdinfo output and exit
+parity while retaining authenticated carrier transfer across process lifecycle
+operations.
+
+Test Plan:
+- cargo test --offline -p reverie-kvm --lib syncfs_ -- --nocapture
+- cargo test --offline -p reverie-kvm --lib executor::tests::fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers -- --exact --nocapture
+- REVERIE_REQUIRE_KVM=1 cargo test --offline -p reverie-kvm --test static_elf real_kvm_authenticated_proc_carrier_survives_sender_close_thread_fork_exec_and_reopen -- --exact --nocapture
+- cargo clippy --offline -p reverie-kvm --lib --tests --all-features --no-deps

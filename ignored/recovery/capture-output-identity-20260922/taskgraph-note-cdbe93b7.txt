@@ -1,0 +1,51 @@
+2026-09-22 KVM recovery progress, local unpublished Reverie commit
+
+Checkout: /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922
+Branch: codex/kvm-pr611-recovery-20260922
+Commit: cdbe93b7d3b149dd6506f93c2e78b31d7a00c802
+Parent: 6c3d3e3de345f4516172b94995cff739dd29cdd0
+Tree: 2fa934fe9af460d35425cd980beaa7f6e09b01e0
+Subject: Isolate captured KVM output descriptors
+Author and committer: rrnewton-bots <330061689+rrnewton-bots@users.noreply.github.com>
+Disclosure is the first commit-body line: [hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+Exact five-file commit diff: SHA-256 960836eca6c68e5df1916d3d984f97da04300a60207688c5493d7286de096292, 83,932 bytes, +1539/-110.
+
+What changed
+
+- Captured stdout and stderr now retain private read and write pipe endpoints at host fd 3 or above. The read keeper prevents POLLERR or HUP on the private O_WRONLY descriptor carrier. Guest identity remains the fixed synthetic FIFO identity and does not come from the host pipe inode.
+- dup, dup2, dup3, F_DUPFD, F_DUPFD_CLOEXEC, O_WRONLY proc-fd reopen, and O_PATH proc-fd reopen no longer consult or retain the supervisor object occupying physical host fd 1 or 2. Dup-family aliases share virtual status; proc-fd reopen receives a fresh status description.
+- File-table snapshot clones use F_DUPFD_CLOEXEC with minimum fd 3, so snapshots do not retain a closed physical standard slot.
+- poll, ppoll, and raw select on an implicit captured output use the private O_WRONLY carrier and report exactly POLLOUT or the write fd-set, even when supervisor fd 1 or 2 is closed or reused.
+- Captured O_PATH aliases now return EBADF for writev, current-position pwritev2, and lseek, matching scalar write behavior.
+- O_RDONLY and O_RDWR proc-fd reopens are host-validated, discarded, then fail closed with ENOSYS. Captured bytes live in the bounded memory sink rather than the identity pipe, so exposing a read end would otherwise produce false EAGAIN, false EOF, or an unbounded wait. Linux access mode 3 retains the host FIFO EINVAL result.
+- Captured epoll ADD, MOD, and DEL fail closed with ENOSYS before host epoll mutation. Registering the root-owned carrier would outlive the guest's final alias close and produce stale POLLOUT.
+- Captured F_GETPIPE_SZ and F_SETPIPE_SZ return ENOSYS without reading or mutating host pipe capacity; O_PATH returns EBADF. Captured writes bypass that pipe, and forwarding these calls exposed host default and quota variability. Ordinary guest-created pipes retain existing host forwarding.
+
+Adversarial evidence
+
+- Frozen and committed diff were byte-identical at SHA-256 960836eca6c68e5df1916d3d984f97da04300a60207688c5493d7286de096292.
+- Three independent exact-diff reviewers approved with no findings: lifecycle/concurrency, syscall semantics/determinism, and evidence/goalpost review.
+- Three independent immutable exact-commit reviewers approved cdbe93b7d3b149dd6506f93c2e78b31d7a00c802 with no findings after verifying its parent, tree, five-file diff hash, bot attribution, and first-body-line disclosure.
+- Goalpost audit found no weakened/deleted assertion, widened tolerance, hidden skip, relaxed comparator, renamed failure, or removed gate.
+
+Validation on exact committed bytes
+
+- cargo test -p reverie-kvm --lib: 878 passed, 0 failed, default parallel mode, 16.45 seconds.
+- cargo test -p reverie-kvm --lib -- --test-threads=1: 878 passed, 0 failed, 53.67 seconds.
+- Focused capture library selection: 30 passed, 0 failed.
+- captured_aliases_ignore_reused_supervisor_stdio_on_kvm: three independent outer passes in 0.52, 0.51, and 1.01 seconds. Each outer pass runs direct KVM twice and StraceTool KVM twice, requiring exact stdout, stderr, exit status, and cross-mode repeat equality.
+- captured_output_statfs_matches_native_and_is_repeatable_on_kvm: passed in 0.85 seconds.
+- repair_prctl_required_kvm_is_not_optional anti-skip gate: passed; the new required KVM cell is in its enforced list.
+- cargo clippy -p reverie-kvm --all-targets -- -D warnings: passed.
+- cargo fmt --all -- --check and git diff --check: passed.
+
+Claim boundaries
+
+- Full KVM evidence covers supervisor fd 1 and 2 reused by adversarial readable O_RDONLY regular files. Executor-level isolated-child evidence covers physical host fd 1 and 2 closed.
+- KVM result claims are output, exit, and status repeat parity only. This is not L2-log parity and not record/replay parity.
+- O_RDONLY and O_RDWR capture reopen, captured epoll registration, and captured pipe-capacity modeling remain explicit ENOSYS divergences; matching final output does not claim syscall-result parity for them.
+- Private carriers and reopened files are not retained at host fd 0, 1, or 2. Residual: pipe2 and proc-fd openat can transiently allocate a closed low host slot before relocation. Avoiding that process-global window requires broader serialization or virtualization.
+
+Publication state and hard gate
+
+This commit is local and unpublished. No Reverie PR or main landing is claimed, and Hermit has not been repinned. PR 611 remains stacked on the PR 610 loginuid/authentication prerequisite. Per coordinator direction, PR 610 remains read-only pending independent Claude-family exact-head approval; do not bypass or weaken that dependency. The next publication gate is prerequisite landing plus immutable exact-commit approvals, followed by a bot-disclosed recovery PR. No ad-hoc Hermit invocation occurred in this slice.

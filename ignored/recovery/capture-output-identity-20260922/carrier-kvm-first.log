@@ -1,0 +1,30 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.45s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 1 test
+
+thread 'captured_aliases_ignore_reused_supervisor_stdio_on_kvm' (4004490) panicked at reverie-kvm/tests/static_elf.rs:1603:5:
+captured_aliases_ignore_reused_supervisor_stdio_on_kvm: status=Some(101) stdout=
+running 1 test
+test captured_aliases_ignore_reused_supervisor_stdio_on_kvm ... FAILED
+
+failures:
+
+failures:
+    captured_aliases_ignore_reused_supervisor_stdio_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 345 filtered out; finished in 0.86s
+
+ stderr=
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test captured_aliases_ignore_reused_supervisor_stdio_on_kvm ... FAILED
+
+failures:
+
+failures:
+    captured_aliases_ignore_reused_supervisor_stdio_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 345 filtered out; finished in 0.86s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

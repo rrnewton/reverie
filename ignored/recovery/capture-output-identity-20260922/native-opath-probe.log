@@ -1,0 +1,5 @@
+fchmod result=-1 errno=9
+fchmodat2-empty result=0 errno=0
+utimensat-null result=-1 errno=9
+utimensat-empty result=0 errno=0
+fchownat-empty result=0 errno=0

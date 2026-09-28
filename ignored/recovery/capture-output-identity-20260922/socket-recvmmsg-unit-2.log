@@ -1,0 +1,9 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.91s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 1 test
+test executor::tests::recvmmsg_translates_guest_headers_and_receives_multiple_datagrams ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 879 filtered out; finished in 0.00s
+

@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 1 test
+
+thread 'captured_dirfds_reject_reused_supervisor_directories_on_kvm' (4064398) panicked at reverie-kvm/tests/static_elf.rs:1603:5:
+captured_dirfds_reject_reused_supervisor_directories_on_kvm: status=Some(124) stdout=
+running 1 test
+ stderr=
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test captured_dirfds_reject_reused_supervisor_directories_on_kvm ... FAILED
+
+failures:
+
+failures:
+    captured_dirfds_reject_reused_supervisor_directories_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 346 filtered out; finished in 30.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

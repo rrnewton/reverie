@@ -1,0 +1,7 @@
+Implement per-caller close_range unsharing
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Detach only the calling KVM task's file table for CLOSE_RANGE_UNSHARE while preserving ordinary CLONE_FILES propagation. Resolve proc fd and fdinfo views through generation-bound task tables, publish initial bindings atomically, and fence inactive signalfd publishers across table rebinding.
+
+Test shared and detached close/CLOEXEC behavior, empty-range detachment, failure atomicity, cross-task proc paths with same-numbered distinct files, publication races, and native/direct/Tool output-exit-status parity.

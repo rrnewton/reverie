@@ -1,0 +1,39 @@
+Local KVM synthetic-proc provider child qualified at exact Reverie commit ba417c49899963415a3d32b9730c4740aa6ab457, parent dd9e083a1c38589b37de1b79e3928b52bcc51644.
+
+Scope and dependency state:
+- The commit is intentionally stacked after the locally qualified socket child, recovered PR 611, and the content-equivalent local PR 610 prerequisite. It is not pushed or published.
+- Diff from dd9e083a is confined to reverie-kvm/src/elf.rs, reverie-kvm/src/executor.rs, and reverie-kvm/tests/static_elf.rs: 581 insertions, 3 deletions.
+- PR 610 https://github.com/rrnewton/reverie/pull/610 remains the required authenticated-carrier prerequisite and still needs independent Claude-family exact-head approval and landing. This child does not delete, bypass, or weaken loginuid_fds, proc_files, or proc_carrier_authority authentication.
+- Two TODO-HUMAN-REVIEW(kvm-proc-persona) placeholders require the eventual standalone PR number and a fresh exact-head review before publication/landing.
+
+Behavior added for the next three priority-map cells:
+- `/proc/sys/kernel/overflowuid` and `/proc/sys/kernel/overflowgid` now expose `65534\n`, derived from the same fixed guest persona constant used by supplementary groups.
+- `/proc/sys/kernel/random/uuid` now exposes lowercase RFC 4122 v4/variant snapshots from a deterministic seed, virtual TID, and per-executor sequence. Successful readable opens advance the sequence; failed/writable and O_PATH opens do not. Readable proc-fd reopens advance it. Partial reads, dup/SCM cursor sharing, fork stream separation, exec cursor preservation, same-seed repeats, and changed-seed separation are covered.
+- `/proc/sys/kernel/pty/nr` counts current guest-file-table PTY master open descriptions by distinct `(st_dev,TIOCGPTN)` identity. Dup aliases count once; distinct masters count separately; closing only one alias does not decrement. This matches Detcore's current FileMetadata/open_file_id scope rather than the host-global raw value.
+- All four paths enter the exact synthetic-proc allowlist, reverse inode map, authenticated-carrier path, read-only open policy, and measured native O_RDONLY pwrite=EBADF classification.
+
+Claim boundary:
+- Immutable authenticated carriers snapshot UUID and PTY content at each successful readable open. Native Linux and Detcore materialize at first nonzero read, and native Linux generates a fresh UUID after rewind. This child is normalized property/transition and output/exit/status repeat-parity progress; it does not claim temporal, L2, or log parity.
+
+Native evidence on Linux 7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf:
+- overflowuid and overflowgid each read `65534\n`.
+- random/uuid is a 37-byte lowercase UUIDv4 line; a 5-byte plus 32-byte partial read is coherent; rewind produces a fresh native UUID.
+- pty/nr changed 53,54,54,55,55,54,53 across baseline, first master, dup, second master, close one alias, close final first-description alias, and close all.
+- O_RDONLY pwrite with count 0 or 1 returned EBADF for all four paths.
+
+Exact-head validation:
+- Focused UUID/provider unit: 1/1 pass.
+- Focused PTY distinct-description unit: 1/1 pass.
+- Four existing all-path synthetic-proc tests covering pwrite errno, reverse inode map, open policy, and content: 4/4 pass.
+- Full reverie-kvm library default: 865/865 pass in 9.67 s.
+- Full reverie-kvm library serial: 865/865 pass in 29.14 s.
+- Required-KVM deterministic_proc_persona_providers_run_on_kvm: three final exact-head passes, 0.27 s, 0.27 s, 0.28 s. The fixture emits the actual UUID; two direct and two Tool executions require zero exit, exact UUID-plus-marker output shape, empty stderr, and byte-identical repeat/cross-mode output.
+- cargo clippy -p reverie-kvm --all-targets: exit 0.
+- cargo fmt --all -- --check and git diff --check: pass.
+
+Review:
+- Three independent adversarial reviewers approve exact ba417c49899963415a3d32b9730c4740aa6ab457 with no findings after two review-driven repairs: proc-fd dynamic refresh and restoration/strengthening of stdout/stderr comparators.
+- No assertion, tolerance, exemption, skip, comparator, label, or gate was weakened.
+- The child is mechanically stacked on dd9e083a because its integration test is adjacent to the socket test, though production semantics are independent.
+
+Official census remains 243 green, 8 red, 109 disabled = 360. These three cells are locally qualified only; counts must not change until prerequisite landing, monotonic Hermit pinning, and official manifest qualification.

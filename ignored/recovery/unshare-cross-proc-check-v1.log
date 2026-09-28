@@ -1,0 +1,225 @@
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+error[E0382]: use of partially moved value: `guest_path`
+     --> reverie-kvm/src/executor.rs:14772:22
+      |
+14766 |     if let Some(metadata) = guest_path
+      |                 -------- value partially moved here
+...
+14772 |     let descriptor = guest_path
+      |                      ^^^^^^^^^^ value used here after partial move
+      |
+      = note: partial move occurs because value has type `GuestFdMetadata`, which does not implement the `Copy` trait
+help: borrow this binding in the pattern to avoid moving the value
+      |
+14766 |     if let Some(ref metadata) = guest_path
+      |                 +++
+
+error[E0382]: use of moved value
+     --> reverie-kvm/src/executor.rs:14813:31
+      |
+14757 |     let guest_path = match guest_fd_metadata(
+      |         ---------- move occurs because `guest_path` has type `Option<GuestFdMetadata>`, which does not implement the `Copy` trait
+...
+14773 |         .map(|metadata| metadata.guest_fd)
+      |          --------------------------------- `guest_path` moved due to this method call
+...
+14813 |     let host_fd = if let Some(metadata) = guest_path {
+      |                               ^^^^^^^^ value used here after move
+      |
+help: consider calling `.as_ref()` to borrow the value's contents
+      |
+14772 |     let descriptor = guest_path.as_ref()
+      |                                +++++++++
+help: consider calling `.as_mut()` to mutably borrow the value's contents
+      |
+14772 |     let descriptor = guest_path.as_mut()
+      |                                +++++++++
+help: you could `clone` the value and consume it, if the `GuestFdMetadata: std::clone::Clone` trait bound could be satisfied
+      |
+14772 |     let descriptor = guest_path.clone()
+      |                                ++++++++
+
+error[E0382]: use of moved value
+     --> reverie-kvm/src/executor.rs:14847:17
+      |
+14757 |     let guest_path = match guest_fd_metadata(
+      |         ---------- move occurs because `guest_path` has type `Option<GuestFdMetadata>`, which does not implement the `Copy` trait
+...
+14773 |         .map(|metadata| metadata.guest_fd)
+      |          --------------------------------- `guest_path` moved due to this method call
+...
+14813 |     let host_fd = if let Some(metadata) = guest_path {
+      |                               -------- value moved here
+...
+14847 |     if let Some(metadata) = guest_path {
+      |                 ^^^^^^^^ value used here after move
+      |
+help: consider calling `.as_ref()` to borrow the value's contents
+      |
+14772 |     let descriptor = guest_path.as_ref()
+      |                                +++++++++
+help: consider calling `.as_mut()` to mutably borrow the value's contents
+      |
+14772 |     let descriptor = guest_path.as_mut()
+      |                                +++++++++
+help: you could `clone` the value and consume it, if the `GuestFdMetadata: std::clone::Clone` trait bound could be satisfied
+      |
+14772 |     let descriptor = guest_path.clone()
+      |                                ++++++++
+help: borrow this binding in the pattern to avoid moving the value
+      |
+14813 |     let host_fd = if let Some(ref metadata) = guest_path {
+      |                               +++
+
+error[E0382]: use of partially moved value: `guest_path`
+     --> reverie-kvm/src/executor.rs:14980:22
+      |
+14974 |     if let Some(metadata) = guest_path
+      |                 -------- value partially moved here
+...
+14980 |     let descriptor = guest_path.map(|metadata| metadata.guest_fd).or_else(|| {
+      |                      ^^^^^^^^^^ value used here after partial move
+      |
+      = note: partial move occurs because value has type `GuestFdMetadata`, which does not implement the `Copy` trait
+help: borrow this binding in the pattern to avoid moving the value
+      |
+14974 |     if let Some(ref metadata) = guest_path
+      |                 +++
+
+error[E0382]: use of moved value
+     --> reverie-kvm/src/executor.rs:15011:31
+      |
+14965 |     let guest_path = match guest_fd_metadata(
+      |         ---------- move occurs because `guest_path` has type `Option<GuestFdMetadata>`, which does not implement the `Copy` trait
+...
+14980 |     let descriptor = guest_path.map(|metadata| metadata.guest_fd).or_else(|| {
+      |                                 --------------------------------- `guest_path` moved due to this method call
+...
+15011 |     let host_fd = if let Some(metadata) = guest_path {
+      |                               ^^^^^^^^ value used here after move
+      |
+help: consider calling `.as_ref()` to borrow the value's contents
+      |
+14980 |     let descriptor = guest_path.as_ref().map(|metadata| metadata.guest_fd).or_else(|| {
+      |                                +++++++++
+help: consider calling `.as_mut()` to mutably borrow the value's contents
+      |
+14980 |     let descriptor = guest_path.as_mut().map(|metadata| metadata.guest_fd).or_else(|| {
+      |                                +++++++++
+help: you could `clone` the value and consume it, if the `GuestFdMetadata: std::clone::Clone` trait bound could be satisfied
+      |
+14980 |     let descriptor = guest_path.clone().map(|metadata| metadata.guest_fd).or_else(|| {
+      |                                ++++++++
+
+error[E0382]: use of moved value
+     --> reverie-kvm/src/executor.rs:15054:17
+      |
+14965 |     let guest_path = match guest_fd_metadata(
+      |         ---------- move occurs because `guest_path` has type `Option<GuestFdMetadata>`, which does not implement the `Copy` trait
+...
+14980 |     let descriptor = guest_path.map(|metadata| metadata.guest_fd).or_else(|| {
+      |                                 --------------------------------- `guest_path` moved due to this method call
+...
+15011 |     let host_fd = if let Some(metadata) = guest_path {
+      |                               -------- value moved here
+...
+15054 |     if let Some(metadata) = guest_path {
+      |                 ^^^^^^^^ value used here after move
+      |
+help: consider calling `.as_ref()` to borrow the value's contents
+      |
+14980 |     let descriptor = guest_path.as_ref().map(|metadata| metadata.guest_fd).or_else(|| {
+      |                                +++++++++
+help: consider calling `.as_mut()` to mutably borrow the value's contents
+      |
+14980 |     let descriptor = guest_path.as_mut().map(|metadata| metadata.guest_fd).or_else(|| {
+      |                                +++++++++
+help: you could `clone` the value and consume it, if the `GuestFdMetadata: std::clone::Clone` trait bound could be satisfied
+      |
+14980 |     let descriptor = guest_path.clone().map(|metadata| metadata.guest_fd).or_else(|| {
+      |                                ++++++++
+help: borrow this binding in the pattern to avoid moving the value
+      |
+15011 |     let host_fd = if let Some(ref metadata) = guest_path {
+      |                               +++
+
+error[E0382]: use of moved value
+     --> reverie-kvm/src/executor.rs:15111:31
+      |
+15099 |     let guest_path = match guest_fd_metadata(state, &path, false, capture) {
+      |         ---------- move occurs because `guest_path` has type `Option<GuestFdMetadata>`, which does not implement the `Copy` trait
+...
+15103 |     if let (Some(metadata), Some(capture)) = (guest_path, capture)
+      |                                               ---------- value moved here
+...
+15111 |     let host_fd = if let Some(metadata) = guest_path {
+      |                               ^^^^^^^^ value used here after move
+
+error[E0382]: use of moved value
+     --> reverie-kvm/src/executor.rs:15330:17
+      |
+15322 |     if let Some(metadata) = guest_path
+      |                 -------- value moved here
+...
+15330 |     if let Some(metadata) = guest_path
+      |                 ^^^^^^^^ value used here after move
+      |
+      = note: move occurs because value has type `GuestFdMetadata`, which does not implement the `Copy` trait
+help: borrow this binding in the pattern to avoid moving the value
+      |
+15322 |     if let Some(ref metadata) = guest_path
+      |                 +++
+
+error[E0382]: use of moved value
+     --> reverie-kvm/src/executor.rs:15338:17
+      |
+15322 |     if let Some(metadata) = guest_path
+      |                 -------- value moved here
+...
+15330 |     if let Some(metadata) = guest_path
+      |                 -------- value moved here
+...
+15338 |     if let Some(metadata) = guest_path
+      |                 ^^^^^^^^ value used here after move
+      |
+      = note: move occurs because value has type `GuestFdMetadata`, which does not implement the `Copy` trait
+help: borrow this binding in the pattern to avoid moving the value
+      |
+15330 |     if let Some(ref metadata) = guest_path
+      |                 +++
+help: borrow this binding in the pattern to avoid moving the value
+      |
+15322 |     if let Some(ref metadata) = guest_path
+      |                 +++
+
+error[E0382]: use of moved value
+     --> reverie-kvm/src/executor.rs:15345:31
+      |
+15322 |     if let Some(metadata) = guest_path
+      |                 -------- value moved here
+...
+15330 |     if let Some(metadata) = guest_path
+      |                 -------- value moved here
+...
+15338 |     if let Some(metadata) = guest_path
+      |                 -------- value moved here
+...
+15345 |     let host_fd = if let Some(metadata) = guest_path {
+      |                               ^^^^^^^^ value used here after move
+      |
+      = note: move occurs because value has type `GuestFdMetadata`, which does not implement the `Copy` trait
+help: borrow this binding in the pattern to avoid moving the value
+      |
+15338 |     if let Some(ref metadata) = guest_path
+      |                 +++
+help: borrow this binding in the pattern to avoid moving the value
+      |
+15330 |     if let Some(ref metadata) = guest_path
+      |                 +++
+help: borrow this binding in the pattern to avoid moving the value
+      |
+15322 |     if let Some(ref metadata) = guest_path
+      |                 +++
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `reverie-kvm` (lib) due to 10 previous errors

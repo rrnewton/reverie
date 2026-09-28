@@ -1,0 +1,37 @@
+    Blocking waiting for file lock on build directory
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.78s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 1 test
+test captured_dirfds_reject_reused_supervisor_directories_on_kvm ... 
+thread 'captured_dirfds_reject_reused_supervisor_directories_on_kvm' (1263613) panicked at reverie-kvm/tests/static_elf.rs:1603:5:
+captured_dirfds_reject_reused_supervisor_directories_on_kvm: status=Some(101) stdout=
+running 1 test
+test captured_dirfds_reject_reused_supervisor_directories_on_kvm ... FAILED
+
+failures:
+
+failures:
+    captured_dirfds_reject_reused_supervisor_directories_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 346 filtered out; finished in 0.78s
+
+ stderr=
+thread 'captured_dirfds_reject_reused_supervisor_directories_on_kvm' (1263629) panicked at reverie-kvm/tests/static_elf.rs:15048:9:
+assertion `left == right` failed: direct: stdout= stderr=
+  left: 35
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    captured_dirfds_reject_reused_supervisor_directories_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 346 filtered out; finished in 0.78s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

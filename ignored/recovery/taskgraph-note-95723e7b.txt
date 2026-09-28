@@ -1,0 +1,28 @@
+Reverie KVM thread-self procfs opener-identity slice is locally qualified at exact commit 95723e7b2224f1b6b56d131800d9eb979cbcdd5c, parent ba417c49899963415a3d32b9730c4740aa6ab457, on codex/kvm-pr611-recovery-20260922. It remains intentionally unpushed and stacked behind https://github.com/rrnewton/reverie/pull/610 and recovered https://github.com/rrnewton/reverie/pull/611.
+
+Change: 2 files, +406/-21. Added authenticated synthetic /proc/thread-self/stat and /proc/thread-self/status. A worker open binds the worker TID and thread-local comm while status retains the process Tgid and PPid. /proc/self/stat and /proc/self/status remain leader-oriented. The immutable carrier and proc_files identity flow through the existing PR610 authentication and CLONE_FILES table synchronization; no loginuid_fds, proc-carrier authority, allowlist gate, assertion, comparator, or required-KVM gate was weakened.
+
+Claim scope: opener-identity output/exit/status repeat parity only. This is not full procfs temporal parity, inode/link parity, scheduler-state parity, L2 parity, or log parity. Native Linux and Detcore bind task identity at open but materialize bytes on first nonzero read and again after rewind. The current KVM carrier snapshots bytes at successful readable open. Live Threads count, first-read/rewind timing, post-opener-exit reads, and per-task proc inode/link identity remain explicit residuals.
+
+Native evidence on Linux 7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf with GCC 11.5.0:
+- exact Hermit fixture source SHA-256 d83d3f8c163fff42727c8bc9188cbd3613208cbfd974f188622270f62e700648 passed 5/5;
+- stronger worker-open/leader-read and leader-open/worker-read probes showed status Name/Pid and stat pid/comm identify the opener, with worker tid distinct from process and reader;
+- duplicate descriptors share the cursor and an independent open starts at offset zero;
+- raw pwrite64 count 1 and count 0 return ESPIPE for both files;
+- open then rename then first read observes the new name; after a partial first read, dup continuation retains that snapshot; rewind regenerates; unread status after opener exit returns ESRCH.
+Artifacts under ignored/recovery: main source ea6e607129bee35c641bf3e23b59774b6810b06c8696f2dd0e40e81baf469abc, main binary 379729e14548f97d99aad9b4189c3cfbbf109b33190832fc2e56d70b86e66682, post-exit source 34337ecd7a26a6e9c34795e253268d533ba0d40b32f79254bdbf64a5dbc7c6de, post-exit binary 7359a235ee0afb964e320140492a947187de08b0f14985e6ffa55052752c9568, timing source 253c1fc6e15f097a56d3e14baca3fc8099f166048d5b6abea04bd28539937b2, timing binary 92f882963d4761f278aac2032ac70ac8d53487d53943872f478865d78a5f4bc0.
+
+Exact-head validation:
+- focused unit synthetic_proc_thread_self_binds_worker_identity_across_handoff: 1/1, 0.11 seconds;
+- full reverie-kvm library default: 866/866, 9.04 seconds;
+- full reverie-kvm library serial: 866/866, 30.73 seconds;
+- required-KVM kvm_thread_self_procfs_binds_opener_identity_across_handoff: 3/3 outer repetitions, 1.03, 0.51, and 0.55 seconds; each run executes native once, direct KVM twice, and Tool KVM twice, requiring zero exit, exact normalized stdout, and exact empty stderr;
+- generic all-synthetic-path native pwrite oracle: 1/1;
+- reverse-inode collision test: 1/1;
+- required-KVM anti-skip guard: 1/1;
+- cargo clippy for reverie-kvm all targets with warnings denied: pass, 3.18 seconds;
+- rustfmt check and git diff check: pass.
+
+Three independent exact-head adversarial reviews approved 95723e7b2224f1b6b56d131800d9eb979cbcdd5c. Each traced the authenticated carrier and shared-file-table path, inspected production and test changes together, and explicitly found no weakened assertions, widened tolerances, exemptions, skipped cases, relaxed comparators, relabelled failures, or deleted checks. All three confined approval to the stated output/exit/status opener-identity scope and retained the temporal, Threads, inode/link, scheduler-state, and post-exit limitations.
+
+Official Hermit KVM census remains unchanged at 243 green, 8 red, 109 disabled because no Reverie publication/landing or Hermit pin advance occurred. This child adds one locally qualified prospective cell; the current local stack now represents eight prospective closures: syncfs 1, socket metadata 3, proc persona providers 3, and thread-self procfs handoff 1. PR610 remains the next hard delivery gate.

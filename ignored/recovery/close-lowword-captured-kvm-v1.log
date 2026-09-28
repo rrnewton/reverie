@@ -1,0 +1,36 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.07s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-00b7a9dec96f5de3)
+
+running 1 test
+test captured_aliases_ignore_reused_supervisor_stdio_on_kvm ... 
+thread 'captured_aliases_ignore_reused_supervisor_stdio_on_kvm' (2579245) panicked at reverie-kvm/tests/static_elf.rs:1603:5:
+captured_aliases_ignore_reused_supervisor_stdio_on_kvm: status=Some(101) stdout=
+running 1 test
+test captured_aliases_ignore_reused_supervisor_stdio_on_kvm ... FAILED
+
+failures:
+
+failures:
+    captured_aliases_ignore_reused_supervisor_stdio_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 350 filtered out; finished in 0.10s
+
+ stderr=
+thread 'captured_aliases_ignore_reused_supervisor_stdio_on_kvm' (2579248) panicked at reverie-kvm/tests/static_elf.rs:14688:5:
+assertion `left == right` failed: native: Output { status: ExitStatus(unix_wait_status(8192)), stdout: "stdout-dup\nstdout-reopen\n", stderr: "" }
+  left: Some(32)
+ right: Some(0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    captured_aliases_ignore_reused_supervisor_stdio_on_kvm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 350 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

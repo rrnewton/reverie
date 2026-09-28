@@ -1,0 +1,13 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm/src/executor.rs:15029:
+     set_cwd(state, directory)
+ }
+ 
+-fn fchdir(
+-    state: &mut LoadedStaticElf,
+-    args: &[u64; 6],
+-    capture: Option<CaptureMetadata>,
+-) -> i64 {
++fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6], capture: Option<CaptureMetadata>) -> i64 {
+     // Linux consumes the low 32-bit descriptor word from the syscall register.
+     let fd = args[0] as libc::c_int;
+     let Some(host_fd) = isolated_host_fd(state, fd, capture) else {

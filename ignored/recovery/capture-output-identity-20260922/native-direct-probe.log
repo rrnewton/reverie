@@ -1,0 +1,4 @@
+fchmod-read result=0 errno=0
+fchmod-write result=0 errno=0
+utimensat-null-read result=0 errno=0
+utimensat-null-write result=0 errno=0

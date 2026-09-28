@@ -1,0 +1,10 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.69s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 2 tests
+test executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused ... ok
+test executor::tests::pipe_fionread_complete_memory_and_request_width ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 876 filtered out; finished in 0.01s
+

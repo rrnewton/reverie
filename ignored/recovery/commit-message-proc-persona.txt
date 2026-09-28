@@ -1,0 +1,20 @@
+Add deterministic KVM proc persona providers
+
+[hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+
+Serve the overflow UID/GID sysctls from the fixed guest identity, generate a
+repeatable sequence of distinct UUIDv4 snapshots, and report guest-owned PTY
+master descriptions without leaking the host-global PTY count. Preserve the
+authenticated synthetic-proc carrier path across direct opens, proc-fd
+reopens, aliases, fork, exec, and SCM_RIGHTS transfer.
+
+The immutable carrier model snapshots UUID and PTY content at each successful
+readable open. This intentionally does not claim native or Detcore first-read
+timing, nor native UUID refresh-after-rewind behavior.
+
+Test Plan:
+- cargo test -p reverie-kvm --lib
+- cargo test -p reverie-kvm --lib -- --test-threads=1
+- REVERIE_REQUIRE_KVM=1 cargo test -p reverie-kvm --test static_elf deterministic_proc_persona_providers_run_on_kvm -- --exact --nocapture
+- cargo clippy -p reverie-kvm --all-targets
+- cargo fmt --all -- --check

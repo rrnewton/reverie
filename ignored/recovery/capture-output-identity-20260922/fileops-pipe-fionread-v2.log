@@ -1,0 +1,31 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-pr611-recovery-20260922/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.86s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-8401bb9e1f308a79)
+
+running 2 tests
+test executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused ... 
+thread 'executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused' (2371941) panicked at reverie-kvm/src/pipe_fionread_tests.rs:118:13:
+mode=objects status=ExitStatus(unix_wait_status(25856)) stdout=
+running 1 test
+test executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused ... FAILED
+
+failures:
+
+failures:
+    executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 877 filtered out; finished in 0.00s
+
+ stderr=
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test executor::tests::pipe_fionread_complete_memory_and_request_width ... ok
+
+failures:
+
+failures:
+    executor::tests::pipe_fionread_capture_objects_and_unavailable_identity_are_refused
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 876 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`
