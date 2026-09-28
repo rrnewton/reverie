@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io;
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -231,6 +232,61 @@ impl Drop for Entrant<'_> {
 }
 
 impl Buffer {
+    /// Create a V4 mapping and a separately owned, close-on-exec transfer descriptor.
+    ///
+    /// The returned mapping owns no descriptor. No socket is created, and this
+    /// API provides no process-lifetime notification. Dropping the transfer
+    /// descriptor does not finish any producer or prove that writers exited.
+    ///
+    /// # Safety
+    /// Every recipient, descriptor duplicate, mapped alias and fork descendant
+    /// must obey the [shared-memory contract](super::super) until all mappings,
+    /// writers, records and collectors are released. Initialized layout fields
+    /// remain immutable and all frame/credit access follows the matching
+    /// exclusive-producer, single-collector protocol. The caller must own writer
+    /// lifetimes separately; size seals and descriptor closure do not establish
+    /// quiescence or make untrusted writable aliases safe.
+    ///
+    /// ```compile_fail,E0133
+    /// use reverie_rpc_transport::guest_log as g;
+    /// fn requires_ownership_contract(limits: g::ordered::Limits) {
+    ///     let _ = g::ordered::Buffer::create(limits);
+    /// }
+    /// ```
+    pub unsafe fn create(limits: Limits) -> io::Result<(Arc<Self>, OwnedFd)> {
+        let descriptor = super::create_descriptor(limits.options()?, Some(limits))?;
+        let mapping = unsafe { Self::import(descriptor.try_clone()?)? };
+        Ok((mapping, descriptor))
+    }
+
+    /// Import a trusted V4 backing descriptor, closing it on success or failure.
+    ///
+    /// The returned mapping owns no descriptor and supplies no process-lifetime
+    /// notification. Import does not activate a producer or claim the collector.
+    ///
+    /// # Safety
+    /// `descriptor` and every writable alias must be under trusted ownership.
+    /// Validation rejects unsupported layouts but cannot exclude concurrent
+    /// mutation. All existing and future writable aliases, including duplicates
+    /// and fork descendants, must obey the [shared-memory contract](super::super)
+    /// for the full lifetime of this mapping and every derived writer, record
+    /// and collector. Preserve immutable layout fields and exclusive frame/credit
+    /// ownership under the matching protocol. The caller separately owns writer
+    /// lifetimes: validation and size seals do not prevent hostile mutation, and
+    /// closing the descriptor is neither FINISH nor proof of process exit.
+    ///
+    /// ```compile_fail,E0133
+    /// use reverie_rpc_transport::guest_log as g;
+    /// fn requires_ownership_contract(descriptor: std::os::fd::OwnedFd) {
+    ///     let _ = g::ordered::Buffer::import(descriptor);
+    /// }
+    /// ```
+    pub unsafe fn import(descriptor: OwnedFd) -> io::Result<Arc<Self>> {
+        Ok(Arc::new(Self {
+            mapping: unsafe { SharedBuffer::import_version(descriptor, true)? },
+        }))
+    }
+
     /// Import a trusted V4 channel without consuming its lifetime endpoint.
     ///
     /// # Safety

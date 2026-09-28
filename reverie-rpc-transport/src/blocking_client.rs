@@ -136,6 +136,71 @@ where
         let response_bytes = read_message(&mut *stream, DEFAULT_MAX_FRAME_LEN)?;
         decode(&response_bytes)
     }
+
+    /// Send a borrowed request using the same envelope and framing as the owned
+    /// API. The caller retains the request and chooses when to destroy it after
+    /// this call, including after an enclosing runtime I/O scope has ended.
+    pub fn try_send_rpc_ref(&self, message: &G::Request) -> Result<G::Response, RpcError> {
+        let request_bytes = encode(&RequestEnvelope {
+            from: self.tid,
+            request: message,
+        })?;
+        let mut stream = self.stream.lock().map_err(|_| {
+            RpcError::Io(io::Error::other(
+                "reverie-rpc-transport: blocking client mutex poisoned",
+            ))
+        })?;
+        write_message(&mut *stream, &request_bytes)?;
+        let response_bytes = read_message(&mut *stream, DEFAULT_MAX_FRAME_LEN)?;
+        decode(&response_bytes)
+    }
+}
+
+impl<G: GlobalTool> BlockingRpcClient<G, crate::mapped::MappedStream> {
+    /// Receive one mapped configuration frame under the original setup deadline.
+    /// Framing, size limits, partial-header EOF and decoding match the ordinary
+    /// constructor. Failure drops this fresh stream; callers must not retry the
+    /// partially consumed transaction. The deadline is checked around arbitrary
+    /// deserialization, which remains synchronous and cannot be preempted here.
+    pub fn from_connected_stream_until(
+        mut stream: crate::mapped::MappedStream,
+        tid: Tid,
+        deadline: std::time::Instant,
+    ) -> Result<Self, RpcError> {
+        struct Reader<'a> {
+            stream: &'a mut crate::mapped::MappedStream,
+            deadline: std::time::Instant,
+        }
+        impl Read for Reader<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.stream.read_until(bytes, self.deadline)
+            }
+        }
+        let check = || {
+            if std::time::Instant::now() >= deadline {
+                Err(RpcError::Io(io::ErrorKind::TimedOut.into()))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let config_bytes = read_message(
+            &mut Reader {
+                stream: &mut stream,
+                deadline,
+            },
+            DEFAULT_MAX_FRAME_LEN,
+        )?;
+        check()?;
+        let config = decode(&config_bytes)?;
+        check()?;
+        Ok(Self {
+            tid,
+            config,
+            stream: Mutex::new(stream),
+            _phantom: PhantomData,
+        })
+    }
 }
 
 impl<G: GlobalTool> BlockingRpcClient<G> {

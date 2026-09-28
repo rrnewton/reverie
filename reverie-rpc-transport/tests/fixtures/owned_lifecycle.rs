@@ -186,10 +186,8 @@ pub fn run(mut command: Command, bound: Duration) -> io::Result<(Output, Vec<Sig
                 // wait status and disarm Drop. Descendants may still hold pipes.
                 status = Some(fixture.child.take().unwrap().wait()?);
             }
-            if out_closed && err_closed {
-                if let Some(status) = status {
-                    return Ok(status);
-                }
+            if let (true, Some(status)) = (out_closed && err_closed, status) {
+                return Ok(status);
             }
             std::thread::sleep(Duration::from_millis(1));
         }

@@ -96,12 +96,18 @@ reverie_preload_guest_syscall_return_ip:
     // The guest may deny this very stack. Restore caller rights entirely in
     // registers before any stack/global/TLS access, also in a COW fork child.
     mov r12, rax
+    // Capture Linux's actual returned rights even when RAX is negative. A
+    // syscall error does not prove that the operation had no partial effects.
+    xor ecx, ecx
+    rdpkru
+    mov r14d, eax
     mov eax, r15d
     xor ecx, ecx
     xor edx, edx
     wrpkru
     lfence
     mov rax, r12
+    mov edx, r14d
     pop r15
     pop r14
     pop r13
@@ -110,6 +116,21 @@ reverie_preload_guest_syscall_return_ip:
     .size reverie_preload_guest_syscall, .-reverie_preload_guest_syscall
 "#
 );
+
+// SysV classifies this concrete 16-byte integer pair into RAX and RDX. Rust's
+// Option layout never crosses the assembly boundary.
+#[repr(C)]
+struct GuestSyscallResult {
+    result: i64,
+    pkru: u64,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<GuestSyscallResult>() == 16);
+    assert!(std::mem::align_of::<GuestSyscallResult>() == 8);
+    assert!(std::mem::offset_of!(GuestSyscallResult, result) == 0);
+    assert!(std::mem::offset_of!(GuestSyscallResult, pkru) == 8);
+};
 
 unsafe extern "C" {
     fn reverie_preload_trusted_syscall(
@@ -123,7 +144,11 @@ unsafe extern "C" {
     ) -> i64;
     static reverie_preload_trusted_syscall_ip: u8;
     static reverie_preload_trusted_syscall_return_ip: u8;
-    fn reverie_preload_guest_syscall(number: i64, args: *const u64, pkru: u32) -> i64;
+    fn reverie_preload_guest_syscall(
+        number: i64,
+        args: *const u64,
+        pkru: u32,
+    ) -> GuestSyscallResult;
     static reverie_preload_guest_syscall_ip: u8;
     static reverie_preload_guest_syscall_return_ip: u8;
 }
@@ -173,7 +198,61 @@ pub unsafe fn raw_syscall6(number: i64, args: [u64; 6]) -> i64 {
 /// Like the ordinary gate, this cannot resume a clone with a different stack
 /// and must not be used as an ordinary wrapper around rt_sigreturn.
 pub unsafe fn raw_syscall6_with_pkru(number: i64, args: [u64; 6], pkru: u32) -> i64 {
-    unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru) }
+    unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru).result }
+}
+
+/// The scalar result and, when requested, permissions returned by one physical
+/// syscall. This does not update a dispatcher, signal frame or guest context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeSyscallResult {
+    pub result: i64,
+    /// Actual PKRU immediately after the syscall, including an error result.
+    /// `None` means the caller selected the scalar gate without a permission
+    /// observation; it does not independently certify hardware absence.
+    pub pkru: Option<u32>,
+}
+
+/// Execute one native syscall with its original arguments and observe its
+/// returned permissions before restoring the caller's permissions.
+///
+/// `Some(pkru)` selects the existing exact guest gate. `None` selects the
+/// existing scalar gate and executes no PKRU instructions, including on a CPU
+/// without OSPKE. Capability-aware callers establish support before selecting
+/// `Some`; this function performs no CPUID operation during interception.
+///
+/// # Safety
+///
+/// The caller must uphold the safety of successful kernel writes, mapping
+/// changes and other operation effects. Invalid or denied original pointers
+/// with a kernel-defined error such as EFAULT remain admitted. `Some` requires
+/// OSPKE, and the selected exact trusted gate must be allowed by any
+/// installed syscall filter. Caller permissions must allow this helper's call
+/// and return storage before and after the syscall. The operation must not
+/// unmap or revoke that storage, resume a clone on a different stack, or use
+/// ordinary wrapper return for rt_sigreturn. These are internal raw-helper
+/// requirements, not restrictions on guest syscalls: an integrating runtime
+/// must own surviving callback/return storage before forwarding such calls.
+/// Original guest pointers are passed unchanged and checked by Linux under the
+/// supplied guest permissions. Caller permissions are restored before the first
+/// return-side memory access, even if Linux changes PKRU or returns an error.
+pub unsafe fn raw_syscall6_with_result(
+    number: i64,
+    args: [u64; 6],
+    guest_pkru: Option<u32>,
+) -> NativeSyscallResult {
+    match guest_pkru {
+        Some(pkru) => {
+            let result = unsafe { reverie_preload_guest_syscall(number, args.as_ptr(), pkru) };
+            NativeSyscallResult {
+                result: result.result,
+                pkru: Some(result.pkru as u32),
+            }
+        }
+        None => NativeSyscallResult {
+            result: unsafe { raw_syscall6(number, args) },
+            pkru: None,
+        },
+    }
 }
 
 /// The address range of the trusted gate, for building the seccomp filter.
