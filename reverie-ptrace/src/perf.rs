@@ -861,6 +861,34 @@ fn try_close_mmap(
     }
 }
 
+/// Whether descriptor number `fd` has stopped naming the perf event whose
+/// `PERF_EVENT_IOC_ID` was `id`.
+///
+/// A descriptor number is not an identity: once a counter is closed, the
+/// kernel hands the lowest free number to the next `open`, `pipe` or
+/// `perf_event_open` of any thread in this process, and the parallel unit
+/// tests in this binary open descriptors continuously. `F_GETFD` returning
+/// `EBADF` therefore cannot be the closure proof. The event ID can: it comes
+/// from a global counter and is never reused, and while the old descriptor is
+/// open its number cannot be handed to anyone else. So the old event is gone
+/// from `fd` exactly when `fd` is free, names a non-perf file, or names a perf
+/// event with a different ID.
+#[cfg(test)]
+pub(crate) fn fd_no_longer_names_event(fd: libc::c_int, id: u64) -> bool {
+    match std::fs::read_link(format!("/proc/self/fd/{fd}")) {
+        Err(error) => return error.raw_os_error() == Some(libc::ENOENT),
+        Ok(target) if target.as_os_str() != "anon_inode:[perf_event]" => return true,
+        Ok(_) => {}
+    }
+    let mut current = 0u64;
+    // SAFETY: the pointer names a live, writable u64 for the ioctl's duration.
+    if unsafe { ioctls::ID(fd, &mut current as *mut u64) } == 0 {
+        return current != id;
+    }
+    // Closed or replaced by a non-perf file between the two probes.
+    matches!(Errno::last(), Errno::EBADF | Errno::ENOTTY)
+}
+
 impl Drop for PerfCounter {
     fn drop(&mut self) {
         if let Some(ptr) = self.mmap.take() {
@@ -1027,6 +1055,56 @@ pub fn do_branches(mut count: u64) {
 #[cfg(test)]
 mod support_test {
     use super::*;
+
+    /// The closure predicate used by the nonleader-exec counter handoff test
+    /// must key on the event, not on the descriptor number. `dup2` replaces a
+    /// number atomically, so this reproduces a parallel test reusing a closed
+    /// counter's number without ever leaving it free for another thread.
+    #[test]
+    fn closed_counter_is_recognized_after_its_fd_number_is_reused() {
+        use std::os::fd::AsRawFd;
+        let dummy = || {
+            Builder::new(0, -1)
+                .event(Event::Software(SoftwareEvent::Dummy))
+                .sample_period(PerfCounter::DISABLE_SAMPLE_PERIOD)
+                .create()
+                .expect("open a software perf event")
+        };
+        let old = dummy();
+        let old_id = old.id().unwrap();
+        let fd = old.exec_test_fd();
+        assert!(
+            !fd_no_longer_names_event(fd, old_id),
+            "an open counter was reported closed"
+        );
+        let other = dummy();
+        let other_id = other.id().unwrap();
+        assert_ne!(old_id, other_id);
+        let devnull = std::fs::File::open("/dev/null").unwrap();
+        for (replacement, what) in [
+            (devnull.as_raw_fd(), "a non-perf file"),
+            (other.exec_test_fd(), "another perf event"),
+        ] {
+            // Closes whatever `fd` named and reuses its number in one step.
+            assert_eq!(unsafe { libc::dup2(replacement, fd) }, fd);
+            assert_ne!(
+                unsafe { libc::fcntl(fd, libc::F_GETFD) },
+                -1,
+                "the number is open again, so EBADF cannot prove closure"
+            );
+            assert!(
+                fd_no_longer_names_event(fd, old_id),
+                "old counter reported open after its number now names {what}"
+            );
+        }
+        assert!(
+            !fd_no_longer_names_event(fd, other_id),
+            "a live duplicate of another counter was reported closed"
+        );
+        // `old` owns `fd` again only as a number; its event is already gone.
+        drop(old);
+        assert!(fd_no_longer_names_event(fd, old_id));
+    }
 
     #[test]
     fn perf_event_open_errors_mean_pmu_is_unsupported() {
