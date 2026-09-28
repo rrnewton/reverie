@@ -1,0 +1,1 @@
+with-proxy gh pr view 653 -R rrnewton/reverie --json headRefOid,baseRefOid,mergeStateStatus,isDraft

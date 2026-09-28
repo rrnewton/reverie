@@ -250,6 +250,16 @@ struct RegistryState {
     operations: BTreeMap<u64, Arc<Operation>>,
     errors: BTreeMap<u64, Arc<Error>>,
     observer_errors: Vec<Arc<Error>>,
+    // Guest child waits currently asleep in the host, keyed by a registry-
+    // local sequence. A committed cancellation wakes the matching ones after
+    // publishing its terminal cause under this same lock.
+    next_blocked_wait: u64,
+    blocked_waits: BTreeMap<u64, BlockedWait>,
+}
+
+struct BlockedWait {
+    worker: bool,
+    wake: std::sync::mpsc::Sender<i32>,
 }
 
 /// One registry per actual guest thread group; forks receive a separate one.
@@ -301,13 +311,13 @@ impl ReadRegistry {
     }
 
     fn cancel(&self, workers_only: bool, cause: Arc<Terminal>) {
-        let operations = {
+        let (operations, blocked_waits) = {
             let mut state = lock(&self.state);
             if !workers_only {
                 state.root_terminal.get_or_insert_with(|| cause.clone());
             }
             state.worker_terminal.get_or_insert_with(|| cause.clone());
-            state
+            let operations = state
                 .operations
                 .values()
                 .filter(|operation| !workers_only || operation.identity.worker)
@@ -315,12 +325,44 @@ impl ReadRegistry {
                     operation.mark_terminal(cause.clone());
                     operation.clone()
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-653): Review group-exit wake of blocked child waits.
+            // The same terminal cause is already visible to these waiters'
+            // `WaitCancellation::is_cancelled` when they wake. Each
+            // registration is one-shot; the woken waiter never re-registers.
+            let woken = state
+                .blocked_waits
+                .iter()
+                .filter(|(_, wait)| !workers_only || wait.worker)
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            let blocked_waits = woken
+                .into_iter()
+                .filter_map(|id| state.blocked_waits.remove(&id))
+                .map(|wait| wait.wake)
+                .collect::<Vec<_>>();
+            (operations, blocked_waits)
         };
         // No registry/group/operation lock surrounds the actual cancel sends.
         // Physical C joins are exclusively the original worker's obligation.
         for operation in operations {
             operation.cancel();
+        }
+        for wake in blocked_waits {
+            // A waiter that already returned has dropped nothing we own; a
+            // stale wake only makes its next blocking wait re-check.
+            let _ = wake.send(0);
+        }
+    }
+
+    /// The committed-cancellation view of one guest thread's blocking host
+    /// child wait: the same root/worker terminal causes that retire an
+    /// inherited-stdin read.
+    pub(crate) fn wait_cancellation(self: &Arc<Self>, worker: bool) -> WaitCancellation {
+        WaitCancellation {
+            registry: self.clone(),
+            worker,
         }
     }
 
@@ -365,6 +407,84 @@ impl ReadRegistry {
         // A discarded later error may own an opaque host-error destructor.
         // Drop that value only after releasing the registry lock.
         recorded
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-653): Review sharing the terminal-read cancellation
+// source with blocking wait4/waitid.
+/// A blocking guest child wait's view of this thread group's committed
+/// thread/group cancellation. A cancelled wait is consumed exactly like a
+/// cancelled inherited-stdin read (`Error::TerminalReadCancelled`): it never
+/// produces a syscall result or resumes a Tool callback.
+pub(crate) struct WaitCancellation {
+    registry: Arc<ReadRegistry>,
+    worker: bool,
+}
+
+impl WaitCancellation {
+    /// Whether a thread or group cancellation applying to this thread has
+    /// been committed. Once true it stays true until an exec rearm, which
+    /// happens only after every old worker has joined.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        let state = lock(&self.registry.state);
+        if self.worker {
+            state.worker_terminal.is_some()
+        } else {
+            state.root_terminal.is_some()
+        }
+    }
+
+    /// Register `wake` to receive one message when a cancellation applying to
+    /// this thread commits. Returns `None`, registering nothing, when one has
+    /// already committed. Checking and registering under the registry lock
+    /// that `cancel` publishes under means a cancellation is never missed.
+    pub(crate) fn register(
+        &self,
+        wake: &std::sync::mpsc::Sender<i32>,
+    ) -> Option<BlockedWaitRegistration<'_>> {
+        let mut state = lock(&self.registry.state);
+        let terminal = if self.worker {
+            &state.worker_terminal
+        } else {
+            &state.root_terminal
+        };
+        if terminal.is_some() {
+            return None;
+        }
+        state.next_blocked_wait = state
+            .next_blocked_wait
+            .checked_add(1)
+            .expect("blocked child-wait generation exhausted");
+        let id = state.next_blocked_wait;
+        state.blocked_waits.insert(
+            id,
+            BlockedWait {
+                worker: self.worker,
+                wake: wake.clone(),
+            },
+        );
+        Some(BlockedWaitRegistration {
+            cancellation: self,
+            id,
+        })
+    }
+}
+
+/// Withdraws a blocked wait's cancellation registration when it stops
+/// blocking, so no later cancellation sends to a wait that already returned.
+pub(crate) struct BlockedWaitRegistration<'a> {
+    cancellation: &'a WaitCancellation,
+    id: u64,
+}
+
+impl Drop for BlockedWaitRegistration<'_> {
+    fn drop(&mut self) {
+        let removed = lock(&self.cancellation.registry.state)
+            .blocked_waits
+            .remove(&self.id);
+        // Drop the Sender clone outside the registry lock.
+        drop(removed);
     }
 }
 
@@ -1458,5 +1578,61 @@ mod tests {
         assert!(polls.load(Ordering::SeqCst) >= 1);
         assert!(lock(&registry.state).root_terminal.is_none());
         assert!(lock(&registry.state).operations.is_empty());
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-653): Review the blocked child-wait cancellation tests.
+    #[test]
+    fn exit_group_wakes_blocked_child_waits_after_publishing_their_cancellation() {
+        let registry = Arc::new(ReadRegistry::default());
+        let (root_wake, root_woken) = std::sync::mpsc::channel();
+        let (worker_wake, worker_woken) = std::sync::mpsc::channel();
+        let root = registry.wait_cancellation(false);
+        let worker = registry.wait_cancellation(true);
+        let root_registration = root.register(&root_wake).unwrap();
+        let worker_registration = worker.register(&worker_wake).unwrap();
+        assert!(!root.is_cancelled() && !worker.is_cancelled());
+
+        registry.request_exit_group(ExitStatus::Exited(42));
+
+        assert_eq!(root_woken.try_recv(), Ok(0));
+        assert_eq!(worker_woken.try_recv(), Ok(0));
+        assert!(root.is_cancelled() && worker.is_cancelled());
+        // Each registration is woken once; withdrawing it afterwards is inert.
+        drop((root_registration, worker_registration));
+        assert!(lock(&registry.state).blocked_waits.is_empty());
+        // A wait that starts after the commit never sleeps.
+        assert!(root.register(&root_wake).is_none());
+        assert!(worker.register(&worker_wake).is_none());
+        assert!(lock(&registry.state).blocked_waits.is_empty());
+        assert_eq!(
+            root_woken.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+    }
+
+    #[test]
+    fn worker_cancellation_wakes_only_worker_child_waits() {
+        let registry = Arc::new(ReadRegistry::default());
+        let (root_wake, root_woken) = std::sync::mpsc::channel();
+        let (worker_wake, worker_woken) = std::sync::mpsc::channel();
+        let root = registry.wait_cancellation(false);
+        let worker = registry.wait_cancellation(true);
+        let root_registration = root.register(&root_wake).unwrap();
+        let _worker_registration = worker.register(&worker_wake).unwrap();
+
+        registry.cancel_workers();
+
+        assert_eq!(worker_woken.try_recv(), Ok(0));
+        assert!(worker.is_cancelled());
+        assert_eq!(
+            root_woken.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        assert!(!root.is_cancelled());
+        // The root wait stays registered until it withdraws.
+        assert_eq!(lock(&registry.state).blocked_waits.len(), 1);
+        drop(root_registration);
+        assert!(lock(&registry.state).blocked_waits.is_empty());
     }
 }

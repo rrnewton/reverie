@@ -17762,5 +17762,270 @@ int main(int argc, char **argv) {
     }
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-653): Review the peer-exit_group child-wait regressions.
+/// Run `test` again in a child test process bounded by `timeout`, so a hang
+/// fails the test instead of stalling CI. Returns true inside that child.
+fn bounded_child_wait_test(test: &str, seconds: u32) -> bool {
+    if !kvm_available(test) {
+        return false;
+    }
+    if std::env::var("REVERIE_BOUNDED_CHILD_WAIT_TEST").as_deref() == Ok(test) {
+        return true;
+    }
+    let started = std::time::Instant::now();
+    let output = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", &format!("{seconds}s")])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .env("REVERIE_BOUNDED_CHILD_WAIT_TEST", test)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{test}: status={:?} (124 = timed out after {seconds}s, i.e. a blocked wait hung) \
+         after {:?} stdout={} stderr={}",
+        output.status.code(),
+        started.elapsed(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
+/// A thread of a guest PID-namespace init blocks in wait4/waitid on a child
+/// that is still running (an adopted orphan, or its own fork child), while a
+/// sibling thread calls exit_group(42). Linux kills the waiting thread, so
+/// its wait never returns and the process exits 42. Any wait that returns
+/// instead exits with 90 + variant before or after the exit_group.
+const PEER_EXIT_GROUP_WAIT_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static int variant;
+static pid_t target;
+
+static void spin(unsigned long rounds) {
+  /* Guest sleeps are virtual and return at once, so burn real CPU instead. */
+  for (volatile unsigned long i = 0; i < rounds; i++) {
+  }
+}
+
+/* The exiter spins long enough for the waiter to be asleep in the host. */
+#define EXITER_ROUNDS 150000000UL
+/* The awaited child outlives the exiter by a wide margin. If it ever
+   finished first the wait would return and the guest would exit 90 + variant,
+   a red result rather than a masked one. The root's exit joins it. */
+#define CHILD_ROUNDS (6 * EXITER_ROUNDS)
+
+static void wait_once(void) {
+  int status = 0;
+  siginfo_t info;
+  switch (variant) {
+  case 0: case 8: (void)wait4(-1, &status, 0, 0); break;
+  case 1: (void)wait4(0, &status, 0, 0); break;
+  case 2: (void)wait4(-(pid_t)syscall(SYS_getpgrp), &status, 0, 0); break;
+  case 3: (void)wait4(target, &status, 0, 0); break;
+  case 4: case 9: (void)waitid(P_ALL, 0, &info, WEXITED); break;
+  case 5: (void)waitid(P_PGID, 0, &info, WEXITED); break;
+  case 6: (void)waitid(P_PID, target, &info, WEXITED | WNOWAIT); break;
+  case 7: (void)waitid(P_PGID, (pid_t)syscall(SYS_getpgrp), &info, WEXITED | WNOWAIT); break;
+  }
+  syscall(SYS_exit_group, 90 + variant);
+}
+
+static void *waiter(void *unused) {
+  (void)unused;
+  wait_once();
+  return 0;
+}
+
+static void *exiter(void *unused) {
+  (void)unused;
+  spin(EXITER_ROUNDS);
+  syscall(SYS_exit_group, 42);
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 3) return 10;
+  variant = atoi(argv[1]);
+  int leader_waits = atoi(argv[2]);
+  if (getpid() != 1) return 11;
+  int report[2];
+  if (pipe(report) != 0) return 12;
+  pid_t child = fork();
+  if (child < 0) return 13;
+  if (child == 0) {
+    if (variant >= 8) {
+      /* A local child that is still running when the wait blocks. */
+      spin(CHILD_ROUNDS);
+      _exit(7);
+    }
+    pid_t self = getpid();
+    pid_t grandchild = fork();
+    if (grandchild < 0) _exit(14);
+    if (grandchild == 0) {
+      /* Orphaned when its parent exits; init adopts it and it keeps
+         running while init waits for it. */
+      while (getppid() == self) {
+      }
+      pid_t me = getpid();
+      if (getppid() != 1 || write(report[1], &me, sizeof me) != sizeof me) _exit(15);
+      spin(CHILD_ROUNDS);
+      _exit(9);
+    }
+    _exit(7);
+  }
+  target = child;
+  if (variant < 8) {
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 7) return 16;
+    if (read(report[0], &target, sizeof target) != sizeof target) return 17;
+  }
+  pthread_t thread;
+  if (pthread_create(&thread, 0, leader_waits ? exiter : waiter, 0) != 0) return 18;
+  if (leader_waits) {
+    wait_once();
+  } else {
+    spin(EXITER_ROUNDS);
+    syscall(SYS_exit_group, 42);
+  }
+  return 19;
+}
+"#;
+
+/// Wait syscalls take the executor's direct path under this Tool.
+#[derive(Clone, Copy, Debug, Default)]
+struct UnsubscribedWaitTool;
+
+#[reverie::tool]
+impl Tool for UnsubscribedWaitTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscall(Sysno::getpid);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+/// The Direct runner is absent on purpose: it runs a fork child inline on
+/// the parent's stack, so the parent can never wait on a running child.
+#[derive(Clone, Copy, Debug)]
+enum PeerExitGroupRunner {
+    StraceInject,
+    UnsubscribedTool,
+}
+
+/// `leader_waits` lists which thread waits: "1" the leader, "0" a worker.
+fn run_peer_exit_group_wait_matrix(
+    test: &str,
+    variants: std::ops::RangeInclusive<u32>,
+    leader_waits: &[&str],
+) {
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "peer-exit-group-wait",
+        PEER_EXIT_GROUP_WAIT_PROGRAM,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    for runner in [
+        PeerExitGroupRunner::StraceInject,
+        PeerExitGroupRunner::UnsubscribedTool,
+    ] {
+        for variant in variants.clone() {
+            for &leader_waits in leader_waits {
+                let started = std::time::Instant::now();
+                let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+                backend.set_root_pid(1).unwrap();
+                let variant_string = variant.to_string();
+                backend
+                    .install_static_elf_with_context(
+                        &image,
+                        &[executable, &variant_string, leader_waits],
+                        &["PATH=/usr/bin:/bin"],
+                        &directory.0,
+                    )
+                    .unwrap();
+                let (code, stderr) = match runner {
+                    PeerExitGroupRunner::StraceInject => {
+                        let (_, code, _stdout, stderr) = futures::executor::block_on(
+                            backend.run_static_elf_with_tool::<StraceTool>((), true),
+                        )
+                        .unwrap();
+                        (code, stderr)
+                    }
+                    PeerExitGroupRunner::UnsubscribedTool => {
+                        let (_, code, _stdout, stderr) = futures::executor::block_on(
+                            backend.run_static_elf_with_tool::<UnsubscribedWaitTool>((), true),
+                        )
+                        .unwrap();
+                        (code, stderr)
+                    }
+                };
+                eprintln!(
+                    "{test}: runner={runner:?} variant={variant} leader_waits={leader_waits} \
+                     code={code} in {:?}",
+                    started.elapsed()
+                );
+                let stderr = String::from_utf8_lossy(&stderr);
+                assert_eq!(
+                    code,
+                    42,
+                    "runner={runner:?} variant={variant} leader_waits={leader_waits}: the wait \
+                     must be killed by the peer's exit_group, never return; stderr tail={}",
+                    &stderr[stderr.len().saturating_sub(4000)..]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn adopted_orphan_wait4_is_cancelled_by_peer_exit_group() {
+    let test = "adopted_orphan_wait4_is_cancelled_by_peer_exit_group";
+    if bounded_child_wait_test(test, 120) {
+        run_peer_exit_group_wait_matrix(test, 0..=3, &["1", "0"]);
+    }
+}
+
+#[test]
+fn adopted_orphan_waitid_is_cancelled_by_peer_exit_group() {
+    let test = "adopted_orphan_waitid_is_cancelled_by_peer_exit_group";
+    if bounded_child_wait_test(test, 120) {
+        run_peer_exit_group_wait_matrix(test, 4..=7, &["1", "0"]);
+    }
+}
+
+#[test]
+fn local_child_wait_is_cancelled_by_peer_exit_group() {
+    let test = "local_child_wait_is_cancelled_by_peer_exit_group";
+    if bounded_child_wait_test(test, 120) {
+        // Only the forking leader waits here: a local fork child is recorded
+        // on the leader's executor, and a worker's wait for it already
+        // returns ECHILD at once, independent of the exit_group.
+        run_peer_exit_group_wait_matrix(test, 8..=9, &["1"]);
+    }
+}
+
 #[path = "support/natural_retirement.rs"]
 mod natural_retirement;

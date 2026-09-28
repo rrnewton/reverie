@@ -462,7 +462,9 @@ impl ProcessSignalRegistry {
         family
             .terminal
             .insert(process_family_key, ProcessFamilyExit::Failed);
-        let mut waiters = Vec::new();
+        // A failed adopter's own blocked waits observe this terminal state
+        // when woken, exactly as for its logical exit.
+        let mut waiters = family.take_adoption_waiters(process_family_key);
         if let Some(parent_key) = family.current_parent(process_family_key, fork_parent) {
             if let Some(children) = family.direct_children.get_mut(&parent_key) {
                 children.remove(&process_family_key);
@@ -478,7 +480,8 @@ impl ProcessSignalRegistry {
                 .and_then(|adopted| adopted.get_mut(&process_family_key))
             {
                 *state = AdoptedChild::Failed;
-                waiters = family.take_adoption_waiters(parent_key);
+                let parent_waiters = family.take_adoption_waiters(parent_key);
+                waiters.extend(parent_waiters);
             }
         }
         drop(family);
@@ -580,7 +583,17 @@ impl ProcessSignalRegistry {
                 parent_snapshot,
             );
             family.terminal.insert(key, exit);
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-653): Review waking a terminal adopter's
+            // blocked waits.
+            // A peer thread of this now-terminal process may be asleep in a
+            // wait on an adopted orphan. Its wake must not be dropped: no
+            // later completion notifies a terminal adopter. Wake it only
+            // after `terminal` is published under this lock, so the woken
+            // task observes the committed exit and retires without a result.
+            let waiters = family.take_adoption_waiters(key);
             drop(family);
+            wake_adoption_waiters(waiters, key.0);
             // Publish each running orphan's new guest-visible parent while this
             // process's transaction is still held by `take_exit`, before its
             // Tool exit callback can release the scheduler turn. A later
@@ -729,9 +742,10 @@ impl ProcessSignalRegistry {
         let orphans = family.reparent_orphans(key);
         if is_root {
             // Nothing in the guest remains to collect orphans this root
-            // adopted; they are consumed by run teardown.
+            // adopted; they are consumed by run teardown. Its still-blocked
+            // waiters are woken by `record_process_exit` once this exit is
+            // published, never silently dropped.
             family.adoptions.remove(&key);
-            family.adoption_waiters.remove(&key);
         }
         (exit, orphans)
     }
