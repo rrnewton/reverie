@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "git",
+    "commit",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/commit-message.txt"
+  ],
+  "raw_status": 0
+}

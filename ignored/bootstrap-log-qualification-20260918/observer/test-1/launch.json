@@ -1,0 +1,44 @@
+{
+  "binary": "/usr/bin/python3",
+  "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+  "arguments": [
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/before_exec.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/test-1/before-exec.json",
+    "85cbf6802bbe6737c303119f9b3aa4924c5de504872c54012d404559ad8a0e15"
+  ],
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/test-1-plan.json",
+      "cc9f980831522cc516bbcb6f4f43f2fbf21b0a92da555cac91427093777d714d"
+    ]
+  },
+  "before_exec_spec_sha256": "85cbf6802bbe6737c303119f9b3aa4924c5de504872c54012d404559ad8a0e15",
+  "cpu_allowance_usec": 30000000,
+  "wall_seconds": 60,
+  "log_bytes": 1048576,
+  "safehermit_log_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/test-1/safehermit",
+  "wrapper_sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760",
+  "observer_sources": {
+    "observer.py": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6",
+    "unit_reference.py": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+    "before_exec.py": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+    "source-inputs.json": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+  },
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918",
+  "epoch": 1789696849.7552814,
+  "monotonic_ns": 1855778513510698,
+  "pid": 377377,
+  "wrapper_identity": {
+    "pid": 377377,
+    "start_ticks": 185577851,
+    "parent_pid": 377290,
+    "state": "R",
+    "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+  }
+}

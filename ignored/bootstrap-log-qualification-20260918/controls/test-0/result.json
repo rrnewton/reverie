@@ -1,0 +1,73 @@
+{
+  "plan_sha256": "e41759d204c1fcaccf2db33dffab9204506f57910c57ef6835a602455f226bd1",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/test-0",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "1048576",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/test-0-plan.json",
+      "e41759d204c1fcaccf2db33dffab9204506f57910c57ef6835a602455f226bd1"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 3.5092352570500225,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/controls/test-0/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "bac51b812de4543aec8957a2dd4063f9ed169e09f4aebbc520f50696dcdaa242"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/controls/test-0/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/test-0/result.json",
+    "bytes": 59060,
+    "mode": 384,
+    "sha256": "28ecee502f048d33ea325c654c45ce8cfdab57d532e4a743978c52d9180932c6"
+  },
+  "readback": {
+    "executed": 1,
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 180,
+      "exec_time": 0.000361333
+    },
+    "names": [
+      "task::tests::command_bootstrap_arguments_preserve_types_and_raw_tail"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.002833995036780834
+  },
+  "inputs_unchanged": true
+}

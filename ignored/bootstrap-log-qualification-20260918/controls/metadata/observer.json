@@ -1,0 +1,38 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/observer.py",
+    "--out",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/metadata",
+    "--cpu-usec",
+    "600000000",
+    "--wall-seconds",
+    "900",
+    "--log-bytes",
+    "16777216",
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/phase.py",
+    "payload",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/metadata-plan.json",
+    "728ada8dcd5a468fc2d99e0a18c10f189c027ac247b043d259845d662a832c91"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918",
+  "wall_limit_seconds": 950,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 1.2546271870378405,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/controls/metadata/observer.stdout",
+    "bytes": 160,
+    "mode": 420,
+    "sha256": "e8c57ab5b2651e3cd131e10c2dc4351e55aa08796814f9763f2718e0f9b5580c"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/controls/metadata/observer.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

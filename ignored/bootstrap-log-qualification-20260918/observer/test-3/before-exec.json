@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/test-3-plan.json",
+      "cc036b477b6ad3c6115c3f86535fd5302e2bd92ce3697a0f3341986cadce4adc"
+    ]
+  },
+  "token": "07388b89deca16812233ec401635b1838021fe80c6ae543eded72b8f01ad8e75",
+  "observer_pid": 400418,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 185578946,
+  "deadline_monotonic_ns": 1855814510802167
+}
