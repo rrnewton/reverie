@@ -296,7 +296,13 @@ impl FatalNewborn {
     #[cfg(test)]
     async fn reap(self) -> Result<(), Error> {
         while let Some(pending) = self.terminal.reserve_pending_for_cleanup(Duration::ZERO) {
-            let _stopped = pending.decode().map_err(anyhow::Error::new)?;
+            let _stopped = match pending.decode() {
+                Ok(stopped) => stopped,
+                Err(error) => match pending.consume_dead_exec() {
+                    Ok(()) => continue,
+                    Err(_) => return Err(anyhow::Error::new(error).into()),
+                },
+            };
             pending.commit();
         }
         let stopped = self.exit.await.map_err(anyhow::Error::new)?;
@@ -330,10 +336,15 @@ impl FatalNewborn {
         while let Some(pending) = self.terminal.reserve_pending_for_cleanup(Duration::ZERO) {
             match pending.decode() {
                 Ok(_) => pending.commit(),
-                Err(error) => {
-                    drop(pending);
-                    session.retry_after(anyhow::Error::new(error).into()).await;
-                }
+                // A dead Exec can never decode; it is consumed and the
+                // statuses behind it follow.
+                Err(error) => match pending.consume_dead_exec() {
+                    Ok(()) => {}
+                    Err(pending) => {
+                        drop(pending);
+                        session.retry_after(anyhow::Error::new(error).into()).await;
+                    }
+                },
             }
         }
         let stopped = loop {
@@ -773,7 +784,15 @@ impl FatalTaskStop {
                 tokio::task::yield_now().await;
                 continue;
             };
-            let wait = pending.decode().map_err(anyhow::Error::new)?;
+            let wait = match pending.decode() {
+                Ok(wait) => wait,
+                // The tracee left this exec stop through a fatal signal. It
+                // is not a stop the tracee is in, so it proves no freeze.
+                Err(error) => match pending.consume_dead_exec() {
+                    Ok(()) => continue,
+                    Err(_) => return Err(anyhow::Error::new(error).into()),
+                },
+            };
             if let Wait::Stopped(task, Event::NewChild(op, child)) = &wait {
                 capture(task.pid(), *op, child);
             }
@@ -1060,7 +1079,15 @@ impl NewbornTracee {
                 }
                 return Err(Errno::ETIMEDOUT.into());
             };
-            let state = reservation.decode()?;
+            let state = match reservation.decode() {
+                Ok(state) => state,
+                // As for a resume that meets death below: the SIGKILL has
+                // taken the child out of that exec stop.
+                Err(error) => match reservation.consume_dead_exec() {
+                    Ok(()) => return Ok(()),
+                    Err(_) => return Err(error),
+                },
+            };
             let Wait::Stopped(stopped, _) = state else {
                 reservation.commit();
                 continue;
@@ -1398,11 +1425,23 @@ impl LiteinstTraceeCleanup {
 
     fn capture_pending_children(&self, terminal: &TerminalCleanup) -> std::io::Result<()> {
         while let Some(reservation) = terminal.reserve_pending_for_cleanup(Duration::ZERO) {
-            let state = reservation.decode().map_err(|error| {
-                #[cfg(all(test, target_arch = "x86_64"))]
-                injected_error_tests::refusal_leaf_error(Some("queued-state-decode"), &error, None);
-                std::io::Error::other(format!("decode queued cancellation state: {error}"))
-            })?;
+            let state = match reservation.decode() {
+                Ok(state) => state,
+                Err(error) => match reservation.consume_dead_exec() {
+                    Ok(()) => continue,
+                    Err(_) => {
+                        #[cfg(all(test, target_arch = "x86_64"))]
+                        injected_error_tests::refusal_leaf_error(
+                            Some("queued-state-decode"),
+                            &error,
+                            None,
+                        );
+                        return Err(std::io::Error::other(format!(
+                            "decode queued cancellation state: {error}"
+                        )));
+                    }
+                },
+            };
             if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
                 let child_pid = child.pid();
                 let mut newborns = self.newborn_tracees.lock().unwrap();
@@ -1516,11 +1555,20 @@ impl LiteinstTraceeCleanup {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if let Some(reservation) = terminal.reserve_pending_for_cleanup(remaining) {
-                let state = legacy_cleanup_observe!(
+                let decoded = legacy_cleanup_observe!(
                     "queued-state-decode",
                     self.pid(),
                     Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
-                    reservation.decode()
+                    match reservation.decode() {
+                        Ok(state) => Ok(Some((reservation, state))),
+                        // A dead Exec names a stop the root has left, so it
+                        // proves no freeze; it is consumed and the statuses
+                        // behind it follow.
+                        Err(error) => reservation
+                            .consume_dead_exec()
+                            .map(|()| None)
+                            .map_err(|_| error),
+                    }
                 )
                 .map_err(|error| {
                     std::io::Error::other(format!(
@@ -1528,33 +1576,42 @@ impl LiteinstTraceeCleanup {
                         self.pid()
                     ))
                 })?;
-                if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
-                    let child_pid = child.pid();
-                    self.newborn_tracees
-                        .lock()
-                        .unwrap()
-                        .entry(child_pid)
-                        .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), op, &child));
+                if let Some((reservation, state)) = decoded {
+                    if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
+                        let child_pid = child.pid();
+                        self.newborn_tracees
+                            .lock()
+                            .unwrap()
+                            .entry(child_pid)
+                            .or_insert_with(|| {
+                                NewbornTracee::from_event(stopped.pid(), op, &child)
+                            });
+                    }
+                    legacy_cleanup_observe!(
+                        "root-freeze-revocation-site1",
+                        self.pid(),
+                        Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                        terminal.revoke_unclaimed_exit_stop()
+                    )
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                    reservation.commit();
+                    // Any exact-generation nonterminal wait status means the root
+                    // is kernel-stopped. Drain the remaining FIFO while it cannot
+                    // execute and create another child.
+                    legacy_cleanup_observe!(
+                        "root-pending-children-site3",
+                        self.pid(),
+                        Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
+                        self.capture_pending_children(terminal)
+                    )?;
+                    self.root_frozen = true;
+                    return Ok(());
                 }
-                legacy_cleanup_observe!(
-                    "root-freeze-revocation-site1",
-                    self.pid(),
-                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
-                    terminal.revoke_unclaimed_exit_stop()
-                )
-                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
-                reservation.commit();
-                // Any exact-generation nonterminal wait status means the root
-                // is kernel-stopped. Drain the remaining FIFO while it cannot
-                // execute and create another child.
-                legacy_cleanup_observe!(
-                    "root-pending-children-site3",
-                    self.pid(),
-                    Some(injected_error_tests::RefusalGeneration::of(&self.identity)),
-                    self.capture_pending_children(terminal)
-                )?;
-                self.root_frozen = true;
-                return Ok(());
+                // The consumed dead Exec may have been the last queued
+                // status; its exit stop is published outside the FIFO.
+                if !terminal.pending_is_empty() {
+                    continue;
+                }
             }
             if terminal.exit_stop_observed() {
                 legacy_cleanup_observe!(
@@ -5079,6 +5136,7 @@ mod tests {
     include!("tracer/fatal_daemon_group_tests.rs");
     include!("tracer/fatal_capacity_tests.rs");
     include!("tracer/fatal_group_lifetime_tests.rs");
+    include!("tracer/fatal_dead_exec_tests.rs");
     #[tokio::test(flavor = "current_thread")]
     async fn unsupported_injected_completion_returns_original_pipes_and_usable_tracer() {
         let mut command = Command::new("/bin/sh");
