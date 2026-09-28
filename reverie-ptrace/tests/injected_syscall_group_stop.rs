@@ -33,8 +33,11 @@ use reverie::Pid;
 use reverie::Signal;
 use reverie::Subscription;
 use reverie::Tool;
+use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::Errno;
+use reverie::syscalls::Getpid;
+use reverie::syscalls::RtSigprocmask;
 use reverie::syscalls::RtTgsigqueueinfo;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::Sysno;
@@ -49,6 +52,12 @@ const PROBE_FD: i32 = 900;
 /// `rt_tgsigqueueinfo(self, self, SIGSYS, buf)`, where `buf` is the marker's
 /// buffer holding a guest-prepared siginfo.
 const SIGQUEUE_FD: i32 = 901;
+/// A zero-length write to this descriptor is replaced with
+/// `rt_sigprocmask(SIG_UNBLOCK, buf, NULL)`.
+const UNBLOCK_FD: i32 = 902;
+/// Like `UNBLOCK_FD`, followed by an injected `getpid` whose result the tool
+/// returns to the guest.
+const UNBLOCK_THEN_GETPID_FD: i32 = 903;
 const MARKERS: usize = 1500;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -117,6 +126,32 @@ impl Tool for ReplaceMarker {
                             .with_siginfo(siginfo),
                     )
                     .await;
+                guest
+                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                    .await;
+                Ok(result?)
+            }
+            Syscall::Write(write)
+                if (write.fd() == UNBLOCK_FD || write.fd() == UNBLOCK_THEN_GETPID_FD)
+                    && write.len() == 0 =>
+            {
+                let set = write.buf().and_then(|buf| Addr::from_raw(buf.as_raw()));
+                let result = guest
+                    .inject(
+                        RtSigprocmask::new()
+                            .with_how(libc::SIG_UNBLOCK)
+                            .with_set(set)
+                            .with_oldset(None)
+                            .with_sigsetsize(8),
+                    )
+                    .await;
+                guest
+                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                    .await;
+                if write.fd() == UNBLOCK_FD {
+                    return Ok(result?);
+                }
+                let result = guest.inject(Getpid::new()).await;
                 guest
                     .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
                     .await;
@@ -345,5 +380,200 @@ fn injected_syscall_completed_before_signal_delivery_keeps_its_result() {
         stdout.trim(),
         "0 1",
         "guest sees success and one handler run"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS],
+        "the signal reaches the tool like any other signal delivery"
+    );
+}
+
+static SIGSEGV_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn count_sigsegv(_signal: libc::c_int) {
+    SIGSEGV_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+static SIGUSR1_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn count_sigusr1(_signal: libc::c_int) {
+    SIGUSR1_HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Installs `handler` for `signal` without `SA_RESTART`.
+///
+/// # Safety
+/// Replaces the process-wide disposition of `signal`.
+unsafe fn install_counter(signal: libc::c_int, handler: extern "C" fn(libc::c_int)) {
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = handler as *const () as usize;
+        action.sa_flags = 0;
+        libc::sigemptyset(&mut action.sa_mask);
+        assert_eq!(libc::sigaction(signal, &action, std::ptr::null_mut()), 0);
+    }
+}
+
+/// Blocks `signals` and returns the set.
+///
+/// # Safety
+/// Changes the calling thread's signal mask.
+unsafe fn block(signals: &[libc::c_int]) -> libc::sigset_t {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for &signal in signals {
+            libc::sigaddset(&mut set, signal);
+        }
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                libc::SIG_BLOCK,
+                &set as *const libc::sigset_t,
+                0usize,
+                8usize
+            ),
+            0
+        );
+        set
+    }
+}
+
+/// Queues `signal` to the calling thread with `si_code`.
+///
+/// # Safety
+/// Sends a signal to the calling thread.
+unsafe fn queue_to_self(signal: libc::c_int, si_code: libc::c_int) {
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        info.si_signo = signal;
+        info.si_code = si_code;
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_rt_tgsigqueueinfo,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                signal,
+                &mut info as *mut libc::siginfo_t,
+            ),
+            0
+        );
+    }
+}
+
+/// Two synchronous-class signals (positive `si_code`) queued while blocked
+/// and unblocked by one injected `rt_sigprocmask` are both dequeued ahead of
+/// the step SIGTRAP, one stop each, with RIP past the private `syscall`.
+/// Linux under plain execution returns 0 and runs both handlers once (checked
+/// with the same guest body run untraced: "0 1 1"). Holding them in the
+/// single `pending_signal` slot delivered only the second one ("0 0 1").
+#[test]
+fn injected_syscall_completed_before_two_signal_deliveries_delivers_both() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        SIGSEGV_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        install_counter(libc::SIGSEGV, count_sigsegv);
+        let set = block(&[libc::SIGSYS, libc::SIGSEGV]);
+        queue_to_self(libc::SIGSYS, 1);
+        queue_to_self(libc::SIGSEGV, 1);
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        println!(
+            "{ret} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            SIGSEGV_HANDLER_CALLS.load(Ordering::Relaxed)
+        );
+    })
+    .expect("run two-signal guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE two-signal guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(*injected, vec![Ok(0)], "the unblock runs once and succeeds");
+    assert_eq!(
+        stdout.trim(),
+        "0 1 1",
+        "guest sees success and each handler runs once"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSYS, libc::SIGSEGV],
+        "both signals reach the tool, in queue order"
+    );
+}
+
+/// A signal that becomes deliverable before an injected `syscall` executes
+/// interrupts it: Reverie reports `ERESTARTSYS` and delivers the signal at
+/// the next resume, where the kernel turns the restart into `EINTR` because
+/// the handler lacks `SA_RESTART`. SIGUSR1 queued by `tgkill` is not
+/// synchronous-class, so the unblock's own step SIGTRAP is dequeued first and
+/// the signal stops the following `getpid` before its `syscall`.
+#[test]
+fn signal_pending_before_injected_syscall_interrupts_it() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGUSR1_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGUSR1, count_sigusr1);
+        let set = block(&[libc::SIGUSR1]);
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_tgkill,
+                libc::getpid(),
+                libc::syscall(libc::SYS_gettid),
+                libc::SIGUSR1
+            ),
+            0
+        );
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        println!(
+            "{ret} {errno} {}",
+            SIGUSR1_HANDLER_CALLS.load(Ordering::Relaxed)
+        );
+    })
+    .expect("run interrupted-injection guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    eprintln!(
+        "PROBE interrupted guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        *injected,
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes; the signal interrupts getpid before it runs"
+    );
+    assert_eq!(
+        stdout.trim(),
+        format!("-1 {} 1", libc::EINTR),
+        "guest sees EINTR and one handler run"
     );
 }
