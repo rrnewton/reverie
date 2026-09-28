@@ -521,12 +521,17 @@ struct Event {
     /// Serializes the two-phase exit-stop publication with terminal
     /// finalization. The notifier worker normally supplies statuses in order,
     /// but unstarted-completion paths may publish ECHILD independently.
+    ///
+    /// Lock order: `exit_publication` before `status`. `publish_exit_stop`
+    /// takes `status` while holding this lock; no path may take this lock
+    /// while holding `status` (a live status reservation holds `status`).
     exit_publication: Mutex<()>,
 
     /// Waker for regular status events.
     status_waker: WakerSlot,
 
-    /// Ordered regular statuses plus a retained terminal publication.
+    /// Ordered regular statuses plus a retained terminal publication. Never
+    /// held while taking `exit_publication`; see that field's lock order.
     status: Mutex<StatusState>,
 
     /// Wakes synchronous cancellation cleanup when a status is published.
@@ -579,6 +584,83 @@ struct Event {
 struct StatusState {
     pending: VecDeque<i32>,
     terminal: i32,
+    /// How many of the oldest `pending` entries were queued before this
+    /// Event's latest published `PTRACE_EVENT_EXIT` stop. Every pop from the
+    /// front decrements it, so it never covers a status queued after that
+    /// exit stop.
+    before_exit: usize,
+    /// The exit epoch of the publication that recorded `before_exit`. Only
+    /// the capability minted for that publication retires the prefix.
+    before_exit_epoch: usize,
+    /// Diagnostic count of the pre-exit stops removed by
+    /// [`StatusState::retire_before_exit`].
+    retired_before_exit: u64,
+}
+
+/// Returns true for a stop whose status records more than the stop itself: a
+/// new tracee (fork, vfork, clone), a vfork release, or an exec's thread-group
+/// identity change. Such an entry is never retired, even when it is dead.
+fn stop_records_lifecycle_state(status: i32) -> bool {
+    !libc::WIFSTOPPED(status)
+        || matches!(
+            (status >> 16) & 0xff,
+            libc::PTRACE_EVENT_FORK
+                | libc::PTRACE_EVENT_VFORK
+                | libc::PTRACE_EVENT_CLONE
+                | libc::PTRACE_EVENT_EXEC
+                | libc::PTRACE_EVENT_VFORK_DONE
+        )
+}
+
+impl StatusState {
+    /// Consumes the FIFO front. Every consumer pops through this, so the
+    /// pre-exit count stays a prefix of `pending`.
+    fn pop_front(&mut self) -> Option<i32> {
+        let front = self.pending.pop_front();
+        if front.is_some() {
+            self.before_exit = self.before_exit.saturating_sub(1);
+        }
+        debug_assert!(self.before_exit <= self.pending.len());
+        front
+    }
+
+    /// Removes the statuses queued before the latest exit stop and returns
+    /// how many were removed.
+    ///
+    /// A tracee is in at most one ptrace stop at a time. Every stop reported
+    /// before its `PTRACE_EVENT_EXIT` stop is therefore one it had already
+    /// left when it entered the exit stop, for example a single-step stop that
+    /// a non-leader exec's zap moved into the exit stop. Such a status names
+    /// no stop the tracee is in, and a later consumer would otherwise take it
+    /// in place of the statuses behind it. Nothing queued after the exit stop
+    /// is touched. If the prefix holds a status that records lifecycle state
+    /// (see [`stop_records_lifecycle_state`]), nothing is removed and the
+    /// existing consumers see the queue unchanged.
+    fn retire_before_exit(&mut self) -> usize {
+        debug_assert!(self.before_exit <= self.pending.len());
+        let count = self.before_exit.min(self.pending.len());
+        if self
+            .pending
+            .iter()
+            .take(count)
+            .any(|&status| stop_records_lifecycle_state(status))
+        {
+            return 0;
+        }
+        self.pending.drain(..count);
+        self.before_exit = 0;
+        self.retired_before_exit += count as u64;
+        count
+    }
+
+    /// As [`StatusState::retire_before_exit`], but only when the recorded
+    /// prefix belongs to the exit stop published in `epoch`.
+    fn retire_before_exit_of(&mut self, epoch: usize) -> usize {
+        if self.before_exit_epoch != epoch {
+            return 0;
+        }
+        self.retire_before_exit()
+    }
 }
 
 struct StatusReservation<'a> {
@@ -759,7 +841,7 @@ enum CancellableNotifierWaitOwnership<'a> {
 impl StatusReservation<'_> {
     fn commit(mut self) {
         if let Some(state) = self.state.as_mut() {
-            let committed = state.pending.pop_front();
+            let committed = state.pop_front();
             debug_assert_eq!(committed, Some(self.status));
         }
     }
@@ -774,6 +856,9 @@ impl Event {
             status: Mutex::new(StatusState {
                 pending: VecDeque::new(),
                 terminal: INVALID_STATUS,
+                before_exit: 0,
+                before_exit_epoch: 0,
+                retired_before_exit: 0,
             }),
             status_changed: Condvar::new(),
             exit_status: AtomicI32::new(EXIT_PENDING),
@@ -870,6 +955,13 @@ impl Event {
         }
     }
 
+    /// Publishes an out-of-band exit stop and records the statuses queued
+    /// before it.
+    ///
+    /// Lock order: takes `exit_publication`, then `status` while still holding
+    /// it. The caller must not hold `status` (for example through a live
+    /// status reservation): that would invert the order and can deadlock
+    /// against another publisher.
     fn publish_exit_stop(&self, between_status_and_capability: impl FnOnce()) {
         // Publish STOPPED first. A waiter that observes this half-published
         // state is already registered and returns Pending until AVAILABLE is
@@ -886,6 +978,15 @@ impl Event {
             Ok(EXIT_PENDING) | Err(EXIT_STOPPED | EXIT_ECHILD)
         ));
         if previous.is_ok() {
+            // Lock order: exit_publication, then status. Every status queued
+            // now was reported before this exit stop. The count is read and
+            // stored under one status lock so a concurrent pop cannot make it
+            // cover a status queued after the exit stop. The epoch cannot
+            // change here: observe_exec_after_exit takes exit_publication.
+            let mut state = self.status.lock();
+            state.before_exit = state.pending.len();
+            state.before_exit_epoch = self.exit_epoch.load(Ordering::Acquire);
+            drop(state);
             between_status_and_capability();
             let capability = self.exit_capability.compare_exchange(
                 EXIT_CAP_PENDING,
@@ -1000,11 +1101,27 @@ impl Event {
         // A synchronous wait directly returns this stopped capability. Keep
         // the raw stop rollback-safe in the regular FIFO without separately
         // minting an ExitFuture capability for the same consumed status.
+        // This exit stop is itself a FIFO entry, and a consumer reaches it
+        // only through every status ahead of it. Those were all reported
+        // before the exit stop, so they are retired here, under the same
+        // status lock that queues the exit stop. No reservation can be live
+        // while this lock is held.
         let mut state = self.status.lock();
+        state.before_exit = state.pending.len();
+        state.retire_before_exit();
         state.pending.push_back(status);
         drop(state);
         self.status_changed.notify_all();
         self.status_waker.wake();
+    }
+
+    /// Retires the statuses queued before the exit stop published in
+    /// `epoch`. Called on a terminal disposition of the ExitFuture-minted
+    /// capability for that exit stop: a successful ptrace request that moves
+    /// the tracee out of it, or an ESRCH from a request on it. The caller must
+    /// not hold `status`.
+    fn retire_statuses_before_exit_stop(&self, epoch: usize) -> usize {
+        self.status.lock().retire_before_exit_of(epoch)
     }
 
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
@@ -1670,6 +1787,11 @@ impl EventHandle {
 
     fn event(&self) -> &Arc<Event> {
         &self.resolved().0.event
+    }
+
+    /// See [`Event::retire_statuses_before_exit_stop`].
+    pub(super) fn retire_statuses_before_exit_stop(&self, epoch: usize) -> usize {
+        self.event().retire_statuses_before_exit_stop(epoch)
     }
 
     fn identity(&self) -> Option<&Arc<WorkerIdentity>> {
@@ -3303,6 +3425,27 @@ impl TerminalCleanup {
         self.event.event().pending_is_empty()
     }
 
+    /// Diagnostic: how many statuses queued before a published exit stop
+    /// this exact event generation has retired, because the tracee had left
+    /// each of those stops when it entered the exit stop.
+    pub fn retired_stops_before_exit(&self) -> u64 {
+        self.event.event().status.lock().retired_before_exit
+    }
+
+    /// Diagnostic: the raw wait statuses currently queued for this exact
+    /// event generation, oldest first. Observational only; it consumes and
+    /// reserves nothing.
+    pub fn queued_raw_statuses(&self) -> Vec<i32> {
+        self.event
+            .event()
+            .status
+            .lock()
+            .pending
+            .iter()
+            .copied()
+            .collect()
+    }
+
     /// Returns true when this exact event observed a ptrace exit stop.
     pub fn exit_stop_observed(&self) -> bool {
         self.event.event().exit_status.load(Ordering::Acquire) == EXIT_STOPPED
@@ -3322,6 +3465,13 @@ impl TerminalCleanup {
     /// Transfers a previously claimed exit-stop capability to cancellation
     /// cleanup and revokes all future claims.
     ///
+    /// This is the claimed capability's terminal disposition, so the statuses
+    /// queued before its exit stop are retired as for a resumed capability
+    /// (`Stopped::retire_statuses_before_exit_stop`): the tracee had
+    /// left each of those stops when it entered the exit stop. Statuses
+    /// queued after the exit stop are kept for cleanup. The caller must not
+    /// hold a [`PendingStatusReservation`] for this generation.
+    ///
     /// # Safety
     ///
     /// The caller must prove exclusive ownership of the exact stopped tracee
@@ -3329,7 +3479,19 @@ impl TerminalCleanup {
     /// destroyed or transferred to the cleanup path. Revocation cannot make an
     /// independently retained `Stopped` value safe.
     pub unsafe fn revoke_owned_exit_stop(&self) -> Result<(), Errno> {
-        self.event.event().prepare_exit_capability_for_cleanup(true)
+        let event = self.event.event();
+        event.prepare_exit_capability_for_cleanup(true)?;
+        // Not keyed on an exit epoch, unlike the paths of a marked Stopped.
+        // The key stops a capability from an earlier epoch from changing the
+        // FIFO that a later exit stop's owner consumes. Here the caller owns
+        // this generation exclusively and cleanup consumes every queued status
+        // from now on, so no other owner exists. The recorded prefix holds only
+        // stops reported before the latest published exit stop, each of which
+        // the tracee had left; an Exec after that exit stop is queued behind
+        // it, outside the prefix, and the lifecycle guard in
+        // `retire_before_exit` still keeps any prefix holding one.
+        event.status.lock().retire_before_exit();
+        Ok(())
     }
 }
 
@@ -3354,7 +3516,7 @@ impl PendingStatusReservation<'_> {
 
     /// Removes the reserved front after all associated ownership is durable.
     pub fn commit(mut self) {
-        let committed = self.state.pending.pop_front();
+        let committed = self.state.pop_front();
         debug_assert_eq!(committed, Some(self.status));
     }
 }
@@ -3370,7 +3532,7 @@ impl WaitFuture {
         Self { pid, token }
     }
 
-    fn from_stopped(Stopped(pid, token): Stopped) -> Self {
+    fn from_stopped(Stopped(pid, token, _): Stopped) -> Self {
         Self { pid, token }
     }
 }
@@ -3507,9 +3669,10 @@ impl Future for ExitFuture {
         };
         let event = event_handle.event();
         match futures::ready!(event.poll_exit(&this.waiter, cx.waker())) {
-            Ok(()) => Poll::Ready(Ok(Stopped::from_token(
+            Ok(()) => Poll::Ready(Ok(Stopped::from_exit_token(
                 this.pid,
                 TraceeToken::from_event(event_handle),
+                this.waiter.epoch,
             ))),
             Err(errno) => Poll::Ready(Err(errno.into())),
         }
@@ -4990,6 +5153,388 @@ mod test {
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(signal)));
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(exec)));
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(0)));
+    }
+
+    const PRE_EXIT_STEP_STOP: i32 = (libc::SIGTRAP << 8) | 0x7f;
+    const POST_EXIT_EXEC_STOP: i32 = (libc::PTRACE_EVENT_EXEC << 16) | (libc::SIGTRAP << 8) | 0x7f;
+
+    fn queued(event: &Event) -> Vec<i32> {
+        event.status.lock().pending.iter().copied().collect()
+    }
+
+    #[test]
+    fn exit_capability_resume_retires_only_stops_queued_before_exit() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let winner = Arc::new(ExitWaiter::default());
+
+        // The 686 order: the old leader's step stop is queued, the exec's zap
+        // moves it into its exit stop, and the exec is reported behind both.
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.poll_exit(&winner, &waker), Poll::Ready(Ok(())));
+        event.update(POST_EXIT_EXEC_STOP);
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP, POST_EXIT_EXEC_STOP]);
+
+        let pid = crate::Pid::from_raw(4242);
+        let token = TraceeToken::from_event(handle.clone());
+        let plain = Stopped::from_token(pid, token.clone());
+        let exit = Stopped::from_exit_token(pid, token.clone(), 0);
+        assert_eq!(plain, exit, "the exit-stop mark changed Stopped identity");
+        assert_eq!(format!("{plain:?}"), format!("{exit:?}"));
+
+        // Only the exit-stop capability retires, and only the pre-exit prefix.
+        let _ = plain.into_running();
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP, POST_EXIT_EXEC_STOP]);
+        let _ = exit.into_running();
+        assert_eq!(queued(event), [POST_EXIT_EXEC_STOP]);
+        assert_eq!(
+            TerminalCleanup::new_unregistered(pid, &token).retired_stops_before_exit(),
+            1
+        );
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(POST_EXIT_EXEC_STOP))
+        );
+
+        // A repeated retirement finds nothing more to remove.
+        assert_eq!(event.retire_statuses_before_exit_stop(0), 0);
+        assert_eq!(event.status.lock().retired_before_exit, 1);
+    }
+
+    /// A PID no task can have (above PID_MAX_LIMIT), so every ptrace request
+    /// on it fails with a real kernel ESRCH.
+    const ABSENT_PID: i32 = i32::MAX;
+
+    /// Queues the 686 order on a fresh generation: a pre-exit step stop, the
+    /// published and claimed exit stop, and the Exec behind both.
+    fn claimed_exit_after_stale_step() -> (EventHandle, TraceeToken) {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        let winner = Arc::new(ExitWaiter::default());
+        assert_eq!(event.poll_exit(&winner, &waker), Poll::Ready(Ok(())));
+        event.update(POST_EXIT_EXEC_STOP);
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP, POST_EXIT_EXEC_STOP]);
+        let token = TraceeToken::from_event(handle.clone());
+        (handle, token)
+    }
+
+    /// ESRCH from any request on the exit-stop capability means the tracee
+    /// has left the exit stop, so the pre-exit prefix is retired exactly as on
+    /// a successful resume, and the Exec queued after the exit stop is kept.
+    /// Each ESRCH here is a real kernel reply.
+    #[test]
+    fn exit_capability_esrch_retires_only_stops_queued_before_exit() {
+        let pid = crate::Pid::from_raw(ABSENT_PID);
+        let retired = |token: &TraceeToken| {
+            TerminalCleanup::new_unregistered(pid, token).retired_stops_before_exit()
+        };
+
+        // resume_retaining: the retained value comes back with ESRCH.
+        let (handle, token) = claimed_exit_after_stale_step();
+        let plain = Stopped::from_token(pid, token.clone());
+        let (plain, errno) = plain
+            .resume_retaining(None)
+            .expect_err("absent PID resumed");
+        assert_eq!(errno, Errno::ESRCH);
+        drop(plain);
+        assert_eq!(
+            queued(handle.event()),
+            [PRE_EXIT_STEP_STOP, POST_EXIT_EXEC_STOP]
+        );
+        let exit = Stopped::from_exit_token(pid, token.clone(), 0);
+        let (retained, errno) = exit.resume_retaining(None).expect_err("absent PID resumed");
+        assert_eq!(errno, Errno::ESRCH);
+        assert_eq!(queued(handle.event()), [POST_EXIT_EXEC_STOP]);
+        assert_eq!(retired(&token), 1);
+        drop(retained);
+
+        // resume: ESRCH becomes Died.
+        let (handle, token) = claimed_exit_after_stale_step();
+        let exit = Stopped::from_exit_token(pid, token.clone(), 0);
+        assert!(matches!(exit.resume(None), Err(Error::Died(_))));
+        assert_eq!(queued(handle.event()), [POST_EXIT_EXEC_STOP]);
+        assert_eq!(retired(&token), 1);
+
+        // GETEVENTMSG: ESRCH becomes Died and the capability is kept.
+        let (handle, token) = claimed_exit_after_stale_step();
+        let exit = Stopped::from_exit_token(pid, token.clone(), 0);
+        assert!(matches!(exit.getevent(), Err(Error::Died(_))));
+        assert_eq!(queued(handle.event()), [POST_EXIT_EXEC_STOP]);
+        assert_eq!(retired(&token), 1);
+        // A second ESRCH on the same capability finds nothing more to retire.
+        assert!(matches!(exit.getevent(), Err(Error::Died(_))));
+        assert_eq!(queued(handle.event()), [POST_EXIT_EXEC_STOP]);
+        assert_eq!(retired(&token), 1);
+
+        // Any other refusal leaves the prefix: the tracee may still be in the
+        // exit stop, and the retained capability is retried by its owner.
+        let (handle, token) = claimed_exit_after_stale_step();
+        let exit = Stopped::from_exit_token(pid, token.clone(), 0);
+        let (retained, errno) = exit
+            .finish_retained_resume(Err(nix::errno::Errno::EIO))
+            .expect_err("EIO is a refusal");
+        assert_eq!(errno, Errno::EIO);
+        assert_eq!(
+            queued(handle.event()),
+            [PRE_EXIT_STEP_STOP, POST_EXIT_EXEC_STOP]
+        );
+        assert_eq!(retired(&token), 0);
+        drop(retained);
+    }
+
+    /// A capability minted for an earlier exit epoch cannot retire the prefix
+    /// recorded for a later exit stop; the later capability does.
+    #[test]
+    fn exit_capability_from_an_earlier_epoch_retires_nothing() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let pid = crate::Pid::from_raw(ABSENT_PID);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let token = TraceeToken::from_event(handle.clone());
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        let first = Arc::new(ExitWaiter::default());
+        assert_eq!(event.poll_exit(&first, &waker), Poll::Ready(Ok(())));
+        assert_eq!(event.status.lock().before_exit_epoch, 0);
+        // The prefix is consumed, then a real Exec re-arms the exit stop and
+        // the replacement image queues a stop before its own exit stop.
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(PRE_EXIT_STEP_STOP))
+        );
+        event.update(POST_EXIT_EXEC_STOP);
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(POST_EXIT_EXEC_STOP))
+        );
+        let later = (libc::SIGUSR1 << 8) | 0x7f;
+        event.update(later);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.exit_epoch.load(Ordering::Acquire), 1);
+        assert_eq!(event.status.lock().before_exit_epoch, 1);
+        assert_eq!(event.status.lock().before_exit, 1);
+
+        let stale = Stopped::from_exit_token(pid, token.clone(), 0);
+        assert!(matches!(stale.resume(None), Err(Error::Died(_))));
+        let _ = Stopped::from_exit_token(pid, token.clone(), 0).into_running();
+        assert_eq!(queued(event), [later]);
+        assert_eq!(event.status.lock().retired_before_exit, 0);
+
+        let current = Stopped::from_exit_token(pid, token.clone(), 1);
+        assert!(matches!(current.resume(None), Err(Error::Died(_))));
+        assert!(queued(event).is_empty());
+        assert_eq!(event.status.lock().retired_before_exit, 1);
+    }
+
+    /// Cleanup's transfer of the claimed exit capability is also its terminal
+    /// disposition: the pre-exit prefix is retired and the Exec kept. The
+    /// unclaimed revocation retires nothing; its callers can hold a status
+    /// reservation, which would deadlock on the status lock.
+    #[test]
+    fn owned_exit_revocation_retires_only_stops_queued_before_exit() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let pid = crate::Pid::from_raw(ABSENT_PID);
+        let handle = EventHandle::new();
+        let event = handle.event();
+        let token = TraceeToken::from_event(handle.clone());
+        let cleanup = TerminalCleanup::new_unregistered(pid, &token);
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        let winner = Arc::new(ExitWaiter::default());
+        assert_eq!(event.poll_exit(&winner, &waker), Poll::Ready(Ok(())));
+        // While the capability is claimed only its owner can transfer it.
+        assert_eq!(cleanup.revoke_unclaimed_exit_stop(), Err(Errno::EALREADY));
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP]);
+        // SAFETY: this test holds no Stopped for the claimed exit stop.
+        unsafe { cleanup.revoke_owned_exit_stop() }.expect("owned revocation");
+        assert_eq!(queued(event), []);
+        assert_eq!(cleanup.retired_stops_before_exit(), 1);
+
+        // The 686 order as cleanup meets it: the Exec is queued behind the
+        // exit stop before cleanup takes the owned exit capability over.
+        let (handle, token) = claimed_exit_after_stale_step();
+        let cleanup = TerminalCleanup::new_unregistered(pid, &token);
+        // SAFETY: this test holds no Stopped for the claimed exit stop.
+        unsafe { cleanup.revoke_owned_exit_stop() }.expect("owned revocation");
+        assert_eq!(queued(handle.event()), [POST_EXIT_EXEC_STOP]);
+        assert_eq!(cleanup.retired_stops_before_exit(), 1);
+        assert_eq!(cleanup.queued_raw_statuses(), [POST_EXIT_EXEC_STOP]);
+
+        let handle = EventHandle::new();
+        let event = handle.event();
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        let token = TraceeToken::from_event(handle.clone());
+        let cleanup = TerminalCleanup::new_unregistered(pid, &token);
+        cleanup
+            .revoke_unclaimed_exit_stop()
+            .expect("unclaimed revocation");
+        assert_eq!(queued(event), [PRE_EXIT_STEP_STOP]);
+        assert_eq!(cleanup.retired_stops_before_exit(), 0);
+    }
+
+    #[test]
+    fn exit_retirement_follows_consumers_that_pop_the_prefix_first() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let event = Event::new();
+        let second = (libc::SIGUSR1 << 8) | 0x7f;
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(second);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        event.update(POST_EXIT_EXEC_STOP);
+        assert_eq!(event.status.lock().before_exit, 2);
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(PRE_EXIT_STEP_STOP))
+        );
+        assert_eq!(event.status.lock().before_exit, 1);
+        assert_eq!(event.retire_statuses_before_exit_stop(0), 1);
+        assert_eq!(queued(&event), [POST_EXIT_EXEC_STOP]);
+    }
+
+    #[test]
+    fn synchronous_exit_stop_retires_only_stops_queued_before_it() {
+        let event = Event::new();
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update_sync_status(PTRACE_EVENT_EXIT_STOP);
+        event.update(POST_EXIT_EXEC_STOP);
+        assert_eq!(
+            queued(&event),
+            [PTRACE_EVENT_EXIT_STOP, POST_EXIT_EXEC_STOP]
+        );
+        assert_eq!(event.status.lock().retired_before_exit, 1);
+        assert_eq!(event.status.lock().before_exit, 0);
+
+        let reservation = event
+            .try_status_reservation_sync()
+            .expect("queued synchronous exit stop is reservable")
+            .expect("queued synchronous exit stop is not ECHILD");
+        assert_eq!(reservation.status, PTRACE_EVENT_EXIT_STOP);
+        reservation.commit();
+        assert_eq!(queued(&event), [POST_EXIT_EXEC_STOP]);
+    }
+
+    #[test]
+    fn exit_retirement_keeps_a_prefix_that_records_lifecycle_state() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let clone = (libc::PTRACE_EVENT_CLONE << 16) | (libc::SIGTRAP << 8) | 0x7f;
+
+        let event = Event::new();
+        event.update(PRE_EXIT_STEP_STOP);
+        event.update(clone);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.retire_statuses_before_exit_stop(0), 0);
+        assert_eq!(queued(&event), [PRE_EXIT_STEP_STOP, clone]);
+        assert_eq!(event.status.lock().retired_before_exit, 0);
+        assert_eq!(
+            event.poll_status(&waker),
+            Poll::Ready(Ok(PRE_EXIT_STEP_STOP))
+        );
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(clone)));
+        assert_eq!(event.status.lock().before_exit, 0);
+
+        let event = Event::new();
+        event.update(clone);
+        event.update_sync_status(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(queued(&event), [clone, PTRACE_EVENT_EXIT_STOP]);
+        assert_eq!(event.status.lock().retired_before_exit, 0);
+    }
+
+    /// Races the exit publication against a consumer popping the pre-exit
+    /// prefix, and the retirement against pushes queued after the exit stop.
+    /// Every iteration must retire exactly the pre-exit statuses the consumer
+    /// did not take, and keep every later status in order.
+    #[test]
+    fn exit_retirement_races_consumers_and_later_pushes_without_losing_a_later_status() {
+        const ITERATIONS: usize = 4000;
+        const PRE: usize = 6;
+        const POST: i32 = 6;
+        let pre = (libc::SIGUSR1 << 8) | 0x7f;
+        let post: Vec<i32> = (0..POST)
+            .map(|index| ((0x40 + index) << 16) | (libc::SIGUSR2 << 8) | 0x7f)
+            .collect();
+        let mut retired_total = 0;
+        let mut consumed_total = 0;
+        for _ in 0..ITERATIONS {
+            let event = Event::new();
+            let barrier = std::sync::Barrier::new(3);
+            let producer_done = AtomicBool::new(false);
+            let resumer_done = AtomicBool::new(false);
+            let (consumed, retired) = std::thread::scope(|scope| {
+                let producer = scope.spawn(|| {
+                    barrier.wait();
+                    for _ in 0..PRE {
+                        event.update(pre);
+                    }
+                    event.update(PTRACE_EVENT_EXIT_STOP);
+                    for &status in &post {
+                        event.update(status);
+                    }
+                    producer_done.store(true, Ordering::Release);
+                });
+                let resumer = scope.spawn(|| {
+                    barrier.wait();
+                    // The capability becomes claimable only once the exit
+                    // stop is fully published, as for a real ExitFuture.
+                    while event.exit_capability.load(Ordering::Acquire) != EXIT_CAP_AVAILABLE {
+                        std::hint::spin_loop();
+                    }
+                    let retired = event.retire_statuses_before_exit_stop(0);
+                    resumer_done.store(true, Ordering::Release);
+                    retired
+                });
+                let consumer = scope.spawn(|| {
+                    barrier.wait();
+                    let mut consumed = 0;
+                    loop {
+                        match event.try_status_reservation_sync() {
+                            Some(Ok(reservation)) if reservation.status == pre => {
+                                reservation.commit();
+                                consumed += 1;
+                            }
+                            Some(_) => break,
+                            None => {
+                                if producer_done.load(Ordering::Acquire)
+                                    && resumer_done.load(Ordering::Acquire)
+                                {
+                                    break;
+                                }
+                                std::hint::spin_loop();
+                            }
+                        }
+                    }
+                    consumed
+                });
+                producer.join().unwrap();
+                (consumer.join().unwrap(), resumer.join().unwrap())
+            });
+            assert_eq!(
+                queued(&event),
+                post,
+                "a status queued after the exit stop was lost"
+            );
+            assert_eq!(
+                consumed + retired,
+                PRE,
+                "a pre-exit status was retired twice or kept"
+            );
+            assert_eq!(event.status.lock().retired_before_exit, retired as u64);
+            assert_eq!(event.status.lock().before_exit, 0);
+            retired_total += retired;
+            consumed_total += consumed;
+        }
+        eprintln!(
+            "exit retirement race: iterations={ITERATIONS} consumed={consumed_total} retired={retired_total}"
+        );
+        assert!(
+            retired_total > 0 && consumed_total > 0,
+            "the race never interleaved consumption and retirement"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
