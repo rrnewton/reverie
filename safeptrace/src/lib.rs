@@ -242,6 +242,19 @@ impl Event {
                 // identifies the executing thread's former TID; it is not a
                 // newly allocated PID or a terminal status for that thread.
                 let former_tid = Pid::from_raw(task.getevent()? as i32);
+                // Only a task in its exec stop reports that message. A fatal
+                // signal takes a tracee out of any stop without a tracer
+                // request, into its exit stop, whose message is the exit
+                // code. PTRACE_GETSIGINFO after GETEVENTMSG confirms the task
+                // was still in its exec stop when the message was read: the
+                // task never returns to an exec stop once it has left it, so
+                // an exec-stop si_code here proves the message above is the
+                // former TID. Any other si_code, or ESRCH, is a death under
+                // ptrace: this status names a stop the tracee has left.
+                let siginfo = task.getsiginfo()?;
+                if siginfo.si_code != libc::SIGTRAP | (libc::PTRACE_EVENT_EXEC << 8) {
+                    return Err(Error::Died(Zombie::from_token(task.0, task.1.clone())));
+                }
                 Ok(Self::Exec(former_tid))
             }
             libc::PTRACE_EVENT_VFORK_DONE => Ok(Self::VforkDone),
