@@ -1696,13 +1696,17 @@ impl UserMemory {
     /// Invalid and protected addresses remain PROT_NONE so the actual syscall
     /// decides whether it needs to touch them, including at EOF or zero count.
     pub(crate) fn writable_alias(&self, address: u64, length: usize) -> Result<UserWriteAlias<'_>> {
-        self.memory.with_copy(|copy| {
-            let retained = self
-                .memory
+        // Retire the short copy before taking either alias lock: retirement
+        // notifies subscribers synchronously and their wakers may read memory.
+        // The retained operand still prevents a mapping-generation change.
+        let retained = self.memory.with_copy(|copy| {
+            self.memory
                 .mapping
                 .entry_gate
                 .retain_operand(copy)
-                .map_err(|failure| failure.error())?;
+                .map_err(|failure| failure.error())
+        })?;
+        let result = (|| {
             // Match permission-aware copyout's lock order. Keeping both guards
             // through the syscall prevents stale mprotect/munmap permissions
             // and simultaneous Rust dereferences of kernel-written memory.
@@ -1824,7 +1828,12 @@ impl UserMemory {
                 _permissions: permissions,
                 _retained: retained,
             })
-        })
+        })();
+        // Retirement's wake may have poisoned the gate before construction.
+        // Preserve poison precedence over both success and preparation errors;
+        // dropping the result releases alias locks before its retained token.
+        self.memory.check_copy_failure()?;
+        result
     }
 
     fn host_operand_admitted(
@@ -4733,6 +4742,312 @@ mod tests {
                 .copy_to_user_prefix(2 * PAGE_SIZE as u64, b"x")
                 .is_err()
         );
+    }
+
+    mod writable_alias_notification_tests {
+        use std::future::Future;
+        use std::task::Context;
+        use std::task::Wake;
+        use std::task::Waker;
+
+        use super::*;
+
+        enum WakeAction {
+            SetWritable(bool),
+            Poison(Arc<Error>),
+        }
+
+        #[derive(Debug)]
+        struct Observation {
+            copies: usize,
+            retained: usize,
+            permissions_available: bool,
+            host_access_available: bool,
+            read: Option<Result<[u8; 4]>>,
+        }
+
+        struct ObserveAliasWake {
+            memory: GuestMemory,
+            action: Mutex<Option<WakeAction>>,
+            observations: Mutex<Vec<Observation>>,
+        }
+
+        impl Wake for ObserveAliasWake {
+            fn wake(self: Arc<Self>) {
+                self.wake_by_ref();
+            }
+
+            fn wake_by_ref(self: &Arc<Self>) {
+                let state = self.memory.entry_gate().test_state();
+                let permissions_available = !matches!(
+                    self.memory.mapping.address_space.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                );
+                let host_access_available = !matches!(
+                    self.memory.mapping.slice.backing.host_access.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                );
+                // Do not hang the baseline: record lock contention instead of
+                // reentering a mutex held by the notifying thread. On the fixed
+                // path this performs a real public GuestMemory read. Both
+                // try_lock temporaries have retired before that operation.
+                // Unwinding may poison an unlocked mutex; the real read then
+                // observes the already-retained gate failure before locking.
+                let read = if permissions_available && host_access_available {
+                    let mut bytes = [0; 4];
+                    Some(self.memory.read(0, &mut bytes).map(|()| bytes))
+                } else {
+                    None
+                };
+                self.observations.lock().unwrap().push(Observation {
+                    copies: state.copies,
+                    retained: state.retained_operands,
+                    permissions_available,
+                    host_access_available,
+                    read,
+                });
+                // No observation lock crosses a permission update or poison,
+                // which can itself notify another registered subscriber.
+                let action = if permissions_available && host_access_available {
+                    self.action.lock().unwrap().take()
+                } else {
+                    None
+                };
+                match action {
+                    Some(WakeAction::SetWritable(writable)) => self
+                        .memory
+                        .map_user_permissions(0, PAGE_SIZE as u64, true, writable)
+                        .unwrap(),
+                    Some(WakeAction::Poison(cause)) => {
+                        self.memory
+                            .entry_gate()
+                            .poison(self.memory.entry_origin(), Error::SharedFailure(cause));
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        fn fixture(writable: bool) -> GuestMemory {
+            let memory = GuestMemory::new(0, PAGE_SIZE).unwrap();
+            memory.write_raw(0, &[0xa5; PAGE_SIZE]).unwrap();
+            memory
+                .map_user_permissions(0, PAGE_SIZE as u64, true, writable)
+                .unwrap();
+            memory.enable_user_access();
+            memory
+        }
+
+        fn probe(memory: &GuestMemory, action: Option<WakeAction>) -> Arc<ObserveAliasWake> {
+            Arc::new(ObserveAliasWake {
+                memory: memory.clone(),
+                action: Mutex::new(action),
+                observations: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn assert_preparation_notification(probe: &ObserveAliasWake) {
+            let observations = probe.observations.lock().unwrap();
+            assert_eq!(observations.len(), 1, "{observations:?}");
+            let observed = &observations[0];
+            assert_eq!(observed.copies, 0);
+            assert_eq!(observed.retained, 1);
+            assert!(observed.permissions_available, "{observed:?}");
+            assert!(observed.host_access_available, "{observed:?}");
+            assert_eq!(
+                observed
+                    .read
+                    .as_ref()
+                    .expect("reentrant read was not attempted")
+                    .as_ref()
+                    .unwrap(),
+                &[0xa5; 4]
+            );
+            assert!(probe.action.lock().unwrap().is_none());
+        }
+
+        fn assert_retired(memory: &GuestMemory) {
+            let state = memory.entry_gate().test_state();
+            assert_eq!(state.copies, 0);
+            assert_eq!(state.retained_operands, 0);
+            assert!(memory.mapping.address_space.try_lock().is_ok());
+            assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
+            assert_eq!(Arc::strong_count(&memory.mapping.slice.backing), 1);
+        }
+
+        #[test]
+        fn successful_preparation_notifies_before_alias_locks() {
+            for (address, length) in [(u64::MAX, 0), (3, 17)] {
+                let memory = fixture(true);
+                let mapping = Arc::downgrade(&memory.mapping);
+                let generation = memory.entry_gate().test_state().generation;
+                let probe = probe(&memory, None);
+                let waker = Waker::from(probe.clone());
+                // This is the same subscription used by the checked Tool
+                // driver's private-failure future before polling its callback.
+                let watch = crate::entry::driver::EntryDriverWatch::for_memory(&memory);
+                let mut changed = Box::pin(watch.wait());
+                assert!(
+                    changed
+                        .as_mut()
+                        .poll(&mut Context::from_waker(&waker))
+                        .is_pending()
+                );
+                let user = memory.user();
+                let alias = user.writable_alias(address, length).unwrap();
+                assert_eq!(memory.entry_gate().test_state().copies, 0);
+                assert_eq!(memory.entry_gate().test_state().retained_operands, 1);
+                assert_eq!(memory.entry_gate().test_state().generation, generation);
+                assert!(memory.mapping.address_space.try_lock().is_err());
+                assert!(memory.mapping.slice.backing.host_access.try_lock().is_err());
+                alias.finish().unwrap();
+                assert_preparation_notification(&probe);
+                assert_retired(&memory);
+                let mut actual = [0; PAGE_SIZE];
+                memory.read(0, &mut actual).unwrap();
+                assert_eq!(actual, [0xa5; PAGE_SIZE]);
+                drop(changed);
+                drop(watch);
+                drop(waker);
+                drop(probe);
+                drop(user);
+                drop(memory);
+                assert!(mapping.upgrade().is_none());
+            }
+        }
+
+        #[test]
+        fn preparation_uses_permissions_changed_by_notification() {
+            for writable in [false, true] {
+                let memory = fixture(!writable);
+                let probe = probe(&memory, Some(WakeAction::SetWritable(writable)));
+                let waker = Waker::from(probe.clone());
+                let watch = crate::entry::driver::EntryDriverWatch::for_memory(&memory);
+                let mut changed = Box::pin(watch.wait());
+                assert!(
+                    changed
+                        .as_mut()
+                        .poll(&mut Context::from_waker(&waker))
+                        .is_pending()
+                );
+                let zero = std::fs::File::open("/dev/zero").unwrap();
+                let user = memory.user();
+                let alias = user.writable_alias(3, 1).unwrap();
+                // SAFETY: the alias owns this kernel destination until finish;
+                // protected pages are deliberately inaccessible to the kernel.
+                let copied = unsafe { libc::read(zero.as_raw_fd(), alias.address(), 1) };
+                let errno = io::Error::last_os_error().raw_os_error();
+                alias.finish().unwrap();
+                assert_preparation_notification(&probe);
+                assert_retired(&memory);
+                if writable {
+                    assert_eq!(copied, 1);
+                } else {
+                    assert_eq!(copied, -1);
+                    assert_eq!(errno, Some(libc::EFAULT));
+                }
+                let mut actual = [0; PAGE_SIZE];
+                memory.read(0, &mut actual).unwrap();
+                let mut expected = [0xa5; PAGE_SIZE];
+                if writable {
+                    expected[3] = 0;
+                }
+                assert_eq!(actual, expected);
+            }
+        }
+
+        #[test]
+        fn preparation_preserves_poison_from_notification() {
+            for length in [0, 1, usize::MAX] {
+                let memory = fixture(true);
+                let cause = Arc::new(Error::UnexpectedVcpuExit(
+                    "alias preparation notification poison".to_owned(),
+                ));
+                let probe = probe(&memory, Some(WakeAction::Poison(cause.clone())));
+                let waker = Waker::from(probe.clone());
+                let watch = crate::entry::driver::EntryDriverWatch::for_memory(&memory);
+                let mut changed = Box::pin(watch.wait());
+                assert!(
+                    changed
+                        .as_mut()
+                        .poll(&mut Context::from_waker(&waker))
+                        .is_pending()
+                );
+                let user = memory.user();
+                let error = user
+                    .writable_alias(3, length)
+                    .err()
+                    .expect("poison became success");
+                assert!(error.retains_primary(&cause), "{error}");
+                assert!(
+                    memory
+                        .entry_gate()
+                        .pending_failure()
+                        .unwrap()
+                        .error()
+                        .retains_primary(&cause)
+                );
+                assert_preparation_notification(&probe);
+                assert_retired(&memory);
+            }
+        }
+
+        #[test]
+        fn unwinding_alias_releases_locks_before_retained_notification() {
+            let memory = fixture(true);
+            let user = memory.user();
+            let alias = user.writable_alias(3, 1).unwrap();
+            let probe = probe(&memory, None);
+            let waker = Waker::from(probe.clone());
+            let watch = crate::entry::driver::EntryDriverWatch::for_memory(&memory);
+            let mut changed = Box::pin(watch.wait());
+            assert!(
+                changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _alias = alias;
+                panic!("controlled alias unwind");
+            }));
+            assert!(result.is_err());
+            let observations = probe.observations.lock().unwrap();
+            assert_eq!(observations.len(), 1, "{observations:?}");
+            let observed = &observations[0];
+            assert_eq!((observed.copies, observed.retained), (0, 0));
+            assert!(
+                observed.permissions_available && observed.host_access_available,
+                "{observed:?}"
+            );
+            let error = observed
+                .read
+                .as_ref()
+                .expect("reentrant read was not attempted")
+                .as_ref()
+                .unwrap_err();
+            assert!(matches!(
+                error.primary(),
+                Error::EntryControl {
+                    operation: "retained host operand unwound",
+                    ..
+                }
+            ));
+            let state = memory.entry_gate().test_state();
+            assert_eq!((state.copies, state.retained_operands), (0, 0));
+            // Guard destruction during unwind preserves ordinary Mutex poison.
+            // Poisoned means try_lock acquired the now-unlocked mutex, unlike
+            // WouldBlock; do not clear either mutex's poison for this control.
+            assert!(matches!(
+                memory.mapping.address_space.try_lock(),
+                Err(std::sync::TryLockError::Poisoned(_))
+            ));
+            assert!(matches!(
+                memory.mapping.slice.backing.host_access.try_lock(),
+                Err(std::sync::TryLockError::Poisoned(_))
+            ));
+            assert_eq!(Arc::strong_count(&memory.mapping.slice.backing), 1);
+        }
     }
 
     #[test]
