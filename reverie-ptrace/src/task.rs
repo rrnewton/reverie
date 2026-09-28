@@ -408,6 +408,7 @@ fn swaps_signal_mask(nr: Sysno) -> bool {
             | Sysno::epoll_pwait
             | Sysno::epoll_pwait2
             | Sysno::io_pgetevents
+            | Sysno::io_uring_enter
     )
 }
 
