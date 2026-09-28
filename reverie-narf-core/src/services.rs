@@ -140,16 +140,18 @@ pub trait KernelServices: Send + Sync {
     /// unless it ran `exit`, `exit_group`, `execve`, `execveat` or
     /// `rt_sigreturn`, or it was the guest's own syscall, which the kernel
     /// refused to run; those the core takes as the callback's terminal
-    /// transition instead. Only a syscall callback survives a parked inject, by keeping
-    /// its future until the guest's syscall is re-executed. A callback with
-    /// no guest syscall to re-execute, such as thread start or an RDTSC
-    /// event, fails closed with
+    /// transition instead. Only a syscall callback survives a parked
+    /// inject, by keeping its future until the guest's syscall is
+    /// re-executed. A callback with no guest syscall to re-execute, such as
+    /// thread start or an RDTSC event, fails closed with
     /// [`NarfFatal::InjectParked`](crate::NarfFatal::InjectParked).
     ///
     /// The core also asks at the end of every RDTSC callback whose task was
     /// not killed during a wait. For a task that is ending, a callback that
-    /// ends without a value returns `RdtscOutcome::ContextManaged`;
-    /// otherwise it fails closed (see `NarfToolHost::handle_rdtsc`).
+    /// ends without a value because the Tool failed with an errno, or an
+    /// inject or tail inject ended the task, returns
+    /// `RdtscOutcome::ContextManaged`; `NarfToolHost::handle_rdtsc` lists the
+    /// failures that still end the run, for an ending task or not.
     ///
     /// The default answers `false`. A kernel that delivers RDTSC events must
     /// answer in its RDTSC callbacks (see `NarfToolHost::new_delivering_rdtsc`).
