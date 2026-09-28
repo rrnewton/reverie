@@ -3729,11 +3729,6 @@ impl ElfExecutor {
         self.clear_child_tid = address;
     }
 
-    #[cfg(any(test, feature = "native-test-support"))]
-    pub(crate) fn child_exit_policy(&self) -> Arc<AtomicBool> {
-        self.sigchld_auto_reap.clone()
-    }
-
     #[cfg(test)]
     pub(crate) fn child_completion(&self, status: ExitStatus) -> ChildCompletion {
         ChildCompletion::from_waitability(status, !self.sigchld_auto_reap.load(Ordering::SeqCst))
@@ -5994,6 +5989,25 @@ impl ElfExecutor {
             self.signal_registry
                 .record_process_failure(self.admitted_signal_identity().process);
         }
+    }
+
+    /// Consume only the exact group decision that cancelled this live wait.
+    /// The Tool callback may have been destroyed since the initial selection;
+    /// stale identity or a newly failed process must still refuse clean exit.
+    pub(crate) fn validate_child_wait_group_exit(&self, status: ExitStatus) -> crate::Result<()> {
+        if wait_group_exit_status(&self.state) == Some(status) {
+            Ok(())
+        } else {
+            Err(crate::Error::RunAborted)
+        }
+    }
+
+    pub(crate) fn retire_child_wait_group_exit(
+        &mut self,
+        status: ExitStatus,
+    ) -> crate::Result<ProcessExit> {
+        self.validate_child_wait_group_exit(status)?;
+        Ok(self.retire_current_thread(status, true))
     }
 
     pub(crate) fn process_exit_status(&self) -> Option<ExitStatus> {
@@ -17932,6 +17946,25 @@ fn wait4_options_supported(raw: u64) -> bool {
     options & !(libc::WNOHANG | libc::WUNTRACED) == 0
 }
 
+fn wait_group_exit_status(state: &LoadedStaticElf) -> Option<ExitStatus> {
+    let identity = state.children.task_identity().ok()?;
+    if identity.tid.as_raw() != state.tid || identity.process.tgid.as_raw() != state.pid {
+        return None;
+    }
+    state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .live_task_group_exit_status(identity)
+}
+
+fn parent_terminated_wait(state: &LoadedStaticElf) -> crate::Result<i64> {
+    Err(match wait_group_exit_status(state) {
+        Some(status) => crate::Error::ChildWaitGroupExit { status },
+        None => crate::Error::RunAborted,
+    })
+}
+
 fn wait4_result(
     memory: &GuestMemory,
     state: &mut LoadedStaticElf,
@@ -17949,6 +17982,7 @@ fn wait4_result(
         args[2] as libc::c_int & libc::WNOHANG != 0,
     )? {
         ChildWaitSelection::Ready(selected) => selected,
+        ChildWaitSelection::ParentTerminated => return parent_terminated_wait(state),
         ChildWaitSelection::Pending => return Ok(0),
         ChildWaitSelection::NoChild => return Ok(negative_errno(libc::ECHILD)),
     };
@@ -18094,6 +18128,7 @@ fn waitid_result(
         args[3] as libc::c_int & libc::WNOHANG != 0,
     )? {
         ChildWaitSelection::Ready(selected) => selected,
+        ChildWaitSelection::ParentTerminated => return parent_terminated_wait(state),
         ChildWaitSelection::Pending => return Ok(finish_waitid(memory, args, None, 0)),
         ChildWaitSelection::NoChild => {
             return Ok(finish_waitid(
@@ -47346,10 +47381,19 @@ mod tests {
         let status = apply_next_default_signal(&mut executor);
         assert_eq!(status, ExitStatus::Signaled(Signal::SIGABRT, false));
 
+        // The fatal signal retired `executor`; a live parent performs waits.
+        // Keep the status obtained from that real fatal transition as the ABI
+        // oracle rather than resurrecting the terminated task's family state.
+        assert!(executor.signal_task_identity().is_none());
+        let mut wait_parent = ElfExecutor::new(test_state(&dir.0), false);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        executor.state.children.insert(7, status);
+        wait_parent.state.children.insert(7, status);
         assert_eq!(
-            wait4(&mut memory, &mut executor.state, &[7, OUTPUT, 0, 0, 0, 0]),
+            wait4(
+                &mut memory,
+                &mut wait_parent.state,
+                &[7, OUTPUT, 0, 0, 0, 0]
+            ),
             7,
         );
         let mut raw_status = [0; std::mem::size_of::<libc::c_int>()];
@@ -47359,11 +47403,11 @@ mod tests {
         assert_eq!(libc::WTERMSIG(raw_status), libc::SIGABRT);
         assert!(!libc::WCOREDUMP(raw_status));
 
-        executor.state.children.insert(8, status);
+        wait_parent.state.children.insert(8, status);
         assert_eq!(
             waitid(
                 &mut memory,
-                &mut executor.state,
+                &mut wait_parent.state,
                 &[libc::P_PID as u64, 8, OUTPUT, libc::WEXITED as u64, 0, 0],
             ),
             0,

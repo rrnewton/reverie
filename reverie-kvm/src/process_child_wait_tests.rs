@@ -5,10 +5,13 @@
 
 fn ready_family_child(parent: &mut ElfExecutor, pid: i32) -> ElfExecutor {
     let mut child = parent.fork_child(pid, false, false).unwrap();
+    let child_id = identity(&child);
     child.retire_current_thread(reverie::ExitStatus::Exited(23), false);
+    assert!(child.signal_task_identity().is_none());
+    assert_eq!(child.retired_process_identity(), child_id);
     parent
         .record_child_completion(
-            identity(&child),
+            child_id,
             super::super::ChildCompletion::Waitable(reverie::ExitStatus::Exited(23)),
         )
         .unwrap();
@@ -130,7 +133,7 @@ fn sibling_waits_share_published_children_and_fault_consumption() {
                 let mut actual = [0; 8192];
                 memory.read_raw(0, &mut actual).unwrap();
                 assert_eq!(actual, expected);
-                assert_eq!(identity(&child).tgid.as_raw(), 2);
+                assert_eq!(child.retired_process_identity().tgid.as_raw(), 2);
             }
         }
     }
@@ -360,7 +363,7 @@ fn family_wait_receipt_is_exact_and_survives_parent_teardown() {
 fn old_generation_acknowledgement_cannot_consume_reused_pid() {
     let mut parent = executor();
     let child = ready_family_child(&mut parent, 2);
-    let old_id = identity(&child);
+    let old_id = child.retired_process_identity();
     let ChildWaitSelection::Ready(selected) =
         parent.state.children.select(Some(2), true, true).unwrap()
     else {
@@ -371,7 +374,7 @@ fn old_generation_acknowledgement_cannot_consume_reused_pid() {
     // The production allocator never reissues a PID. Explicit construction
     // exercises the ledger's stronger exact-generation boundary nonetheless.
     let replacement = ready_family_child(&mut parent, 2);
-    assert_ne!(identity(&replacement), old_id);
+    assert_ne!(replacement.retired_process_identity(), old_id);
     parent.state.children.acknowledge(receipt).unwrap();
     parent
         .signal_registry
@@ -458,38 +461,200 @@ fn fork_wait_domains_are_isolated_while_threads_share_one() {
 
 #[test]
 fn parent_teardown_wakes_fenced_sibling_without_republishing_child() {
-    let mut parent = outside_init_root();
-    let mut child = parent.fork_child(2, false, false).unwrap();
-    let child_id = identity(&child);
-    child.retire_current_thread(reverie::ExitStatus::Exited(23), false);
-    let slot = Arc::new(super::super::ChildCompletionSlot::default());
-    parent
-        .begin_child_wait_publication(child_id, &slot)
-        .unwrap();
-    let mut sibling = parent.thread_child(9).unwrap();
-    let waiter = std::thread::spawn(move || {
+    for group_status in [
+        reverie::ExitStatus::SUCCESS,
+        reverie::ExitStatus::Exited(37),
+        reverie::ExitStatus::Signaled(reverie::Signal::SIGTERM, false),
+    ] {
+        let mut parent = outside_init_root();
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let child_id = identity(&child);
+        child.retire_current_thread(reverie::ExitStatus::Exited(23), false);
+        let slot = Arc::new(super::super::ChildCompletionSlot::default());
+        parent
+            .begin_child_wait_publication(child_id, &slot)
+            .unwrap();
+        let mut sibling = parent.thread_child(9).unwrap();
+        let waiter = std::thread::spawn(move || {
+            let memory = GuestMemory::new(0, 4096).unwrap();
+            memory.write_raw(0, &[0xa5; 4096]).unwrap();
+            let result = sibling.execute_checked(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [2, 0x100, libc::WNOHANG as u64, 0x200, 0, 0],
+                ),
+                &memory,
+            );
+            let mut bytes = [0; 4096];
+            memory.read_raw(0, &mut bytes).unwrap();
+            assert_eq!(bytes, [0xa5; 4096], "termination is not a wait return");
+            assert!(matches!(
+                result,
+                Err(crate::Error::ChildWaitGroupExit { status }) if status == group_status
+            ));
+            assert!(sibling.state.consumed_child_wait.is_none());
+            let exit = sibling.retire_child_wait_group_exit(group_status).unwrap();
+            assert_eq!(exit.status, group_status);
+            assert!(exit.group);
+        });
+        assert!(parent.signal_registry.wait_for_guest_waiter());
+        assert!(!waiter.is_finished());
+        parent.retire_current_thread(group_status, true);
+        waiter.join().unwrap();
+        parent
+            .publish_child_wait(
+                child_id,
+                super::super::ChildCompletion::AutoReaped(reverie::ExitStatus::Exited(23)),
+                &slot,
+                true,
+            )
+            .unwrap();
+        assert!(parent.state.children.is_empty());
+        assert_eq!(parent.process_exit_status(), Some(group_status));
+    }
+}
+
+#[test]
+fn wait_group_exit_requires_live_generation_and_nonfailed_owner() {
+    for failure in [false, true] {
+        let mut parent = outside_init_root();
+        let mut sibling = parent.thread_child(9).unwrap();
+        let mut failed_peer = failure.then(|| parent.thread_child(10).unwrap());
+        let identity = sibling.state.children.task_identity().unwrap();
+        let lifecycle = sibling.state.task_lifecycle.clone();
+        assert_eq!(
+            lifecycle
+                .lock()
+                .unwrap()
+                .live_task_group_exit_status(identity),
+            None
+        );
+        parent.retire_current_thread(reverie::ExitStatus::Exited(37), true);
+        {
+            let table = lifecycle.lock().unwrap();
+            assert_eq!(
+                table.live_task_group_exit_status(identity),
+                Some(reverie::ExitStatus::Exited(37))
+            );
+            for wrong in [
+                reverie::SignalTaskIdentity {
+                    task_generation: identity.task_generation + 1,
+                    ..identity
+                },
+                reverie::SignalTaskIdentity {
+                    process: SignalProcessId {
+                        generation: identity.process.generation + 1,
+                        ..identity.process
+                    },
+                    ..identity
+                },
+                reverie::SignalTaskIdentity {
+                    tid: reverie::Pid::from_raw(99),
+                    ..identity
+                },
+            ] {
+                assert_eq!(table.live_task_group_exit_status(wrong), None);
+            }
+        }
+        if let Some(peer) = failed_peer.as_mut() {
+            peer.retire_failed_thread();
+            assert!(
+                lifecycle
+                    .lock()
+                    .unwrap()
+                    .get(identity.tid.as_raw())
+                    .is_some()
+            );
+        } else {
+            assert!(matches!(
+                sibling.retire_child_wait_group_exit(reverie::ExitStatus::SUCCESS),
+                Err(crate::Error::RunAborted)
+            ));
+            assert!(
+                sibling
+                    .retire_child_wait_group_exit(reverie::ExitStatus::Exited(37))
+                    .unwrap()
+                    .group
+            );
+        }
+        assert_eq!(
+            lifecycle
+                .lock()
+                .unwrap()
+                .live_task_group_exit_status(identity),
+            None
+        );
+        assert!(matches!(
+            sibling.retire_child_wait_group_exit(reverie::ExitStatus::Exited(37)),
+            Err(crate::Error::RunAborted)
+        ));
         let memory = GuestMemory::new(0, 4096).unwrap();
-        sibling.execute_checked(
-            &SyscallRequest::new(
-                libc::SYS_wait4 as u64,
-                [2, 0, libc::WNOHANG as u64, 0, 0, 0],
+        assert!(matches!(
+            sibling.execute_checked(
+                &SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [2, 0, libc::WNOHANG as u64, 0, 0, 0]
+                ),
+                &memory,
             ),
-            &memory,
-        )
-    });
-    assert!(parent.signal_registry.wait_for_guest_waiter());
-    parent.retire_current_thread(reverie::ExitStatus::SUCCESS, true);
-    assert!(matches!(
-        waiter.join().unwrap(),
-        Err(crate::Error::RunAborted)
-    ));
-    parent
-        .publish_child_wait(
-            child_id,
-            super::super::ChildCompletion::AutoReaped(reverie::ExitStatus::Exited(23)),
-            &slot,
-            true,
-        )
-        .unwrap();
-    assert!(parent.state.children.is_empty());
+            Err(crate::Error::RunAborted)
+        ));
+    }
+}
+
+#[test]
+fn committed_wait_failure_precedes_clean_parent_group_exit() {
+    // Exercise production family mutations, not an invented final-state map.
+    for failure_kind in [0, 1, 2] {
+        let mut parent = outside_init_root();
+        let global = Arc::new(());
+        let run = crate::failure::RunFailure::new(&global);
+        if failure_kind == 2 {
+            parent.install_signal_control(reverie::BackendSignalControlMode::ToolControlled, &run);
+        }
+        let mut child = parent.fork_child(2, false, false).unwrap();
+        let child_id = identity(&child);
+        let mut sibling = parent.thread_child(9).unwrap();
+        match failure_kind {
+            0 => parent.fail_child_wait_publication(child_id),
+            1 => child.retire_failed_thread(),
+            2 => {
+                crate::failure::FailureContext::new(
+                    run.clone(),
+                    identity(&parent).tgid,
+                    identity(&parent).tgid,
+                )
+                .publish(
+                    "group wait failure precedence",
+                    crate::Error::GuestClock("forced primary".to_owned()),
+                );
+            }
+            _ => unreachable!(),
+        }
+        parent.retire_current_thread(reverie::ExitStatus::SUCCESS, true);
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        assert!(matches!(
+            sibling.execute_checked(
+                &SyscallRequest::new(
+                    libc::SYS_waitid as u64,
+                    [libc::P_PID as u64, 2, 0, libc::WEXITED as u64, 0, 0]
+                ),
+                &memory,
+            ),
+            Err(crate::Error::RunAborted)
+        ));
+        assert!(sibling.state.consumed_child_wait.is_none());
+        if failure_kind == 0 {
+            assert_eq!(
+                parent
+                    .signal_registry
+                    .family
+                    .lock()
+                    .unwrap()
+                    .wait_publications[&process_key(child_id)]
+                    .phase,
+                WaitPhase::Failed
+            );
+        }
+    }
 }

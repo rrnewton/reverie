@@ -4575,6 +4575,10 @@ impl KvmBackend {
                             match self.execute_static_elf_syscall(executor, &request, &self.memory)
                             {
                                 Ok(result) => result,
+                                Err(Error::ChildWaitGroupExit { status }) => {
+                                    let exit = executor.retire_child_wait_group_exit(status)?;
+                                    return self.finish_static_elf_thread(executor, exit);
+                                }
                                 Err(Error::TerminalReadCancelled) => {
                                     let exit = match self.guest_thread_group_exit_status() {
                                         Some(status) => {
@@ -7351,10 +7355,17 @@ mod tests {
                 &executor, 4, None, None, None, None, false, false, false, None,
             )
             .unwrap();
+        let child_id = child.executor.signal_task_identity().unwrap().process;
         executor.retire_current_thread(ExitStatus::Exited(1), false);
         child
             .executor
             .retire_current_thread(ExitStatus::Exited(7), false);
+        assert!(matches!(
+            child.executor.process_family_exit().unwrap(),
+            crate::executor::ProcessFamilyExit::ReapedByNamespaceInit {
+                status: ExitStatus::Exited(7)
+            }
+        ));
         let result = parent.finish_forked_process(
             &mut executor,
             child,
@@ -7362,6 +7373,10 @@ mod tests {
             b"orphan out".to_vec(),
             b"orphan err".to_vec(),
         );
+        executor
+            .state
+            .children
+            .assert_namespace_reaped_child_for_test(child_id, ExitStatus::Exited(7));
         (result, executor)
     }
 
@@ -7374,17 +7389,25 @@ mod tests {
             (b"orphan out".to_vec(), b"orphan err".to_vec()),
             "a detached child's output still reaches the run",
         );
-        let memory = GuestMemory::new(0, 4096).unwrap();
         assert_eq!(
-            executor.execute(
-                &SyscallRequest::new(
-                    libc::SYS_wait4 as u64,
-                    [4, 0, libc::WNOHANG as u64, 0, 0, 0],
-                ),
-                &memory,
-            ),
-            -i64::from(libc::ECHILD),
+            executor.state.children.get(&4),
+            None,
             "init reaped the child, so its former parent has nothing to wait for",
+        );
+        assert!(executor.signal_task_identity().is_none());
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        assert!(
+            matches!(
+                executor.execute_checked(
+                    &SyscallRequest::new(
+                        libc::SYS_wait4 as u64,
+                        [4, 0, libc::WNOHANG as u64, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                Err(Error::RunAborted)
+            ),
+            "a terminal caller cannot issue another guest wait"
         );
     }
 

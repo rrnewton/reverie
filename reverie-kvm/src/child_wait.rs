@@ -59,6 +59,8 @@ pub(crate) enum ChildWaitSelection {
     Ready(SelectedChildWait),
     Pending,
     NoChild,
+    // The executor must validate its still-live identity and committed group status.
+    ParentTerminated,
 }
 
 pub(crate) struct SelectedChildWait {
@@ -84,6 +86,10 @@ impl ChildWaitContext {
                 "KVM wait has no exact process-family context".to_owned(),
             )
         })
+    }
+
+    pub(crate) fn task_identity(&self) -> crate::Result<reverie::SignalTaskIdentity> {
+        self.bound().map(|(_, identity)| identity)
     }
 
     pub(crate) fn select(
@@ -114,10 +120,31 @@ impl ChildWaitContext {
     #[cfg(any(test, feature = "native-test-support"))]
     pub(crate) fn publish_fixture_owner(
         &self,
-        completion: super::super::ChildCompletion,
+        status: reverie::ExitStatus,
         slot: &super::super::ChildCompletionSlot,
     ) -> crate::Result<()> {
         let (registry, identity) = self.bound()?;
+        let completion = match registry.claim_child_exit(identity.process) {
+            Some(ProcessFamilyExit::Child(snapshot))
+                if snapshot.completion.child == identity.process
+                    && snapshot.completion.status == status =>
+            {
+                super::super::ChildCompletion::from_waitability(
+                    status,
+                    snapshot.completion.waitable,
+                )
+            }
+            Some(
+                ProcessFamilyExit::RunTeardownChild { status: frozen }
+                | ProcessFamilyExit::ReapedByNamespaceInit { status: frozen },
+            ) if frozen == status => super::super::ChildCompletion::AutoReaped(status),
+            family => {
+                return Err(crate::Error::UnexpectedVcpuExit(format!(
+                    "native fixture child {:?} completion {status:?} disagrees with frozen family {family:?}",
+                    identity.process,
+                )));
+            }
+        };
         registry.publish_wait_boundary(identity.process, completion, slot, false)
     }
 
@@ -171,6 +198,40 @@ impl ChildWaitContext {
                 })
                 .flatten()
             })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn assert_namespace_reaped_child_for_test(
+        &self,
+        child: SignalProcessId,
+        status: reverie::ExitStatus,
+    ) {
+        let (registry, identity) = self.bound().expect("orphan fixture has a family context");
+        let family = registry.family.lock().unwrap();
+        let parent_key = process_key(identity.process);
+        let child_key = process_key(child);
+        assert_eq!(
+            family
+                .wait_publications
+                .get(&child_key)
+                .map(|publication| (publication.parent, publication.phase,)),
+            Some((identity.process, WaitPhase::Retired)),
+        );
+        assert_eq!(
+            family.terminal.get(&child_key),
+            Some(&ProcessFamilyExit::ReapedByNamespaceInit { status }),
+        );
+        assert!(
+            !family
+                .direct_children
+                .get(&parent_key)
+                .is_some_and(|children| { children.contains_key(&child_key) }),
+            "outside init adoption must remove the former parent's exact child edge",
+        );
+        assert!(
+            !family.wait_receipts.contains_key(&(parent_key, child_key)),
+            "outside init reaping must not fabricate a traced wait receipt",
+        );
     }
 
     #[cfg(test)]
@@ -453,7 +514,7 @@ impl ProcessSignalRegistry {
             self.wait_changed.notify_all();
         }
         loop {
-            if family.wait_failed || family.terminal.contains_key(&process_key(parent)) {
+            if family.wait_failed {
                 return Err(crate::Error::RunAborted);
             }
             if family.wait_failure_notified {
@@ -469,6 +530,38 @@ impl ProcessSignalRegistry {
                     self.wait_changed.notify_all();
                 }
                 continue;
+            }
+            if let Some(exit) = family.terminal.get(&process_key(parent)) {
+                if !matches!(
+                    exit,
+                    ProcessFamilyExit::Root
+                        | ProcessFamilyExit::Child(_)
+                        | ProcessFamilyExit::RunTeardownChild { .. }
+                        | ProcessFamilyExit::ReapedByNamespaceInit { .. }
+                ) {
+                    return Err(crate::Error::RunAborted);
+                }
+                // A clean parent exit does not erase an already committed
+                // child publication/family failure. Check all relevant children
+                // before returning terminal control, even if one was ready.
+                for (child, publication) in &family.wait_publications {
+                    if publication.parent != parent || requested.is_some_and(|pid| pid != child.0) {
+                        continue;
+                    }
+                    if publication.phase == WaitPhase::Failed
+                        || family.terminal.get(child).is_some_and(|exit| {
+                            !matches!(
+                                exit,
+                                ProcessFamilyExit::Child(_)
+                                    | ProcessFamilyExit::RunTeardownChild { .. }
+                                    | ProcessFamilyExit::ReapedByNamespaceInit { .. }
+                            )
+                        })
+                    {
+                        return Err(crate::Error::RunAborted);
+                    }
+                }
+                return Ok(ChildWaitSelection::ParentTerminated);
             }
             let mut pending = false;
             let mut fenced = false;
@@ -589,10 +682,10 @@ impl ProcessSignalRegistry {
 
     pub(crate) fn fail_child_wait(&self, child: SignalProcessId) {
         let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(publication) = family.wait_publications.get_mut(&process_key(child)) {
-            if !matches!(publication.phase, WaitPhase::Consumed | WaitPhase::Retired) {
-                publication.phase = WaitPhase::Failed;
-            }
+        if let Some(publication) = family.wait_publications.get_mut(&process_key(child))
+            && !matches!(publication.phase, WaitPhase::Consumed | WaitPhase::Retired)
+        {
+            publication.phase = WaitPhase::Failed;
         }
         self.wait_changed.notify_all();
     }

@@ -218,7 +218,7 @@ impl ProcessFamilyState {
         self.reparented.insert(process);
         for publication in self.wait_publications.values_mut() {
             if process_key(publication.parent) == process
-                && publication.phase != WaitPhase::Consumed
+                && !matches!(publication.phase, WaitPhase::Consumed | WaitPhase::Failed)
             {
                 publication.phase = WaitPhase::Retired;
             }
@@ -430,10 +430,10 @@ impl ProcessSignalRegistry {
             .terminal
             .insert(process_family_key, ProcessFamilyExit::Failed);
         family.namespace_orphans.remove(&process_family_key);
-        if let Some(publication) = family.wait_publications.get_mut(&process_family_key) {
-            if publication.phase != WaitPhase::Consumed {
-                publication.phase = WaitPhase::Failed;
-            }
+        if let Some(publication) = family.wait_publications.get_mut(&process_family_key)
+            && publication.phase != WaitPhase::Consumed
+        {
+            publication.phase = WaitPhase::Failed;
         }
         self.wait_changed.notify_all();
         if let Some(parent) = parent {
@@ -4493,12 +4493,34 @@ mod tests {
             const { std::cell::RefCell::new(None) };
     }
 
+    /// Retire the actual fork generation at this fixture's publication boundary.
+    /// Host-thread ownership remains live until the existing turn/release/TLS
+    /// protocol completes; family readiness alone never proves physical join.
+    fn publish_owned_fixture_child(
+        child: &Arc<Mutex<ElfExecutor>>,
+        slot: &super::super::ChildCompletionSlot,
+    ) {
+        let mut child = child.lock().unwrap();
+        let child_id = child.retired_process_identity();
+        let status = child
+            .retire_current_thread(reverie::ExitStatus::Exited(3), false)
+            .status;
+        assert!(child.signal_task_identity().is_none());
+        assert_eq!(status, reverie::ExitStatus::Exited(3));
+        child
+            .fixture_child_wait_context()
+            .publish_fixture_owner(status, slot)
+            .unwrap();
+        assert_eq!(child.retired_process_identity(), child_id);
+    }
+
     /// A child whose remaining work, like a Tool exit hook, needs a turn from
     /// a scheduler that only the exiting root's own executor polls, as Hermit's
     /// is. It needs the turn whether its gate starts or cancels it, and before
     /// or after publishing its status.
     /// The thread holds `lifetime` until its turn is granted.
     fn co_scheduled_child_thread(
+        child: Arc<Mutex<ElfExecutor>>,
         turns: TurnRequests,
         published_first: Option<std::sync::mpsc::Sender<()>>,
         lifetime: Arc<()>,
@@ -4513,11 +4535,7 @@ mod tests {
         let published = slot.clone();
         let handle = super::super::ChildThread::spawn(move || {
             started.recv().unwrap();
-            let publish = || {
-                assert!(published.publish(super::super::ChildCompletion::AutoReaped(
-                    reverie::ExitStatus::Exited(3),
-                )));
-            };
+            let publish = || publish_owned_fixture_child(&child, &published);
             if let Some(announce) = &published_first {
                 publish();
                 announce.send(()).unwrap();
@@ -4581,10 +4599,13 @@ mod tests {
         let mut root = outside_init_root();
         let mut children = Vec::new();
         if !matches!(direct, RootChild::None) {
-            children.push(root.fork_child(6, false, false).unwrap());
+            children.push(Arc::new(Mutex::new(
+                root.fork_child(6, false, false).unwrap(),
+            )));
             let (announce, announced) = std::sync::mpsc::channel();
             let collected = matches!(direct, RootChild::Collected);
             let (gate, slot, handle) = co_scheduled_child_thread(
+                children.last().unwrap().clone(),
                 turns.clone(),
                 collected.then_some(announce),
                 lifetime.clone(),
@@ -4599,8 +4620,16 @@ mod tests {
             }
         }
         let mut parent = root.fork_child(7, false, false).unwrap();
-        children.push(parent.fork_child(8, false, false).unwrap());
-        let (gate, slot, handle) = co_scheduled_child_thread(turns, None, lifetime.clone(), needed);
+        children.push(Arc::new(Mutex::new(
+            parent.fork_child(8, false, false).unwrap(),
+        )));
+        let (gate, slot, handle) = co_scheduled_child_thread(
+            children.last().unwrap().clone(),
+            turns,
+            None,
+            lifetime.clone(),
+            needed,
+        );
         parent.register_child_process_with_gate(8, gate, slot, handle);
 
         // The reparenting parent hands its child over although no scheduler
@@ -4693,6 +4722,7 @@ mod tests {
     /// cancels it, holding `lifetime` until then and through the thread-local
     /// teardown that follows.
     fn released_child_thread(
+        child: Arc<Mutex<ElfExecutor>>,
         published_first: Option<std::sync::mpsc::Sender<()>>,
         lifetime: Arc<()>,
     ) -> (
@@ -4707,11 +4737,7 @@ mod tests {
         let published = slot.clone();
         let handle = super::super::ChildThread::spawn(move || {
             started.recv().unwrap();
-            let publish = || {
-                assert!(published.publish(super::super::ChildCompletion::AutoReaped(
-                    reverie::ExitStatus::Exited(3),
-                )));
-            };
+            let publish = || publish_owned_fixture_child(&child, &published);
             if let Some(announce) = &published_first {
                 publish();
                 announce.send(()).unwrap();
@@ -4767,10 +4793,15 @@ mod tests {
         // The join reaps pending children, then collected ones, then orphans.
         // It first waits for the `awaited` kind; every later kind also waits.
         if !matches!(awaited, AwaitedChild::Orphan) {
-            children.push(root.fork_child(9, false, false).unwrap());
+            children.push(Arc::new(Mutex::new(
+                root.fork_child(9, false, false).unwrap(),
+            )));
             let (announce, announced) = std::sync::mpsc::channel();
-            let (gate, slot, handle, release) =
-                released_child_thread(Some(announce), lifetime.clone());
+            let (gate, slot, handle, release) = released_child_thread(
+                children.last().unwrap().clone(),
+                Some(announce),
+                lifetime.clone(),
+            );
             root.register_child_process_with_gate(9, gate, slot, handle);
             root.start_pending_child_processes().unwrap();
             announced.recv().unwrap();
@@ -4778,14 +4809,20 @@ mod tests {
             releases.push(release);
         }
         if matches!(awaited, AwaitedChild::Pending) {
-            children.push(root.fork_child(6, false, false).unwrap());
-            let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+            children.push(Arc::new(Mutex::new(
+                root.fork_child(6, false, false).unwrap(),
+            )));
+            let (gate, slot, handle, release) =
+                released_child_thread(children.last().unwrap().clone(), None, lifetime.clone());
             root.register_child_process_with_gate(6, gate, slot, handle);
             releases.push(release);
         }
         let mut parent = root.fork_child(7, false, false).unwrap();
-        children.push(parent.fork_child(8, false, false).unwrap());
-        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        children.push(Arc::new(Mutex::new(
+            parent.fork_child(8, false, false).unwrap(),
+        )));
+        let (gate, slot, handle, release) =
+            released_child_thread(children.last().unwrap().clone(), None, lifetime.clone());
         parent.register_child_process_with_gate(8, gate, slot, handle);
         parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
         parent.join_all_child_processes().unwrap();
@@ -5032,8 +5069,9 @@ mod tests {
         let lifetime = Arc::new(());
         let mut root = outside_init_root();
         let mut parent = root.fork_child(7, false, false).unwrap();
-        let _orphan = parent.fork_child(8, false, false).unwrap();
-        let (gate, slot, mut handle, release) = released_child_thread(None, lifetime.clone());
+        let orphan = Arc::new(Mutex::new(parent.fork_child(8, false, false).unwrap()));
+        let (gate, slot, mut handle, release) =
+            released_child_thread(orphan.clone(), None, lifetime.clone());
         // Two blocking joins of the orphan panic before the third waits.
         handle.failed_joins = 2;
         parent.register_child_process_with_gate(8, gate, slot, handle);
@@ -5085,8 +5123,9 @@ mod tests {
         let lifetime = Arc::new(());
         let mut root = outside_init_root();
         let mut parent = root.fork_child(7, false, false).unwrap();
-        let _orphan = parent.fork_child(8, false, false).unwrap();
-        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        let orphan = Arc::new(Mutex::new(parent.fork_child(8, false, false).unwrap()));
+        let (gate, slot, handle, release) =
+            released_child_thread(orphan.clone(), None, lifetime.clone());
         parent.register_child_process_with_gate(8, gate, slot, handle);
         // An earlier panic poisoned the orphanage the parent's exit hands 8 to.
         {
@@ -5205,8 +5244,8 @@ mod tests {
         std::sync::mpsc::Sender<()>,
     ) {
         let mut root = outside_init_root();
-        let _child = root.fork_child(6, false, false).unwrap();
-        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        let child = Arc::new(Mutex::new(root.fork_child(6, false, false).unwrap()));
+        let (gate, slot, handle, release) = released_child_thread(child, None, lifetime.clone());
         root.register_child_process_with_gate(6, gate, slot, handle);
         let root_alive = Arc::downgrade(&root.transferred_processes);
         (root, root_alive, release)
@@ -6755,4 +6794,5 @@ mod tests {
         assert!(registry.lookup(process).is_none());
     }
     include!("process_child_wait_tests.rs");
+    include!("process_child_wait_guest_tests.rs");
 }

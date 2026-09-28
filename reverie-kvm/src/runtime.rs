@@ -130,6 +130,7 @@ enum HandlerSignal {
     ParkedCancelled(reverie::ParkedSignalFailureContext),
     ParkedRetired(reverie::ParkedSignalFailureContext),
     ThreadCancelled,
+    GroupExit(ExitStatus),
     ThreadRetired,
     TailInjected {
         result: std::result::Result<i64, Errno>,
@@ -1463,6 +1464,14 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         self.admit_ordinary_operation().await;
         let raw = match self.executor.execute(&request, &self.memory) {
             Ok(raw) => raw,
+            Err(Error::ChildWaitGroupExit { status }) => {
+                // The group exit is already committed, not a request to cancel
+                // an ordinary callback. Preserve its status across owned future
+                // destruction and terminal signal-boundary settlement.
+                self.signal_handler(HandlerSignal::GroupExit(status));
+                return std::future::pending().await;
+            }
+
             Err(Error::TerminalReadCancelled) => {
                 // Reuse the existing nonreturning cancellation disposition,
                 // including parked/dequeue ownership. No syscall result or
@@ -1817,6 +1826,7 @@ enum HandlerOutcome<T> {
     Returned(T),
     RunFailed,
     ThreadCancelled,
+    GroupExit(ExitStatus),
     ThreadRetired,
     TailInjected {
         result: std::result::Result<i64, Errno>,
@@ -1840,6 +1850,7 @@ fn map_handler_completion<T, U>(
         HandlerOutcome::ParkedRetired(value) => HandlerOutcome::ParkedRetired(value),
         HandlerOutcome::RunFailed => HandlerOutcome::RunFailed,
         HandlerOutcome::ThreadCancelled => HandlerOutcome::ThreadCancelled,
+        HandlerOutcome::GroupExit(status) => HandlerOutcome::GroupExit(status),
         HandlerOutcome::ThreadRetired => HandlerOutcome::ThreadRetired,
         HandlerOutcome::TailInjected {
             result,
@@ -1952,6 +1963,7 @@ mod handler_scratch_tests {
 enum CallbackOutcome<T> {
     Completed(T),
     ThreadCancelled,
+    GroupExit(ExitStatus),
     ThreadRetired,
 }
 
@@ -1961,6 +1973,7 @@ fn handler_signal_outcome<T>(signal: HandlerSignal) -> HandlerOutcome<T> {
         HandlerSignal::ParkedCancelled(context) => HandlerOutcome::ParkedCancelled(context),
         HandlerSignal::ParkedRetired(context) => HandlerOutcome::ParkedRetired(context),
         HandlerSignal::ThreadCancelled => HandlerOutcome::ThreadCancelled,
+        HandlerSignal::GroupExit(status) => HandlerOutcome::GroupExit(status),
         HandlerSignal::ThreadRetired => HandlerOutcome::ThreadRetired,
         HandlerSignal::TailInjected {
             result,
@@ -2436,6 +2449,10 @@ where
         match outcome {
             HandlerOutcome::Returned(Ok(())) => return Ok(CallbackOutcome::Completed(())),
             HandlerOutcome::Returned(Err(error)) => return Err(Error::PostExec(error)),
+            HandlerOutcome::GroupExit(status) => {
+                backend.prepare_wait_group_exit(executor, status, &pending_child_starts)?;
+                return Ok(CallbackOutcome::GroupExit(status));
+            }
             HandlerOutcome::ThreadCancelled => {
                 backend.start_pending_tool_children(executor, &pending_child_starts)?;
                 return Ok(CallbackOutcome::ThreadCancelled);
@@ -2616,6 +2633,10 @@ where
         HandlerOutcome::TailInjected { .. } => Err(Error::UnexpectedVcpuExit(
             "initial exec handler tail-injected without completing exec".to_owned(),
         )),
+        HandlerOutcome::GroupExit(status) => {
+            backend.prepare_wait_group_exit(executor, status, &pending_child_starts)?;
+            Ok(CallbackOutcome::GroupExit(status))
+        }
         HandlerOutcome::ThreadCancelled => {
             backend.start_pending_tool_children(executor, &pending_child_starts)?;
             Ok(CallbackOutcome::ThreadCancelled)
@@ -3739,6 +3760,31 @@ impl KvmBackend {
             .map_err(|errno| Error::Reverie(errno.into()))
     }
 
+    fn prepare_wait_group_exit(
+        &mut self,
+        executor: &mut ElfExecutor,
+        status: ExitStatus,
+        starts: &SharedChildStarts,
+    ) -> Result<()> {
+        executor.validate_child_wait_group_exit(status)?;
+        // Keep the existing nonlocal callback child-start settlement, but make
+        // the committed group cancellation visible before releasing any gate.
+        self.request_guest_thread_group_exit(status);
+        self.start_pending_tool_children(executor, starts)
+    }
+
+    fn wait_group_exit_status(
+        &self,
+        executor: &mut ElfExecutor,
+        status: ExitStatus,
+    ) -> Result<ToolProcessExit> {
+        let exit = executor.retire_child_wait_group_exit(status)?;
+        self.request_guest_thread_group_exit(exit.status);
+        // This is an actual committed group termination. The existing process
+        // finalizer settles any owned signal permit with that exact outcome.
+        Ok(exit.into())
+    }
+
     fn cancelled_tool_thread_status(&self, executor: &mut ElfExecutor) -> ToolProcessExit {
         let exit = if let Some(status) = self.guest_thread_group_exit_status() {
             executor.retire_current_thread(status, true)
@@ -4092,6 +4138,11 @@ impl KvmBackend {
                 .await?;
             match start_outcome {
                 HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                HandlerOutcome::GroupExit(_) => {
+                    return Err(Error::UnexpectedVcpuExit(
+                        "group wait exit outside a static-ELF process".to_owned(),
+                    ));
+                }
                 HandlerOutcome::ThreadCancelled => {
                     return Ok(ExitStatus::SUCCESS);
                 }
@@ -4208,6 +4259,12 @@ impl KvmBackend {
                                     }
                                     HandlerOutcome::TailInjected { result, .. } => {
                                         result_to_raw(result)
+                                    }
+                                    HandlerOutcome::GroupExit(_) => {
+                                        return Err(Error::UnexpectedVcpuExit(
+                                            "group wait exit outside a static-ELF process"
+                                                .to_owned(),
+                                        ));
                                     }
                                     HandlerOutcome::ThreadCancelled => {
                                         return Ok(ExitStatus::SUCCESS);
@@ -4529,6 +4586,7 @@ impl KvmBackend {
             if matches!(
                 pending,
                 CallbackOutcome::ThreadCancelled
+                    | CallbackOutcome::GroupExit(_)
                     | CallbackOutcome::ThreadRetired
                     | CallbackOutcome::Completed(Some(_))
             ) || executor.has_pending_exit()
@@ -4720,6 +4778,10 @@ impl KvmBackend {
                 self.start_pending_tool_children(executor, &pending_child_starts)?;
                 return Ok(CallbackOutcome::ThreadRetired);
             }
+            HandlerOutcome::GroupExit(status) => {
+                self.prepare_wait_group_exit(executor, status, &pending_child_starts)?;
+                return Ok(CallbackOutcome::GroupExit(status));
+            }
             HandlerOutcome::ThreadCancelled => {
                 self.start_pending_tool_children(executor, &pending_child_starts)?;
                 return Ok(CallbackOutcome::ThreadCancelled);
@@ -4895,6 +4957,10 @@ impl KvmBackend {
                 )
                 .await?;
             match start_outcome {
+                HandlerOutcome::GroupExit(status) => {
+                    self.prepare_wait_group_exit(executor, status, &pending_child_starts)?;
+                    return self.wait_group_exit_status(executor, status);
+                }
                 HandlerOutcome::ThreadCancelled => {
                     self.start_pending_tool_children(executor, &pending_child_starts)?;
                     return Ok(self.cancelled_tool_thread_status(executor));
@@ -4955,6 +5021,9 @@ impl KvmBackend {
                         &stack_checked_out,
                     )
                     .await?;
+                    if let CallbackOutcome::GroupExit(status) = initial_outcome {
+                        return self.wait_group_exit_status(executor, status);
+                    }
                     if matches!(initial_outcome, CallbackOutcome::ThreadCancelled) {
                         return Ok(self.cancelled_tool_thread_status(executor));
                     }
@@ -4984,6 +5053,9 @@ impl KvmBackend {
                 )
                 .await;
                 let post_exec_error = match post_exec_outcome {
+                    Ok(CallbackOutcome::GroupExit(status)) => {
+                        return self.wait_group_exit_status(executor, status);
+                    }
                     Ok(CallbackOutcome::ThreadCancelled) => {
                         return Ok(self.cancelled_tool_thread_status(executor));
                     }
@@ -5026,6 +5098,9 @@ impl KvmBackend {
                     .await?;
                 let pending = match pending {
                     CallbackOutcome::Completed(pending) => pending,
+                    CallbackOutcome::GroupExit(status) => {
+                        return self.wait_group_exit_status(executor, status);
+                    }
                     CallbackOutcome::ThreadCancelled => {
                         return Ok(self.cancelled_tool_thread_status(executor));
                     }
@@ -5245,6 +5320,15 @@ impl KvmBackend {
                                     return Err(Error::Reverie(error.into())
                                         .with_cleanup(hidden.err().into_iter().collect()));
                                 }
+                                HandlerOutcome::GroupExit(status) => {
+                                    hidden?;
+                                    self.prepare_wait_group_exit(
+                                        executor,
+                                        status,
+                                        &pending_child_starts,
+                                    )?;
+                                    return self.wait_group_exit_status(executor, status);
+                                }
                                 HandlerOutcome::ThreadCancelled => {
                                     hidden?;
                                     return Ok(self.cancelled_tool_thread_status(executor));
@@ -5334,6 +5418,9 @@ impl KvmBackend {
                             .await?;
                         let pending = match pending {
                             CallbackOutcome::Completed(pending) => pending,
+                            CallbackOutcome::GroupExit(status) => {
+                                return self.wait_group_exit_status(executor, status);
+                            }
                             CallbackOutcome::ThreadCancelled => {
                                 return Ok(self.cancelled_tool_thread_status(executor));
                             }
@@ -5412,6 +5499,9 @@ impl KvmBackend {
                             .await?;
                         let pending = match pending {
                             CallbackOutcome::Completed(pending) => pending,
+                            CallbackOutcome::GroupExit(status) => {
+                                return self.wait_group_exit_status(executor, status);
+                            }
                             CallbackOutcome::ThreadCancelled => {
                                 return Ok(self.cancelled_tool_thread_status(executor));
                             }
@@ -5628,6 +5718,14 @@ impl KvmBackend {
                                 handler_process_completed,
                                 false,
                             ),
+                            HandlerOutcome::GroupExit(status) => {
+                                self.prepare_wait_group_exit(
+                                    executor,
+                                    status,
+                                    &pending_child_starts,
+                                )?;
+                                return self.wait_group_exit_status(executor, status);
+                            }
                             HandlerOutcome::ThreadCancelled => {
                                 self.start_pending_tool_children(executor, &pending_child_starts)?;
                                 return Ok(self.cancelled_tool_thread_status(executor));
@@ -5701,6 +5799,9 @@ impl KvmBackend {
                     })?;
                     let raw = match self.execute_static_elf_syscall(executor, &request, &memory) {
                         Ok(raw) => raw,
+                        Err(Error::ChildWaitGroupExit { status }) => {
+                            return self.wait_group_exit_status(executor, status);
+                        }
                         Err(Error::TerminalReadCancelled) => {
                             return Ok(self.cancelled_tool_thread_status(executor));
                         }
@@ -5830,6 +5931,9 @@ impl KvmBackend {
                     )
                     .await;
                     let post_exec_error = match post_exec_outcome {
+                        Ok(CallbackOutcome::GroupExit(status)) => {
+                            return self.wait_group_exit_status(executor, status);
+                        }
                         Ok(CallbackOutcome::ThreadCancelled) => {
                             return Ok(self.cancelled_tool_thread_status(executor));
                         }
@@ -5875,6 +5979,9 @@ impl KvmBackend {
                     };
                     let pending = match pending {
                         CallbackOutcome::Completed(pending) => pending,
+                        CallbackOutcome::GroupExit(status) => {
+                            return self.wait_group_exit_status(executor, status);
+                        }
                         CallbackOutcome::ThreadCancelled => {
                             return Ok(self.cancelled_tool_thread_status(executor));
                         }
@@ -6867,6 +6974,7 @@ mod tests {
             }
             HandlerOutcome::RuntimeError(error) => panic!("unexpected tail refusal: {error}"),
             HandlerOutcome::TailInjected { .. } => panic!("tail injection unexpectedly ran"),
+            HandlerOutcome::GroupExit(_) => panic!("tail injection unexpectedly exited the group"),
             HandlerOutcome::ThreadCancelled => {
                 panic!("tail injection unexpectedly cancelled the thread")
             }

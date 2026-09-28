@@ -396,6 +396,26 @@ impl TaskLifecycleTable {
         (status, group_started)
     }
 
+    /// A still-live waiter may observe a peer's committed group exit before
+    /// the backend cancellation flag is published. Never grant that control to
+    /// a dead/reused task or a process whose cleanup has already failed.
+    pub(crate) fn live_task_group_exit_status(
+        &self,
+        identity: reverie::SignalTaskIdentity,
+    ) -> Option<ExitStatus> {
+        let task = self.tasks.get(&identity.tid.as_raw())?;
+        if task.generation != identity.task_generation
+            || task.tgid != identity.process.tgid.as_raw()
+            || task.process_generation != identity.process.generation
+        {
+            return None;
+        }
+        let exit = self
+            .process_exits
+            .get(&(task.tgid, task.process_generation))?;
+        if exit.failed { None } else { exit.group }
+    }
+
     pub(crate) fn process_exit_status(
         &self,
         tgid: i32,
