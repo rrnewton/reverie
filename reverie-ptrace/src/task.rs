@@ -5499,7 +5499,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             }
         });
-        let body = async move {
+        // Heap-place the child operation before the catch/completion wrappers
+        // capture it. Tokio's automatic boxing occurs after its by-value spawn
+        // entry, which can already exhaust the container's small host stack.
+        let body = Box::pin(async move {
             if ordinary_failure.is_some() {
                 return child_task
                     .run_ordinary_newborn(child, child_restore_context)
@@ -5690,7 +5693,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 Ok(exit_status) => exit_status,
             }))
-        };
+        });
         if self.ordinary_failure_enabled() {
             self.global_state.fatal_session.handed(id);
         }
