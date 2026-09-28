@@ -5336,6 +5336,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             .get_syscall(&task)
             .tracee_context(tid, "read registers at seccomp stop")?;
         let (nr, args) = syscall.into_parts();
+        // Trap-only site-table lifecycle: before the syscall runs and before
+        // any Tool code, for x86_64 and patched-site stops alike.
+        if self.trap_only.is_some()
+            && let Err(error) = self.trap_only_lifecycle(nr, &args)
+        {
+            return Err(self.trap_only_error(tid, error, "trap-only site-table lifecycle"));
+        }
         let tool_subscribed = self
             .global_state
             .subscriptions
@@ -5836,7 +5843,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             ChildOp::Fork => self.forked(child.pid()),
             ChildOp::Vfork => self.forked(child.pid()),
         };
-        child_task.trap_only = self.trap_only_new_child(&parent, op)?;
+        child_task.trap_only = self.trap_only_new_child(&parent, child.pid(), op)?;
 
         let (child_stop_tx, child_stop_rx) = mpsc::channel(1);
         child_task.gdb_stop_tx = Some(child_stop_tx);
