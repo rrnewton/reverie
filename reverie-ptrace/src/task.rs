@@ -103,6 +103,7 @@ use crate::regs::Reg;
 use crate::regs::RegAccess;
 use crate::stack::GuestStack;
 use crate::timer::HandleFailure;
+use crate::timer::OwnNotification;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
 use crate::timer::Unfinished;
@@ -2354,6 +2355,10 @@ fn set_ret(task: &Stopped, ret: Reg) -> Result<Reg, TraceError> {
 /// Late timer overflow signals discarded at injected syscalls, for tests.
 pub(crate) static LATE_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
 
+/// Live timer overflow signals taken at injected syscalls, for their events to
+/// be delivered, for tests.
+pub(crate) static LIVE_TIMER_SIGNALS_TAKEN: AtomicU64 = AtomicU64::new(0);
+
 /// Timer overflow signals discarded while the LiteInst patch helper ran, for
 /// tests.
 pub(crate) static LITEINST_HELPER_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
@@ -3033,6 +3038,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             .map_err(TraceError::Errno)
     }
 
+    /// Takes this thread's own precise-timer overflow notification that a
+    /// signal-delivery stop inside an injected syscall reports. See
+    /// [`Timer::take_overflow_signal`].
+    fn take_own_timer_notification(
+        &mut self,
+        task: &Stopped,
+    ) -> Result<Option<OwnNotification>, TraceError> {
+        let siginfo = task.getsiginfo()?;
+        self.timer
+            .take_overflow_signal(&siginfo)
+            .map_err(TraceError::Errno)
+    }
+
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
@@ -3152,7 +3170,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
 
         self.ordinary_continuation()?;
-        match event {
+        let result = match event {
             Event::Signal(sig) => self
                 .handle_signal(stopped, sig)
                 .await
@@ -3171,7 +3189,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await
                 .tracee_context(tid, "handle vfork completion stop"),
             task_state => panic!("unknown task state for tracee {}: {:?}", tid, task_state),
-        }
+        };
+        // Unless its handling disregarded it, the stop decided the timer event.
+        self.timer.settle_stop();
+        result
     }
 
     async fn get_stop_tx(&self) -> Option<(Arc<AtomicBool>, mpsc::Sender<(Pid, Suspended)>)> {
@@ -3214,6 +3235,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         let (nr, args) = syscall.into_parts();
         // AUTONOMOUS-BOT-IMPLEMENTED
         if nr == Sysno::rt_sigreturn {
+            // The trap makes no Tool callback. Before the programming passes
+            // its period it leaves the timer event as it was, and the
+            // notification, yet to come, reaches the restored context and
+            // delivers the event. Nothing of the event is continued across
+            // the context switch, so past the period, where host timing
+            // decides whether the notification is still pending, was taken
+            // as single steps began, or was lost, the event is cancelled
+            // outright. The event's fate at the trap then depends on the
+            // guest's clock relative to the programming's period, which the
+            // host CPU model's PMU skid margin places short of the target,
+            // and not on host timing or on whether overflow records are
+            // mapped.
+            self.timer.disregard_stop_before_period()?;
             return self.resume_injected_rt_sigreturn(task, &frame).await;
         }
 
@@ -3226,11 +3260,33 @@ impl<L: Tool + 'static> TracedTask<L> {
             .iter_syscalls()
             .any(|subscribed| subscribed == nr)
         {
+            // The trap makes no Tool callback, so it leaves the timer event as
+            // it was. Before the syscall, since the event's notification can
+            // arrive at the injection (`untraced_syscall`).
+            let disregarded = self.timer.disregard_stop()?;
             self.injected_syscall_frame = Some(frame_address);
             let result = self.untraced_syscall(task, nr, args).await?;
             let task = self.assume_stopped();
             self.write_injected_syscall_result(&task, result)?;
             self.injected_syscall_frame = None;
+            // What of the event nothing else will drive, the single steps
+            // toward it that the trap interrupted, a lost notification, or one
+            // the injection took, is finished at the syscall's return, where
+            // the guest would have taken the notification. A guest signal the
+            // injection held is instead delivered as the guest resumes, by
+            // the resume itself, with no stop and no Tool callback. Its
+            // handler must run before the guest's next instruction, so the
+            // steps cannot come first, and stepping into the handler is not
+            // implemented: the event is cancelled, and the Tool loses that
+            // preemption. This is a policy, not a stop's cancellation.
+            let task = match disregarded.or_else(|| self.timer.take_notification()) {
+                Some(_) if self.pending_signal.is_some() => {
+                    self.timer.retire()?;
+                    task
+                }
+                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
+                None => task,
+            };
             let signal = self.take_pending_signal_for_resume(
                 LiteinstActivationOperation::ResumeInjectedSyscall,
             )?;
@@ -4934,7 +4990,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // Cancelled and its signal's own stop would drop it. It
                     // never reaches the guest; resume the helper without it.
                     // Any other signal, one not backed by an unconsumed
-                    // overflow record, and a failure to tell still roll the
+                    // overflow record, a notification of an event that no
+                    // stop has decided (which `consume_overflow_signal` does
+                    // not match; unreachable here, since the seccomp stop was
+                    // not disregarded), and a failure to tell still roll the
                     // helper back. Without overflow records (the kernel is or
                     // may be PREEMPT_RT, or the records could not be mapped)
                     // no signal is backed by one, so an overflow raised in
@@ -6646,6 +6705,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                     if let Some(stats) = &self.global_state.backend_stats {
                         stats.record_tracee_exit();
                     }
+                    // Whether the run loop returned or the exit stop cut it
+                    // short, the thread has ended its timer event.
+                    self.timer.settle_at_exit();
                     log_guest_exit(self.tid(), self.pid(), status);
                     self.tool_exit_ordinary(status).await;
                     session.finished(&stop);
@@ -7163,6 +7225,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let Some(stats) = &self.global_state.backend_stats {
             stats.record_tracee_exit();
         }
+        // Whether the run loop returned or the exit stop cut it short, the
+        // thread has ended its timer event.
+        self.timer.settle_at_exit();
         log_guest_exit(self.tid(), self.pid(), exit_status);
 
         let tool_exit = self.tool_exit(exit_status).fuse();
@@ -7350,8 +7415,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         // A late overflow notification of the timer can be pending when the
         // step starts. Its delivery stop precedes the syscall instruction. No
         // guest branch runs during an injection, so the overflow predates the
-        // current stop, which ends the event it belongs to. The notification
-        // has nothing to deliver: discard it and step again.
+        // current stop. If that stop ended the event it belongs to, the
+        // notification has nothing to deliver: discard it and step again.
+        // If the stop was disregarded, so that no stop has decided the event
+        // (see `Timer::take_overflow_signal`), the notification is the
+        // event's own: take it, for the caller to deliver the event when the
+        // syscall returns (`Timer::take_notification`), and step again.
         //
         // A guest signal can carry the same signal number, code, and file
         // descriptor number, so a match also requires a kernel record of an
@@ -7386,7 +7455,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         while let Wait::Stopped(stopped, Event::Signal(sig)) = &wait
             && *sig == Timer::signal_type()
             && stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET
-            && self.consume_own_timer_overflow(stopped)?
+            && let Some(notification) = self.take_own_timer_notification(stopped)?
         {
             self.validate_nested_liteinst_activation_signal(
                 stopped,
@@ -7397,11 +7466,22 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ),
                 false,
             )?;
-            tracing::debug!(
-                "[{}] discarding a late timer overflow signal before an injected syscall",
-                stopped.pid()
-            );
-            LATE_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
+            match notification {
+                OwnNotification::Live => {
+                    tracing::debug!(
+                        "[{}] taking the timer event's overflow signal before an injected syscall",
+                        stopped.pid()
+                    );
+                    LIVE_TIMER_SIGNALS_TAKEN.fetch_add(1, Ordering::Relaxed);
+                }
+                OwnNotification::Late => {
+                    tracing::debug!(
+                        "[{}] discarding a late timer overflow signal before an injected syscall",
+                        stopped.pid()
+                    );
+                    LATE_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             let Wait::Stopped(stopped, _) = wait else {
                 unreachable!("the loop condition matched a stopped task")
             };

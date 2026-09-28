@@ -20,10 +20,18 @@
 //! target, the overshoot is recorded and the event is delivered at the observed
 //! counter because single stepping cannot move the guest backward. If another
 //! Tool-observable stop arrives first with the delivery point already reached,
-//! that stop cancels the event and the overshoot is recorded there. An event
-//! retired without such a stop (thread exit, a non-leader exec) or overtaken by
-//! a stop of the timer signal's own type, including a forged one, is not
-//! recorded.
+//! that stop cancels the event and the overshoot is recorded there. A stop
+//! that `Timer::disregard_stop()` hands back to the event does not cancel it;
+//! if it found the delivery point reached, the overshoot is recorded only if
+//! the thread exits before anything else decides the event. A disregarded
+//! stop that cannot hand the event back (one past the period without overflow
+//! records, or one that finds the steps' notification lost) cancels it and
+//! records the overshoot as a Tool-observable stop does, and
+//! `Timer::retire()` records one if the guest has reached the delivery point;
+//! either way an event is recorded at most once. An event that ends with its
+//! thread (thread exit, a non-leader exec) without a stop having found its
+//! delivery point reached, or that is overtaken by a stop of the timer
+//! signal's own type, including a forged one, is not recorded.
 //!
 //! Proper use of timers requires that all delivered signals of type
 //! `Timer::signal_type()` be passed through `Timer::handle_signal`, and that
@@ -112,6 +120,11 @@ static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
 /// thread's pending queue, for tests.
 pub(crate) static OVERFLOW_RECORDS_EXPIRED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+/// Timers created while this is set map no overflow records, as on a kernel
+/// that is or may be `PREEMPT_RT`, for tests.
+pub(crate) static OVERFLOW_RECORDS_DISABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Whether the running kernel may be built with `PREEMPT_RT`. A kernel whose
 /// version cannot be read counts as one.
@@ -336,16 +349,15 @@ impl PmuConfig {
     /// the target is at least one instruction, so `rcb_actual - rcb_target >=
     /// instr_offset` proves the guest got there. A stop with fewer branches
     /// past the target is not recorded, even if the delivery point was in fact
-    /// reached. `TimerImpl::observe_event` is the sole runtime caller.
+    /// reached. `TimerImpl::commit_missed`, for a stop that retires the event,
+    /// is the sole runtime caller.
     pub fn record_missed_if_target_reached(
         &self,
         rcb_actual: u64,
         rcb_target: u64,
         instr_offset: u64,
     ) -> bool {
-        let reached = rcb_actual
-            .checked_sub(rcb_target)
-            .is_some_and(|past| past >= instr_offset);
+        let reached = target_reached(rcb_actual, rcb_target, instr_offset);
         if reached {
             self.emit_skid_overshoot_marker(rcb_actual, rcb_target);
             reverie::record_skid_overshoot();
@@ -402,6 +414,15 @@ impl Default for PmuConfig {
 /// configuration. Callers should install overrides before spawning a [`crate::Tracer`].
 pub fn set_pmu_config(config: PmuConfig) -> Result<(), PmuConfig> {
     PMU_CONFIG.set(config)
+}
+
+/// Whether a stop at `rcb_actual` has reached the delivery point of a precise
+/// event `instr_offset` instructions past `rcb_target`, as far as the counter
+/// can show. See [`PmuConfig::record_missed_if_target_reached`].
+fn target_reached(rcb_actual: u64, rcb_target: u64, instr_offset: u64) -> bool {
+    rcb_actual
+        .checked_sub(rcb_target)
+        .is_some_and(|past| past >= instr_offset)
 }
 
 /// Returns true if the current CPU supports precise_ip.
@@ -583,6 +604,9 @@ impl Timer {
     /// current programming has passed its period disables the counter, which
     /// only prevents notifications of a timer event that has already been
     /// cancelled.
+    ///
+    /// A notification of an event that no stop has decided yet, which
+    /// [`Timer::take_overflow_signal`] takes, does not match.
     pub(crate) fn consume_overflow_signal(
         &mut self,
         signal: &libc::siginfo_t,
@@ -590,6 +614,69 @@ impl Timer {
         match self.inner_mut_noinit() {
             Some(timer) => timer.consume_overflow_signal(signal),
             None => Ok(false),
+        }
+    }
+
+    /// Takes this thread's own overflow notification `signal` at a stop inside
+    /// an injected syscall, which must never reach the guest.
+    ///
+    /// A notification of the active event is live if no stop has decided the
+    /// event: it is still scheduled because the stop that led to the injection
+    /// was disregarded (see [`Timer::disregard_stop`]), and the current
+    /// programming has passed its period with an overflow the kernel recorded.
+    /// Such a notification is recorded as taken, without ending the
+    /// programming, and [`Timer::take_notification`] then hands the event on
+    /// to be delivered. Any other notification this timer owns is late, and is
+    /// consumed as by [`Timer::consume_overflow_signal`]. Returns `None` for a
+    /// signal that is not this timer's notification, including every signal
+    /// when no overflow records are mapped.
+    pub(crate) fn take_overflow_signal(
+        &mut self,
+        signal: &libc::siginfo_t,
+    ) -> Result<Option<OwnNotification>, Errno> {
+        match self.inner_mut_noinit() {
+            Some(timer) => timer.take_overflow_signal(signal),
+            None => Ok(None),
+        }
+    }
+
+    /// Hands on the active event whose live notification
+    /// [`Timer::take_overflow_signal`] took, to be finished with
+    /// [`Timer::continue_stepping`] before the guest is resumed.
+    pub(crate) fn take_notification(&mut self) -> Option<Unfinished> {
+        self.inner_mut_noinit()
+            .and_then(|timer| timer.take_notification())
+    }
+
+    /// Cancels the active event, and ends the programming, where what
+    /// [`Timer::disregard_stop`] or [`Timer::take_notification`] handed on
+    /// cannot be finished. A precise event whose delivery point the guest has
+    /// reached is recorded as a skid overshoot, as a stop that cancels it is.
+    pub(crate) fn retire(&mut self) -> Result<(), Errno> {
+        match self.inner_mut_noinit() {
+            Some(timer) => timer.retire(),
+            None => Ok(()),
+        }
+    }
+
+    /// Ends the handling of the latest observed stop. If it was not
+    /// disregarded, it decided the active event, and the event is recorded as
+    /// a skid overshoot if the stop cancelled it past its delivery point.
+    pub(crate) fn settle_stop(&mut self) {
+        if let Some(timer) = self.inner_mut_noinit() {
+            timer.settle_stop();
+        }
+    }
+
+    /// Ends the handling of a thread that has exited. Settles the latest
+    /// observed stop (see [`Timer::settle_stop`]). If the latest stop was
+    /// disregarded (see [`Timer::disregard_stop`]) and found the precise
+    /// event's delivery point reached, and nothing has decided the event
+    /// since, the event ends with the thread and is recorded as a skid
+    /// overshoot.
+    pub(crate) fn settle_at_exit(&mut self) {
+        if let Some(timer) = self.inner_mut_noinit() {
+            timer.settle_at_exit();
         }
     }
 
@@ -642,7 +729,13 @@ impl Timer {
     /// ptrace event of that stop. This ensures proper cancellation semantics
     /// are observed. See the internal `timer::EventStatus` type for details.
     /// A precise event whose delivery point the guest already reached is
-    /// recorded as a skid overshoot before this stop cancels it.
+    /// recorded as a skid overshoot when this stop cancels it: when the stop
+    /// is settled (see [`Timer::settle_stop`]), a request or finalization
+    /// follows it, or the next stop is observed. A stop passed to
+    /// [`Timer::disregard_stop`] that hands the event back records nothing
+    /// unless the thread exits before anything decides the event (see
+    /// [`Timer::settle_at_exit`]); one that cancels the event instead records
+    /// it at once, as does [`Timer::retire`].
     pub fn observe_event(&mut self, event: &TraceEvent) {
         if let Some(t) = self.inner_mut_noinit() {
             t.observe_event(event);
@@ -657,13 +750,36 @@ impl Timer {
     /// Returns what of the event no timer signal is left to drive: the single
     /// steps toward it that the stop interrupted, or the whole event if the
     /// stop found that the kernel lost its PMU notification. It must be
-    /// finished with [`Timer::continue_stepping`] before the guest is resumed.
-    /// Returns `None` if there is nothing to finish, or if the event has been
-    /// requested or cancelled since the stop was observed.
+    /// finished with [`Timer::continue_stepping`] before the guest is resumed,
+    /// or cancelled with [`Timer::retire`]. Returns `None` if there is nothing
+    /// to finish, or if the event has been requested or cancelled since the
+    /// stop was observed.
+    ///
+    /// Without overflow records a lost notification cannot be told from a
+    /// pending one, so a stop at which the programming has already passed its
+    /// period, including one during the single steps, cancels the event as
+    /// any stop does, and returns `None`.
     pub(crate) fn disregard_stop(&mut self) -> Result<Option<Unfinished>, Errno> {
         match self.inner_mut_noinit() {
             Some(timer) => timer.disregard_stop(),
             None => Ok(None),
+        }
+    }
+
+    /// Disregards the latest observed stop, as [`Timer::disregard_stop`]
+    /// does, where nothing that it hands on can be finished, and keeps the
+    /// active event only if the stop came before the programming passed its
+    /// period. Otherwise the event is cancelled (see [`Timer::retire`]).
+    ///
+    /// Past the period the notification may already be pending, may have
+    /// been taken as single steps began, or may have been lost, and which of
+    /// these holds at the stop is decided by host timing. Deciding by the
+    /// guest's own clock instead gives the stop one outcome however the host
+    /// schedules the notification.
+    pub(crate) fn disregard_stop_before_period(&mut self) -> Result<(), Errno> {
+        match self.inner_mut_noinit() {
+            Some(timer) => timer.disregard_stop_before_period(),
+            None => Ok(()),
         }
     }
 
@@ -902,8 +1018,17 @@ struct TimerImpl {
     interrupted: Option<Interruption>,
 
     /// What observing the latest stop did to the active event, until the stop
-    /// is disregarded or the event is requested or cancelled.
+    /// is disregarded or settled, or the event is requested or cancelled.
     observed: Option<ObservedStop>,
+
+    /// A live notification of the active event has been taken at an injected
+    /// syscall, and the event has not yet been handed on to be delivered.
+    notification_taken: bool,
+
+    /// The delivery point of the active event that the latest disregarded
+    /// stop found already reached. No stop has decided the event since, so
+    /// the thread's exit records it (see [`TimerImpl::settle_at_exit`]).
+    disregarded_missed: Option<MissedTarget>,
 
     #[cfg(test)]
     fail_next_notification: Option<Errno>,
@@ -947,10 +1072,33 @@ enum Interruption {
 }
 
 /// The timer's state before it observed a stop.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 struct ObservedStop {
     before: EventStatus,
     interrupted: Option<Interruption>,
+    /// The delivery point of the scheduled precise event that the stop found
+    /// already reached, recorded as a skid overshoot unless the stop is
+    /// disregarded.
+    missed: Option<MissedTarget>,
+}
+
+/// A precise event whose delivery point a stop found already reached.
+#[derive(Debug, Clone)]
+struct MissedTarget {
+    clock: u64,
+    clock_target: u64,
+    offset: u64,
+    stop: String,
+}
+
+/// An overflow notification of this thread's timer, taken at an injected
+/// syscall. See [`Timer::take_overflow_signal`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum OwnNotification {
+    /// The notification of the active event, which no stop has decided.
+    Live,
+    /// A notification that nothing is left to deliver.
+    Late,
 }
 
 /// Single steps toward a precise timer event that a stop interrupted, which
@@ -1152,14 +1300,16 @@ impl TimerImpl {
         };
         // Mapped after the clock, so that it never takes this thread's clock
         // page.
-        if kernel_is_preempt_rt() {
+        if OVERFLOW_RECORDS_DISABLED.load(std::sync::atomic::Ordering::Relaxed) {
+            debug!("Timer overflow records disabled for a test");
+        } else if kernel_is_preempt_rt() {
             // PREEMPT_RT sends the notification from a kernel thread some time
             // after the record is written, so a record does not show that the
             // notification is pending.
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
                 warn!(
-                    "PREEMPT_RT kernel; late timer signals at injected syscalls will be delivered to the guest"
+                    "PREEMPT_RT kernel; late timer signals at injected syscalls will be delivered to the guest, and a stop without a Tool callback past a timer event's period cancels the event"
                 )
             });
         } else if let Err(errno) = timer.map_sample_records() {
@@ -1167,7 +1317,7 @@ impl TimerImpl {
             WARNED.call_once(|| {
                 warn!(
                     %errno,
-                    "Could not map timer overflow records; late timer signals at injected syscalls will be delivered to the guest"
+                    "Could not map timer overflow records; late timer signals at injected syscalls will be delivered to the guest, and a stop without a Tool callback past a timer event's period cancels the event"
                 )
             });
         }
@@ -1197,6 +1347,8 @@ impl TimerImpl {
             held_initial_event: None,
             interrupted: None,
             observed: None,
+            notification_taken: false,
+            disregarded_missed: None,
             #[cfg(test)]
             fail_next_notification: None,
             guest_pid,
@@ -1228,11 +1380,14 @@ impl TimerImpl {
     }
 
     /// Sets the status of a new or cancelled event. Earlier stops and steps
-    /// concern the event it replaces.
+    /// concern the event it replaces. A stop observed before the request or
+    /// cancellation was not disregarded, so it decided the old event.
     fn set_status(&mut self, status: EventStatus) {
+        self.settle_stop();
         self.timer_status = status;
         self.interrupted = None;
-        self.observed = None;
+        self.notification_taken = false;
+        self.disregarded_missed = None;
     }
 
     fn prepare_notification(&mut self, notification: u64) -> Result<(), Errno> {
@@ -1377,38 +1532,88 @@ impl TimerImpl {
         // The first stop after a request decides the event: a stop by this
         // timer's signal delivers it, and any other stop cancels it. When that
         // other stop comes after the guest already reached the delivery point,
-        // the overflow interrupt was late and the event was due first. Stops
-        // with the timer's signal number are left to `handle_signal`, which
-        // records a late delivery itself. Held initial-command requests have
-        // no physical notification to be late.
-        if self.timer_status == EventStatus::Scheduled
-            && self.initial_command == InitialCommand::Ordinary
-            && !matches!(event, TraceEvent::Signal(signal) if *signal == MARKER_SIGNAL)
-            && let ActiveEvent::Precise {
+        // the overflow interrupt was late and the event was due first. That is
+        // recorded once the stop is known to cancel the event, since a stop
+        // that `disregard_stop` hands back to the event does not. Stops with
+        // the timer's signal number are left to `handle_signal`, which records
+        // a late delivery itself. Held initial-command requests have no
+        // physical notification to be late.
+        let missed = match self.event {
+            ActiveEvent::Precise {
                 clock_target,
                 offset,
-            } = self.event
-        {
-            let ctr = self.read_clock();
-            if get_pmu_config().record_missed_if_target_reached(ctr, clock_target, offset) {
-                warn!(
-                    "Precise timer target {} + {} instructions reached before its interrupt \
-                     was handled; {:?} stop at counter {} cancels the event",
-                    clock_target, offset, event, ctr
-                );
+            } if self.timer_status == EventStatus::Scheduled
+                && self.initial_command == InitialCommand::Ordinary
+                && !matches!(event, TraceEvent::Signal(signal) if *signal == MARKER_SIGNAL) =>
+            {
+                let clock = self.read_clock();
+                target_reached(clock, clock_target, offset).then(|| MissedTarget {
+                    clock,
+                    clock_target,
+                    offset,
+                    stop: format!("{:?} stop", event),
+                })
             }
+            _ => None,
+        };
+        self.tick_observed();
+        if let Some(observed) = self.observed.as_mut() {
+            observed.missed = missed;
         }
-        self.tick_observed()
     }
 
     /// Records the event's status and any interrupted steps before a stop,
-    /// then ticks the status, as every stop does.
+    /// then ticks the status, as every stop does. The previous stop, if not
+    /// disregarded, decided the event.
     fn tick_observed(&mut self) {
+        self.settle_stop();
+        // A taken notification is handed on before the next stop, except on a
+        // path that fails before it; the stop then decides the event.
+        self.notification_taken = false;
+        // This stop decides the event unless it is disregarded too, and finds
+        // for itself whether the delivery point was reached.
+        self.disregarded_missed = None;
         self.observed = Some(ObservedStop {
             before: self.timer_status,
             interrupted: self.interrupted.take(),
+            missed: None,
         });
         self.timer_status.tick()
+    }
+
+    /// Ends the latest observed stop, which decided the event.
+    fn settle_stop(&mut self) {
+        if let Some(observed) = self.observed.take() {
+            Self::commit_missed(observed.missed);
+        }
+    }
+
+    /// Records a precise event that a stop retired past its delivery point as
+    /// a skid overshoot.
+    fn commit_missed(missed: Option<MissedTarget>) {
+        let Some(missed) = missed else {
+            return;
+        };
+        if get_pmu_config().record_missed_if_target_reached(
+            missed.clock,
+            missed.clock_target,
+            missed.offset,
+        ) {
+            warn!(
+                "Precise timer target {} + {} instructions reached before its interrupt \
+                 was handled; {} at counter {} cancels the event",
+                missed.clock_target, missed.offset, missed.stop, missed.clock
+            );
+        }
+    }
+
+    /// Ends the handling of a thread that has exited. The latest observed
+    /// stop decided the event, and so did a disregarded stop that found the
+    /// delivery point reached if nothing has decided the event since: the
+    /// event ends with the thread, undelivered past its delivery point.
+    fn settle_at_exit(&mut self) {
+        self.settle_stop();
+        Self::commit_missed(self.disregarded_missed.take());
     }
 
     fn disregard_stop(&mut self) -> Result<Option<Unfinished>, Errno> {
@@ -1416,19 +1621,128 @@ impl TimerImpl {
             return Ok(None);
         };
         match observed.interrupted {
-            None => self.timer_status = observed.before,
+            None => {
+                if !self.timer.has_sample_records() && self.current_overflow()? {
+                    // Without overflow records the notification of a
+                    // programming past its period may be pending or lost, as
+                    // host scheduling decides, and a pending one may arrive
+                    // only after the guest has run past the target. Either
+                    // way the event would fire, if at all, at a clock that
+                    // depends on the host, so the stop cancels it as a stop
+                    // the Tool observes does. A pending notification then
+                    // finds it cancelled.
+                    self.cancel_at_disregarded_stop(observed.missed);
+                    return Ok(None);
+                }
+                self.timer_status = observed.before;
+                self.disregarded_missed = observed.missed;
+            }
+            // Steps under way show that the notification came, and so that
+            // the programming passed its period. Without overflow records a
+            // stop past the period cancels the event (above), whether or not
+            // the notification came before it, which host timing decides.
+            Some(Interruption::At(_)) if !self.timer.has_sample_records() => {
+                self.cancel_at_disregarded_stop(observed.missed);
+                return Ok(None);
+            }
+            // Steps run only for an Armed event, and a missed target is found
+            // only at a Scheduled one's stop, so there is none to keep.
             Some(Interruption::At(steps)) => {
                 self.timer_status = observed.before;
                 return Ok(Some(Unfinished::Steps(steps)));
             }
             // The event cannot be taken to its target, so it stays cancelled.
-            Some(Interruption::Lost) => return Ok(None),
+            Some(Interruption::Lost) => {
+                self.cancel_at_disregarded_stop(observed.missed);
+                return Ok(None);
+            }
         }
         // Nothing else will take up an event whose notification was lost,
         // even to cancel it.
         Ok(self
             .notification_lost()?
             .then_some(Unfinished::Notification))
+    }
+
+    /// Cancels the event at a disregarded stop that cannot hand it back, as
+    /// a stop the Tool observes cancels it, and records its delivery point as
+    /// a skid overshoot if the stop found it reached. The status is set to
+    /// `Cancelled` outright rather than left at the stop's tick, which leaves
+    /// an event that was Scheduled Armed, so that a later
+    /// [`TimerImpl::retire`] of the same event does not record it again.
+    fn cancel_at_disregarded_stop(&mut self, missed: Option<MissedTarget>) {
+        Self::commit_missed(missed);
+        self.timer_status = EventStatus::Cancelled;
+    }
+
+    fn disregard_stop_before_period(&mut self) -> Result<(), Errno> {
+        // Read before the stop is disregarded, which leaves the programming
+        // as it is, like every step of the decision.
+        let passed_period = self.current_overflow()?;
+        match self.disregard_stop()? {
+            None if !passed_period => Ok(()),
+            // Single steps under way, or a lost notification, also show that
+            // the programming passed its period: steps end it.
+            _ => self.retire(),
+        }
+    }
+
+    /// Whether a notification of this timer's, received while no stop has
+    /// decided the active event, is the event's own. See
+    /// [`Timer::take_overflow_signal`]. The caller collects the overflow
+    /// records first.
+    fn live_notification(&self) -> Result<bool, Errno> {
+        Ok(self.timer_status == EventStatus::Scheduled
+            && self.overflow_recorded
+            && self.programming_overflowed
+            && self.current_overflow()?)
+    }
+
+    fn take_overflow_signal(
+        &mut self,
+        signal: &libc::siginfo_t,
+    ) -> Result<Option<OwnNotification>, Errno> {
+        if !self.owns_overflow_signal(signal) {
+            return Ok(None);
+        }
+        self.collect_overflow_records();
+        if self.live_notification()? {
+            self.mark_overflows_consumed();
+            self.notification_taken = true;
+            return Ok(Some(OwnNotification::Live));
+        }
+        Ok(self
+            .consume_overflow_signal(signal)?
+            .then_some(OwnNotification::Late))
+    }
+
+    fn take_notification(&mut self) -> Option<Unfinished> {
+        std::mem::take(&mut self.notification_taken).then_some(Unfinished::Notification)
+    }
+
+    fn retire(&mut self) -> Result<(), Errno> {
+        if self.timer_status != EventStatus::Cancelled
+            && self.initial_command == InitialCommand::Ordinary
+            && let ActiveEvent::Precise {
+                clock_target,
+                offset,
+            } = self.event
+        {
+            let clock = self.read_clock();
+            if target_reached(clock, clock_target, offset) {
+                Self::commit_missed(Some(MissedTarget {
+                    clock,
+                    clock_target,
+                    offset,
+                    stop: "a stop that cannot finish it".to_owned(),
+                }));
+            }
+        }
+        self.set_status(EventStatus::Cancelled);
+        self.send_artificial_signal = false;
+        self.cancel()?;
+        self.overflow_period = None;
+        Ok(())
     }
 
     async fn continue_stepping(
@@ -1560,7 +1874,7 @@ impl TimerImpl {
             return Ok(false);
         }
         self.collect_overflow_records();
-        if !self.overflow_recorded {
+        if !self.overflow_recorded || self.live_notification()? {
             return Ok(false);
         }
         if self.current_overflow()? {
@@ -1579,6 +1893,7 @@ impl TimerImpl {
     }
 
     pub fn finalize_requests(&mut self) {
+        self.settle_stop();
         if self.initial_command != InitialCommand::Ordinary {
             debug_assert!(!self.send_artificial_signal);
             return;
@@ -1810,9 +2125,11 @@ impl TimerImpl {
                 // (`Timer::disregard_stop`). The instruction ran if the stop
                 // moved rip or the clock. A SIGTRAP from elsewhere that
                 // arrives before the step leaves both, and one that arrives
-                // during it replaces the step's report, so the rare step whose
-                // instruction moves neither, like a jump to itself, is then
-                // not counted.
+                // during it replaces the step's report, so a step whose
+                // instruction moves neither is then not counted, and the event
+                // lands one instruction late. A `rep` string instruction does
+                // that on every iteration but its last, as does a jump to
+                // itself.
                 #[cfg(target_arch = "x86_64")]
                 Wait::Stopped(mut new_task, event) => {
                     self.interrupted = Some(
@@ -1920,6 +2237,13 @@ enum FlagsInstruction {
 
 /// The most consecutive loads of SS before an instruction that the decoder
 /// follows.
+///
+/// A step that starts at a longer chain decodes as `Other`. Should the
+/// processor run the whole chain and the `pushf`, `popf`, `iret` or `syscall`
+/// after it in that one step, the stepping's TF is not removed from where
+/// that instruction leaves it, the guest's stack, RFLAGS or r11, and the
+/// guest sees TF set; a stepped `syscall`'s report is then also taken for a
+/// trap of the guest's.
 #[cfg(target_arch = "x86_64")]
 const MAX_SS_LOADS: usize = 4;
 
@@ -2377,6 +2701,8 @@ mod tests {
                 held_initial_event: Some(event),
                 interrupted: None,
                 observed: None,
+                notification_taken: false,
+                disregarded_missed: None,
                 fail_next_notification: None,
                 // A terminal close must not try to finalize the pending kick.
                 guest_pid: Pid::from_raw(0),
@@ -2656,6 +2982,135 @@ mod tests {
     }
 
     #[test]
+    fn a_notification_of_an_undecided_event_is_taken_not_discarded() {
+        use reverie::Pid;
+
+        use super::EventStatus;
+        use super::OwnNotification;
+        use super::TimerImpl;
+        use super::Unfinished;
+        use crate::perf::do_branches;
+
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        assert_eq!(timer.timer.take_sample_records(), Some(0));
+        const PERIOD: u64 = 10_000;
+
+        // No stop has decided the event, as after a disregarded stop: the
+        // notification is the event's own. It is not discarded as late, and
+        // it is handed on exactly once.
+        timer.timer_status = EventStatus::Scheduled;
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        let notification = take_timer_signal().expect("the counter overflowed");
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert_eq!(
+            timer.take_overflow_signal(&notification),
+            Ok(Some(OwnNotification::Live))
+        );
+        assert!(matches!(
+            timer.take_notification(),
+            Some(Unfinished::Notification)
+        ));
+        assert!(timer.take_notification().is_none());
+        // Taking it did not end the programming, which delivery does.
+        assert_eq!(timer.overflow_period, Some(PERIOD));
+        // Its overflow is consumed, so a guest signal with identical siginfo
+        // is not the timer's.
+        assert_eq!(timer.take_overflow_signal(&notification), Ok(None));
+        assert!(timer.take_notification().is_none());
+
+        // A new request or cancellation drops a notification taken for the
+        // event it replaces.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert!(take_timer_signal().is_some());
+        assert_eq!(
+            timer.take_overflow_signal(&notification),
+            Ok(Some(OwnNotification::Live))
+        );
+        timer.set_status(EventStatus::Scheduled);
+        assert!(timer.take_notification().is_none());
+
+        // Once a stop has decided the event, the notification is late: it is
+        // consumed, which ends the programming, and nothing is handed on.
+        for decided in [EventStatus::Armed, EventStatus::Cancelled] {
+            timer.timer_status = decided;
+            timer.prepare_notification(PERIOD).unwrap();
+            do_branches(PERIOD * 3);
+            timer.timer.disable().unwrap();
+            assert!(take_timer_signal().is_some());
+            assert_eq!(
+                timer.take_overflow_signal(&notification),
+                Ok(Some(OwnNotification::Late))
+            );
+            assert_eq!(timer.overflow_period, None);
+            assert!(timer.take_notification().is_none());
+        }
+
+        // A programming that has not passed its period has no live
+        // notification, and an overflow of an earlier programming is late.
+        timer.timer_status = EventStatus::Scheduled;
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        timer.prepare_notification(PERIOD).unwrap();
+        assert_eq!(
+            timer.take_overflow_signal(&notification),
+            Ok(Some(OwnNotification::Late))
+        );
+        assert!(take_timer_signal().is_some());
+        assert!(timer.take_notification().is_none());
+
+        // Nor does a programming that passed its period without an overflow
+        // interrupt, even while an earlier programming's overflow is recorded
+        // and unconsumed: the notification is the earlier programming's.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        timer.prepare_notification(PERIOD).unwrap();
+        timer
+            .timer
+            .set_period(crate::perf::PerfCounter::DISABLE_SAMPLE_PERIOD)
+            .unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert_eq!(timer.current_overflow(), Ok(true));
+        let earlier = take_timer_signal().expect("the earlier programming overflowed");
+        assert_eq!(
+            timer.take_overflow_signal(&earlier),
+            Ok(Some(OwnNotification::Late))
+        );
+        assert!(take_timer_signal_now().is_none());
+        assert!(timer.take_notification().is_none());
+
+        // Without records nothing is the timer's, so nothing is taken.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert!(take_timer_signal().is_some());
+        timer.timer.unmap_sample_records();
+        assert_eq!(timer.take_overflow_signal(&notification), Ok(None));
+        assert!(timer.take_notification().is_none());
+
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
+        }
+    }
+
+    #[test]
     fn a_notification_is_lost_when_its_programming_passes_its_period_unrecorded() {
         use reverie::Pid;
 
@@ -2765,6 +3220,140 @@ mod tests {
         assert_eq!(timer.notification_lost(), Ok(false));
         assert!(take_timer_signal_now().is_none());
 
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn a_stop_that_nothing_continues_keeps_the_event_only_before_the_period() {
+        use reverie::Pid;
+
+        use super::ClockCounter;
+        use super::EventStatus;
+        use super::InterruptedSteps;
+        use super::Interruption;
+        use super::MissedTarget;
+        use super::TimerImpl;
+        use crate::perf::do_branches;
+
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        assert_eq!(timer.timer.take_sample_records(), Some(0));
+        // The clock counts this thread, which runs while it is read; an
+        // imprecise event keeps cancellation from reading it for a witness.
+        timer.event = super::ActiveEvent::Imprecise { clock_min: 0 };
+        const PERIOD: u64 = 10_000;
+        // Short of its target, so that committing it records no skid
+        // overshoot in the process-wide count other tests read.
+        let missed = || MissedTarget {
+            clock: PERIOD - 1,
+            clock_target: PERIOD,
+            offset: 0,
+            stop: "test".into(),
+        };
+
+        // Before the period the stop leaves the event and its programming as
+        // they were, and it remembers the delivery point it found reached
+        // until something decides the event.
+        timer.set_status(EventStatus::Scheduled);
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD / 2);
+        timer.timer.disable().unwrap();
+        assert!(timer.timer.ctr_value().unwrap() < PERIOD);
+        timer.tick_observed();
+        timer.observed.as_mut().unwrap().missed = Some(missed());
+        assert_eq!(timer.disregard_stop_before_period(), Ok(()));
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+        assert_eq!(timer.overflow_period, Some(PERIOD));
+        assert!(timer.disregarded_missed.is_some());
+        // The next observed stop decides the event, and finds for itself
+        // whether the delivery point was reached; so does a new request.
+        timer.tick_observed();
+        assert!(timer.disregarded_missed.is_none());
+        timer.observed = None;
+        timer.set_status(EventStatus::Scheduled);
+        timer.tick_observed();
+        timer.observed.as_mut().unwrap().missed = Some(missed());
+        assert_eq!(timer.disregard_stop_before_period(), Ok(()));
+        timer.set_status(EventStatus::Scheduled);
+        assert!(timer.disregarded_missed.is_none());
+        // The thread's exit decides it, if nothing has.
+        timer.tick_observed();
+        timer.observed.as_mut().unwrap().missed = Some(missed());
+        assert_eq!(timer.disregard_stop_before_period(), Ok(()));
+        timer.settle_at_exit();
+        assert!(timer.disregarded_missed.is_none());
+
+        // Past the period, whether or not the notification has arrived, the
+        // event is cancelled and the programming ended.
+        timer.set_status(EventStatus::Scheduled);
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert!(take_timer_signal().is_some());
+        timer.tick_observed();
+        assert_eq!(timer.disregard_stop_before_period(), Ok(()));
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        assert_eq!(timer.overflow_period, None);
+        assert!(timer.disregarded_missed.is_none());
+
+        // So is an event whose single steps the stop interrupted, although
+        // the steps have ended the programming. Steps run toward an event a
+        // stop has armed.
+        let steps = InterruptedSteps {
+            steps: ClockCounter::new(PERIOD - 10, 0, PERIOD),
+            target_instr: 0,
+        };
+        timer.set_status(EventStatus::Armed);
+        timer.interrupted = Some(Interruption::At(steps));
+        timer.tick_observed();
+        assert_eq!(timer.current_overflow(), Ok(false));
+        assert_eq!(timer.disregard_stop_before_period(), Ok(()));
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+
+        // With records, a stop during the steps hands them on; without
+        // records it cancels the event, as a stop past the period does.
+        timer.set_status(EventStatus::Armed);
+        timer.interrupted = Some(Interruption::At(steps));
+        timer.tick_observed();
+        assert!(matches!(
+            timer.disregard_stop(),
+            Ok(Some(super::Unfinished::Steps(_)))
+        ));
+        assert_eq!(timer.timer_status, EventStatus::Armed);
+        timer.timer.unmap_sample_records();
+        timer.interrupted = Some(Interruption::At(steps));
+        timer.tick_observed();
+        assert!(matches!(timer.disregard_stop(), Ok(None)));
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        // Without records a stop past the period, with no steps under way,
+        // cancels a Scheduled event outright rather than leave it Armed as
+        // the stop's tick does, so that retiring the event afterwards does
+        // not record its delivery point a second time.
+        timer.set_status(EventStatus::Scheduled);
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert!(take_timer_signal().is_some());
+        timer.tick_observed();
+        assert_eq!(timer.timer_status, EventStatus::Armed);
+        timer.observed.as_mut().unwrap().missed = Some(missed());
+        assert!(matches!(timer.disregard_stop(), Ok(None)));
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        assert!(timer.disregarded_missed.is_none());
+
+        assert!(take_timer_signal_now().is_none());
         unsafe {
             libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
         }
