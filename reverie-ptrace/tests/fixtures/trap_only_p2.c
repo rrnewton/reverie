@@ -1861,11 +1861,14 @@ static void mode_sigstop_hop(void) {
 /* park_run: the child blocks SIGCONT until the parent's token arrives, and
  * the parent sends SIGCONT after reading the child's post-call output. */
 #define PARK_LATE_CONT 2
-/* park_run: the child handles SIGTSTP (else SIG_DFL). */
+/* park_run: the child handles SIGTSTP, SIGTTIN and SIGTTOU (else SIG_DFL). */
 #define PARK_TSTP_HANDLER 4
 /* park_run: the child has a second thread, which blocks every signal, while
  * it makes the call. */
 #define PARK_SIBLING 8
+/* A park_run `kills` entry: the parent sends SIGCONT to the process, then
+ * `sig` (a positive, process-directed entry). */
+#define CONT_THEN(sig) (0x100 | (sig))
 
 struct park_rec {
   int sig, code, from_parent;
@@ -1916,8 +1919,11 @@ static void release_and_join(int release, pthread_t thread, pid_t tid) {
 static void
 park_child(const char* tag, long act, int how, int from_parent, int to_parent) {
   install(SIGCONT, 0, park_handler);
-  if (how & PARK_TSTP_HANDLER)
+  if (how & PARK_TSTP_HANDLER) {
     install(SIGTSTP, 0, park_handler);
+    install(SIGTTIN, 0, park_handler);
+    install(SIGTTOU, 0, park_handler);
+  }
   sigset_t mask;
   int sibling_pipe[2], tid_pipe[2], sibling_fds[2];
   pthread_t sibling;
@@ -2009,8 +2015,11 @@ park_run(const char* tag, long act, int how, const int* kills, int nkills) {
       break;
     notified++;
     /* A negative entry is sent to the thread (tgkill), else to the process. */
-    if (kills[i] < 0 ? syscall(SYS_tgkill, child, child, -kills[i]) != 0
-                     : kill(child, kills[i]) != 0)
+    int sig = kills[i] > 0 ? kills[i] & 0xff : kills[i];
+    if (kills[i] > 0 && (kills[i] & CONT_THEN(0)) && kill(child, SIGCONT) != 0)
+      die("kill SIGCONT");
+    if (sig < 0 ? syscall(SYS_tgkill, child, child, -sig) != 0
+                : kill(child, sig) != 0)
       die("kill");
   }
   char buf[8] = {0};
@@ -2197,8 +2206,9 @@ static void mode_sigstop_cont_late(void) {
 }
 
 /* After an injected write whose SIGSTOP the hop re-raised, a SIGCONT
- * discards it, and the Tool sends a new SIGSTOP (SI_TKILL) before the thread
- * returns to user mode: its delivery stop keeps its own siginfo. */
+ * discards it, and the Tool sends a new SIGSTOP (rt_tgsigqueueinfo: SI_QUEUE
+ * with value 7, shaped like a re-raise) before the thread returns to user
+ * mode: its delivery stop keeps its own siginfo. */
 static void mode_sigstop_stale(void) {
   static const int kills[] = {SIGSTOP, SIGCONT};
   warm();
@@ -2206,6 +2216,22 @@ static void mode_sigstop_stale(void) {
       "inject",
       SHAPE_INJECT | TOOL_PARK(SIGSTOP) | TOOL_AFTER_CONT,
       0,
+      kills,
+      2);
+}
+
+/* A SIGCONT inside the window, after the SIGSTOP, then the stop signal `sig`
+ * (handled) before the hop reads the pending signals: `sig` discards the
+ * SIGCONT, which discarded the SIGSTOP, so under plain ptrace only `sig` is
+ * delivered, after the write. Trap-only cannot see the SIGCONT and refuses
+ * (TrapOnlyHopDeferredStopBehindStopSignal). */
+static void sigstop_cont_then(const char* tag, int sig) {
+  const int kills[] = {SIGSTOP, CONT_THEN(sig)};
+  warm();
+  park_run(
+      tag,
+      SHAPE_TAIL | TOOL_PARK(SIGSTOP) | HOOK_PARK(sig),
+      PARK_TSTP_HANDLER,
       kills,
       2);
 }
@@ -2453,6 +2479,12 @@ int main(int argc, char** argv) {
     mode_sigstop_many();
   else if (!strcmp(m, "sigstop_cont_late"))
     mode_sigstop_cont_late();
+  else if (!strcmp(m, "sigstop_cont_tstp"))
+    sigstop_cont_then("tstp", SIGTSTP);
+  else if (!strcmp(m, "sigstop_cont_ttin"))
+    sigstop_cont_then("ttin", SIGTTIN);
+  else if (!strcmp(m, "sigstop_cont_ttou"))
+    sigstop_cont_then("ttou", SIGTTOU);
   else if (!strcmp(m, "sigstop_stale"))
     mode_sigstop_stale();
   else if (!strcmp(m, "sigstop_threaded"))
