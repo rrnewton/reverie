@@ -312,6 +312,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
     ) -> Result<TrapOnlyRoute, TraceError> {
+        // `stepped_entry` describes only the stop that `handle_timer` just
+        // re-dispatched; take it before any return so that it can never
+        // survive into a later, unstepped entry.
+        let stepped = std::mem::take(
+            &mut self
+                .trap_only
+                .as_mut()
+                .expect("trap-only routing")
+                .stepped_entry,
+        );
         let tag = task.getevent()?;
         let mut regs = task.getregs()?;
         if tag == TAG_SLOT as i64 {
@@ -325,6 +335,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let site = regs.rip.wrapping_sub(2);
         if tag != TAG_I386 as i64 {
+            self.timer.observe_event();
             return Ok(TrapOnlyRoute::Ordinary {
                 task,
                 patch_site: site,
@@ -333,6 +344,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let trap_only = self.trap_only.as_ref().expect("trap-only routing");
         let live = !is_reserved_site(site) && trap_only.lock().is_live(site);
         if !live {
+            // A stop plain ptrace also reports: it advances the timer.
+            self.timer.observe_event();
             return self
                 .trap_only_foreign_i386(task, regs)
                 .await
@@ -341,13 +354,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         // H0: the registers the original `syscall` would have produced. A
         // `syscall` executed under a timer single-step saves RFLAGS with TF set
         // into r11, while the kernel hides that TF from `eflags` (O4, G).
-        let stepped = std::mem::take(
-            &mut self
-                .trap_only
-                .as_mut()
-                .expect("trap-only routing")
-                .stepped_entry,
-        );
         regs.rcx = regs.rip;
         regs.r11 = if stepped {
             regs.eflags | EFLAGS_TF
@@ -357,7 +363,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         regs.orig_rax = regs.orig_rax as u32 as i32 as i64 as u64;
         task.setregs(&regs)?;
         match self.trap_only_decode(regs.orig_rax) {
-            Some(_) => {}
+            Some(_) => self.timer.observe_event(),
             None if stepped => {
                 // Rule 4. `handle_timer` classifies this stop first; this is
                 // the backstop for any other route to a stepped entry.
@@ -370,6 +376,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ));
             }
             None => {
+                // O4 rule 3: plain ptrace has no stop here, so this internal
+                // stop leaves the timer's cancellation state untouched: a
+                // precise timer armed before the site stays armed across it.
                 return self
                     .trap_only_allow_class(task, regs, site)
                     .await
@@ -684,12 +693,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }) {
                     regs.rip = regs.rip.wrapping_add(1);
                 }
-                if regs.rip == expected_rip {
+                if sigreturn_rip == Some(regs.rip) {
+                    // rt_sigreturn loaded the frame's registers, which win
+                    // even when the frame's own rip is the slot's return.
+                } else if regs.rip == expected_rip {
                     regs.rip = view.rip;
                     regs.rcx = view.rcx;
                     regs.r11 = view.r11;
                     task.setregs(&regs)?;
-                } else if sigreturn_rip != Some(regs.rip) {
+                } else {
                     // Even a restarting syscall's exit stop still has rip at
                     // the return address (the rewind happens later, at signal
                     // delivery), and exec is forwarded before its exit stop.

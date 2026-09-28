@@ -50,6 +50,8 @@ const SEND_QUEUE: u64 = 0x400;
 const SEND_RESUME: u64 = 0x800;
 /// The Tool requests a precise timer of r8 (the fifth argument) branches.
 const ARM_TIMER: u64 = 0x1000;
+/// The Tool sends SIGSTOP to the calling thread while it is parked.
+const SEND_SIGSTOP: u64 = 0x2000;
 
 /// The P2 Tool's configuration.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -159,6 +161,9 @@ fn send_signals(pid: Pid, tid: Pid, action: u64) {
     }
     if action & SEND_SIGWINCH != 0 {
         tgkill(pid, tid, libc::SIGWINCH);
+    }
+    if action & SEND_SIGSTOP != 0 {
+        tgkill(pid, tid, libc::SIGSTOP);
     }
     if action & SEND_QUEUE != 0 {
         // Standard signals only: the ptrace backend cannot handle a
@@ -2081,6 +2086,115 @@ async fn trap_only_p2_t4c_rt_sigreturn_through_a_patched_site() {
     );
 }
 
+/// H4 with rt_sigreturn to a frame whose saved rip is the slot's own return
+/// address (`SLOT_RET`, which the private page maps under plain ptrace too):
+/// the frame's registers win, so the guest executes the `ud2` there and
+/// takes SIGILL as under ptrace, instead of H4 mistaking the frame's rip for
+/// the hop's return and rewriting it to the site.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_rt_sigreturn_to_the_slot_return_keeps_the_frame() {
+    let [ptrace, trap_only, _, trap_only_tail] =
+        compare_mode_with_internal("sigreturn_slot_ret", &["seccomp 15"]).await;
+    for run in [&trap_only, &trap_only_tail] {
+        assert_patched(run, SiteState::Retired(RetiredReason::AllowClass));
+    }
+    eprintln!("slot-ret ptrace report:\n{}", ptrace.report);
+    assert_report_has(
+        &ptrace,
+        &[
+            "slot-ret SIGILL addr-is-slot-ret=1 rip-is-slot-ret=1",
+            "slot-ret getpid after pid=1",
+            "slot-ret after site bytes 0f 05",
+        ],
+    );
+}
+
+/// rt_sigreturn through a warmed generic site with rsp at an unmapped page:
+/// the tracer cannot read the frame (`sigreturn_frame_rip` is `None`), the
+/// kernel returns 0 at the slot's return, which H4 rewrites to S+2, and the
+/// forced SIGSEGV is delivered there, as under ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_rt_sigreturn_with_an_unreadable_frame() {
+    let [ptrace, trap_only, _, trap_only_tail] =
+        compare_mode_with_internal("sigreturn_bad_frame", &["seccomp 15"]).await;
+    for run in [&trap_only, &trap_only_tail] {
+        assert!(
+            run.lifecycle
+                .iter()
+                .any(|entry| entry.starts_with("allow-class site=") && entry.ends_with(" nr=15")),
+            "{:#?}",
+            run.lifecycle
+        );
+    }
+    eprintln!("bad-frame ptrace report:\n{}", ptrace.report);
+    assert_report_has(
+        &ptrace,
+        &[
+            "bad-frame SIGSEGV code=128 rip-next=1 rax=0 bytes after 0f 05",
+            "bad-frame getpid after=1",
+        ],
+    );
+}
+
+/// x86_64 335 (uretprobe) and 336 (uprobe) through a warmed generic site.
+/// Seccomp passes both through without running the filter (upstream design),
+/// so the slot's syscall produces no TAG_SLOT stop and the hop fails closed
+/// with `TrapOnlyHopUnexpectedStop` where plain ptrace runs them (SIGILL for
+/// 335, -ENXIO for 336). On a kernel without them both backends return
+/// -ENOSYS and must be equal.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_seccomp_bypassing_probe_numbers_fail_closed() {
+    for (mode, nr, probe_line) in [
+        ("probe_uretprobe", 335, "probe nr=335 SIGILL code=128"),
+        ("probe_uprobe", 336, "probe nr=336 ret=-6"),
+    ] {
+        let ptrace = run_p2(mode, None, false).await;
+        eprintln!("{mode} ptrace report:\n{}", ptrace.report);
+        let enosys = format!("probe nr={nr} ret=-38");
+        if ptrace.report.lines().any(|line| line == enosys) {
+            eprintln!("{mode}: this kernel lacks syscall {nr}; comparing as an unknown number");
+            let trap_only = run_p2(mode, Some(SitePatching::On), false).await;
+            assert_equal_runs_with_internal(&trap_only, &ptrace, &[&format!("seccomp {nr}")]);
+            continue;
+        }
+        assert_report_has(&ptrace, &[probe_line]);
+        let error = run_p2_with(mode, Some(SitePatching::On), false, false)
+            .await
+            .expect_err("a seccomp-bypassing number through the hop must end the run");
+        let text = format!("{error:#} {error:?}");
+        assert!(text.contains("TrapOnlyHopUnexpectedStop"), "{mode}: {text}");
+    }
+}
+
+/// A SIGSTOP pending when the hop resumes a patched site's thread (sent by
+/// the Tool at the I386 stop, then `tail_inject`). Plain ptrace suppresses
+/// every SIGSTOP at its delivery stop (`handle_sigstop`), so the call
+/// completes. Trap-only does not implement the P2-SPEC O1.4 SIGSTOP deferral
+/// in this step (it is a separate stacked step that must land before P2e
+/// makes `SitePatching::On` public): the SIGSTOP delivery stop at the slot is
+/// an unexpected H2 stop and the run fails closed. This test pins that the
+/// gap fails closed rather than diverging silently; the O1.4 step replaces
+/// the trap-only half with an equality assertion.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_sigstop_in_the_hop_fails_closed_until_o1_4() {
+    let ptrace = run_p2("sigstop_hop", None, false).await;
+    assert_eq!(ptrace.status, ExitStatus::Exited(0), "{}", ptrace.report);
+    assert_report_has(
+        &ptrace,
+        &[
+            "sigstop tail getpid returned pid=1",
+            "sigstop site bytes 0f 05",
+        ],
+    );
+    let error = run_p2_with("sigstop_hop", Some(SitePatching::On), false, false)
+        .await
+        .expect_err("a SIGSTOP inside the hop must end the run until O1.4 lands");
+    let text = format!("{error:#} {error:?}");
+    assert!(text.contains("TrapOnlyHopUnexpectedStop"), "{text}");
+    assert!(text.contains("H2 slot stop"), "{text}");
+    assert!(text.contains("SIGSTOP"), "{text}");
+}
+
 /// T4d: a timer single-step that reaches a patched site carrying an allowed
 /// number fails closed with `TrapOnlyAllowClassInTimerStep` (plain ptrace
 /// steps over the unknown syscall and fires the timer).
@@ -2100,6 +2214,85 @@ async fn trap_only_p2_t4d_timer_step_onto_an_allowed_number_fails_closed() {
     let text = format!("{error:#} {error:?}");
     assert!(text.contains("TrapOnlyAllowClassInTimerStep"), "{text}");
     assert!(text.contains("allowed syscall 500"), "{text}");
+}
+
+/// O4 rule 3 across a counting-phase timer: a precise timer armed at a
+/// patched getppid stays armed across a later Allow-class hop (an unknown
+/// number through a warmed generic site, and rt_sigreturn through the
+/// warmed shared site from a signal handler that armed it), and fires at the
+/// same rip, clock and step count as under plain ptrace. The hop's internal
+/// stop must not advance the timer's cancellation state, which it did when
+/// the run loop ticked the timer before routing the stop.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_timer_survives_an_allow_class_hop() {
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    // (mode, internal stop, report line, shared-site state, retired number)
+    for (mode, internal, line, shared_site, nr) in [
+        (
+            "timer_hop_unknown",
+            "seccomp 500",
+            "timer hop unknown ret=-38 getpid=1 bytes after 0f 05",
+            SiteState::Live,
+            " nr=500",
+        ),
+        (
+            "timer_hop_sigreturn",
+            "seccomp 15",
+            "timer hop sigreturn getpid=1 bytes after 0f 05",
+            SiteState::Retired(RetiredReason::AllowClass),
+            " nr=15",
+        ),
+    ] {
+        let [ptrace, trap_only, ptrace_tail, trap_only_tail] =
+            compare_mode_with_internal(mode, &[internal]).await;
+        for (ptrace, trap_only) in [(&ptrace, &trap_only), (&ptrace_tail, &trap_only_tail)] {
+            // Not vacuous: plain ptrace fires the timer exactly once, in the
+            // branch loop after the hop.
+            assert_eq!(
+                timer_events(ptrace).len(),
+                1,
+                "{mode}: {:#?}",
+                ptrace.all_events()
+            );
+            assert_eq!(
+                timer_events(trap_only),
+                timer_events(ptrace),
+                "{mode}: timer events differ"
+            );
+            assert_patched(trap_only, shared_site);
+            assert!(
+                trap_only
+                    .lifecycle
+                    .iter()
+                    .any(|entry| entry.starts_with("allow-class site=") && entry.ends_with(nr)),
+                "{mode}: {:#?}",
+                trap_only.lifecycle
+            );
+            assert_report_has(ptrace, &[line]);
+        }
+    }
+}
+
+/// The other side of the timer rule: every stop that plain ptrace also
+/// reports cancels an armed counting-phase timer under trap-only too, both a
+/// live patched site's stop and an ordinary x86_64 stop. Only the last timer,
+/// with no stop before its branch loop, fires.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_timer_is_cancelled_by_every_ptrace_visible_stop() {
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let [ptrace, trap_only, ptrace_tail, trap_only_tail] = compare_mode("timer_cancel").await;
+    for (ptrace, trap_only) in [(&ptrace, &trap_only), (&ptrace_tail, &trap_only_tail)] {
+        assert_patched(trap_only, SiteState::Live);
+        assert_eq!(timer_events(ptrace).len(), 1, "{:#?}", ptrace.all_events());
+        assert_eq!(timer_events(trap_only), timer_events(ptrace));
+        assert_report_has(ptrace, &["timer cancel site=1 ordinary=1"]);
+    }
 }
 
 /// The hop fails closed with `TrapOnlyHopExitRip` when the slot's syscall
@@ -2196,30 +2389,24 @@ async fn trap_only_p2_unknown_numbers_behave_as_under_ptrace() {
     }
 }
 
-/// T5: the text residual of a patched site is exactly its two bytes, read
-/// directly or through /proc/self/mem, until the guest makes the page
-/// writable (which restores them), plus one page of smaps accounting that the
-/// restore does not undo (measured; the spec expected every read after the
-/// mprotect to equal ptrace's).
-#[tokio::test(flavor = "current_thread")]
-async fn traponly_text_residual_is_exactly_the_site_bytes() {
+/// The two runs of the T5 fixture (ptrace, trap-only), after checking that
+/// they print the same lines and that the only differing lines outside
+/// smaps are the two patched bytes read before the guest's mprotect.
+async fn text_residual_runs() -> (P2Run, P2Run) {
     let ptrace = run_p2("text_residual", None, false).await;
     let trap_only = run_p2("text_residual", Some(SitePatching::On), false).await;
     eprintln!("T5 ptrace report:\n{}", ptrace.report);
     eprintln!("T5 trap-only report:\n{}", trap_only.report);
-    let differing: Vec<(&str, &str)> = ptrace
-        .report
-        .lines()
-        .zip(trap_only.report.lines())
-        .filter(|(p, t)| p != t)
-        .collect();
     assert_eq!(
         ptrace.report.lines().count(),
         trap_only.report.lines().count()
     );
-    let (smaps, bytes): (Vec<_>, Vec<_>) = differing
-        .into_iter()
-        .partition(|(p, _)| p.contains(" smaps "));
+    let bytes: Vec<(&str, &str)> = ptrace
+        .report
+        .lines()
+        .zip(trap_only.report.lines())
+        .filter(|(p, t)| p != t && !p.contains(" smaps "))
+        .collect();
     assert_eq!(
         bytes,
         [
@@ -2228,36 +2415,90 @@ async fn traponly_text_residual_is_exactly_the_site_bytes() {
         ],
         "the only differing bytes"
     );
-    // The patched page is a private copy of the file page, and restoring its
-    // bytes (on the guest's mprotect) does not make it a file page again: one
-    // page moves from clean file-backed memory to anonymous dirty memory,
-    // before and after. Which of Shared_Clean and Private_Clean it leaves
-    // depends on whether another process maps the fixture, so it is compared
-    // as their sum.
-    eprintln!("T5 smaps differences: {smaps:?}");
-    let field = |report: &str, tag: &str, name: &str| -> i64 {
-        let prefix = format!("{tag} smaps {name}: ");
-        report
-            .lines()
-            .find_map(|line| line.strip_prefix(prefix.as_str()))
-            .unwrap_or_else(|| panic!("no {prefix:?} in {report}"))
-            .parse()
-            .expect("a kB count")
-    };
-    for tag in ["before", "after"] {
-        let get = |run: &P2Run, name| field(&run.report, tag, name);
-        let clean = |run: &P2Run| get(run, "Shared_Clean") + get(run, "Private_Clean");
-        assert_eq!(get(&trap_only, "Rss"), get(&ptrace, "Rss"), "{tag} Rss");
-        assert_eq!(clean(&trap_only), clean(&ptrace) - 4, "{tag} clean");
-        for name in ["Private_Dirty", "Anonymous"] {
-            assert_eq!(
-                get(&trap_only, name),
-                get(&ptrace, name) + 4,
-                "{tag} {name}"
-            );
-        }
-        for name in ["Shared_Dirty", "AnonHugePages"] {
-            assert_eq!(get(&trap_only, name), get(&ptrace, name), "{tag} {name}");
-        }
+    (ptrace, trap_only)
+}
+
+/// One smaps field (kB) of the site's mapping, as the T5 fixture printed it
+/// under `tag` ("before" or "after" the guest's mprotect).
+fn text_residual_smaps(run: &P2Run, tag: &str, name: &str) -> i64 {
+    let prefix = format!("{tag} smaps {name}: ");
+    run.report
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("no {prefix:?} in {}", run.report))
+        .parse()
+        .expect("a kB count")
+}
+
+/// Asserts that the site's mapping under trap-only differs from ptrace's by
+/// exactly one page moved from clean file-backed memory to anonymous dirty
+/// memory (`moved` = 1) or not at all (`moved` = 0). Which of Shared_Clean
+/// and Private_Clean the page leaves depends on whether another process maps
+/// the fixture, so they are compared as their sum.
+fn assert_text_residual_smaps(ptrace: &P2Run, trap_only: &P2Run, tag: &str, moved: i64) {
+    let get = |run: &P2Run, name| text_residual_smaps(run, tag, name);
+    let clean = |run: &P2Run| get(run, "Shared_Clean") + get(run, "Private_Clean");
+    assert_eq!(get(trap_only, "Rss"), get(ptrace, "Rss"), "{tag} Rss");
+    assert_eq!(clean(trap_only), clean(ptrace) - 4 * moved, "{tag} clean");
+    for name in ["Private_Dirty", "Anonymous"] {
+        assert_eq!(
+            get(trap_only, name),
+            get(ptrace, name) + 4 * moved,
+            "{tag} {name}"
+        );
     }
+    for name in ["Shared_Dirty", "AnonHugePages"] {
+        assert_eq!(get(trap_only, name), get(ptrace, name), "{tag} {name}");
+    }
+}
+
+/// T5 as P2-SPEC states it: the text residual of a patched site is its two
+/// bytes (read directly or through /proc/self/mem) and that page's smaps
+/// accounting, and after the guest makes the page writable (which restores
+/// the bytes) every read equals ptrace's.
+///
+/// Red at this head, so ignored rather than weakened: the tracer's write
+/// COWs the private file page into anonymous memory, and restoring the bytes
+/// does not make it a file page again, so the "after" smaps still show the
+/// moved page. `traponly_text_residual_o5_smaps_witness` pins the measured
+/// residual; closing it (tracer-side smaps virtualization, or a step-free
+/// in-guest `MADV_DONTNEED` of the restored page) is the open O5 question.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "P2-SPEC O5/T5 open question: the restored page stays anonymous in smaps"]
+async fn traponly_text_residual_is_exactly_the_site_bytes() {
+    let (ptrace, trap_only) = text_residual_runs().await;
+    assert_text_residual_smaps(&ptrace, &trap_only, "before", 1);
+    let after: Vec<(&str, &str)> = ptrace
+        .report
+        .lines()
+        .zip(trap_only.report.lines())
+        .filter(|(p, t)| p.starts_with("after ") && p != t)
+        .collect();
+    assert!(
+        after.is_empty(),
+        "reads after the mprotect differ: {after:?}"
+    );
+}
+
+/// The measured O5 residual that keeps T5 red, exactly: one page of the
+/// site's mapping moves from clean file-backed memory to anonymous dirty
+/// memory when the site is patched, and stays moved after the guest's
+/// mprotect restores the bytes. Every other read after the mprotect equals
+/// ptrace's. When the residual is closed this test fails, and T5 above is
+/// un-ignored instead.
+#[tokio::test(flavor = "current_thread")]
+async fn traponly_text_residual_o5_smaps_witness() {
+    let (ptrace, trap_only) = text_residual_runs().await;
+    assert_text_residual_smaps(&ptrace, &trap_only, "before", 1);
+    assert_text_residual_smaps(&ptrace, &trap_only, "after", 1);
+    let after: Vec<(&str, &str)> = ptrace
+        .report
+        .lines()
+        .zip(trap_only.report.lines())
+        .filter(|(p, t)| p.starts_with("after ") && !p.contains(" smaps ") && p != t)
+        .collect();
+    assert!(
+        after.is_empty(),
+        "non-smaps reads after the mprotect differ: {after:?}"
+    );
 }
