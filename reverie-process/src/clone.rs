@@ -332,7 +332,13 @@ mod tests {
             };
             unsafe {
                 libc::alarm(5);
-                libc::_exit(i32::from(check().is_err()));
+                // Do not unwind into the copied libtest worker: when that
+                // child thread exits, the process can incorrectly exit 0.
+                libc::_exit(match std::panic::catch_unwind(check) {
+                    Ok(Ok(())) => 0,
+                    Ok(Err(_)) => 1,
+                    Err(_) => 2,
+                });
             }
         }
         assert_eq!(
