@@ -677,6 +677,30 @@ pub(crate) struct TrapOnlyTask {
     /// number (O4 rule 4). The r11 H0 builds does not depend on it: plain
     /// ptrace's timer clears the TF that the stepped `syscall` saved in r11.
     pub(crate) stepped_entry: bool,
+    /// The original siginfo of each SIGSTOP the masked hop dequeued at its
+    /// slot and re-raised at H3 (P2-SPEC O1.4), in delivery order, until the
+    /// re-raised SIGSTOP's delivery stop restores it. Cleared at this task's
+    /// next seccomp stop: a re-raised SIGSTOP is delivered before the thread
+    /// returns to user mode, so one still here when the thread next enters a
+    /// syscall was discarded by a SIGCONT, as the original would have been.
+    /// (Event stops such as an exec's come before the delivery and keep it.)
+    pub(crate) reraised_stops: std::collections::VecDeque<ReraisedStop>,
+}
+
+/// A SIGSTOP the masked hop suppressed at its slot stop and re-raised.
+#[derive(Clone, Copy)]
+pub(crate) struct ReraisedStop {
+    /// The siginfo of the original SIGSTOP's delivery stop.
+    pub(crate) info: libc::siginfo_t,
+}
+
+impl std::fmt::Debug for ReraisedStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReraisedStop")
+            .field("si_signo", &self.info.si_signo)
+            .field("si_code", &self.info.si_code)
+            .finish()
+    }
 }
 
 impl TrapOnlyTask {
@@ -689,6 +713,7 @@ impl TrapOnlyTask {
             in_hop: false,
             pending_clone_flags: None,
             stepped_entry: false,
+            reraised_stops: std::collections::VecDeque::new(),
         }
     }
 
