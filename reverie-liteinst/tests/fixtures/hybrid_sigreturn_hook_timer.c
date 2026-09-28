@@ -9,8 +9,9 @@
 long reverie_liteinst_restorer_nr;
 
 /* Two syscall sites, which the first use of each, a getpid, patches. The
-   first makes getpid with its argument in rdi, which tells the test's Tool
-   whether to request a timer. The second makes the syscall numbered by
+   first makes getpid with its arguments in rdi, which tells the test's Tool
+   whether to request a timer, and rsi, the round the request is for. The
+   second makes the syscall numbered by
    `reverie_liteinst_restorer_nr`, and becomes the signal handler's
    restorer, whose rt_sigreturn is then a LiteInst hook trap. */
 __asm__(".text\n"
@@ -37,7 +38,7 @@ __asm__(".text\n"
         "ret\n"
         ".size reverie_liteinst_restorer, .-reverie_liteinst_restorer\n");
 
-extern long reverie_liteinst_getpid(long request);
+extern long reverie_liteinst_getpid(long request, unsigned long round);
 extern long reverie_liteinst_restorer(void);
 
 /* Retires exactly `rounds` conditional branches, for `rounds` > 0. */
@@ -61,28 +62,43 @@ struct kernel_sigaction {
 };
 
 static unsigned long before;
+static unsigned long leads = 1;
+static unsigned long stride;
+static volatile unsigned long round_index;
 static volatile unsigned long wrong;
 static volatile unsigned long handled;
 
-/* Requests the timer, and returns `before` branches later. */
+/* Requests the timer for the current round `i`, and returns
+   `before + (i % leads) * stride` branches later. */
 static void handler(int signal) {
   (void)signal;
-  long pid = reverie_liteinst_getpid(1);
-  branches(before);
+  unsigned long i = round_index;
+  unsigned long lead = before + (i % leads) * stride;
+  long pid = reverie_liteinst_getpid(1, i);
+  branches(lead);
   wrong += pid != ANSWER;
   ++handled;
 }
 
 /* Arguments: the branches from the handler's getpid to its return, the
-   number of signals, and the branches after each. */
+   number of signals, and the branches after each; optionally then `leads`
+   and `stride`, to add `(i % leads) * stride` branches before round `i`'s
+   return. */
 int main(int argc, char **argv) {
-  if (argc != 4) {
+  if (argc != 4 && argc != 6) {
     return 2;
   }
   before = strtoul(argv[1], NULL, 0);
   unsigned long rounds = strtoul(argv[2], NULL, 0);
   unsigned long after = strtoul(argv[3], NULL, 0);
-  wrong += reverie_liteinst_getpid(0) != ANSWER;
+  if (argc == 6) {
+    leads = strtoul(argv[4], NULL, 0);
+    stride = strtoul(argv[5], NULL, 0);
+    if (leads == 0) {
+      return 2;
+    }
+  }
+  wrong += reverie_liteinst_getpid(0, 0) != ANSWER;
   reverie_liteinst_restorer_nr = SYS_getpid;
   wrong += reverie_liteinst_restorer() != ANSWER;
   reverie_liteinst_restorer_nr = SYS_rt_sigreturn;
@@ -98,6 +114,7 @@ int main(int argc, char **argv) {
   /* The Tool answers getpid, so address the signal by thread alone. */
   pid_t tid = gettid();
   for (unsigned long i = 0; i < rounds; ++i) {
+    round_index = i;
     if (syscall(SYS_tkill, tid, SIGUSR1)) {
       return 4;
     }

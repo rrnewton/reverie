@@ -86,7 +86,12 @@ impl Tool for PreciseTimerTool {
 
     fn subscriptions(_cfg: &u64) -> Subscription {
         let mut s = Subscription::none();
-        s.syscalls([Sysno::clock_getres, Sysno::getpid, Sysno::rt_sigprocmask]);
+        s.syscalls([
+            Sysno::clock_getres,
+            Sysno::getpid,
+            Sysno::rt_sigprocmask,
+            Sysno::exit,
+        ]);
         s
     }
 
@@ -207,17 +212,21 @@ fn overtaken_precise_event_is_witnessed(branches: u64, offset: u64, witnesses: u
 enum AfterTrap {
     /// A syscall the Tool observes, which decides the event.
     Syscall,
-    /// Straight to `exit_group`, which retires the event with no stop the Tool
-    /// observes.
+    /// Straight to `exit_group`, which the Tool does not observe: the thread
+    /// exits with the event undecided.
     Exit,
+    /// To `exit`, which the Tool observes and passes on: the syscall decides
+    /// the event, and ends the thread before its stop's handling returns.
+    ObservedExit,
 }
 
 // A trap that the Tool does not observe does not decide the event: the event
-// is left as it was, so it is witnessed only by the stop that does cancel it,
-// once, and not at all if nothing observable follows before the guest exits.
+// is left as it was, so it is witnessed only by what does end it, once. That
+// is the stop that cancels it, or, if the guest exits first, the exit.
 // The trap is a guest `int3`, which Reverie consumes without delivering it.
 #[test_case(AfterTrap::Syscall, 1; "the syscall after the trap is the one witness")]
-#[test_case(AfterTrap::Exit, 0; "an exit after the trap records nothing")]
+#[test_case(AfterTrap::Exit, 1; "an exit after the trap is the one witness")]
+#[test_case(AfterTrap::ObservedExit, 1; "an observed exit after the trap is the one witness")]
 fn a_disregarded_trap_past_the_target_is_not_witnessed(after: AfterTrap, witnesses: u64) {
     ret_without_perf!();
     let _owner = WITNESS
@@ -234,6 +243,7 @@ fn a_disregarded_trap_past_the_target_is_not_witnessed(after: AfterTrap, witness
             match after {
                 AfterTrap::Syscall => unsafe { syscall_no_branches(Sysno::getpid) },
                 AfterTrap::Exit => unsafe { syscall_no_branches(Sysno::exit_group) },
+                AfterTrap::ObservedExit => unsafe { syscall_no_branches(Sysno::exit) },
             }
         },
         0,
@@ -244,7 +254,7 @@ fn a_disregarded_trap_past_the_target_is_not_witnessed(after: AfterTrap, witness
         log.overtaking_syscalls.load(Ordering::SeqCst),
         match after {
             AfterTrap::Syscall => 1,
-            AfterTrap::Exit => 0,
+            AfterTrap::Exit | AfterTrap::ObservedExit => 0,
         },
         "the guest must reach the syscall stop exactly once, if it makes the syscall"
     );

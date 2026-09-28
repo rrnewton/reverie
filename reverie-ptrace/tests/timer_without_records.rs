@@ -12,9 +12,11 @@
 //! Reverie consumes without a Tool callback cannot tell a lost notification
 //! from a pending one, nor a pending one that will arrive before the target
 //! from one that will arrive after it. Such a stop past the period therefore
-//! cancels the event, as a stop the Tool observes does, so that the event
-//! never fires at a clock that depends on when the host handled the
-//! interrupt. A stop before the period still leaves the event as it was.
+//! cancels the event, as a stop the Tool observes does, and so does one during
+//! the single steps toward the event, which only a notification past the
+//! period begins. The event then never fires at a clock, and never has a fate,
+//! that depends on when the host handled the interrupt. A stop before the
+//! period still leaves the event as it was.
 //!
 //! This binary maps no overflow records for any timer.
 
@@ -229,16 +231,45 @@ fn a_trap_past_the_period_cancels_the_timer() {
     assert_eq!(witnesses, 0, "the event was not due at the trap");
 }
 
+// The same trap with the notification free to arrive. It arrives within a
+// skid margin of the period, and its single steps toward the target are
+// under way at the trap, which cancels the event among them rather than
+// stepping on: without records the trap cannot tell steps begun from a
+// notification still pending, and the event's fate must not depend on which.
+// Should the notification come only after the trap, the trap cancels the
+// event before it, the same outcome.
+#[test]
+fn a_trap_among_the_single_steps_cancels_the_timer() {
+    ret_without_perf!();
+    let (events, witnesses) = run(|| {
+        request();
+        do_branches(PERF_RCBS - 2);
+        unsafe { core::arch::asm!("int3") };
+        do_branches(PERF_RCBS);
+    });
+    assert_eq!(
+        events,
+        Vec::<u64>::new(),
+        "the cancelled timer must not fire"
+    );
+    assert_eq!(witnesses, 0, "the event was not due at the trap");
+}
+
 // The guest traps in every round of a loop that runs across the target, where
 // Linux can lose the notification (see `TimerImpl::notification_lost`). The
-// event fires at its target if its notification comes before the first trap
-// past the period, and not at all otherwise; never at another clock.
+// first trap past the period cancels the event: before the notification, or
+// during the single steps it begins, since a trap comes within every few
+// instructions. Either way the event is cancelled short of its target, so it
+// neither fires nor is witnessed, whenever the host delivers the
+// notification.
 #[test]
-fn the_timer_fires_at_its_target_or_not_in_a_loop_that_traps_in_every_round() {
+fn the_first_trap_past_the_period_cancels_the_timer_in_a_loop_that_traps_in_every_round() {
     ret_without_perf!();
-    let (events, _) = run(|| int3_loop(2 * PERF_RCBS));
-    assert!(
-        events.is_empty() || events == [PERF_RCBS],
-        "the timer must fire at its target or not at all: {events:?}"
+    let (events, witnesses) = run(|| int3_loop(2 * PERF_RCBS));
+    assert_eq!(
+        events,
+        Vec::<u64>::new(),
+        "the cancelled timer must not fire"
     );
+    assert_eq!(witnesses, 0, "the event was cancelled before it was due");
 }

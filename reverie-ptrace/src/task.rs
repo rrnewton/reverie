@@ -3235,16 +3235,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         let (nr, args) = syscall.into_parts();
         // AUTONOMOUS-BOT-IMPLEMENTED
         if nr == Sysno::rt_sigreturn {
-            // The trap makes no Tool callback, so it leaves the timer event as
-            // it was, and a notification that is pending or yet to come
-            // reaches the restored context and delivers the event. What a
-            // notification cannot drive, single steps the trap interrupted or
-            // an event whose notification was lost, is not continued across
-            // the context switch: the event is cancelled, as a stop the Tool
-            // observes would cancel it.
-            if self.timer.disregard_stop()?.is_some() {
-                self.timer.retire()?;
-            }
+            // The trap makes no Tool callback. Before the programming passes
+            // its period it leaves the timer event as it was, and the
+            // notification, yet to come, reaches the restored context and
+            // delivers the event. Nothing of the event is continued across
+            // the context switch, so past the period, where host timing
+            // decides whether the notification is still pending, was taken
+            // as single steps began, or was lost, the event is cancelled
+            // outright. The guest's clock alone then decides the event's fate
+            // at the trap.
+            self.timer.disregard_stop_before_period()?;
             return self.resume_injected_rt_sigreturn(task, &frame).await;
         }
 
@@ -3270,8 +3270,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             // toward it that the trap interrupted, a lost notification, or one
             // the injection took, is finished at the syscall's return, where
             // the guest would have taken the notification. A guest signal the
-            // injection held is delivered first there, in a stop the Tool
-            // observes, which would cancel the event, so it is cancelled.
+            // injection held is instead delivered as the guest resumes, by
+            // the resume itself, with no stop and no Tool callback. Its
+            // handler must run before the guest's next instruction, so the
+            // steps cannot come first, and stepping into the handler is not
+            // implemented: the event is cancelled, and the Tool loses that
+            // preemption. This is a policy, not a stop's cancellation.
             let task = match disregarded.or_else(|| self.timer.take_notification()) {
                 Some(_) if self.pending_signal.is_some() => {
                     self.timer.retire()?;
@@ -6698,6 +6702,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                     if let Some(stats) = &self.global_state.backend_stats {
                         stats.record_tracee_exit();
                     }
+                    // Whether the run loop returned or the exit stop cut it
+                    // short, the thread has ended its timer event.
+                    self.timer.settle_at_exit();
                     log_guest_exit(self.tid(), self.pid(), status);
                     self.tool_exit_ordinary(status).await;
                     session.finished(&stop);
@@ -7215,6 +7222,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let Some(stats) = &self.global_state.backend_stats {
             stats.record_tracee_exit();
         }
+        // Whether the run loop returned or the exit stop cut it short, the
+        // thread has ended its timer event.
+        self.timer.settle_at_exit();
         log_guest_exit(self.tid(), self.pid(), exit_status);
 
         let tool_exit = self.tool_exit(exit_status).fuse();
