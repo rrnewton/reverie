@@ -7898,6 +7898,23 @@ impl<L: Tool + 'static> TracedTask<L> {
                     match (&mut *exit_event).await {
                         Ok(stopped) => break Ok(stopped),
                         Err(TraceError::Died(zombie)) => break Err(TraceError::Died(zombie)),
+                        // As on the exit-future path above: once the notifier
+                        // has published this generation's actual final wait
+                        // status (for example a SIGKILLed tracee that exited
+                        // without an exit stop, so the exit wait meets ECHILD),
+                        // finish_ordinary_exit reports exactly that status.
+                        // An error without a published final status still
+                        // refuses cleanup.
+                        Err(error)
+                            if stop
+                                .terminal
+                                .observed_exit_status()
+                                .ok()
+                                .flatten()
+                                .is_some() =>
+                        {
+                            break Err(error);
+                        }
                         Err(error) => session.retry_after(anyhow::Error::new(error).into()).await,
                     }
                 };
