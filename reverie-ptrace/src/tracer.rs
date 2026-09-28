@@ -571,6 +571,7 @@ async fn finish_ordinary_terminal(
                                 }
                             }
                             Err(TraceError::Died(zombie)) => {
+                                eprintln!("PROBE_EXITSTOP_GETEVENT_ESRCH tid={}", stopped.pid());
                                 // A synchronous transition (for example a timer
                                 // step) can have advanced the physical EXIT
                                 // stop before its queued ExitFuture is polled.
@@ -606,6 +607,7 @@ async fn finish_ordinary_terminal(
                             break running.wait_owned();
                         }
                         Err((retained, Errno::ESRCH)) => {
+                            eprintln!("PROBE_EXITSTOP_RESUME_ESRCH");
                             // A real group-fatal signal may advance this EXIT
                             // after GETEVENTMSG and before CONT. Keep its sole
                             // generation owner; ESRCH itself supplies no status.
