@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -21,7 +22,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Iterator, Mapping, Sequence
 
 
 TOOL_ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +72,22 @@ UNRELATED_UNREADABLE_RECORD = "unrelated-unreadable-handles.json"
 DECIDER_TOOL_RELATIVE = "ci-hub/health/integration_tip_validate.py"
 DISPATCH_ID_PATTERN = r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}"
 DECIDER_HISTORY_KEEP = 48
+
+# A DECISION BUILDS CI-HUB IN ITS OWN RUST-SCRIPT CACHE.
+# `ci-hub/ci-hub` runs `rust-script --force`, and every rust-script on the host
+# builds into the one target directory ~/.cache/rust-script/binaries under one
+# Cargo lock, so even an already-built ci-hub waits for every other lane's
+# script build. Measured on devbig014, 2026-09-28: `ci-hub --help` with its
+# binary already built took 0.14-0.36s alone but 54.5s and 72.8s while other
+# lanes' validate.rs, scorecard.rs and pressure-test.rs builds held that lock,
+# and decider 20260928T174539Z-c17ba8f8b9de spent its entire 180s
+# second-status phase without an answer. In a private cache a fully cold ci-hub
+# build took 46.3s (293 MB) and exact validate-status then took 37-42s, waiting
+# on no other lane. validate-run already isolates itself the same way in
+# ci-hub/ci-hub. The cache path is fixed and is only used under tick.lock, which
+# every decider and dry run holds for its whole decision; it starts empty and
+# is removed afterwards.
+DECISION_RUST_SCRIPT_CACHE = "decision-rust-script-cache"
 
 # An unreadable run handle blocks the launch unless its file last changed
 # before the target commit existed: a handle is written only after its target
@@ -1754,6 +1771,38 @@ def gate_tick(
     return report_exit
 
 
+@contextlib.contextmanager
+def decision_rust_script_cache(settings: Settings) -> Iterator[Path]:
+    """Point this decision's ci-hub builds at a cache no other lane locks.
+
+    Hold tick.lock around the whole context: the path is fixed, and whatever a
+    killed decision left there is removed before use. A cache that cannot be
+    emptied refuses the decision rather than growing unseen.
+    """
+
+    root = settings.state_dir / DECISION_RUST_SCRIPT_CACHE
+    try:
+        if root.is_symlink():
+            root.unlink()
+        elif root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+    except OSError as error:
+        raise ObservationUnavailable(
+            f"cannot start this decision with an empty rust-script cache at {root}: {error}"
+        ) from error
+    previous = os.environ.get("XDG_CACHE_HOME")
+    os.environ["XDG_CACHE_HOME"] = str(root)
+    try:
+        yield root
+    finally:
+        if previous is None:
+            os.environ.pop("XDG_CACHE_HOME", None)
+        else:
+            os.environ["XDG_CACHE_HOME"] = previous
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def acquire_lock(lock: object, wait_seconds: float) -> bool:
     deadline = time.monotonic() + wait_seconds
     while True:
@@ -1798,7 +1847,8 @@ def decide(
                     )
                 else:
                     try:
-                        exit_code = tick(settings)
+                        with decision_rust_script_cache(settings):
+                            exit_code = tick(settings)
                     except ObservationUnavailable as error:
                         emit(
                             state="unknown",
@@ -1918,7 +1968,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             try:
                 if args.dry_run:
-                    return run_tick(settings, dry_run=True)
+                    with decision_rust_script_cache(settings):
+                        return run_tick(settings, dry_run=True)
                 return gate_tick(settings)
             except ObservationUnavailable as error:
                 emit(
