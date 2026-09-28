@@ -1,0 +1,926 @@
+{
+  "every_archive_byte_equal_original": true,
+  "files": [
+    {
+      "archived_path": "tool/crate/Cargo.toml",
+      "bytes": 433,
+      "sha256": "98acaba7b6c447cc340b768dff3dda4fec4477a5da1b90346232c83fa1e3260b",
+      "source": {
+        "bytes": 433,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/crate/Cargo.toml",
+        "sha256": "98acaba7b6c447cc340b768dff3dda4fec4477a5da1b90346232c83fa1e3260b"
+      }
+    },
+    {
+      "archived_path": "tool/crate/Cargo.lock",
+      "bytes": 42679,
+      "sha256": "22323cd693dd04e2f9c248fcce09843bf940bc5fe15ad3b0cc647e2ecc2627de",
+      "source": {
+        "bytes": 42679,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/crate/Cargo.lock",
+        "sha256": "22323cd693dd04e2f9c248fcce09843bf940bc5fe15ad3b0cc647e2ecc2627de"
+      }
+    },
+    {
+      "archived_path": "tool/crate/src/main.rs",
+      "bytes": 10373,
+      "sha256": "3d2902044ed4cb3f61894cd5d6a9cd555f9756bb132da749666fae49b516194d",
+      "source": {
+        "bytes": 10373,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/crate/src/main.rs",
+        "sha256": "3d2902044ed4cb3f61894cd5d6a9cd555f9756bb132da749666fae49b516194d"
+      }
+    },
+    {
+      "archived_path": "tool/main-A-B.rs",
+      "bytes": 9486,
+      "sha256": "48f8c0c1c6bec7f384bd16423d89683be54e1561613b28613f137ee6fb98ae79",
+      "source": {
+        "bytes": 9486,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/source-correction-003/before-main.rs",
+        "sha256": "48f8c0c1c6bec7f384bd16423d89683be54e1561613b28613f137ee6fb98ae79"
+      }
+    },
+    {
+      "archived_path": "tool/guest.c",
+      "bytes": 4416,
+      "sha256": "c5b3b7fe3650fee60b2808f27e474e9fb9e1b5fcf6eb45cb2b035f762662e477",
+      "source": {
+        "bytes": 4416,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/guest.c",
+        "sha256": "c5b3b7fe3650fee60b2808f27e474e9fb9e1b5fcf6eb45cb2b035f762662e477"
+      }
+    },
+    {
+      "archived_path": "tool/B2-ONLY.patch",
+      "bytes": 1482,
+      "sha256": "18b3c869066e8203c6976dbd90f7690f60d43cb61a2e6bf2a7d304e1e245568a",
+      "source": {
+        "bytes": 1482,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/source-correction-003/B2-ONLY.patch",
+        "sha256": "18b3c869066e8203c6976dbd90f7690f60d43cb61a2e6bf2a7d304e1e245568a"
+      }
+    },
+    {
+      "archived_path": "tool/compiler-bindings.json",
+      "bytes": 819,
+      "sha256": "0da08a2f3eaf39cb378ce4cb6c4844abeea15d4857a66c5903a360e6fbe05253",
+      "source": {
+        "bytes": 819,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-005/before-compiler.json",
+        "sha256": "0da08a2f3eaf39cb378ce4cb6c4844abeea15d4857a66c5903a360e6fbe05253"
+      }
+    },
+    {
+      "archived_path": "tool/rust-toolchain.toml",
+      "bytes": 831,
+      "sha256": "8e95dba878d554bb4ce4267bc4cc5be16c20f327d2bc636fa0e25cd9cc2a0909",
+      "source": {
+        "bytes": 831,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/rust-toolchain.toml",
+        "sha256": "8e95dba878d554bb4ce4267bc4cc5be16c20f327d2bc636fa0e25cd9cc2a0909"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-01.stdout",
+      "bytes": 2300,
+      "sha256": "cffaf0d2cc567acf7eadef4a8e5a1709db92417dd93503e89873ceef2bf2302e",
+      "source": {
+        "bytes": 2300,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-01.stdout",
+        "sha256": "cffaf0d2cc567acf7eadef4a8e5a1709db92417dd93503e89873ceef2bf2302e"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-01.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-01.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-01.guest.stdout",
+      "bytes": 251,
+      "sha256": "dab29483902ffc9ee1ba51f7bad26a13cdb4fdddb9ed925ab9c71ac6c8b8ecce",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-01.guest.stdout",
+        "sha256": "dab29483902ffc9ee1ba51f7bad26a13cdb4fdddb9ed925ab9c71ac6c8b8ecce"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-01.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-01.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-01.RESULT.json",
+      "bytes": 1190,
+      "sha256": "157e8005ad9d47246de89e5892f267c90e8f3aea66d0b17ef674861b0ceee40c",
+      "source": {
+        "bytes": 1190,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-01.RESULT.json",
+        "sha256": "157e8005ad9d47246de89e5892f267c90e8f3aea66d0b17ef674861b0ceee40c"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-02.stdout",
+      "bytes": 2309,
+      "sha256": "5d70a4cd3db2a0a09e873f152efb5ecb9928d38d807ca6351a011c432d231979",
+      "source": {
+        "bytes": 2309,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-02.stdout",
+        "sha256": "5d70a4cd3db2a0a09e873f152efb5ecb9928d38d807ca6351a011c432d231979"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-02.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-02.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-02.guest.stdout",
+      "bytes": 251,
+      "sha256": "a11e1b46241fc7a1c44beb5908765419c892610be3473064f8d7e88ff7288573",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-02.guest.stdout",
+        "sha256": "a11e1b46241fc7a1c44beb5908765419c892610be3473064f8d7e88ff7288573"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-02.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-02.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-02.RESULT.json",
+      "bytes": 1195,
+      "sha256": "12a589dc9885fffd555f570db2c05569a80da8d3d5539814dedefccb06e52c50",
+      "source": {
+        "bytes": 1195,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-02.RESULT.json",
+        "sha256": "12a589dc9885fffd555f570db2c05569a80da8d3d5539814dedefccb06e52c50"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-03.stdout",
+      "bytes": 2312,
+      "sha256": "c685a245846f3ac700996a52cadb66f474d3b9eac2f91f0ca09453675c755430",
+      "source": {
+        "bytes": 2312,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-03.stdout",
+        "sha256": "c685a245846f3ac700996a52cadb66f474d3b9eac2f91f0ca09453675c755430"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-03.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-03.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-03.guest.stdout",
+      "bytes": 251,
+      "sha256": "7fc62dc70201dc4a4ca2fa3192bb974799b908117d628cfdfe6f8b35eda32038",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-03.guest.stdout",
+        "sha256": "7fc62dc70201dc4a4ca2fa3192bb974799b908117d628cfdfe6f8b35eda32038"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-03.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-03.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-03.RESULT.json",
+      "bytes": 1195,
+      "sha256": "8f90388628b37366ee45bde26f88796369bcc929bb6b5815850e187c7d94e450",
+      "source": {
+        "bytes": 1195,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-03.RESULT.json",
+        "sha256": "8f90388628b37366ee45bde26f88796369bcc929bb6b5815850e187c7d94e450"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-04.stdout",
+      "bytes": 2306,
+      "sha256": "a930888a48fb0fb1e95ae3ba1f8e94b4fa6c114bc71ff86d6eaf583d7cac72b4",
+      "source": {
+        "bytes": 2306,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-04.stdout",
+        "sha256": "a930888a48fb0fb1e95ae3ba1f8e94b4fa6c114bc71ff86d6eaf583d7cac72b4"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-04.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-04.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-04.guest.stdout",
+      "bytes": 251,
+      "sha256": "c004c457872f07dfe8b3333a91e452bdcfac9f7acc4ba39d7d41e00df9bd8576",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-04.guest.stdout",
+        "sha256": "c004c457872f07dfe8b3333a91e452bdcfac9f7acc4ba39d7d41e00df9bd8576"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-04.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-04.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-04.RESULT.json",
+      "bytes": 1192,
+      "sha256": "aaf37e3ebf2cabb73ae7702037d6f7b9523f51f08fb261e23aa55e63a2bfbd91",
+      "source": {
+        "bytes": 1192,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-04.RESULT.json",
+        "sha256": "aaf37e3ebf2cabb73ae7702037d6f7b9523f51f08fb261e23aa55e63a2bfbd91"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-05.stdout",
+      "bytes": 2315,
+      "sha256": "579d8d8b4e3ce7b9138ad7ad3c15b80f09177e933748de9b05feeedf69bc8229",
+      "source": {
+        "bytes": 2315,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-05.stdout",
+        "sha256": "579d8d8b4e3ce7b9138ad7ad3c15b80f09177e933748de9b05feeedf69bc8229"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-05.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-05.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-05.guest.stdout",
+      "bytes": 251,
+      "sha256": "c56c4b05df5cf5122a1c60652449f57f5e2b84c982d5e7c750e7bd0db14a94cf",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-05.guest.stdout",
+        "sha256": "c56c4b05df5cf5122a1c60652449f57f5e2b84c982d5e7c750e7bd0db14a94cf"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-05.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-05.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-05.RESULT.json",
+      "bytes": 1197,
+      "sha256": "d893d47201a25c819865fad0e2b0506dbd83d20ac4aa98877e79daf63bc0e95e",
+      "source": {
+        "bytes": 1197,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-05.RESULT.json",
+        "sha256": "d893d47201a25c819865fad0e2b0506dbd83d20ac4aa98877e79daf63bc0e95e"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-06.stdout",
+      "bytes": 2318,
+      "sha256": "906601bc16d18a08e91367e9ae1edc5987cca98bab36f9036f012362624b62d8",
+      "source": {
+        "bytes": 2318,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-06.stdout",
+        "sha256": "906601bc16d18a08e91367e9ae1edc5987cca98bab36f9036f012362624b62d8"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-06.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-06.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-06.guest.stdout",
+      "bytes": 251,
+      "sha256": "4ace29978e2791501e9318734cdbf9f4bb26b1a10f5eecb9a9225e23f25a48ec",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-06.guest.stdout",
+        "sha256": "4ace29978e2791501e9318734cdbf9f4bb26b1a10f5eecb9a9225e23f25a48ec"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-06.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-06.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/cell-06.RESULT.json",
+      "bytes": 1196,
+      "sha256": "17ebfb755c60daf58cda1f07645ea578e3ad4ec604dfdfe3974c29394152696a",
+      "source": {
+        "bytes": 1196,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/cell-06.RESULT.json",
+        "sha256": "17ebfb755c60daf58cda1f07645ea578e3ad4ec604dfdfe3974c29394152696a"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/RESULT.json",
+      "bytes": 1619,
+      "sha256": "ace3455d1460fdfebe4bcf6063a2cfcbe6ddd427e6648fddafcc7affbe4edd14",
+      "source": {
+        "bytes": 1619,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/RESULT.json",
+        "sha256": "ace3455d1460fdfebe4bcf6063a2cfcbe6ddd427e6648fddafcc7affbe4edd14"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/CALLER.json",
+      "bytes": 381,
+      "sha256": "a3d1768786efc1d8a107c038280664c6a1cf6819d46064b451c1daf970a729dc",
+      "source": {
+        "bytes": 381,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/CALLER.json",
+        "sha256": "a3d1768786efc1d8a107c038280664c6a1cf6819d46064b451c1daf970a729dc"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-002/REPORT.md",
+      "bytes": 3164,
+      "sha256": "1b75cc4d729b72737505201db87053ef22b68b66b60eac72def403f077fffcfb",
+      "source": {
+        "bytes": 3164,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-audit-002/REPORT.md",
+        "sha256": "1b75cc4d729b72737505201db87053ef22b68b66b60eac72def403f077fffcfb"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-01.stdout",
+      "bytes": 3564,
+      "sha256": "3625e1b9cf955c060ffffc194b62a746f29fc39e05ceddead258a2c27b383f73",
+      "source": {
+        "bytes": 3564,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-01.stdout",
+        "sha256": "3625e1b9cf955c060ffffc194b62a746f29fc39e05ceddead258a2c27b383f73"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-01.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-01.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-01.guest.stdout",
+      "bytes": 251,
+      "sha256": "74b2a4d7d7092b0a375503fe225b02ff26dff3e4d7700c8ecc47316dafdc0e3d",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-01.guest.stdout",
+        "sha256": "74b2a4d7d7092b0a375503fe225b02ff26dff3e4d7700c8ecc47316dafdc0e3d"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-01.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-01.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-01.RESULT.json",
+      "bytes": 1190,
+      "sha256": "552584cddb66eb9dbd8cf10b5b946876d3249b6a7eba9532959622470a1171ab",
+      "source": {
+        "bytes": 1190,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-01.RESULT.json",
+        "sha256": "552584cddb66eb9dbd8cf10b5b946876d3249b6a7eba9532959622470a1171ab"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-02.stdout",
+      "bytes": 3451,
+      "sha256": "70ef3b9b4da31e07317e52b9f2c0759079e67a10bdf419a133c0ece8677495c2",
+      "source": {
+        "bytes": 3451,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-02.stdout",
+        "sha256": "70ef3b9b4da31e07317e52b9f2c0759079e67a10bdf419a133c0ece8677495c2"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-02.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-02.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-02.guest.stdout",
+      "bytes": 234,
+      "sha256": "7fbb578b78a0aa369d72f8c7da9d5f37c941d8258231143b51bdee54477436c6",
+      "source": {
+        "bytes": 234,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-02.guest.stdout",
+        "sha256": "7fbb578b78a0aa369d72f8c7da9d5f37c941d8258231143b51bdee54477436c6"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-02.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-02.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-02.RESULT.json",
+      "bytes": 1194,
+      "sha256": "ce8f6ed094ce662f9d119935acb73bbb56f65172fef07370e9f1745b308b6706",
+      "source": {
+        "bytes": 1194,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-02.RESULT.json",
+        "sha256": "ce8f6ed094ce662f9d119935acb73bbb56f65172fef07370e9f1745b308b6706"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-03.stdout",
+      "bytes": 3574,
+      "sha256": "b1a33f17bd28ac141b5a0bbb0b912b6d19ac7feba8ebfa81e4a35f13843727ff",
+      "source": {
+        "bytes": 3574,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-03.stdout",
+        "sha256": "b1a33f17bd28ac141b5a0bbb0b912b6d19ac7feba8ebfa81e4a35f13843727ff"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-03.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-03.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-03.guest.stdout",
+      "bytes": 251,
+      "sha256": "f97ae6d7cb26192b476236972d2a3bef5af4a4cebeede9ec986e0903bfa54fc9",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-03.guest.stdout",
+        "sha256": "f97ae6d7cb26192b476236972d2a3bef5af4a4cebeede9ec986e0903bfa54fc9"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-03.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-03.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-03.RESULT.json",
+      "bytes": 1195,
+      "sha256": "17be89c196f733476cdf13557befb33b67c0ec3cd20f7f14a22de26afd4b4411",
+      "source": {
+        "bytes": 1195,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-03.RESULT.json",
+        "sha256": "17be89c196f733476cdf13557befb33b67c0ec3cd20f7f14a22de26afd4b4411"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-04.stdout",
+      "bytes": 3572,
+      "sha256": "1051104ca02dfd9d795a2c51a24244ca84481eaf07d9fe5f3bf6ff0767eeefdf",
+      "source": {
+        "bytes": 3572,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-04.stdout",
+        "sha256": "1051104ca02dfd9d795a2c51a24244ca84481eaf07d9fe5f3bf6ff0767eeefdf"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-04.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-04.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-04.guest.stdout",
+      "bytes": 251,
+      "sha256": "b7a902a2196e44746103b3954f3bef77fbbb38dc5ae2299e98b32ba949bd6601",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-04.guest.stdout",
+        "sha256": "b7a902a2196e44746103b3954f3bef77fbbb38dc5ae2299e98b32ba949bd6601"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-04.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-04.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-04.RESULT.json",
+      "bytes": 1192,
+      "sha256": "29ba03bb923b9d088d6e3219962a33d56c054b01c8663f6b1a04709ba72eea01",
+      "source": {
+        "bytes": 1192,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-04.RESULT.json",
+        "sha256": "29ba03bb923b9d088d6e3219962a33d56c054b01c8663f6b1a04709ba72eea01"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-05.stdout",
+      "bytes": 3459,
+      "sha256": "afc7cbd68a22c00ddb3e072263722400ab332a64503c24b18cc09385282709e1",
+      "source": {
+        "bytes": 3459,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-05.stdout",
+        "sha256": "afc7cbd68a22c00ddb3e072263722400ab332a64503c24b18cc09385282709e1"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-05.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-05.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-05.guest.stdout",
+      "bytes": 234,
+      "sha256": "a28440d1862b3b0e41cbbf6cc642e546bbd89879688b79dea0508f5a69670e21",
+      "source": {
+        "bytes": 234,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-05.guest.stdout",
+        "sha256": "a28440d1862b3b0e41cbbf6cc642e546bbd89879688b79dea0508f5a69670e21"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-05.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-05.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-05.RESULT.json",
+      "bytes": 1197,
+      "sha256": "7d6bbb69eca9b5f628f069ea9602296dfa83d1eb2d2637d2a1c29077266deb61",
+      "source": {
+        "bytes": 1197,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-05.RESULT.json",
+        "sha256": "7d6bbb69eca9b5f628f069ea9602296dfa83d1eb2d2637d2a1c29077266deb61"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-06.stdout",
+      "bytes": 3582,
+      "sha256": "e558c10c6c5ca4ac160bfe5cbb6a120a36570f511d834a057f6c0f2289caf502",
+      "source": {
+        "bytes": 3582,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-06.stdout",
+        "sha256": "e558c10c6c5ca4ac160bfe5cbb6a120a36570f511d834a057f6c0f2289caf502"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-06.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-06.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-06.guest.stdout",
+      "bytes": 251,
+      "sha256": "0b96d89237ed03b530b1bcd6f975043f1ea57e95327d3c3036cd7af981c78d8b",
+      "source": {
+        "bytes": 251,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-06.guest.stdout",
+        "sha256": "0b96d89237ed03b530b1bcd6f975043f1ea57e95327d3c3036cd7af981c78d8b"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-06.guest.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-06.guest.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/cell-06.RESULT.json",
+      "bytes": 1198,
+      "sha256": "0ea28ea5a9c07a7a5fbf552b29e29ee0808806bab378199163bba4863888ab62",
+      "source": {
+        "bytes": 1198,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-06.RESULT.json",
+        "sha256": "0ea28ea5a9c07a7a5fbf552b29e29ee0808806bab378199163bba4863888ab62"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/RESULT.json",
+      "bytes": 1619,
+      "sha256": "1b73af7aa60b179d1e4e723b8f23d7bb7ac39465d89b79385c315d5029b70a4b",
+      "source": {
+        "bytes": 1619,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/RESULT.json",
+        "sha256": "1b73af7aa60b179d1e4e723b8f23d7bb7ac39465d89b79385c315d5029b70a4b"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/CALLER.json",
+      "bytes": 1937,
+      "sha256": "3c067df2b79a4b275919587f8982616925272b56d43fe0c6c09e1beaafaa0248",
+      "source": {
+        "bytes": 1937,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/CALLER.json",
+        "sha256": "3c067df2b79a4b275919587f8982616925272b56d43fe0c6c09e1beaafaa0248"
+      }
+    },
+    {
+      "archived_path": "tool/experiment-003/REPORT.md",
+      "bytes": 4739,
+      "sha256": "4b64a6d64ca907acdbab333a06afd53d0333ba9ea145e8cb20991f35b9ce133e",
+      "source": {
+        "bytes": 4739,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-audit-003/REPORT.md",
+        "sha256": "4b64a6d64ca907acdbab333a06afd53d0333ba9ea145e8cb20991f35b9ce133e"
+      }
+    },
+    {
+      "archived_path": "tool/build-004/cargo.RESULT.json",
+      "bytes": 1109,
+      "sha256": "d4e74d2748274ab326a0567d5624bc172f97da07b2c09c8a07ad723c1b1c56ca",
+      "source": {
+        "bytes": 1109,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/cargo.RESULT.json",
+        "sha256": "d4e74d2748274ab326a0567d5624bc172f97da07b2c09c8a07ad723c1b1c56ca"
+      }
+    },
+    {
+      "archived_path": "tool/build-004/cc.RESULT.json",
+      "bytes": 1352,
+      "sha256": "94137b193289d1e6b2d599ad48a5b85fe2c0f05a736a4dceb8e1cc72a3213866",
+      "source": {
+        "bytes": 1352,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/cc.RESULT.json",
+        "sha256": "94137b193289d1e6b2d599ad48a5b85fe2c0f05a736a4dceb8e1cc72a3213866"
+      }
+    },
+    {
+      "archived_path": "tool/build-004/RESULT.json",
+      "bytes": 1617,
+      "sha256": "5693608281750e77bb16a04034a12873703fb35f9140507a04af4b198a648392",
+      "source": {
+        "bytes": 1617,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/RESULT.json",
+        "sha256": "5693608281750e77bb16a04034a12873703fb35f9140507a04af4b198a648392"
+      }
+    },
+    {
+      "archived_path": "tool/build-004/ARTIFACTS.json",
+      "bytes": 9099,
+      "sha256": "e5e353280235321ab951635ff36da27651f7c4a7c8add459c470f2096749bf9f",
+      "source": {
+        "bytes": 9099,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/ARTIFACTS.json",
+        "sha256": "e5e353280235321ab951635ff36da27651f7c4a7c8add459c470f2096749bf9f"
+      }
+    },
+    {
+      "archived_path": "tool/build-005/cargo.RESULT.json",
+      "bytes": 1109,
+      "sha256": "7dfd26ab9f746315f3d1a7d8aabee5d004f6aa5ba41669591e913ee1e7d2fa2f",
+      "source": {
+        "bytes": 1109,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-005/cargo.RESULT.json",
+        "sha256": "7dfd26ab9f746315f3d1a7d8aabee5d004f6aa5ba41669591e913ee1e7d2fa2f"
+      }
+    },
+    {
+      "archived_path": "tool/build-005/cc.RESULT.json",
+      "bytes": 1351,
+      "sha256": "2632f4d3b17e6a10e413d25c3090658395a95d97ef0d5158496b8fc2d8188e39",
+      "source": {
+        "bytes": 1351,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-005/cc.RESULT.json",
+        "sha256": "2632f4d3b17e6a10e413d25c3090658395a95d97ef0d5158496b8fc2d8188e39"
+      }
+    },
+    {
+      "archived_path": "tool/build-005/RESULT.json",
+      "bytes": 1617,
+      "sha256": "0f315b3b0c477c72d8b68d97e58d12980d71c57538300439a71a037e6868f726",
+      "source": {
+        "bytes": 1617,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-005/RESULT.json",
+        "sha256": "0f315b3b0c477c72d8b68d97e58d12980d71c57538300439a71a037e6868f726"
+      }
+    },
+    {
+      "archived_path": "tool/build-005/ARTIFACTS.json",
+      "bytes": 9798,
+      "sha256": "23fe7f670d72fb015e7f618870ffcf31e347f201285512651e01a650b233bfbb",
+      "source": {
+        "bytes": 9798,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-005/ARTIFACTS.json",
+        "sha256": "23fe7f670d72fb015e7f618870ffcf31e347f201285512651e01a650b233bfbb"
+      }
+    },
+    {
+      "archived_path": "native/injection_boundary.c",
+      "bytes": 18273,
+      "sha256": "fa0e9c28f9c500f5a33daf89e3a220cb6ff12ea087701d4d3a5e7fabaf66125a",
+      "source": {
+        "bytes": 18273,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/injection_boundary.c",
+        "sha256": "fa0e9c28f9c500f5a33daf89e3a220cb6ff12ea087701d4d3a5e7fabaf66125a"
+      }
+    },
+    {
+      "archived_path": "native/compile.RESULT.json",
+      "bytes": 1441,
+      "sha256": "15e5df56cd5b3325097d4c5be15bac1b891aa26228cc3b5698cc819f68537f0f",
+      "source": {
+        "bytes": 1441,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-001/compile.RESULT.json",
+        "sha256": "15e5df56cd5b3325097d4c5be15bac1b891aa26228cc3b5698cc819f68537f0f"
+      }
+    },
+    {
+      "archived_path": "native/probe.RESULT.json",
+      "bytes": 917,
+      "sha256": "5750d2659e463024222392acd459f8b308136774b77280fab237a1c1614c2188",
+      "source": {
+        "bytes": 917,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-001/probe.RESULT.json",
+        "sha256": "5750d2659e463024222392acd459f8b308136774b77280fab237a1c1614c2188"
+      }
+    },
+    {
+      "archived_path": "native/probe.stdout",
+      "bytes": 84816,
+      "sha256": "c25ce5ba59c10cf7c0162ff7d3e05bf2725d6e920d2b272a3e3581dd3b0c5af1",
+      "source": {
+        "bytes": 84816,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-001/probe.stdout",
+        "sha256": "c25ce5ba59c10cf7c0162ff7d3e05bf2725d6e920d2b272a3e3581dd3b0c5af1"
+      }
+    },
+    {
+      "archived_path": "native/probe.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": {
+        "bytes": 0,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-001/probe.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "archived_path": "native/RESULT.json",
+      "bytes": 1583,
+      "sha256": "219b8b4dedca19cb2cfa03f3a005449ccd8f5059a3d2cc4d0b58dd2f4698fdba",
+      "source": {
+        "bytes": 1583,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-001/RESULT.json",
+        "sha256": "219b8b4dedca19cb2cfa03f3a005449ccd8f5059a3d2cc4d0b58dd2f4698fdba"
+      }
+    },
+    {
+      "archived_path": "native/REPORT.md",
+      "bytes": 4979,
+      "sha256": "eeb3d00500a20bcb13078f0852b5d53afa017f374ce0cc8b691232ed7678b000",
+      "source": {
+        "bytes": 4979,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-audit-001/REPORT.md",
+        "sha256": "eeb3d00500a20bcb13078f0852b5d53afa017f374ce0cc8b691232ed7678b000"
+      }
+    },
+    {
+      "archived_path": "historical/build-001-RESULT.json",
+      "bytes": 1609,
+      "sha256": "7f3fa4c0fec6a807c94aa234e9b6e1e4bdde0e2909e706e8201ef384a3f20e7d",
+      "source": {
+        "bytes": 1609,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-001/RESULT.json",
+        "sha256": "7f3fa4c0fec6a807c94aa234e9b6e1e4bdde0e2909e706e8201ef384a3f20e7d"
+      }
+    },
+    {
+      "archived_path": "historical/build-002-RESULT.json",
+      "bytes": 1617,
+      "sha256": "2e69e2d6c2369cf693f49cec94d880822f7e8aef3a3314d43eefe58d51625af4",
+      "source": {
+        "bytes": 1617,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-002/RESULT.json",
+        "sha256": "2e69e2d6c2369cf693f49cec94d880822f7e8aef3a3314d43eefe58d51625af4"
+      }
+    },
+    {
+      "archived_path": "historical/experiment-001-RESULT.json",
+      "bytes": 1622,
+      "sha256": "b7d64a660dc09bbca3d182e4ef7f4b52b24ad32d5e27385460dbd828e3711152",
+      "source": {
+        "bytes": 1622,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-001/RESULT.json",
+        "sha256": "b7d64a660dc09bbca3d182e4ef7f4b52b24ad32d5e27385460dbd828e3711152"
+      }
+    }
+  ],
+  "remote_publication": null
+}

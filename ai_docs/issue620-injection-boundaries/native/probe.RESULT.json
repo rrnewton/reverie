@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-001/injection_boundary"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2",
+  "literal_returncode": 0,
+  "wall_seconds": 0.06179078799323179,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-001/probe.stdout",
+    "bytes": 84816,
+    "sha256": "c25ce5ba59c10cf7c0162ff7d3e05bf2725d6e920d2b272a3e3581dd3b0c5af1"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/execution-001/probe.stderr",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

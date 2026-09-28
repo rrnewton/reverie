@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-baseline-001/private-fs-001/mnt/brs-poll-select-baseline-01a0d5c2-3436018-1790603809758174377/build-poll-select-tool-boundary-005/debug/poll-select-tool-boundary-probe",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-005/guest",
+    "exact",
+    "second-wait"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2",
+  "literal_returncode": 0,
+  "wall_seconds": 0.04310618501040153,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-03.stdout",
+    "bytes": 3574,
+    "sha256": "b1a33f17bd28ac141b5a0bbb0b912b6d19ac7feba8ebfa81e4a35f13843727ff"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-003/cell-03.stderr",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

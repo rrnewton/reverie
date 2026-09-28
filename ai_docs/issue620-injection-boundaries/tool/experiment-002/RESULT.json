@@ -1,0 +1,53 @@
+{
+  "actual": {
+    "cgroup_usage_usec": 3814088,
+    "cpu_budget_seconds": 120,
+    "cpu_seconds": 3.814088,
+    "cpu_source": "systemd CPUUsageNSec after scope exit",
+    "cpu_usage_nsec": 3814088000,
+    "exit_code": 0,
+    "label": "poll-select-tool-boundary-experiment-002",
+    "reaped": false,
+    "schema": "hermit-box-run-actual/v1",
+    "scope": "hermit-box-run-1864170-1790611372863852367.scope",
+    "termination": "completed",
+    "wall_backstop_seconds": 120
+  },
+  "evidence_complete": true,
+  "literal_caller_returncode": 0,
+  "outcome": "PASSED",
+  "outer_wall_seconds": 15.904137902980438,
+  "payload": {
+    "bytes": 65992,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/PAYLOAD-RESULT.json",
+    "sha256": "fa9589b911fe9c26be0d9458149dbe943634946ff71418eb4a188ed0e8ee8011"
+  },
+  "phase": "experiment",
+  "retirement": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "hermit-box-run-1864170-1790611372863852367.scope",
+      "-p",
+      "LoadState",
+      "-p",
+      "ActiveState",
+      "-p",
+      "SubState",
+      "-p",
+      "ControlGroup"
+    ],
+    "cgroups": [
+      "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/hermit-box-run-1864170-1790611372863852367.scope"
+    ],
+    "retired": true,
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nControlGroup=\n",
+    "units": [
+      "hermit-box-run-1864170-1790611372863852367.scope"
+    ]
+  },
+  "truncations": []
+}

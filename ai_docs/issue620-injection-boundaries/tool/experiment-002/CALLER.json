@@ -1,0 +1,11 @@
+{
+  "session_id": 63290,
+  "closed": true,
+  "literal_returncode": 0,
+  "final_chunk": "cbe7ce",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/experiment-002/RESULT.json",
+    "bytes": 1619,
+    "sha256": "ace3455d1460fdfebe4bcf6063a2cfcbe6ddd427e6648fddafcc7affbe4edd14"
+  }
+}

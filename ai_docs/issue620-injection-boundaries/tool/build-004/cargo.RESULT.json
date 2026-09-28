@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+    "build",
+    "--locked",
+    "--offline",
+    "--manifest-path",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/crate/Cargo.toml",
+    "--message-format=json-render-diagnostics",
+    "-j",
+    "2"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2",
+  "literal_returncode": 0,
+  "wall_seconds": 50.73873679499957,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/cargo.stdout",
+    "bytes": 256054,
+    "sha256": "8980b1ccdeb63bb5e56c92ba89defcd1fcd0999ef786ff614bd0aff04c81b5df"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/cargo.stderr",
+    "bytes": 5195,
+    "sha256": "0e6a9f7f46806971f10e89a094d84fe78c0bc4fe3aeca3bd3ee1d4191964413c"
+  }
+}

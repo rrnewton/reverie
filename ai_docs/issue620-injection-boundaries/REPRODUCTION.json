@@ -1,0 +1,169 @@
+{
+  "actual_commands": "Each build-*/cargo.RESULT.json and cc.RESULT.json and each experiment-*/cell-*.RESULT.json contains its complete original argv and cwd. Native compile.RESULT.json and probe.RESULT.json do the same. These are historical commands, not execution authority.",
+  "allowed_relocations": [
+    "checkout prefix",
+    "fresh private Cargo target/output directories",
+    "guest executable path returned by actual build"
+  ],
+  "base": "547278b9b5e9a205c92e40c9e6f189beb8a3ddd7",
+  "build_caps": {
+    "cores": 2,
+    "cpu_seconds": 1800,
+    "jobs": 2,
+    "memory": "8Gi",
+    "stderr_bytes": 33554432,
+    "stdout_bytes": 33554432,
+    "wall_seconds": 1800
+  },
+  "cases": [
+    {
+      "B": "getpid",
+      "route": "exact"
+    },
+    {
+      "B": "mask-query",
+      "route": "exact"
+    },
+    {
+      "B": "second-wait",
+      "route": "exact"
+    },
+    {
+      "B": "getpid",
+      "route": "scratch"
+    },
+    {
+      "B": "mask-query",
+      "route": "scratch"
+    },
+    {
+      "B": "second-wait",
+      "route": "scratch"
+    }
+  ],
+  "compiler": {
+    "cargo": {
+      "bytes": 35930328,
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+    },
+    "cc": {
+      "bytes": 1093144,
+      "path": "/usr/bin/gcc",
+      "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0"
+    },
+    "rustc": {
+      "bytes": 647712,
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "9da19b28ed198d7a7e3bd1ba5f6490b3d56c9b324f514bd05a5ed3f4661c95de"
+    },
+    "rustfmt": {
+      "bytes": 5255768,
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+      "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+    }
+  },
+  "issue": "https://github.com/rrnewton/reverie/issues/620",
+  "lock": {
+    "bytes": 42679,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/crate/Cargo.lock",
+    "sha256": "22323cd693dd04e2f9c248fcce09843bf940bc5fe15ad3b0cc647e2ecc2627de"
+  },
+  "materialization": "In a separately authorized Reverie checkout at the recorded base, place tool/crate and tool/guest.c under target/issue620-tool-boundary-reproduce-001/. This preserves the manifest relative path dependencies exactly. Use main-A-B.rs as crate/src/main.rs for A/B; use archived crate/src/main.rs for A/B2. Give each variant its own fresh target and output paths. Never overwrite retained evidence.",
+  "native_compile_and_experiment_caps": {
+    "cores": 2,
+    "cpu_seconds": 30,
+    "max_ptrace_stops_per_child": 24,
+    "memory": "1Gi",
+    "per_child_seconds": 5,
+    "stderr_bytes": 4194304,
+    "stdout_bytes": 4194304,
+    "wall_seconds": 60
+  },
+  "no_extra_injections": true,
+  "no_retry_loop": true,
+  "product_dependencies": [
+    {
+      "bytes": 369605,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/src/task.rs",
+      "sha256": "cfd0c112e208019b4aa6c7680f3d3c48d98c1997f5adc79c28dc2cf2043275e0"
+    },
+    {
+      "bytes": 397134,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/src/tracer.rs",
+      "sha256": "1b4bbe01c61a501d4241c84377b1e44f48227041d544f3e286bb11833a521e40"
+    },
+    {
+      "bytes": 19839,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/src/failure.rs",
+      "sha256": "826f7646bb32534d05a370525919d04a104ac85a584aa00f1f9e22a8f459d949"
+    },
+    {
+      "bytes": 5553,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/src/testing.rs",
+      "sha256": "37092d598786ff216b08a5dc91fed26fbec9c4e21e0ce3ccc768453c16a216c3"
+    },
+    {
+      "bytes": 28605,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie/src/guest.rs",
+      "sha256": "98f8aac11fb82dbb8145d94476a3873a458ad8c30e2d3f2b5f4907f56411b1bb"
+    },
+    {
+      "bytes": 32709,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie/src/tool.rs",
+      "sha256": "36ae34d65d16e8a344eff2b2c1f67af69430a5a537b4e86d7abc17ec35904b90"
+    },
+    {
+      "bytes": 5894,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie/src/subscription.rs",
+      "sha256": "638a1482113e9ddc33e94319bbf1d70aa1807ad3336df16f58175719058d7acc"
+    },
+    {
+      "bytes": 92779,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-syscalls/src/syscalls.rs",
+      "sha256": "60629d490d670d4567401a1c9c01a8e93a1748ca82ac808553473e3b7626b2ce"
+    },
+    {
+      "bytes": 1796,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/Cargo.toml",
+      "sha256": "f428c008150829799649506bb242580d6870a431f335a5bf7f4b3354c17515a8"
+    },
+    {
+      "bytes": 1759,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie/Cargo.toml",
+      "sha256": "0b33ffe97d3b3bc8bf40438a1e724f2d6eea8c3521e5d5edebd1f7e80eb8fc1b"
+    },
+    {
+      "bytes": 1459,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-process/Cargo.toml",
+      "sha256": "38faa74a46e31ddf02f2bebb72a6c5201147d6c9a2aa44d3509f6a6ad9ee25c6"
+    },
+    {
+      "bytes": 954,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-syscalls/Cargo.toml",
+      "sha256": "a02c4568a488958d40ca0b735220ba06a4c883519e95fd0eef72c89166d05413"
+    },
+    {
+      "bytes": 1556,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/safeptrace/Cargo.toml",
+      "sha256": "093f34300581ba77ceb61e7c0b2f34a8862dfaa8d3cf9f58876e3720ba13a1ea"
+    },
+    {
+      "bytes": 831,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/rust-toolchain.toml",
+      "sha256": "8e95dba878d554bb4ce4267bc4cc5be16c20f327d2bc636fa0e25cd9cc2a0909"
+    }
+  ],
+  "repository": "https://github.com/rrnewton/reverie",
+  "status": "PROPOSED_ARCHIVE_ONLY_NOT_PUBLISHED",
+  "tool_experiment_caps": {
+    "cores": 2,
+    "cpu_seconds": 120,
+    "guest_alarm_seconds": 5,
+    "memory": "8Gi",
+    "stderr_bytes": 33554432,
+    "stdout_bytes": 33554432,
+    "wall_seconds": 120
+  },
+  "toolchain": "nightly-2026-07-29"
+}

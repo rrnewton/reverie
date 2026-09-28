@@ -1,0 +1,5 @@
+# Archive status
+
+This commit archives the original capture-time sources, proposal records, command/result records and literal outputs for https://github.com/rrnewton/reverie/issues/620. Historical absolute target paths and proposal/unreleased labels remain verbatim; they describe their original capture or preparation state. They are not a new execution authorization or current qualification claim. COPY-INDEX.json binds copied primaries; REPRODUCTION.json and README.md explain relocation and the required bounds.
+
+The related unfinished product checkpoint is https://github.com/rrnewton/reverie/commit/fc3f89f9f7e8bdc1fb58dc5bd407f4c2e94bf861, based on547278b9b5e9a205c92e40c9e6f189beb8a3ddd7. This archive does not change its six product files, enable temporary-mask wait support, resolve original masked/pselect failures, or establish independent approval. The recorded diagnostic outcomes are observations, including preserved earlier setup failures. No new compiler, test, guest or tracer execution occurred to create this archive. No binary, cache, opaque configuration, paper text/PDF or unrelated lane evidence is included.

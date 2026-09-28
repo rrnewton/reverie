@@ -1,0 +1,173 @@
+{
+  "tool": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-baseline-001/private-fs-001/mnt/brs-poll-select-baseline-01a0d5c2-3436018-1790603809758174377/build-poll-select-tool-boundary-004/debug/poll-select-tool-boundary-probe",
+    "bytes": 114129128,
+    "sha256": "eaea8687d1c95207e1592e1549e8ba704f936ef56815a9d55ef9193939150063"
+  },
+  "guest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/guest",
+    "bytes": 30512,
+    "sha256": "b71d55c8be1a5299e984f15813b40b28b8b28e60554fcd9b4dc5d4a297f3b83a"
+  },
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/crate/Cargo.lock",
+    "bytes": 42679,
+    "sha256": "22323cd693dd04e2f9c248fcce09843bf940bc5fe15ad3b0cc647e2ecc2627de"
+  },
+  "source": {
+    "frozen": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-injection-boundary-probe-001/FROZEN-SOURCE.json",
+      "bytes": 1328,
+      "sha256": "de7f7d4af3918bbeeacce237496c9eb65f7c6df5d9ce5863328035081bf67479"
+    },
+    "probe": [
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/guest.c",
+        "bytes": 4416,
+        "sha256": "c5b3b7fe3650fee60b2808f27e474e9fb9e1b5fcf6eb45cb2b035f762662e477"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/crate/Cargo.toml",
+        "bytes": 433,
+        "sha256": "98acaba7b6c447cc340b768dff3dda4fec4477a5da1b90346232c83fa1e3260b"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/crate/src/main.rs",
+        "bytes": 9486,
+        "sha256": "48f8c0c1c6bec7f384bd16423d89683be54e1561613b28613f137ee6fb98ae79"
+      }
+    ],
+    "product_bindings": [
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/src/task.rs",
+        "bytes": 369605,
+        "sha256": "cfd0c112e208019b4aa6c7680f3d3c48d98c1997f5adc79c28dc2cf2043275e0"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/src/tracer.rs",
+        "bytes": 397134,
+        "sha256": "1b4bbe01c61a501d4241c84377b1e44f48227041d544f3e286bb11833a521e40"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/src/failure.rs",
+        "bytes": 19839,
+        "sha256": "826f7646bb32534d05a370525919d04a104ac85a584aa00f1f9e22a8f459d949"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/src/testing.rs",
+        "bytes": 5553,
+        "sha256": "37092d598786ff216b08a5dc91fed26fbec9c4e21e0ce3ccc768453c16a216c3"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie/src/guest.rs",
+        "bytes": 28605,
+        "sha256": "98f8aac11fb82dbb8145d94476a3873a458ad8c30e2d3f2b5f4907f56411b1bb"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie/src/tool.rs",
+        "bytes": 32709,
+        "sha256": "36ae34d65d16e8a344eff2b2c1f67af69430a5a537b4e86d7abc17ec35904b90"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie/src/subscription.rs",
+        "bytes": 5894,
+        "sha256": "638a1482113e9ddc33e94319bbf1d70aa1807ad3336df16f58175719058d7acc"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-syscalls/src/syscalls.rs",
+        "bytes": 92779,
+        "sha256": "60629d490d670d4567401a1c9c01a8e93a1748ca82ac808553473e3b7626b2ce"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-ptrace/Cargo.toml",
+        "bytes": 1796,
+        "sha256": "f428c008150829799649506bb242580d6870a431f335a5bf7f4b3354c17515a8"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie/Cargo.toml",
+        "bytes": 1759,
+        "sha256": "0b33ffe97d3b3bc8bf40438a1e724f2d6eea8c3521e5d5edebd1f7e80eb8fc1b"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-process/Cargo.toml",
+        "bytes": 1459,
+        "sha256": "38faa74a46e31ddf02f2bebb72a6c5201147d6c9a2aa44d3509f6a6ad9ee25c6"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/reverie-syscalls/Cargo.toml",
+        "bytes": 954,
+        "sha256": "a02c4568a488958d40ca0b735220ba06a4c883519e95fd0eef72c89166d05413"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/safeptrace/Cargo.toml",
+        "bytes": 1556,
+        "sha256": "093f34300581ba77ceb61e7c0b2f34a8862dfaa8d3cf9f58876e3720ba13a1ea"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/rust-toolchain.toml",
+        "bytes": 831,
+        "sha256": "8e95dba878d554bb4ce4267bc4cc5be16c20f327d2bc636fa0e25cd9cc2a0909"
+      }
+    ],
+    "preserved_artifacts": [
+      {
+        "bytes": 415878448,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-baseline-001/private-fs-001/mnt/brs-poll-select-baseline-01a0d5c2-3436018-1790603809758174377/build-poll-select-baseline-001/debug/deps/static_elf-5430aa08d4461df4",
+        "sha256": "d28781c75426d8f4d0d73c41ca133f5c79cba80510f32705a3a030473e8c06f4"
+      },
+      {
+        "bytes": 267506104,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-baseline-001/private-fs-001/mnt/brs-poll-select-baseline-01a0d5c2-3436018-1790603809758174377/build-poll-select-routing-001/debug/deps/reverie_kvm-6331043f5454ed5d",
+        "sha256": "41aecd9f2031f251500f9a3ebe42757ca72d9125e1ffae0745ad375573dd412b"
+      },
+      {
+        "bytes": 416180624,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-baseline-001/private-fs-001/mnt/brs-poll-select-baseline-01a0d5c2-3436018-1790603809758174377/build-poll-select-routing-001/debug/deps/static_elf-5430aa08d4461df4",
+        "sha256": "ecac22014bca43d03e19500af6876314dbe15db9c779896ae56da503388e54dc"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-baseline-001/private-fs-001/mnt/brs-poll-select-baseline-01a0d5c2-3436018-1790603809758174377/build-poll-select-tool-boundary-003/debug/poll-select-tool-boundary-probe",
+        "bytes": 113900608,
+        "sha256": "d55c91d5caf7df35bd5aefbdc2c2f1750399d6d07dc0ccfb0604897880bb342d"
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-003/guest",
+        "bytes": 30512,
+        "sha256": "b71d55c8be1a5299e984f15813b40b28b8b28e60554fcd9b4dc5d4a297f3b83a"
+      }
+    ]
+  },
+  "compiler": {
+    "cargo": {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+      "bytes": 35930328,
+      "sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+    },
+    "rustc": {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+      "bytes": 647712,
+      "sha256": "9da19b28ed198d7a7e3bd1ba5f6490b3d56c9b324f514bd05a5ed3f4661c95de"
+    },
+    "rustfmt": {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+      "bytes": 5255768,
+      "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+    },
+    "cc": {
+      "path": "/usr/bin/gcc",
+      "bytes": 1093144,
+      "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0"
+    }
+  },
+  "cargo_message": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/TOOL.compiler-artifact.json",
+    "bytes": 1525,
+    "sha256": "d2fa0558bfd56b39e1272992de6020f3e1427e8467b01e44a317d5c5328eb843"
+  },
+  "guest_dependencies": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-poll-select-recovery-01a0d5c2/target/poll-select-tool-boundary-probe-001/build-004/guest.d",
+    "bytes": 3682,
+    "sha256": "bdc74a3d7151e7ecfab606af3ce1efa370cab73c79caf727580013050f8cdbae"
+  },
+  "diagnostic_executed": false
+}

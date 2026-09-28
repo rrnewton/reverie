@@ -1,0 +1,19 @@
+--- a/crate/src/main.rs
++++ b/crate/src/main.rs
+@@ -79,6 +79,16 @@
+             Next::SecondWait => guest.inject(Ppoll::new().with_fds(None).with_nfds(0).with_timeout(AddrMut::from_raw(base + 32)).with_sigmask(Addr::from_raw(base + 56)).with_sigsetsize(8)).await,
+         };
+         guest.send_rpc(json!({"kind":"B_result","callback":callback,"result":public_result(b),"snapshot":snapshot(guest,base)?}).to_string()).await;
++        // At most one B2 per cell, on the first callback only. Preserve any
++        // later kernel-driven callback reentry; never retry B2 or loop to green.
++        if callback == 1 && b == Err(Errno::ERESTARTSYS) {
++            let b2 = match config.next {
++                Next::Getpid => guest.inject(Getpid::new()).await,
++                Next::MaskQuery => guest.inject(RtSigprocmask::new().with_how(libc::SIG_SETMASK).with_set(None).with_oldset(AddrMut::from_raw(base + 64)).with_sigsetsize(8)).await,
++                Next::SecondWait => guest.inject(Ppoll::new().with_fds(None).with_nfds(0).with_timeout(AddrMut::from_raw(base + 32)).with_sigmask(Addr::from_raw(base + 56)).with_sigsetsize(8)).await,
++            };
++            guest.send_rpc(json!({"kind":"B2_result","callback":callback,"result":public_result(b2),"snapshot":snapshot(guest,base)?}).to_string()).await;
++        }
+         guest.send_rpc(json!({"kind":"callback_return_A_unchanged","callback":callback,"result":public_result(a)}).to_string()).await;
+         Ok(a?)
+     }
