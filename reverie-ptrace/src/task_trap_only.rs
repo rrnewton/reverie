@@ -159,6 +159,10 @@ enum DeferredStopsNext {
     /// The group has more than one thread (see
     /// [`TrapOnlyFailure::HopDeferredStopMultiThread`]).
     MultiThread(u64),
+    /// A stop signal other than SIGSTOP is pending, so a SIGCONT sent since
+    /// the deferral may have been discarded without a trace (see
+    /// [`TrapOnlyFailure::HopDeferredStopBehindStopSignal`]).
+    StopSignalPending(i32),
     /// Another SIGSTOP is pending: run the slot again, so that it is
     /// dequeued (and deferred) too, before its queue receives the re-raise.
     Rerun,
@@ -178,6 +182,17 @@ fn deferred_stops_next(status: Option<&HopThreadStatus>) -> DeferredStopsNext {
         DeferredStopsNext::Dying
     } else if status.threads != 1 {
         DeferredStopsNext::MultiThread(status.threads)
+    } else if let Some(signal) = [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU]
+        .into_iter()
+        .find(|signal| status.pending(*signal))
+    {
+        // Every SIGCONT sent before this stop signal was discarded when it
+        // was sent, so the read cannot tell whether one was sent after a
+        // deferred SIGSTOP (which it would have discarded under plain
+        // ptrace). Neither can the pending set at the deferral: the stop
+        // signal may have been pending then, discarded by a SIGCONT, and
+        // sent again, which discarded that SIGCONT.
+        DeferredStopsNext::StopSignalPending(signal)
     } else if status.pending(libc::SIGSTOP) {
         DeferredStopsNext::Rerun
     } else {
@@ -912,6 +927,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                                 TrapOnlyFailure::HopDeferredStopMultiThread { site, threads },
                             ));
                         }
+                        DeferredStopsNext::StopSignalPending(signal) => {
+                            return Err(self.trap_only_failure(
+                                "trap-only hop",
+                                TrapOnlyFailure::HopDeferredStopBehindStopSignal { site, signal },
+                            ));
+                        }
                         DeferredStopsNext::Rerun => {
                             self.trap_only_record(
                                 "slot SIGSTOP pending at the slot stop: run the slot again"
@@ -1075,8 +1096,9 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Raises again, into its own queue, each SIGSTOP that H2 suppressed and
     /// kept (at most one per queue: `DeferredStops`). H2 already dropped
-    /// them if a SIGCONT arrived since, or if the thread is dying, and made
-    /// sure that no other SIGSTOP is pending (`DeferredStopsNext`).
+    /// them if a SIGCONT arrived since, or if the thread is dying, made sure
+    /// that no other SIGSTOP is pending, and refused if another stop signal
+    /// is (`DeferredStopsNext`).
     ///
     /// Each is sent with `rt_tgsigqueueinfo` (the private queue) or
     /// `rt_sigqueueinfo` (the shared queue) as `SI_QUEUE` from the tracer,
@@ -1088,6 +1110,18 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// window between H2's last read of the pending signals and the re-raise
     /// below, or from what that read cannot see:
     ///
+    /// - Refused, not a difference: a SIGCONT sent after a deferred SIGSTOP
+    ///   and then discarded by a SIGTSTP, SIGTTIN or SIGTTOU sent before the
+    ///   read. Under plain ptrace that SIGCONT discarded the SIGSTOP; the
+    ///   read sees neither, and raising the SIGSTOP again would add a
+    ///   SIGSTOP delivery stop (and a restart of a blocking syscall it
+    ///   interrupts). The read cannot tell this from a stop signal that
+    ///   followed no SIGCONT, so any such stop signal pending at the read
+    ///   fails closed (`TrapOnlyHopDeferredStopBehindStopSignal`), including
+    ///   in runs plain ptrace would complete. A SIGCONT sent in the window
+    ///   itself, with or without a stop signal after it, is the residual
+    ///   below.
+    ///   `trap_only_p2_sigcont_then_a_stop_signal_fails_closed` covers it.
     /// - Visible to the Tool and the guest: a SIGCONT sent in the window is
     ///   discarded by the re-raised SIGSTOP (sending a stop signal discards a
     ///   pending SIGCONT), where under plain ptrace it would have discarded
@@ -1720,6 +1754,41 @@ mod hop_stop_tests {
                 DeferredStopsNext::Rerun
             );
         }
+        // Any other pending stop signal, in either queue, refuses: before a
+        // rerun, and whatever else is pending (a SIGCONT cannot be, as the
+        // stop signal would have discarded it, or it the stop signal).
+        for signal in [libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU] {
+            for (private, shared) in [
+                (bit(signal), 0),
+                (0, bit(signal)),
+                (bit(libc::SIGSTOP), bit(signal)),
+                (bit(signal) | bit(libc::SIGUSR1), bit(libc::SIGCONT)),
+            ] {
+                assert_eq!(
+                    deferred_stops_next(Some(&status("t", private, shared, 1))),
+                    DeferredStopsNext::StopSignalPending(signal)
+                );
+            }
+        }
+        assert_eq!(
+            deferred_stops_next(Some(&status(
+                "t",
+                bit(libc::SIGTTOU),
+                bit(libc::SIGTTIN),
+                1
+            ))),
+            DeferredStopsNext::StopSignalPending(libc::SIGTTIN)
+        );
+        // A dying thread or a second thread still decides first.
+        let stopped = status("t", bit(libc::SIGTSTP), bit(libc::SIGKILL), 1);
+        assert_eq!(
+            deferred_stops_next(Some(&stopped)),
+            DeferredStopsNext::Dying
+        );
+        assert_eq!(
+            deferred_stops_next(Some(&status("t", bit(libc::SIGTSTP), 0, 2))),
+            DeferredStopsNext::MultiThread(2)
+        );
         for (private, shared, discarded) in [
             (0, 0, false),
             (bit(libc::SIGUSR1), bit(libc::SIGUSR2), false),
