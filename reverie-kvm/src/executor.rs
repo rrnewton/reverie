@@ -41,7 +41,7 @@ use crate::elf::STACK_LIMIT;
 use crate::elf::TASK_COMM_LEN;
 #[cfg(any(test, feature = "native-test-support"))]
 use crate::elf::initialize_regular_create_directory_policy;
-use crate::elf::load_static_elf;
+use crate::elf::load_static_elf_with_authority;
 use crate::elf::resolve_executable_path;
 use crate::memory::AllocationCursors;
 use crate::memory::HostMemoryOperand;
@@ -728,7 +728,7 @@ fn execute_basic_syscall_inner(
         recvfrom(memory, state, args)
     } else if number == libc::SYS_sendmsg as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        sendmsg(memory, state, args)
+        sendmsg(memory, state, args, capture_output)
     } else if number == libc::SYS_recvmsg as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         recvmsg(memory, state, args)
@@ -2176,6 +2176,7 @@ pub(crate) struct FileTableState {
     native_poll_fds: std::collections::BTreeMap<i32, Arc<NativePollBinding>>,
     random_device_fds: std::collections::BTreeSet<i32>,
     random_device_descriptions: std::collections::BTreeMap<i32, Arc<RandomDeviceDescription>>,
+    loginuid_fds: std::collections::BTreeSet<i32>,
     stdout_alias_fds: std::collections::BTreeSet<i32>,
     stderr_alias_fds: std::collections::BTreeSet<i32>,
     cloexec_fds: std::collections::BTreeSet<i32>,
@@ -2313,23 +2314,6 @@ fn release_proc_transfers(state: &LoadedStaticElf, keys: &[(libc::dev_t, libc::i
     for key in keys {
         take_proc_transfer(&mut table, *key);
     }
-}
-
-/// Undoes registrations whose rights the host dequeued but the guest will never
-/// receive. A peek left them queued, so they stay in flight.
-fn release_dropped_proc_transfers<'a>(
-    state: &LoadedStaticElf,
-    files: impl IntoIterator<Item = &'a std::fs::File>,
-    peek: bool,
-) {
-    if peek {
-        return;
-    }
-    let keys: Vec<_> = files
-        .into_iter()
-        .filter_map(|file| host_file_key(file.as_raw_fd()).ok())
-        .collect();
-    release_proc_transfers(state, &keys);
 }
 
 /// Consumes one in-flight right, returning its description state.
@@ -2530,6 +2514,7 @@ impl FdinfoTarget {
             }
             if table.proc_files.contains_key(&self.target_fd)
                 || table.random_device_fds.contains(&self.target_fd)
+                || table.loginuid_fds.contains(&self.target_fd)
                 || table.signalfd_fds.contains(&self.target_fd)
                 || (self.capture_output
                     && (table.stdout_alias_fds.contains(&self.target_fd)
@@ -2807,6 +2792,7 @@ fn ensure_fdinfo_content_supported(
     let host = host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
     if state.proc_files.contains_key(&fd)
         || state.random_device_fds.contains(&fd)
+        || state.loginuid_fds.contains(&fd)
         || signalfd_mask(state, fd).is_some()
         || (capture_output && output_alias(state, fd).is_some())
     {
@@ -2874,7 +2860,7 @@ fn open_fdinfo(
     });
     // The empty, read-only backing file supplies descriptor ownership and
     // synthetic proc metadata only. Reads/seeks must use the description.
-    let result = open_synthetic_proc(
+    let result = open_private_fdinfo_carrier(
         state,
         &path,
         b"",
@@ -2998,6 +2984,7 @@ impl FileTableState {
             native_poll_fds: state.native_poll_fds.clone(),
             random_device_fds: state.random_device_fds.clone(),
             random_device_descriptions: state.random_device_descriptions.clone(),
+            loginuid_fds: state.loginuid_fds.clone(),
             stdout_alias_fds: state.stdout_alias_fds.clone(),
             stderr_alias_fds: state.stderr_alias_fds.clone(),
             cloexec_fds: state.cloexec_fds.clone(),
@@ -3079,6 +3066,7 @@ impl FileTableState {
         state
             .random_device_descriptions
             .clone_from(&self.random_device_descriptions);
+        state.loginuid_fds.clone_from(&self.loginuid_fds);
         state.stdout_alias_fds.clone_from(&self.stdout_alias_fds);
         state.stderr_alias_fds.clone_from(&self.stderr_alias_fds);
         state.cloexec_fds.clone_from(&self.cloexec_fds);
@@ -3606,12 +3594,13 @@ impl ElfExecutor {
         };
         let argv_refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
-        if load_static_elf(
+        if load_static_elf_with_authority(
             &mut validation_memory,
             &image,
             &argv_refs,
             &envp_refs,
             &self.state.cwd,
+            self.state.proc_carrier_authority.clone(),
         )
         .is_err()
         {
@@ -4559,6 +4548,13 @@ impl ElfExecutor {
     }
 
     pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
+        assert!(
+            Arc::ptr_eq(
+                &self.state.proc_carrier_authority,
+                &state.proc_carrier_authority
+            ),
+            "exec replacement changed the synthetic-proc carrier authority"
+        );
         let _retirement = self.state.file_retirement.hold();
         let file_table = self.file_table.clone();
         let mut files = file_table.lock().expect("KVM file-table lock poisoned");
@@ -4606,6 +4602,10 @@ impl ElfExecutor {
 
     pub(crate) fn cwd(&self) -> &std::path::Path {
         &self.state.cwd
+    }
+
+    pub(crate) fn proc_carrier_authority(&self) -> Arc<crate::proc_carrier::ProcCarrierAuthority> {
+        self.state.proc_carrier_authority.clone()
     }
 
     pub(crate) fn auxv(&self) -> &[(libc::c_ulong, libc::c_ulong)] {
@@ -6598,14 +6598,34 @@ impl ElfExecutor {
             && request.args()[1] != 0)
             .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
         let identity = self.admitted_signal_identity();
-        let action = execute_basic_syscall_with_read_context(
-            &mut memory,
-            &mut self.state,
-            request,
-            self.current_user_stack_pointer,
-            self.output.as_mut(),
-            terminal_read.map(|context| (context, identity)),
-        );
+        let action = if request.number() == libc::SYS_recvmsg as u64
+            || request.number() == libc::SYS_recvmmsg as u64
+        {
+            let shared = shared_files
+                .as_mut()
+                .expect("receive syscall retained its serialized file table");
+            let result = if request.number() == libc::SYS_recvmsg as u64 {
+                recvmsg_with_table(&mut memory, &mut self.state, request.args(), shared)
+            } else {
+                recvmmsg_with_table(&mut memory, &mut self.state, request.args(), shared)
+            };
+            // Receive publishes or rolls back both tables using prepared clones.
+            // Avoid a fallible generic clone after guest-visible publication.
+            shared_files.take();
+            SyscallAction::Continue {
+                result,
+                segment: None,
+            }
+        } else {
+            execute_basic_syscall_with_read_context(
+                &mut memory,
+                &mut self.state,
+                request,
+                self.current_user_stack_pointer,
+                self.output.as_mut(),
+                terminal_read.map(|context| (context, identity)),
+            )
+        };
         if let Some(before) = sigchld_action_before {
             let after = installed_signal_action(&self.state, libc::SIGCHLD);
             if after != before {
@@ -8700,6 +8720,9 @@ fn memfd_create(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         Ok(name) => name,
         Err(error) => return read_c_string_errno(error),
     };
+    if crate::proc_carrier::ProcCarrierAuthority::reserved_guest_name(&name) {
+        return negative_errno(libc::EINVAL);
+    }
     let Ok(name) = std::ffi::CString::new(name) else {
         // A NUL byte cannot occur inside a C string read stops at NUL, but guard
         // defensively; the kernel would reject an embedded NUL with EINVAL.
@@ -9136,11 +9159,14 @@ fn open_file(
             if path == b"/dev/random" { 8 } else { 9 },
         );
     }
-    if path == b"/proc/uptime" {
-        return open_virtual_file(state, b"0.00 0.00\n", flags, guest_cloexec);
-    }
     if path == b"/proc/self/loginuid" {
-        return open_virtual_file(state, b"0", flags, guest_cloexec);
+        let result = open_virtual_file(state, b"0", flags, guest_cloexec);
+        if result >= 0
+            && let Ok(fd) = libc::c_int::try_from(result)
+        {
+            state.loginuid_fds.insert(fd);
+        }
+        return result;
     }
     let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, path) else {
         return negative_errno(libc::EBADF);
@@ -9529,6 +9555,15 @@ fn open_host_fd_path(source_host_fd: RawFd, flags: u64) -> Result<std::fs::File,
     }
 }
 
+fn ensure_proc_carrier_readonly_or_path(file: &std::fs::File) -> Result<(), i64> {
+    let flags = fd_status_flags(file.as_raw_fd())?;
+    if flags & libc::O_PATH == 0 && flags & libc::O_ACCMODE != libc::O_RDONLY {
+        Err(negative_errno(libc::EBADMSG))
+    } else {
+        Ok(())
+    }
+}
+
 fn open_guest_fd_path(
     state: &mut LoadedStaticElf,
     guest_fd: libc::c_int,
@@ -9574,7 +9609,10 @@ fn open_guest_fd_path(
         // backing file.
         return negative_errno(libc::ENOSYS);
     }
-    if state.fdinfo_files.contains_key(&guest_fd) || state.random_device_fds.contains(&guest_fd) {
+    if state.fdinfo_files.contains_key(&guest_fd)
+        || state.random_device_fds.contains(&guest_fd)
+        || state.loginuid_fds.contains(&guest_fd)
+    {
         // Random-only prerequisite from https://github.com/rrnewton/reverie/pull/610
         // at acffb228964041190ff9aa071454a5f0017e34a1. Native random-device
         // aliases are valid, but this private carrier would lose its stream
@@ -9611,6 +9649,72 @@ fn open_guest_fd_path(
         if flags & libc::O_DIRECT as u64 != 0 {
             return negative_errno(libc::EINVAL);
         }
+    }
+
+    if let Some(source_proc_inode) = source_proc_inode.filter(|_| regular_proc) {
+        let Some(source_file) = state.files.get(&guest_fd) else {
+            return negative_errno(libc::EBADMSG);
+        };
+        let candidate = match state.proc_carrier_authority.candidate_kind(source_file) {
+            Ok(candidate) => candidate,
+            Err(errno) => return negative_errno(errno),
+        };
+        if !matches!(
+            candidate,
+            crate::proc_carrier::ProcCarrierCandidate::Reserved
+        ) {
+            return negative_errno(libc::EBADMSG);
+        }
+        if let Err(error) = ensure_proc_carrier_readonly_or_path(source_file) {
+            return error;
+        }
+        let inspection = match state
+            .proc_carrier_authority
+            .open_inspection_alias(source_file)
+        {
+            Ok(file) => state.file_retirement.stage(file),
+            Err(errno) => return negative_errno(errno),
+        };
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        let authenticated = match state.proc_carrier_authority.authenticate_reserved(
+            source_file,
+            inspection.as_file(),
+            &mut budget,
+            &mut cache,
+        ) {
+            Ok(authenticated) => authenticated,
+            Err(errno) => return negative_errno(errno),
+        };
+        let Some(expected_path) = synthetic_proc_path_for_inode(source_proc_inode) else {
+            return negative_errno(libc::EBADMSG);
+        };
+        if authenticated.canonical_path.as_slice() != expected_path
+            || authenticated.virtual_nofollow
+                != state.synthetic_proc_nofollow_fds.contains(&guest_fd)
+        {
+            return negative_errno(libc::EBADMSG);
+        }
+        let virtual_nofollow = flags & libc::O_NOFOLLOW as u64 != 0;
+        let file = match state.proc_carrier_authority.mint(
+            &authenticated.canonical_path,
+            authenticated.content.as_ref(),
+            virtual_nofollow,
+            path_only,
+            flags as libc::c_int,
+        ) {
+            Ok(file) => file,
+            Err(errno) => return negative_errno(errno),
+        };
+        let new_fd = insert_file_with_flags(state, file, close_on_exec, None);
+        if new_fd >= 0 {
+            let new_fd = new_fd as libc::c_int;
+            state.proc_files.insert(new_fd, source_proc_inode);
+            if virtual_nofollow {
+                state.synthetic_proc_nofollow_fds.insert(new_fd);
+            }
+        }
+        return new_fd;
     }
     let source_object_inode = guest_fd_object_identity(state, guest_fd);
 
@@ -9870,10 +9974,13 @@ fn downgrade_file_identity(state: &LoadedStaticElf, key: (libc::dev_t, libc::ino
     table.objects.retain(|_, entry| entry.is_live());
 }
 
-fn allocate_fd_object_inode(
-    state: &LoadedStaticElf,
-    file: &std::fs::File,
-) -> Result<Arc<GuestFileIdentity>, i64> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PreparedFileIdentity {
+    key: (libc::dev_t, libc::ino_t),
+    persistent: bool,
+}
+
+fn inspect_file_identity(file: &std::fs::File) -> Result<PreparedFileIdentity, i64> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: stat is writable and file owns a live descriptor.
     if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
@@ -9888,13 +9995,21 @@ fn allocate_fd_object_inode(
     }
     // SAFETY: fstatfs initialized filesystem on success.
     let filesystem = unsafe { filesystem.assume_init() };
-    let persistent = stat.st_nlink > 0
-        && !matches!(
-            filesystem.f_type,
-            ANON_INODE_FS_MAGIC | PIPEFS_MAGIC | SOCKFS_MAGIC
-        );
+    Ok(PreparedFileIdentity {
+        key: (stat.st_dev, stat.st_ino),
+        persistent: stat.st_nlink > 0
+            && !matches!(
+                filesystem.f_type,
+                ANON_INODE_FS_MAGIC | PIPEFS_MAGIC | SOCKFS_MAGIC
+            ),
+    })
+}
 
-    let key = (stat.st_dev, stat.st_ino);
+fn allocate_fd_object_inode(
+    state: &LoadedStaticElf,
+    file: &std::fs::File,
+) -> Result<Arc<GuestFileIdentity>, i64> {
+    let prepared = inspect_file_identity(file)?;
     let mut table = state
         .file_identity_table
         .lock()
@@ -9902,7 +10017,7 @@ fn allocate_fd_object_inode(
     table.objects.retain(|_, entry| entry.is_live());
     if let Some(identity) = table
         .objects
-        .get(&key)
+        .get(&prepared.key)
         .and_then(GuestFileIdentityEntry::identity)
     {
         return Ok(identity);
@@ -9916,12 +10031,12 @@ fn allocate_fd_object_inode(
     // Linked filesystem objects keep Linux inode identity across close/reopen.
     // Anonymous or deleted objects cannot be reopened by path, so retain them
     // only while a descriptor in any forked state holds a strong identity.
-    let entry = if persistent {
+    let entry = if prepared.persistent {
         GuestFileIdentityEntry::Persistent(identity.clone())
     } else {
         GuestFileIdentityEntry::Ephemeral(Arc::downgrade(&identity))
     };
-    table.objects.insert(key, entry);
+    table.objects.insert(prepared.key, entry);
     Ok(identity)
 }
 
@@ -9970,6 +10085,7 @@ struct DuplicateFdSource {
     object_inode: Arc<GuestFileIdentity>,
     is_random: bool,
     random_description: Option<Arc<RandomDeviceDescription>>,
+    is_loginuid: bool,
     signalfd_mask: Option<Arc<KernelSigset>>,
     native_poll: Option<NativePollDescription>,
 }
@@ -10082,6 +10198,13 @@ fn duplicate_fd_at_or_above(
     state.fd_object_inodes.insert(fd, source.object_inode);
     if source.is_random {
         state.random_device_fds.insert(fd);
+    } else {
+        state.random_device_fds.remove(&fd);
+    }
+    if source.is_loginuid {
+        state.loginuid_fds.insert(fd);
+    } else {
+        state.loginuid_fds.remove(&fd);
     }
     if let Some(description) = source.random_description {
         state.random_device_descriptions.insert(fd, description);
@@ -10140,6 +10263,7 @@ fn duplicate_fd(
     let source_is_random = state.random_device_fds.contains(&old_fd);
     let source_random_description = state.random_device_descriptions.get(&old_fd).cloned();
     let source_native_poll = native_poll_description(state, old_fd);
+    let source_is_loginuid = state.loginuid_fds.contains(&old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
@@ -10186,6 +10310,11 @@ fn duplicate_fd(
             state.random_device_fds.insert(new_fd);
         } else {
             state.random_device_fds.remove(&new_fd);
+        }
+        if source_is_loginuid {
+            state.loginuid_fds.insert(new_fd);
+        } else {
+            state.loginuid_fds.remove(&new_fd);
         }
         replace_signalfd_mask(state, new_fd, source_signalfd_mask);
         cleanup_fd_object_inodes(state);
@@ -10234,6 +10363,9 @@ fn duplicate_fd(
                 .insert(new_fd as libc::c_int, source_object_inode);
             if source_is_random {
                 state.random_device_fds.insert(new_fd as libc::c_int);
+            }
+            if source_is_loginuid {
+                state.loginuid_fds.insert(new_fd as libc::c_int);
             }
             replace_signalfd_mask(state, new_fd as libc::c_int, source_signalfd_mask);
             if let Some(description) = source_fdinfo {
@@ -13046,9 +13178,10 @@ fn is_socket_timestamp_cmsg(message: ControlMessage) -> bool {
 fn translate_outgoing_control(
     control: &mut [u8],
     state: &LoadedStaticElf,
+    capture_output: bool,
 ) -> Result<Vec<(libc::dev_t, libc::ino_t)>, i64> {
     let mut transfers = Vec::new();
-    let result = translate_outgoing_rights(control, state, &mut transfers);
+    let result = translate_outgoing_rights(control, state, capture_output, &mut transfers);
     if let Err(error) = result {
         release_proc_transfers(state, &transfers);
         return Err(error);
@@ -13059,6 +13192,7 @@ fn translate_outgoing_control(
 fn translate_outgoing_rights(
     control: &mut [u8],
     state: &LoadedStaticElf,
+    capture_output: bool,
     transfers: &mut Vec<(libc::dev_t, libc::ino_t)>,
 ) -> Result<(), i64> {
     for message in control_messages(control)? {
@@ -13114,11 +13248,12 @@ fn translate_outgoing_rights(
             } else if state.fdinfo_files.contains_key(&guest_fd)
                 || signalfd_mask(state, guest_fd).is_some()
                 || state.random_device_fds.contains(&guest_fd)
+                || state.loginuid_fds.contains(&guest_fd)
+                || (capture_output && output_alias(state, guest_fd).is_some())
             {
-                // Random-only prerequisite from https://github.com/rrnewton/reverie/pull/610
-                // at acffb228964041190ff9aa071454a5f0017e34a1. The receiver
-                // cannot reconstruct private stream/signalfd metadata. Refuse
-                // before host sendmsg delivers any payload or descriptors.
+                // The receiver cannot reconstruct private virtual metadata.
+                // Refuse before host sendmsg so no datagram or descriptor is
+                // delivered with a supervisor-only carrier identity.
                 return Err(negative_errno(libc::ENOSYS));
             }
             write_control_fd(control, offset, host_fd)?;
@@ -13144,18 +13279,26 @@ enum ReceivedRawFdKind {
     Unsupported,
 }
 
-fn close_received_raw_fds(raw_fds: &[(libc::c_int, ReceivedRawFdKind)]) {
+fn retire_received_raw_fds(
+    raw_fds: &[(libc::c_int, ReceivedRawFdKind)],
+    retirement: &crate::elf::FileRetirement,
+) {
     let mut closed = std::collections::BTreeSet::new();
+    let mut files = Vec::new();
     for &(fd, _) in raw_fds {
         if fd >= 0 && closed.insert(fd) {
             // SAFETY: descriptors returned in recvmsg control data belong to
             // this process. This error path has not wrapped them in File yet.
-            unsafe { libc::close(fd) };
+            files.push(unsafe { std::fs::File::from_raw_fd(fd) });
         }
     }
+    retirement.retire(files);
 }
 
-fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl, i64> {
+fn sanitize_received_control(
+    control: &[u8],
+    retirement: &crate::elf::FileRetirement,
+) -> Result<SanitizedReceivedControl, i64> {
     let messages = match control_messages(control) {
         Ok(messages) => messages,
         Err(error) => {
@@ -13173,7 +13316,7 @@ fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl,
         if message.level == libc::SOL_SOCKET && message.kind == libc::SCM_RIGHTS {
             let data_length = message.end - message.data_offset;
             if data_length == 0 || data_length % std::mem::size_of::<libc::c_int>() != 0 {
-                close_received_raw_fds(&raw_fds);
+                retire_received_raw_fds(&raw_fds, retirement);
                 return Err(negative_errno(libc::EBADMSG));
             }
             let output_start = bytes.len();
@@ -13183,9 +13326,15 @@ fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl,
             for offset in
                 (message.data_offset..message.end).step_by(std::mem::size_of::<libc::c_int>())
             {
-                let raw_fd = read_control_fd(control, offset)?;
+                let raw_fd = match read_control_fd(control, offset) {
+                    Ok(fd) => fd,
+                    Err(error) => {
+                        retire_received_raw_fds(&raw_fds, retirement);
+                        return Err(error);
+                    }
+                };
                 if raw_fd < 0 {
-                    close_received_raw_fds(&raw_fds);
+                    retire_received_raw_fds(&raw_fds, retirement);
                     return Err(negative_errno(libc::EBADMSG));
                 }
                 raw_fds.push((
@@ -13210,12 +13359,18 @@ fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl,
             // report ancillary truncation rather than leaking its host number.
             if message.level == libc::SOL_SOCKET && message.kind == SCM_PIDFD {
                 if message.end - message.data_offset != std::mem::size_of::<libc::c_int>() {
-                    close_received_raw_fds(&raw_fds);
+                    retire_received_raw_fds(&raw_fds, retirement);
                     return Err(negative_errno(libc::EBADMSG));
                 }
-                let raw_fd = read_control_fd(control, message.data_offset)?;
+                let raw_fd = match read_control_fd(control, message.data_offset) {
+                    Ok(fd) => fd,
+                    Err(error) => {
+                        retire_received_raw_fds(&raw_fds, retirement);
+                        return Err(error);
+                    }
+                };
                 if raw_fd < 0 {
-                    close_received_raw_fds(&raw_fds);
+                    retire_received_raw_fds(&raw_fds, retirement);
                     return Err(negative_errno(libc::EBADMSG));
                 }
                 raw_fds.push((raw_fd, ReceivedRawFdKind::Unsupported));
@@ -13228,7 +13383,7 @@ fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl,
 
     let mut unique = std::collections::BTreeSet::new();
     if raw_fds.iter().any(|(fd, _)| !unique.insert(*fd)) {
-        close_received_raw_fds(&raw_fds);
+        retire_received_raw_fds(&raw_fds, retirement);
         return Err(negative_errno(libc::EBADMSG));
     }
 
@@ -13242,8 +13397,9 @@ fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl,
                 control_offset,
                 file,
             });
+        } else {
+            retirement.retire([file]);
         }
-        // Unsupported fd-bearing records are closed when `file` drops here.
     }
 
     Ok(SanitizedReceivedControl {
@@ -13276,14 +13432,116 @@ fn rollback_received_rights(state: &mut LoadedStaticElf, guest_fds: &[libc::c_in
     }
 }
 
-fn install_received_rights(
+fn rollback_received_rights_with_table(
     state: &mut LoadedStaticElf,
+    shared: &mut FileTableState,
+    guest_fds: &[libc::c_int],
+) {
+    rollback_received_rights(state, guest_fds);
+    for &fd in guest_fds.iter().rev() {
+        state.file_retirement.retire(shared.files.remove(&fd));
+        shared.fd_entry_ids.remove(&fd);
+        shared.fd_object_inodes.remove(&fd);
+        shared.proc_files.remove(&fd);
+        shared.fdinfo_files.remove(&fd);
+        shared.random_device_descriptions.remove(&fd);
+        for set in [
+            &mut shared.random_device_fds,
+            &mut shared.loginuid_fds,
+            &mut shared.stdout_alias_fds,
+            &mut shared.stderr_alias_fds,
+            &mut shared.cloexec_fds,
+            &mut shared.synthetic_proc_nofollow_fds,
+            &mut shared.signalfd_fds,
+        ] {
+            set.remove(&fd);
+        }
+        // Preserve closed standard slots: removing a received replacement must
+        // not resurrect the supervisor's stdin/stdout/stderr.
+    }
+}
+
+struct StagedReceivedRight {
+    guest_fd: libc::c_int,
+    local_file: crate::elf::StagedFile,
+    shared_file: crate::elf::StagedFile,
+    entry_id: Arc<()>,
+    proc_inode: Option<u64>,
+    process_description: Option<Arc<FdinfoDescription>>,
+    synthetic_proc_nofollow: bool,
+    identity: PreparedFileIdentity,
+}
+
+struct StagedReceivedRights {
+    rights: Vec<StagedReceivedRight>,
+}
+
+struct PreparedReceivedRight {
+    staged: StagedReceivedRight,
+    object_identity: Arc<GuestFileIdentity>,
+}
+
+struct PreparedReceivedRights {
+    rights: Vec<PreparedReceivedRight>,
+    next_inode: u64,
+}
+
+/// Plan object identities without advancing the allocator. The caller must
+/// retain the mutex guard that owns `table` until commit;
+/// forked processes share this table even when their descriptor tables differ.
+fn prepare_received_identities(
+    table: &crate::elf::GuestFileIdentityTable,
+    staged: StagedReceivedRights,
+) -> Result<PreparedReceivedRights, i64> {
+    let mut by_key: std::collections::BTreeMap<(libc::dev_t, libc::ino_t), Arc<GuestFileIdentity>> =
+        std::collections::BTreeMap::new();
+    let mut cursor = table.next_inode;
+    let mut rights = Vec::with_capacity(staged.rights.len());
+    for staged in staged.rights {
+        let object_identity = if let Some(identity) = by_key.get(&staged.identity.key) {
+            identity.clone()
+        } else if let Some(identity) = table
+            .objects
+            .get(&staged.identity.key)
+            .and_then(GuestFileIdentityEntry::identity)
+        {
+            identity
+        } else {
+            let inode = cursor;
+            cursor = cursor
+                .checked_add(1)
+                .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
+            Arc::new(GuestFileIdentity { inode })
+        };
+        by_key.insert(staged.identity.key, object_identity.clone());
+        rights.push(PreparedReceivedRight {
+            staged,
+            object_identity,
+        });
+    }
+    Ok(PreparedReceivedRights {
+        rights,
+        next_inode: cursor,
+    })
+}
+
+/// Authenticate the complete message before copying guest payload or publishing
+/// metadata. This is not an all-output-writable admission: valid messages keep
+/// the current receive copyout order and its separately documented EFAULT limits.
+fn prepare_received_rights_with_peek(
+    state: &mut LoadedStaticElf,
+    shared: &FileTableState,
     control: &mut [u8],
     rights: Vec<PendingReceivedRight>,
-    close_on_exec: bool,
+    auth_budget: &mut crate::proc_carrier::CarrierAuthBudget,
+    auth_cache: &mut crate::proc_carrier::CarrierAuthCache,
     peek: bool,
-) -> Result<Vec<libc::c_int>, i64> {
-    let rights: Vec<_> = rights
+) -> Result<StagedReceivedRights, i64> {
+    // Convert every received descriptor into deferred-retirement ownership
+    // before any fallible reservation, rewrite, clone, or authentication step.
+    // The executor holds its file-table lock here, so a raw File drop could
+    // otherwise run a blocking close (for example, SO_LINGER) under that lock.
+    let rights = rights
         .into_iter()
         .map(|right| {
             (
@@ -13291,76 +13549,253 @@ fn install_received_rights(
                 state.file_retirement.stage(right.file),
             )
         })
-        .collect();
-    let guest_fds = match available_guest_fds_with_limit(state, rights.len(), GUEST_NOFILE_LIMIT) {
-        Ok(guest_fds) => guest_fds,
-        Err(error) => {
-            release_dropped_proc_transfers(
-                state,
-                rights.iter().map(|(_, file)| file.as_file()),
-                peek,
-            );
-            return Err(error);
-        }
+        .collect::<Vec<_>>();
+    // Pin all received owners before any fallible step. Capture the keys before
+    // staging can retire a failed owner; a consuming receive dequeued every
+    // retained right even when authentication subsequently refuses the message.
+    let consumed_keys = if peek {
+        Vec::new()
+    } else {
+        rights
+            .iter()
+            .filter_map(|(_, file)| host_file_key(file.as_file().as_raw_fd()).ok())
+            .collect::<Vec<_>>()
     };
-    let mut installed = Vec::with_capacity(rights.len());
-    let mut pending = rights.into_iter().zip(guest_fds);
+    let result = (|| {
+        let guest_fds = available_guest_fds_with_limit(state, rights.len(), GUEST_NOFILE_LIMIT)?;
+        for (right, &guest_fd) in rights.iter().zip(&guest_fds) {
+            if shared.files.contains_key(&guest_fd) || is_open_standard(state, guest_fd) {
+                return Err(negative_errno(libc::EIO));
+            }
+            write_control_fd(control, right.0, guest_fd)?;
+        }
 
-    while let Some(((control_offset, file), guest_fd)) = pending.next() {
-        let prepared = received_proc_inode(file.as_file()).and_then(|proc_inode| {
-            let object_inode = allocate_fd_object_inode(state, file.as_file())?;
-            let transfer = received_proc_transfer(state, file.as_file(), peek)?;
-            Ok((proc_inode, object_inode, transfer))
-        });
-        let (proc_inode, object_inode, transfer) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                rollback_received_rights(state, &installed);
-                let rest: Vec<_> = pending.map(|((_, file), _)| file).collect();
-                release_dropped_proc_transfers(
-                    state,
-                    std::iter::once(&file)
-                        .chain(&rest)
-                        .map(|file| file.as_file()),
-                    peek,
-                );
-                return Err(error);
-            }
-        };
-        let retired = state.insert_file(guest_fd, file.into_file());
-        state.file_retirement.retire(retired);
-        state.fd_object_inodes.insert(guest_fd, object_inode);
-        state.synthetic_proc_nofollow_fds.remove(&guest_fd);
-        if let Some((description, inode, nofollow)) = transfer {
-            // The received descriptor shares the sender's open description.
-            state.fdinfo_files.insert(guest_fd, description);
-            state.proc_files.insert(guest_fd, inode);
-            if nofollow {
-                state.synthetic_proc_nofollow_fds.insert(guest_fd);
-            }
-        } else if let Some(inode) = proc_inode {
-            state.fdinfo_files.remove(&guest_fd);
-            state.proc_files.insert(guest_fd, inode);
+        let mut staged = Vec::with_capacity(rights.len());
+        for ((_, local_file), guest_fd) in rights.into_iter().zip(guest_fds) {
+            let shared_file = state
+                .file_retirement
+                .stage_clone(local_file.as_file())
+                .map_err(io_error)?;
+            let (mut proc_inode, mut synthetic_proc_nofollow) = match state
+                .proc_carrier_authority
+                .candidate_kind(local_file.as_file())
+                .map_err(negative_errno)?
+            {
+                crate::proc_carrier::ProcCarrierCandidate::Ordinary => {
+                    (received_proc_inode(local_file.as_file())?, false)
+                }
+                crate::proc_carrier::ProcCarrierCandidate::Reserved => {
+                    ensure_proc_carrier_readonly_or_path(local_file.as_file())?;
+                    let inspection = state
+                        .proc_carrier_authority
+                        .open_inspection_alias(local_file.as_file())
+                        .map(|file| state.file_retirement.stage(file))
+                        .map_err(negative_errno)?;
+                    let authenticated = state
+                        .proc_carrier_authority
+                        .authenticate_reserved(
+                            local_file.as_file(),
+                            inspection.as_file(),
+                            auth_budget,
+                            auth_cache,
+                        )
+                        .map_err(negative_errno)?;
+                    if !fixed_synthetic_proc_path(&authenticated.canonical_path) {
+                        return Err(negative_errno(libc::EBADMSG));
+                    }
+                    (
+                        Some(synthetic_proc_inode(&authenticated.canonical_path)),
+                        authenticated.virtual_nofollow,
+                    )
+                }
+            };
+            // Lookup is nonconsuming; release all consumed registrations once below.
+            let process_description =
+                match received_proc_transfer(state, local_file.as_file(), true)? {
+                    Some((description, inode, nofollow)) => {
+                        proc_inode = Some(inode);
+                        synthetic_proc_nofollow = nofollow;
+                        Some(description)
+                    }
+                    None => None,
+                };
+            let identity = inspect_file_identity(local_file.as_file())?;
+            staged.push(StagedReceivedRight {
+                guest_fd,
+                local_file,
+                shared_file,
+                entry_id: Arc::new(()),
+                proc_inode,
+                process_description,
+                synthetic_proc_nofollow,
+                identity,
+            });
+        }
+        Ok(StagedReceivedRights { rights: staged })
+    })();
+    release_proc_transfers(state, &consumed_keys);
+    result
+}
+
+#[cfg(test)]
+fn prepare_received_rights(
+    state: &mut LoadedStaticElf,
+    shared: &FileTableState,
+    control: &mut [u8],
+    rights: Vec<PendingReceivedRight>,
+    auth_budget: &mut crate::proc_carrier::CarrierAuthBudget,
+    auth_cache: &mut crate::proc_carrier::CarrierAuthCache,
+) -> Result<StagedReceivedRights, i64> {
+    prepare_received_rights_with_peek(
+        state,
+        shared,
+        control,
+        rights,
+        auth_budget,
+        auth_cache,
+        false,
+    )
+}
+
+/// Publish a fully prepared SCM_RIGHTS message to the executor and its shared
+/// CLONE_FILES table. Every operation here is an infallible map/set update or
+/// transfer of an already-owned descriptor.
+fn commit_received_rights(
+    state: &mut LoadedStaticElf,
+    shared: &mut FileTableState,
+    mut prepared: PreparedReceivedRights,
+    close_on_exec: bool,
+    table: &mut crate::elf::GuestFileIdentityTable,
+) -> Vec<libc::c_int> {
+    table.objects.retain(|_, entry| entry.is_live());
+    for right in &prepared.rights {
+        if table
+            .objects
+            .get(&right.staged.identity.key)
+            .and_then(GuestFileIdentityEntry::identity)
+            .is_none()
+        {
+            let entry = if right.staged.identity.persistent {
+                GuestFileIdentityEntry::Persistent(right.object_identity.clone())
+            } else {
+                GuestFileIdentityEntry::Ephemeral(Arc::downgrade(&right.object_identity))
+            };
+            table.objects.insert(right.staged.identity.key, entry);
+        }
+    }
+    table.next_inode = prepared.next_inode;
+
+    let mut installed = Vec::with_capacity(prepared.rights.len());
+    for right in prepared.rights.drain(..) {
+        let object_identity = right.object_identity;
+        let right = right.staged;
+        let fd = right.guest_fd;
+        debug_assert!(!state.files.contains_key(&fd));
+        debug_assert!(!shared.files.contains_key(&fd));
+        debug_assert!(signalfd_mask(state, fd).is_none());
+        let local = right.local_file.into_file();
+        let shared_file = right.shared_file.into_file();
+        assert!(state.files.insert(fd, local).is_none());
+        assert!(shared.files.insert(fd, shared_file).is_none());
+        state.fd_entry_ids.insert(fd, right.entry_id.clone());
+        shared.fd_entry_ids.insert(fd, right.entry_id);
+        state.fd_object_inodes.insert(fd, object_identity.clone());
+        shared.fd_object_inodes.insert(fd, object_identity);
+
+        for set in [
+            &mut state.random_device_fds,
+            &mut state.loginuid_fds,
+            &mut state.stdout_alias_fds,
+            &mut state.stderr_alias_fds,
+        ] {
+            set.remove(&fd);
+        }
+        for set in [
+            &mut shared.random_device_fds,
+            &mut shared.loginuid_fds,
+            &mut shared.stdout_alias_fds,
+            &mut shared.stderr_alias_fds,
+            &mut shared.signalfd_fds,
+        ] {
+            set.remove(&fd);
+        }
+        state.random_device_descriptions.remove(&fd);
+        shared.random_device_descriptions.remove(&fd);
+        if let Some(description) = right.process_description {
+            state.fdinfo_files.insert(fd, description.clone());
+            shared.fdinfo_files.insert(fd, description);
         } else {
-            state.fdinfo_files.remove(&guest_fd);
-            state.proc_files.remove(&guest_fd);
+            state.fdinfo_files.remove(&fd);
+            shared.fdinfo_files.remove(&fd);
+        }
+        if (0..=2).contains(&fd) {
+            // A guest description in a closed standard slot shadows the
+            // supervisor's physical descriptor. Retain that fact so closing
+            // this received description cannot resurrect host stdin/out/err.
+            state.closed_standard_fds.insert(fd);
+            shared.closed_standard_fds.insert(fd);
+        } else {
+            state.closed_standard_fds.remove(&fd);
+            shared.closed_standard_fds.remove(&fd);
         }
         if close_on_exec {
-            state.cloexec_fds.insert(guest_fd);
+            state.cloexec_fds.insert(fd);
+            shared.cloexec_fds.insert(fd);
         } else {
-            state.cloexec_fds.remove(&guest_fd);
+            state.cloexec_fds.remove(&fd);
+            shared.cloexec_fds.remove(&fd);
         }
-        set_output_alias(state, guest_fd, None);
-        if let Err(error) = write_control_fd(control, control_offset, guest_fd) {
-            installed.push(guest_fd);
-            rollback_received_rights(state, &installed);
-            let rest: Vec<_> = pending.map(|((_, file), _)| file).collect();
-            release_dropped_proc_transfers(state, rest.iter().map(|file| file.as_file()), peek);
-            return Err(error);
+        if let Some(inode) = right.proc_inode {
+            state.proc_files.insert(fd, inode);
+            shared.proc_files.insert(fd, inode);
+        } else {
+            state.proc_files.remove(&fd);
+            shared.proc_files.remove(&fd);
         }
-        installed.push(guest_fd);
+        if right.synthetic_proc_nofollow {
+            state.synthetic_proc_nofollow_fds.insert(fd);
+            shared.synthetic_proc_nofollow_fds.insert(fd);
+        } else {
+            state.synthetic_proc_nofollow_fds.remove(&fd);
+            shared.synthetic_proc_nofollow_fds.remove(&fd);
+        }
+        installed.push(fd);
     }
-    Ok(installed)
+    installed
+}
+
+#[cfg(test)]
+fn install_received_rights(
+    state: &mut LoadedStaticElf,
+    control: &mut [u8],
+    rights: Vec<PendingReceivedRight>,
+    close_on_exec: bool,
+    peek: bool,
+) -> Result<Vec<libc::c_int>, i64> {
+    let mut shared = FileTableState::try_from_elf(state).map_err(io_error)?;
+    let mut auth_budget = crate::proc_carrier::CarrierAuthBudget::new();
+    let mut auth_cache = crate::proc_carrier::CarrierAuthCache::new();
+    let staged = prepare_received_rights_with_peek(
+        state,
+        &shared,
+        control,
+        rights,
+        &mut auth_budget,
+        &mut auth_cache,
+        peek,
+    )?;
+    let identity_table = state.file_identity_table.clone();
+    let mut identities = identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let prepared = prepare_received_identities(&identities, staged)?;
+    Ok(commit_received_rights(
+        state,
+        &mut shared,
+        prepared,
+        close_on_exec,
+        &mut identities,
+    ))
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -13373,7 +13808,12 @@ fn install_received_rights(
 // this executor arm only has to translate the guest `msghdr` — gathering the
 // iovec payload and name and mapping SCM_RIGHTS descriptors — before forwarding
 // it to the host socket.
-fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn sendmsg(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
@@ -13452,7 +13892,7 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     {
         return negative_errno(libc::EFAULT);
     }
-    let transfers = match translate_outgoing_control(&mut control, state) {
+    let transfers = match translate_outgoing_control(&mut control, state, capture_output) {
         Ok(transfers) => transfers,
         Err(error) => return error,
     };
@@ -13512,7 +13952,12 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
 // detcore/src/syscalls/io.rs `handle_recvmsg` / `canonicalize_socket_timestamps`),
 // so the executor only faithfully performs the host receive and copies the
 // control/name bytes back into guest memory for Detcore to sanitize.
-fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn recvmsg_with_table(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    shared: &mut FileTableState,
+) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
@@ -13637,8 +14082,31 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         bytes: mut control_bytes,
         rights,
         stripped_unsupported,
-    } = match sanitize_received_control(&control[..used_control]) {
+    } = match sanitize_received_control(&control[..used_control], &state.file_retirement) {
         Ok(control) => control,
+        Err(error) => return error,
+    };
+
+    let mut auth_budget = crate::proc_carrier::CarrierAuthBudget::new();
+    let mut auth_cache = crate::proc_carrier::CarrierAuthCache::new();
+    let staged = match prepare_received_rights_with_peek(
+        state,
+        shared,
+        &mut control_bytes,
+        rights,
+        &mut auth_budget,
+        &mut auth_cache,
+        flags & libc::MSG_PEEK != 0,
+    ) {
+        Ok(staged) => staged,
+        Err(error) => return error,
+    };
+    let identity_table = state.file_identity_table.clone();
+    let mut identities = identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let prepared = match prepare_received_identities(&identities, staged) {
+        Ok(prepared) => prepared,
         Err(error) => return error,
     };
 
@@ -13655,8 +14123,6 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
                 )
                 .is_err()
         {
-            let dropped = rights.iter().map(|right| &right.file);
-            release_dropped_proc_transfers(state, dropped, flags & libc::MSG_PEEK != 0);
             return negative_errno(libc::EFAULT);
         }
         copied += length;
@@ -13670,21 +14136,17 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
             )
             .is_err()
     {
-        let dropped = rights.iter().map(|right| &right.file);
-        release_dropped_proc_transfers(state, dropped, flags & libc::MSG_PEEK != 0);
         return negative_errno(libc::EFAULT);
     }
 
-    let installed = match install_received_rights(
+    let installed = commit_received_rights(
         state,
-        &mut control_bytes,
-        rights,
+        shared,
+        prepared,
         flags & libc::MSG_CMSG_CLOEXEC != 0,
-        flags & libc::MSG_PEEK != 0,
-    ) {
-        Ok(installed) => installed,
-        Err(error) => return error,
-    };
+        &mut identities,
+    );
+    drop(identities);
     if control_capacity != 0 {
         // Detcore snapshots the caller's original capacity before injection and
         // rereads that entire region to canonicalize timestamps. Zero the tail
@@ -13697,7 +14159,7 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
             .write(message.msg_control as usize as u64, &guest_control)
             .is_err()
         {
-            rollback_received_rights(state, &installed);
+            rollback_received_rights_with_table(state, shared, &installed);
             return negative_errno(libc::EFAULT);
         }
     }
@@ -13711,15 +14173,28 @@ fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6
         message.msg_flags |= libc::MSG_CTRUNC;
     }
     if write_struct(memory, message_address, &message) != 0 {
-        rollback_received_rights(state, &installed);
+        rollback_received_rights_with_table(state, shared, &installed);
         return negative_errno(libc::EFAULT);
     }
     received as i64
 }
 
+fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let mut shared = match FileTableState::try_from_elf(state) {
+        Ok(shared) => shared,
+        Err(error) => return io_error(error),
+    };
+    recvmsg_with_table(memory, state, args, &mut shared)
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-210): Review guest mmsghdr translation and nonblocking receive semantics.
-fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn recvmmsg_with_table(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    shared: &mut FileTableState,
+) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
@@ -13739,7 +14214,10 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
     }
 
     let mut delivered = 0usize;
+    let mut auth_budget = crate::proc_carrier::CarrierAuthBudget::new();
+    let mut auth_cache = crate::proc_carrier::CarrierAuthCache::new();
     for index in 0..message_count {
+        auth_cache.clear();
         let Some(message_address) = args[1].checked_add((index * message_size) as u64) else {
             return if delivered == 0 {
                 negative_errno(libc::EFAULT)
@@ -13903,8 +14381,41 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
             bytes: mut control_bytes,
             rights,
             stripped_unsupported,
-        } = match sanitize_received_control(&control[..used_control]) {
+        } = match sanitize_received_control(&control[..used_control], &state.file_retirement) {
             Ok(control) => control,
+            Err(error) => {
+                return if delivered == 0 {
+                    error
+                } else {
+                    delivered as i64
+                };
+            }
+        };
+
+        let staged = match prepare_received_rights_with_peek(
+            state,
+            shared,
+            &mut control_bytes,
+            rights,
+            &mut auth_budget,
+            &mut auth_cache,
+            flags & libc::MSG_PEEK != 0,
+        ) {
+            Ok(staged) => staged,
+            Err(error) => {
+                return if delivered == 0 {
+                    error
+                } else {
+                    delivered as i64
+                };
+            }
+        };
+        let identity_table = state.file_identity_table.clone();
+        let mut identities = identity_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prepared = match prepare_received_identities(&identities, staged) {
+            Ok(prepared) => prepared,
             Err(error) => {
                 return if delivered == 0 {
                     error
@@ -13927,8 +14438,6 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                     )
                     .is_err()
             {
-                let dropped = rights.iter().map(|right| &right.file);
-                release_dropped_proc_transfers(state, dropped, flags & libc::MSG_PEEK != 0);
                 return if delivered == 0 {
                     negative_errno(libc::EFAULT)
                 } else {
@@ -13946,30 +14455,20 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                 )
                 .is_err()
         {
-            let dropped = rights.iter().map(|right| &right.file);
-            release_dropped_proc_transfers(state, dropped, flags & libc::MSG_PEEK != 0);
             return if delivered == 0 {
                 negative_errno(libc::EFAULT)
             } else {
                 delivered as i64
             };
         }
-        let installed = match install_received_rights(
+        let installed = commit_received_rights(
             state,
-            &mut control_bytes,
-            rights,
+            shared,
+            prepared,
             flags & libc::MSG_CMSG_CLOEXEC != 0,
-            flags & libc::MSG_PEEK != 0,
-        ) {
-            Ok(installed) => installed,
-            Err(error) => {
-                return if delivered == 0 {
-                    error
-                } else {
-                    delivered as i64
-                };
-            }
-        };
+            &mut identities,
+        );
+        drop(identities);
         if control_capacity != 0 {
             let mut guest_control = vec![0; control_capacity];
             guest_control[..control_bytes.len()].copy_from_slice(&control_bytes);
@@ -13978,7 +14477,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
                 .write(message.msg_hdr.msg_control as usize as u64, &guest_control)
                 .is_err()
             {
-                rollback_received_rights(state, &installed);
+                rollback_received_rights_with_table(state, shared, &installed);
                 return if delivered == 0 {
                     negative_errno(libc::EFAULT)
                 } else {
@@ -13997,7 +14496,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         }
         message.msg_len = received as libc::c_uint;
         if write_struct(memory, message_address, &message) != 0 {
-            rollback_received_rights(state, &installed);
+            rollback_received_rights_with_table(state, shared, &installed);
             return if delivered == 0 {
                 negative_errno(libc::EFAULT)
             } else {
@@ -14007,6 +14506,14 @@ fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
         delivered += 1;
     }
     delivered as i64
+}
+
+fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let mut shared = match FileTableState::try_from_elf(state) {
+        Ok(shared) => shared,
+        Err(error) => return io_error(error),
+    };
+    recvmmsg_with_table(memory, state, args, &mut shared)
 }
 
 // General FIONREAD support was withdrawn in 345681e44bf9d07f8c9f52138ce2682633adfffe:
@@ -15916,9 +16423,8 @@ fn supported_synthetic_proc_seals(seals: libc::c_int) -> bool {
         || seals == (SYNTHETIC_PROC_REQUIRED_SEALS | LINUX_F_SEAL_EXEC)
 }
 
-/// Back a synthesized /proc file with a memfd holding `content` and record it in
-/// `proc_files` so `fstat`/`statx` report deterministic metadata.
-fn open_synthetic_proc(
+/// Private backing for read-time Process/Fdinfo descriptions, not an authenticated snapshot.
+fn open_private_fdinfo_carrier(
     state: &mut LoadedStaticElf,
     normalized_path: &[u8],
     content: &[u8],
@@ -16002,6 +16508,57 @@ fn open_synthetic_proc(
             state.synthetic_proc_nofollow_fds.insert(guest_fd);
         } else {
             state.synthetic_proc_nofollow_fds.remove(&guest_fd);
+        }
+    }
+    guest_fd
+}
+
+/// Mint one authenticated physical carrier per fixed synthetic-proc open. The
+/// authority seals and self-authenticates the object before returning a guest
+/// view, so no reserved candidate is ever published half-constructed.
+fn fixed_synthetic_proc_path(path: &[u8]) -> bool {
+    SYNTHETIC_REGULAR_PROC_PATHS.contains(&path)
+        && ProcessProcFile::from_normalized_path(path).is_none()
+}
+
+fn open_synthetic_proc(
+    state: &mut LoadedStaticElf,
+    normalized_path: &[u8],
+    content: &[u8],
+    close_on_exec: bool,
+    path_only: bool,
+    guest_status_flags: libc::c_int,
+) -> i64 {
+    if ProcessProcFile::from_normalized_path(normalized_path).is_some() {
+        // Process views (including O_PATH's empty backing) remain read-time
+        // descriptions. They must never authenticate as immutable snapshots.
+        return open_private_fdinfo_carrier(
+            state,
+            normalized_path,
+            content,
+            close_on_exec,
+            path_only,
+            guest_status_flags,
+        );
+    }
+    let virtual_nofollow = guest_status_flags & libc::O_NOFOLLOW != 0;
+    let file = match state.proc_carrier_authority.mint(
+        normalized_path,
+        content,
+        virtual_nofollow,
+        path_only,
+        guest_status_flags,
+    ) {
+        Ok(file) => file,
+        Err(errno) => return negative_errno(errno),
+    };
+    let inode = synthetic_proc_inode(normalized_path);
+    let guest_fd = insert_file_with_flags(state, file, close_on_exec, None);
+    if guest_fd >= 0 {
+        let guest_fd = guest_fd as libc::c_int;
+        state.proc_files.insert(guest_fd, inode);
+        if virtual_nofollow {
+            state.synthetic_proc_nofollow_fds.insert(guest_fd);
         }
     }
     guest_fd
@@ -16360,6 +16917,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
     let source_is_random = state.random_device_fds.contains(&guest_fd);
     let source_random_description = state.random_device_descriptions.get(&guest_fd).cloned();
     let source_native_poll = native_poll_description(state, guest_fd);
+    let source_is_loginuid = state.loginuid_fds.contains(&guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
@@ -16379,6 +16937,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 object_inode: source_object_inode,
                 is_random: source_is_random,
                 random_description: source_random_description,
+                is_loginuid: source_is_loginuid,
                 signalfd_mask: source_signalfd_mask,
                 native_poll: source_native_poll,
             },
@@ -16396,6 +16955,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 object_inode: source_object_inode,
                 is_random: source_is_random,
                 random_description: source_random_description,
+                is_loginuid: source_is_loginuid,
                 signalfd_mask: source_signalfd_mask,
                 native_poll: source_native_poll,
             },
@@ -16551,6 +17111,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
     if let Some(retired) = state.remove_file(fd) {
         state.cloexec_fds.remove(&fd);
         state.random_device_fds.remove(&fd);
+        state.loginuid_fds.remove(&fd);
         replace_signalfd_mask(state, fd, None);
         state.proc_files.remove(&fd);
         state.synthetic_proc_nofollow_fds.remove(&fd);
@@ -16571,6 +17132,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.closed_standard_fds.insert(fd);
         state.cloexec_fds.remove(&fd);
         state.random_device_fds.remove(&fd);
+        state.loginuid_fds.remove(&fd);
         replace_signalfd_mask(state, fd, None);
         state.fd_object_inodes.remove(&fd);
         cleanup_fd_object_inodes(state);
@@ -19452,6 +20014,16 @@ const fn negative_errno(errno: libc::c_int) -> i64 {
 
 #[cfg(any(test, feature = "native-test-support"))]
 pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
+    let authority = crate::proc_carrier::ProcCarrierAuthority::new_for_tests()
+        .expect("test KVM state requires authenticated proc-carrier support");
+    native_loaded_state_with_authority(cwd, authority)
+}
+
+#[cfg(any(test, feature = "native-test-support"))]
+pub(crate) fn native_loaded_state_with_authority(
+    cwd: &std::path::Path,
+    proc_carrier_authority: Arc<crate::proc_carrier::ProcCarrierAuthority>,
+) -> LoadedStaticElf {
     LoadedStaticElf {
         entry_point: 0,
         stack_pointer: 0,
@@ -19512,6 +20084,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         native_poll_fds: Default::default(),
         random_device_fds: std::collections::BTreeSet::new(),
         random_device_descriptions: std::collections::BTreeMap::new(),
+        loginuid_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
@@ -19520,6 +20093,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         consumed_child_wait: None,
         proc_files: std::collections::BTreeMap::new(),
         synthetic_proc_nofollow_fds: std::collections::BTreeSet::new(),
+        proc_carrier_authority,
         regular_create_directory_policy: initialize_regular_create_directory_policy()
             .expect("test KVM state requires a supported host open policy"),
         fdinfo_files: std::collections::BTreeMap::new(),
@@ -19537,6 +20111,14 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
 #[cfg(test)]
 pub(crate) fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf {
     tests::test_state(cwd)
+}
+
+#[cfg(test)]
+pub(crate) fn test_loaded_state_for_vm_with_authority(
+    cwd: &std::path::Path,
+    authority: Arc<crate::proc_carrier::ProcCarrierAuthority>,
+) -> LoadedStaticElf {
+    native_loaded_state_with_authority(cwd, authority)
 }
 
 #[cfg(test)]
@@ -20398,7 +20980,6 @@ mod tests {
             assert_eq!(write_struct(&mut memory, 0x100, &guest_message), 0);
             let mut expected = [0; 0x1000];
             memory.read(0, &mut expected).unwrap();
-            expected[0x400] = b'x';
             assert_eq!(
                 syscall_result(
                     &mut memory,
@@ -20413,7 +20994,7 @@ mod tests {
             memory.read(0, &mut actual).unwrap();
             assert_eq!(
                 actual, expected,
-                "{path}: only the received payload byte may change"
+                "{path}: failed preparation must precede every guest copyout"
             );
             assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), vec![3]);
             assert!(state.proc_files.is_empty());
@@ -20429,7 +21010,8 @@ mod tests {
                     libc::SYS_recvmsg,
                     [3, 0x100, 0, 0, 0, 0]
                 ),
-                negative_errno(libc::EAGAIN)
+                negative_errno(libc::EAGAIN),
+                "{path}: the rejected datagram itself is consumed and not rollbackable"
             );
             memory.read(0, &mut actual).unwrap();
             assert_eq!(actual, expected);
@@ -20466,6 +21048,25 @@ mod tests {
         let mut state = native_loaded_state(cwd);
         state.children = ChildWaitContext::test_root();
         state
+    }
+
+    fn test_exec_replacement(cwd: &Path, previous: &LoadedStaticElf) -> LoadedStaticElf {
+        native_loaded_state_with_authority(cwd, previous.proc_carrier_authority.clone())
+    }
+
+    #[test]
+    fn native_loaded_state_uses_a_fresh_authority_for_each_root() {
+        let root = TestDir::new();
+        let first = test_state(&root.0);
+        let second = test_state(&root.0);
+        assert!(!Arc::ptr_eq(
+            &first.proc_carrier_authority,
+            &second.proc_carrier_authority
+        ));
+        assert_ne!(
+            first.proc_carrier_authority.public_id(),
+            second.proc_carrier_authority.public_id()
+        );
     }
 
     fn prctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -21594,6 +22195,51 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_proc_seal_policy_accepts_only_supported_kernel_shapes() {
+        // Reserve a currently unused bit to prove that an unexpected future
+        // implicit seal is rejected rather than silently broadening policy.
+        const HYPOTHETICAL_FUTURE_IMPLICIT_SEAL: libc::c_int = 0x40;
+        let required =
+            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        assert!(supported_synthetic_proc_seals(required));
+        assert!(supported_synthetic_proc_seals(required | LINUX_F_SEAL_EXEC));
+        assert!(!supported_synthetic_proc_seals(
+            required & !libc::F_SEAL_WRITE
+        ));
+        assert!(
+            !supported_synthetic_proc_seals(required | HYPOTHETICAL_FUTURE_IMPLICIT_SEAL),
+            "an unexpected future implicit seal must fail closed"
+        );
+    }
+
+    #[test]
+    fn process_proc_normal_and_path_opens_remain_private_read_time_carriers() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for path in ["/proc/self/stat", "/proc/self/status"] {
+            assert!(!fixed_synthetic_proc_path(path.as_bytes()));
+            for flags in [libc::O_RDONLY, libc::O_PATH | libc::O_NOFOLLOW] {
+                let fd = open_with_flags(&mut memory, &mut state, path, flags);
+                assert!(fd >= 0, "{path} flags={flags:#x}: {fd}");
+                let fd = fd as libc::c_int;
+                assert_eq!(
+                    state
+                        .proc_carrier_authority
+                        .candidate_kind(&state.files[&fd]),
+                    Ok(crate::proc_carrier::ProcCarrierCandidate::Ordinary),
+                    "read-time Process backing must not be minted as a fixed snapshot",
+                );
+                assert_eq!(
+                    state.fdinfo_files.contains_key(&fd),
+                    flags & libc::O_PATH == 0
+                );
+                assert_eq!(close(&mut state, fd as u64), 0);
+            }
+        }
+    }
+
+    #[test]
     fn synthetic_proc_snapshot_has_required_seals_and_readonly_description() {
         const PATH: u64 = 0x100;
         const BUFFER: u64 = 0x200;
@@ -21644,6 +22290,11 @@ mod tests {
         assert!(
             observed == required || observed == (required | LINUX_F_SEAL_EXEC),
             "unexpected synthetic proc seal policy: {observed:#x}"
+        );
+        assert_eq!(
+            observed,
+            state.proc_carrier_authority.selected_seals(),
+            "synthetic proc carrier did not retain the startup-selected seal policy"
         );
 
         memory.write(BUFFER, b"x").unwrap();
@@ -21715,24 +22366,6 @@ mod tests {
         let mut actual = vec![0; expected.len()];
         memory.read(BUFFER, &mut actual).unwrap();
         assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn synthetic_proc_seal_policy_accepts_only_supported_kernel_shapes() {
-        // Reserve a currently unused bit to prove that an unexpected future
-        // implicit seal is rejected rather than silently broadening policy.
-        const HYPOTHETICAL_FUTURE_IMPLICIT_SEAL: libc::c_int = 0x40;
-        let required =
-            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
-        assert!(supported_synthetic_proc_seals(required));
-        assert!(supported_synthetic_proc_seals(required | LINUX_F_SEAL_EXEC));
-        assert!(!supported_synthetic_proc_seals(
-            required & !libc::F_SEAL_WRITE
-        ));
-        assert!(
-            !supported_synthetic_proc_seals(required | HYPOTHETICAL_FUTURE_IMPLICIT_SEAL),
-            "an unexpected future implicit seal must fail closed"
-        );
     }
 
     #[test]
@@ -22092,7 +22725,7 @@ mod tests {
             ) & i64::from(libc::O_NOFOLLOW),
             0
         );
-        let mut replacement = test_state(&root.0);
+        let mut replacement = test_exec_replacement(&root.0, &child);
         replacement.inherit_process_state(child);
         assert!(
             replacement
@@ -22925,7 +23558,7 @@ mod tests {
         let child = state.try_clone_for_fork(2).unwrap();
         assert_eq!(child.regular_create_directory_policy, detected);
 
-        let mut replacement = test_state(&root.0);
+        let mut replacement = test_exec_replacement(&root.0, &state);
         replacement.regular_create_directory_policy = match detected {
             RegularCreateDirectoryPolicy::EarlyEinval => RegularCreateDirectoryPolicy::LegacyLookup,
             RegularCreateDirectoryPolicy::LegacyLookup => RegularCreateDirectoryPolicy::EarlyEinval,
@@ -23166,6 +23799,11 @@ mod tests {
                 "unexpected alias seal policy: {observed:#x}"
             );
             assert_eq!(
+                observed,
+                state.proc_carrier_authority.selected_seals(),
+                "synthetic proc alias did not retain the startup-selected seal policy"
+            );
+            assert_eq!(
                 unsafe { libc::fcntl(host_fd, libc::F_GETFL) } & libc::O_ACCMODE,
                 libc::O_RDONLY
             );
@@ -23248,26 +23886,13 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_proc_procfd_access_gate_is_dac_independent_and_directory_specific() {
+    fn synthetic_proc_procfd_access_gate_authenticates_and_is_directory_specific() {
         const PATH: u64 = 0x100;
 
         let root = TestDir::new();
-        let carrier_path = root.0.join("permissive-carrier");
-        std::fs::write(&carrier_path, b"payload").unwrap();
-        std::fs::set_permissions(&carrier_path, std::fs::Permissions::from_mode(0o666)).unwrap();
         let mut state = test_state(&root.0);
-        state.files.insert(
-            3,
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&carrier_path)
-                .unwrap(),
-        );
-        state
-            .proc_files
-            .insert(3, synthetic_proc_inode(b"/proc/uptime"));
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(open_readonly(&mut memory, &mut state, "/proc/uptime"), 3);
         write_c_string(&mut memory, PATH, "/proc/self/fd/3");
 
         let native_source = std::fs::File::open("/proc/uptime").unwrap();
@@ -23430,16 +24055,12 @@ mod tests {
                 [3, 0o600, 0, 0, 0, 0],
             ),
             negative_errno(libc::EPERM),
-            "classified carrier protection must not depend on its permissive host mode"
+            "authenticated carrier mode must not be mutable through the guest"
         );
         assert_eq!(
-            std::fs::metadata(&carrier_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o666,
-            "refused guest fchmod unexpectedly changed the permissive host control"
+            state.files[&3].metadata().unwrap().permissions().mode() & 0o777,
+            0o444,
+            "refused guest fchmod changed the authenticated carrier mode"
         );
         assert_eq!(
             open_with_flags(
@@ -23449,9 +24070,15 @@ mod tests {
                 libc::O_RDONLY | libc::O_TRUNC,
             ),
             negative_errno(libc::EACCES),
-            "O_TRUNC must not reach a permissive carrier"
+            "O_TRUNC must not reach an authenticated carrier"
         );
-        assert_eq!(std::fs::read(&carrier_path).unwrap(), b"payload");
+        let expected = synthetic_proc_content(&state, b"/proc/uptime").unwrap();
+        let mut observed = vec![0; expected.len()];
+        assert_eq!(
+            state.files[&3].read_at(&mut observed, 0).unwrap(),
+            observed.len()
+        );
+        assert_eq!(observed, expected);
         assert_eq!(
             open_with_flags(
                 &mut memory,
@@ -23526,6 +24153,74 @@ mod tests {
             ),
             negative_errno(libc::EISDIR),
             "synthetic proc directories retain native directory precedence"
+        );
+    }
+
+    #[test]
+    fn synthetic_proc_write_gate_precedes_authentication_and_host_dac() {
+        const PATH: u64 = 0x100;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(open_readonly(&mut memory, &mut state, "/proc/uptime"), 3);
+        let carrier = &state.files[&3];
+        let mut original = vec![
+            0;
+            synthetic_proc_content(&state, b"/proc/uptime")
+                .unwrap()
+                .len()
+        ];
+        assert_eq!(carrier.read_at(&mut original, 0).unwrap(), original.len());
+
+        // Seals do not protect mode. Make host DAC deliberately permissive and
+        // prove the host proc-fd path itself admits a writable description.
+        // SAFETY: carrier owns a live descriptor and mode contains no invalid bits.
+        assert_eq!(unsafe { libc::fchmod(carrier.as_raw_fd(), 0o666) }, 0);
+        let host_procfd = CString::new(format!("/proc/self/fd/{}", carrier.as_raw_fd())).unwrap();
+        // SAFETY: host_procfd is NUL-terminated and live for the call.
+        let writable =
+            unsafe { libc::open(host_procfd.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC) };
+        assert!(writable >= 0);
+        // SAFETY: open returned a uniquely owned descriptor.
+        assert_eq!(unsafe { libc::close(writable) }, 0);
+
+        write_c_string(&mut memory, PATH, "/proc/self/fd/3");
+        for flags in [libc::O_WRONLY, libc::O_RDWR, libc::O_RDONLY | libc::O_TRUNC] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_openat,
+                    [libc::AT_FDCWD as u64, PATH, flags as u64, 0, 0, 0],
+                ),
+                negative_errno(libc::EACCES),
+                "guest write gate reached host DAC/authentication for flags {flags:#x}",
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchmod,
+                [3, 0o600, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EPERM),
+        );
+        assert_eq!(
+            state.files[&3].metadata().unwrap().permissions().mode() & 0o777,
+            0o666,
+        );
+        let mut observed = vec![0; original.len()];
+        assert_eq!(
+            state.files[&3].read_at(&mut observed, 0).unwrap(),
+            observed.len()
+        );
+        assert_eq!(observed, original);
+        assert_eq!(
+            open_with_flags(&mut memory, &mut state, "/proc/self/fd/3", libc::O_RDONLY),
+            negative_errno(libc::EBADMSG),
+            "mode mutation must invalidate authenticated read/remint",
         );
     }
 
@@ -23774,7 +24469,7 @@ mod tests {
         let child = state.try_clone_for_fork(2).unwrap();
         assert!(Arc::ptr_eq(&state.proc_mounts, &child.proc_mounts));
         let snapshot = state.proc_mounts.clone();
-        let mut replacement = test_state(&root.0);
+        let mut replacement = test_exec_replacement(&root.0, &state);
         replacement.inherit_process_state(state);
         assert!(Arc::ptr_eq(&snapshot, &replacement.proc_mounts));
     }
@@ -24450,6 +25145,111 @@ mod tests {
         );
     }
 
+    #[test]
+    fn authenticated_proc_opens_are_distinct_dup_and_fork_alias_and_procfd_remints() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let first = open_readonly(&mut memory, &mut state, "/proc/uptime") as i32;
+        let second = open_readonly(&mut memory, &mut state, "/proc/uptime") as i32;
+        let nofollow = open_with_flags(
+            &mut memory,
+            &mut state,
+            "/proc/uptime",
+            libc::O_PATH | libc::O_NOFOLLOW,
+        ) as i32;
+        assert!(first >= 0 && second >= 0 && nofollow >= 0);
+
+        let physical = |state: &LoadedStaticElf, fd| {
+            let stat = file_identity_stat(&state.files[&fd]).unwrap();
+            (stat.st_dev, stat.st_ino)
+        };
+        assert_ne!(physical(&state, first), physical(&state, second));
+        assert_ne!(physical(&state, first), physical(&state, nofollow));
+        assert!(!Arc::ptr_eq(
+            &state.fd_object_inodes[&first],
+            &state.fd_object_inodes[&second]
+        ));
+
+        let duplicated = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [first as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        assert_eq!(physical(&state, duplicated), physical(&state, first));
+        assert!(Arc::ptr_eq(
+            &state.fd_object_inodes[&first],
+            &state.fd_object_inodes[&duplicated]
+        ));
+        let child = state.try_clone_for_fork(2).unwrap();
+        assert_eq!(physical(&child, first), physical(&state, first));
+        assert!(Arc::ptr_eq(
+            &child.fd_object_inodes[&first],
+            &state.fd_object_inodes[&first]
+        ));
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [first as u64, 3, libc::SEEK_SET as u64, 0, 0, 0]
+            ),
+            3
+        );
+        let source = &state.files[&first];
+        assert!(matches!(
+            state.proc_carrier_authority.candidate_kind(source),
+            Ok(crate::proc_carrier::ProcCarrierCandidate::Reserved)
+        ));
+        let inspection = state.file_retirement.stage(
+            state
+                .proc_carrier_authority
+                .open_inspection_alias(source)
+                .unwrap(),
+        );
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        let authenticated = state
+            .proc_carrier_authority
+            .authenticate_reserved(source, inspection.as_file(), &mut budget, &mut cache)
+            .unwrap();
+        assert_eq!(authenticated.canonical_path, b"/proc/uptime");
+        assert_eq!(authenticated.content.as_ref(), b"0.00 0.00\n");
+        assert!(!authenticated.virtual_nofollow);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [first as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+            ),
+            3,
+            "authentication changed the source open-description offset"
+        );
+
+        let procfd = format!("/proc/self/fd/{first}");
+        let reminted = open_with_flags(&mut memory, &mut state, &procfd, libc::O_RDONLY) as i32;
+        assert!(reminted >= 0);
+        assert_ne!(physical(&state, reminted), physical(&state, first));
+        assert!(!Arc::ptr_eq(
+            &state.fd_object_inodes[&reminted],
+            &state.fd_object_inodes[&first]
+        ));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [reminted as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0]
+            ),
+            0
+        );
+        assert!(state.synthetic_proc_nofollow_fds.contains(&nofollow));
+        assert!(!state.synthetic_proc_nofollow_fds.contains(&reminted));
+    }
+
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-224): regression coverage for the /proc/vmstat
     // and /proc/sys/kernel/osrelease synthetic surfaces.
@@ -24486,6 +25286,26 @@ mod tests {
             synthetic_proc_path_for_inode(synthetic_proc_inode(b"/proc/sys/kernel/osrelease")),
             Some(b"/proc/sys/kernel/osrelease".as_slice())
         );
+    }
+
+    #[test]
+    fn synthetic_proc_reverse_inode_map_is_collision_free() {
+        let mut by_inode = BTreeMap::new();
+        for path in
+            std::iter::once(b"/proc".as_slice()).chain(SYNTHETIC_REGULAR_PROC_PATHS.iter().copied())
+        {
+            let inode = synthetic_proc_inode(path);
+            assert_eq!(
+                synthetic_proc_path_for_inode(inode),
+                Some(path),
+                "reverse lookup selected a different semantic proc path"
+            );
+            assert!(
+                by_inode.insert(inode, path).is_none(),
+                "synthetic proc inode collision for {}",
+                String::from_utf8_lossy(path)
+            );
+        }
     }
 
     #[test]
@@ -24564,50 +25384,148 @@ mod tests {
     }
 
     #[test]
-    fn generic_virtual_file_procfd_reopen_is_a_writable_unsealed_residual() {
+    fn generic_sysfs_procfd_reopen_is_a_writable_unsealed_residual() {
         const BUFFER: u64 = 0x200;
-        for path in [
-            "/proc/self/loginuid",
-            "/sys/devices/system/cpu/cpufreq/boost",
-        ] {
-            let root = TestDir::new();
-            let mut state = test_state(&root.0);
-            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-            memory.write(BUFFER, b"z").unwrap();
-            let direct = open_readonly(&mut memory, &mut state, path);
-            assert!(direct >= 0, "direct open failed for {path}: {direct}");
-            assert!(
-                !state.proc_files.contains_key(&(direct as libc::c_int)),
-                "generic virtual carrier was accidentally classified as sealed proc: {path}"
-            );
-            let host = host_fd(&state, direct as libc::c_int).unwrap();
-            // memfd_create without MFD_ALLOW_SEALING starts with only
-            // F_SEAL_SEAL, so these generic carriers lack all mutation seals.
-            // SAFETY: host is a live generic virtual-file carrier.
-            assert_eq!(
-                unsafe { libc::fcntl(host, libc::F_GET_SEALS) },
-                libc::F_SEAL_SEAL
-            );
+        let path = "/sys/devices/system/cpu/cpufreq/boost";
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(BUFFER, b"z").unwrap();
+        let direct = open_readonly(&mut memory, &mut state, path);
+        assert!(direct >= 0, "direct open failed for {path}: {direct}");
+        assert!(
+            !state.proc_files.contains_key(&(direct as libc::c_int)),
+            "generic virtual carrier was accidentally classified as sealed proc: {path}"
+        );
+        let host = host_fd(&state, direct as libc::c_int).unwrap();
+        // memfd_create without MFD_ALLOW_SEALING starts with only F_SEAL_SEAL,
+        // so generic sysfs carriers lack all mutation seals.
+        // SAFETY: host is a live generic virtual-file carrier.
+        assert_eq!(
+            unsafe { libc::fcntl(host, libc::F_GET_SEALS) },
+            libc::F_SEAL_SEAL
+        );
 
-            let procfd = format!("/proc/self/fd/{direct}");
-            let writable = open_with_flags(&mut memory, &mut state, &procfd, libc::O_RDWR);
-            assert!(
-                writable >= 0,
-                "generic virtual proc-fd writable-reopen residual changed for {path}: {writable}"
-            );
+        let procfd = format!("/proc/self/fd/{direct}");
+        let writable = open_with_flags(&mut memory, &mut state, &procfd, libc::O_RDWR);
+        assert!(
+            writable >= 0,
+            "generic virtual proc-fd writable-reopen residual changed for {path}: {writable}"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [writable as u64, BUFFER, 1, 0, 0, 0],
+            ),
+            1,
+            "generic virtual proc-fd carrier ceased to be writable for {path}"
+        );
+        assert_eq!(close(&mut state, writable as u64), 0);
+        assert_eq!(close(&mut state, direct as u64), 0);
+    }
+
+    #[test]
+    fn loginuid_identity_is_trusted_only_at_creation_and_tracks_descriptor_lifecycle() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // The guest model deliberately exposes loginuid as read-only even
+        // though native Linux may admit O_RDWR depending on procfs credentials.
+        let direct = open_readonly(&mut memory, &mut state, "/proc/self/loginuid") as i32;
+        assert!(direct >= 0);
+        assert_eq!(state.loginuid_fds, [direct].into_iter().collect());
+
+        for path in [
+            format!("/proc/self/fd/{direct}"),
+            format!("/proc/self/fdinfo/{direct}"),
+        ] {
             assert_eq!(
-                syscall_result(
-                    &mut memory,
-                    &mut state,
-                    libc::SYS_write,
-                    [writable as u64, BUFFER, 1, 0, 0, 0],
-                ),
-                1,
-                "generic virtual proc-fd carrier ceased to be writable for {path}"
+                open_with_flags(&mut memory, &mut state, &path, libc::O_RDONLY),
+                negative_errno(libc::ENOSYS),
+                "trusted loginuid identity must not escape through {path}"
             );
-            assert_eq!(close(&mut state, writable as u64), 0);
-            assert_eq!(close(&mut state, direct as u64), 0);
         }
+
+        let duplicated = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [direct as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        let fcntl_duplicated = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [direct as u64, libc::F_DUPFD as u64, 100, 0, 0, 0],
+        ) as i32;
+        assert!(duplicated >= 0 && fcntl_duplicated >= 100);
+        for fd in [direct, duplicated, fcntl_duplicated] {
+            assert!(state.loginuid_fds.contains(&fd));
+        }
+
+        let ordinary = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open("/dev/null").unwrap(),
+            false,
+            None,
+        ) as i32;
+        assert!(ordinary >= 0);
+        assert_eq!(
+            duplicate_fd(
+                &mut state,
+                ordinary as u64,
+                Some(duplicated as u64),
+                0,
+                false,
+            ),
+            i64::from(duplicated)
+        );
+        assert!(
+            !state.loginuid_fds.contains(&duplicated),
+            "replacement by an ordinary description retained trusted identity"
+        );
+        assert_eq!(
+            duplicate_fd(&mut state, direct as u64, Some(ordinary as u64), 0, false,),
+            i64::from(ordinary)
+        );
+        assert!(state.loginuid_fds.contains(&ordinary));
+        let dup3_target = 101;
+        assert_eq!(
+            duplicate_fd(
+                &mut state,
+                direct as u64,
+                Some(dup3_target as u64),
+                libc::O_CLOEXEC as u64,
+                true,
+            ),
+            i64::from(dup3_target)
+        );
+        assert!(state.loginuid_fds.contains(&dup3_target));
+        assert!(state.cloexec_fds.contains(&dup3_target));
+        assert_eq!(
+            close_range(&mut state, &[ordinary as u64, ordinary as u64, 0, 0, 0, 0],),
+            0
+        );
+        assert!(!state.loginuid_fds.contains(&ordinary));
+
+        let child = state.try_clone_for_fork(2).unwrap();
+        assert_eq!(child.loginuid_fds, state.loginuid_fds);
+        let shared = FileTableState::try_from_elf(&state).unwrap();
+        let mut installed = test_state(&root.0);
+        shared.install(&mut installed).unwrap();
+        assert_eq!(installed.loginuid_fds, state.loginuid_fds);
+
+        state.cloexec_fds.insert(direct);
+        let mut replacement = test_exec_replacement(&root.0, &state);
+        replacement.inherit_process_state(state);
+        assert!(!replacement.loginuid_fds.contains(&direct));
+        assert!(!replacement.loginuid_fds.contains(&dup3_target));
+        assert!(replacement.loginuid_fds.contains(&fcntl_duplicated));
+        assert_eq!(close(&mut replacement, fcntl_duplicated as u64), 0);
+        assert!(replacement.loginuid_fds.is_empty());
     }
 
     #[test]
@@ -26343,6 +27261,49 @@ mod tests {
         let mut got = [0u8; 7];
         memory.read(RBUF, &mut got).unwrap();
         assert_eq!(&got, b"payload");
+    }
+
+    #[test]
+    fn memfd_create_rejects_reserved_proc_carrier_prefix_before_allocation() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let files_before = state.files.keys().copied().collect::<Vec<_>>();
+        let next_inode = state.file_identity_table.lock().unwrap().next_inode;
+
+        for name in [
+            "reverie-kvm.proc-carrier.v1",
+            "reverie-kvm.proc-carrier.v1.forged",
+        ] {
+            write_c_string(&mut memory, 0x100, name);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_memfd_create,
+                    [0x100, 0, 0, 0, 0, 0]
+                ),
+                negative_errno(libc::EINVAL)
+            );
+            assert_eq!(
+                state.files.keys().copied().collect::<Vec<_>>(),
+                files_before
+            );
+            assert_eq!(
+                state.file_identity_table.lock().unwrap().next_inode,
+                next_inode
+            );
+        }
+
+        write_c_string(&mut memory, 0x100, "x-reverie-kvm.proc-carrier.v1");
+        let ordinary = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_memfd_create,
+            [0x100, 0, 0, 0, 0, 0],
+        );
+        assert!(ordinary >= 0);
+        assert!(state.files.contains_key(&(ordinary as i32)));
     }
 
     #[test]
@@ -29761,6 +30722,39 @@ mod tests {
 
     #[test]
     fn positioned_vectored_io_handles_pipes_partial_writes_and_sigpipe() {
+        const TEST: &str =
+            "executor::tests::positioned_vectored_io_handles_pipes_partial_writes_and_sigpipe";
+        const CHILD_ENV: &str = "REVERIE_POSITIONED_PIPE_CHILD";
+        const CHILD_VALUE: &str = "reverie-positioned-pipe-child-v1";
+        const COMPLETED: &str = "REVERIE_POSITIONED_PIPE_COMPLETE_V1";
+        if let Some(value) = std::env::var_os(CHILD_ENV) {
+            assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+        } else {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, CHILD_VALUE)
+                .output()
+                .expect("failed to run isolated positioned-pipe regression");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "isolated positioned-pipe regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout.matches(COMPLETED).count(),
+                1,
+                "isolated positioned-pipe regression did not execute exactly once:\n{stdout}"
+            );
+            return;
+        }
+        // Create the pipe after exec in this exact-test subprocess. A
+        // concurrently spawned library-test child can otherwise inherit even
+        // CLOEXEC endpoints until its own exec and keep the read end alive.
         const PIPE_FDS: u64 = 0x100;
         const WRITE: u64 = 0x1000;
         const WRITE_IOV: u64 = 0x4000;
@@ -29865,6 +30859,7 @@ mod tests {
             partial > 0 && partial < 8192,
             "unexpected short write: {partial}"
         );
+        println!("{}", COMPLETED);
     }
 
     #[test]
@@ -30452,6 +31447,37 @@ mod tests {
 
     #[test]
     fn pipe_syscalls_create_owned_guest_descriptors() {
+        const TEST: &str = "executor::tests::pipe_syscalls_create_owned_guest_descriptors";
+        const CHILD_ENV: &str = "REVERIE_PIPE_SYSCALLS_CHILD";
+        const CHILD_VALUE: &str = "reverie-pipe-syscalls-child-v1";
+        const COMPLETED: &str = "REVERIE_PIPE_SYSCALLS_COMPLETE_V1";
+        if let Some(value) = std::env::var_os(CHILD_ENV) {
+            assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+        } else {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, CHILD_VALUE)
+                .output()
+                .expect("failed to run isolated pipe-syscalls regression");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "isolated pipe-syscalls regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout.matches(COMPLETED).count(),
+                1,
+                "isolated pipe-syscalls regression did not execute exactly once:\n{stdout}"
+            );
+            return;
+        }
+        // Create both pipe generations after exec so a concurrent test child
+        // cannot inherit a reader and invalidate the exact EPIPE assertion.
         const PIPE_FDS: u64 = 0x100;
         const PAYLOAD: u64 = 0x200;
         const READ_BUFFER: u64 = 0x300;
@@ -30749,6 +31775,7 @@ mod tests {
                 .objects
                 .is_empty()
         );
+        println!("{}", COMPLETED);
     }
 
     #[test]
@@ -35656,6 +36683,899 @@ mod tests {
     }
 
     #[test]
+    fn recvmsg_and_recvmmsg_install_long_path_ordinary_rights() {
+        const PAIR_FDS: u64 = 0x100;
+        const MESSAGE: u64 = 0x180;
+        const IOV: u64 = 0x200;
+        const SOCKET_PAYLOAD: u64 = 0x280;
+        const CONTROL: u64 = 0x300;
+        const FILE_PAYLOAD: u64 = 0x400;
+        const CONTROL_LENGTH: usize = 64;
+        const LINK_TARGET_CAPACITY: usize = 267;
+        const CONTENT: &[u8] = b"long-path ordinary right\n";
+
+        for (label, receive_many) in [("recvmsg", false), ("recvmmsg", true)] {
+            let root = TestDir::new();
+            let first_component = "a".repeat(120);
+            let second_component = "b".repeat(120);
+            let directory = root.0.join(&first_component).join(&second_component);
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join(format!("ordinary-{label}"));
+            assert!(
+                path.components()
+                    .all(|component| component.as_os_str().as_bytes().len() < 255),
+                "the regression must exceed the total link buffer without exceeding NAME_MAX"
+            );
+            std::fs::write(&path, CONTENT).unwrap();
+            let donated = std::fs::File::open(&path).unwrap();
+            let proc_target =
+                std::fs::read_link(format!("/proc/self/fd/{}", donated.as_raw_fd())).unwrap();
+            assert_eq!(proc_target, path);
+            assert!(
+                proc_target.as_os_str().as_bytes().len() > LINK_TARGET_CAPACITY,
+                "{label}: proc-fd target must exceed the classifier's fixed observation buffer"
+            );
+
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_socketpair,
+                    [
+                        libc::AF_UNIX as u64,
+                        libc::SOCK_DGRAM as u64,
+                        0,
+                        PAIR_FDS,
+                        0,
+                        0,
+                    ],
+                ),
+                0
+            );
+            let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+
+            let mut host_payload = *b"x";
+            let mut host_iov = libc::iovec {
+                iov_base: std::ptr::from_mut(&mut host_payload).cast(),
+                iov_len: host_payload.len(),
+            };
+            let mut host_control = rights_control(&[donated.as_raw_fd()]);
+            let host_message = libc::msghdr {
+                msg_name: std::ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: std::ptr::from_mut(&mut host_iov),
+                msg_iovlen: 1,
+                msg_control: host_control.as_mut_ptr().cast(),
+                msg_controllen: host_control.len(),
+                msg_flags: 0,
+            };
+            // SAFETY: every buffer and the donated descriptor outlive sendmsg.
+            assert_eq!(
+                unsafe {
+                    libc::sendmsg(
+                        host_fd(&state, socket_fds[0]).unwrap(),
+                        std::ptr::from_ref(&host_message),
+                        libc::MSG_NOSIGNAL,
+                    )
+                },
+                1
+            );
+            drop(donated);
+
+            let recv_iov = libc::iovec {
+                iov_base: SOCKET_PAYLOAD as usize as *mut libc::c_void,
+                iov_len: 1,
+            };
+            assert_eq!(write_struct(&mut memory, IOV, &recv_iov), 0);
+            memory.write(CONTROL, &[0; CONTROL_LENGTH]).unwrap();
+            let received_control_length = if receive_many {
+                let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+                message.msg_hdr.msg_iov = IOV as usize as *mut libc::iovec;
+                message.msg_hdr.msg_iovlen = 1;
+                message.msg_hdr.msg_control = CONTROL as usize as *mut libc::c_void;
+                message.msg_hdr.msg_controllen = CONTROL_LENGTH;
+                assert_eq!(write_struct(&mut memory, MESSAGE, &message), 0);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_recvmmsg,
+                        [
+                            socket_fds[1] as u64,
+                            MESSAGE,
+                            1,
+                            libc::MSG_DONTWAIT as u64,
+                            0,
+                            0,
+                        ],
+                    ),
+                    1,
+                    "{label}: long ordinary right was not received"
+                );
+                let received: libc::mmsghdr = read_struct(&memory, MESSAGE);
+                assert_eq!(received.msg_len, 1);
+                assert_eq!(received.msg_hdr.msg_flags & libc::MSG_CTRUNC, 0);
+                received.msg_hdr.msg_controllen
+            } else {
+                let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+                message.msg_iov = IOV as usize as *mut libc::iovec;
+                message.msg_iovlen = 1;
+                message.msg_control = CONTROL as usize as *mut libc::c_void;
+                message.msg_controllen = CONTROL_LENGTH;
+                assert_eq!(write_struct(&mut memory, MESSAGE, &message), 0);
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_recvmsg,
+                        [
+                            socket_fds[1] as u64,
+                            MESSAGE,
+                            libc::MSG_DONTWAIT as u64,
+                            0,
+                            0,
+                            0,
+                        ],
+                    ),
+                    1,
+                    "{label}: long ordinary right was not received"
+                );
+                let received: libc::msghdr = read_struct(&memory, MESSAGE);
+                assert_eq!(received.msg_flags & libc::MSG_CTRUNC, 0);
+                received.msg_controllen
+            };
+
+            assert_eq!(
+                read_guest_bytes::<1>(&memory, SOCKET_PAYLOAD).unwrap(),
+                *b"x"
+            );
+            let mut received_control = vec![0; received_control_length];
+            memory.read(CONTROL, &mut received_control).unwrap();
+            let received_fds = control_rights(&received_control);
+            assert_eq!(received_fds.len(), 1, "{label}");
+            let received_fd = received_fds[0];
+            assert_eq!(
+                state
+                    .proc_carrier_authority
+                    .candidate_kind(&state.files[&received_fd]),
+                Ok(crate::proc_carrier::ProcCarrierCandidate::Ordinary),
+                "{label}: long-path file was not classified ordinary"
+            );
+            assert!(!state.proc_files.contains_key(&received_fd));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [
+                        received_fd as u64,
+                        FILE_PAYLOAD,
+                        CONTENT.len() as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ),
+                CONTENT.len() as i64,
+                "{label}: installed long-path file was not readable"
+            );
+            let mut content = vec![0; CONTENT.len()];
+            memory.read(FILE_PAYLOAD, &mut content).unwrap();
+            assert_eq!(content, CONTENT, "{label}");
+        }
+    }
+
+    #[test]
+    fn recvmmsg_late_header_fault_retains_prior_message_and_consumes_current() {
+        // Preserve the current KVM residual explicitly, not as native parity:
+        // the second payload/control are copied before its final header faults;
+        // current rollback closes the second right despite the copied fd number.
+        // Authentication must not introduce PR610's obsolete pre-dequeue whole-
+        // output permission check or undo the first successfully returned message.
+        const PAIR_FDS: u64 = 0x100;
+        const MESSAGE_SIZE: usize = std::mem::size_of::<libc::mmsghdr>();
+        const MESSAGES: u64 = PAGE_SIZE - MESSAGE_SIZE as u64;
+        const SECOND_MESSAGE: u64 = PAGE_SIZE;
+        const FIRST_IOV: u64 = 2 * PAGE_SIZE;
+        const SECOND_IOV: u64 = 3 * PAGE_SIZE;
+        const FIRST_BUFFER: u64 = 4 * PAGE_SIZE;
+        const SECOND_BUFFER: u64 = 5 * PAGE_SIZE;
+        const SECOND_CONTROL: u64 = 6 * PAGE_SIZE;
+        const CONTROL_LENGTH: usize = 64;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (8 * PAGE_SIZE) as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0,
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        // SAFETY: both pointers name live one-byte buffers and the socket is
+        // valid. The first datagram carries no ancillary state.
+        assert_eq!(
+            unsafe {
+                libc::send(
+                    host_fd(&state, socket_fds[0]).unwrap(),
+                    b"a".as_ptr().cast(),
+                    1,
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            1,
+        );
+        let donated = std::fs::File::open("/dev/null").unwrap();
+        let mut second_payload = *b"b";
+        let mut second_host_iov = libc::iovec {
+            iov_base: second_payload.as_mut_ptr().cast(),
+            iov_len: second_payload.len(),
+        };
+        let mut second_host_control = rights_control(&[donated.as_raw_fd()]);
+        let second_host_message = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: std::ptr::from_mut(&mut second_host_iov),
+            msg_iovlen: 1,
+            msg_control: second_host_control.as_mut_ptr().cast(),
+            msg_controllen: second_host_control.len(),
+            msg_flags: 0,
+        };
+        // SAFETY: the host buffers and descriptor remain live for sendmsg.
+        assert_eq!(
+            unsafe {
+                libc::sendmsg(
+                    host_fd(&state, socket_fds[0]).unwrap(),
+                    std::ptr::from_ref(&second_host_message),
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            1,
+        );
+
+        for (message_address, iov_address, buffer_address, control) in [
+            (MESSAGES, FIRST_IOV, FIRST_BUFFER, None),
+            (
+                SECOND_MESSAGE,
+                SECOND_IOV,
+                SECOND_BUFFER,
+                Some(SECOND_CONTROL),
+            ),
+        ] {
+            let iov = libc::iovec {
+                iov_base: buffer_address as usize as *mut libc::c_void,
+                iov_len: 1,
+            };
+            assert_eq!(write_struct(&mut memory, iov_address, &iov), 0);
+            let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+            message.msg_hdr.msg_iov = iov_address as usize as *mut libc::iovec;
+            message.msg_hdr.msg_iovlen = 1;
+            if let Some(control) = control {
+                message.msg_hdr.msg_control = control as usize as *mut libc::c_void;
+                message.msg_hdr.msg_controllen = CONTROL_LENGTH;
+            }
+            assert_eq!(write_struct(&mut memory, message_address, &message), 0);
+        }
+        memory.write(FIRST_BUFFER, &[0xa5]).unwrap();
+        memory.write(SECOND_BUFFER, &[0xa5]).unwrap();
+        memory
+            .write(SECOND_CONTROL, &[0xa5; CONTROL_LENGTH])
+            .unwrap();
+        memory
+            .map_user_permissions(0, 8 * PAGE_SIZE, true, true)
+            .unwrap();
+        memory
+            .map_user_permissions(SECOND_MESSAGE, PAGE_SIZE, true, false)
+            .unwrap();
+        memory.enable_user_access();
+
+        let files_before = state.files.keys().copied().collect::<Vec<_>>();
+        let mut second_header_before = vec![0; MESSAGE_SIZE];
+        memory
+            .user()
+            .read(SECOND_MESSAGE, &mut second_header_before)
+            .unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [
+                    socket_fds[1] as u64,
+                    MESSAGES,
+                    2,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                ],
+            ),
+            1,
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, FIRST_BUFFER).unwrap(), *b"a");
+        assert_eq!(
+            read_guest_bytes::<1>(&memory, SECOND_BUFFER).unwrap(),
+            *b"b"
+        );
+        let control_bytes = read_guest_bytes::<CONTROL_LENGTH>(&memory, SECOND_CONTROL).unwrap();
+        let received_control = rights_control(&[5]);
+        let mut expected_control = [0; CONTROL_LENGTH];
+        expected_control[..received_control.len()].copy_from_slice(&received_control);
+        assert_eq!(control_bytes, expected_control);
+        assert!(
+            !state.files.contains_key(&5),
+            "late-fault rollback is an inherited KVM limitation"
+        );
+        let mut second_header_after = vec![0; MESSAGE_SIZE];
+        memory
+            .user()
+            .read(SECOND_MESSAGE, &mut second_header_after)
+            .unwrap();
+        assert_eq!(second_header_after, second_header_before);
+        assert_eq!(
+            state.files.keys().copied().collect::<Vec<_>>(),
+            files_before
+        );
+
+        memory
+            .map_user_permissions(SECOND_MESSAGE, PAGE_SIZE, true, true)
+            .unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [
+                    socket_fds[1] as u64,
+                    SECOND_MESSAGE,
+                    1,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EAGAIN),
+            "the current late-header fault has consumed the second datagram",
+        );
+        assert_eq!(
+            read_guest_bytes::<1>(&memory, SECOND_BUFFER).unwrap(),
+            *b"b"
+        );
+        assert_eq!(
+            read_guest_bytes::<CONTROL_LENGTH>(&memory, SECOND_CONTROL).unwrap(),
+            control_bytes,
+        );
+        assert_eq!(
+            state.files.keys().copied().collect::<Vec<_>>(),
+            files_before
+        );
+        assert!(!state.files.contains_key(&5));
+    }
+
+    #[test]
+    fn recvmsg_valid_rights_retain_current_partial_copyout_stages() {
+        const PAIR_FDS: u64 = 0x100;
+        const HEADER: u64 = PAGE_SIZE;
+        const IOV: u64 = 2 * PAGE_SIZE;
+        const PAYLOAD: u64 = 3 * PAGE_SIZE;
+        const CONTROL: u64 = 4 * PAGE_SIZE;
+        const CONTROL_LENGTH: usize = 64;
+
+        // Preserve c1ff's existing destination-dependent copyout behavior while
+        // adding authentication. This is NOT a Linux-parity oracle: current KVM
+        // prechecks the header and rolls back installed rights on a late control
+        // fault, whereas Linux can publish earlier descriptors or report CTRUNC.
+        // The old PR610 whole-output-writable preflight would fail this test by
+        // retaining a datagram that the payload/control-fault paths consumed.
+        for (label, readonly_page) in [
+            ("final header", HEADER),
+            ("payload", PAYLOAD),
+            ("late control", CONTROL),
+        ] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, (6 * PAGE_SIZE) as usize).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_socketpair,
+                    [
+                        libc::AF_UNIX as u64,
+                        libc::SOCK_DGRAM as u64,
+                        0,
+                        PAIR_FDS,
+                        0,
+                        0,
+                    ],
+                ),
+                0,
+            );
+            let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+            let donated = std::fs::File::open("/dev/null").unwrap();
+            let mut host_payload = *b"x";
+            let mut host_iov = libc::iovec {
+                iov_base: host_payload.as_mut_ptr().cast(),
+                iov_len: host_payload.len(),
+            };
+            let mut host_control = rights_control(&[donated.as_raw_fd()]);
+            let host_message = libc::msghdr {
+                msg_name: std::ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: std::ptr::from_mut(&mut host_iov),
+                msg_iovlen: 1,
+                msg_control: host_control.as_mut_ptr().cast(),
+                msg_controllen: host_control.len(),
+                msg_flags: 0,
+            };
+            // SAFETY: the host buffers outlive sendmsg and the guest socket's
+            // backing descriptor is live for this call.
+            assert_eq!(
+                unsafe {
+                    libc::sendmsg(
+                        host_fd(&state, socket_fds[0]).unwrap(),
+                        std::ptr::from_ref(&host_message),
+                        libc::MSG_NOSIGNAL,
+                    )
+                },
+                1,
+            );
+
+            let recv_iov = libc::iovec {
+                iov_base: PAYLOAD as usize as *mut libc::c_void,
+                iov_len: 1,
+            };
+            assert_eq!(write_struct(&mut memory, IOV, &recv_iov), 0);
+            memory.write(PAYLOAD, &[0xa5]).unwrap();
+            memory.write(CONTROL, &[0xa5; CONTROL_LENGTH]).unwrap();
+            let mut guest_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+            guest_message.msg_iov = IOV as usize as *mut libc::iovec;
+            guest_message.msg_iovlen = 1;
+            guest_message.msg_control = CONTROL as usize as *mut libc::c_void;
+            guest_message.msg_controllen = CONTROL_LENGTH;
+            assert_eq!(write_struct(&mut memory, HEADER, &guest_message), 0);
+            memory
+                .map_user_permissions(0, 6 * PAGE_SIZE, true, true)
+                .unwrap();
+            memory
+                .map_user_permissions(readonly_page, PAGE_SIZE, true, false)
+                .unwrap();
+            memory.enable_user_access();
+
+            let files_before = state.files.keys().copied().collect::<Vec<_>>();
+            let next_inode = state.file_identity_table.lock().unwrap().next_inode;
+            let mut header_before = vec![0; std::mem::size_of::<libc::msghdr>()];
+            memory.user().read(HEADER, &mut header_before).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_recvmsg,
+                    [
+                        socket_fds[1] as u64,
+                        HEADER,
+                        libc::MSG_DONTWAIT as u64,
+                        0,
+                        0,
+                        0
+                    ],
+                ),
+                negative_errno(libc::EFAULT),
+                "{label}",
+            );
+            assert_eq!(
+                state.files.keys().copied().collect::<Vec<_>>(),
+                files_before
+            );
+            assert_eq!(
+                state.file_identity_table.lock().unwrap().next_inode,
+                next_inode + u64::from(readonly_page == CONTROL)
+            );
+            assert_eq!(
+                read_guest_bytes::<1>(&memory, PAYLOAD).unwrap(),
+                if readonly_page == CONTROL {
+                    *b"x"
+                } else {
+                    [0xa5]
+                },
+            );
+            assert_eq!(
+                read_guest_bytes::<CONTROL_LENGTH>(&memory, CONTROL).unwrap(),
+                [0xa5; CONTROL_LENGTH],
+            );
+            let mut header_after = vec![0; std::mem::size_of::<libc::msghdr>()];
+            memory.user().read(HEADER, &mut header_after).unwrap();
+            assert_eq!(header_after, header_before, "{label}: header changed");
+
+            memory
+                .map_user_permissions(readonly_page, PAGE_SIZE, true, true)
+                .unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_recvmsg,
+                    [
+                        socket_fds[1] as u64,
+                        HEADER,
+                        libc::MSG_DONTWAIT as u64,
+                        0,
+                        0,
+                        0
+                    ],
+                ),
+                if readonly_page == HEADER {
+                    1
+                } else {
+                    negative_errno(libc::EAGAIN)
+                },
+                "{label}: current dequeue boundary changed",
+            );
+            if readonly_page == HEADER {
+                assert_eq!(read_guest_bytes::<1>(&memory, PAYLOAD).unwrap(), *b"x");
+                let received: libc::msghdr = read_struct(&memory, HEADER);
+                let mut control = vec![0; received.msg_controllen];
+                memory.user().read(CONTROL, &mut control).unwrap();
+                assert_eq!(control_rights(&control), [5]);
+                assert!(state.files.contains_key(&5));
+            } else {
+                assert_eq!(
+                    state.files.keys().copied().collect::<Vec<_>>(),
+                    files_before
+                );
+                assert!(!state.files.contains_key(&5));
+            }
+        }
+    }
+
+    #[test]
+    fn recvmmsg_commits_prior_authenticated_message_but_not_later_bad_reserved_right() {
+        const PAIR_FDS: u64 = 0x80;
+        const MESSAGES: u64 = 0x100;
+        const FIRST_IOV: u64 = 0x200;
+        const SECOND_IOV: u64 = 0x220;
+        const FIRST_BUFFER: u64 = 0x300;
+        const SECOND_BUFFER: u64 = 0x320;
+        const FIRST_CONTROL: u64 = 0x400;
+        const SECOND_CONTROL: u64 = 0x480;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        let valid = state
+            .proc_carrier_authority
+            .mint(
+                b"/proc/uptime",
+                b"0.00 0.00\n",
+                false,
+                false,
+                libc::O_RDONLY,
+            )
+            .unwrap();
+        let forged_name = CString::new("reverie-kvm.proc-carrier.v1.bad-later").unwrap();
+        let forged_raw = unsafe {
+            libc::memfd_create(
+                forged_name.as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        assert!(forged_raw >= 0);
+        let forged = unsafe { std::fs::File::from_raw_fd(forged_raw) };
+
+        let send_host_rights = |payload: u8, descriptors: &[libc::c_int]| {
+            let mut payload = [payload];
+            let mut vector = libc::iovec {
+                iov_base: payload.as_mut_ptr().cast(),
+                iov_len: payload.len(),
+            };
+            let mut control = rights_control(descriptors);
+            let message = libc::msghdr {
+                msg_name: std::ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: std::ptr::from_mut(&mut vector),
+                msg_iovlen: 1,
+                msg_control: control.as_mut_ptr().cast(),
+                msg_controllen: control.len(),
+                msg_flags: 0,
+            };
+            assert_eq!(
+                unsafe {
+                    libc::sendmsg(
+                        host_fd(&state, socket_fds[0]).unwrap(),
+                        std::ptr::from_ref(&message),
+                        libc::MSG_NOSIGNAL,
+                    )
+                },
+                1
+            );
+        };
+        send_host_rights(b'a', &[valid.as_raw_fd(), valid.as_raw_fd()]);
+        send_host_rights(b'b', &[forged.as_raw_fd()]);
+
+        for (index, (iov_address, buffer_address, control_address)) in [
+            (FIRST_IOV, FIRST_BUFFER, FIRST_CONTROL),
+            (SECOND_IOV, SECOND_BUFFER, SECOND_CONTROL),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let iov = libc::iovec {
+                iov_base: buffer_address as usize as *mut libc::c_void,
+                iov_len: 1,
+            };
+            assert_eq!(write_struct(&mut memory, iov_address, &iov), 0);
+            let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+            message.msg_hdr.msg_iov = iov_address as usize as *mut libc::iovec;
+            message.msg_hdr.msg_iovlen = 1;
+            message.msg_hdr.msg_control = control_address as usize as *mut libc::c_void;
+            message.msg_hdr.msg_controllen = 64;
+            assert_eq!(
+                write_struct(
+                    &mut memory,
+                    MESSAGES + (index * std::mem::size_of::<libc::mmsghdr>()) as u64,
+                    &message,
+                ),
+                0
+            );
+        }
+
+        let next_inode = state.file_identity_table.lock().unwrap().next_inode;
+        let mut shared = FileTableState::try_from_elf(&state).unwrap();
+        assert_eq!(
+            recvmmsg_with_table(
+                &mut memory,
+                &mut state,
+                &[
+                    socket_fds[1] as u64,
+                    MESSAGES,
+                    2,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                ],
+                &mut shared,
+            ),
+            1,
+            "the valid first message commits before the bad later message"
+        );
+        let first: libc::mmsghdr = read_struct(&memory, MESSAGES);
+        let second: libc::mmsghdr = read_struct(
+            &memory,
+            MESSAGES + std::mem::size_of::<libc::mmsghdr>() as u64,
+        );
+        assert_eq!(first.msg_len, 1);
+        assert_eq!(second.msg_len, 0);
+        assert_eq!(read_guest_bytes::<1>(&memory, FIRST_BUFFER).unwrap(), *b"a");
+        let mut first_control = vec![0; first.msg_hdr.msg_controllen];
+        memory.read(FIRST_CONTROL, &mut first_control).unwrap();
+        let installed = control_rights(&first_control);
+        assert_eq!(installed, [5, 6]);
+        for fd in installed {
+            assert!(state.files.contains_key(&fd));
+            assert!(shared.files.contains_key(&fd));
+            assert_eq!(
+                state.proc_files.get(&fd),
+                Some(&synthetic_proc_inode(b"/proc/uptime"))
+            );
+            assert_eq!(shared.proc_files.get(&fd), state.proc_files.get(&fd));
+        }
+        assert!(Arc::ptr_eq(
+            &state.fd_object_inodes[&5],
+            &state.fd_object_inodes[&6]
+        ));
+        assert!(!Arc::ptr_eq(
+            &state.fd_entry_ids[&5],
+            &state.fd_entry_ids[&6]
+        ));
+        assert_eq!(
+            state.file_identity_table.lock().unwrap().next_inode,
+            next_inode + 1,
+            "two received aliases of one object consume one generic identity"
+        );
+        assert!(!state.files.contains_key(&7));
+        assert!(!shared.files.contains_key(&7));
+        let mut byte = 0u8;
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    host_fd(&state, socket_fds[1]).unwrap(),
+                    std::ptr::from_mut(&mut byte).cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            -1,
+            "the rejected later datagram payload is consumed and not rollbackable"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+    }
+
+    #[test]
+    fn recvmmsg_auth_budget_is_syscall_wide_and_cache_is_message_local() {
+        const PAIR_FDS: u64 = 0x80;
+        const MESSAGES: u64 = 0x100;
+        const FIRST_IOV: u64 = 0x200;
+        const SECOND_IOV: u64 = 0x220;
+        const FIRST_BUFFER: u64 = 0x300;
+        const SECOND_BUFFER: u64 = 0x320;
+        const FIRST_CONTROL: u64 = 0x400;
+        const SECOND_CONTROL: u64 = 0x480;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        let content = vec![b'x'; crate::proc_carrier::MAX_AUTHENTICATED_BYTES / 2 + 1];
+        let carrier = state
+            .proc_carrier_authority
+            .mint(b"/proc/uptime", &content, false, false, libc::O_RDONLY)
+            .unwrap();
+
+        let send_host_rights = |payload: u8, descriptors: &[libc::c_int]| {
+            let mut payload = [payload];
+            let mut vector = libc::iovec {
+                iov_base: payload.as_mut_ptr().cast(),
+                iov_len: payload.len(),
+            };
+            let mut control = rights_control(descriptors);
+            let message = libc::msghdr {
+                msg_name: std::ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: std::ptr::from_mut(&mut vector),
+                msg_iovlen: 1,
+                msg_control: control.as_mut_ptr().cast(),
+                msg_controllen: control.len(),
+                msg_flags: 0,
+            };
+            assert_eq!(
+                unsafe {
+                    libc::sendmsg(
+                        host_fd(&state, socket_fds[0]).unwrap(),
+                        std::ptr::from_ref(&message),
+                        libc::MSG_NOSIGNAL,
+                    )
+                },
+                1
+            );
+        };
+        send_host_rights(b'a', &[carrier.as_raw_fd(), carrier.as_raw_fd()]);
+        send_host_rights(b'b', &[carrier.as_raw_fd()]);
+
+        for (index, (iov_address, buffer_address, control_address)) in [
+            (FIRST_IOV, FIRST_BUFFER, FIRST_CONTROL),
+            (SECOND_IOV, SECOND_BUFFER, SECOND_CONTROL),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let iov = libc::iovec {
+                iov_base: buffer_address as usize as *mut libc::c_void,
+                iov_len: 1,
+            };
+            assert_eq!(write_struct(&mut memory, iov_address, &iov), 0);
+            let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+            message.msg_hdr.msg_iov = iov_address as usize as *mut libc::iovec;
+            message.msg_hdr.msg_iovlen = 1;
+            message.msg_hdr.msg_control = control_address as usize as *mut libc::c_void;
+            message.msg_hdr.msg_controllen = 64;
+            assert_eq!(
+                write_struct(
+                    &mut memory,
+                    MESSAGES + (index * std::mem::size_of::<libc::mmsghdr>()) as u64,
+                    &message,
+                ),
+                0
+            );
+        }
+
+        let next_inode = state.file_identity_table.lock().unwrap().next_inode;
+        let mut shared = FileTableState::try_from_elf(&state).unwrap();
+        assert_eq!(
+            recvmmsg_with_table(
+                &mut memory,
+                &mut state,
+                &[
+                    socket_fds[1] as u64,
+                    MESSAGES,
+                    2,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                ],
+                &mut shared,
+            ),
+            1,
+            "two same-handle rights in one message share authentication, but the next message must consume the syscall-wide budget"
+        );
+        let first: libc::mmsghdr = read_struct(&memory, MESSAGES);
+        let second: libc::mmsghdr = read_struct(
+            &memory,
+            MESSAGES + std::mem::size_of::<libc::mmsghdr>() as u64,
+        );
+        assert_eq!(first.msg_len, 1);
+        assert_eq!(second.msg_len, 0);
+        let mut first_control = vec![0; first.msg_hdr.msg_controllen];
+        memory.read(FIRST_CONTROL, &mut first_control).unwrap();
+        let installed = control_rights(&first_control);
+        assert_eq!(installed, [5, 6]);
+        for fd in installed {
+            assert!(state.files.contains_key(&fd));
+            assert!(shared.files.contains_key(&fd));
+        }
+        assert_eq!(
+            state.file_identity_table.lock().unwrap().next_inode,
+            next_inode + 1
+        );
+        assert!(!state.files.contains_key(&7));
+        assert!(!shared.files.contains_key(&7));
+        assert_eq!(read_guest_bytes::<1>(&memory, SECOND_BUFFER).unwrap(), [0]);
+        let mut byte = 0_u8;
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    host_fd(&state, socket_fds[1]).unwrap(),
+                    std::ptr::from_mut(&mut byte).cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+    }
+
+    #[test]
     fn sendmsg_recvmsg_translates_multiple_rights_and_cloexec_lifecycle() {
         const PAIR_FDS: u64 = 0x100;
         const PIPE_FDS: u64 = 0x180;
@@ -35862,7 +37782,7 @@ mod tests {
 
         let forked = state.try_clone_for_fork(2).unwrap();
         assert!(received_fds.iter().all(|fd| forked.files.contains_key(fd)));
-        let mut replacement = test_state(&root.0);
+        let mut replacement = test_exec_replacement(&root.0, &state);
         replacement.inherit_process_state(state);
         assert!(
             received_fds
@@ -35983,7 +37903,47 @@ mod tests {
             libc::SYS_dup,
             [signal_fd as u64, 0, 0, 0, 0, 0],
         );
-        for donated in [signal_fd, signal_alias] {
+        let random = open_readonly(&mut memory, &mut state, "/dev/urandom");
+        let random_alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [random as u64, 0, 0, 0, 0, 0],
+        );
+        let loginuid = open_readonly(&mut memory, &mut state, "/proc/self/loginuid");
+        let fdinfo_carrier = open_virtual_file(&mut state, b"", libc::O_RDONLY as u64, false);
+        assert!(random >= 0 && random_alias >= 0 && loginuid >= 0 && fdinfo_carrier >= 0);
+        let target_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .generation;
+        state.fdinfo_files.insert(
+            fdinfo_carrier as i32,
+            Arc::new(FdinfoDescription {
+                source: SeqProcSource::Fdinfo(FdinfoTarget {
+                    target_tid: 1,
+                    target_generation,
+                    target_fd: socket_fds[0],
+                    table: std::sync::Weak::new(),
+                    lifecycle: state.task_lifecycle.clone(),
+                    capture_output: false,
+                }),
+                path: b"/proc/1/fdinfo/private".to_vec(),
+                nofollow_status: false,
+                sequence: Mutex::default(),
+            }),
+        );
+        for donated in [
+            signal_fd,
+            signal_alias,
+            random,
+            random_alias,
+            loginuid,
+            fdinfo_carrier,
+        ] {
             let control = rights_control(&[donated as libc::c_int]);
             memory.write(SEND_CONTROL, &control).unwrap();
             send_message.msg_controllen = control.len();
@@ -35998,7 +37958,7 @@ mod tests {
                     [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
                 ),
                 negative_errno(libc::ENOSYS),
-                "SCM_RIGHTS must not lose signalfd metadata for fd {donated}",
+                "SCM_RIGHTS must not lose private metadata for fd {donated}",
             );
             assert_eq!(
                 state.files.keys().copied().collect::<Vec<_>>(),
@@ -36012,6 +37972,28 @@ mod tests {
                 control_rights(&read_guest_bytes::<24>(&memory, SEND_CONTROL).unwrap()),
                 [donated as libc::c_int],
                 "the guest control buffer is not rewritten",
+            );
+        }
+
+        // Active output capture makes both standard slots and every duplicate
+        // private. Exercise the real sendmsg translation with capture enabled;
+        // the ordinary syscall helper intentionally passes false.
+        let stdout_alias = duplicate_fd(&mut state, libc::STDOUT_FILENO as u64, None, 0, false);
+        assert!(stdout_alias >= 0);
+        for donated in [libc::STDOUT_FILENO as i64, stdout_alias] {
+            let control = rights_control(&[donated as libc::c_int]);
+            memory.write(SEND_CONTROL, &control).unwrap();
+            send_message.msg_controllen = control.len();
+            assert_eq!(write_struct(&mut memory, SEND_MSG, &send_message), 0);
+            assert_eq!(
+                sendmsg(
+                    &memory,
+                    &state,
+                    &[socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+                    true,
+                ),
+                negative_errno(libc::ENOSYS),
+                "captured output alias {donated} escaped through SCM_RIGHTS",
             );
         }
 
@@ -36121,11 +38103,544 @@ mod tests {
         let (unsupported, unsupported_peer) = UnixStream::pair().unwrap();
         let pidfd = std::os::fd::IntoRawFd::into_raw_fd(unsupported);
         let pidfd_control = control_message(libc::SOL_SOCKET, SCM_PIDFD, &pidfd.to_ne_bytes());
-        let sanitized = sanitize_received_control(&pidfd_control).unwrap();
+        let sanitized = sanitize_received_control(&pidfd_control, &state.file_retirement).unwrap();
         assert!(sanitized.stripped_unsupported);
         assert!(sanitized.bytes.is_empty());
         assert!(sanitized.rights.is_empty());
         assert_stream_peer_closed(&unsupported_peer);
+    }
+
+    #[test]
+    fn received_rights_prepare_failures_preserve_both_tables_and_identity_allocator() {
+        const TEST: &str = "executor::tests::received_rights_prepare_failures_preserve_both_tables_and_identity_allocator";
+        const CHILD_ENV: &str = "REVERIE_RECEIVED_PREPARE_CHILD";
+        const CHILD_VALUE: &str = "reverie-received-prepare-child-v1";
+        const COMPLETED: &str = "REVERIE_RECEIVED_PREPARE_COMPLETE_V1";
+        if let Some(value) = std::env::var_os(CHILD_ENV) {
+            assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+        } else {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, CHILD_VALUE)
+                .output()
+                .expect("failed to run isolated received-prepare regression");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "isolated received-prepare regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout.matches(COMPLETED).count(),
+                1,
+                "isolated received-prepare regression did not execute exactly once:\n{stdout}"
+            );
+            return;
+        }
+        // Create both peer-EOF fixtures only after exec so no sibling test
+        // child can inherit their owned endpoints before rollback closes them.
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let shared = FileTableState::try_from_elf(&state).unwrap();
+        let state_files = state.files.keys().copied().collect::<Vec<_>>();
+        let shared_files = shared.files.keys().copied().collect::<Vec<_>>();
+        let entry_ids = state
+            .fd_entry_ids
+            .iter()
+            .map(|(&fd, identity)| (fd, Arc::as_ptr(identity) as usize))
+            .collect::<BTreeMap<_, _>>();
+        let object_ids = state
+            .fd_object_inodes
+            .iter()
+            .map(|(&fd, identity)| (fd, Arc::as_ptr(identity) as usize))
+            .collect::<BTreeMap<_, _>>();
+        let next_inode = state.file_identity_table.lock().unwrap().next_inode;
+
+        let (received, peer) = UnixStream::pair().unwrap();
+        state.file_retirement.fail_clone_after(Some(0));
+        let mut control = [0; std::mem::size_of::<libc::c_int>()];
+        let mut auth_budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut auth_cache = crate::proc_carrier::CarrierAuthCache::new();
+        let error = prepare_received_rights(
+            &mut state,
+            &shared,
+            &mut control,
+            vec![PendingReceivedRight {
+                control_offset: 0,
+                // SAFETY: into_raw_fd transfers this endpoint's sole ownership.
+                file: unsafe {
+                    std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(received))
+                },
+            }],
+            &mut auth_budget,
+            &mut auth_cache,
+        )
+        .err()
+        .expect("shared-table clone injection must fail preparation");
+        assert_eq!(error, negative_errno(libc::EMFILE));
+        state.file_retirement.fail_clone_after(None);
+        assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), state_files);
+        assert_eq!(
+            shared.files.keys().copied().collect::<Vec<_>>(),
+            shared_files
+        );
+        assert_eq!(
+            state
+                .fd_entry_ids
+                .iter()
+                .map(|(&fd, identity)| (fd, Arc::as_ptr(identity) as usize))
+                .collect::<BTreeMap<_, _>>(),
+            entry_ids
+        );
+        assert_eq!(
+            state
+                .fd_object_inodes
+                .iter()
+                .map(|(&fd, identity)| (fd, Arc::as_ptr(identity) as usize))
+                .collect::<BTreeMap<_, _>>(),
+            object_ids
+        );
+        assert_eq!(
+            state.file_identity_table.lock().unwrap().next_inode,
+            next_inode
+        );
+        assert_stream_peer_closed(&peer);
+
+        let (received, peer) = UnixStream::pair().unwrap();
+        state.file_identity_table.lock().unwrap().next_inode = u64::MAX;
+        let mut auth_budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut auth_cache = crate::proc_carrier::CarrierAuthCache::new();
+        let staged = prepare_received_rights(
+            &mut state,
+            &shared,
+            &mut control,
+            vec![PendingReceivedRight {
+                control_offset: 0,
+                // SAFETY: into_raw_fd transfers this endpoint's sole ownership.
+                file: unsafe {
+                    std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(received))
+                },
+            }],
+            &mut auth_budget,
+            &mut auth_cache,
+        )
+        .unwrap();
+        let identity_table = state.file_identity_table.clone();
+        let identities = identity_table.lock().unwrap();
+        let error = prepare_received_identities(&identities, staged)
+            .err()
+            .expect("identity exhaustion must fail before commit");
+        drop(identities);
+        assert_eq!(error, negative_errno(libc::EOVERFLOW));
+        assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), state_files);
+        assert_eq!(
+            shared.files.keys().copied().collect::<Vec<_>>(),
+            shared_files
+        );
+        assert_eq!(
+            state
+                .fd_entry_ids
+                .iter()
+                .map(|(&fd, identity)| (fd, Arc::as_ptr(identity) as usize))
+                .collect::<BTreeMap<_, _>>(),
+            entry_ids
+        );
+        assert_eq!(
+            state
+                .fd_object_inodes
+                .iter()
+                .map(|(&fd, identity)| (fd, Arc::as_ptr(identity) as usize))
+                .collect::<BTreeMap<_, _>>(),
+            object_ids
+        );
+        assert_eq!(
+            state.file_identity_table.lock().unwrap().next_inode,
+            u64::MAX
+        );
+        assert_stream_peer_closed(&peer);
+        println!("{}", COMPLETED);
+    }
+
+    #[test]
+    fn received_rights_stage_every_owner_before_a_later_clone_failure() {
+        const TEST: &str =
+            "executor::tests::received_rights_stage_every_owner_before_a_later_clone_failure";
+        const CHILD_ENV: &str = "REVERIE_RECEIVED_RETIREMENT_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("failed to run isolated received-retirement regression");
+            assert!(
+                output.status.success(),
+                "isolated received-retirement regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+        // Create the endpoints only after exec so concurrent tests cannot fork
+        // copies that postpone the object-identity EOF assertions below.
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let shared = FileTableState::try_from_elf(&state).unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<i32>::new()));
+        state.file_retirement.set_probe(Some({
+            let observed = observed.clone();
+            Arc::new(move |fds| observed.lock().unwrap().extend_from_slice(fds))
+        }));
+        let retirement_scope = state.file_retirement.hold();
+        let (first, first_peer) = UnixStream::pair().unwrap();
+        let (second, second_peer) = UnixStream::pair().unwrap();
+        let first_raw = std::os::fd::IntoRawFd::into_raw_fd(first);
+        let second_raw = std::os::fd::IntoRawFd::into_raw_fd(second);
+        state.file_retirement.fail_clone_after(Some(1));
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        let error = prepare_received_rights(
+            &mut state,
+            &shared,
+            &mut [0; 2 * std::mem::size_of::<libc::c_int>()],
+            vec![
+                PendingReceivedRight {
+                    control_offset: 0,
+                    file: unsafe { std::fs::File::from_raw_fd(first_raw) },
+                },
+                PendingReceivedRight {
+                    control_offset: std::mem::size_of::<libc::c_int>(),
+                    file: unsafe { std::fs::File::from_raw_fd(second_raw) },
+                },
+            ],
+            &mut budget,
+            &mut cache,
+        )
+        .err()
+        .expect("the second shared-table clone must fail");
+        assert_eq!(error, negative_errno(libc::EMFILE));
+        state.file_retirement.fail_clone_after(None);
+        assert!(observed.lock().unwrap().is_empty());
+        assert!(unsafe { libc::fcntl(first_raw, libc::F_GETFD) } >= 0);
+        assert!(unsafe { libc::fcntl(second_raw, libc::F_GETFD) } >= 0);
+
+        drop(retirement_scope);
+        let observed = observed.lock().unwrap().clone();
+        assert!(observed.contains(&first_raw));
+        assert!(observed.contains(&second_raw));
+        // A parallel test may reuse either numeric fd immediately after close;
+        // the retirement probe and peer EOF below identify the actual objects.
+        assert_stream_peer_closed(&first_peer);
+        assert_stream_peer_closed(&second_peer);
+        state.file_retirement.set_probe(None);
+    }
+
+    #[test]
+    fn received_identity_capacity_is_guarded_until_infallible_commit() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut shared = FileTableState::try_from_elf(&state).unwrap();
+        state.file_identity_table.lock().unwrap().next_inode = u64::MAX - 1;
+        let (received, _peer) = UnixStream::pair().unwrap();
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        let staged = prepare_received_rights(
+            &mut state,
+            &shared,
+            &mut [0; std::mem::size_of::<libc::c_int>()],
+            vec![PendingReceivedRight {
+                control_offset: 0,
+                file: unsafe {
+                    std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(received))
+                },
+            }],
+            &mut budget,
+            &mut cache,
+        )
+        .unwrap();
+
+        let identity_table = state.file_identity_table.clone();
+        let mut identities = identity_table.lock().unwrap();
+        let prepared = prepare_received_identities(&identities, staged).unwrap();
+        assert_eq!(identities.next_inode, u64::MAX - 1);
+        let competing_table = identity_table.clone();
+        let blocked = std::thread::spawn(move || {
+            matches!(
+                competing_table.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            )
+        })
+        .join()
+        .unwrap();
+        assert!(
+            blocked,
+            "a forked allocator could race the prepared successor"
+        );
+
+        let installed =
+            commit_received_rights(&mut state, &mut shared, prepared, false, &mut identities);
+        assert_eq!(installed, [3]);
+        assert_eq!(identities.next_inode, u64::MAX);
+        assert_eq!(state.fd_object_inodes[&3].inode, u64::MAX - 1);
+        assert!(Arc::ptr_eq(
+            &state.fd_object_inodes[&3],
+            &shared.fd_object_inodes[&3]
+        ));
+    }
+
+    #[test]
+    fn received_right_in_closed_standard_slot_cannot_resurrect_supervisor_stdio() {
+        for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            assert_eq!(close(&mut state, target as u64), 0);
+            assert!(state.closed_standard_fds.contains(&target));
+            let mut shared = FileTableState::try_from_elf(&state).unwrap();
+
+            let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+            let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+            let staged = prepare_received_rights(
+                &mut state,
+                &shared,
+                &mut [0; std::mem::size_of::<libc::c_int>()],
+                vec![PendingReceivedRight {
+                    control_offset: 0,
+                    file: std::fs::File::open("/dev/null").unwrap(),
+                }],
+                &mut budget,
+                &mut cache,
+            )
+            .unwrap();
+            let identity_table = state.file_identity_table.clone();
+            let mut identities = identity_table.lock().unwrap();
+            let prepared = prepare_received_identities(&identities, staged).unwrap();
+            assert_eq!(
+                commit_received_rights(&mut state, &mut shared, prepared, false, &mut identities,),
+                [target]
+            );
+            drop(identities);
+            assert!(state.closed_standard_fds.contains(&target));
+            assert!(shared.closed_standard_fds.contains(&target));
+            assert!(state.files.contains_key(&target));
+
+            assert_eq!(close(&mut state, target as u64), 0);
+            assert!(state.closed_standard_fds.contains(&target));
+            assert!(host_fd(&state, target).is_none());
+            assert!(output_alias(&state, target).is_none());
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fcntl,
+                    [target as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EBADF),
+                "closing received fd {target} resurrected supervisor stdio",
+            );
+        }
+    }
+
+    #[test]
+    fn received_carrier_authentication_is_atomic_and_nonreserved_content_stays_ordinary() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut shared = FileTableState::try_from_elf(&state).unwrap();
+        let retired = Arc::new(Mutex::new(Vec::<i32>::new()));
+        state.file_retirement.set_probe(Some({
+            let retired = retired.clone();
+            Arc::new(move |fds| retired.lock().unwrap().extend_from_slice(fds))
+        }));
+        let valid = state
+            .proc_carrier_authority
+            .mint(
+                b"/proc/uptime",
+                b"0.00 0.00\n",
+                false,
+                false,
+                libc::O_RDONLY,
+            )
+            .unwrap();
+        let forged_name = CString::new("reverie-kvm.proc-carrier.v1.forged").unwrap();
+        let forged_raw = unsafe {
+            libc::memfd_create(
+                forged_name.as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        assert!(forged_raw >= 0);
+        let forged = unsafe { std::fs::File::from_raw_fd(forged_raw) };
+        let valid_raw = valid.as_raw_fd();
+        let files_before = state.files.keys().copied().collect::<Vec<_>>();
+        let shared_before = shared.files.keys().copied().collect::<Vec<_>>();
+        let next_inode = state.file_identity_table.lock().unwrap().next_inode;
+        let mut control = [0; 2 * std::mem::size_of::<libc::c_int>()];
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        let error = prepare_received_rights(
+            &mut state,
+            &shared,
+            &mut control,
+            vec![
+                PendingReceivedRight {
+                    control_offset: 0,
+                    file: valid,
+                },
+                PendingReceivedRight {
+                    control_offset: std::mem::size_of::<libc::c_int>(),
+                    file: forged,
+                },
+            ],
+            &mut budget,
+            &mut cache,
+        )
+        .err()
+        .expect("a malformed reserved carrier must reject the complete batch");
+        assert_eq!(error, negative_errno(libc::EBADMSG));
+        assert_eq!(
+            state.files.keys().copied().collect::<Vec<_>>(),
+            files_before
+        );
+        assert_eq!(
+            shared.files.keys().copied().collect::<Vec<_>>(),
+            shared_before
+        );
+        assert_eq!(
+            state.file_identity_table.lock().unwrap().next_inode,
+            next_inode
+        );
+        {
+            let observed = retired.lock().unwrap();
+            assert!(observed.contains(&valid_raw));
+            assert!(observed.contains(&forged_raw));
+        }
+
+        let foreign_authority = crate::proc_carrier::ProcCarrierAuthority::new_for_tests().unwrap();
+        let foreign = foreign_authority
+            .mint(
+                b"/proc/uptime",
+                b"0.00 0.00\n",
+                false,
+                false,
+                libc::O_RDONLY,
+            )
+            .unwrap();
+        let foreign_raw = foreign.as_raw_fd();
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        retired.lock().unwrap().clear();
+        assert_eq!(
+            prepare_received_rights(
+                &mut state,
+                &shared,
+                &mut control[..std::mem::size_of::<libc::c_int>()],
+                vec![PendingReceivedRight {
+                    control_offset: 0,
+                    file: foreign,
+                }],
+                &mut budget,
+                &mut cache,
+            )
+            .err()
+            .expect("a carrier from another top-level authority must be rejected"),
+            negative_errno(libc::EBADMSG)
+        );
+        assert!(retired.lock().unwrap().contains(&foreign_raw));
+
+        // Seals do not protect inode mode or ctime. A same-authority holder can
+        // temporarily grant write permission, manufacture an O_RDWR alias, and
+        // restore the authenticated mode. Authentication alone still succeeds;
+        // received proc semantics must reject the writable open description.
+        let readonly = state
+            .proc_carrier_authority
+            .mint(
+                b"/proc/uptime",
+                b"0.00 0.00\n",
+                false,
+                false,
+                libc::O_RDONLY,
+            )
+            .unwrap();
+        assert_eq!(unsafe { libc::fchmod(readonly.as_raw_fd(), 0o600) }, 0);
+        let procfd = CString::new(format!("/proc/self/fd/{}", readonly.as_raw_fd())).unwrap();
+        let writable_raw = unsafe { libc::open(procfd.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+        assert!(writable_raw >= 0);
+        assert_eq!(unsafe { libc::fchmod(readonly.as_raw_fd(), 0o444) }, 0);
+        let writable = unsafe { std::fs::File::from_raw_fd(writable_raw) };
+        let inspection = state
+            .proc_carrier_authority
+            .open_inspection_alias(&writable)
+            .unwrap();
+        assert!(
+            state
+                .proc_carrier_authority
+                .authenticate_reserved(
+                    &writable,
+                    &inspection,
+                    &mut crate::proc_carrier::CarrierAuthBudget::new(),
+                    &mut crate::proc_carrier::CarrierAuthCache::new(),
+                )
+                .is_ok(),
+            "ctime-only mutation must leave the HMAC-valid bearer intact"
+        );
+        drop(inspection);
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        retired.lock().unwrap().clear();
+        assert_eq!(
+            prepare_received_rights(
+                &mut state,
+                &shared,
+                &mut control[..std::mem::size_of::<libc::c_int>()],
+                vec![PendingReceivedRight {
+                    control_offset: 0,
+                    file: writable,
+                }],
+                &mut budget,
+                &mut cache,
+            )
+            .err()
+            .expect("a writable alias of a valid carrier must be rejected"),
+            negative_errno(libc::EBADMSG)
+        );
+        assert!(retired.lock().unwrap().contains(&writable_raw));
+
+        let ordinary_name = CString::new("ordinary-same-content").unwrap();
+        let ordinary_raw = unsafe { libc::memfd_create(ordinary_name.as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(ordinary_raw >= 0);
+        let mut ordinary = unsafe { std::fs::File::from_raw_fd(ordinary_raw) };
+        ordinary.write_all(b"0.00 0.00\n").unwrap();
+        let mut budget = crate::proc_carrier::CarrierAuthBudget::new();
+        let mut cache = crate::proc_carrier::CarrierAuthCache::new();
+        let staged = prepare_received_rights(
+            &mut state,
+            &shared,
+            &mut control[..std::mem::size_of::<libc::c_int>()],
+            vec![PendingReceivedRight {
+                control_offset: 0,
+                file: ordinary,
+            }],
+            &mut budget,
+            &mut cache,
+        )
+        .unwrap();
+        let identity_table = state.file_identity_table.clone();
+        let mut identities = identity_table.lock().unwrap();
+        let prepared = prepare_received_identities(&identities, staged).unwrap();
+        let installed =
+            commit_received_rights(&mut state, &mut shared, prepared, false, &mut identities);
+        assert_eq!(installed.len(), 1);
+        assert!(!state.proc_files.contains_key(&installed[0]));
+        assert!(!shared.proc_files.contains_key(&installed[0]));
+        // Numeric descriptors may be reused immediately by parallel tests;
+        // the retirement probe above observes ownership before destruction.
+        state.file_retirement.set_probe(None);
     }
 
     #[test]
@@ -37183,7 +39698,6 @@ mod tests {
                 .unwrap(),
         );
         set_output_alias(&mut state, 3, Some(OutputAlias::Stdout));
-        state.proc_files.insert(3, 0x1234);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
         assert_eq!(
@@ -37210,10 +39724,7 @@ mod tests {
             output_alias(&state, reopened as libc::c_int),
             Some(OutputAlias::Stdout)
         ));
-        assert_eq!(
-            state.proc_files.get(&(reopened as libc::c_int)),
-            Some(&0x1234)
-        );
+        assert!(!state.proc_files.contains_key(&(reopened as libc::c_int)));
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -38883,7 +41394,8 @@ mod tests {
         let required =
             libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
         for fd in [info, alias] {
-            let host = fixture.executor.state.files[&(fd as libc::c_int)].as_raw_fd();
+            let carrier = &fixture.executor.state.files[&(fd as libc::c_int)];
+            let host = carrier.as_raw_fd();
             // SAFETY: host is a live fdinfo carrier and these fcntl commands
             // take no third argument.
             assert_eq!(
@@ -38896,6 +41408,15 @@ mod tests {
             assert!(
                 seals == required || seals == (required | LINUX_F_SEAL_EXEC),
                 "unexpected fdinfo carrier seal policy: {seals:#x}"
+            );
+            assert_eq!(
+                fixture
+                    .executor
+                    .state
+                    .proc_carrier_authority
+                    .candidate_kind(carrier),
+                Ok(crate::proc_carrier::ProcCarrierCandidate::Ordinary),
+                "private fdinfo carrier used the authenticated reserved namespace"
             );
         }
 
@@ -39539,7 +42060,7 @@ mod tests {
                 .as_raw_fd(),
             authoritative
         );
-        let replacement = test_state(&f.root.0);
+        let replacement = test_exec_replacement(&f.root.0, &f.executor.state);
         f.executor.replace_after_exec(replacement);
         assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
         assert_eq!(
@@ -39565,7 +42086,8 @@ mod tests {
             ),
             0
         );
-        f.executor.replace_after_exec(test_state(&f.root.0));
+        let replacement = test_exec_replacement(&f.root.0, &f.executor.state);
+        f.executor.replace_after_exec(replacement);
         assert!(f.executor.state.stdin.is_none());
         assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
         assert_eq!(
@@ -39732,7 +42254,7 @@ mod tests {
             let old_shared =
                 f.executor.file_table.lock().unwrap().files[&(target as i32)].as_raw_fd();
             let old_stdin = f.executor.state.stdin.as_ref().unwrap().as_raw_fd();
-            let replacement = test_state(&f.root.0);
+            let replacement = test_exec_replacement(&f.root.0, &f.executor.state);
             let replacement_cwd = replacement.cwd_fd.as_raw_fd();
             let replacement_stdin = replacement.stdin.as_ref().unwrap().as_raw_fd();
             let observed = observe_unlocked_retirement(&f.executor);
@@ -39860,6 +42382,38 @@ mod tests {
 
     #[test]
     fn descriptor_retirement_accept_cleanup_releases_both_guards() {
+        const TEST: &str =
+            "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards";
+        const CHILD_ENV: &str = "REVERIE_ACCEPT_RETIREMENT_CHILD";
+        const CHILD_VALUE: &str = "reverie-accept-retirement-child-v1";
+        const COMPLETED: &str = "REVERIE_ACCEPT_RETIREMENT_COMPLETE_V1";
+        if let Some(value) = std::env::var_os(CHILD_ENV) {
+            assert_eq!(value, std::ffi::OsStr::new(CHILD_VALUE));
+        } else {
+            let output = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "10s"])
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, CHILD_VALUE)
+                .output()
+                .expect("failed to run isolated accept-retirement regression");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "isolated accept-retirement regression failed with {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                stdout.matches(COMPLETED).count(),
+                1,
+                "isolated accept-retirement regression did not execute exactly once:\n{stdout}"
+            );
+            return;
+        }
+        // Create the listener and client only after exec so a concurrent test
+        // child cannot inherit the accepted endpoint and delay peer EOF.
         for fail_second_install in [false, true] {
             let mut f = FdinfoFixture::new(false);
             let socket_path = f.root.0.join("retire-accept.sock");
@@ -40030,6 +42584,7 @@ mod tests {
                 assert_eq!(f.call(libc::SYS_close, [result as u64, 0, 0, 0, 0, 0]), 0);
             }
         }
+        println!("{}", COMPLETED);
     }
 
     #[test]
@@ -40311,6 +42866,7 @@ mod tests {
         let metadata = |state: &LoadedStaticElf| {
             (
                 state.random_device_fds.clone(),
+                state.loginuid_fds.clone(),
                 state.stdout_alias_fds.clone(),
                 state.stderr_alias_fds.clone(),
                 state.cloexec_fds.clone(),
@@ -40823,7 +43379,8 @@ mod tests {
         let table = f.executor.file_table.clone();
         let generation = f.executor.task_generation;
         let mounts = f.executor.state.proc_mounts.clone();
-        f.executor.replace_after_exec(test_state(&f.root.0));
+        let replacement = test_exec_replacement(&f.root.0, &f.executor.state);
+        f.executor.replace_after_exec(replacement);
         assert!(Arc::ptr_eq(&table, &f.executor.file_table));
         assert!(Arc::ptr_eq(&mounts, &f.executor.state.proc_mounts));
         assert_eq!(f.executor.task_generation, generation);
@@ -41281,7 +43838,7 @@ mod tests {
             );
             let mut control = rights_control(&[fd as i32]);
             assert_eq!(
-                translate_outgoing_control(&mut control, &f.executor.state),
+                translate_outgoing_control(&mut control, &f.executor.state, false),
                 Err(negative_errno(libc::ENOSYS))
             );
         }
@@ -45909,7 +48466,7 @@ mod tests {
         // cleared CLOEXEC on its alias of the first description. Exec must
         // remove exactly the closed description's mask and preserve the live
         // alias with its unchanged mask.
-        let mut after_exec = test_state(&root.0);
+        let mut after_exec = test_exec_replacement(&root.0, &state);
         after_exec.inherit_process_state(state);
         assert!(!after_exec.files.contains_key(&second));
         assert!(after_exec.files.contains_key(&duplicated));
@@ -51343,7 +53900,7 @@ mod tests {
         caught[..std::mem::size_of::<usize>()].copy_from_slice(&2usize.to_ne_bytes());
         test_install_signal_action(&previous, libc::SIGUSR1, ignored);
         test_install_signal_action(&previous, libc::SIGUSR2, caught);
-        let mut replacement = test_state(&root.0);
+        let mut replacement = test_exec_replacement(&root.0, &previous);
         replacement.inherit_process_state(previous);
         assert!(replacement.files.contains_key(&3));
         assert!(!replacement.files.contains_key(&4));
@@ -52082,7 +54639,8 @@ mod tests {
         let request =
             SyscallRequest::new(libc::SYS_set_tid_address as u64, [CLEAR_TID, 0, 0, 0, 0, 0]);
         assert_eq!(executor.execute_process_action(&request, &memory), Some(1));
-        executor.replace_after_exec(test_state(&root.0));
+        let replacement = test_exec_replacement(&root.0, &executor.state);
+        executor.replace_after_exec(replacement);
         assert_eq!(executor.take_clear_child_tid(), None);
     }
 
@@ -52127,7 +54685,8 @@ mod tests {
             );
 
             for exec_depth in 1..=2 {
-                executor.replace_after_exec(test_state(&root.0));
+                let replacement = test_exec_replacement(&root.0, &executor.state);
+                executor.replace_after_exec(replacement);
                 assert!(
                     executor
                         .state
@@ -53559,7 +56118,8 @@ mod tests {
 
         // Exec retains the task but clears its robust head and resets
         // dumpability. Peer lookup must still succeed with the empty state.
-        child.replace_after_exec(test_state(&root.0));
+        let replacement = test_exec_replacement(&root.0, &child.state);
+        child.replace_after_exec(replacement);
         assert_eq!(
             get_robust_list(
                 &mut memory,
@@ -53856,7 +56416,7 @@ mod tests {
         let mut previous = test_state(Path::new("/"));
         previous.random_seed = 91;
         let prefix = read_deterministic_getrandom(&mut memory, &mut previous, 333);
-        let mut replacement = test_state(Path::new("/"));
+        let mut replacement = test_exec_replacement(Path::new("/"), &previous);
         replacement.inherit_process_state(previous);
         assert_eq!(replacement.random_seed, 91);
         assert_eq!(replacement.getrandom_offset, 333);
@@ -54911,7 +57471,8 @@ mod tests {
         let mut leader = ElfExecutor::new(test_state(&root.0), false);
         let mut old_worker = leader.thread_child(2).unwrap();
         commit_test_exit(&mut old_worker, 61, false);
-        leader.replace_after_exec(test_state(&root.0));
+        let replacement = test_exec_replacement(&root.0, &leader.state);
+        leader.replace_after_exec(replacement);
         let mut new_worker = leader.thread_child(2).unwrap();
         assert_ne!(old_worker.task_generation, new_worker.task_generation);
         old_worker.retire_current_thread(ExitStatus::Exited(99), true);
@@ -56578,7 +59139,8 @@ mod tests {
         let old_target = leader.state.thread_signals.downgrade();
         // Successful exec's runtime tears down siblings before replacing state.
         drop(sender);
-        leader.replace_after_exec(test_state(&root.0));
+        let replacement = test_exec_replacement(&root.0, &leader.state);
+        leader.replace_after_exec(replacement);
         assert!(old_target.upgrade().is_none());
         assert!(
             leader
@@ -57201,7 +59763,7 @@ mod tests {
             &state.thread_group_leader_name,
         ));
         let forked_leader_name = forked.thread_group_leader_name.clone();
-        let mut replacement = test_state(&root.0);
+        let mut replacement = test_exec_replacement(&root.0, &forked);
         replacement.argv0 = b"arbitrary-argv-zero".to_vec();
         replacement.thread_name =
             crate::elf::initial_thread_name(std::path::Path::new("/resolved/new-program"));
@@ -57392,7 +59954,7 @@ mod tests {
             1,
         );
 
-        let mut replacement = test_state(&root.0);
+        let mut replacement = test_exec_replacement(&root.0, &forked);
         replacement.inherit_process_state(forked);
         assert_eq!(
             syscall_result(&mut memory, &mut replacement, libc::SYS_prctl, get),
@@ -57436,7 +59998,8 @@ mod tests {
             syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, get),
             0,
         );
-        shared_child.replace_after_exec(test_state(&root.0));
+        let replacement = test_exec_replacement(&root.0, &shared_child.state);
+        shared_child.replace_after_exec(replacement);
         assert_eq!(
             syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, set(1)),
             0,
@@ -57463,7 +60026,7 @@ mod tests {
         let mut child = state.try_clone_for_fork(2).unwrap();
         assert_eq!(prctl(&mut child, &get), 1);
 
-        let mut after_exec = test_state(&root.0);
+        let mut after_exec = test_exec_replacement(&root.0, &state);
         after_exec.inherit_process_state(state);
         assert_eq!(prctl(&mut after_exec, &get), 0);
     }
@@ -57484,7 +60047,7 @@ mod tests {
         let mut child = state.try_clone_for_fork(2).unwrap();
         assert_eq!(prctl(&mut child, &get), 0);
 
-        let mut after_exec = test_state(&root.0);
+        let mut after_exec = test_exec_replacement(&root.0, &state);
         after_exec.inherit_process_state(state);
         assert_eq!(prctl(&mut after_exec, &get), 1);
     }
@@ -57557,7 +60120,7 @@ mod tests {
 
         let child = state.try_clone_for_fork(2).unwrap();
         assert_eq!(child.capability_bounding, reduced);
-        let mut after_exec = test_state(&root.0);
+        let mut after_exec = test_exec_replacement(&root.0, &state);
         after_exec.inherit_process_state(state);
         assert_eq!(after_exec.capability_effective, reduced);
         assert_eq!(after_exec.capability_permitted, reduced);
@@ -57923,7 +60486,7 @@ mod tests {
         state.sched_priority = 9;
         state.sched_reset_on_fork = true;
         let expected_ioprio = state.ioprio;
-        let mut after_exec = test_state(&dir.0);
+        let mut after_exec = test_exec_replacement(&dir.0, &state);
         after_exec.inherit_process_state(state);
         assert_eq!(after_exec.nice, -7);
         assert_eq!(after_exec.sched_policy, libc::SCHED_RR);

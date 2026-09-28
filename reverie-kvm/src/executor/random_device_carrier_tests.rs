@@ -206,7 +206,7 @@ fn random_carrier_status_and_access_survive_alias_fork_exec_and_reuse() {
                     i64::from(expected)
                 );
             }
-            let mut replacement = test_state(&root.0);
+            let mut replacement = test_exec_replacement(&root.0, &forked);
             replacement.inherit_process_state(forked);
             assert!(Arc::ptr_eq(
                 &description,
