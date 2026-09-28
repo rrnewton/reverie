@@ -1199,6 +1199,22 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
+    /// Forces the order a loaded tracer thread produces by chance: a nonleader
+    /// thread's run loop observes its own TID vanish in a non-leader execve
+    /// before `drive_ordinary` polls that thread's exit future again. Every
+    /// nonleader `drive_ordinary` on this thread leaves its exit future
+    /// unpolled for the duration of its run-loop race; the leader is
+    /// unaffected.
+    pub(crate) static NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The wait operation of every own-TID ECHILD for which a nonleader's run
+    /// loop stayed pending, in order. Tests read it to prove that a pass went
+    /// through that branch rather than through the exit future or an earlier
+    /// Exec transfer.
+    pub(crate) static NONLEADER_RUN_LOOP_ECHILD_PENDED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
     pub(crate) static FATAL_FORK_PAUSE: std::cell::RefCell<Option<Arc<FatalForkPause>>> = const { std::cell::RefCell::new(None) };
     pub(crate) static FATAL_SETUP_CONTROL: std::cell::RefCell<Option<Arc<FatalSetupControl>>> = const { std::cell::RefCell::new(None) };
     pub(crate) static FATAL_FREEZE_CONTROL: std::cell::RefCell<Option<Arc<FatalFreezeControl>>> = const { std::cell::RefCell::new(None) };
@@ -5236,6 +5252,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             .get_syscall(&task)
             .tracee_context(tid, "read registers at seccomp stop")?;
         let (nr, args) = syscall.into_parts();
+        // Trap-only site-table lifecycle: before the syscall runs and before
+        // any Tool code, for x86_64 and patched-site stops alike.
+        if self.trap_only.is_some()
+            && let Err(error) = self.trap_only_lifecycle(nr, &args)
+        {
+            return Err(self.trap_only_error(tid, error, "trap-only site-table lifecycle"));
+        }
         let tool_subscribed = self
             .global_state
             .subscriptions
@@ -5736,7 +5759,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             ChildOp::Fork => self.forked(child.pid()),
             ChildOp::Vfork => self.forked(child.pid()),
         };
-        child_task.trap_only = self.trap_only_new_child(&parent, op)?;
+        child_task.trap_only = self.trap_only_new_child(&parent, child.pid(), op)?;
 
         let (child_stop_tx, child_stop_rx) = mpsc::channel(1);
         child_task.gdb_stop_tx = Some(child_stop_tx);
@@ -6275,6 +6298,27 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // numerically signal the root PID.
                     return Err(anyhow::Error::new(err).into());
                 }
+                if !self.is_main_thread()
+                    && let Some(_operation) = self.own_tid_echild_operation(&err)
+                {
+                    // A nonleader execve (de_thread) hands this thread's TID
+                    // to the leader's pid object and releases it, so a wait on
+                    // the former TID reports ECHILD. The run loop can see that
+                    // before `drive_ordinary` re-polls this thread's exit
+                    // future, which applies the same rule. ECHILD authorizes
+                    // neither exit nor failure: stay pending so the leader's
+                    // actual Exec edge transfers this state, while session
+                    // cancellation and backend failure remain observable.
+                    #[cfg(test)]
+                    {
+                        NONLEADER_RUN_LOOP_ECHILD_PENDED
+                            .with(|pended| pended.borrow_mut().push(_operation));
+                        if let Some(slot) = self.ordinary_exec.lock().unwrap().get(&self.tid()) {
+                            slot.changed.notify_waiters();
+                        }
+                    }
+                    return future::pending().await;
+                }
                 // Note: Calling handle_internal_error cannot happen in the
                 // `select!()` of the `run` function because then the exit
                 // events that get generated in here cannot be caught by the
@@ -6362,7 +6406,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                     task_state = futures::select_biased! {
                         next_state = fut1 => {
                             if let Some(next_state) = next_state {
-                                next_state.map_err(Error::Internal)
+                                next_state.map_err(|error| match error {
+                                    // Only this task's own handlers send here
+                                    // (`abort`), from `inject`, `tail_inject`
+                                    // and the nested handlers they run. Their
+                                    // waits are all on this TID: a new child is
+                                    // waited on in its own spawned task. ptrace
+                                    // and process_vm_* never return ECHILD. So
+                                    // an ECHILD here is a wait on this TID, or
+                                    // a Tool post-exec callback's errno that a
+                                    // nested `handle_exec_event` relays
+                                    // (`ordinary_callback_errno` returns it as
+                                    // `TraceError::Errno`). Both get this label.
+                                    // The callback case is harmless: before
+                                    // returning the errno, that function has
+                                    // published the session failure, which
+                                    // `drive_ordinary` sees as cancellation.
+                                    // Other errors keep their unattributed form.
+                                    TraceError::Errno(Errno::ECHILD) => Error::Tracee {
+                                        operation: "wait during injected syscall",
+                                        pid: tid,
+                                        source: error,
+                                    },
+                                    error => Error::Internal(error),
+                                })
                             } else {
                                 Err(Error::runtime(
                                     tid,
@@ -6527,6 +6594,36 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// The wait operation, when `err` is ECHILD from a wait on this task's own
+    /// TID. Only an error that names this TID qualifies: a bare
+    /// `Error::Internal` ECHILD could come from any `?` (`From<Errno>` makes
+    /// every propagated errno one), so it does not. Every own-TID wait that
+    /// can report ECHILD to the ordinary run loop carries this TID: the
+    /// initial resume and seccomp resume waits, the handlers that
+    /// `handle_stop_event` annotates, and waits inside injected syscalls,
+    /// which `run_loop_events` annotates when their result comes back through
+    /// the next-state channel.
+    ///
+    /// The converse does not hold: not every qualifying error is a wait.
+    /// `handle_stop_event` names this TID on any error from `handle_signal`,
+    /// `handle_exec_event`, `dispatch_new_task` and `handle_vfork_done_event`,
+    /// and `ordinary_callback_errno` returns a Tool callback's errno as
+    /// `TraceError::Errno`, so a callback that returns ECHILD qualifies too.
+    /// That is harmless today. This rule applies only without LiteInst, and
+    /// there `ordinary_callback_errno` either never returns or publishes the
+    /// session failure before it returns the errno, so `drive_ordinary` takes
+    /// its cancellation branch while the run loop stays pending.
+    fn own_tid_echild_operation(&self, err: &Error) -> Option<&'static str> {
+        match err {
+            Error::Tracee {
+                operation,
+                pid,
+                source: TraceError::Errno(Errno::ECHILD),
+            } if *pid == self.tid() => Some(operation),
+            _ => None,
+        }
+    }
+
     fn ordinary_failure_enabled(&self) -> bool {
         // Configured static traps use the same stopped-task ownership as
         // seccomp. Dynamic LiteInst retains its separate session cleanup guard.
@@ -6677,6 +6774,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         if matches!(&start, OrdinaryStart::Newborn(..)) && self.is_a_daemon {
             self.ndaemons.fetch_add(1, Ordering::SeqCst);
         }
+        #[cfg(test)]
+        let hold_transfer = !self.is_main_thread()
+            && NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(std::cell::Cell::get);
         loop {
             // Covers the entire run, parked callbacks, terminal waits, and
             // failure cleanup. The actual Exec requester owns the replacement
@@ -6685,7 +6785,25 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let drive = self
                     .drive_ordinary(start, &mut exit_event, &stop, &session)
                     .fuse();
-                let transfer = slot.requested().fuse();
+                let transfer = async {
+                    slot.requested().await;
+                    // The forced order is complete only once the run loop,
+                    // not an earlier Exec transfer, has observed the former
+                    // TID's ECHILD. Hold the transfer until then.
+                    #[cfg(test)]
+                    if hold_transfer {
+                        loop {
+                            let changed = slot.changed.notified();
+                            if NONLEADER_RUN_LOOP_ECHILD_PENDED
+                                .with(|pended| !pended.borrow().is_empty())
+                            {
+                                break;
+                            }
+                            changed.await;
+                        }
+                    }
+                }
+                .fuse();
                 futures::pin_mut!(drive, transfer);
                 futures::select_biased! {
                     () = transfer => None,
@@ -6793,12 +6911,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                             .timer
                             .exec_test_identity()
                             .expect("read replacement perf identity");
+                        // Probe by event ID, not by descriptor number: other
+                        // tests in this process reuse a freed number at once.
                         let closed = displaced.as_ref().is_some_and(|old| {
-                            [old.clock_fd, old.timer_fd].into_iter().all(|fd| {
-                                (unsafe { libc::fcntl(fd, libc::F_GETFD) }) == -1
-                                    && std::io::Error::last_os_error().raw_os_error()
-                                        == Some(libc::EBADF)
-                            })
+                            [
+                                (old.clock_fd, old.clock_event_id),
+                                (old.timer_fd, old.timer_event_id),
+                            ]
+                            .into_iter()
+                            .all(|(fd, id)| crate::perf::fd_no_longer_names_event(fd, id))
                         });
                         EXEC_TIMER_TRANSFERS.with(|control| {
                             control.borrow().as_ref().unwrap().lock().unwrap().push(
@@ -6892,12 +7013,22 @@ impl<L: Tool + 'static> TracedTask<L> {
         session: &Arc<FatalSession>,
     ) -> crate::tracer::OrdinaryTerminal {
         let global = self.global_state.gs_ref.clone();
+        #[cfg(test)]
+        let exit_deferred = !self.is_main_thread()
+            && NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(std::cell::Cell::get);
         let outcome = {
             let run_loop = self.ordinary_start(start).fuse();
             let cancelled = session.cancelled().fuse();
             let global_failure = global.wait_for_backend_failure().fuse();
             futures::pin_mut!(run_loop, cancelled, global_failure);
-            let exit = (&mut *exit_event).fuse();
+            let exit = async {
+                #[cfg(test)]
+                if exit_deferred {
+                    return future::pending().await;
+                }
+                (&mut *exit_event).await
+            }
+            .fuse();
             futures::pin_mut!(exit);
             futures::select_biased! {
                 () = cancelled => None,
