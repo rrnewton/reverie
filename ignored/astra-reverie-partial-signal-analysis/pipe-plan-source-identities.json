@@ -1,0 +1,120 @@
+[
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "89a9f0217b2f3ab6106aac12ea2a650eee7972d6",
+    "path": "reverie-kvm/src/executor.rs",
+    "git_blob": "2be817680d9ccd25946a4c39dfcf5913f04efab4",
+    "bytes": 1245723,
+    "sha256": "b67eda8a6da319d5168b749264817dce2c5e4e04935faa60bfe2fbee38a8af61"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "89a9f0217b2f3ab6106aac12ea2a650eee7972d6",
+    "path": "reverie-kvm/src/elf.rs",
+    "git_blob": "4ff58d2bea03eb509e35cf80d7ccb143e2d85d24",
+    "bytes": 60664,
+    "sha256": "84f60b2e81e9deac76439985458b2381df40a0ad3a5bd860a30bd78dddfc3f19"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "89a9f0217b2f3ab6106aac12ea2a650eee7972d6",
+    "path": "reverie-kvm/src/runtime.rs",
+    "git_blob": "d8cedf6857af8ba26fbda2c6136ab8a1bc990c59",
+    "bytes": 135379,
+    "sha256": "7436313ad455bef00b153c56a50e7802c5c3f81514c73beef779ca2d931f6760"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "89a9f0217b2f3ab6106aac12ea2a650eee7972d6",
+    "path": "reverie-kvm/src/vm.rs",
+    "git_blob": "83cf26e3fb89d274b626e4944a969e38ce3ba065",
+    "bytes": 252605,
+    "sha256": "56f1a12f4fe17d9ef5b9c768c563ca0c6e114b4764910dc0d91c2c8b1fbac8b5"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "89a9f0217b2f3ab6106aac12ea2a650eee7972d6",
+    "path": "reverie-kvm/src/memory.rs",
+    "git_blob": "07f8630318bf9d3da937f2ebb2021b73f32423cc",
+    "bytes": 52767,
+    "sha256": "228ed762dda6b892286149757530d2a6e55539e0898721e255642b32c4ec708c"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "detcore/src/lib.rs",
+    "git_blob": "a242f6f30c5c720e76fab86f030f733175a9c792",
+    "bytes": 158461,
+    "sha256": "a5a806e8c6843898ac3e1fdb9dc650678787cfc7d590d498ff822805d37e183a"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "detcore/src/tool_global.rs",
+    "git_blob": "154a987b7e034aafc5d575d3fd0b3311cd5dc14b",
+    "bytes": 185861,
+    "sha256": "6683a2b4d80fce4c4d51f78db994d3fc05d8e99d800cfeb031f8625b6295e4ad"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "detcore/src/scheduler.rs",
+    "git_blob": "84f62882b53840b46de9e65eb9036a2299a756ca",
+    "bytes": 345299,
+    "sha256": "e931eb57e72da829a95eba22e5864fa2427cb7994504daeb3f1526b30ddf6cb8"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "hermit-cli/src/lib.rs",
+    "git_blob": "dd8e333b62ae470b9647a96d6bad6b14c125da2a",
+    "bytes": 194350,
+    "sha256": "6a1eca719d56de3fd76838ce2b4ececcc9cf081088c13a811295580ade83ce74"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-hermit-ready",
+    "revision": "7b9748c638deacfd9f3e13ba4640bf6ec38c92d2",
+    "path": "tests/c/preadv2_pwritev2_pipe.c",
+    "git_blob": "093d165afd2f71ffdb9ec30d31764984f891b50d",
+    "bytes": 30693,
+    "sha256": "0a3c446a8624d4b4e811b27de5c8585f25dc475d34f2ddd17a35c88eaa5bb4ab"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie/ignored/astra-reverie-partial-signal-analysis/linux-v6.17-pipe.c",
+    "bytes": 37634,
+    "sha256": "6d6d680a3109980cba6f34fe8710173dbf18e7c4bf3780c2000cc742bd91e5a6"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie/ignored/astra-reverie-partial-signal-analysis/linux-v6.17-ioctl.c",
+    "bytes": 17384,
+    "sha256": "fca774fad83aaf1df8a596722856ba28341d8eefce8ca6efcea44359522fd79a"
+  },
+  {
+    "path": "/tmp/astra-hermit-ready-kvm-cancellation-build/cancellation-only.patch",
+    "bytes": 696,
+    "sha256": "4de6acd5f8caace81522c763b083d002ba047a9984b59bb23d7ab4ee1334de74"
+  },
+  {
+    "path": "/tmp/astra-hermit-ready-kvm-cancellation-tests/results.json",
+    "bytes": 5130,
+    "sha256": "e4389d59cbef344dc9894d50255b129b8a549dd93a548949a6711300b67859a6"
+  },
+  {
+    "path": "/tmp/astra-hermit-ready-kvm-cancellation-tests/partial-error-exit.stderr",
+    "bytes": 196931,
+    "sha256": "d77a1e6ed2ad9e05e901eeca9b9f43324bd6300bf403aed852505d2cbc0126a8"
+  },
+  {
+    "path": "/tmp/astra-hermit-ready-vector-signal-traces/true-partial.stderr",
+    "bytes": 193379,
+    "sha256": "abec458ab23e47a57b69c36865bbe324eb849399a674f60188dc3290466dca24"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/astra-reverie",
+    "revision": "d3aede09d301b71d7cc36c5846c3ad1013b62033",
+    "path": "reverie-kvm/src/fionread_contract_tests.rs",
+    "git_blob": "bbfc4304dbfb1f26ada47794c3bd8898f2adc1e6",
+    "bytes": 16906,
+    "sha256": "90b705601b9bcaf6a3673ece5a1e1c381e0f5642a33943062ffbe8e7574207fe"
+  }
+]
