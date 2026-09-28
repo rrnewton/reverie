@@ -709,9 +709,10 @@ class DirectLedgerFixture(unittest.TestCase):
             suffix = "plan.json" if role == "plan" else role + ".jsonl"
             path.write_bytes((fixtures / ("ordinary-only-" + suffix)).read_bytes())
         source = self.parent / "ignored/ci-hub/ledger-publisher-clone"
-        source.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", str(source)], check=True)
-        git(source, "remote", "add", "origin", mirror.finalized_proof.PARENT_REPOSITORY)
+        if not source.exists():  # a test may prepare several terminals
+            source.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(source)], check=True)
+            git(source, "remote", "add", "origin", mirror.finalized_proof.PARENT_REPOSITORY)
         selection = {
             "row": selected,
             "terminal": {"repository": "rrnewton/hermit", "run_id": selected["run_id"],
@@ -852,10 +853,14 @@ class DirectLedgerFixture(unittest.TestCase):
         self.assertEqual(["native-refusal"], [r["event_id"] for r in self.remote_rows()])
         self.assertEqual("", git(self.remote, "ls-tree", "-r", "main", "--", "scorecard/finalized"))
 
-    def derived_fixture(self):
+    def derived_fixture(self, **row_updates):
         _encoded, selection = self.portable_fixture()
         selected = selection["row"]
         selected.update(schema_version=5, cell_results=None, result="fail", validation_complete=False)
+        # Row facts are part of the derived binding, so apply them before it.
+        selected.update(row_updates)
+        if "run_id" in row_updates:
+            selection["terminal"]["run_id"] = row_updates["run_id"]
         cell = {"lane": "portable", "category": "c-programs", "test": "fixture",
                 "mode": "verify", "backend": "ptrace"}
         selected["raw_result_input_census_v1"] = {
@@ -870,7 +875,7 @@ class DirectLedgerFixture(unittest.TestCase):
                      "result": None, "failure_class": None, "ordinary_verdict": {}, "backend_parity": None}]}
         encoded = mirror.finalized_proof.canonical_bytes(value) + b"\n"
         prepared = {"selection": selection, "source": self.parent, "artifacts": None,
-                    "objects": None, "parent_tool_commit": "8" * 40}
+                    "objects": None, "parent_tool_commit": "8" * 40, "derived": True}
         return prepared, encoded
 
     def test_native_derived_emission_is_explicit_and_failed_child_cannot_stage(self):
@@ -1142,6 +1147,389 @@ class DirectLedgerFixture(unittest.TestCase):
         recovery = delivered["reports"][0]["raw_publication"]["recovered_ref"]
         self.assertEqual(f"refs/heads/recovery/cell-series-{refused_commit}", recovery)
         self.assertEqual(refused_commit, git(writer, "rev-parse", recovery))
+
+    # --- Scorecard renderer, head order and proof independence ------------
+
+    def set_tool(self, body: str, checkout: Path | None = None) -> str:
+        """Replace a fixture scorecard renderer and commit it; return its HEAD."""
+        checkout = checkout or self.tool
+        tool = checkout / "ci/compat-envelope/scorecard.rs"
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        tool.write_text("#!/usr/bin/python3\nimport os, pathlib, subprocess, sys\n" + HELP_FIXTURE
+                        + "fd=int(os.environ['DEV_HERMIT_TEST_LEDGER_PUBLISH_LOCK_FD'])\nos.fstat(fd)\n"
+                        + "ledger=pathlib.Path(os.environ['DEV_HERMIT_TEST_LEDGER_ROOT'])\n"
+                        + "p=ledger/'scorecard'\n" + body)
+        tool.chmod(0o755)
+        git(checkout, "add", "ci")
+        git(checkout, "commit", "-qm", "fixture renderer")
+        return git(checkout, "rev-parse", "HEAD")
+
+    def use_head_renderer(self) -> None:
+        # The renderer runs in the measured checkout; it names the head it rendered.
+        self.set_tool("head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\n"
+                      "(p/'SCORECARD.md').write_text('rendered at '+head+'\\n')\n")
+
+    def source_commit(self, message: str, when: str, *, base: str | None = None) -> str:
+        """Commit in the measured repository at WHEN, optionally on top of BASE."""
+        if base is not None:
+            git(self.source, "checkout", "-q", "--detach", base)
+        environment = {**os.environ, "GIT_COMMITTER_DATE": when, "GIT_AUTHOR_DATE": when}
+        subprocess.run(["git", "-C", str(self.source), "commit", "--allow-empty", "-qm", message],
+                       check=True, env=environment)
+        return git(self.source, "rev-parse", "HEAD")
+
+    def publish_at(self, commit: str, **kwargs):
+        git(self.source, "checkout", "-q", "--detach", commit)
+        self.target = commit
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            report = self.publish(**kwargs)
+        return report, stderr.getvalue()
+
+    def remote_file(self, path: str) -> str | None:
+        found = subprocess.run(["git", "-C", str(self.remote), "show", f"main:{path}"],
+                               capture_output=True, text=True, check=False)
+        return found.stdout if found.returncode == 0 else None
+
+    def remote_latest(self) -> dict | None:
+        text = self.remote_file("latest.json")
+        return None if text is None else json.loads(text)
+
+    def test_parser_leaves_renderer_to_the_measured_checkout(self):
+        args = mirror.build_parser().parse_args(
+            ["--parent", "/p", "--source-checkout", "/s", "--target", "0" * 40])
+        self.assertIsNone(args.tool_checkout)
+        explicit = mirror.build_parser().parse_args(
+            ["--parent", "/p", "--source-checkout", "/s", "--target", "0" * 40, "--tool-checkout", "/t"])
+        self.assertEqual(Path("/t"), explicit.tool_checkout)
+
+    def test_measured_checkout_renders_its_own_scorecard_by_default(self):
+        # https://github.com/rrnewton/dev-hermit/issues/392: the measured
+        # SCORECARD.md and scorecard.rs both differ from the pinned tool.
+        self.set_tool("if pathlib.Path('SCORECARD.md').read_text() != 'pinned prose\\n':\n"
+                      "    sys.exit('SCORECARD.md is stale for this renderer')\n"
+                      "(p/'SCORECARD.md').write_text('rendered by pinned renderer\\n')\n")
+        (self.source / "SCORECARD.md").write_text("measured prose\n")
+        (self.source / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly-2026-07-12"\n')
+        git(self.source, "add", "SCORECARD.md", "rust-toolchain.toml")
+        git(self.source, "commit", "-qm", "measured prose")
+        measured = self.set_tool("assert pathlib.Path('SCORECARD.md').read_text() == 'measured prose\\n'\n"
+                                 "(p/'SCORECARD.md').write_text('rendered by measured renderer\\n')\n",
+                                 checkout=self.source)
+        cargo = self.root / "bin/cargo"
+        cargo.write_text(
+            "#!/usr/bin/python3\nimport os, sys\n"
+            "manifest = sys.argv[sys.argv.index('--manifest-path') + 1]\n"
+            f"assert manifest in {[str(self.tool / 'Cargo.toml'), str(self.source / 'Cargo.toml')]!r}, manifest\n"
+            "open(os.environ['CARGO_FIXTURE_LOG'], 'a').write(manifest + '\\n')\n"
+            "assert os.environ['RUSTUP_TOOLCHAIN'] == 'nightly-2026-07-12-x86_64-unknown-linux-gnu'\n")
+        log = self.root / "cargo.log"
+        self.enterContext(mock.patch.dict(os.environ, {"CARGO_FIXTURE_LOG": str(log)}))
+        self.append("pinned-renderer")
+        pinned, _ = self.publish_at(measured)
+        self.assertEqual("derived-failed", pinned["state"])
+        self.assertIn("SCORECARD.md is stale", pinned["scorecard"]["error"])
+        self.assertEqual("legacy scorecard\n", self.remote_file("scorecard/SCORECARD.md"))
+        self.append("measured-renderer")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            report = mirror.mirror(self.parent, self.source, measured, mirror.REMOTE_URL,
+                                   net_wrapper="/usr/bin/env")
+        self.assertEqual("published", report["state"], (report, stderr.getvalue()))
+        self.assertEqual(measured, report["scorecard"]["tool_hermit_commit"])
+        self.assertEqual("rendered by measured renderer\n", self.remote_file("scorecard/SCORECARD.md"))
+        self.assertEqual(measured, self.remote_latest()["scorecard_tool_hermit_commit"])
+        self.assertEqual(str(self.source / "Cargo.toml"), log.read_text().splitlines()[-1])
+
+    def test_renderer_writes_outside_its_output_are_refused_before_push(self):
+        # The renderer is measured code: it may write exactly SCORECARD.md and cells.json.
+        self.set_tool("(p/'SCORECARD.md').write_text('rendered\\n')\n"
+                      "(p/'finalized/runs').mkdir(parents=True)\n"
+                      "(p/'finalized/runs/forged.json').write_text('{}\\n')\n")
+        self.append("forged-path")
+        report, _ = self.publish_at(self.target)
+        self.assertEqual("derived-failed", report["state"])
+        self.assertEqual("failed", report["scorecard"]["state"])
+        self.assertIn("changed ledger paths outside its generated output", report["scorecard"]["error"])
+        self.assertIn("scorecard/finalized/runs/forged.json", report["scorecard"]["error"])
+        self.assertEqual("", git(self.remote, "ls-tree", "-r", "main", "--", "scorecard/finalized"))
+        self.assertEqual("legacy scorecard\n", self.remote_file("scorecard/SCORECARD.md"))
+        self.assertIsNone(self.remote_latest())
+        self.assertEqual([row("forged-path")], self.remote_rows())
+
+    def test_renderer_commit_in_the_writer_is_refused_before_push(self):
+        self.set_tool("(p/'SCORECARD.md').write_text('rendered\\n')\n"
+                      "subprocess.run(['git','-C',str(ledger),'commit','--allow-empty','-qm','renderer forged commit'],"
+                      "check=True)\n")
+        self.append("forged-commit")
+        report, _ = self.publish_at(self.target)
+        self.assertEqual("derived-failed", report["state"])
+        self.assertIn("moved the ledger writer HEAD", report["scorecard"]["error"])
+        self.assertNotIn("renderer forged commit", git(self.remote, "log", "--format=%s", "main"))
+        self.assertIsNone(self.remote_latest())
+        self.assertEqual([row("forged-commit")], self.remote_rows())
+
+    def test_scorecard_head_only_moves_forward_along_ancestry(self):
+        self.use_head_renderer()
+        root = self.target
+        first, _ = self.publish_at(root)
+        self.assertEqual("published", first["state"], first)
+        latest = self.remote_latest()
+        self.assertEqual(root, latest["scorecard_hermit_commit"])
+        self.assertEqual(int(git(self.source, "show", "-s", "--format=%ct", root)),
+                         latest[mirror.SCORECARD_HEAD_TIME_FIELD])
+        child = self.source_commit("descendant", "2030-01-01T00:00:00Z")
+        advanced, _ = self.publish_at(child)
+        self.assertEqual("published", advanced["scorecard"]["state"], advanced)
+        self.assertEqual(child, self.remote_latest()["scorecard_hermit_commit"])
+        self.assertEqual(f"rendered at {child}\n", self.remote_file("scorecard/SCORECARD.md"))
+        before = {path: git(self.remote, "rev-parse", "main:" + path)
+                  for path in ("latest.json", "scorecard/SCORECARD.md", "scorecard/cells.json")}
+        self.append("late-older-run")
+        with mock.patch.object(mirror, "build_scorecard", wraps=mirror.build_scorecard) as renderer:
+            older, stderr = self.publish_at(root)
+        renderer.assert_not_called()
+        self.assertEqual("published", older["state"], older)
+        self.assertEqual({"state": "superseded", "hermit_commit": root, "current_hermit_commit": child},
+                         {key: older["scorecard"][key] for key in ("state", "hermit_commit", "current_hermit_commit")})
+        self.assertIn("ancestor of the published head", older["scorecard"]["detail"])
+        self.assertIn("SCORECARD SUPERSEDED", stderr)
+        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertIn(row("late-older-run"), self.remote_rows())
+        self.assertEqual(older["commit"], git(self.remote, "rev-parse", "main"))
+
+    def test_divergent_scorecard_heads_order_by_committer_time(self):
+        self.use_head_renderer()
+        root = self.target
+        middle = self.source_commit("branch middle", "2030-01-01T00:00:00Z", base=root)
+        older = self.source_commit("branch older", "2029-01-01T00:00:00Z", base=root)
+        newer = self.source_commit("branch newer", "2031-01-01T00:00:00Z", base=root)
+        tied = self.source_commit("branch tied", "2031-01-01T00:00:00Z", base=root)
+        self.assertEqual("published", self.publish_at(middle)[0]["scorecard"]["state"])
+        for commit, expected in ((older, "superseded"), (newer, "published"), (tied, "superseded")):
+            with self.subTest(commit=commit):
+                head = self.remote_latest()["scorecard_hermit_commit"]
+                report, _ = self.publish_at(commit)
+                self.assertEqual(expected, report["scorecard"]["state"], report)
+                self.assertEqual(head if expected == "superseded" else commit,
+                                 self.remote_latest()["scorecard_hermit_commit"])
+                if expected == "superseded":
+                    self.assertIn("divergent history", report["scorecard"]["detail"])
+        self.assertEqual(f"rendered at {newer}\n", self.remote_file("scorecard/SCORECARD.md"))
+
+    def metadata_repository(self, head: str, recorded_time=None) -> Path:
+        repository = self.root / f"metadata-{head[:8]}-{recorded_time}"
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        value = {"schema": mirror.METADATA_SCHEMA, "scorecard_hermit_commit": head}
+        if recorded_time is not None:
+            value[mirror.SCORECARD_HEAD_TIME_FIELD] = recorded_time
+        (repository / "latest.json").write_text(json.dumps(value))
+        git(repository, "add", "latest.json")
+        git(repository, "commit", "-qm", "metadata")
+        return repository
+
+    def test_unreadable_published_head_is_ordered_only_by_its_recorded_time(self):
+        target_time = int(git(self.source, "show", "-s", "--format=%ct", self.target))
+        unknown = "f" * 40
+        for recorded, expected in ((target_time - 1, "advance"), (target_time, "superseded"),
+                                   (target_time + 1, "superseded")):
+            with self.subTest(recorded=recorded):
+                order = mirror.scorecard_order(self.metadata_repository(unknown, recorded), self.source, self.target)
+                self.assertEqual(expected, order["state"])
+                self.assertEqual(unknown, order["current"])
+        with self.assertRaisesRegex(mirror.MirrorRefused, "records no scorecard_hermit_commit_time"):
+            mirror.scorecard_order(self.metadata_repository(unknown), self.source, self.target)
+        # A readable head whose recorded time disagrees with the commit is refused.
+        with self.assertRaisesRegex(mirror.MirrorRefused, "records commit time"):
+            mirror.scorecard_order(self.metadata_repository(self.target, target_time + 5), self.source, self.target)
+        # A shallow measured checkout cannot decide ancestry.
+        shallow = self.root / "shallow-source"
+        self.source_commit("second", "2030-01-01T00:00:00Z")
+        subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{self.source}", str(shallow)], check=True)
+        with self.assertRaisesRegex(mirror.MirrorRefused, "shallow"):
+            mirror.scorecard_order(self.metadata_repository(self.target), shallow, git(shallow, "rev-parse", "HEAD"))
+
+    def test_write_metadata_refuses_every_backward_or_stale_order(self):
+        self.use_head_renderer()
+        self.publish_at(self.target)
+        child = self.source_commit("descendant", "2030-01-01T00:00:00Z")
+        writer = self.parent / mirror.WRITER_RELATIVE
+        snapshot = mirror._published_snapshot(writer)
+        order = mirror.scorecard_order(writer, self.source, child)
+        self.assertEqual("advance", order["state"])
+        refused = (({**order, "state": "superseded"}, child, "may not move"),
+                   (order, self.source_commit("other", "2031-01-01T00:00:00Z"), "may not move"),
+                   ({**order, "current": "e" * 40}, child, "changed after it was ordered"))
+        for bad, target, message in refused:
+            with self.subTest(message=message, target=target), self.assertRaisesRegex(mirror.MirrorRefused, message):
+                mirror.write_metadata(writer, snapshot, target, snapshot["source"]["commit"], {}, "9" * 40, bad)
+        self.assertEqual("", git(writer, "status", "--porcelain"))
+        mirror.write_metadata(writer, snapshot, child, snapshot["source"]["commit"], {}, "9" * 40, order)
+        written = json.loads((writer / "latest.json").read_text())
+        self.assertEqual(child, written["scorecard_hermit_commit"])
+        self.assertEqual(order["hermit_commit_time"], written[mirror.SCORECARD_HEAD_TIME_FIELD])
+        git(writer, "checkout", "--", "latest.json")
+
+    def proof_doubles(self, prepared, encoded, calls=None):
+        selected = prepared["selection"]
+
+        def native(value, parent, results, tool_checkout, **kwargs):
+            if calls is not None:
+                calls.append(tool_checkout)
+            value["artifacts"], value["objects"] = mirror.finalized_proof.capture_derived_cells(selected["row"], encoded)
+            return git(self.tool, "rev-parse", "HEAD")
+
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(mirror, "finalized_producer_row",
+                                              return_value=mirror._row_bytes(selected["row"])))
+        stack.enter_context(mock.patch.object(mirror, "prepare_portable_proof", return_value=prepared))
+        stack.enter_context(mock.patch.object(mirror, "_parent_tool_commit", return_value="8" * 40))
+        stack.enter_context(mock.patch.object(mirror, "_select_published_terminal",
+                                              return_value=(mock.MagicMock(), selected)))
+        stack.enter_context(mock.patch.object(mirror, "emit_derived_portable_proof", side_effect=native))
+        return stack
+
+    def carrier_paths(self) -> list[str]:
+        listed = git(self.remote, "ls-tree", "-r", "--name-only", "main", "--", "scorecard/finalized/runs")
+        return listed.splitlines()
+
+    def test_failed_scorecard_still_publishes_the_derived_proof_and_stays_failed(self):
+        # The renderer writes, then fails: its partial output stays unstaged
+        # and retained, and only the carrier is committed beside the rows.
+        self.set_tool("(p/'SCORECARD.md').write_text('partial render\\n')\nsys.exit('renderer exploded')\n")
+        prepared, encoded = self.derived_fixture()
+        calls = []
+        self.append("proof-despite-scorecard")
+        with self.proof_doubles(prepared, encoded, calls):
+            report, stderr = self.publish_at(self.target, results=self.root / "results",
+                                             finalized_run_id=prepared["selection"]["row"]["run_id"])
+        self.assertEqual("derived-failed", report["state"], report)
+        self.assertEqual("failed", report["scorecard"]["state"])
+        self.assertIn("renderer exploded", report["scorecard"]["error"])
+        proof = report["portable_proof"]
+        self.assertEqual("published", proof["state"], proof)
+        self.assertEqual([None], calls, "the derived census uses the parent's pinned provider")
+        self.assertEqual(report["commit"], proof["commit"])
+        self.assertEqual(report["commit"], git(self.remote, "rev-parse", "main"))
+        carriers = self.carrier_paths()
+        self.assertEqual(1, len(carriers))
+        self.assertIn(carriers[0], proof["files"])
+        carrier = json.loads(self.remote_file(carriers[0]))
+        self.assertEqual(prepared["selection"]["terminal"], carrier["terminal"])
+        self.assertEqual(report["series_commit"], carrier["series"]["commit"])
+        self.assertIsNone(self.remote_latest())
+        self.assertEqual("legacy scorecard\n", self.remote_file("scorecard/SCORECARD.md"))
+        self.assertEqual([row("proof-despite-scorecard")], self.remote_rows())
+        self.assertIn("SCORECARD FAILED", stderr)
+        self.assertIn("FINALIZED PROOF PUBLISHED", stderr)
+        writer = self.parent / mirror.WRITER_RELATIVE
+        self.assertEqual("partial render\n", (writer / "scorecard/SCORECARD.md").read_text())
+        self.assertEqual({"scorecard/SCORECARD.md": " M"}, mirror._worktree_changes(writer))
+
+    def test_failed_scorecard_cannot_leave_files_where_the_carrier_is_written(self):
+        self.set_tool("(p/'finalized/runs').mkdir(parents=True)\n"
+                      "(p/'finalized/runs/forged.json').write_text('{}\\n')\nsys.exit('renderer exploded')\n")
+        prepared, encoded = self.derived_fixture()
+        self.append("forged-before-proof")
+        with self.proof_doubles(prepared, encoded):
+            report, stderr = self.publish_at(self.target, results=self.root / "results",
+                                             finalized_run_id=prepared["selection"]["row"]["run_id"])
+        self.assertEqual("derived-failed", report["state"])
+        self.assertEqual("failed", report["portable_proof"]["state"])
+        self.assertIn("under the finalized proof directory", report["portable_proof"]["error"])
+        self.assertEqual([], self.carrier_paths())
+        self.assertIn("finalized proof failed", stderr)
+
+    def test_superseded_run_publishes_its_derived_proof_without_moving_the_head(self):
+        self.use_head_renderer()
+        root = self.target
+        child = self.source_commit("descendant", "2030-01-01T00:00:00Z")
+        self.publish_at(child)
+        before = {path: git(self.remote, "rev-parse", "main:" + path)
+                  for path in ("latest.json", "scorecard/SCORECARD.md")}
+        self.target = root
+        prepared, encoded = self.derived_fixture()
+        self.append("superseded-with-proof")
+        with self.proof_doubles(prepared, encoded):
+            report, _ = self.publish_at(root, results=self.root / "results",
+                                        finalized_run_id=prepared["selection"]["row"]["run_id"])
+        self.assertEqual("published", report["state"], report)
+        self.assertEqual("superseded", report["scorecard"]["state"])
+        self.assertEqual("published", report["portable_proof"]["state"])
+        self.assertEqual(1, len(self.carrier_paths()))
+        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+
+    def test_unbound_proof_only_attaches_without_touching_any_scorecard(self):
+        # No scorecard was ever published: latest.json does not exist.
+        self.append("never-scored")
+        self.assertEqual("published", self.publish(publish_only=True)["state"])
+        prepared, encoded = self.derived_fixture(commit_anchored=True, tree_dirty=False)
+        run_id = prepared["selection"]["row"]["run_id"]
+        with self.proof_doubles(prepared, encoded), \
+                mock.patch.object(mirror, "build_scorecard") as scorecard:
+            report, stderr = self.publish_at(self.target, results=self.root / "results",
+                                             finalized_run_id=run_id, portable_proof_only=True)
+        scorecard.assert_not_called()
+        self.assertEqual("published", report["state"], report)
+        self.assertEqual({"state": "unbound", "latest_hermit_commit": None,
+                          "commit": report["series_commit"]}, report["existing_scorecard"])
+        self.assertEqual("published", report["portable_proof"]["state"])
+        self.assertEqual(report["commit"], report["portable_proof"]["commit"])
+        self.assertEqual(1, len(self.carrier_paths()))
+        self.assertIsNone(self.remote_latest())
+        self.assertEqual("legacy scorecard\n", self.remote_file("scorecard/SCORECARD.md"))
+        self.assertIn("without a scorecard", stderr)
+        # A second carrier for the same run, or the same terminal event under
+        # another run identity, is refused before any emission.
+        for label, updates in (("same run", {}), ("same event", {"run_id": "another-run"})):
+            with self.subTest(label):
+                again, encoded_again = self.derived_fixture(commit_anchored=True, tree_dirty=False, **updates)
+                emitted = []
+                with self.proof_doubles(again, encoded_again, emitted):
+                    refused, _ = self.publish_at(self.target, results=self.root / "results",
+                                                 finalized_run_id=again["selection"]["row"]["run_id"],
+                                                 portable_proof_only=True)
+                self.assertEqual("derived-failed", refused["state"])
+                self.assertIn("refusing a second carrier", refused["portable_proof"]["error"])
+                self.assertEqual([], emitted)
+                self.assertEqual(1, len(self.carrier_paths()))
+
+    def test_unbound_proof_only_leaves_another_commits_scorecard_in_place(self):
+        root = self.target
+        self.append("scored-elsewhere")
+        self.assertEqual("published", self.publish_at(root)[0]["state"])
+        before = {path: git(self.remote, "rev-parse", "main:" + path)
+                  for path in ("latest.json", "scorecard/SCORECARD.md", "scorecard/cells.json")}
+        self.target = self.source_commit("unscored run", "2030-01-01T00:00:00Z")
+        prepared, encoded = self.derived_fixture(commit_anchored=True, tree_dirty=False)
+        with self.proof_doubles(prepared, encoded):
+            report, _ = self.publish_at(self.target, results=self.root / "results",
+                                        finalized_run_id=prepared["selection"]["row"]["run_id"],
+                                        portable_proof_only=True)
+        self.assertEqual("published", report["state"], report)
+        self.assertEqual(root, report["existing_scorecard"]["latest_hermit_commit"])
+        self.assertEqual(self.target, report["portable_proof"]["hermit_commit"])
+        self.assertEqual(before, {path: git(self.remote, "rev-parse", "main:" + path) for path in before})
+        self.assertEqual(1, len(self.carrier_paths()))
+
+    def test_unbound_proof_only_requires_a_commit_anchored_clean_run(self):
+        self.append("unqualified")
+        self.publish(publish_only=True)
+        for label, updates in (("not anchored", {"commit_anchored": None}),
+                               ("anchor false", {"commit_anchored": False}),
+                               ("dirty tree", {"commit_anchored": True, "tree_dirty": True}),
+                               ("dirty unknown", {"commit_anchored": True, "tree_dirty": None})):
+            with self.subTest(label):
+                prepared, encoded = self.derived_fixture(**updates)
+                emitted = []
+                with self.proof_doubles(prepared, encoded, emitted):
+                    report, _ = self.publish_at(self.target, results=self.root / "results",
+                                                finalized_run_id=prepared["selection"]["row"]["run_id"],
+                                                portable_proof_only=True)
+                self.assertEqual("derived-failed", report["state"])
+                self.assertIn("requires a commit-anchored run of a clean tree", report["portable_proof"]["error"])
+                self.assertEqual([], emitted)
+                self.assertEqual([], self.carrier_paths())
 
 
 def real_finalized_suite(provider_path: Path) -> unittest.TestSuite:

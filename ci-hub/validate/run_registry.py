@@ -539,10 +539,15 @@ def _ledger_mirror(value: Any) -> None:
         raise _error("ledger_mirror.rows", "must be a nonnegative integer")
 
 
-def _scorecard_publication_files(files: Any) -> None:
+def _is_commit(value: Any) -> bool:
+    return (isinstance(value, str) and len(value) == 40
+            and all(ch in "0123456789abcdef" for ch in value))
+
+
+def _scorecard_publication_files(files: Any, *, field: str = "ledger_mirror.scorecard.files",
+                                 generated: frozenset[str] = frozenset(
+                                     {"scorecard/SCORECARD.md", "scorecard/cells.json"})) -> None:
     """Validate publication metadata; the proof reader verifies operand bytes."""
-    field = "ledger_mirror.scorecard.files"
-    generated = {"scorecard/SCORECARD.md", "scorecard/cells.json"}
     if not isinstance(files, dict) or not generated.issubset(files):
         raise _error(field, "must bind both generated files")
     for path, digest in files.items():
@@ -570,6 +575,31 @@ def _scorecard_publication_files(files: Any) -> None:
         raise _error(field, "must bind one finalized carrier and one to three proof objects")
 
 
+def _portable_proof(value: Any, *, publication_state: str) -> None:
+    """A derived census carrier published (or refused) without a scorecard."""
+    field = "ledger_mirror.portable_proof"
+    if not isinstance(value, dict):
+        raise _error(field, "must be an object")
+    state = value.get("state")
+    if state == "failed":
+        if publication_state != "derived-failed":
+            raise _error(field, "a failed proof must leave the publication derived-failed")
+        if set(value) != {"state", "error"}:
+            raise _error(field, "failed must contain exactly error, state")
+        _required_text(value, "error")
+        return
+    if state not in {"published", "unchanged"}:
+        raise _error(f"{field}.state", f"unsupported value {state!r}")
+    if set(value) != {"state", "commit", "files", "hermit_commit", "tool_hermit_commit"}:
+        raise _error(field, f"{state} must contain exactly commit, files, hermit_commit, state, tool_hermit_commit")
+    for name in ("commit", "hermit_commit", "tool_hermit_commit"):
+        if not _is_commit(value[name]):
+            raise _error(f"{field}.{name}", "must be lowercase forty-hex")
+    _scorecard_publication_files(value["files"], field=f"{field}.files", generated=frozenset())
+    if not value["files"]:
+        raise _error(f"{field}.files", "must bind one finalized carrier and one to three proof objects")
+
+
 def _cell_ledger_publication(value: dict[str, Any]) -> None:
     """Extension of the historical mirror record, with explicit storage identity."""
     repository = "https://github.com/rrnewton/hermit_test_ledger.git"
@@ -595,6 +625,9 @@ def _cell_ledger_publication(value: dict[str, Any]) -> None:
     if value.get("state") == "derived-failed":
         required.add("detail")
         _required_text(value, "detail")
+    if "portable_proof" in value:
+        required.add("portable_proof")
+        _portable_proof(value["portable_proof"], publication_state=value.get("state"))
     if set(value) != required or value.get("source_repository") != repository:
         raise _error("ledger_mirror", "direct publication has an invalid repository or field set")
     legacy = {key: value[key] for key in (
@@ -608,6 +641,21 @@ def _cell_ledger_publication(value: dict[str, Any]) -> None:
         raise _error("ledger_mirror.raw_publication", "must retain the publisher outcome")
     scorecard = value["scorecard"]
     expected = "failed" if value["state"] == "derived-failed" else "published"
+    if (expected == "published" and isinstance(scorecard, dict)
+            and scorecard.get("state") == "superseded"):
+        # A newer published head owns latest.json; this run's rows (and any
+        # derived proof) published without moving the scorecard backward.
+        if set(scorecard) != {"state", "hermit_commit", "current_hermit_commit", "detail"}:
+            raise _error("ledger_mirror.scorecard", "superseded must contain exactly "
+                         "current_hermit_commit, detail, hermit_commit, state")
+        if (not _is_commit(scorecard["hermit_commit"]) or not _is_commit(scorecard["current_hermit_commit"])
+                or scorecard["hermit_commit"] == scorecard["current_hermit_commit"]):
+            raise _error("ledger_mirror.scorecard", "superseded must name this commit and a different newer head")
+        if not isinstance(scorecard["detail"], str) or not scorecard["detail"].strip():
+            raise _error("ledger_mirror.scorecard.detail", "must explain why the scorecard did not move")
+        return
+    if "portable_proof" in value and expected == "published":
+        raise _error("ledger_mirror.portable_proof", "a regenerated scorecard binds its proof in scorecard.files")
     if not isinstance(scorecard, dict) or scorecard.get("state") != expected:
         raise _error("ledger_mirror.scorecard", f"must retain the {expected} scorecard outcome")
     if expected == "published":

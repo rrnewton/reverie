@@ -6,6 +6,13 @@ in dev-hermit; cell series batches stay in its ignored spool until a freshly
 fetched ledger commit proves publication. One persistent linked worktree owns
 ledger writes. A scorecard failure does not undo published rows or change the
 validation verdict, and leaves its local work available for recovery.
+
+The scorecard is rendered by the measured checkout's own scorecard.rs, so a
+renderer change travels with its SCORECARD.md. A derived portable proof is
+independent of that scorecard and publishes even when the scorecard fails. The
+public scorecard head (latest.json and the rendered "Last regenerated" notice)
+only moves forward: an older head publishes its rows and proof but not a
+scorecard.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -36,6 +44,8 @@ import finalized_proof  # noqa: E402
 REMOTE_URL = series.LEDGER_REPOSITORY
 REMOTE_BRANCH = "main"
 METADATA_SCHEMA = "hermit-test-ledger/v1"
+SCORECARD_HEAD_TIME_FIELD = "scorecard_hermit_commit_time"
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 MIRRORED_SCORECARD_PATHS = (Path("scorecard/SCORECARD.md"), Path("scorecard/cells.json"))
 WRITER_RELATIVE = Path("ignored/ci-hub/test-ledger-writer")
 PUBLICATION_LOCK = "ci-hub-series-publication.lock"
@@ -102,6 +112,61 @@ def submodule_remote(parent: Path) -> str:
     if configured != REMOTE_URL:
         raise MirrorRefused(f"hermit_test_ledger submodule URL is absent or unexpected: {configured!r}")
     return configured
+
+
+def _worktree_changes(repo: Path) -> dict[str, str]:
+    """Map every staged, unstaged or untracked path to its two-letter status.
+
+    A rename or copy names two paths; both are reported. Paths are read with
+    -z, so quoting cannot hide or disguise a name.
+    """
+    output = _run(["git", "-C", str(repo), "status", "--porcelain=v1", "-z",
+                   "--untracked-files=all"]).stdout
+    entries = output.split("\0")
+    changes: dict[str, str] = {}
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        if len(entry) < 4 or entry[2] != " ":
+            raise MirrorRefused(f"cannot parse ledger writer status entry {entry!r}")
+        status = entry[:2]
+        changes[entry[3:]] = status
+        if "R" in status or "C" in status:
+            if index >= len(entries) or not entries[index]:
+                raise MirrorRefused(f"ledger writer rename entry has no source path: {entry!r}")
+            changes[entries[index]] = status
+            index += 1
+    return changes
+
+
+def _commit_and_push(writer: Path, paths: Sequence[str], message: str, *,
+                     net_wrapper: str) -> str | None:
+    """Commit exactly PATHS, push, and prove the commit reached origin/main.
+
+    Returns None when none of PATHS changed. Refuses if the index holds any
+    other path, so unrelated dirty work in the writer is never swept in.
+    """
+    if not paths:
+        return None
+    _git(writer, "add", "--", *paths)
+    staged = {path for path in _run([
+        "git", "-C", str(writer), "diff", "--cached", "--name-only", "-z",
+    ]).stdout.split("\0") if path}
+    if not staged <= set(paths):
+        raise MirrorRefused(
+            "ledger writer index holds paths outside this publication: "
+            + ", ".join(sorted(staged - set(paths))))
+    if not staged:
+        return None
+    _git(writer, "commit", "--quiet", "-m", message)
+    commit = _git(writer, "rev-parse", "HEAD^{commit}")
+    _network(["git", "push", "origin", "HEAD:refs/heads/main"], cwd=writer, wrapper=net_wrapper)
+    _network(["git", "fetch", "--quiet", "origin", "main"], cwd=writer, wrapper=net_wrapper)
+    _git(writer, "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main")
+    return commit
 
 
 def _require_clean(repo: Path) -> None:
@@ -361,8 +426,11 @@ def prepare_portable_proof(parent: Path, encoded_row: bytes, *, net_wrapper: str
     with namespace:
         namespace.verify_origin(selected["parent"], selected["terminal"])
     artifacts, objects = ((None, None) if derived else finalized_proof.capture_artifacts(parent, row))
+    # A derived census proof depends only on the finalized row and raw results,
+    # so it may publish without the scorecard. Schema-10 operands are verified
+    # by the scorecard's own native transaction and stay bound to its success.
     return {"source": source, "selection": selected, "artifacts": artifacts,
-            "objects": objects, "parent_tool_commit": tool_parent}
+            "objects": objects, "parent_tool_commit": tool_parent, "derived": derived}
 
 
 def _cargo_target(state_root: Path | None) -> str | None:
@@ -486,8 +554,12 @@ def _scorecard_execution(
 ) -> tuple[Path, str, str, dict[str, str]]:
     if _git(source_checkout, "rev-parse", "HEAD^{commit}") != target:
         raise MirrorRefused("scorecard source HEAD no longer matches the validation target")
-    # The measured checkout is input, not a new compiler cache namespace.
-    tool_checkout = (tool_checkout or TOOL_ROOT / "hermit").resolve()
+    # The measured checkout renders its own SCORECARD.md with its own
+    # scorecard.rs, so a renderer change and the prose it produces travel in
+    # one commit (https://github.com/rrnewton/dev-hermit/issues/392). The
+    # parent's hermit gitlink is not consulted. build_scorecard confines the
+    # child's writes to the exact generated paths.
+    tool_checkout = (tool_checkout or source_checkout).resolve()
     tool_commit = _committed_tool_source(tool_checkout)
     tool = tool_checkout / "ci/compat-envelope/scorecard.rs"
     if not tool.is_file():
@@ -545,7 +617,7 @@ def build_scorecard(
     state_root: Path | None = None, prepared_finalized_row: bytes | None = None,
     prepared_tool: tuple[str, str] | None = None,
 ) -> tuple[dict[str, str], str]:
-    tool_checkout = (tool_checkout or TOOL_ROOT / "hermit").resolve()
+    tool_checkout = (tool_checkout or source_checkout).resolve()
     tool, tool_commit, compiler, environment = _scorecard_execution(
         source_checkout, target, tool_checkout, state_root)
     if prepared_tool is not None and prepared_tool != (tool_commit, compiler):
@@ -612,12 +684,113 @@ def build_scorecard(
                  Path(f"scorecard/legacy/{blob}.identity.json"))
     else:
         paths = MIRRORED_SCORECARD_PATHS
+    # The renderer is the measured tree's code. Its write authority is exactly
+    # the generated files; anything else it touched (including a forged proof
+    # carrier or a commit) is refused before the parent stages or pushes.
+    if _git(writer, "rev-parse", "HEAD^{commit}") != snapshot["source"]["commit"]:
+        raise MirrorRefused("scorecard tool moved the ledger writer HEAD; writer retained for recovery")
+    unexpected = sorted(set(_worktree_changes(writer)) - {path.as_posix() for path in paths})
+    if unexpected:
+        raise MirrorRefused(
+            "scorecard tool changed ledger paths outside its generated output; "
+            "writer retained for recovery: " + ", ".join(unexpected))
     return ({path.as_posix(): hashlib.sha256((writer / path).read_bytes()).hexdigest()
              for path in paths}, tool_commit)
 
 
+def published_scorecard_head(writer: Path) -> dict[str, Any] | None:
+    """Return the hermit commit (and recorded commit time) latest.json names at HEAD."""
+    if not _git(writer, "ls-tree", "HEAD", "--", "latest.json"):
+        return None
+    value = finalized_proof._json(_run(["git", "-C", str(writer), "show", "HEAD:latest.json"]).stdout.encode())
+    if not isinstance(value, dict) or value.get("schema") != METADATA_SCHEMA:
+        raise MirrorRefused("published latest.json is not scorecard metadata; the scorecard head cannot be ordered")
+    commit = value.get("scorecard_hermit_commit")
+    if not isinstance(commit, str) or not _COMMIT.fullmatch(commit):
+        raise MirrorRefused("published latest.json names no forty-hex scorecard head")
+    recorded = value.get(SCORECARD_HEAD_TIME_FIELD)
+    if recorded is not None and (type(recorded) is not int or recorded <= 0):
+        raise MirrorRefused(f"published latest.json has an invalid {SCORECARD_HEAD_TIME_FIELD}")
+    return {"commit": commit, "time": recorded}
+
+
+def _commit_time(repo: Path, commit: str) -> int | None:
+    """Committer time of COMMIT in REPO, or None when REPO does not have it."""
+    found = _run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
+                 check=False)
+    if found.returncode == 1:
+        return None
+    if found.returncode != 0 or found.stdout.strip() != commit:
+        raise MirrorRefused(f"cannot resolve hermit commit {commit} in {repo}")
+    return int(_git(repo, "show", "-s", "--format=%ct", commit))
+
+
+def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    result = _run(["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant],
+                  check=False)
+    if result.returncode not in {0, 1}:
+        raise MirrorRefused(f"cannot order hermit commits {ancestor} and {descendant}: "
+                            + (result.stderr.strip() or f"exit {result.returncode}"))
+    return result.returncode == 0
+
+
+def scorecard_order(writer: Path, source_checkout: Path, target: str) -> dict[str, Any]:
+    """Decide whether TARGET may become the public scorecard head.
+
+    The head only moves forward. A descendant of the published head advances
+    and an ancestor is superseded. Divergent heads compare committer time: the
+    target advances only when strictly newer, so equal or older is superseded.
+    A published head this repository cannot read is compared by the commit time
+    latest.json records; without that record the order is unknown and refused.
+    """
+    current = published_scorecard_head(writer)
+    target_time = _commit_time(source_checkout, target)
+    if target_time is None:
+        raise MirrorRefused(f"measured source commit {target} is not readable in {source_checkout}")
+    order = {"hermit_commit": target, "hermit_commit_time": target_time,
+             "current": current and current["commit"], "current_time": current and current["time"]}
+    if current is None:
+        return {**order, "state": "first", "basis": "no published scorecard head"}
+    head = current["commit"]
+    if _git(source_checkout, "rev-parse", "--is-shallow-repository") != "false":
+        raise MirrorRefused("measured checkout is shallow; scorecard head ancestry cannot be decided")
+    head_time = _commit_time(source_checkout, head)
+    if head_time is not None and current["time"] is not None and current["time"] != head_time:
+        raise MirrorRefused(f"published scorecard head {head} records commit time "
+                            f"{current['time']}, but the commit says {head_time}")
+    if head == target:
+        return {**order, "state": "same", "current_time": head_time, "basis": "published head is this commit"}
+    if head_time is not None:
+        order["current_time"] = head_time
+        if _is_ancestor(source_checkout, head, target):
+            return {**order, "state": "advance", "basis": "published head is an ancestor"}
+        if _is_ancestor(source_checkout, target, head):
+            return {**order, "state": "superseded", "basis": "this commit is an ancestor of the published head"}
+        basis = "divergent history; committer time"
+    elif current["time"] is not None:
+        # An unreadable head cannot be an ancestor of a readable target in a
+        # complete repository, so only the recorded time can order it.
+        head_time = current["time"]
+        basis = "published head unreadable here; recorded committer time"
+    else:
+        raise MirrorRefused(
+            f"published scorecard head {head} is not in {source_checkout} and latest.json records "
+            f"no {SCORECARD_HEAD_TIME_FIELD}; refusing to move the scorecard head without an order")
+    if target_time > head_time:
+        return {**order, "state": "advance", "basis": basis}
+    return {**order, "state": "superseded", "basis": basis}
+
+
 def write_metadata(repo: Path, snapshot: Mapping[str, Any], target: str,
-                   series_commit: str, scorecard: Mapping[str, str], tool_commit: str) -> None:
+                   series_commit: str, scorecard: Mapping[str, str], tool_commit: str,
+                   order: Mapping[str, Any]) -> None:
+    """Move latest.json to TARGET only when scorecard_order proved it is newer."""
+    if order.get("state") not in {"first", "same", "advance"} or order.get("hermit_commit") != target:
+        raise MirrorRefused(f"latest.json may not move to {target}: scorecard head order is "
+                            f"{order.get('state')!r} against {order.get('current')}")
+    current = published_scorecard_head(repo)
+    if (current and current["commit"]) != order.get("current"):
+        raise MirrorRefused("published scorecard head changed after it was ordered")
     source = snapshot["source"]
     value = {
         "schema": METADATA_SCHEMA, "source_repository": source["repository"],
@@ -626,8 +799,43 @@ def write_metadata(repo: Path, snapshot: Mapping[str, Any], target: str,
         "local_sources": source["local_sources"], "series_commit": series_commit,
         "scorecard_hermit_commit": target, "scorecard": dict(sorted(scorecard.items())),
         "scorecard_tool_hermit_commit": tool_commit,
+        SCORECARD_HEAD_TIME_FIELD: order["hermit_commit_time"],
     }
     (repo / "latest.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def _new_proof_paths(changes: Mapping[str, str], hashes: Mapping[str, str],
+                     ignore: frozenset[str] = frozenset()) -> list[str]:
+    """Proof attachment may only add the exact new files stage_carrier wrote."""
+    paths = []
+    for path, status in changes.items():
+        if path in ignore:
+            continue
+        if status != "??" or path not in hashes or not path.startswith(finalized_proof.PREFIX + "/"):
+            raise MirrorRefused(f"proof attachment changed an unexpected path: {path} ({status.strip()})")
+        paths.append(path)
+    return sorted(paths)
+
+
+def unbound_proof_binding(writer: Path, snapshot: Mapping[str, Any], portable: Mapping[str, Any],
+                          head: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Admit a proof-only attachment for a run whose scorecard never published.
+
+    Only a commit-anchored, clean census terminal qualifies, and only while
+    the fetched ledger holds no carrier for its terminal event or run.
+    """
+    row = portable["selection"]["row"]
+    terminal = portable["selection"]["terminal"]
+    if row.get("commit_anchored") is not True or row.get("tree_dirty") is not False:
+        raise MirrorRefused("unbound proof-only attachment requires a commit-anchored run of a clean tree")
+    commit = snapshot["source"]["commit"]
+    for value in finalized_proof.read_carriers(writer, commit).values():
+        if (value["terminal"]["event_id"] == terminal["event_id"]
+                or value["terminal"]["run_id"] == terminal["run_id"]):
+            raise MirrorRefused(
+                f"ledger {commit} already carries a finalized proof for run {terminal['run_id']} "
+                f"(event {value['terminal']['event_id']}); refusing a second carrier")
+    return {"state": "unbound", "latest_hermit_commit": head and head["commit"], "commit": commit}
 
 
 def mirror(
@@ -705,72 +913,211 @@ def mirror(
             report["rows"] = snapshot["rows_read"]
         if publish_only:
             return report
-        operation = "portable_proof" if portable_proof_only else ("legacy_export" if legacy_export else "scorecard")
+        if portable_proof_only:
+            _attach_proof_only(report, parent=parent, writer=writer, snapshot=snapshot, target=target,
+                               portable=portable, preparation_error=preparation_error,
+                               results=results, tool_checkout=tool_checkout, net_wrapper=net_wrapper)
+            return report
+        _publish_scorecard(
+            report, parent=parent, writer=writer, snapshot=snapshot, lock_fd=lock_fd,
+            source_checkout=source_checkout, target=target, portable=portable,
+            preparation_error=preparation_error, tool_preparation_error=tool_preparation_error,
+            prepared_tool=prepared_tool, finalized_row=finalized_row, results=results,
+            scorecard_command=scorecard_command, scorecard_args=scorecard_args,
+            tool_checkout=tool_checkout, finalized_run_id=finalized_run_id, net_wrapper=net_wrapper)
+        return report
+
+
+PUBLICATION_ERRORS = (MirrorRefused, OSError, ValueError, KeyError, series.SeriesError)
+
+
+def _attach_proof_only(report: dict[str, Any], *, parent: Path, writer: Path,
+                       snapshot: Mapping[str, Any], target: str | None, portable: dict | None,
+                       preparation_error: BaseException | None, results: Path | None,
+                       tool_checkout: Path | None, net_wrapper: str) -> None:
+    """Attach a derived census carrier; never touch the scorecard or latest.json.
+
+    A run whose published scorecard names it keeps the strict binding to that
+    scorecard. A run whose scorecard never published (it failed, or a newer
+    head superseded it) attaches unbound, under unbound_proof_binding's guards.
+    """
+    try:
+        if preparation_error is not None:
+            raise MirrorRefused(f"finalized proof preparation failed: {preparation_error}")
+        if target is None:
+            raise MirrorRefused("proof-only attachment requires the measured target")
+        if (portable is None or portable.get("derived") is not True
+                or portable["selection"]["row"].get("schema_version") != 5):
+            raise MirrorRefused("proof-only attachment requires an original schema-5 census terminal")
+        head = published_scorecard_head(writer)
+        bound = head is not None and head["commit"] == target
+        binding = (published_scorecard_binding(writer, snapshot, target) if bound
+                   else unbound_proof_binding(writer, snapshot, portable, head))
+        report["existing_scorecard"] = binding
+        tool_commit = emit_derived_portable_proof(portable, parent, results, tool_checkout,
+                                                  net_wrapper=net_wrapper)
+        hashes = finish_portable_proof(portable, parent, writer, snapshot, tool_commit,
+                                       net_wrapper=net_wrapper)
+        again = (published_scorecard_binding(writer, snapshot, target) if bound
+                 else unbound_proof_binding(writer, snapshot, portable, published_scorecard_head(writer)))
+        if again != binding:
+            raise MirrorRefused("published scorecard changed during proof-only attachment")
+        paths = _new_proof_paths(_worktree_changes(writer), hashes)
+        commit = _commit_and_push(writer, paths, "Attach verified finalized comparison operands",
+                                  net_wrapper=net_wrapper)
+        if commit is not None:
+            report["commit"] = commit
+            report["state"] = "published"
+        report["portable_proof"] = {"state": "published" if commit else "unchanged",
+                                    "commit": report["commit"], "files": hashes,
+                                    "hermit_commit": target, "tool_hermit_commit": tool_commit}
+        if not bound:
+            print(f"ledger publication: FINALIZED PROOF {report['portable_proof']['state'].upper()} "
+                  f"for {target} without a scorecard: latest.json and SCORECARD.md stay at "
+                  f"{binding['latest_hermit_commit']}", file=sys.stderr)
+    except PUBLICATION_ERRORS as error:
+        report["state"] = "derived-failed"
+        report["portable_proof"] = {"state": "failed", "error": str(error)}
+
+
+def _publish_scorecard(report: dict[str, Any], *, parent: Path, writer: Path,
+                       snapshot: Mapping[str, Any], lock_fd: int, source_checkout: Path | None,
+                       target: str | None, portable: dict | None,
+                       preparation_error: BaseException | None,
+                       tool_preparation_error: BaseException | None,
+                       prepared_tool: tuple[str, str] | None, finalized_row: bytes | None,
+                       results: Path | None, scorecard_command: str | None,
+                       scorecard_args: Sequence[str], tool_checkout: Path | None,
+                       finalized_run_id: str | None, net_wrapper: str) -> None:
+    """Regenerate the scorecard, and publish a derived proof whatever it does.
+
+    Outcomes, all recorded in REPORT:
+    - scorecard regenerated: scorecard files, latest.json and any carrier
+      publish in one commit (a proof failure withholds all of them, as before);
+    - scorecard failed: a derived census carrier still publishes alone, and
+      the state stays derived-failed with both facts recorded separately;
+    - scorecard superseded by a newer published head: rows and any derived
+      carrier publish, latest.json and SCORECARD.md do not move.
+    A schema-10 carrier depends on the scorecard's own native verification,
+    so it publishes only with a regenerated scorecard.
+    """
+    legacy_export = scorecard_command == "export-legacy"
+    operation = "legacy_export" if legacy_export else "scorecard"
+    series_commit = snapshot["source"]["commit"]
+    derived = portable is not None and portable.get("derived") is True
+    order = None
+    try:
+        if preparation_error is not None:
+            raise MirrorRefused(f"finalized proof preparation failed: {preparation_error}")
+        if source_checkout is None or target is None:
+            raise MirrorRefused("scorecard generation requires source checkout and target")
+        if not legacy_export:
+            order = scorecard_order(writer, source_checkout, target)
+    except PUBLICATION_ERRORS as error:
+        report["state"] = "derived-failed"
+        report[operation] = {"state": "failed", "error": str(error)}
+        return
+    superseded = order is not None and order["state"] == "superseded"
+    scorecard_error = None
+    hashes: dict[str, str] = {}
+    tool_commit = None
+    if not superseded:
         try:
-            if preparation_error is not None:
-                raise MirrorRefused(f"finalized proof preparation failed: {preparation_error}")
             if tool_preparation_error is not None:
                 raise MirrorRefused(f"scorecard tool preparation failed: {tool_preparation_error}")
-            if source_checkout is None or target is None:
-                raise MirrorRefused("scorecard generation requires source checkout and target")
-            if portable_proof_only:
-                if portable is None or portable["selection"]["row"].get("schema_version") != 5:
-                    raise MirrorRefused("proof-only attachment requires an original schema-5 census terminal")
-                report["existing_scorecard"] = published_scorecard_binding(writer, snapshot, target)
-                hashes = {}
-                tool_commit = emit_derived_portable_proof(portable, parent, results, tool_checkout,
-                                                          net_wrapper=net_wrapper)
-            else:
-                hashes, tool_commit = build_scorecard(
-                    source_checkout, target, snapshot, writer, lock_fd=lock_fd,
-                    net_wrapper=net_wrapper, results=results,
-                    scorecard_command=scorecard_command, scorecard_args=scorecard_args,
-                    tool_checkout=tool_checkout, finalized_run_id=finalized_run_id,
-                    state_root=parent, prepared_finalized_row=finalized_row,
-                    prepared_tool=prepared_tool,
-                )
-                if portable is not None and portable["artifacts"] is None:
-                    derived_tool = emit_derived_portable_proof(portable, parent, results, tool_checkout,
-                                                              net_wrapper=net_wrapper)
-                    if derived_tool != tool_commit:
-                        raise MirrorRefused("derived-census and scorecard tools differ")
+            hashes, tool_commit = build_scorecard(
+                source_checkout, target, snapshot, writer, lock_fd=lock_fd,
+                net_wrapper=net_wrapper, results=results,
+                scorecard_command=scorecard_command, scorecard_args=scorecard_args,
+                tool_checkout=tool_checkout, finalized_run_id=finalized_run_id,
+                state_root=parent, prepared_finalized_row=finalized_row,
+                prepared_tool=prepared_tool,
+            )
+        except PUBLICATION_ERRORS as error:
+            scorecard_error = error
+    if scorecard_error is None and not superseded:
+        try:
             if portable is not None:
+                proof_tool = (emit_derived_portable_proof(portable, parent, results, None,
+                                                          net_wrapper=net_wrapper)
+                              if derived else tool_commit)
                 hashes.update(finish_portable_proof(
-                    portable, parent, writer, snapshot, tool_commit, net_wrapper=net_wrapper))
-            if portable_proof_only:
-                if published_scorecard_binding(writer, snapshot, target) != report["existing_scorecard"]:
-                    raise MirrorRefused("published scorecard changed during proof-only attachment")
-            elif not legacy_export:
-                write_metadata(writer, snapshot, target, series_commit, hashes, tool_commit)
-            # The child has authority only for scorecard output, never code or series.
-            changed = _run([
-                "git", "-C", str(writer), "status", "--porcelain", "--untracked-files=all",
-            ]).stdout
-            for line in changed.splitlines():
-                path = line[3:]
-                allowed = path in hashes if legacy_export or portable_proof_only else (
-                    path == "latest.json" or path.startswith("scorecard/"))
+                    portable, parent, writer, snapshot, proof_tool, net_wrapper=net_wrapper))
+            if not legacy_export:
+                write_metadata(writer, snapshot, target, series_commit, hashes, tool_commit, order)
+            changes = _worktree_changes(writer)
+            for path in changes:
+                allowed = path in hashes or (not legacy_export and path == "latest.json")
                 if not allowed:
                     raise MirrorRefused(f"scorecard changed an unexpected path: {path}")
-            if changed:
-                staged = sorted(hashes) if legacy_export or portable_proof_only else ["latest.json", "scorecard"]
-                _git(writer, "add", "--", *staged)
-                message = ("Attach verified finalized comparison operands" if portable_proof_only else
-                           "Preserve exact legacy Hermit cell history" if legacy_export
-                           else "Generate scorecard from published cell history")
-                _git(writer, "commit", "--quiet", "-m", message)
-                commit = _git(writer, "rev-parse", "HEAD^{commit}")
-                _network(["git", "push", "origin", "HEAD:refs/heads/main"], cwd=writer, wrapper=net_wrapper)
-                _network(["git", "fetch", "--quiet", "origin", "main"], cwd=writer, wrapper=net_wrapper)
-                _git(writer, "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main")
+            message = ("Preserve exact legacy Hermit cell history" if legacy_export
+                       else "Generate scorecard from published cell history")
+            commit = _commit_and_push(writer, sorted(changes), message, net_wrapper=net_wrapper)
+            if commit is not None:
                 report["commit"] = commit
                 report["state"] = "published"
             report[operation] = {"state": "published", "files": hashes,
-                                   "hermit_commit": target, "tool_hermit_commit": tool_commit}
-        except (MirrorRefused, OSError, ValueError, KeyError, series.SeriesError) as error:
+                                 "hermit_commit": target, "tool_hermit_commit": tool_commit}
+        except PUBLICATION_ERRORS as error:
             report["state"] = "derived-failed"
             report[operation] = {"state": "failed", "error": str(error)}
-        return report
+        return
+    # No scorecard publishes from here on: it failed, or a newer head owns it.
+    if superseded:
+        detail = (f"published scorecard head {order['current']} is newer than {target} "
+                  f"({order['basis']}); latest.json and SCORECARD.md were left unchanged")
+        report[operation] = {"state": "superseded", "hermit_commit": target,
+                             "current_hermit_commit": order["current"], "detail": detail}
+        print(f"ledger publication: SCORECARD SUPERSEDED: {detail}", file=sys.stderr)
+    else:
+        report["state"] = "derived-failed"
+        report[operation] = {"state": "failed", "error": str(scorecard_error)}
+    if portable is None:
+        return
+    if not derived:
+        # The schema-10 carrier's operands are verified only by the scorecard
+        # transaction that did not run to completion here.
+        reason = (f"superseded by newer scorecard head {order['current']}" if superseded
+                  else f"scorecard failed: {scorecard_error}")
+        report["state"] = "derived-failed"
+        report[operation] = {"state": "failed", "error":
+                             f"schema-10 finalized proof requires the scorecard transaction; {reason}"}
+        return
+    try:
+        # Whatever a failed renderer left behind stays unstaged and retained;
+        # none of it may sit where the carrier is written.
+        leftover = frozenset(_worktree_changes(writer))
+        if any(path.startswith(finalized_proof.PREFIX + "/") for path in leftover):
+            raise MirrorRefused("the failed scorecard left changes under the finalized proof directory: "
+                                + ", ".join(sorted(path for path in leftover
+                                                   if path.startswith(finalized_proof.PREFIX + "/"))))
+        proof_tool = emit_derived_portable_proof(portable, parent, results, None, net_wrapper=net_wrapper)
+        files = finish_portable_proof(portable, parent, writer, snapshot, proof_tool,
+                                      net_wrapper=net_wrapper)
+        paths = _new_proof_paths(_worktree_changes(writer), files, ignore=leftover)
+        message = ("Attach verified finalized comparison operands; scorecard superseded" if superseded
+                   else "Attach verified finalized comparison operands; scorecard generation failed")
+        commit = _commit_and_push(writer, paths, message, net_wrapper=net_wrapper)
+        if commit is not None:
+            report["commit"] = commit
+            if superseded:
+                report["state"] = "published"
+        report["portable_proof"] = {"state": "published" if commit else "unchanged",
+                                    "commit": report["commit"], "files": files,
+                                    "hermit_commit": target, "tool_hermit_commit": proof_tool}
+        print(f"ledger publication: FINALIZED PROOF {report['portable_proof']['state'].upper()} "
+              f"at {report['commit']}: {', '.join(path for path in sorted(files) if '/runs/' in path)}",
+              file=sys.stderr)
+    except PUBLICATION_ERRORS as error:
+        report["state"] = "derived-failed"
+        report["portable_proof"] = {"state": "failed", "error": str(error)}
+        if superseded:
+            report[operation] = {"state": "failed", "error":
+                                 f"finalized proof failed while the scorecard was superseded by "
+                                 f"{order['current']}: {error}"}
+    if not superseded:
+        print(f"ledger publication: SCORECARD FAILED: {scorecard_error}; finalized proof "
+              f"{report['portable_proof']['state']}", file=sys.stderr)
 
 
 def _verify_lifecycle_worker(deadline_ns: int) -> None:
@@ -794,19 +1141,21 @@ def _verify_lifecycle_worker(deadline_ns: int) -> None:
         raise MirrorRefused(f"unverified publication lifecycle: {error}") from error
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    started_ns = time.monotonic_ns()
-    actual_argv = list(sys.argv[1:] if argv is None else argv)
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--parent", type=Path, required=True)
     parser.add_argument("--source-checkout", type=Path)
-    parser.add_argument("--tool-checkout", type=Path, default=TOOL_ROOT / "hermit")
+    parser.add_argument("--tool-checkout", type=Path, default=None,
+                        help="scorecard renderer checkout; defaults to --source-checkout")
     parser.add_argument("--target")
     parser.add_argument("--results", type=Path)
     parser.add_argument("--finalized-run-id", help="canonical completed validation run; row and proof are read from STATE")
     parser.add_argument("--publish-only", action="store_true")
     parser.add_argument("--portable-proof-only", action="store_true",
-                        help="attach newly verified public census operands to an already published scorecard; preserve its files and original validation result")
+                        help="attach newly verified public census operands without regenerating the scorecard; "
+                             "a run the published scorecard names stays bound to it, and any other run must be "
+                             "commit-anchored, clean and not yet carried; scorecard files, latest.json and the "
+                             "original validation result are preserved")
     parser.add_argument("--scorecard-command", choices=SCORECARD_COMMANDS)
     parser.add_argument("--scorecard-arg", action="append", default=[])
     parser.add_argument("--net-wrapper", default=os.environ.get("WITH_PROXY", "with-proxy"))
@@ -814,6 +1163,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lifecycle-deadline-ns", type=int,
                         help="absolute monotonic caller deadline; capped at the existing 1800-second lifecycle ceiling")
     parser.add_argument("--bounded-worker", action="store_true", help=argparse.SUPPRESS)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    started_ns = time.monotonic_ns()
+    actual_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
     args = parser.parse_args(actual_argv)
     if args.attempts <= 0 or (not args.publish_only and (args.source_checkout is None or args.target is None)):
         parser.error("positive attempts and either --publish-only or --source-checkout/--target are required")

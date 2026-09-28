@@ -8596,17 +8596,32 @@ def cell_ledger_attempted(record: Mapping[str, Any]) -> bool:
 
 
 def cell_ledger_published(record: Mapping[str, Any]) -> bool:
-    """New publication replaces local scorecard writeback, not old receipts."""
+    """New publication replaces local scorecard writeback, not old receipts.
+
+    A scorecard superseded by a newer published head is complete: this run's
+    rows (and any derived proof) are published, and the public scorecard head
+    only moves forward, so no retry can ever regenerate it at this commit.
+    """
     publication = record.get("ledger_mirror")
-    return (
+    if not (
         isinstance(publication, dict)
         and publication.get("repository") == CELL_LEDGER_REPOSITORY
         and publication.get("state") in LEDGER_MIRROR_SUCCEEDED
         and isinstance(publication.get("commit"), str)
         and SHA_RE.fullmatch(publication["commit"]) is not None
         and isinstance(publication.get("scorecard"), dict)
-        and publication["scorecard"].get("state") == "published"
         and publication["scorecard"].get("hermit_commit") == record.get("target")
+    ):
+        return False
+    scorecard = publication["scorecard"]
+    if scorecard.get("state") == "published":
+        return True
+    current = scorecard.get("current_hermit_commit")
+    return (
+        scorecard.get("state") == "superseded"
+        and isinstance(current, str)
+        and SHA_RE.fullmatch(current) is not None
+        and current != record.get("target")
     )
 
 
@@ -9488,6 +9503,10 @@ def finalize_ledger_mirror(
                 }
                 if state == "derived-failed":
                     outcome["detail"] = report.get("scorecard", {}).get("error", "scorecard generation failed")
+                if "portable_proof" in report:
+                    # A derived census carrier publishes whatever the
+                    # scorecard did; keep that fact separate from it.
+                    outcome["portable_proof"] = report["portable_proof"]
             except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 detail = (result.stderr or result.stdout).strip()
                 if len(detail) > 4000:
@@ -9498,6 +9517,22 @@ def finalize_ledger_mirror(
                     "detail": f"{error}; output={detail!r}",
                 }
 
+    scorecard_outcome = outcome.get("scorecard")
+    if isinstance(scorecard_outcome, dict) and scorecard_outcome.get("state") == "superseded":
+        print(
+            "validate-run: SCORECARD SUPERSEDED: "
+            f"{scorecard_outcome.get('detail')}",
+            file=sys.stderr,
+        )
+    proof = outcome.get("portable_proof")
+    if isinstance(proof, dict):
+        print(
+            "validate-run: FINALIZED PROOF "
+            f"{str(proof.get('state')).upper()}: "
+            + (f"commit={proof.get('commit')}" if proof.get("state") != "failed"
+               else str(proof.get("error"))),
+            file=sys.stderr,
+        )
     if outcome["state"] in LEDGER_MIRROR_SUCCEEDED:
         print(
             "validate-run: CELL LEDGER "

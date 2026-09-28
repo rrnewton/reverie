@@ -158,6 +158,7 @@ class FakeRun:
         self.scorecard_head_after_write: str | None = None
         self.ledger_mirror_rc = 0
         self.ledger_mirror_stderr = ""
+        self.ledger_mirror_update: dict = {}
         self.commit_status_action = "published"
         self.commit_status_rc = 0
         self.commit_status_stderr = ""
@@ -934,6 +935,7 @@ class FakeRun:
                 detail = self.scorecard_stderr or "scorecard source checkout HEAD changed"
                 report["scorecard"] = {"state": "failed", "error": detail}
                 native = 1
+            report.update(self.ledger_mirror_update)
             return completed(
                 command, rc=native,
                 stdout=json.dumps(report) + "\n" if self.ledger_mirror_rc == 0 else "",
@@ -5241,6 +5243,63 @@ else:
         self.assertEqual("e" * 40, record["ledger_mirror"]["series_commit"])
         self.assertFalse(start_unit.cell_ledger_published(record))
         self.assertEqual("scorecard write-back did not complete", record["commit_status_publication"]["reason"])
+
+    def test_derived_failure_records_the_published_proof_separately(self) -> None:
+        self.plant_per_cell_results()
+        self.fake.scorecard_rc = 2
+        self.fake.scorecard_stderr = "renderer exploded\n"
+        proof = {"state": "published", "commit": "d" * 40, "hermit_commit": SHA,
+                 "tool_hermit_commit": "9" * 40,
+                 "files": {"scorecard/finalized/runs/" + "3" * 64 + ".json": "4" * 64,
+                           "scorecard/finalized/objects/sha256/" + "5" * 64: "5" * 64}}
+        self.fake.ledger_mirror_update = {"portable_proof": proof}
+        rc, _output, error = self.invoke()
+        self.assertEqual(start_unit.EXIT_PASSED, rc, error)
+        self.assertIn(f"FINALIZED PROOF PUBLISHED: commit={'d' * 40}", error)
+        self.assertIn("CELL LEDGER PUBLICATION INCOMPLETE: renderer exploded", error)
+        record = run_registry.read_record(self.root / "ignored/validate/runs/validate-test.json")
+        self.assertEqual("derived-failed", record["ledger_mirror"]["state"])
+        self.assertEqual({"state": "failed", "error": "renderer exploded\n"}, record["ledger_mirror"]["scorecard"])
+        self.assertEqual(proof, record["ledger_mirror"]["portable_proof"])
+        self.assertFalse(start_unit.cell_ledger_published(record))
+        self.assertEqual([], self.fake.removed)
+        self.assertEqual("scorecard write-back did not complete", record["commit_status_publication"]["reason"])
+
+    def test_superseded_scorecard_completes_the_ledger_publication(self) -> None:
+        self.fake.ledger_mirror_update = {"scorecard": {
+            "state": "superseded", "hermit_commit": SHA, "current_hermit_commit": "b" * 40,
+            "detail": "published scorecard head bbbb is newer; latest.json and SCORECARD.md were left unchanged"}}
+        rc, _output, error = self.invoke()
+        self.assertEqual(0, rc, error)
+        self.assertIn("SCORECARD SUPERSEDED: published scorecard head bbbb is newer", error)
+        self.assertIn("CELL LEDGER PUBLISHED", error)
+        record = run_registry.read_record(self.root / "ignored/validate/runs/validate-test.json")
+        self.assertEqual("superseded", record["ledger_mirror"]["scorecard"]["state"])
+        self.assertTrue(start_unit.cell_ledger_published(record))
+        self.assertTrue(any(len(c) > 1 and c[1] == "publish-commit-status" for c in self.fake.commands))
+
+    def test_cell_ledger_published_accepts_only_an_exact_superseded_scorecard(self) -> None:
+        base = {"target": SHA, "ledger_mirror": {
+            **publication_report(SHA), "repository": start_unit.CELL_LEDGER_REPOSITORY}}
+        superseded = {"state": "superseded", "hermit_commit": SHA, "current_hermit_commit": "b" * 40,
+                      "detail": "newer head"}
+        self.assertTrue(start_unit.cell_ledger_published(base))
+        self.assertTrue(start_unit.cell_ledger_published(
+            {**base, "ledger_mirror": {**base["ledger_mirror"], "scorecard": superseded}}))
+        for label, scorecard in (
+            ("names itself as newer", {**superseded, "current_hermit_commit": SHA}),
+            ("newer head not a SHA", {**superseded, "current_hermit_commit": "newer"}),
+            ("newer head absent", {key: value for key, value in superseded.items()
+                                   if key != "current_hermit_commit"}),
+            ("other commit", {**superseded, "hermit_commit": "c" * 40}),
+            ("failed", {"state": "failed", "error": "x", "hermit_commit": SHA}),
+        ):
+            with self.subTest(label):
+                self.assertFalse(start_unit.cell_ledger_published(
+                    {**base, "ledger_mirror": {**base["ledger_mirror"], "scorecard": scorecard}}))
+        self.assertFalse(start_unit.cell_ledger_published(
+            {**base, "ledger_mirror": {**base["ledger_mirror"], "state": "derived-failed",
+                                       "scorecard": superseded}}))
 
     @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
     def test_linked_parent_uses_shared_state_and_exact_tooling(

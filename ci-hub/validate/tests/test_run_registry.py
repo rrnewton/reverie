@@ -739,6 +739,55 @@ class RunRegistryContractTests(unittest.TestCase):
         self.assertEqual("c" * 40, accepted.raw["ledger_mirror"]["series_commit"])
         self.assertEqual("derived-failed", accepted.raw["ledger_mirror"]["state"])
 
+    def test_direct_publication_records_a_proof_beside_a_failed_or_superseded_scorecard(self) -> None:
+        publication = modern_publication()
+        files = publication["scorecard"]["files"]
+        proof_files = {path: digest for path, digest in files.items() if "/finalized/" in path}
+        proof = {"state": "published", "commit": publication["commit"], "files": proof_files,
+                 "hermit_commit": SHA, "tool_hermit_commit": "e" * 40}
+        failed = {**publication, "state": "derived-failed", "detail": "renderer failed",
+                  "scorecard": {"state": "failed", "error": "renderer failed"}, "portable_proof": proof}
+        superseded = {**publication, "scorecard": {
+            "state": "superseded", "hermit_commit": SHA, "current_hermit_commit": "b" * 40,
+            "detail": "published scorecard head is newer"}}
+        accepted_cases = (
+            failed,
+            {**failed, "portable_proof": {**proof, "state": "unchanged"}},
+            {**failed, "portable_proof": {"state": "failed", "error": "census refused"}},
+            superseded,
+            {**superseded, "portable_proof": proof},
+        )
+        for candidate in accepted_cases:
+            with self.subTest(accepted=candidate.get("portable_proof", candidate["scorecard"])):
+                accepted = run_registry.parse_current_record(validation_handle(ledger_mirror=candidate))
+                self.assertEqual(candidate, accepted.raw["ledger_mirror"])
+        carrier = next(path for path in proof_files if "/runs/" in path)
+        refused_cases = {
+            "failed proof on a published record": {**superseded, "portable_proof": {"state": "failed", "error": "x"}},
+            "failed proof without error": {**failed, "portable_proof": {"state": "failed", "error": ""}},
+            "proof beside a regenerated scorecard": {**publication, "portable_proof": proof},
+            "unknown proof state": {**failed, "portable_proof": {**proof, "state": "pending"}},
+            "proof commit not forty-hex": {**failed, "portable_proof": {**proof, "commit": "unknown"}},
+            "proof without carrier": {**failed, "portable_proof": {**proof, "files": {
+                path: digest for path, digest in proof_files.items() if path != carrier}}},
+            "proof without files": {**failed, "portable_proof": {**proof, "files": {}}},
+            "proof with scorecard file": {**failed, "portable_proof": {**proof, "files": {
+                **proof_files, "scorecard/SCORECARD.md": "f" * 64}}},
+            "proof with extra field": {**failed, "portable_proof": {**proof, "extra": 1}},
+            "superseded by itself": {**superseded, "scorecard": {
+                **superseded["scorecard"], "current_hermit_commit": SHA}},
+            "superseded without detail": {**superseded, "scorecard": {
+                **superseded["scorecard"], "detail": " "}},
+            "superseded head not forty-hex": {**superseded, "scorecard": {
+                **superseded["scorecard"], "current_hermit_commit": "newer"}},
+            "superseded with files": {**superseded, "scorecard": {
+                **superseded["scorecard"], "files": files}},
+            "superseded on a derived-failed record": {**failed, "scorecard": superseded["scorecard"]},
+        }
+        for label, candidate in refused_cases.items():
+            with self.subTest(refused=label), self.assertRaises(RuntimeError):
+                run_registry.parse_current_record(validation_handle(ledger_mirror=candidate))
+
     def test_direct_publication_has_exact_not_applicable_shape(self) -> None:
         repository = "https://github.com/rrnewton/hermit_test_ledger.git"
         publication = {
