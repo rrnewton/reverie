@@ -6207,6 +6207,102 @@ mod tests {
         ordinary_exec_owner_control(false, 1).await;
     }
 
+    /// Runs `body` with the order a loaded tracer thread produces by chance:
+    /// an exec'ing nonleader's run loop observes its former TID's ECHILD before
+    /// its exit future and before the leader's Exec edge takes its state.
+    /// Returns the wait operation of every ECHILD for which that run loop
+    /// stayed pending, so a caller can require that its pass went through the
+    /// run-loop branch.
+    async fn with_nonleader_run_loop_echild_first(
+        body: impl std::future::Future<Output = ()>,
+    ) -> Vec<&'static str> {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::task::NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(|slot| slot.set(false));
+                crate::task::NONLEADER_RUN_LOOP_ECHILD_PENDED
+                    .with(|pended| pended.borrow_mut().clear());
+            }
+        }
+        let _reset = Reset;
+        crate::task::NONLEADER_RUN_LOOP_ECHILD_PENDED.with(|pended| pended.borrow_mut().clear());
+        crate::task::NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(|slot| slot.set(true));
+        body.await;
+        crate::task::NONLEADER_RUN_LOOP_ECHILD_PENDED.with(|pended| pended.borrow().clone())
+    }
+
+    /// The exec'ing thread's run loop, not its exit future, observes the
+    /// former TID's ECHILD first, from a wait that names the TID directly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge() {
+        let pended =
+            with_nonleader_run_loop_echild_first(ordinary_exec_owner_control(false, 1)).await;
+        eprintln!("nonleader run loop stayed pending on: {pended:?}");
+        assert_eq!(
+            pended.len(),
+            1,
+            "the run loop did not stay pending exactly once on its former TID's ECHILD: {pended:?}"
+        );
+    }
+
+    #[derive(Default)]
+    struct InjectedExecTool;
+
+    #[reverie::tool]
+    impl Tool for InjectedExecTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::execve].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            // `inject`, not `tail_inject`: the wait inside the injection
+            // reports the former TID's ECHILD through the next-state channel.
+            Ok(guest.inject(syscall).await?)
+        }
+    }
+
+    /// As above, but the ECHILD comes from a wait inside an injected execve,
+    /// whose result reaches the run loop through the next-state channel.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_injected_exec_echild_awaits_leader_exec_edge() {
+        let pended = with_nonleader_run_loop_echild_first(async {
+            let tracer = spawn_fn::<InjectedExecTool, _>(|| {
+                std::thread::spawn(|| {
+                    let args = [c"/bin/true".as_ptr(), std::ptr::null()];
+                    unsafe {
+                        libc::execv(args[0], args.as_ptr());
+                        libc::_exit(127);
+                    }
+                });
+                loop {
+                    unsafe {
+                        libc::pause();
+                    }
+                }
+            })
+            .await
+            .expect("spawn nonleader exec guest");
+            let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+                .await
+                .expect("nonleader injected exec hung")
+                .expect("nonleader injected exec tracing failed");
+            assert_eq!(status, ExitStatus::Exited(0));
+        })
+        .await;
+        assert_eq!(
+            pended,
+            ["wait during injected syscall"],
+            "the run loop did not stay pending on the injected wait's ECHILD"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_nonleader_exec_real_signal_cancels_postexec_timer() {
         ordinary_exec_owner_control(false, 2).await;
