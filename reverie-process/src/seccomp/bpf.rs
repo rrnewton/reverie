@@ -384,6 +384,23 @@ instruction! {
         BPF_STMT(BPF_RET + BPF_K, libc::SECCOMP_RET_KILL_PROCESS);
     }
 
+    /// Like [`VALIDATE_ARCH`], except that a syscall of `alternate_arch` takes
+    /// `action` (which should be a `BPF_RET`) instead of killing the process.
+    /// A syscall of `target_arch` continues with the next instruction, and any
+    /// other architecture still kills the process.
+    pub fn VALIDATE_ARCH_OR_ALTERNATE(target_arch: u32, alternate_arch: u32, action: sock_filter) {
+        // Load `seccomp_data.arch`
+        BPF_STMT(BPF_LD + BPF_W + BPF_ABS, SECCOMP_DATA_OFFSET_ARCH);
+        // if (arch == target_arch) goto CONTINUE;
+        BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, target_arch, 3, 0);
+        // if (arch != alternate_arch) goto KILL;
+        BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, alternate_arch, 0, 1);
+        action;
+        // KILL:
+        BPF_STMT(BPF_RET + BPF_K, libc::SECCOMP_RET_KILL_PROCESS);
+        // CONTINUE: the next instruction.
+    }
+
     pub fn LOAD_SYSCALL_IP() {
         BPF_STMT(BPF_LD + BPF_W + BPF_ABS, SECCOMP_DATA_OFFSET_IP_LO);
         // M[0] = lo
@@ -446,6 +463,31 @@ instruction! {
         action;
 
         // 11: NOMATCH: Load M[1], the high bits of the IP, for the next rule.
+        BPF_STMT(BPF_LD + BPF_MEM, 1);
+    }
+}
+
+/// Checks if the instruction pointer equals `ip`. If so, executes `action`.
+/// Otherwise, falls through with the high 32 bits of the instruction pointer
+/// in the accumulator again.
+///
+/// Precondition: The instruction pointer must be loaded with [`LOAD_SYSCALL_IP`]
+/// first (so the accumulator holds its high 32 bits).
+pub fn IP_EQ(ip: u64, action: sock_filter) -> impl ByteCode {
+    IP_EQ64(ip as u32, (ip >> 32) as u32, action)
+}
+
+instruction! {
+    fn IP_EQ64(lo: u32, hi: u32, action: sock_filter) {
+        // if (arg.hi != hi) goto NOMATCH;
+        BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, hi, 0, 3 /* goto NOMATCH */);
+        // Load M[0] to operate on the low bits of the IP.
+        BPF_STMT(BPF_LD + BPF_MEM, 0);
+        // if (arg.lo != lo) goto NOMATCH;
+        BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, lo, 0, 1 /* goto NOMATCH */);
+        // MATCH: Take the action.
+        action;
+        // NOMATCH: Load M[1], the high bits of the IP, for the next rule.
         BPF_STMT(BPF_LD + BPF_MEM, 1);
     }
 }
