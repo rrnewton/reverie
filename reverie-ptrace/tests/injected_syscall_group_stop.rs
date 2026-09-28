@@ -37,6 +37,7 @@ use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::Errno;
 use reverie::syscalls::Getpid;
+use reverie::syscalls::Ppoll;
 use reverie::syscalls::RtSigprocmask;
 use reverie::syscalls::RtTgsigqueueinfo;
 use reverie::syscalls::Syscall;
@@ -58,6 +59,16 @@ const UNBLOCK_FD: i32 = 902;
 /// Like `UNBLOCK_FD`, followed by an injected `getpid` whose result the tool
 /// returns to the guest.
 const UNBLOCK_THEN_GETPID_FD: i32 = 903;
+/// A zero-length write to this descriptor is replaced with
+/// `ppoll(NULL, 0, &buf.timeout, &buf.mask, 8)` for a `PpollArgs` at `buf`.
+const PPOLL_FD: i32 = 904;
+
+/// Guest memory for the injected `ppoll`.
+#[repr(C)]
+struct PpollArgs {
+    mask: libc::sigset_t,
+    timeout: libc::timespec,
+}
 const MARKERS: usize = 1500;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -152,6 +163,25 @@ impl Tool for ReplaceMarker {
                     return Ok(result?);
                 }
                 let result = guest.inject(Getpid::new()).await;
+                guest
+                    .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
+                    .await;
+                Ok(result?)
+            }
+            Syscall::Write(write) if write.fd() == PPOLL_FD && write.len() == 0 => {
+                let base = write.buf().map_or(0, |buf| buf.as_raw());
+                let result = guest
+                    .inject(
+                        Ppoll::new()
+                            .with_fds(None)
+                            .with_nfds(0)
+                            .with_timeout(AddrMut::from_raw(
+                                base + std::mem::offset_of!(PpollArgs, timeout),
+                            ))
+                            .with_sigmask(Addr::from_raw(base))
+                            .with_sigsetsize(8),
+                    )
+                    .await;
                 guest
                     .send_rpc(Report::Injected(result.map_err(Errno::into_raw)))
                     .await;
@@ -575,5 +605,73 @@ fn signal_pending_before_injected_syscall_interrupts_it() {
         stdout.trim(),
         format!("-1 {} 1", libc::EINTR),
         "guest sees EINTR and one handler run"
+    );
+}
+
+/// `ppoll` swaps in a temporary signal mask and leaves the kernel to restore
+/// the saved one after signal handling. When the temporary mask unblocks a
+/// pending synchronous-class signal, `ppoll` returns `-ERESTARTNOHAND` and
+/// the signal is dequeued ahead of the step SIGTRAP. Returning it to the
+/// kernel queue by masking it through ptrace would discard the saved mask, so
+/// SIGSYS would stay unblocked after the call. Untraced Linux prints
+/// "-1 4 1 1": EINTR, one handler run, SIGSYS blocked again.
+#[test]
+fn injected_mask_swapping_syscall_keeps_the_saved_mask() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        block(&[libc::SIGSYS]);
+        queue_to_self(libc::SIGSYS, 1);
+        let mut args: PpollArgs = std::mem::zeroed();
+        libc::sigemptyset(&mut args.mask);
+        args.timeout.tv_sec = 5;
+        let ret = libc::syscall(
+            libc::SYS_write,
+            PPOLL_FD,
+            &mut args as *mut PpollArgs,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        let mut current: libc::sigset_t = std::mem::zeroed();
+        assert_eq!(
+            libc::syscall(
+                libc::SYS_rt_sigprocmask,
+                libc::SIG_BLOCK,
+                0usize,
+                &mut current as *mut libc::sigset_t,
+                8usize
+            ),
+            0
+        );
+        println!(
+            "{ret} {errno} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            libc::sigismember(&current, libc::SIGSYS)
+        );
+    })
+    .expect("run ppoll guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    eprintln!(
+        "PROBE ppoll guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *log.signals.lock().unwrap()
+    );
+    assert_eq!(
+        *injected,
+        vec![Err(Errno::ERESTARTNOHAND.into_raw())],
+        "ppoll is interrupted by the signal its mask unblocks"
+    );
+    assert_eq!(
+        stdout.trim(),
+        format!("-1 {} 1 1", libc::EINTR),
+        "guest sees EINTR, one handler run, and its saved mask restored"
     );
 }
