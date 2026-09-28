@@ -128,12 +128,18 @@ LAUNCHER_GIT_ENVIRONMENT = re.compile(r"GIT_[A-Za-z0-9_]+|HOME|XDG_CONFIG_HOME")
 # when set, is git's whole protocol allowlist and overrides every
 # protocol.<name>.allow setting, so the unit's clones no longer depend on
 # whether the manager or a global config happens to admit `file`. It also
-# refuses http:// and git:// in that unit; every recursive submodule URL of
-# Hermit main is https (checked at 10770b2f34, 2026-09-28). The preflight
+# refuses http://, git:// and ext:: in that unit; every recursive submodule URL
+# of Hermit main is https (checked at 10770b2f34, 2026-09-28), and the
+# preflight refuses a source whose transport the allowlist omits. The preflight
 # probes with this same mapping laid over the manager environment, so removing
 # the allowance makes the preflight refuse again instead of starting a
 # launcher whose create would fail and leave a journal.
 LAUNCHER_UNIT_GIT_SETENV: Mapping[str, str] = {"GIT_ALLOW_PROTOCOL": "https:file:ssh"}
+
+CREATE_JOURNAL_CONSEQUENCE = (
+    "a failed create leaves a wrkslots CREATE journal that refuses heartbeat, hold, "
+    "remove and handoff commands for every lane on this machine; no launcher started"
+)
 
 
 class ObservationUnavailable(RuntimeError):
@@ -891,6 +897,26 @@ def uses_file_transport(url: str) -> bool:
     return not (colon > 0 and (slash < 0 or colon < slash))
 
 
+def transport_of(url: str) -> str:
+    """Name the transport git checks against GIT_ALLOW_PROTOCOL for `url`.
+
+    Git compares these names case-sensitively: `name::` selects a remote
+    helper, `git+ssh://` and `ssh+git://` are `ssh`, any other `scheme://` is
+    the scheme itself, the scp-like `host:path` form is `ssh`, and a local
+    path is `file`.
+    """
+
+    helper = re.match(r"([A-Za-z0-9][A-Za-z0-9+.-]*)::", url)
+    if helper is not None:
+        return helper.group(1)
+    # Git's is_urlschemechar admits a digit as the first character too.
+    scheme = re.match(r"([A-Za-z0-9][A-Za-z0-9+.-]*)://", url)
+    if scheme is not None:
+        name = scheme.group(1)
+        return "ssh" if name in ("git+ssh", "ssh+git") else name
+    return "file" if uses_file_transport(url) else "ssh"
+
+
 def launcher_provisioning_preflight(
     settings: Settings,
     target: str,
@@ -927,6 +953,8 @@ def launcher_provisioning_preflight(
         if isinstance(error, CommandNotStarted):
             raise
         raise CommandNotStarted(f"launcher provisioning preflight: {error}") from error
+    # None means the unit carries no allowlist and git's per-protocol defaults apply.
+    allowlist = environment.get("GIT_ALLOW_PROTOCOL")
     checkout = str(settings.source_checkout)
     listed = query(
         launcher_git(
@@ -975,6 +1003,21 @@ def launcher_provisioning_preflight(
             detail = expanded.stderr.strip() or f"exit {expanded.returncode}"
             raise CommandNotStarted(f"cannot expand the clone URL of submodule {name}: {one_line(detail)}")
         if not uses_file_transport(source):
+            # GIT_ALLOW_PROTOCOL, when the unit carries it, is git's whole
+            # allowlist, so a network source outside it fails in the hook just
+            # as a refused local source does. Git names the transport before
+            # connecting, so this string check needs no network access.
+            transport = transport_of(source)
+            if allowlist is not None and transport not in allowlist.split(":"):
+                redirect = "" if transport == "https" else "point the submodule at an https URL, or "
+                raise CommandNotStarted(
+                    f"the launcher's checkout hook `git submodule update --init --recursive` "
+                    f"would fail: submodule {name} ({url}) clones from {source} over the "
+                    f"{transport!r} transport, which the launcher unit's "
+                    f"GIT_ALLOW_PROTOCOL={allowlist} does not admit; {CREATE_JOURNAL_CONSEQUENCE}; "
+                    f"{redirect}admit that transport in "
+                    "LAUNCHER_UNIT_GIT_SETENV in ci-hub/health/integration_tip_validate.py"
+                )
             continue
         # A submodule clone runs with GIT_PROTOCOL_FROM_USER=0, so git applies
         # its non-user file-transport policy; probe exactly that policy.
@@ -993,24 +1036,30 @@ def launcher_provisioning_preflight(
             continue
         detail = one_line(probe.stderr.strip() or f"exit {probe.returncode}")
         unit_git = (
-            ", ".join(f"{name}={value}" for name, value in sorted(unit_setenv.items()))
+            ", ".join(f"{key}={value}" for key, value in sorted(unit_setenv.items()))
             or "none"
         )
-        remedy = (
-            "the launcher unit's own --setenv Git environment "
-            f"({unit_git}) does not admit the file transport; restore "
-            "LAUNCHER_UNIT_GIT_SETENV in ci-hub/health/integration_tip_validate.py, which "
-            "scopes the allowance to that one unit, instead of changing the systemd user "
-            "manager's environment or ~/.gitconfig, which every agent on this host shares"
-            if "transport 'file' not allowed" in detail else
-            "repair the local source named by the url.insteadOf rewrite"
-        )
+        if "transport 'file' not allowed" not in detail:
+            remedy = "repair the local source named by the url.insteadOf rewrite"
+        elif allowlist is not None and "file" in allowlist.split(":"):
+            remedy = (
+                f"git refused the file transport although the launcher unit's "
+                f"GIT_ALLOW_PROTOCOL={allowlist} admits it; inspect the local source and "
+                "the quoted git error before retrying"
+            )
+        else:
+            remedy = (
+                "the launcher unit's own --setenv Git environment "
+                f"({unit_git}) does not admit the file transport; restore "
+                "LAUNCHER_UNIT_GIT_SETENV in ci-hub/health/integration_tip_validate.py, which "
+                "scopes the allowance to that one unit, instead of changing the systemd user "
+                "manager's environment or ~/.gitconfig, which every agent on this host shares"
+            )
         raise CommandNotStarted(
             f"the launcher's checkout hook `git submodule update --init --recursive` would fail: "
             f"submodule {name} ({url}) is rewritten to local source {source}, and git in the "
-            f"launcher unit's environment refuses it ({detail}); a failed create leaves a "
-            "wrkslots CREATE journal that refuses heartbeat, hold, remove and handoff commands "
-            f"for every lane on this machine; no launcher started; {remedy}"
+            f"launcher unit's environment refuses it ({detail}); {CREATE_JOURNAL_CONSEQUENCE}; "
+            f"{remedy}"
         )
     return sources
 

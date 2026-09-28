@@ -159,6 +159,33 @@ def test_an_unreadable_gitmodules_blob_refuses(tmp_path: Path) -> None:
 
 
 def test_a_refused_local_rewrite_refuses_and_names_the_rewrite(tmp_path: Path) -> None:
+    # The allowance is absent, as when LAUNCHER_UNIT_GIT_SETENV is emptied.
+    fake = FakeGit(
+        expanded={NETWORK_URL: "/mirrors/sub"},
+        probe_rc=128,
+        probe_stderr="fatal: transport 'file' not allowed",
+    )
+    with pytest.raises(driver.CommandNotStarted) as refused:
+        driver.launcher_provisioning_preflight(
+            settings(tmp_path), SHA, 4.0, fake.run, unit_setenv={}
+        )
+    message = str(refused.value)
+    assert "transport 'file' not allowed" in message
+    assert NETWORK_URL in message and "/mirrors/sub" in message
+    assert "CREATE journal" in message and "no launcher started" in message
+    assert "--setenv Git environment (none) does not admit the file transport" in message
+    assert "restore LAUNCHER_UNIT_GIT_SETENV" in message
+    assert "set-environment" not in message, "the remedy must not ask for a manager-wide change"
+    assert "remove the url.insteadOf" not in message, "nor for removing a shared rewrite"
+    [(environment, verb)] = fake.probes
+    assert environment["GIT_PROTOCOL_FROM_USER"] == "0", "a submodule clone's policy, not a user's"
+    assert "GIT_ALLOW_PROTOCOL" not in environment
+    assert verb == ["ls-remote", "/mirrors/sub", "HEAD"]
+
+
+def test_a_refusal_despite_the_allowance_does_not_blame_a_missing_allowance(tmp_path: Path) -> None:
+    """Real git cannot refuse `file` under this allowlist; if it ever does, say so."""
+
     fake = FakeGit(
         expanded={NETWORK_URL: "/mirrors/sub"},
         probe_rc=128,
@@ -167,15 +194,86 @@ def test_a_refused_local_rewrite_refuses_and_names_the_rewrite(tmp_path: Path) -
     with pytest.raises(driver.CommandNotStarted) as refused:
         driver.launcher_provisioning_preflight(settings(tmp_path), SHA, 4.0, fake.run)
     message = str(refused.value)
-    assert "transport 'file' not allowed" in message
-    assert NETWORK_URL in message and "/mirrors/sub" in message
     assert "CREATE journal" in message and "no launcher started" in message
-    assert "LAUNCHER_UNIT_GIT_SETENV" in message and "GIT_ALLOW_PROTOCOL=https:file:ssh" in message
-    assert "set-environment" not in message, "the remedy must not ask for a manager-wide change"
-    assert "remove the url.insteadOf" not in message, "nor for removing a shared rewrite"
-    [(environment, verb)] = fake.probes
-    assert environment["GIT_PROTOCOL_FROM_USER"] == "0", "a submodule clone's policy, not a user's"
-    assert verb == ["ls-remote", "/mirrors/sub", "HEAD"]
+    assert "although the launcher unit's GIT_ALLOW_PROTOCOL=https:file:ssh admits it" in message
+    assert "restore LAUNCHER_UNIT_GIT_SETENV" not in message
+    assert "does not admit the file transport" not in message
+    [(environment, _)] = fake.probes
+    assert environment["GIT_ALLOW_PROTOCOL"] == "https:file:ssh"
+
+
+@pytest.mark.parametrize(
+    "source,transport",
+    [
+        ("git://example.invalid/sub.git", "git"),
+        ("http://example.invalid/sub.git", "http"),
+        ("ext::sh -c true", "ext"),
+        ("ftp://example.invalid/sub.git", "ftp"),
+    ],
+)
+def test_a_network_source_outside_the_unit_allowlist_refuses(
+    tmp_path: Path, source: str, transport: str
+) -> None:
+    """The unit's allowlist refuses these in the hook, so the preflight must too."""
+
+    configured = settings(tmp_path)
+    fake = FakeGit(expanded={NETWORK_URL: source})
+    with pytest.raises(driver.CommandNotStarted) as refused:
+        driver.spawn_validate(
+            configured, SHA, "attempt", "validate-ops-tick-fixture",
+            tmp_path / "validate.log", tmp_path / "launcher.log", 8.0, run=fake.run,
+        )
+    message = str(refused.value)
+    assert f"over the {transport!r} transport" in message
+    assert "GIT_ALLOW_PROTOCOL=https:file:ssh does not admit" in message
+    assert source in message and NETWORK_URL in message
+    assert "CREATE journal" in message and "no launcher started" in message
+    assert "point the submodule at an https URL, or admit that transport" in message
+    assert fake.probes == [], "a string check, not a network probe"
+    assert [command for command in fake.commands if command[0] == "systemd-run"] == []
+    assert not (tmp_path / "launcher.log").exists()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://example.invalid/sub.git",
+        "ssh://git@example.invalid/sub.git",
+        "git@example.invalid:sub.git",
+        "git+ssh://example.invalid/sub.git",
+    ],
+)
+def test_a_network_source_inside_the_unit_allowlist_passes_unprobed(
+    tmp_path: Path, source: str
+) -> None:
+    fake = FakeGit(expanded={NETWORK_URL: source})
+    assert driver.launcher_provisioning_preflight(settings(tmp_path), SHA, 4.0, fake.run) == []
+    assert fake.probes == []
+
+
+def test_without_an_allowlist_a_git_source_keeps_gits_default(tmp_path: Path) -> None:
+    """No GIT_ALLOW_PROTOCOL anywhere: git's own default admits git://, so pass."""
+
+    fake = FakeGit(expanded={NETWORK_URL: "git://example.invalid/sub.git"})
+    assert driver.launcher_provisioning_preflight(
+        settings(tmp_path), SHA, 4.0, fake.run, unit_setenv={}
+    ) == []
+    assert fake.probes == []
+
+
+def test_a_manager_allowlist_without_a_unit_value_is_still_applied(tmp_path: Path) -> None:
+    fake = FakeGit(
+        manager="HOME=/home/fixture\nGIT_ALLOW_PROTOCOL=file\n",
+        expanded={NETWORK_URL: "https://example.invalid/sub.git"},
+    )
+    with pytest.raises(driver.CommandNotStarted, match="GIT_ALLOW_PROTOCOL=file does not admit") as refused:
+        driver.launcher_provisioning_preflight(
+            settings(tmp_path), SHA, 4.0, fake.run, unit_setenv={}
+        )
+    # The refused transport is already https, so the remedy must not suggest https.
+    message = str(refused.value)
+    assert "point the submodule at an https URL" not in message
+    assert "admit that transport in LAUNCHER_UNIT_GIT_SETENV" in message
 
 
 def test_the_probe_sees_the_manager_environment_not_this_process(tmp_path: Path, monkeypatch) -> None:
@@ -284,6 +382,48 @@ def test_a_quoted_manager_value_is_decoded(tmp_path: Path) -> None:
 )
 def test_transport_classification_matches_git(url: str, local: bool) -> None:
     assert driver.uses_file_transport(url) is local
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is required")
+@pytest.mark.parametrize(
+    "url",
+    [
+        "git://127.0.0.1:9/x",
+        "http://127.0.0.1:9/x",
+        "https://127.0.0.1:9/x",
+        "ext::true",
+        "git+ssh://127.0.0.1:9/x",
+        "ssh+git://127.0.0.1:9/x",
+        "ssh://127.0.0.1:9/x",
+        "git@127.0.0.1:x",
+        "ftp://127.0.0.1:9/x",
+        "HTTPS://127.0.0.1:9/x",
+        "1x://127.0.0.1:9/x",
+        "/nonexistent/local/path",
+        "file:///nonexistent/local/path",
+    ],
+)
+def test_transport_names_match_what_real_git_refuses(tmp_path: Path, url: str) -> None:
+    """An allowlist that admits nothing makes git name the transport before connecting."""
+
+    completed = subprocess.run(
+        ["git", "ls-remote", url, "HEAD"],
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(tmp_path),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ALLOW_PROTOCOL": "none-admitted",
+            "GIT_PROTOCOL_FROM_USER": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        },
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert f"transport '{driver.transport_of(url)}' not allowed" in completed.stderr, completed.stderr
 
 
 def test_a_refused_preflight_starts_no_launcher_and_writes_no_log(tmp_path: Path) -> None:
