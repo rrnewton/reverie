@@ -15498,13 +15498,12 @@ fn synthetic_guest_fd_symlink_statx(guest_fd: libc::c_int) -> libc::statx {
 }
 
 fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let Ok(fd) = i32::try_from(args[0]) else {
-        return negative_errno(libc::EBADF);
-    };
+    // Linux consumes the descriptor register's low 32 bits.
+    let fd = args[0] as libc::c_int;
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
-    let mut length = requested_length.min(MAX_HOST_IO);
+    let length = requested_length.min(MAX_HOST_IO);
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -15518,39 +15517,41 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     {
         return 0;
     }
-    if length >= 24 && !range_is_valid(memory, args[1], length as u64) {
-        return negative_errno(libc::EFAULT);
-    }
-    if length >= 24 {
-        let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
-            return negative_errno(libc::EFAULT);
-        };
-        if writable < 24 {
+    // Let the kernel write through a protected shared alias. A snapshot/copyback
+    // would clobber concurrent guest writes to untouched padding or the tail,
+    // including when EOF produces no output at all.
+    let user = memory.user();
+    let alias = match user.writable_alias(args[1], length) {
+        Ok(alias) => alias,
+        Err(error @ crate::Error::MemoryMapping(_)) => {
+            // Alias construction has already released every mapping, lock and
+            // operand. Host resource failure is terminal, not a guest errno:
+            // result publication/injection resume must observe this cause.
+            memory.entry_gate().poison(memory.entry_origin(), error);
             return negative_errno(libc::EFAULT);
         }
-        length = writable;
-    }
-    let mut bytes = vec![0; length];
-    // SAFETY: file owns a live descriptor and bytes is writable for length bytes.
+        Err(_) => return negative_errno(libc::EFAULT),
+    };
+    // SAFETY: file owns a live descriptor; alias retains the current backing,
+    // permissions and host-copy locks for the requested bounded kernel operand.
     let count = unsafe {
         libc::syscall(
             libc::SYS_getdents64,
             file.as_raw_fd(),
-            bytes.as_mut_ptr().cast::<libc::c_void>(),
-            bytes.len(),
+            alias.address(),
+            length,
         )
     };
-    if count < 0 {
-        return io_error(std::io::Error::last_os_error());
+    // Capture errno before dropping the alias invokes munmap.
+    let result = if count < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        count as i64
+    };
+    if alias.finish().is_err() {
+        return negative_errno(libc::EFAULT);
     }
-    let count = count as usize;
-    if count == 0 {
-        return 0;
-    }
-    match memory.user().write(args[1], &bytes[..count]) {
-        Ok(()) => count as i64,
-        Err(_) => negative_errno(libc::EFAULT),
-    }
+    result
 }
 
 fn is_open_standard(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
@@ -38121,6 +38122,796 @@ mod tests {
             ),
             negative_errno(libc::EBADF)
         );
+    }
+
+    #[test]
+    fn getdents64_alias_mapping_failure_is_terminal_before_directory_io() {
+        let Some(fault) = crate::alias_failure::child(
+            "executor::tests::getdents64_alias_mapping_failure_is_terminal_before_directory_io",
+        ) else {
+            return;
+        };
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut directory = std::fs::File::open(&root.0).unwrap();
+        state.files.insert(0, directory.try_clone().unwrap());
+        let mut memory = GuestMemory::new(0, 3 * PAGE_SIZE as usize).unwrap();
+        memory
+            .write_raw(0, &[0xa5; 3 * PAGE_SIZE as usize])
+            .unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory.enable_user_access();
+        let before = directory.stream_position().unwrap();
+        fault.arm();
+        let _transport_only = getdents64(&mut memory, &state, &[0, 0, 3 * PAGE_SIZE, 0, 0, 0]);
+        fault.assert_fired();
+        let pending = memory.entry_gate().pending_failure().unwrap();
+        let error = pending.error();
+        let cause =
+            crate::alias_failure::mapping_cause(&error).unwrap_or_else(|| panic!("{error:?}"));
+        assert_eq!(directory.stream_position().unwrap(), before);
+        assert_eq!(memory.entry_gate().test_state().retained_operands, 0);
+        let refused = memory.write_raw(0, b"ordinary result").unwrap_err();
+        assert!(std::ptr::eq(
+            cause,
+            crate::alias_failure::mapping_cause(&refused).unwrap_or_else(|| panic!("{refused:?}"))
+        ));
+    }
+
+    const GETDENTS64_UPPER_WORDS: [u64; 5] = [
+        0,
+        1 << 32,
+        1 << 63,
+        0xa5a5_5a5a_0000_0000,
+        0xffff_ffff_0000_0000,
+    ];
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CheckedDirent64 {
+        inode: u64,
+        offset: i64,
+        record_length: u16,
+        kind: u8,
+        name: Vec<u8>,
+    }
+
+    fn checked_dirents64(bytes: &[u8]) -> Vec<CheckedDirent64> {
+        let mut records = Vec::new();
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let remaining = &bytes[offset..];
+            assert!(remaining.len() >= 24, "truncated dirent64 header");
+            let record_length = u16::from_ne_bytes(remaining[16..18].try_into().unwrap());
+            let length = usize::from(record_length);
+            assert!(
+                length >= 24 && length.is_multiple_of(8),
+                "invalid dirent64 length"
+            );
+            assert!(length <= remaining.len(), "dirent64 exceeds syscall result");
+            let name_area = &remaining[19..length];
+            let terminator = name_area.iter().position(|byte| *byte == 0).unwrap();
+            assert!(terminator > 0, "dirent64 name must not be empty");
+            let name = name_area[..terminator].to_vec();
+            assert!(!name.contains(&b'/'), "dirent64 name contains a slash");
+            assert_eq!((19 + terminator + 1 + 7) & !7, length);
+            let inode = u64::from_ne_bytes(remaining[..8].try_into().unwrap());
+            assert_ne!(inode, 0, "the controlled fixture has no deleted entries");
+            let kind = remaining[18];
+            assert!(kind == libc::DT_DIR || kind == libc::DT_REG);
+            records.push(CheckedDirent64 {
+                inode,
+                offset: i64::from_ne_bytes(remaining[8..16].try_into().unwrap()),
+                record_length,
+                kind,
+                name,
+            });
+            offset += length;
+        }
+        assert_eq!(offset, bytes.len());
+        records
+    }
+
+    fn assert_getdents64_names(records: &[CheckedDirent64], entry: &str) {
+        let mut names = BTreeMap::new();
+        for record in records {
+            assert!(names.insert(record.name.clone(), record.kind).is_none());
+        }
+        assert_eq!(
+            names,
+            BTreeMap::from([
+                (b".".to_vec(), libc::DT_DIR),
+                (b"..".to_vec(), libc::DT_DIR),
+                (entry.as_bytes().to_vec(), libc::DT_REG),
+            ])
+        );
+    }
+
+    fn checked_getdents64(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        fd: u64,
+        address: u64,
+        length: u64,
+    ) -> (i64, Vec<CheckedDirent64>) {
+        let sentinel = vec![0xa7; (memory.guest_end() - memory.guest_base()) as usize];
+        memory.write_raw(memory.guest_base(), &sentinel).unwrap();
+        let result = syscall_result(
+            memory,
+            state,
+            libc::SYS_getdents64,
+            [
+                fd,
+                address,
+                length,
+                u64::MAX,
+                0x5a5a_a5a5_dead_beef,
+                1 << 63,
+            ],
+        );
+        let mut actual = vec![0; sentinel.len()];
+        memory.read_raw(memory.guest_base(), &mut actual).unwrap();
+        if result <= 0 {
+            assert_eq!(
+                actual, sentinel,
+                "fd={fd:#x}, address={address:#x}, count={length}, result={result}"
+            );
+            return (result, Vec::new());
+        }
+        assert!(result as u64 <= length);
+        let start = usize::try_from(address.checked_sub(memory.guest_base()).unwrap()).unwrap();
+        let end = start.checked_add(result as usize).unwrap();
+        assert!(end <= actual.len());
+        assert_eq!(&actual[..start], &sentinel[..start], "prefix sentinel");
+        assert_eq!(
+            &actual[end..],
+            &sentinel[end..],
+            "buffer tail and suffix sentinel"
+        );
+        (result, checked_dirents64(&actual[start..end]))
+    }
+
+    fn getdents64_test_directory(path: &Path) -> std::fs::File {
+        let file = std::fs::File::open(path).unwrap();
+        // Keep host descriptors different from every modeled guest key, including
+        // 257, so bypassing guest-table translation cannot accidentally work.
+        // SAFETY: file owns a live descriptor; fcntl returns a new owned one.
+        let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 258) };
+        assert!(fd >= 258);
+        assert_ne!(fd, libc::c_int::MAX);
+        // SAFETY: the successful fcntl call transferred ownership of fd.
+        unsafe { std::fs::File::from_raw_fd(fd) }
+    }
+
+    fn getdents64_position(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        fd: libc::c_int,
+    ) -> i64 {
+        let position = syscall_result(
+            memory,
+            state,
+            libc::SYS_lseek,
+            [fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
+        );
+        assert!(position >= 0);
+        position
+    }
+
+    fn rewind_getdents64(memory: &mut GuestMemory, state: &mut LoadedStaticElf, fd: libc::c_int) {
+        assert_eq!(
+            syscall_result(
+                memory,
+                state,
+                libc::SYS_lseek,
+                [fd as u64, 0, libc::SEEK_SET as u64, 0, 0, 0],
+            ),
+            0
+        );
+    }
+
+    fn native_getdents64_short_position(
+        file: &mut std::fs::File,
+        upper: u64,
+        invalid_pointer: bool,
+        length: u64,
+    ) -> i64 {
+        assert!(matches!(length, 0 | 1 | 23));
+        let mut bytes = [0xa7; 16 + 23 + 16];
+        let buffer = if invalid_pointer {
+            usize::MAX as *mut libc::c_void
+        } else {
+            bytes[16..].as_mut_ptr().cast::<libc::c_void>()
+        };
+        // SAFETY: file owns a live descriptor. The valid buffer has room for
+        // every tested count; Linux validates the deliberately invalid pointer.
+        // This is an independent native syscall, not executor reinjection.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_getdents64,
+                upper | file.as_raw_fd() as u64,
+                buffer,
+                length,
+                u64::MAX,
+                0x5a5a_a5a5_dead_beef_u64,
+                1_u64 << 63,
+            )
+        };
+        assert_eq!(result, -1, "native short count={length}, upper={upper:#x}");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EINVAL)
+        );
+        assert_eq!(bytes, [0xa7; 16 + 23 + 16], "native whole-buffer sentinels");
+        i64::try_from(file.stream_position().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn getdents64_consumes_low_descriptor_words() {
+        const BUFFER: u64 = 0x100;
+        const CAPACITY: u64 = 1024;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for fd in [0, 1, 3, 257, libc::c_int::MAX] {
+            let directory = root.0.join(format!("directory-{fd}"));
+            std::fs::create_dir(&directory).unwrap();
+            std::fs::write(directory.join(format!("entry-{fd}")), b"payload").unwrap();
+            state
+                .files
+                .insert(fd, getdents64_test_directory(&directory));
+        }
+        for fd in [0, 3, 257, libc::c_int::MAX] {
+            let (count, canonical) =
+                checked_getdents64(&mut memory, &mut state, fd as u64, BUFFER, CAPACITY);
+            assert!(count > 0, "canonical guest fd {fd}");
+            assert_getdents64_names(&canonical, &format!("entry-{fd}"));
+            for upper in GETDENTS64_UPPER_WORDS {
+                rewind_getdents64(&mut memory, &mut state, fd);
+                let (alias_count, alias) = checked_getdents64(
+                    &mut memory,
+                    &mut state,
+                    upper | fd as u64,
+                    BUFFER,
+                    CAPACITY,
+                );
+                assert_eq!(alias_count, count, "upper={upper:#x}, fd={fd}");
+                assert_getdents64_names(&alias, &format!("entry-{fd}"));
+                // Compare all fields except padding within the same rewound
+                // stream. Inodes and opaque cookies across different directories
+                // are deliberately not compared.
+                assert_eq!(alias, canonical, "upper={upper:#x}, fd={fd}");
+                assert_eq!(
+                    checked_getdents64(
+                        &mut memory,
+                        &mut state,
+                        upper | fd as u64,
+                        BUFFER,
+                        CAPACITY
+                    )
+                    .0,
+                    0,
+                    "alias must reach EOF"
+                );
+            }
+        }
+        assert_eq!(
+            getdents64_position(&mut memory, &mut state, 1),
+            0,
+            "fd 257 must not consume the fd 1 decoy"
+        );
+    }
+
+    /// Compare a copyout boundary with an independent native open of the same
+    /// unchanged directory at the exact preceding opaque cookie. The native
+    /// mapping mirrors the guest's middle PROT_NONE page and inaccessible tail;
+    /// no executor helper or guest-backed alias is used for the reference.
+    fn native_checked_getdents64_copyout(
+        memory: &mut GuestMemory,
+        state: &mut LoadedStaticElf,
+        directory: &Path,
+        fd: u64,
+        alias: libc::c_int,
+        address: u64,
+        length: u64,
+    ) -> (i64, Vec<CheckedDirent64>) {
+        struct NativeArena(*mut libc::c_void, usize);
+        impl Drop for NativeArena {
+            fn drop(&mut self) {
+                // SAFETY: this arena owns the complete mmap reservation.
+                assert_eq!(unsafe { libc::munmap(self.0, self.1) }, 0);
+            }
+        }
+
+        assert_eq!(memory.guest_base(), 0);
+        assert_eq!(memory.guest_end(), 3 * PAGE_SIZE);
+        assert!(length <= 1024);
+        let before = getdents64_position(memory, state, fd as libc::c_int);
+        assert_eq!(getdents64_position(memory, state, alias), before);
+        let native_file = std::fs::File::open(directory).unwrap();
+        // SAFETY: independent live directory fd and a previously observed cookie.
+        assert_eq!(
+            unsafe { libc::lseek(native_file.as_raw_fd(), before, libc::SEEK_SET) },
+            before
+        );
+        let size = 4 * PAGE_SIZE as usize;
+        // SAFETY: independent private mapping, no shared Rust references.
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let arena = NativeArena(mapping, size);
+        // SAFETY: the reservation is writable; protect exactly the page holes
+        // modeled by this test, including the page beyond GuestMemory's end.
+        unsafe {
+            std::ptr::write_bytes(mapping.cast::<u8>(), 0xa7, size);
+            assert_eq!(
+                libc::mprotect(
+                    mapping.cast::<u8>().add(PAGE_SIZE as usize).cast(),
+                    PAGE_SIZE as usize,
+                    libc::PROT_NONE
+                ),
+                0
+            );
+            assert_eq!(
+                libc::mprotect(
+                    mapping.cast::<u8>().add(3 * PAGE_SIZE as usize).cast(),
+                    PAGE_SIZE as usize,
+                    libc::PROT_NONE
+                ),
+                0
+            );
+        }
+        let pointer = if address == u64::MAX {
+            std::ptr::with_exposed_provenance_mut::<libc::c_void>(usize::MAX)
+        } else {
+            assert!(address < memory.guest_end());
+            // SAFETY: the address is within the owned reservation, possibly
+            // protected; only the kernel attempts the actual output access.
+            unsafe { mapping.cast::<u8>().add(address as usize).cast() }
+        };
+        // SAFETY: the fd is live; the kernel handles the intentional faults.
+        // Count is canonical unsigned32 here; only fd has high register bits.
+        let native = unsafe {
+            libc::syscall(
+                libc::SYS_getdents64,
+                (fd & 0xffff_ffff_0000_0000) | native_file.as_raw_fd() as u64,
+                pointer,
+                length,
+                u64::MAX,
+                0x5a5a_a5a5_dead_beef_u64,
+                1_u64 << 63,
+            )
+        };
+        let expected_result = if native == -1 {
+            negative_errno(std::io::Error::last_os_error().raw_os_error().unwrap())
+        } else {
+            native as i64
+        };
+        // Capture errno above before any other libc call.
+        let expected_position = unsafe { libc::lseek(native_file.as_raw_fd(), 0, libc::SEEK_CUR) };
+        assert!(expected_position >= 0);
+        // SAFETY: restore the owned arena before reading every byte and guard.
+        assert_eq!(
+            unsafe { libc::mprotect(mapping, size, libc::PROT_READ | libc::PROT_WRITE) },
+            0
+        );
+        let native_bytes =
+            unsafe { std::slice::from_raw_parts(mapping.cast::<u8>(), size) }.to_vec();
+        assert!(
+            native_bytes[3 * PAGE_SIZE as usize..]
+                .iter()
+                .all(|byte| *byte == 0xa7),
+            "native protected tail guard"
+        );
+        drop(arena);
+
+        let sentinel = vec![0xa7; 3 * PAGE_SIZE as usize];
+        memory.write_raw(0, &sentinel).unwrap();
+        let result = syscall_result(
+            memory,
+            state,
+            libc::SYS_getdents64,
+            [
+                fd,
+                address,
+                length,
+                u64::MAX,
+                0x5a5a_a5a5_dead_beef,
+                1 << 63,
+            ],
+        );
+        let mut actual = vec![0; sentinel.len()];
+        memory.read_raw(0, &mut actual).unwrap();
+        assert_eq!(
+            result, expected_result,
+            "native result fd={fd:#x} address={address:#x} count={length}"
+        );
+        assert_eq!(
+            actual,
+            native_bytes[..sentinel.len()],
+            "native full arena, including partial writes, padding and guards"
+        );
+        assert_eq!(
+            getdents64_position(memory, state, fd as libc::c_int),
+            expected_position,
+            "native exact post-call cursor"
+        );
+        assert_eq!(
+            getdents64_position(memory, state, alias),
+            expected_position,
+            "dup observes native post-call cursor"
+        );
+        if result <= 0 {
+            return (result, Vec::new());
+        }
+        assert!(result as u64 <= length);
+        let start = usize::try_from(address).unwrap();
+        let end = start.checked_add(result as usize).unwrap();
+        assert!(end <= actual.len());
+        (result, checked_dirents64(&actual[start..end]))
+    }
+
+    #[test]
+    fn getdents64_low_words_preserve_errors_and_cursor() {
+        const BUFFER: u64 = 0x100;
+        const CAPACITY: u64 = 1024;
+        let root = TestDir::new();
+        let directory = root.0.join("directory");
+        let decoy = root.0.join("decoy");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::create_dir(&decoy).unwrap();
+        std::fs::write(directory.join("entry"), b"payload").unwrap();
+        std::fs::write(decoy.join("decoy-entry"), b"decoy").unwrap();
+        // Independent opens of the same controlled directories supply the
+        // native cursor oracle. A dup or try_clone would share the tested
+        // cursor and could make an incorrect advance compare equal to itself.
+        let mut native_directories = BTreeMap::from([
+            (3, std::fs::File::open(&directory).unwrap()),
+            (257, std::fs::File::open(&decoy).unwrap()),
+        ]);
+        let mut state = test_state(&root.0);
+        state.files.insert(3, getdents64_test_directory(&directory));
+        state.files.insert(257, getdents64_test_directory(&decoy));
+        state
+            .files
+            .insert(4, std::fs::File::open(directory.join("entry")).unwrap());
+        for (fd, path) in [(5, directory.clone()), (6, directory.join("entry"))] {
+            state.files.insert(
+                fd,
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_PATH)
+                    .open(path)
+                    .unwrap(),
+            );
+        }
+        state.files.insert(7, getdents64_test_directory(&directory));
+        let mut memory = GuestMemory::new(0, 3 * PAGE_SIZE as usize).unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory.enable_user_access();
+        let alias = syscall_result(&mut memory, &mut state, libc::SYS_dup, [3, 0, 0, 0, 0, 0]);
+        assert!(alias >= 0 && alias != 3 && alias != 257 && alias != 7);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_close, [7, 0, 0, 0, 0, 0]),
+            0
+        );
+
+        for upper in GETDENTS64_UPPER_WORDS {
+            for low in [
+                0x8000_0000,
+                0x8000_0003,
+                0x8000_0101,
+                u32::MAX,
+                libc::AT_FDCWD as u32,
+                7,
+                99,
+            ] {
+                for address in [BUFFER, u64::MAX] {
+                    for length in [0, 1, 23, 24, CAPACITY] {
+                        assert_eq!(
+                            checked_getdents64(
+                                &mut memory,
+                                &mut state,
+                                upper | u64::from(low),
+                                address,
+                                length
+                            )
+                            .0,
+                            negative_errno(libc::EBADF),
+                            "low={low:#x}, upper={upper:#x}, count={length}"
+                        );
+                    }
+                }
+            }
+            for (fd, errno) in [(4, libc::ENOTDIR), (5, libc::EBADF), (6, libc::EBADF)] {
+                for length in [0, 1, 23, 24, CAPACITY] {
+                    assert_eq!(
+                        checked_getdents64(&mut memory, &mut state, upper | fd, u64::MAX, length).0,
+                        negative_errno(errno),
+                        "directory validation must precede the pointer"
+                    );
+                }
+            }
+            for fd in [3, 257] {
+                for address in [BUFFER, u64::MAX] {
+                    for length in [0, 1, 23] {
+                        assert_eq!(
+                            checked_getdents64(
+                                &mut memory,
+                                &mut state,
+                                upper | fd,
+                                address,
+                                length
+                            )
+                            .0,
+                            negative_errno(libc::EINVAL),
+                            "nonempty stream and small canonical count"
+                        );
+                        let expected = native_getdents64_short_position(
+                            native_directories.get_mut(&(fd as libc::c_int)).unwrap(),
+                            upper,
+                            address == u64::MAX,
+                            length,
+                        );
+                        assert_eq!(
+                            getdents64_position(&mut memory, &mut state, fd as libc::c_int),
+                            expected,
+                            "native short-count cursor: fd={fd}, upper={upper:#x}, count={length}"
+                        );
+                        if fd == 3 {
+                            assert_eq!(
+                                getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                                expected,
+                                "the dup must observe the same native short-count cursor"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let decoy_before_faults = getdents64_position(&mut memory, &mut state, 257);
+        let faults = [
+            (u64::MAX, CAPACITY),
+            (memory.guest_end() - 16, 24),
+            (PAGE_SIZE, 24),
+            (PAGE_SIZE - 23, 24),
+        ];
+        // Linux copies individual fields before a later fault and does not
+        // write record padding. Compare those exact effects and the resulting
+        // shared cursor with a native open, rather than imposing preflight.
+        for upper in GETDENTS64_UPPER_WORDS {
+            for (address, length) in faults {
+                let before = getdents64_position(&mut memory, &mut state, 3);
+                assert_eq!(
+                    getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                    before
+                );
+                let (result, records) = native_checked_getdents64_copyout(
+                    &mut memory,
+                    &mut state,
+                    &directory,
+                    upper | 3,
+                    alias as libc::c_int,
+                    address,
+                    length,
+                );
+                if address == PAGE_SIZE - 23 {
+                    assert_eq!(result, 24, "unused alignment padding need not be writable");
+                    assert_eq!(records.len(), 1);
+                } else {
+                    assert_eq!(result, negative_errno(libc::EFAULT));
+                }
+                // Isolate the next cell only after checking actual copyout and
+                // both post-call cursors; no successful progress is hidden.
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_lseek,
+                        [3, before as u64, libc::SEEK_SET as u64, 0, 0, 0]
+                    ),
+                    before
+                );
+                assert_eq!(
+                    getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                    before
+                );
+            }
+        }
+        let (count, canonical) = checked_getdents64(&mut memory, &mut state, 3, BUFFER, CAPACITY);
+        assert!(count > 24);
+        assert_getdents64_names(&canonical, "entry");
+        for upper in GETDENTS64_UPPER_WORDS {
+            assert_eq!(
+                checked_getdents64(&mut memory, &mut state, upper | alias as u64, u64::MAX, 1).0,
+                0
+            );
+            // EOF has no actor/output write. Even invalid/protected pointers
+            // return zero; any filesystem cookie normalization must match the
+            // independently opened native stream exactly, not a guessed zero.
+            for (address, length) in faults {
+                let eof = getdents64_position(&mut memory, &mut state, 3);
+                assert_eq!(
+                    getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                    eof
+                );
+                let (result, records) = native_checked_getdents64_copyout(
+                    &mut memory,
+                    &mut state,
+                    &directory,
+                    upper | 3,
+                    alias as libc::c_int,
+                    address,
+                    length,
+                );
+                assert_eq!(result, 0);
+                assert!(records.is_empty());
+                let mut untouched = vec![0; 3 * PAGE_SIZE as usize];
+                memory.read_raw(0, &mut untouched).unwrap();
+                assert_eq!(untouched, vec![0xa7; untouched.len()], "EOF writes nothing");
+            }
+            rewind_getdents64(&mut memory, &mut state, alias as libc::c_int);
+            for (address, length) in faults {
+                let before = getdents64_position(&mut memory, &mut state, 3);
+                assert_eq!(before, 0, "the explicit rewind must reset the cursor");
+                assert_eq!(
+                    getdents64_position(&mut memory, &mut state, alias as libc::c_int),
+                    before
+                );
+                let (result, records) = native_checked_getdents64_copyout(
+                    &mut memory,
+                    &mut state,
+                    &directory,
+                    upper | alias as u64,
+                    3,
+                    address,
+                    length,
+                );
+                if address == PAGE_SIZE - 23 {
+                    assert_eq!(result, 24);
+                    assert_eq!(records.len(), 1);
+                    assert_eq!(records[0], canonical[0]);
+                } else {
+                    assert_eq!(result, negative_errno(libc::EFAULT));
+                }
+                rewind_getdents64(&mut memory, &mut state, alias as libc::c_int);
+            }
+            // A usable 24-byte prefix succeeds although the rest of the
+            // requested buffer is inaccessible, and consumes exactly one record.
+            let (first_count, mut shared) = checked_getdents64(
+                &mut memory,
+                &mut state,
+                upper | alias as u64,
+                PAGE_SIZE - 24,
+                48,
+            );
+            assert_eq!(first_count, 24);
+            assert_eq!(shared.len(), 1);
+            let (rest_count, rest) =
+                checked_getdents64(&mut memory, &mut state, upper | 3, BUFFER, CAPACITY);
+            assert_eq!(first_count + rest_count, count);
+            shared.extend(rest);
+            assert_getdents64_names(&shared, "entry");
+            assert_eq!(
+                shared, canonical,
+                "dup descriptors share the rewound cursor"
+            );
+            assert_eq!(
+                checked_getdents64(
+                    &mut memory,
+                    &mut state,
+                    upper | alias as u64,
+                    BUFFER,
+                    CAPACITY
+                )
+                .0,
+                0
+            );
+        }
+        assert_eq!(
+            getdents64_position(&mut memory, &mut state, 257),
+            decoy_before_faults,
+            "primary-directory operations must preserve the tested decoy cursor"
+        );
+        let (_, decoy_records) = checked_getdents64(&mut memory, &mut state, 257, BUFFER, CAPACITY);
+        assert_getdents64_names(&decoy_records, "decoy-entry");
+    }
+
+    #[test]
+    fn getdents64_low_words_keep_synthetic_proc_unenumerable() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
+        memory.enable_user_access();
+        let mut descriptors = Vec::new();
+        for flags in [
+            libc::O_RDONLY | libc::O_DIRECTORY,
+            libc::O_PATH | libc::O_DIRECTORY,
+        ] {
+            write_c_string(&mut memory, 0x100, "/proc");
+            let opened = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
+            );
+            let fd = if flags & libc::O_PATH != 0 {
+                // Direct synthetic /proc O_PATH opens retain their existing
+                // EINVAL refusal. Model an inherited O_PATH proc descriptor to
+                // ensure getdents64 checks O_PATH before the synthetic-zero rule.
+                assert_eq!(opened, negative_errno(libc::EINVAL));
+                let fd = 257;
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+                    .open("/proc")
+                    .unwrap();
+                assert!(state.files.insert(fd, file).is_none());
+                state.proc_files.insert(fd, synthetic_proc_inode(b"/proc"));
+                i64::from(fd)
+            } else {
+                assert!(opened >= 0, "open /proc flags={flags:#x} returned {opened}");
+                opened
+            };
+            assert_eq!(
+                state.proc_files.get(&(fd as libc::c_int)),
+                Some(&synthetic_proc_inode(b"/proc"))
+            );
+            let alias = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup,
+                [fd as u64, 0, 0, 0, 0, 0],
+            );
+            assert!(alias >= 0 && alias != fd);
+            assert_eq!(
+                state.proc_files.get(&(alias as libc::c_int)),
+                state.proc_files.get(&(fd as libc::c_int))
+            );
+            let expected = if flags & libc::O_PATH != 0 {
+                negative_errno(libc::EBADF)
+            } else {
+                0
+            };
+            descriptors.extend([(fd as u64, expected), (alias as u64, expected)]);
+        }
+        for (fd, expected) in descriptors {
+            for upper in GETDENTS64_UPPER_WORDS {
+                for address in [0x100, PAGE_SIZE, PAGE_SIZE - 23, u64::MAX] {
+                    for length in [0, 1, 23, 24, 1024] {
+                        assert_eq!(
+                            checked_getdents64(
+                                &mut memory,
+                                &mut state,
+                                upper | fd,
+                                address,
+                                length
+                            )
+                            .0,
+                            expected,
+                            "synthetic proc policy: fd={fd}, upper={upper:#x}, pointer={address:#x}, count={length}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

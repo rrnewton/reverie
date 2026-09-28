@@ -74,6 +74,470 @@ use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 
+#[path = "support/alias_failure.rs"]
+mod alias_failure;
+
+static ALIAS_FAILURE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+static ALIAS_FAILURE_CALLBACK_RESUMED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Default)]
+struct AliasFailureTool;
+
+#[reverie::tool]
+impl Tool for AliasFailureTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::getdents64]);
+        subscriptions
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        ALIAS_FAILURE_CALLBACKS.fetch_add(1, Ordering::SeqCst);
+        let result = guest.inject(syscall).await;
+        ALIAS_FAILURE_CALLBACK_RESUMED.store(true, Ordering::SeqCst);
+        Ok(result?)
+    }
+}
+
+#[test]
+fn getdents64_alias_resource_failure_stops_direct_guest() {
+    getdents64_alias_failure_case(
+        "getdents64_alias_resource_failure_stops_direct_guest",
+        false,
+    );
+}
+
+#[test]
+fn getdents64_alias_resource_failure_stops_tool_and_guest() {
+    getdents64_alias_failure_case(
+        "getdents64_alias_resource_failure_stops_tool_and_guest",
+        true,
+    );
+}
+
+fn getdents64_alias_failure_case(test: &str, with_tool: bool) {
+    if !kvm_available(test) {
+        return;
+    }
+    let Some(fault) = alias_failure::child(test) else {
+        return;
+    };
+    let directory = TestDirectory::new();
+    std::fs::create_dir(directory.0.join("empty")).unwrap();
+    let program = compile_c_program(
+        &directory.0,
+        "alias-failure",
+        GETDENTS_ALIAS_FAILURE_PROGRAM,
+    );
+    let marker = directory.0.join("guest-continued");
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&program)
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(std::fs::read(&marker).unwrap(), b"resumed");
+    std::fs::remove_file(&marker).unwrap();
+    let mut backend = KvmBackend::new(64 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_file_with_context(
+            std::fs::File::open(&program).unwrap(),
+            &[program.to_str().unwrap()],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    fault.arm();
+    let result = if with_tool {
+        futures::executor::block_on(backend.run_static_elf_with_tool::<AliasFailureTool>((), true))
+            .map(|(_, code, stdout, stderr)| (code, stdout, stderr))
+    } else {
+        backend.run_static_elf_captured()
+    };
+    fault.assert_fired();
+    eprintln!(
+        "alias refusal observation: result={result:?} callbacks={} resumed={} guest_marker={}",
+        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst),
+        ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst),
+        marker.exists(),
+    );
+    let error = result.unwrap_err();
+    let cause = alias_failure::mapping_cause(&error).unwrap_or_else(|| panic!("{error:?}"));
+    assert!(!marker.exists(), "guest resumed after supervisor failure");
+    assert_eq!(
+        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst),
+        u64::from(with_tool)
+    );
+    assert!(!ALIAS_FAILURE_CALLBACK_RESUMED.load(Ordering::SeqCst));
+    let refused = backend
+        .memory()
+        .expect("completed alias-failure run must release memory access admission")
+        .read(0, &mut [0])
+        .unwrap_err();
+    assert!(std::ptr::eq(
+        cause,
+        alias_failure::mapping_cause(&refused).unwrap_or_else(|| panic!("{refused:?}"))
+    ));
+    eprintln!(
+        "terminal alias failure with_tool={with_tool}: {error}; callbacks={} resumed=false",
+        ALIAS_FAILURE_CALLBACKS.load(Ordering::SeqCst)
+    );
+}
+
+const GETDENTS_ALIAS_FAILURE_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#define CHECK(x) do { if (!(x)) return 93; } while (0)
+int main(void) {
+    CHECK(close(0) == 0);
+    int fd = open("empty", O_RDONLY | O_DIRECTORY);
+    CHECK(fd == 0);
+    unsigned char *p = mmap(0, 12288, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(p != MAP_FAILED);
+    memset(p, 0xa5, 12288);
+    CHECK(mprotect(p + 4096, 4096, PROT_NONE) == 0);
+    (void)syscall(SYS_getdents64, fd, p, 12288);
+    int marker = open("guest-continued", O_WRONLY | O_CREAT | O_EXCL, 0600);
+    CHECK(marker >= 0 && write(marker, "resumed", 7) == 7);
+    return 0;
+}
+"#;
+
+#[test]
+fn getdents64_copyout_matches_native_direct() {
+    getdents64_copyout_case("getdents64_copyout_matches_native_direct", false);
+}
+
+#[test]
+fn getdents64_copyout_matches_native_tool() {
+    getdents64_copyout_case("getdents64_copyout_matches_native_tool", true);
+}
+
+#[test]
+fn getdents64_preserves_concurrent_unwritten_bytes_direct() {
+    getdents64_native_parity_case(
+        "getdents64_preserves_concurrent_unwritten_bytes_direct",
+        false,
+        GETDENTS_CONCURRENT_PROGRAM,
+    );
+}
+
+#[test]
+fn getdents64_preserves_concurrent_unwritten_bytes_tool() {
+    getdents64_native_parity_case(
+        "getdents64_preserves_concurrent_unwritten_bytes_tool",
+        true,
+        GETDENTS_CONCURRENT_PROGRAM,
+    );
+}
+
+fn getdents64_copyout_case(test: &str, with_tool: bool) {
+    getdents64_native_parity_case(test, with_tool, GETDENTS_COPYOUT_PROGRAM);
+}
+
+fn getdents64_native_parity_case(test: &str, with_tool: bool, source: &str) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let input = directory.0.join("input");
+    std::fs::create_dir(&input).unwrap();
+    std::fs::create_dir(directory.0.join("empty")).unwrap();
+    std::fs::write(input.join("a-long-directory-entry-for-copyout"), b"x").unwrap();
+    let program = compile_c_program(&directory.0, "getdents-copyout", source);
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&program)
+        .arg("native")
+        .current_dir(&directory.0)
+        .output()
+        .unwrap();
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    eprintln!(
+        "native copyout oracle passed: {} bytes",
+        native.stdout.len()
+    );
+    for repetition in 0..2 {
+        let mut backend = KvmBackend::new(64 * 1024 * 1024).unwrap();
+        backend
+            .install_static_elf_file_with_context(
+                std::fs::File::open(&program).unwrap(),
+                &[program.to_str().unwrap(), "guest"],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        let (code, stdout, stderr) = if with_tool {
+            let (log, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            let callbacks = log
+                .syscalls()
+                .iter()
+                .filter(|name| name.as_str() == "getdents64")
+                .count();
+            assert!(callbacks > 0, "typed getdents64 callback was bypassed");
+            eprintln!("typed getdents64 callbacks={callbacks}");
+            (code, stdout, stderr)
+        } else {
+            backend.run_static_elf_captured().unwrap()
+        };
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&stdout));
+        assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+        assert_eq!(
+            std::str::from_utf8(&stdout).unwrap(),
+            std::str::from_utf8(&native.stdout).unwrap(),
+            "with_tool={with_tool} repetition={repetition}"
+        );
+        eprintln!("copyout parity passed: with_tool={with_tool} repetition={repetition}");
+    }
+}
+
+const GETDENTS_CONCURRENT_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <stdatomic.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define SIZE (16 * 1024 * 1024)
+#define CHECK(expression) do { if (!(expression)) { printf("failure line=%d errno=%d\n", __LINE__, errno); return 93; } } while (0)
+static _Atomic unsigned long *wide_marker;
+static _Atomic unsigned char *padding_marker;
+static _Atomic int stop, clobber;
+static _Atomic unsigned long progress;
+static unsigned long before, observed;
+
+static unsigned long marker_value(void) {
+    return padding_marker ? atomic_load(padding_marker) : atomic_load(wide_marker);
+}
+
+static void *writer(void *unused) {
+    (void)unused;
+    unsigned long last = 0;
+    while (!atomic_load(&stop)) {
+        unsigned long actual = marker_value();
+        if (actual != last) {
+            before = last;
+            observed = actual;
+            atomic_store(&clobber, 1);
+            return 0;
+        }
+        if (padding_marker) {
+            last = (unsigned char)(last + 1);
+            atomic_store(padding_marker, last);
+        } else {
+            atomic_store(wide_marker, ++last);
+        }
+        atomic_fetch_add(&progress, 1);
+        sched_yield();
+    }
+    // Check once after the stop request too, so a final copyout cannot escape
+    // detection merely because it overlapped the writer's final yield.
+    unsigned long actual = marker_value();
+    if (actual != last) {
+        before = last;
+        observed = actual;
+        atomic_store(&clobber, 1);
+    }
+    return 0;
+}
+
+int main(void) {
+    CHECK(close(0) == 0);
+    int fd = open("empty", O_RDONLY | O_DIRECTORY);
+    CHECK(fd == 0);
+    unsigned char reference[256];
+    CHECK(syscall(SYS_getdents64, fd, reference, sizeof(reference)) == 48);
+    size_t padding_offset = 20 + strlen((char *)reference + 19);
+    CHECK(padding_offset < 24);
+    unsigned char *buffer = mmap(0, SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(buffer != MAP_FAILED);
+    const char *names[] = {"EOF", "short tail", "padding", "EINVAL"};
+    for (int mode = 0; mode < 4; ++mode) {
+        memset(buffer, 0, SIZE);
+        CHECK(lseek(fd, 0, SEEK_SET) == 0);
+        if (mode == 0) {
+            CHECK(syscall(SYS_getdents64, fd, reference, sizeof(reference)) == 48);
+            CHECK(syscall(SYS_getdents64, fd, reference, sizeof(reference)) == 0);
+        }
+        padding_marker = mode == 2 ? (_Atomic unsigned char *)(buffer + padding_offset) : 0;
+        wide_marker = (_Atomic unsigned long *)(buffer + (mode == 3 ? 8 : SIZE / 2));
+        atomic_store(&stop, 0);
+        atomic_store(&clobber, 0);
+        atomic_store(&progress, 0);
+        pthread_t thread;
+        CHECK(pthread_create(&thread, 0, writer, 0) == 0);
+        while (atomic_load(&progress) < 1000) sched_yield();
+        int calls = 0;
+        for (; calls < 32 && !atomic_load(&clobber); ++calls) {
+            if (mode != 0) CHECK(lseek(fd, 0, SEEK_SET) == 0);
+            errno = 0;
+            long result = syscall(SYS_getdents64, fd, buffer, mode == 3 ? 23 : SIZE);
+            CHECK(mode == 3 ? result == -1 && errno == EINVAL : result == (mode == 0 ? 0 : 48));
+        }
+        atomic_store(&stop, 1);
+        CHECK(pthread_join(thread, 0) == 0);
+        if (atomic_load(&clobber)) {
+            printf("%s calls=%d clobber=1 before=%lu observed=%lu\n", names[mode], calls, before, observed);
+            return 94;
+        }
+        CHECK(calls == 32);
+        printf("%s calls=32 sole-writer-preserved\n", names[mode]);
+    }
+    CHECK(munmap(buffer, SIZE) == 0 && close(fd) == 0);
+    return 0;
+}
+"#;
+
+const GETDENTS_COPYOUT_PROGRAM: &str = r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#define CHECK(expression) do { if (!(expression)) { printf("failure line=%d errno=%d\n", __LINE__, errno); return 93; } } while (0)
+struct entry { uint64_t ino; int64_t off; unsigned short len; unsigned char type; char name[]; };
+
+static void bytes(const unsigned char *buffer, size_t count) {
+    for (size_t i = 0; i < count; ++i) printf("%02x", buffer[i]);
+}
+
+int main(int argc, char **argv) {
+    CHECK(argc == 2);
+    int guest = !strcmp(argv[1], "guest");
+    CHECK(close(0) == 0);
+    int fd = open("input", O_RDONLY | O_DIRECTORY);
+    CHECK(fd == 0);
+    unsigned char reference[256];
+    long size = syscall(SYS_getdents64, fd, reference, sizeof(reference));
+    CHECK(size > 48 && size <= sizeof(reference));
+    off_t long_start = -1, previous = 0;
+    int entries = 0;
+    for (long offset = 0; offset < size;) {
+        struct entry *entry = (struct entry *)(reference + offset);
+        CHECK(entry->len >= 24 && offset + entry->len <= size);
+        if (!strcmp(entry->name, "a-long-directory-entry-for-copyout")) long_start = previous;
+        previous = entry->off;
+        offset += entry->len;
+        ++entries;
+    }
+    CHECK(entries == 3 && long_start >= 0);
+    off_t starts[] = {0, long_start, previous};
+    CHECK(close(fd) == 0);
+    unsigned char *mapping = mmap(0, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(mapping != MAP_FAILED);
+    const int prefixes[] = {0, 16, 21, 23, 24, 40, 48, 128};
+    const int counts[] = {0, 23, 24, 128};
+    for (int protection = 0; protection < 2; ++protection) {
+        for (int start = 0; start < 3; ++start) {
+            for (unsigned pi = 0; pi < sizeof(prefixes) / sizeof(prefixes[0]); ++pi) {
+                for (unsigned ci = 0; ci < sizeof(counts) / sizeof(counts[0]); ++ci) {
+                    CHECK(mprotect(mapping, 8192, PROT_READ | PROT_WRITE) == 0);
+                    memset(mapping, 0xa5, 8192);
+                    CHECK(mprotect(mapping + 4096, 4096, protection ? PROT_READ : PROT_NONE) == 0);
+                    fd = open("input", O_RDONLY | O_DIRECTORY);
+                    CHECK(fd == 0);
+                    int alias = dup(fd);
+                    CHECK(alias >= 3);
+                    CHECK(lseek(fd, starts[start], SEEK_SET) == starts[start]);
+                    unsigned char *output = mapping + 4096 - prefixes[pi];
+                    errno = 0;
+                    long result = syscall(SYS_getdents64, fd, output, counts[ci]);
+                    int error = errno;
+                    off_t position = lseek(alias, 0, SEEK_CUR);
+                    CHECK(position >= 0);
+                    CHECK(mprotect(mapping, 8192, PROT_READ | PROT_WRITE) == 0);
+                    printf("protect=%d start=%d prefix=%d count=%d result=%ld errno=%d cursor=%ld bytes=",
+                           protection, start, prefixes[pi], counts[ci], result, error, position);
+                    bytes(output - 8, 144);
+                    unsigned char retry[256];
+                    memset(retry, 0xa5, sizeof(retry));
+                    errno = 0;
+                    long retry_size = syscall(SYS_getdents64, alias, retry, sizeof(retry));
+                    CHECK(retry_size >= 0 && retry_size <= sizeof(retry));
+                    printf(" retry=%ld errno=%d bytes=", retry_size, errno);
+                    bytes(retry, sizeof(retry));
+                    printf(" cursor=%ld\n", lseek(fd, 0, SEEK_CUR));
+                    CHECK(close(alias) == 0 && close(fd) == 0);
+                }
+            }
+        }
+    }
+    const uintptr_t invalid[] = {0, UINTPTR_MAX - 15};
+    for (int start = 0; start < 3; ++start) {
+        for (unsigned pointer = 0; pointer < sizeof(invalid) / sizeof(invalid[0]); ++pointer) {
+            for (unsigned ci = 0; ci < sizeof(counts) / sizeof(counts[0]); ++ci) {
+                fd = open("input", O_RDONLY | O_DIRECTORY);
+                CHECK(fd == 0);
+                CHECK(lseek(fd, starts[start], SEEK_SET) == starts[start]);
+                errno = 0;
+                long result = syscall(SYS_getdents64, fd, (void *)invalid[pointer], counts[ci]);
+                int error = errno;
+                printf("invalid=%u start=%d count=%d result=%ld errno=%d cursor=%ld\n",
+                       pointer, start, counts[ci], result, error, lseek(fd, 0, SEEK_CUR));
+                CHECK(close(fd) == 0);
+            }
+        }
+    }
+    // Descriptor/type checks precede copyout, including zero and undersized counts.
+    int path = open("input", O_PATH | O_DIRECTORY);
+    int regular = open("input/a-long-directory-entry-for-copyout", O_RDONLY);
+    CHECK(path == 0 && regular >= 3);
+    int descriptors[] = {-1, path, regular};
+    int errors[] = {EBADF, EBADF, ENOTDIR};
+    CHECK(mprotect(mapping, 8192, PROT_READ) == 0);
+    for (int descriptor = 0; descriptor < 3; ++descriptor) {
+        for (unsigned ci = 0; ci < sizeof(counts) / sizeof(counts[0]); ++ci) {
+            errno = 0;
+            CHECK(syscall(SYS_getdents64, descriptors[descriptor], mapping, counts[ci]) == -1);
+            CHECK(errno == errors[descriptor]);
+        }
+    }
+    CHECK(close(path) == 0 && close(regular) == 0);
+    if (guest) {
+        // The backend deliberately exposes synthetic proc directories as empty.
+        fd = open("/proc", O_RDONLY | O_DIRECTORY);
+        CHECK(fd == 0);
+        CHECK(syscall(SYS_getdents64, fd, mapping, 128) == 0);
+        CHECK(syscall(SYS_getdents64, fd, (void *)-1, 0) == 0);
+        CHECK(close(fd) == 0);
+    }
+    for (int i = 0; i < 8192; ++i) CHECK(mapping[i] == 0xa5);
+    CHECK(munmap(mapping, 8192) == 0);
+    puts("copyout errors and synthetic proc policy PASS");
+    return 0;
+}
+"#;
+
 #[path = "support/random_device_stream.rs"]
 mod random_device_stream;
 
@@ -10461,6 +10925,9 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "kvm_direct_and_tool_match_thp_disable_cell",
         "fstat_and_fstatfs_consume_low_descriptor_words_on_kvm",
         "fchdir_consumes_low_descriptor_words_on_kvm",
+        "getdents64_consumes_low_descriptor_words_on_kvm",
+        "getdents64_alias_resource_failure_stops_direct_guest",
+        "getdents64_alias_resource_failure_stops_tool_and_guest",
     ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--test-threads=1", "--nocapture"])
@@ -10477,6 +10944,21 @@ fn repair_prctl_required_kvm_is_not_optional() {
             String::from_utf8_lossy(&output.stderr).contains("requires usable /dev/kvm"),
             "{output:?}"
         );
+        if test.starts_with("getdents64_alias_") {
+            let optional = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test, "--exact", "--test-threads=1", "--nocapture"])
+                .env("LD_PRELOAD", &library)
+                .env_remove("REVERIE_REQUIRE_KVM")
+                .output()
+                .unwrap();
+            assert!(optional.status.success(), "{optional:?}");
+            assert!(
+                String::from_utf8_lossy(&optional.stderr)
+                    .contains(&format!("skipping {test}: cannot open /dev/kvm")),
+                "{optional:?}"
+            );
+            eprintln!("device-denial contract {test}: required=101 optional=0");
+        }
     }
 }
 
@@ -17953,6 +18435,195 @@ int main(int argc, char **argv) {
         assert_eq!(
             stderr, native.stderr,
             "tool_owned={tool_owned} repetition={repetition}"
+        );
+    }
+}
+
+#[test]
+fn getdents64_consumes_low_descriptor_words_on_kvm() {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    const TEST: &str = "getdents64_consumes_low_descriptor_words_on_kvm";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let primary = directory.0.join("getdents-primary");
+    let decoy = directory.0.join("getdents-decoy");
+    std::fs::create_dir(&primary).unwrap();
+    std::fs::create_dir(&decoy).unwrap();
+    std::fs::create_dir(primary.join("nested")).unwrap();
+    let regular = primary.join("alpha");
+    std::fs::write(&regular, b"alpha\n").unwrap();
+    std::fs::write(primary.join("beta-long"), b"beta\n").unwrap();
+    std::fs::write(decoy.join("decoy-only"), b"decoy\n").unwrap();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "getdents64-fd-width",
+        include_str!("fixtures/getdents64_fd_width.c"),
+        &["-std=c11", "-Wall", "-Wextra", "-Werror"],
+    );
+
+    let proc_path_stdin = || {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open("/proc")
+            .unwrap()
+    };
+    let mut common = String::from("getdents64 inherited-proc-opath fd=301 identity=preserved\n");
+    for fd in [0, 3, 257] {
+        for upper in [
+            0_u64,
+            1_u64 << 32,
+            1_u64 << 63,
+            0x5a5a_5a5a_0000_0000,
+            0xffff_ffff_0000_0000,
+        ] {
+            let names = if fd == 257 {
+                ".,..,decoy-only"
+            } else {
+                ".,..,alpha,beta-long,nested"
+            };
+            common.push_str(&format!(
+                "getdents64 fd={fd} upper={upper:016x} exact={names}\n"
+            ));
+        }
+    }
+    common.push_str("getdents64 error-order rows=500 buffers=unchanged\n");
+    let start = std::time::Instant::now();
+    let native = std::process::Command::new("timeout")
+        .args(["--kill-after=2s", "10s"])
+        .arg(&executable)
+        .arg("native")
+        .args([&primary, &decoy, &regular])
+        .stdin(std::process::Stdio::from(proc_path_stdin()))
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "native fixture failed: {native:?}");
+    // Parse exactly three ordered, fixed-width native cookie vectors. Do not
+    // strip or normalize output: the complete native and guest byte comparisons
+    // below also reject extra, missing, duplicate, or misplaced rows.
+    let native_text = std::str::from_utf8(&native.stdout).unwrap();
+    let mut native_rows = native_text
+        .strip_prefix(common.as_str())
+        .unwrap()
+        .split('\n');
+    for fd in [0, 3, 257] {
+        let row = native_rows.next().unwrap();
+        let prefix = format!("getdents64 short-count-cookies fd={fd} ");
+        let fields: Vec<_> = row
+            .strip_prefix(prefix.as_str())
+            .unwrap()
+            .split(' ')
+            .collect();
+        assert_eq!(fields.len(), 3, "native cookie vector for fd {fd}");
+        let mut cookies = [0_u64; 3];
+        for (index, label) in ["count0=", "count1=", "count23="].into_iter().enumerate() {
+            let value = fields[index].strip_prefix(label).unwrap();
+            assert_eq!(value.len(), 16, "native {label} cookie width for fd {fd}");
+            assert!(
+                value
+                    .bytes()
+                    .all(|byte| { byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) })
+            );
+            cookies[index] = u64::from_str_radix(value, 16).unwrap();
+            assert!(cookies[index] <= i64::MAX as u64);
+        }
+        common.push_str(&format!(
+            "getdents64 short-count-cookies fd={fd} count0={:016x} count1={:016x} count23={:016x}\n",
+            cookies[0], cookies[1], cookies[2]
+        ));
+        let cursor_row = format!(
+            "getdents64 cursor fd={fd} rows=80 short=EINVAL fault=unchanged \
+             dup=shared rewind=fresh eof=zero"
+        );
+        assert_eq!(native_rows.next(), Some(cursor_row.as_str()));
+        common.push_str(&cursor_row);
+        common.push('\n');
+    }
+    common.push_str("getdents64 canonical-count boundary=16777216,16777217 guards=unchanged\n");
+    // The controlled directories have one common native/KVM oracle. Synthetic
+    // proc deliberately differs; require its exact policy row separately.
+    let native_expected = format!(
+        "{common}getdents64 policy=native-proc-opath open=success\n\
+         getdents64 policy=native-proc rows=100 records-and-errors checked\n\
+         getdents64 checked calls=874\n"
+    );
+    let guest_expected = format!(
+        "{common}getdents64 policy=synthetic-proc-opath open=EINVAL\n\
+         getdents64 policy=synthetic-proc rows=100 zero-before-buffer unchanged\n\
+         getdents64 checked calls=874\n"
+    );
+    assert_eq!(native.stdout, native_expected.as_bytes());
+    assert!(native.stderr.is_empty(), "{native:?}");
+    eprintln!(
+        "getdents64 native calls=874 seconds={} stdout={}",
+        start.elapsed().as_secs_f64(),
+        String::from_utf8_lossy(&native.stdout)
+    );
+
+    let image = std::fs::read(&executable).unwrap();
+    for (tool_owned, repetition) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
+        let start = std::time::Instant::now();
+        let mut backend =
+            KvmBackend::new_with_stdin(256 * 1024 * 1024, Some(proc_path_stdin())).unwrap();
+        backend
+            .install_static_elf_with_context(
+                &image,
+                &[
+                    executable.to_str().unwrap(),
+                    "kvm",
+                    primary.to_str().unwrap(),
+                    decoy.to_str().unwrap(),
+                    regular.to_str().unwrap(),
+                ],
+                &["PATH=/usr/bin:/bin"],
+                &directory.0,
+            )
+            .unwrap();
+        // Getdents64's typed Tool argument is u32, so reinjection already
+        // narrows it. The direct runs must independently catch the raw-register
+        // decoder defect; successful Tool runs alone cannot establish that.
+        let (code, stdout, stderr, tool_calls) = if tool_owned {
+            let (log, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )
+            .unwrap();
+            let calls = log
+                .entries()
+                .iter()
+                .filter(|entry| entry.name == "getdents64")
+                .count();
+            (code, stdout, stderr, Some(calls))
+        } else {
+            let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+            (code, stdout, stderr, None)
+        };
+        assert_eq!(
+            code,
+            0,
+            "tool_owned={tool_owned} repetition={repetition} stdout={} stderr={}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(
+            stdout,
+            guest_expected.as_bytes(),
+            "tool_owned={tool_owned} repetition={repetition}"
+        );
+        assert!(
+            stderr.is_empty(),
+            "tool_owned={tool_owned} repetition={repetition}: {stderr:?}"
+        );
+        if let Some(calls) = tool_calls {
+            assert_eq!(calls, 874, "actual getdents64 Tool callbacks");
+        }
+        eprintln!(
+            "getdents64 tool_owned={tool_owned} repetition={repetition} \
+             calls=874 tool_calls={tool_calls:?} seconds={} stdout={}",
+            start.elapsed().as_secs_f64(),
+            String::from_utf8_lossy(&stdout)
         );
     }
 }
