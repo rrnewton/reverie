@@ -18582,9 +18582,9 @@ fn getdents64_consumes_low_descriptor_words_on_kvm() {
                 &directory.0,
             )
             .unwrap();
-        // Getdents64's typed Tool argument is u32, so reinjection already
-        // narrows it. The direct runs must independently catch the raw-register
-        // decoder defect; successful Tool runs alone cannot establish that.
+        // StraceTool reinjects the syscall's unchanged raw arguments; typed
+        // getters do not rewrite their storage. Both modes therefore exercise
+        // high descriptor bits, with Tool callback counts checked separately.
         let (code, stdout, stderr, tool_calls) = if tool_owned {
             let (log, code, stdout, stderr) = futures::executor::block_on(
                 backend.run_static_elf_with_tool::<StraceTool>((), true),
