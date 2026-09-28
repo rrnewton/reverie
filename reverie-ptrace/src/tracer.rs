@@ -773,6 +773,16 @@ async fn finish_ordinary_terminal(
                         wait = stopped.wait_owned();
                         continue;
                     }
+                    // An exit stop reaches this ordinary wait only if it was
+                    // queued: by a synchronous wait, or by the notifier for a
+                    // second exit stop under this PID with no Exec between
+                    // (a non-leader exec's thread that a fatal signal killed
+                    // before its exec stop). It is resumed like the first;
+                    // only the actual terminal status settles the path.
+                    #[cfg(test)]
+                    record_fatal_phase_for_test(|| {
+                        format!("finish queued exit stop: tid={}", stopped.pid())
+                    });
                     break Ok(stopped);
                 }
             }
@@ -6906,15 +6916,70 @@ mod tests {
             .filter(|(pid, _)| *pid == root)
             .cloned()
             .collect();
-        assert_eq!(
-            leader_resumes,
-            vec![(root, Ok(()))],
-            "the terminal path resumed the leader's non-exit stop"
-        );
         let (records, omitted) = FATAL_REAP_CHRONOLOGY
             .with(|slot| slot.borrow().clone())
             .expect("chronology installed");
         assert_eq!(omitted, 0, "chronology truncated: {records:?}");
+        // The group SIGKILL races the exec thread's de_thread. If it lands
+        // first, that thread dies under its former TID and the leader reports
+        // one exit stop. If it lands after de_thread gave the thread the
+        // leader's PID but before its exec stop, the thread skips that stop
+        // and reports a second actual exit stop under the leader's PID, with
+        // no Exec between. The notifier queues it, the terminal path resumes
+        // it, and the former TID's owner is retired as lost. Either way no
+        // non-exit stop is resumed; each exit stop is resumed exactly once.
+        let queued_exit = format!("finish queued exit stop: tid={root}");
+        let lost: Vec<&String> = records
+            .iter()
+            .filter(|record| record.starts_with("lost former retired: tid="))
+            .collect();
+        let queued = records
+            .iter()
+            .filter(|record| **record == queued_exit)
+            .count();
+        // Shown by --show-output: which interleaving this run exercised.
+        eprintln!("leader exit stops queued behind the first: {queued}");
+        match queued {
+            0 => {
+                assert_eq!(
+                    leader_resumes,
+                    vec![(root, Ok(()))],
+                    "the terminal path resumed the leader's non-exit stop: {records:?}"
+                );
+                assert!(
+                    lost.is_empty(),
+                    "former lost with one exit stop: {records:?}"
+                );
+            }
+            1 => {
+                assert_eq!(
+                    leader_resumes,
+                    vec![(root, Ok(())), (root, Ok(()))],
+                    "the leader's two exit stops were not each resumed once: {records:?}"
+                );
+                assert_eq!(
+                    lost.len(),
+                    1,
+                    "second exit stop, no lost former: {records:?}"
+                );
+                let former = lost[0]
+                    .strip_prefix("lost former retired: tid=")
+                    .unwrap()
+                    .parse::<i32>()
+                    .unwrap();
+                assert_ne!(former, root.as_raw());
+                assert!(
+                    resumes
+                        .results
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|(pid, _)| pid.as_raw() != former),
+                    "the lost former's TID was resumed: {records:?}"
+                );
+            }
+            count => panic!("{count} queued exit stops for the leader: {records:?}"),
+        }
         let prefix = format!("finish getevent: tid={root},");
         assert_eq!(
             records
