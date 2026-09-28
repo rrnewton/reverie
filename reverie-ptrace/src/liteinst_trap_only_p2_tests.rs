@@ -229,6 +229,17 @@ fn notify_parent(pid: Pid) {
 /// kill has taken effect once the thread is a zombie or gone, or is in a
 /// tracing stop again with its private SIGKILL dequeued (the process-wide
 /// bit stays set until the process is reaped).
+///
+/// Each field is a separate read of `/proc/<tid>/status`, so the reads are
+/// ordered to be sound across the gaps: the process-wide bit first (the kill
+/// has been sent; the kernel sets both bits under one lock), then the private
+/// bit (clear now means dequeued, so the thread has left the stop it was in),
+/// then the state (a tracing stop now must be the exit stop). Reading the
+/// state first, as a single read of the file also does, can pair the old
+/// stop's `t` with the dequeued bits of a thread that is still running to its
+/// exit stop, and the parked call then races the exit again; measured as a
+/// final-resume record present in one backend's run and absent in the
+/// other's, in either direction, in 2 of 25 runs of the P2 subset.
 fn signal_arrived(tid: Pid, signal: i32) -> bool {
     let state = proc_status_field(tid, "State:");
     if state
@@ -244,9 +255,11 @@ fn signal_arrived(tid: Pid, signal: i32) -> bool {
             .is_some_and(|mask| mask & bit != 0)
     };
     if signal == libc::SIGKILL {
-        return state.is_some_and(|state| state.starts_with('t'))
-            && pending("ShdPnd:")
-            && !pending("SigPnd:");
+        return pending("ShdPnd:")
+            && !pending("SigPnd:")
+            && proc_status_field(tid, "State:").is_some_and(|state| {
+                state.starts_with('t') || state.starts_with('Z') || state.starts_with('X')
+            });
     }
     pending("SigPnd:") || pending("ShdPnd:")
 }
