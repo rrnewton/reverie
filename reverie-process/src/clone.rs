@@ -10,10 +10,20 @@ use syscalls::Errno;
 
 use super::Pid;
 
-pub(super) const CHILD_STACK_SIZE: usize = 2 * 1024 * 1024;
+/// Usable bytes in a cloned child's stack, excluding the guard pages.
+///
+/// The in-container tracer's main thread runs on this stack, including the
+/// tokio `block_on` frames and everything the tool does underneath them, so it
+/// gets what an ordinary main thread gets: 8 MiB is the default
+/// `RLIMIT_STACK`. 2 MiB was measured to be too small for a debug build of
+/// Hermit's LiteInst statistics path behind `--backend-engagement-json`: with
+/// the guard pages below, it faults in them; a core taken before they existed
+/// showed all 0x200000 bytes in use, about 1.1 MB in Hermit's own async frames.
+/// Only the pages the child actually touches are backed by memory.
+pub(super) const CHILD_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 // Supported Linux clone ABIs grow the stack down. Keep several inaccessible
-// pages below the usable stack, without reducing its existing 2 MiB capacity.
+// pages below the usable stack; they are in addition to CHILD_STACK_SIZE.
 const GUARD_PAGES: usize = 4;
 
 pub(super) struct ChildStack {
@@ -257,6 +267,20 @@ mod tests {
         assert_eq!(size, CHILD_STACK_SIZE);
         assert_eq!(stack.top() as usize % 16, 0);
         assert!(stack.guard_len >= unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize);
+    }
+
+    #[test]
+    fn default_child_stack_is_a_main_thread_stack() {
+        let mut stack = child_stack().unwrap();
+        let size = stack.top() as usize - stack.bottom() as usize;
+        assert!(
+            size >= 8 * 1024 * 1024,
+            "the in-container tracer's main thread runs on the child stack and needs the \
+             8 MiB a main thread gets; 2 MiB was measured to overflow"
+        );
+        // The guard pages are added to the mapping, not carved out of the
+        // usable stack.
+        assert_eq!(stack.mapping_len, stack.guard_len + CHILD_STACK_SIZE);
     }
 
     #[test]
