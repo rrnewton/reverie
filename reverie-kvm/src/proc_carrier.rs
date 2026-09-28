@@ -336,11 +336,12 @@ impl ProcCarrierAuthority {
         Self::new()
     }
 
-    #[cfg(any(test, feature = "native-test-support"))]
+    #[cfg(test)]
     pub(crate) fn public_id(&self) -> [u8; 16] {
         self.public_id
     }
 
+    #[cfg(test)]
     pub(crate) fn selected_seals(&self) -> libc::c_int {
         self.profile.seals
     }
