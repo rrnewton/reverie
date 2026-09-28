@@ -658,3 +658,201 @@ fn committed_wait_failure_precedes_clean_parent_group_exit() {
         }
     }
 }
+
+#[test]
+fn direct_family_failure_precedes_ready_wait_without_consumption() {
+    for (ready_pid, failed_pid) in [(2, 3), (3, 2)] {
+        for mode in ["wait4", "waitid", "waitid-nowait"] {
+            let mut parent = executor();
+            let _ready = ready_family_child(&mut parent, ready_pid);
+            let failed_child = parent.fork_child(failed_pid, false, false).unwrap();
+            let failed_id = identity(&failed_child);
+            let mut failed_worker = failed_child.thread_child(10).unwrap();
+            let mut waiter = parent.thread_child(9).unwrap();
+            let registry = parent.signal_registry.clone();
+            assert!(registry.run_failure.lock().unwrap().upgrade().is_none());
+            let group = Arc::new(crate::vm::GuestThreadGroup::default());
+            let worker_group = group.clone();
+            let cause = Arc::new(crate::Error::GuestClock(
+                "direct child worker failure".to_owned(),
+            ));
+            let worker_cause = cause.clone();
+            let (committed, observed) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let handle = std::thread::spawn(move || {
+                // Use the real Direct outcome/retirement path, without a Tool
+                // RunFailure. Hold physical return after the family commit.
+                let result: crate::Result<(reverie::ExitStatus, Vec<u8>, Vec<u8>)> =
+                    crate::vm::finish_host_worker_outcome(
+                        None,
+                        reverie::Pid::from_raw(10),
+                        Err(crate::Error::SharedFailure(worker_cause)),
+                        |failed| {
+                            assert!(failed);
+                            failed_worker.retire_failed_thread();
+                            worker_group.record_worker_failure(10);
+                            committed.send(()).unwrap();
+                            released.recv().unwrap();
+                        },
+                    );
+                result
+            });
+            group.add_worker_handle(10, handle);
+            observed
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("worker did not commit its family failure");
+            let memory = GuestMemory::new(0, 8192).unwrap();
+            memory.map_user_permissions(0, 8192, true, true).unwrap();
+            memory.enable_user_access();
+            memory.write_raw(0, &[0xa5; 8192]).unwrap();
+            let options = libc::WEXITED
+                | if mode == "waitid-nowait" {
+                    libc::WNOWAIT
+                } else {
+                    0
+                };
+            let request = if mode == "wait4" {
+                SyscallRequest::new(libc::SYS_wait4 as u64, [u64::MAX, 0x100, 0, 0x400, 0, 0])
+            } else {
+                SyscallRequest::new(
+                    libc::SYS_waitid as u64,
+                    [libc::P_ALL as u64, 0, 0x100, options as u64, 0x400, 0],
+                )
+            };
+            let family_state = || {
+                let family = registry.family.lock().unwrap();
+                (
+                    family.direct_children.clone(),
+                    family.terminal.clone(),
+                    family
+                        .wait_publications
+                        .iter()
+                        .map(|(key, publication)| (*key, publication.parent, publication.phase))
+                        .collect::<Vec<_>>(),
+                    family.wait_receipts.len(),
+                    family.wait_failed,
+                    family.wait_failure_notified,
+                )
+            };
+            let before = family_state();
+            let result = waiter.execute_checked(&request, &memory);
+            let after = family_state();
+            let mut actual = [0; 8192];
+            memory.read_raw(0, &mut actual).unwrap();
+            // Always release and collect the real worker before asserting the
+            // wait result, so the old selector's expected failure cannot strand it.
+            release.send(()).unwrap();
+            group.join_workers();
+            let terminal = group.teardown_result().unwrap_err();
+            assert!(terminal.retains_primary(&cause));
+            assert!(group.teardown_result().unwrap_err().retains_primary(&cause));
+            assert!(!group.has_worker_handles());
+            assert!(
+                matches!(&result, Err(crate::Error::RunAborted)),
+                "{ready_pid}/{failed_pid} {mode}: {result:?}"
+            );
+            assert_eq!(
+                actual, [0xa5; 8192],
+                "failure must precede every output write"
+            );
+            assert_eq!(
+                after, before,
+                "failure must not change eligibility or receipts"
+            );
+            assert_eq!(before.3, 0);
+            assert!(
+                !before.4 && !before.5,
+                "this is the Direct family-failure path"
+            );
+            assert!(waiter.state.consumed_child_wait.is_none());
+            assert!(parent.state.children.has_ready(Some(ready_pid)).unwrap());
+            {
+                let family = registry.family.lock().unwrap();
+                assert_eq!(
+                    family.terminal[&process_key(failed_id)],
+                    ProcessFamilyExit::Failed
+                );
+                assert_eq!(
+                    family.wait_publications[&process_key(failed_id)].phase,
+                    WaitPhase::Failed
+                );
+            }
+
+            // Exact-PID filtering is preserved: an unrelated failed child does
+            // not change this narrowly selected child's wait contract.
+            let exact = if mode == "wait4" {
+                SyscallRequest::new(
+                    libc::SYS_wait4 as u64,
+                    [ready_pid as u64, 0x100, 0, 0x400, 0, 0],
+                )
+            } else {
+                SyscallRequest::new(
+                    libc::SYS_waitid as u64,
+                    [
+                        libc::P_PID as u64,
+                        ready_pid as u64,
+                        0x100,
+                        options as u64,
+                        0x400,
+                        0,
+                    ],
+                )
+            };
+            assert_eq!(
+                waiter.execute_checked(&exact, &memory).unwrap(),
+                if mode == "wait4" {
+                    i64::from(ready_pid)
+                } else {
+                    0
+                }
+            );
+            let mut expected = [0xa5; 8192];
+            if mode == "wait4" {
+                expected[0x100..0x104].copy_from_slice(&(23_i32 << 8).to_le_bytes());
+            } else {
+                for (offset, value) in [0, 4, 8, 16, 20, 24].into_iter().zip([
+                    libc::SIGCHLD,
+                    0,
+                    libc::CLD_EXITED,
+                    ready_pid,
+                    0,
+                    23,
+                ]) {
+                    expected[0x100 + offset..0x104 + offset].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            expected[0x400..0x400 + std::mem::size_of::<libc::rusage>()].fill(0);
+            memory.read_raw(0, &mut actual).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                parent.state.children.has_ready(Some(ready_pid)).unwrap(),
+                mode == "waitid-nowait"
+            );
+            assert!(waiter.state.consumed_child_wait.is_none());
+            assert!(registry.family.lock().unwrap().wait_receipts.is_empty());
+        }
+    }
+
+    // Completing the scan must not replace the first Ready with a later one.
+    let mut parent = executor();
+    let _later = ready_family_child(&mut parent, 3);
+    let _first = ready_family_child(&mut parent, 2);
+    let memory = GuestMemory::new(0, 4096).unwrap();
+    let ChildWaitSelection::Ready(peek) = parent.state.children.select(None, false, true).unwrap()
+    else {
+        panic!("two ready children must produce a selection");
+    };
+    assert_eq!(peek.child.tgid.as_raw(), 2);
+    assert!(peek.receipt.is_none());
+    assert_eq!(
+        parent
+            .execute_checked(
+                &SyscallRequest::new(libc::SYS_wait4 as u64, [u64::MAX, 0, 0, 0, 0, 0]),
+                &memory
+            )
+            .unwrap(),
+        2
+    );
+    assert!(parent.state.children.has_ready(Some(3)).unwrap());
+    assert!(!parent.state.children.has_ready(Some(2)).unwrap());
+}

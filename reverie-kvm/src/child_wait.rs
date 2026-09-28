@@ -584,8 +584,9 @@ impl ProcessSignalRegistry {
                     WaitPhase::Pending => pending = true,
                     WaitPhase::PublicationFenced => fenced = true,
                     WaitPhase::Ready => {
-                        ready = Some(*child);
-                        break;
+                        // Keep the first ready child, but inspect every matching
+                        // publication for a committed failure before consuming.
+                        ready.get_or_insert(*child);
                     }
                     WaitPhase::Failed => return Err(crate::Error::RunAborted),
                     WaitPhase::Consumed | WaitPhase::Retired => {}
