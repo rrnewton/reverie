@@ -395,6 +395,22 @@ fn signal_mask_bit(sig: Signal) -> u64 {
     1u64 << (sig as i32 - 1)
 }
 
+/// The signal mask the kernel dequeues under for the stopped thread `tid`
+/// (`task->blocked`, procfs `SigBlk`).
+///
+/// `PTRACE_GETSIGMASK` reports the saved mask instead while a mask-swapping
+/// syscall's restore is pending (`TIF_RESTORE_SIGMASK`), so it cannot tell
+/// whether that syscall's temporary mask blocks a signal.
+fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
+        .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigBlk:"))
+        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+        .ok_or_else(|| Errno::EPROTO.into())
+}
+
 /// Whether `nr` installs a temporary signal mask that the kernel restores only
 /// after signal handling (`TIF_RESTORE_SIGMASK`). A ptrace mask write discards
 /// that pending restore, so a signal stopping such a syscall must not be
@@ -7270,20 +7286,41 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   has run in between, so the kernel then delivers the signals in their
     ///   original order at the next resume, each through a signal-delivery
     ///   stop that the main loop reports to `Tool::handle_signal_event`, just
-    ///   as it would after the syscall returned in place. A later injection
-    ///   in the same callback finds them pending before its `syscall`, the
-    ///   interrupted case below. No signal is taken into `pending_signal`,
-    ///   whose single slot could otherwise be overwritten.
+    ///   as it would after the syscall returned in place. No signal is taken
+    ///   into `pending_signal`, whose single slot could otherwise be
+    ///   overwritten.
     ///
-    ///   The one exception is a syscall that swaps in a temporary signal mask
-    ///   (`swaps_signal_mask`): a ptrace mask write would discard the saved
-    ///   mask the kernel restores after signal handling. Such a signal is
-    ///   held in `pending_signal` instead, and the step fails closed if the
-    ///   slot is already occupied.
+    ///   This does not reproduce native delivery when the same callback
+    ///   injects another syscall: natively the handlers would run between
+    ///   the two syscalls and the second would succeed, but here the
+    ///   requeued signals are still pending before the next injected
+    ///   `syscall`, which is then reported as interrupted (the case below).
+    ///   With `SA_RESTART` the guest's syscall is restarted and the callback
+    ///   runs again, including injections that already completed. This
+    ///   limitation predates the requeueing.
     ///
-    /// A genuine signal returning to this stop is a protocol violation (the
-    /// kernel cannot dequeue a blocked signal, and a queued step SIGTRAP ends
-    /// the loop) and fails closed rather than stepping forever.
+    ///   The signal may already be blocked: `dequeue_synchronous_signal`
+    ///   returns the first queued synchronous-class entry without consulting
+    ///   the mask whenever any unblocked synchronous signal (the step SIGTRAP
+    ///   among them) is pending. Such a signal is resumed without touching
+    ///   the mask, so `ptrace_signal` requeues it still blocked, as it does
+    ///   for any tracer (which then sees it again whenever the quirk next
+    ///   dequeues it); recording it for the final unmask would unblock a
+    ///   signal the guest itself blocked. After a mask-swapping syscall the
+    ///   temporary mask decides, read through procfs because
+    ///   `PTRACE_GETSIGMASK` reports the saved mask while its restore is
+    ///   pending.
+    ///
+    ///   The one exception is an unblocked signal after a syscall that swaps
+    ///   in a temporary signal mask (`swaps_signal_mask`): a ptrace mask
+    ///   write would discard the saved mask the kernel restores after signal
+    ///   handling. Such a signal is held in `pending_signal` instead, and the
+    ///   step fails closed if the slot is already occupied.
+    ///
+    /// The same signal returning to this stop is a protocol violation (a
+    /// standard signal is queued at most once, a requeued entry lands behind
+    /// the step SIGTRAP, and the step SIGTRAP ends the loop) and fails closed
+    /// rather than stepping forever.
     ///
     /// A genuine signal-delivery stop before the `syscall` executed is returned
     /// for `status_to_result` to report as an interrupted syscall. During
@@ -7292,8 +7329,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn step_private_syscall(&mut self, task: Stopped, nr: Sysno) -> Result<Wait, TraceError> {
         let after_syscall = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
         // Signals returned to the kernel queue during this step, still blocked
-        // by the tracer.
+        // by the tracer. Only these bits are lifted at the final stop.
         let mut requeued: u64 = 0;
+        // Every signal resumed or held at a stop after the `syscall`,
+        // including those the guest already blocked.
+        let mut returned: u64 = 0;
         let mut running = self.step_stopped(task, None)?;
         loop {
             let wait = running.next_state().await?;
@@ -7322,16 +7362,44 @@ impl<L: Tool + 'static> TracedTask<L> {
                 running = self.step_stopped(stopped, None)?;
             } else if stopped.getregs()?.ip() == after_syscall {
                 let bit = signal_mask_bit(sig);
-                if requeued & bit != 0 {
+                if returned & bit != 0 {
                     tracing::error!(
-                        "[scheduler/tool] (pid = {}) {} stopped injected {} again after it was requeued blocked",
+                        "[scheduler/tool] (pid = {}) {} stopped injected {} again after it was returned",
                         stopped.pid(),
                         sig,
                         nr
                     );
                     return Err(Errno::EPROTO.into());
                 }
-                if swaps_signal_mask(nr) {
+                returned |= bit;
+                // The mask in force, and a mask to write back if not. A
+                // mask-swapping syscall's temporary mask is visible only
+                // through procfs and must not be written.
+                let (blocked, mask) = if swaps_signal_mask(nr) {
+                    (blocked_signal_mask(stopped.pid())?, None)
+                } else {
+                    let mask = stopped.getsigmask()?;
+                    (mask, Some(mask))
+                };
+                if blocked & bit != 0 {
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) requeueing already-blocked {} delivered after injected {} completed",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    running = self.step_stopped(stopped, sig)?;
+                } else if let Some(mask) = mask {
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) requeueing {} delivered after injected {} completed",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    stopped.setsigmask(mask | bit)?;
+                    requeued |= bit;
+                    running = self.step_stopped(stopped, sig)?;
+                } else {
                     if let Some(held) = self.pending_signal {
                         tracing::error!(
                             "[scheduler/tool] (pid = {}) cannot hold {} delivered after injected {} completed: {} is already held",
@@ -7350,17 +7418,6 @@ impl<L: Tool + 'static> TracedTask<L> {
                     );
                     self.pending_signal = Some(sig);
                     running = self.step_stopped(stopped, None)?;
-                } else {
-                    tracing::debug!(
-                        "[scheduler/tool] (pid = {}) requeueing {} delivered after injected {} completed",
-                        stopped.pid(),
-                        sig,
-                        nr
-                    );
-                    let mask = stopped.getsigmask()?;
-                    stopped.setsigmask(mask | bit)?;
-                    requeued |= bit;
-                    running = self.step_stopped(stopped, sig)?;
                 }
             } else {
                 if requeued != 0 {
