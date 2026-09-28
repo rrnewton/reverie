@@ -273,6 +273,34 @@ pub(crate) fn step_count_for_test(tid: Pid) -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
+static STEPPED_SECCOMP_GLOBAL: std::sync::Mutex<std::collections::BTreeMap<i32, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Test-only: counts, per tid and on either backend, every timer
+/// single-step that ended at a seccomp stop, so that a test Tool can tell a
+/// stepped syscall entry from any other.
+#[cfg(test)]
+pub(crate) fn record_stepped_seccomp_for_test(tid: Pid) {
+    *STEPPED_SECCOMP_GLOBAL
+        .lock()
+        .unwrap()
+        .entry(tid.as_raw())
+        .or_default() += 1;
+}
+
+/// Test-only: the number of timer single-steps of `tid` so far that ended
+/// at a seccomp stop.
+#[cfg(test)]
+pub(crate) fn stepped_seccomp_count_for_test(tid: Pid) -> u64 {
+    STEPPED_SECCOMP_GLOBAL
+        .lock()
+        .unwrap()
+        .get(&tid.as_raw())
+        .copied()
+        .unwrap_or(0)
+}
+
 impl<L: Tool + 'static> TracedTask<L> {
     /// Publishes a trap-only failure as the run's failure and returns the
     /// error that unwinds the current handler.
@@ -335,32 +363,155 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await
                 .map(TrapOnlyRoute::Done);
         }
-        // H0: the registers the original `syscall` would have produced.
+        // H0: the registers the original `syscall` would have produced. A
+        // `syscall` executed under a timer single-step saves RFLAGS with TF set
+        // into r11, and plain ptrace's timer clears that TF again at the step's
+        // seccomp stop (`remove_stepping_trap_flag` in timer.rs), so r11 is
+        // `eflags` whether or not the entry was stepped (O4, G).
+        let stepped = std::mem::take(
+            &mut self
+                .trap_only
+                .as_mut()
+                .expect("trap-only routing")
+                .stepped_entry,
+        );
         regs.rcx = regs.rip;
         regs.r11 = regs.eflags;
         regs.orig_rax = regs.orig_rax as u32 as i32 as i64 as u64;
         task.setregs(&regs)?;
-        let nr = Sysno::from(regs.orig_rax as i32);
-        let subscribed = self
-            .global_state
-            .subscriptions
-            .iter_syscalls()
-            .any(|subscribed| subscribed == nr);
-        if !subscribed || nr == Sysno::rt_sigreturn {
-            // Never resume an I386 stop with a live number: fail closed.
-            return Err(self.trap_only_failure(
-                "trap-only seccomp routing",
-                TrapOnlyFailure::AllowClassUnsupported {
-                    site,
-                    nr: regs.orig_rax as i64,
-                },
-            ));
+        match self.trap_only_decode(regs.orig_rax) {
+            Some(_) => {}
+            None if stepped => {
+                // Rule 4. `handle_timer` classifies this stop first; this is
+                // the backstop for any other route to a stepped entry.
+                return Err(self.trap_only_failure(
+                    "trap-only seccomp routing",
+                    TrapOnlyFailure::AllowClassInTimerStep {
+                        site,
+                        nr: regs.orig_rax as i64,
+                    },
+                ));
+            }
+            None => {
+                return self
+                    .trap_only_allow_class(task, regs, site)
+                    .await
+                    .map(TrapOnlyRoute::Done);
+            }
         }
         self.trap_only
             .as_mut()
             .expect("trap-only routing")
             .live_entry = Some(regs);
         Ok(TrapOnlyRoute::Patched(task))
+    }
+
+    /// The checked decode of a normalized patched-site number: `Some` for a
+    /// number plain ptrace's filter traces (a known syscall the tool
+    /// subscribes to, other than `rt_sigreturn`), and `None` for the Allow
+    /// class, which plain ptrace runs without a stop: `rt_sigreturn`, an
+    /// unsubscribed number, and any number the syscall table does not know
+    /// (a gap, a negative number, or one past the table).
+    fn trap_only_decode(&self, orig_rax: u64) -> Option<Sysno> {
+        let nr = Sysno::new(orig_rax as i64 as i32 as usize)?;
+        let subscribed = self
+            .global_state
+            .subscriptions
+            .iter_syscalls()
+            .any(|subscribed| subscribed == nr);
+        (subscribed && nr != Sysno::rt_sigreturn).then_some(nr)
+    }
+
+    /// O4 rule 3: an Allow-class number at a live patched site, outside a
+    /// timer step. Plain ptrace's filter runs it without a stop and without
+    /// a Tool event, so the tracer runs it through the masked hop without any
+    /// Tool dispatch, then restores the site (reading the write back) and
+    /// retires it as [`RetiredReason::AllowClass`].
+    async fn trap_only_allow_class(
+        &mut self,
+        task: Stopped,
+        view: libc::user_regs_struct,
+        site: u64,
+    ) -> Result<Wait, TraceError> {
+        // The run loop already counted this I386 stop, which plain ptrace
+        // never produces; the P2 comparator accounts for it explicitly.
+        #[cfg(test)]
+        if let Some(stats) = &self.global_state.backend_stats {
+            stats.mark_last_stop_internal(self.tid);
+        }
+        match self.trap_only_hop(task, view).await? {
+            HopOutcome::ExitStop(task) => {
+                let restored = self
+                    .trap_only
+                    .as_ref()
+                    .expect("trap-only routing")
+                    .lock()
+                    .restore_sites(
+                        &[nix_pid(self.tid)],
+                        &[(site, site.wrapping_add(2))],
+                        RetiredReason::AllowClass,
+                    );
+                match restored {
+                    Ok(1) => {}
+                    Ok(count) => {
+                        return Err(self.trap_only_fail(
+                            "trap-only allow-class restore",
+                            anyhow::anyhow!(
+                                "restored {count} sites for site {site:#x}, expected 1"
+                            ),
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(self.trap_only_fail("trap-only allow-class restore", error));
+                    }
+                }
+                #[cfg(test)]
+                self.trap_only
+                    .as_ref()
+                    .expect("trap-only routing")
+                    .shared
+                    .hooks
+                    .record(format!(
+                        "allow-class site={site:#x} nr={}",
+                        view.orig_rax as i64
+                    ));
+                self.resume_stopped(task, None)?.next_state().await
+            }
+            HopOutcome::Other(wait) => Ok(wait),
+        }
+    }
+
+    /// O4 rule 4, called by `handle_timer` when a timer single-step ended at
+    /// a seccomp stop. An Allow-class number at a live patched site fails
+    /// closed with `TrapOnlyAllowClassInTimerStep`: under plain ptrace that
+    /// step runs the syscall without a stop and ends after it. Any other
+    /// patched-site number is re-dispatched as usual, with H0 told that the
+    /// entry was stepped.
+    pub(super) fn trap_only_stepped_seccomp(&mut self, task: &Stopped) -> Result<(), TraceError> {
+        if self.trap_only.is_none() || task.getevent()? != TAG_I386 as i64 {
+            return Ok(());
+        }
+        let regs = task.getregs()?;
+        let site = regs.rip.wrapping_sub(2);
+        let trap_only = self.trap_only.as_ref().expect("checked above");
+        if is_reserved_site(site) || !trap_only.lock().is_live(site) {
+            return Ok(());
+        }
+        let nr = regs.orig_rax as u32 as i32 as i64 as u64;
+        if self.trap_only_decode(nr).is_none() {
+            return Err(self.trap_only_failure(
+                "trap-only timer step",
+                TrapOnlyFailure::AllowClassInTimerStep {
+                    site,
+                    nr: nr as i64,
+                },
+            ));
+        }
+        self.trap_only
+            .as_mut()
+            .expect("checked above")
+            .stepped_entry = true;
+        Ok(())
     }
 
     /// Removes and returns the live patched-site entry, if any.
@@ -479,6 +630,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             (SLOT, TAG_SLOT as i64, SLOT_RET)
         };
 
+        // rt_sigreturn legitimately leaves the hop somewhere else: at the
+        // signal frame's saved rip, which H4 must then leave alone (the frame's
+        // registers win, as under ptrace). The kernel reads the frame at the
+        // same rsp the hop runs with.
+        let sigreturn_rip = if nr == Sysno::rt_sigreturn as u64 {
+            sigreturn_frame_rip(nix_pid(self.tid), view.rsp)
+        } else {
+            None
+        };
+
         // H1: block everything, skip the int 0x80, and run `syscall` at SLOT
         // (or at the restored site).
         let saved_mask = task.getsigmask()?;
@@ -536,11 +697,39 @@ impl<L: Tool + 'static> TracedTask<L> {
         match wait {
             Wait::Stopped(task, Event::Syscall) => {
                 let mut regs = task.getregs()?;
+                #[cfg(test)]
+                if self.trap_only.as_ref().is_some_and(|trap_only| {
+                    trap_only
+                        .shared
+                        .hooks
+                        .displace_hop_exit_rip
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                }) {
+                    regs.rip = regs.rip.wrapping_add(1);
+                }
                 if regs.rip == expected_rip {
                     regs.rip = view.rip;
                     regs.rcx = view.rcx;
                     regs.r11 = view.r11;
                     task.setregs(&regs)?;
+                } else if sigreturn_rip != Some(regs.rip) {
+                    // Even a restarting syscall's exit stop still has rip at
+                    // the return address (the rewind happens later, at signal
+                    // delivery), and exec is forwarded before its exit stop.
+                    return Err(self.trap_only_failure(
+                        "trap-only hop",
+                        TrapOnlyFailure::HopExitRip {
+                            site,
+                            nr: nr as i64,
+                            rip: regs.rip,
+                            expected: match sigreturn_rip {
+                                Some(frame) => {
+                                    format!("{expected_rip:#x} or frame rip {frame:#x}")
+                                }
+                                None => format!("{expected_rip:#x}"),
+                            },
+                        },
+                    ));
                 }
                 Ok(HopOutcome::ExitStop(task))
             }
@@ -575,8 +764,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             HopOutcome::Other(Wait::Stopped(parent, Event::NewChild(op, child))) => {
                 let ret = child.pid().as_raw() as i64;
+                // Restore the site's view in the parent as ptrace's exact
+                // inject leaves it (rip S+2, the arguments, orig_rax, rcx and
+                // r11) except rax, which the kernel writes when the call
+                // returns. Passing the view as the parent context would also
+                // write the child's id into rax, and a vfork parent, still in
+                // the call at its vfork-done stop after `handle_new_task`'s
+                // step, would show that id where ptrace shows the entry's
+                // -ENOSYS. The child still gets the view as its context.
+                super::restore_context(&parent, view, None, false)?;
                 let _ = self
-                    .dispatch_new_task(op, parent, child, Some(view), None)
+                    .dispatch_new_task(op, parent, child, None, Some(view))
                     .await?;
                 Ok(Ok(ret))
             }
@@ -914,6 +1112,23 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
     }
+}
+
+/// The saved instruction pointer of the `rt_sigframe` an `rt_sigreturn` at
+/// stack pointer `rsp` restores, if readable. The kernel's frame starts one
+/// word below rsp (the handler's `ret` popped `pretcode`), so its
+/// `ucontext` is at rsp: `uc_flags` (8), `uc_link` (8) and `uc_stack` (24)
+/// precede `uc_mcontext`, whose rip is general register 16.
+fn sigreturn_frame_rip(tid: nix::unistd::Pid, rsp: u64) -> Option<u64> {
+    use std::os::unix::fs::FileExt;
+    const UC_MCONTEXT: u64 = 8 + 8 + 24;
+    const MCONTEXT_RIP: u64 = 16 * 8;
+    let address = rsp.checked_add(UC_MCONTEXT + MCONTEXT_RIP)?;
+    let mut bytes = [0u8; 8];
+    std::fs::File::open(format!("/proc/{tid}/mem"))
+        .and_then(|mem| mem.read_exact_at(&mut bytes, address))
+        .ok()?;
+    Some(u64::from_ne_bytes(bytes))
 }
 
 /// The site retirement reason for a guest install.
