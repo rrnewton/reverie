@@ -20,9 +20,14 @@
 //! loop that runs across the target. A Tool rearms its timer only in its
 //! callbacks, so a trap that cancelled the event would leave a guest that
 //! traps, and then spins, with no preemption at all. These tests check that
-//! the event fires exactly at its target. They pass whether the stepping
-//! takes a guest's trap for its step's or passes it on, as long as it counts
-//! the trap's instruction once.
+//! the event fires once, at its target. An event that an artificial signal
+//! delivers must fire exactly there. One that a PMU notification delivers
+//! fires past it if the processor raised the notification more than the skid
+//! margin late, which Reverie witnesses as a skid overshoot (see
+//! `reverie_ptrace::testing::assert_at_target_unless_witnessed`), so it may
+//! fire late only with a witness. They pass whether the stepping takes a
+//! guest's trap for its step's or passes it on, as long as it counts the
+//! trap's instruction once.
 //!
 //! Each guest makes the syscall at which the Tool requests the timer, then
 //! runs two loops with one conditional branch per round and the instructions
@@ -43,6 +48,7 @@ use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_ptrace::ret_without_perf;
+use reverie_ptrace::testing::assert_at_target_unless_witnessed;
 use reverie_ptrace::testing::check_fn_with_config;
 use serde::Deserialize;
 use serde::Serialize;
@@ -59,18 +65,28 @@ const PERF_RCBS: u64 = 30_000;
 /// instruction from there to the target is stepped.
 const LESS_RCBS: u64 = 15;
 
-/// The clock from the request to each timer event.
+/// The clock from the request to each timer event, and where each timer
+/// event found the guest.
 #[derive(Debug, Default)]
-struct TimerEvents(Mutex<Vec<u64>>);
+struct TimerEvents(Mutex<Vec<u64>>, Mutex<Vec<Place>>);
+
+/// The guest's instruction pointer at a timer event, and the address of the
+/// branch at which the guests that `between_loops!` runs expect it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct Place {
+    rip: u64,
+    second_loop_branch: u64,
+}
 
 #[reverie::global_tool]
 impl GlobalTool for TimerEvents {
-    type Request = u64;
+    type Request = (u64, Place);
     type Response = ();
     type Config = Schedule;
 
-    async fn receive_rpc(&self, _from: Pid, clock: u64) {
+    async fn receive_rpc(&self, _from: Pid, (clock, place): (u64, Place)) {
         self.0.lock().unwrap().push(clock);
+        self.1.lock().unwrap().push(place);
     }
 }
 
@@ -97,8 +113,10 @@ struct PreciseTimerTool;
 #[reverie::tool]
 impl Tool for PreciseTimerTool {
     type GlobalState = TimerEvents;
-    /// The clock at the request.
-    type ThreadState = u64;
+    /// The clock at the request, and the request's second argument, which a
+    /// guest that `between_loops!` runs sets to the address of its second
+    /// loop's branch.
+    type ThreadState = (u64, u64);
 
     /// The Tool also observes `getppid`, which the guests that test
     /// cancellation make.
@@ -115,7 +133,8 @@ impl Tool for PreciseTimerTool {
     ) -> Result<i64, Error> {
         match syscall.number() {
             Sysno::clock_getres => {
-                *guest.thread_state_mut() = guest.read_clock().unwrap();
+                let (_, args) = syscall.into_parts();
+                *guest.thread_state_mut() = (guest.read_clock().unwrap(), args.arg1 as u64);
                 let schedule = match guest.config().instructions {
                     None => TimerSchedule::Rcbs(guest.config().rcbs),
                     Some(instructions) => {
@@ -130,8 +149,18 @@ impl Tool for PreciseTimerTool {
     }
 
     async fn handle_timer_event<T: Guest<Self>>(&self, guest: &mut T) {
-        let clock = guest.read_clock().unwrap() - *guest.thread_state();
-        guest.send_rpc(clock).await;
+        let (request_clock, second_loop_branch) = *guest.thread_state();
+        let clock = guest.read_clock().unwrap() - request_clock;
+        let rip = guest.regs().await.rip;
+        guest
+            .send_rpc((
+                clock,
+                Place {
+                    rip,
+                    second_loop_branch,
+                },
+            ))
+            .await;
     }
 }
 
@@ -168,11 +197,13 @@ enum Between {
 /// `$before` rounds of a loop with one conditional branch each, then the
 /// given instructions, then `$after` more rounds. There is no conditional
 /// branch between the syscall and the loop, so the loop's branches are the
-/// first after the request.
+/// first after the request. The syscall's second argument is the address of
+/// the second loop's branch, which the Tool emulating it does not read.
 macro_rules! between_loops {
     ($before:expr, $after:expr, [$($instruction:literal),+] $(, $($operand:tt)+)?) => {
         unsafe {
             core::arch::asm!(
+                "lea rsi, [rip + 5f]",
                 "syscall",
                 "2:",
                 "dec {before}",
@@ -180,13 +211,14 @@ macro_rules! between_loops {
                 $($instruction,)+
                 "3:",
                 "dec {after}",
+                "5:",
                 "jnz 3b",
                 before = inout(reg) $before => _,
                 after = inout(reg) $after => _,
                 $($($operand)+,)?
                 inlateout("rax") Sysno::clock_getres as usize => _,
                 inlateout("rdi") 0usize => _,
-                inlateout("rsi") 0usize => _,
+                out("rsi") _,
                 out("rdx") _,
                 out("rcx") _,
                 out("r11") _,
@@ -257,17 +289,63 @@ impl Between {
     }
 }
 
+/// The skid witness counter is process global; each case owns it while it
+/// runs.
+static WITNESS: Mutex<()> = Mutex::new(());
+
+/// The clock from the request to each timer event, where each timer event
+/// found the guest, and the skid overshoots Reverie witnessed.
+struct Run {
+    clocks: Vec<u64>,
+    places: Vec<Place>,
+    witnesses: u64,
+}
+
+impl Run {
+    /// Checks that the timer fired once, at its target `rcbs` RCBs past the
+    /// request: exactly there if an artificial signal delivered it, and past
+    /// it only with a witnessed skid overshoot if a PMU notification did.
+    fn assert_fired_once_at(&self, rcbs: u64, what: &str) {
+        assert_eq!(
+            self.clocks.len(),
+            1,
+            "the timer must fire once, {what}: {:?}",
+            self.clocks
+        );
+        if rcbs == LESS_RCBS {
+            assert_eq!(self.clocks, [rcbs], "the timer must fire {what}");
+            assert_eq!(
+                self.witnesses, 0,
+                "steps from the request cannot pass the target"
+            );
+        } else {
+            assert_at_target_unless_witnessed(&self.clocks, rcbs, self.witnesses);
+        }
+    }
+}
+
+/// Runs `guest` under the Tool with `schedule`.
+fn run(guest: impl FnOnce() + Send + 'static, schedule: Schedule) -> Run {
+    let _owner = WITNESS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = reverie::take_skid_overshoot_count();
+    let events = check_fn_with_config::<PreciseTimerTool, _>(guest, schedule, true);
+    Run {
+        clocks: events.0.into_inner().unwrap(),
+        places: events.1.into_inner().unwrap(),
+        witnesses: reverie::take_skid_overshoot_count(),
+    }
+}
+
 /// Runs the guest with the instructions under test `before` conditional
 /// branches after the request, and a timer `schedule.rcbs` branches after it,
-/// with twice as many branches in all. Returns the clock from the request to
-/// each timer event.
-fn timer_events(between: Between, schedule: Schedule, before: u64) -> Vec<u64> {
-    let events = check_fn_with_config::<PreciseTimerTool, _>(
+/// with twice as many branches in all.
+fn timer_events(between: Between, schedule: Schedule, before: u64) -> Run {
+    run(
         move || between.run(before, 2 * schedule.rcbs - before),
         schedule,
-        true,
-    );
-    events.0.into_inner().unwrap()
+    )
 }
 
 // Each guest traps one conditional branch before the target. With an
@@ -284,11 +362,8 @@ fn timer_events(between: Between, schedule: Schedule, before: u64) -> Vec<u64> {
 #[test_case(Between::IcebpAfterLoadsOfSs, LESS_RCBS; "icebp after loads of SS")]
 fn a_trap_before_the_target_does_not_cancel_the_timer(between: Between, rcbs: u64) {
     ret_without_perf!();
-    assert_eq!(
-        timer_events(between, Schedule::rcbs(rcbs), rcbs - 1),
-        [rcbs],
-        "the timer must fire at its target after the trap"
-    );
+    timer_events(between, Schedule::rcbs(rcbs), rcbs - 1)
+        .assert_fired_once_at(rcbs, "at its target after the trap");
 }
 
 // Each guest traps one conditional branch after the request, 29,999 before
@@ -300,11 +375,8 @@ fn a_trap_before_the_target_does_not_cancel_the_timer(between: Between, rcbs: u6
 #[test_case(Between::Tgkill; "tgkill")]
 fn a_trap_before_the_perf_signal_does_not_cancel_the_timer(between: Between) {
     ret_without_perf!();
-    assert_eq!(
-        timer_events(between, Schedule::rcbs(PERF_RCBS), 1),
-        [PERF_RCBS],
-        "the timer must fire at its target after the trap"
-    );
+    timer_events(between, Schedule::rcbs(PERF_RCBS), 1)
+        .assert_fired_once_at(PERF_RCBS, "at its target after the trap");
 }
 
 // The same guests without a trap, where the timer fires one branch after the
@@ -315,11 +387,8 @@ fn a_trap_before_the_perf_signal_does_not_cancel_the_timer(between: Between) {
 #[test_case(Between::SyscallAfterLoadsOfSs, LESS_RCBS; "syscall after loads of SS")]
 fn the_timer_fires_without_a_trap(between: Between, rcbs: u64) {
     ret_without_perf!();
-    assert_eq!(
-        timer_events(between, Schedule::rcbs(rcbs), rcbs - 1),
-        [rcbs],
-        "the timer must fire at its target"
-    );
+    timer_events(between, Schedule::rcbs(rcbs), rcbs - 1)
+        .assert_fired_once_at(rcbs, "at its target");
 }
 
 // The trap is the instruction just past the target, so the timer fires before
@@ -331,18 +400,18 @@ fn the_timer_fires_without_a_trap(between: Between, rcbs: u64) {
 #[test_case(Between::Tgkill; "tgkill")]
 fn a_trap_past_the_target_does_not_cancel_the_timer(between: Between) {
     ret_without_perf!();
-    assert_eq!(
-        timer_events(between, Schedule::rcbs(LESS_RCBS), LESS_RCBS),
-        [LESS_RCBS],
-        "the timer must fire before the trap"
-    );
+    timer_events(between, Schedule::rcbs(LESS_RCBS), LESS_RCBS)
+        .assert_fired_once_at(LESS_RCBS, "before the trap");
 }
 
 // The timer's target is `instructions` steps past the last branch of the
 // first loop, which runs the instructions under test and then the `dec` of
 // the second loop, and stops at its `jnz`. A step that the trap's stop
 // interrupted must count once: had it not been counted, the steps would run
-// the `jnz` too, and the clock would be one branch further.
+// the `jnz` too, and the clock would be one branch further. Had it been
+// counted twice, the steps would stop an instruction short, at the `dec`,
+// with the clock unchanged, so the event's instruction pointer is checked
+// too.
 #[test_case(Between::Nop, 2; "nop")]
 #[test_case(Between::Int3, 2; "int3")]
 #[test_case(Between::Icebp, 2; "icebp")]
@@ -353,10 +422,14 @@ fn a_trap_among_the_instructions_past_the_target_counts_once(between: Between, i
         rcbs: LESS_RCBS,
         instructions: Some(instructions),
     };
+    let run = timer_events(between, schedule, LESS_RCBS);
+    run.assert_fired_once_at(LESS_RCBS, "before the second loop's first branch");
+    let places = run.places;
+    assert_eq!(places.len(), 1, "the timer must fire once: {places:?}");
+    assert_ne!(places[0].second_loop_branch, 0);
     assert_eq!(
-        timer_events(between, schedule, LESS_RCBS),
-        [LESS_RCBS],
-        "the timer must fire before the second loop's first branch"
+        places[0].rip, places[0].second_loop_branch,
+        "the timer must fire at the second loop's first branch"
     );
 }
 
@@ -388,16 +461,8 @@ fn int3_loop(rounds: u64) {
 #[test_case(PERF_RCBS; "perf signal")]
 fn the_timer_fires_in_a_loop_that_traps_in_every_round(rcbs: u64) {
     ret_without_perf!();
-    let events = check_fn_with_config::<PreciseTimerTool, _>(
-        move || int3_loop(2 * rcbs),
-        Schedule::rcbs(rcbs),
-        true,
-    );
-    assert_eq!(
-        events.0.into_inner().unwrap(),
-        [rcbs],
-        "the timer must fire at its target inside the loop"
-    );
+    run(move || int3_loop(2 * rcbs), Schedule::rcbs(rcbs))
+        .assert_fired_once_at(rcbs, "at its target inside the loop");
 }
 
 /// Makes the `clock_getres` at which the Tool requests the timer, then
@@ -435,14 +500,17 @@ fn int3_loop_after_getppids(getppids: u64, rounds: u64) {
 #[test_case(2; "two observed stops")]
 fn an_observed_stop_cancels_the_timer_in_a_loop_that_traps_in_every_round(getppids: u64) {
     ret_without_perf!();
-    let events = check_fn_with_config::<PreciseTimerTool, _>(
+    let run = run(
         move || int3_loop_after_getppids(getppids, 2 * PERF_RCBS),
         Schedule::rcbs(PERF_RCBS),
-        true,
     );
     assert_eq!(
-        events.0.into_inner().unwrap(),
+        run.clocks,
         Vec::<u64>::new(),
         "the cancelled timer must not fire"
+    );
+    assert_eq!(
+        run.witnesses, 0,
+        "the event was cancelled before it was due"
     );
 }
