@@ -524,7 +524,8 @@ struct Event {
     /// but unstarted-completion paths may publish ECHILD independently.
     ///
     /// Lock order: `exit_publication` before `status`. `publish_exit_stop`
-    /// takes `status` while holding this lock; no path may take this lock
+    /// and `publish_terminal_exit_state` take `status` while holding this
+    /// lock; no path may take this lock
     /// while holding `status` (a live status reservation holds `status`).
     exit_publication: Mutex<()>,
 
@@ -579,6 +580,8 @@ struct Event {
     registry_retirement_pause: Mutex<Option<BoundedTestPause>>,
     #[cfg(test)]
     worker_identity_retirement_pause: Mutex<Option<BoundedTestPause>>,
+    #[cfg(test)]
+    terminal_echild_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 #[derive(Debug)]
@@ -886,6 +889,8 @@ impl Event {
             registry_retirement_pause: Mutex::new(None),
             #[cfg(test)]
             worker_identity_retirement_pause: Mutex::new(None),
+            #[cfg(test)]
+            terminal_echild_pause: Mutex::new(None),
         }
     }
 
@@ -1008,11 +1013,45 @@ impl Event {
         self.exit_waiters.wake_all();
     }
 
-    fn publish_terminal_exit_state(&self) {
+    /// Publishes this generation's final wait state and returns the final
+    /// status stored before it. `terminal` is the actual final wait status,
+    /// or `ECHILD_STATUS` when the worker found the PID no longer waitable
+    /// (that marker never replaces an actual status).
+    ///
+    /// Lock order: takes `exit_publication`, then `status` while still
+    /// holding it, as [`Self::publish_exit_stop`] does. The final status is
+    /// stored before a missing exit stop becomes visible as `EXIT_ECHILD`, so
+    /// an [`ExitFuture`] that returns ECHILD for a terminal publication always
+    /// finds that final status through
+    /// [`TerminalCleanup::observed_exit_status`]. In between, a pending
+    /// capability is FINALIZING and an ExitFuture poll stays Pending.
+    fn publish_terminal_exit_state(&self, terminal: i32) -> i32 {
         let _publication = self.exit_publication.lock();
         // Expire an unclaimed capability before terminal status or ECHILD
         // becomes visible. CLAIMED is already a non-duplicating state.
         let finalizing = self.expire_unclaimed_exit_capability();
+        let previous = {
+            let mut state = self.status.lock();
+            let previous = state.terminal;
+            if terminal == ECHILD_STATUS {
+                if previous == INVALID_STATUS {
+                    state.terminal = ECHILD_STATUS;
+                }
+            } else if previous == INVALID_STATUS || previous == ECHILD_STATUS {
+                state.terminal = terminal;
+            } else {
+                debug_assert_eq!(previous, terminal, "terminal publication changed");
+            }
+            previous
+        };
+        #[cfg(test)]
+        if let Some(pause) = self.terminal_echild_pause.lock().take() {
+            // Test-only interval after the final status is stored and before
+            // a missing exit stop becomes visible as ECHILD. Disconnection
+            // also releases the publisher.
+            let _ = pause.captured.send(());
+            let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+        }
         let _ = self.exit_status.compare_exchange(
             EXIT_PENDING,
             EXIT_ECHILD,
@@ -1029,6 +1068,7 @@ impl Event {
                 )
                 .expect("terminal exit-capability publication changed");
         }
+        previous
     }
 
     fn observe_exec_after_exit(&self) {
@@ -1061,24 +1101,14 @@ impl Event {
         }
 
         let terminal = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
-        if terminal {
-            self.publish_terminal_exit_state();
-        }
-        let mut state = self.status.lock();
         let previous = if terminal {
-            let previous = state.terminal;
-            if previous == INVALID_STATUS || previous == ECHILD_STATUS {
-                state.terminal = status;
-            } else {
-                debug_assert_eq!(previous, status, "terminal publication changed");
-            }
-            previous
+            self.publish_terminal_exit_state(status)
         } else {
+            let mut state = self.status.lock();
             let previous = state.pending.back().copied().unwrap_or(INVALID_STATUS);
             state.pending.push_back(status);
             previous
         };
-        drop(state);
         self.status_changed.notify_all();
         if terminal {
             // A terminal publication resolves both waiter classes. ExitFuture
@@ -1127,12 +1157,7 @@ impl Event {
 
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
-        self.publish_terminal_exit_state();
-        let mut state = self.status.lock();
-        if state.terminal == INVALID_STATUS {
-            state.terminal = ECHILD_STATUS;
-        }
-        drop(state);
+        self.publish_terminal_exit_state(ECHILD_STATUS);
         self.status_changed.notify_all();
         self.status_waker.wake();
         self.exit_waiters.wake_all();
@@ -5849,6 +5874,67 @@ mod test {
             Poll::Ready(Err(Errno::EALREADY))
         );
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
+    }
+
+    /// A terminal `update` stores the final status before a missing exit
+    /// stop becomes visible as ECHILD. In the gap just before ECHILD the
+    /// pending capability is FINALIZING, an ExitFuture poll stays Pending and
+    /// the final status is already observable. After it, the poll returns
+    /// ECHILD and the same final status is still observable.
+    #[test]
+    fn terminal_status_is_observable_before_exit_echild() {
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        let event = Arc::new(Event::new());
+        let waiter = Arc::new(ExitWaiter::default());
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Pending);
+        // The raw wait status of a SIGKILLed tracee.
+        let status = libc::SIGKILL;
+        assert!(libc::WIFSIGNALED(status));
+        let (captured, paused_rx) = mpsc::sync_channel(1);
+        let (resume_tx, resume) = mpsc::sync_channel(1);
+        *event.terminal_echild_pause.lock() = Some(BoundedTestPause { captured, resume });
+        let publisher_event = Arc::clone(&event);
+        let publisher = thread::spawn(move || publisher_event.update(status));
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("terminal publication did not reach the gap before ECHILD");
+
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_PENDING);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_FINALIZING
+        );
+        assert_eq!(event.status.lock().terminal, status);
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Pending);
+
+        resume_tx.send(()).expect("release terminal publication");
+        assert_eq!(publisher.join().expect("join terminal publisher"), None);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_ECHILD);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_EXPIRED
+        );
+        assert_eq!(
+            event.poll_exit(&waiter, &waker),
+            Poll::Ready(Err(Errno::ECHILD))
+        );
+        assert_eq!(event.status.lock().terminal, status);
+    }
+
+    /// The ECHILD marker is stored only when no final status exists, and an
+    /// actual final status replaces the marker, as before the publication
+    /// was moved under `exit_publication`.
+    #[test]
+    fn terminal_publication_keeps_actual_status_over_echild_marker() {
+        let event = Event::new();
+        event.mark_echild();
+        assert_eq!(event.status.lock().terminal, ECHILD_STATUS);
+        assert_eq!(event.update(42 << 8), Some(ECHILD_STATUS));
+        assert_eq!(event.status.lock().terminal, 42 << 8);
+        event.mark_echild();
+        assert_eq!(event.status.lock().terminal, 42 << 8);
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_ECHILD);
     }
 
     #[test]
