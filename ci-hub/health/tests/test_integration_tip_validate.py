@@ -863,9 +863,17 @@ def test_launcher_runs_in_its_own_bounded_user_unit(tmp_path: Path, monkeypatch)
     commands: list[list[str]] = []
 
     def accepted(command, cwd, timeout):
+        # The provisioning preflight asks first, within half the launch budget;
+        # its own suite is test_integration_tip_validate_provisioning.py.
+        if command[0] != "systemd-run":
+            assert 0 < timeout <= 3.5
+            if command[0] == "systemctl":
+                return subprocess.CompletedProcess(command, 0, "HOME=/home/fixture\n", "")
+            return subprocess.CompletedProcess(command, 1, "", "")
         commands.append(list(command))
         assert cwd == tmp_path
-        assert timeout == 7.0
+        # The launch keeps whatever the preflight left of its 7s budget.
+        assert 3.5 <= timeout <= 7.0
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(driver, "run_bounded", accepted)
@@ -878,7 +886,7 @@ def test_launcher_runs_in_its_own_bounded_user_unit(tmp_path: Path, monkeypatch)
         tmp_path / "launcher.log",
         7.0,
     )
-    command = commands[0]
+    [command] = commands
     assert command[:4] == ["systemd-run", "--user", "--quiet", "--collect"]
     assert "--unit=validate-ops-tick-fixture-launcher" in command
     assert "--property=RuntimeMaxSec=5000" in command
@@ -1259,6 +1267,22 @@ def test_acknowledged_ended_launcher_still_requires_second_status(tmp_path: Path
     assert authorities.launches == []
 
 
+class PreflightClient:
+    """A finished provisioning-preflight query: the manager environment, then
+    no submodules. The preflight has its own suite in
+    test_integration_tip_validate_provisioning.py."""
+
+    pid = 4242
+
+    def __init__(self, command) -> None:
+        manager = command[0] == "systemctl"
+        self.returncode = 0 if manager else 1
+        self.output = "HOME=/home/fixture\n" if manager else ""
+
+    def communicate(self, timeout=None):
+        return self.output, ""
+
+
 def test_real_spawn_timeout_preserves_accepted_but_unconfirmed_launcher(tmp_path: Path, monkeypatch, capsys) -> None:
     configured = settings(tmp_path)
     authorities = Authorities()
@@ -1278,6 +1302,8 @@ def test_real_spawn_timeout_preserves_accepted_but_unconfirmed_launcher(tmp_path
             return "", ""
 
     def popen(command, **_kwargs):
+        if command[0] != "systemd-run":
+            return PreflightClient(command)
         dispatched.append(command)
         return PendingClient()
 
@@ -1306,7 +1332,12 @@ def test_popen_failure_is_definitely_not_started(tmp_path: Path, monkeypatch) ->
     configured = settings(tmp_path)
     authorities = Authorities()
 
-    def refused(*_args, **_kwargs):
+    attempted = []
+
+    def refused(command, **_kwargs):
+        if command[0] != "systemd-run":
+            return PreflightClient(command)
+        attempted.append(command[0])
         raise OSError("Popen could not execute systemd-run")
 
     monkeypatch.setattr(driver.subprocess, "Popen", refused)
@@ -1316,6 +1347,8 @@ def test_popen_failure_is_definitely_not_started(tmp_path: Path, monkeypatch) ->
     latest = json.loads((configured.state_dir / "latest.json").read_text())
     assert latest["state"] == "launch-not-started"
     assert "finished_at" in latest
+    assert attempted == ["systemd-run"]
+    assert "Popen could not execute systemd-run" in latest["detail"]
 
 
 def test_missing_launcher_prerequisite_writes_no_intent(tmp_path: Path) -> None:

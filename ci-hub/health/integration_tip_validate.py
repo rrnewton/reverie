@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shlex
 import signal
 import stat
 import subprocess
@@ -78,6 +79,23 @@ DECIDER_HISTORY_KEEP = 48
 # between the committing host and this one.
 UNREADABLE_HANDLE_CLOCK_MARGIN_SECONDS = 3600
 COMMIT_TIME_TIMEOUT_SECONDS = 5.0
+
+# THE LAUNCHER'S CHECKOUT HOOK MUST BE ABLE TO CLONE THE TARGET'S SUBMODULES.
+# The launched validate provisions its checkout with wrkslots, whose
+# post-provision hook runs `git submodule update --init --recursive` inside the
+# launcher unit, with the environment the systemd user manager hands that unit.
+# Measured on devbig014, 2026-09-28: ~/.gitconfig rewrote every Hermit
+# submodule URL (url.<local mirror>.insteadOf) to a local path, a submodule
+# clone runs with GIT_PROTOCOL_FROM_USER=0, and the manager environment carried
+# no GIT_ALLOW_PROTOCOL, so git refused "transport 'file' not allowed". An
+# interactive shell with GIT_ALLOW_PROTOCOL=https:file:ssh succeeds, which is
+# why a hand-run validate works while the periodic one cannot. The refused
+# create left a CREATE journal that made wrkslots refuse heartbeat, hold,
+# remove and handoff commands for every lane on the machine until an operator
+# ran `wrkslots recover`. The launch therefore asks git itself, in the unit's
+# environment, whether each local submodule source is readable the way the
+# hook will read it, and refuses before systemd-run if not.
+LAUNCHER_GIT_ENVIRONMENT = re.compile(r"GIT_[A-Za-z0-9_]+|HOME|XDG_CONFIG_HOME")
 
 
 class ObservationUnavailable(RuntimeError):
@@ -757,6 +775,174 @@ def launcher_prerequisites(settings: Settings) -> tuple[Path, str]:
     return operational_tool, parent_sha
 
 
+def launcher_git_environment(
+    settings: Settings, timeout: float, run: Runner
+) -> dict[str, str]:
+    """Return the Git-relevant part of the environment a launcher unit inherits.
+
+    A `systemd-run --user` service starts from the user manager's environment
+    block plus its own `--setenv` values, not from this process's environment.
+    """
+
+    completed = run(["systemctl", "--user", "show-environment"], settings.state_root, timeout)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or f"exit {completed.returncode}"
+        raise CommandNotStarted(
+            "cannot read the systemd user manager environment a launcher would inherit: "
+            f"{one_line(detail)}"
+        )
+    environment: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or LAUNCHER_GIT_ENVIRONMENT.fullmatch(name) is None:
+            continue
+        if value.startswith("$'"):
+            raise CommandNotStarted(
+                f"cannot decode the user manager's {name} value {value!r}; refusing a launcher "
+                "whose Git environment this preflight cannot reproduce"
+            )
+        if value[:1] in {"'", '"'}:
+            try:
+                words = shlex.split(value)
+            except ValueError as error:
+                raise CommandNotStarted(
+                    f"cannot decode the user manager's {name} value {value!r}: {error}"
+                ) from error
+            if len(words) != 1:
+                raise CommandNotStarted(
+                    f"cannot decode the user manager's {name} value {value!r} as one word"
+                )
+            value = words[0]
+        environment[name] = value
+    return environment
+
+
+def launcher_git(environment: Mapping[str, str], *arguments: str) -> list[str]:
+    """Build a git command that sees only the launcher unit's Git environment."""
+
+    assignments = [f"{name}={value}" for name, value in sorted(environment.items())]
+    return ["env", "-i", *assignments, f"PATH={os.environ.get('PATH', '')}", "git", *arguments]
+
+
+def uses_file_transport(url: str) -> bool:
+    """Classify a submodule source the way git picks its transport."""
+
+    scheme = re.match(r"([A-Za-z][A-Za-z0-9+.-]*)://", url)
+    if scheme is not None:
+        return scheme.group(1).lower() == "file"
+    colon = url.find(":")
+    slash = url.find("/")
+    # `host:path` without a slash before the colon is git's scp-like SSH form.
+    return not (colon > 0 and (slash < 0 or colon < slash))
+
+
+def launcher_provisioning_preflight(
+    settings: Settings, target: str, timeout: float, run: Runner | None = None
+) -> list[dict[str, str]]:
+    """Refuse a launch whose checkout hook cannot clone the target's submodules.
+
+    Only the target's top-level submodules are probed; a nested submodule is
+    reached through them. Every unanswered question refuses: this runs before
+    systemd-run, so a refusal starts nothing and leaves no wrkslots journal.
+    """
+
+    run = run or run_bounded
+    deadline = time.monotonic() + timeout
+
+    def query(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            return run(command, settings.source_checkout, remaining(deadline, timeout))
+        except ObservationUnavailable as error:
+            raise CommandNotStarted(f"launcher provisioning preflight: {error}") from error
+
+    try:
+        environment = launcher_git_environment(settings, remaining(deadline, timeout), run)
+    except ObservationUnavailable as error:
+        if isinstance(error, CommandNotStarted):
+            raise
+        raise CommandNotStarted(f"launcher provisioning preflight: {error}") from error
+    checkout = str(settings.source_checkout)
+    listed = query(
+        launcher_git(
+            environment,
+            "-C",
+            checkout,
+            "config",
+            "--blob",
+            f"{target}:.gitmodules",
+            "--get-regexp",
+            r"^submodule\..*\.url$",
+        )
+    )
+    if listed.returncode == 1 and not listed.stdout.strip() and not listed.stderr.strip():
+        return []
+    if listed.returncode != 0:
+        detail = listed.stderr.strip() or f"exit {listed.returncode}"
+        raise CommandNotStarted(
+            f"cannot read the submodule URLs of target {target}: {one_line(detail)}"
+        )
+    sources: list[dict[str, str]] = []
+    for line in listed.stdout.splitlines():
+        key, _, declared = line.partition(" ")
+        match = re.fullmatch(r"submodule\.(.+)\.url", key)
+        if match is None or not declared:
+            raise CommandNotStarted(f"unreadable .gitmodules URL entry for target {target}: {line!r}")
+        name = match.group(1)
+        # `submodule update --init` keeps a URL the shared repository config
+        # already records and copies the .gitmodules URL only when none is set.
+        configured = query(launcher_git(environment, "-C", checkout, "config", "--get", f"submodule.{name}.url"))
+        if configured.returncode == 0 and configured.stdout.strip():
+            url = configured.stdout.strip()
+        elif configured.returncode == 1 and not configured.stderr.strip():
+            url = declared
+        else:
+            detail = configured.stderr.strip() or f"exit {configured.returncode}"
+            raise CommandNotStarted(f"cannot read the configured URL of submodule {name}: {one_line(detail)}")
+        if url.startswith(("./", "../")):
+            raise CommandNotStarted(
+                f"submodule {name} of target {target} has relative URL {url!r}; this preflight "
+                "cannot tell whether its clone would use the local file transport"
+            )
+        expanded = query(launcher_git(environment, "-C", checkout, "ls-remote", "--get-url", url))
+        source = expanded.stdout.strip()
+        if expanded.returncode != 0 or not source:
+            detail = expanded.stderr.strip() or f"exit {expanded.returncode}"
+            raise CommandNotStarted(f"cannot expand the clone URL of submodule {name}: {one_line(detail)}")
+        if not uses_file_transport(source):
+            continue
+        # A submodule clone runs with GIT_PROTOCOL_FROM_USER=0, so git applies
+        # its non-user file-transport policy; probe exactly that policy.
+        probe = query(
+            launcher_git(
+                {**environment, "GIT_PROTOCOL_FROM_USER": "0"},
+                "-C",
+                checkout,
+                "ls-remote",
+                source,
+                "HEAD",
+            )
+        )
+        if probe.returncode == 0:
+            sources.append({"submodule": name, "url": url, "source": source})
+            continue
+        detail = one_line(probe.stderr.strip() or f"exit {probe.returncode}")
+        remedy = (
+            "the owner must either allow file transport for the systemd user manager "
+            "(for example `systemctl --user set-environment GIT_ALLOW_PROTOCOL=...` including "
+            "`file`, or protocol.file.allow=always) or remove the url.insteadOf rewrite"
+            if "transport 'file' not allowed" in detail else
+            "repair or remove the local source named by the url.insteadOf rewrite"
+        )
+        raise CommandNotStarted(
+            f"the launcher's checkout hook `git submodule update --init --recursive` would fail: "
+            f"submodule {name} ({url}) is rewritten to local source {source}, and git in the "
+            f"launcher unit's environment refuses it ({detail}); a failed create leaves a "
+            "wrkslots CREATE journal that refuses heartbeat, hold, remove and handoff commands "
+            f"for every lane on this machine; no launcher started; {remedy}"
+        )
+    return sources
+
+
 def consumed_launcher_identity(
     settings: Settings,
     attempt: Mapping[str, object],
@@ -842,8 +1028,14 @@ def spawn_validate(
     validate_log: Path,
     launcher_log: Path,
     timeout: float,
+    *,
+    run: Runner | None = None,
 ) -> Mapping[str, object]:
+    run = run or run_bounded
     operational_tool, parent_sha = launcher_prerequisites(settings)
+    launch_deadline = time.monotonic() + timeout
+    # At most half the launch budget, so systemd-run keeps time to answer.
+    launcher_provisioning_preflight(settings, target, timeout / 2, run)
     try:
         launcher_log.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(launcher_log, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -899,7 +1091,11 @@ def spawn_validate(
         "--",
         *validate_arguments,
     ]
-    completed = run_bounded(command, settings.state_root, timeout)
+    try:
+        launch_timeout = remaining(launch_deadline, timeout)
+    except ObservationUnavailable as error:
+        raise CommandNotStarted(f"no time left to start {launcher_unit}: {error}") from error
+    completed = run(command, settings.state_root, launch_timeout)
     if completed.returncode != 0:
         detail = (
             completed.stderr.strip()
