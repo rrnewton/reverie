@@ -1667,14 +1667,16 @@ mod hop_stop_tests {
         .unwrap()
     }
 
+    /// A SIGSTOP siginfo with `code`, from a pid derived from it.
     fn stop(code: i32) -> libc::siginfo_t {
-        let mut info = reraise_info(0);
-        let mut raw: [u8; std::mem::size_of::<libc::siginfo_t>()] =
-            unsafe { std::mem::transmute(info) };
+        const SIZE: usize = std::mem::size_of::<libc::siginfo_t>();
+        // SAFETY: siginfo_t is plain data of this size.
+        let mut raw =
+            unsafe { std::mem::transmute::<libc::siginfo_t, [u8; SIZE]>(reraise_info(0)) };
         raw[8..12].copy_from_slice(&code.to_ne_bytes());
         raw[16..20].copy_from_slice(&(code.unsigned_abs() + 100).to_ne_bytes());
-        info = unsafe { std::mem::transmute(raw) };
-        info
+        // SAFETY: as above.
+        unsafe { std::mem::transmute::<[u8; SIZE], libc::siginfo_t>(raw) }
     }
 
     #[test]
