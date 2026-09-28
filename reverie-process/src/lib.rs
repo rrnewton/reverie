@@ -210,6 +210,77 @@ impl Command {
     }
 }
 
+/// Runs the calling unit test in a fresh single-test process.
+///
+/// Returns `true` in the libtest harness process, after the fresh process has
+/// run the test body and passed; the caller must then return without running
+/// the body itself. Returns `false` inside the fresh process, where the caller
+/// runs the body. Use it as the first statement of every test that creates a
+/// child process:
+///
+/// ```ignore
+/// if crate::test_runs_in_own_process() {
+///     return;
+/// }
+/// ```
+///
+/// The children these tests create are made with a raw `clone` that shares
+/// neither the file-descriptor table nor glibc's `atfork` handlers, and most of
+/// them never `execve`. Such a child therefore receives a copy of every
+/// descriptor open anywhere in the harness process, including the pipe ends
+/// and pidfds of tests running on other libtest threads, and a copy of every
+/// userspace lock another thread held at the instant of the clone. Both are
+/// the reason the `Container` entry points require their caller to be
+/// single-threaded. Under the default multi-threaded libtest harness that
+/// requirement is false, and at `--test-threads=4` this crate failed every run
+/// (30 of 30): a startup child counted another test's pidfd, a test's closed
+/// result reader was still held open by another test's child so no `SIGPIPE`
+/// was raised, a closed descriptor number was reused by another thread, two
+/// tests' children each held the other's result writer and deadlocked both
+/// drains, and a panicking child blocked forever on glibc's `main_arena` lock.
+/// A mutex around the tests does not remove the last hazard, because libtest's
+/// own threads keep allocating while a test clones. The fresh process runs
+/// with `--test-threads=1`, where the only other thread is libtest's main
+/// thread blocked in a channel receive, which is the documented
+/// single-threaded setting.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn test_runs_in_own_process() -> bool {
+    const MARKER: &str = "REVERIE_PROCESS_ISOLATED_TEST";
+    let thread = std::thread::current();
+    let name = thread
+        .name()
+        .expect("libtest names each test thread after its test")
+        .to_owned();
+    if let Some(marker) = std::env::var_os(MARKER) {
+        assert_eq!(
+            marker.to_str(),
+            Some(name.as_str()),
+            "the isolated test process ran a test other than the one it was started for"
+        );
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name.as_str(), "--exact", "--test-threads=1", "--nocapture"])
+        .env(MARKER, &name)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    print!("{stdout}");
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "the isolated process for {name} failed: {:?}",
+        output.status
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed; 0 failed;"),
+        "the isolated process for {name} did not run exactly that one test"
+    );
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -222,6 +293,9 @@ mod tests {
 
     #[tokio::test]
     async fn spawn() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         assert_eq!(
             Command::new("true").spawn().unwrap().wait().await.unwrap(),
             ExitStatus::Exited(0)
@@ -235,6 +309,9 @@ mod tests {
 
     #[test]
     fn wait_blocking() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         assert_eq!(
             Command::new("true")
                 .spawn()
@@ -256,6 +333,9 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_fail() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         assert_eq!(
             Command::new("/iprobablydonotexist").spawn().unwrap_err(),
             Error::new(Errno::ENOENT, Context::Exec)
@@ -264,6 +344,9 @@ mod tests {
 
     #[tokio::test]
     async fn double_wait() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut child = Command::new("true").spawn().unwrap();
         assert_eq!(child.wait().await.unwrap(), ExitStatus::Exited(0));
         assert_eq!(child.wait().await.unwrap(), ExitStatus::Exited(0));
@@ -271,6 +354,9 @@ mod tests {
 
     #[tokio::test]
     async fn output() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("echo")
             .arg("foo")
             .arg("bar")
@@ -296,6 +382,9 @@ mod tests {
 
     #[tokio::test]
     async fn uid_namespace() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("cat")
             .arg("/proc/self/status")
             .map_root()
@@ -312,6 +401,9 @@ mod tests {
 
     #[tokio::test]
     async fn pid_namespace() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("cat")
             .arg("/proc/self/status")
             .map_root()
@@ -333,6 +425,9 @@ mod tests {
 
     #[tokio::test]
     async fn mount_proc() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("cat")
             .arg("/proc/self/status")
             .map_root()
@@ -352,6 +447,9 @@ mod tests {
 
     #[tokio::test]
     async fn mount_proc_with_readonly_fallback() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let proc = tempfile::tempdir().unwrap();
         let proc_path = proc.path().to_str().unwrap();
         let output = Command::new("sh")
@@ -400,6 +498,9 @@ mod tests {
 
     #[tokio::test]
     async fn hostname() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("cat")
             .arg("/proc/sys/kernel/hostname")
             .map_root()
@@ -416,6 +517,9 @@ mod tests {
 
     #[tokio::test]
     async fn domainname() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("cat")
             .arg("/proc/sys/kernel/domainname")
             .map_root()
@@ -433,6 +537,9 @@ mod tests {
 
     #[tokio::test]
     async fn pty() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use tokio::io::AsyncReadExt;
 
         let mut pty = Pty::open().unwrap();
@@ -463,6 +570,9 @@ mod tests {
 
     #[tokio::test]
     async fn mount_devpts_basic() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("ls")
             .arg("/dev/pts")
             .map_root()
@@ -481,6 +591,9 @@ mod tests {
 
     #[tokio::test]
     async fn mount_devpts_isolated() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("ls")
             .arg("/dev/pts")
             .map_root()
@@ -500,6 +613,9 @@ mod tests {
 
     #[tokio::test]
     async fn mount_tmpfs() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mount = "type=tmpfs,target=/tmp"
             .parse::<Mount>()
             .expect("tmpfs mount syntax should parse");
@@ -520,6 +636,9 @@ mod tests {
 
     #[tokio::test]
     async fn mount_and_move_tmpfs() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let tmpfs = tempfile::tempdir().unwrap();
 
         // Create a temporary directory that will be the only thing to remain in
@@ -548,6 +667,9 @@ mod tests {
 
     #[tokio::test]
     async fn mount_bind() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let a = temp.path().join("a");
         let b = temp.path().join("b");
@@ -572,6 +694,9 @@ mod tests {
 
     #[tokio::test]
     async fn mount_bind_readonly_rejects_writes() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         let target = temp.path().join("target");
@@ -594,6 +719,9 @@ mod tests {
 
     #[tokio::test]
     async fn local_networking_ping() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         const CHILD_ENV: &str = "REVERIE_PROCESS_LOOPBACK_TEST_CHILD";
 
         if std::env::var_os(CHILD_ENV).is_some() {
@@ -623,6 +751,9 @@ mod tests {
 
     #[tokio::test]
     async fn local_networking_loopback_flags() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("cat")
             .arg("/sys/class/net/lo/flags")
             .map_root()
@@ -639,6 +770,9 @@ mod tests {
     /// same port.
     #[tokio::test]
     async fn port_isolation() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use std::thread::sleep;
         use std::time::Duration;
 
@@ -702,6 +836,9 @@ mod tests {
     /// Make sure we can call `.local_networking_only` more than once.
     #[tokio::test]
     async fn local_networking_there_can_be_only_one() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let output = Command::new("true")
             .map_root()
             .local_networking_only()
@@ -718,6 +855,9 @@ mod tests {
 
     #[test]
     fn from_std_lossy() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stdcmd = std::process::Command::new("echo");
         stdcmd.args(["arg1", "arg2"]);
         stdcmd.current_dir("/foo/bar");
@@ -740,6 +880,9 @@ mod tests {
 
     #[test]
     fn into_std_lossy_compatibility() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut cmd = Command::new("env");
         cmd.args(["-0"]);
         cmd.current_dir("/foo/bar");
@@ -762,6 +905,9 @@ mod tests {
 
     #[test]
     fn try_into_std_refuses_container_configuration() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use syscalls::Sysno;
 
         use super::seccomp::Action;
@@ -820,6 +966,9 @@ mod tests {
 
     #[tokio::test]
     async fn seccomp() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use syscalls::Sysno;
 
         use super::seccomp::*;
@@ -844,6 +993,9 @@ mod tests {
 
     #[tokio::test]
     async fn seccomp_notify() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use std::collections::HashMap;
 
         use futures::future::Either;
