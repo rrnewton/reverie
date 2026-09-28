@@ -1,0 +1,326 @@
+{
+  "phases": [
+    {
+      "phase": "check-2",
+      "raw_status": 0,
+      "wall_seconds": 8.35187598108314,
+      "selection": null,
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "compile-1",
+      "raw_status": 0,
+      "wall_seconds": 17.614443802041933,
+      "selection": null,
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "compile-2",
+      "raw_status": 0,
+      "wall_seconds": 11.201843671035022,
+      "selection": null,
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "compile-3",
+      "raw_status": 0,
+      "wall_seconds": 4.080236703855917,
+      "selection": null,
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "format-1",
+      "raw_status": 0,
+      "wall_seconds": 0.5617051830049604,
+      "selection": null,
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "format-2",
+      "raw_status": 0,
+      "wall_seconds": 0.5613750868942589,
+      "selection": null,
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "format-3",
+      "raw_status": 0,
+      "wall_seconds": 0.6319308190140873,
+      "selection": null,
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "inventory-1",
+      "raw_status": 0,
+      "wall_seconds": 0.1833018760662526,
+      "selection": null,
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-action-preparation",
+      "raw_status": 0,
+      "wall_seconds": 0.3289800330530852,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-boundary",
+      "raw_status": 0,
+      "wall_seconds": 0.04335006093606353,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-cleanup-drain",
+      "raw_status": 0,
+      "wall_seconds": 0.04053612588904798,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-cleanup-drain-3",
+      "raw_status": 0,
+      "wall_seconds": 0.03979028109461069,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-cleanup-storage",
+      "raw_status": 0,
+      "wall_seconds": 0.04260761686600745,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-entry-owner",
+      "raw_status": 0,
+      "wall_seconds": 0.039566590916365385,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-entry-owner-3",
+      "raw_status": 0,
+      "wall_seconds": 0.035983005072921515,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-handler-destruction",
+      "raw_status": 0,
+      "wall_seconds": 0.041430889861658216,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-memory-generation",
+      "raw_status": 0,
+      "wall_seconds": 0.033754413947463036,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-memory-retired",
+      "raw_status": 0,
+      "wall_seconds": 0.2000866448506713,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-memory-retired-3",
+      "raw_status": 0,
+      "wall_seconds": 0.03717611497268081,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-owner",
+      "raw_status": 0,
+      "wall_seconds": 0.05119650298729539,
+      "selection": {
+        "summaries": [
+          [
+            "7",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 7
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-owner-2",
+      "raw_status": 101,
+      "wall_seconds": 0.12659174506552517,
+      "selection": {
+        "summaries": [],
+        "expected_passed": 8
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-owner-3",
+      "raw_status": 0,
+      "wall_seconds": 0.04636306082829833,
+      "selection": {
+        "summaries": [
+          [
+            "8",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 8
+      },
+      "source_stable": true,
+      "elf_stable": true
+    },
+    {
+      "phase": "test-read-preparation",
+      "raw_status": 0,
+      "wall_seconds": 0.046490577049553394,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "elf_stable": true
+    }
+  ],
+  "source_1_passed_declarations": 16,
+  "source_2_owner_passed": 7,
+  "source_2_owner_failed": 1,
+  "source_3_passed_declarations": 11,
+  "distinct_declarations_passed_across_versions": 17,
+  "kvm_run": 0,
+  "hermit_guests": 0,
+  "parity_comparisons": 0,
+  "selection_refusals_before_tests": 1
+}

@@ -1,0 +1,160 @@
+            super::Sysno::execveat,
+        ] {
+            assert_eq!(render(nr, false), format!("{args:?}"));
+        }
+        assert_eq!(render(super::Sysno::write, true), format!("{args:?}"));
+        assert_eq!(render(super::Sysno::execveat, true), format!("{args:?}"));
+        let aliased = super::SyscallArgsForLog {
+            nr: super::Sysno::execve,
+            args: super::SyscallArgs::new(0x1000, 0x1000, 0, 41, 0x3000, 43),
+            command_bootstrap: true,
+        };
+        assert_ne!(format!("{aliased:?}"), render(super::Sysno::execve, true));
+    }
+
+    use super::*;
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn syscall_skip_breakpoint_requires_exact_captured_provenance() {
+        let exec_rip = 0x7f00_1234_530b;
+        let arch_prctl_rip = 0x7f00_1234_cb19;
+        let syscall_opcode = [0x0f, 0x05];
+        assert!(is_expected_syscall_skip_breakpoint(
+            libc::TRAP_BRKPT,
+            exec_rip,
+            exec_rip,
+            syscall_opcode,
+            0x48,
+            false,
+        ));
+        assert!(is_expected_syscall_skip_breakpoint(
+            libc::TRAP_BRKPT,
+            arch_prctl_rip,
+            arch_prctl_rip,
+            syscall_opcode,
+            0x48,
+            false,
+        ));
+
+        for rejected in [
+            is_expected_syscall_skip_breakpoint(
+                libc::SI_USER,
+                exec_rip,
+                exec_rip,
+                syscall_opcode,
+                0x48,
+                false,
+            ),
+            is_expected_syscall_skip_breakpoint(
+                libc::TRAP_BRKPT,
+                exec_rip,
+                exec_rip + 1,
+                syscall_opcode,
+                0x48,
+                false,
+            ),
+            is_expected_syscall_skip_breakpoint(
+                libc::TRAP_BRKPT,
+                exec_rip,
+                exec_rip,
+                [0xcc, 0x05],
+                0x48,
+                false,
+            ),
+            is_expected_syscall_skip_breakpoint(
+                libc::TRAP_BRKPT,
+                exec_rip,
+                exec_rip,
+                syscall_opcode,
+                0xcc,
+                false,
+            ),
+            is_expected_syscall_skip_breakpoint(
+                libc::TRAP_BRKPT,
+                exec_rip,
+                exec_rip,
+                syscall_opcode,
+                0x48,
+                true,
+            ),
+        ] {
+            assert!(!rejected);
+        }
+    }
+
+    fn active_state() -> LiteinstRuntimeState {
+        let mut state = LiteinstRuntimeState::default();
+        state.active_hooks.insert(
+            0x401005,
+            ActiveHookFootprint {
+                site: GuestRange::new(0x401005, 8).unwrap(),
+                trampoline: GuestRange::new(0x7000_1000, 0x1000).unwrap(),
+                arena_writable: GuestRange::new(0x7100_0000, 0x80_000).unwrap(),
+                arena_executable: GuestRange::new(0x7000_0000, 0x80_000).unwrap(),
+            },
+        );
+        state
+    }
+
+    #[test]
+    fn exec_generation_replaces_image_state_without_changing_old_holders() {
+        let mut old = active_state();
+        old.phase = LiteinstRuntimePhase::Ready;
+        old.generation = 41;
+        old.ready_generation = Some(41);
+        old.frame = Some(LiteinstHandshakeFrame {
+            begin_rip: 0x7000_1000,
+            ..Default::default()
+        });
+        old.attempted_sites.insert(0x401005);
+        old.fallback_sites
+            .insert(0x401005, LiteinstPatchOutcome::PtraceOtherFallback);
+        let old = Arc::new(StdMutex::new(old));
+        let holder = Arc::clone(&old);
+        let next = Arc::new(StdMutex::new(old.lock().unwrap().after_exec().unwrap()));
+        assert!(!Arc::ptr_eq(&holder, &next));
+        let next = next.lock().unwrap();
+        assert_eq!(next.phase, LiteinstRuntimePhase::Waiting);
+        assert_eq!(next.generation, 42);
+        assert!(next.ready_generation.is_none());
+        assert!(next.frame.is_none());
+        assert!(next.attempted_sites.is_empty());
+        assert!(next.fallback_sites.is_empty());
+        assert!(next.active_hooks.is_empty());
+        let mut old = holder.lock().unwrap();
+        assert_eq!(old.phase, LiteinstRuntimePhase::Ready);
+        assert_eq!(old.ready_generation, Some(41));
+        assert_eq!(old.frame.unwrap().begin_rip, 0x7000_1000);
+        assert!(old.attempted_sites.contains(&0x401005));
+        assert_eq!(
+            old.fallback_sites.get(&0x401005),
+            Some(&LiteinstPatchOutcome::PtraceOtherFallback)
+        );
+        assert_eq!(old.active_hooks.len(), 1);
+        old.generation = u64::MAX;
+        assert_eq!(old.after_exec().unwrap_err(), Errno::EOVERFLOW);
+        assert_eq!(old.generation, u64::MAX);
+        assert_eq!(old.phase, LiteinstRuntimePhase::Ready);
+    }
+
+    #[test]
+    fn kernel_page_ranges_floor_ceil_and_reject_overflow() {
+        assert_eq!(
+            kernel_page_range(0x401005, 1, 4096),
+            Ok(Some(GuestRange {
+                start: 0x401000,
+                end: 0x402000,
+            }))
+        );
+        assert_eq!(kernel_page_range(0x401000, 0, 4096), Ok(None));
+        assert_eq!(kernel_page_range(u64::MAX - 1, 4, 4096), Err(()));
+        assert_eq!(kernel_page_range(0x401000, 1, 3000), Err(()));
+    }
+
+    #[test]
+    fn short_successful_mapping_invalidates_the_whole_attempted_page() {
+        let mut state = LiteinstRuntimeState::default();
+        state.attempted_sites.extend([0x401005, 0x401fff, 0x402005]);
+
+        state.invalidate_attempted_pages(0x401000, 1, 4096);

@@ -1,0 +1,49 @@
+{
+  "started_at_utc": "2026-09-18T20:27:43.941906+00:00",
+  "argv": [
+    "/usr/local/bin/codex",
+    "-a",
+    "never",
+    "-s",
+    "read-only",
+    "-C",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native",
+    "exec",
+    "resume",
+    "-c",
+    "approval_policy=\"never\"",
+    "--json",
+    "--output-last-message",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final.txt",
+    "01a0b38e-9e3c-7883-9816-65199c048935",
+    "-"
+  ],
+  "model_override": null,
+  "prompt_sha256": "26a65bed79c79b92766a2377036d4a6c86b6dc1a9f2f0f573ec5fcea606a5ab8",
+  "wall_limit_seconds": 1800,
+  "output_limit_bytes": 67108864,
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native",
+  "session_resume": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "launcher_pid": 1137131,
+  "launcher_pgid": 1137131,
+  "launcher_start_ticks": "192219270",
+  "finished_at_utc": "2026-09-18T20:42:18.485658+00:00",
+  "elapsed_seconds": 874.5437058529351,
+  "raw_exit_code": 0,
+  "bound_failure": null,
+  "jsonl": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.jsonl",
+    "bytes": 2375888,
+    "sha256": "17a4f3b07443f3b9ae79db8e3eb33003068b99613e118c44c351843b5f94191f"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.stderr",
+    "bytes": 149,
+    "sha256": "43df7f007afa289695cb9fd1c0f306d391d12176406046f9c5223046f30cae75"
+  },
+  "final.txt": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final.txt",
+    "bytes": 6265,
+    "sha256": "4f7c7df40b33a49829148682d4e4269eb1d168ec745f9283660c023fad43d44d"
+  }
+}

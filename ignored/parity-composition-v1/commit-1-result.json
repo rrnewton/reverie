@@ -1,0 +1,5 @@
+{
+  "returncode": 0,
+  "stdout": "[codex/kvm-parity-land-20260918 0d1b4999] Dispatch KVM CPUID instructions through Tool callbacks\n 9 files changed, 1652 insertions(+), 23 deletions(-)\n create mode 100644 reverie-kvm/src/cpuid_instruction.rs\n create mode 100644 reverie-kvm/src/cpuid_runtime_tests.rs\n create mode 100644 reverie-kvm/tests/support/cpuid_dispatch.rs\n create mode 100644 reverie-kvm/tests/support/cpuid_terminal.rs\n",
+  "stderr": ""
+}

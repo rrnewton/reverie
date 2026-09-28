@@ -1,0 +1,59 @@
+{
+  "plan_sha256": "8380e12180ae606edf48394f43fc1f79775d9813d2fb728a7459776153f4a955",
+  "accepted": false,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 101,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/observer/new-02",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/new-02-plan.json",
+      "8380e12180ae606edf48394f43fc1f79775d9813d2fb728a7459776153f4a955"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/source",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 1,
+    "elapsed_seconds": 4.261216948041692,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/controls/new-02/observer.stdout",
+      "bytes": 163,
+      "mode": 420,
+      "sha256": "ce483388c638a6230155021fd206ce09390e249b7cd33cb594bfa5ca25230d50"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/controls/new-02/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/observer/new-02/result.json",
+    "bytes": 47512,
+    "mode": 384,
+    "sha256": "a09af3fa229ca3d67692c76c74455512cf24a71cfc723f493db6d8aa41c7553e"
+  },
+  "readback_error": "RuntimeError('actual selected outcomes differ')",
+  "payload_exit": {
+    "returncode": 101,
+    "reaped": true,
+    "elapsed_seconds": 0.006784913130104542
+  },
+  "error": "RuntimeError('actual payload failed')",
+  "inputs_unchanged": true
+}

@@ -1,0 +1,8 @@
+{"raw_status": 0, "elapsed_seconds": 0.12308944016695023, "stream_bytes": {"stdout": 0, "stderr": 286}, "refusal": null, "source_unchanged": true}
+Running as unit: kvm-cancel-wake-format-check-470051.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 83ms
+             CPU time consumed: 83ms
+                   Memory peak: 14.5M (swap: 0B)
+

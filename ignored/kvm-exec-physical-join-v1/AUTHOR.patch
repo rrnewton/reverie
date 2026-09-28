@@ -1,0 +1,1200 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -310,6 +310,10 @@
+ }
+ type GuestWorkerResult = Result<(ExitStatus, Vec<u8>, Vec<u8>)>;
+ 
++#[path = "vm/worker_join.rs"]
++mod worker_join;
++use worker_join::WorkerJoins;
++
+ struct GuestWorkerHandle {
+     tid: i32,
+     start: Option<ChildStartGate>,
+@@ -318,8 +322,8 @@
+ }
+ 
+ /// The outermost worker wrapper drops this after the actual worker closure
+-/// and its owned state have returned or unwound. Physical completion can trail
+-/// this notification by the final host-thread bookkeeping interval.
++/// and its owned state have returned or unwound. This only makes the worker
++/// eligible for an owned physical join: arbitrary TLS destructors may follow.
+ struct WorkerCompletionNotice {
+     group: Arc<GuestThreadGroup>,
+     returning: Arc<AtomicBool>,
+@@ -406,7 +410,7 @@
+     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
+     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
+     worker_handles: Mutex<Vec<GuestWorkerHandle>>,
+-    worker_completion_wake: Mutex<CancellationWake>,
++    worker_joins: Arc<WorkerJoins>,
+     // Joining moves handles out of the registry. Cancellation must still own
+     // every pending gate while a moved handle is blocking in JoinHandle::join.
+     worker_start_gates: Mutex<std::collections::BTreeMap<i32, ChildStartGate>>,
+@@ -571,7 +575,7 @@
+ 
+     #[cfg(test)]
+     pub(crate) fn has_worker_handles(&self) -> bool {
+-        !self.worker_handles.lock().unwrap().is_empty()
++        self.has_owned_worker_joins()
+     }
+ 
+     pub(crate) fn record_worker_failure(&self, tid: i32) {
+@@ -684,12 +688,14 @@
+         returning: Option<Arc<AtomicBool>>,
+         handle: std::thread::JoinHandle<GuestWorkerResult>,
+     ) {
++        let joins = self.worker_joins.lock();
+         let mut handles = self
+             .worker_handles
+             .lock()
+             .expect("KVM guest worker-handle lock poisoned");
+         assert!(
+-            !handles.iter().any(|worker| worker.tid == tid),
++            !handles.iter().any(|worker| worker.tid == tid)
++                && !joins.active.contains_key(&tid),
+             "duplicate KVM guest worker tid {tid}"
+         );
+         if let Some(gate) = &start {
+@@ -706,6 +712,7 @@
+             handle,
+         });
+         drop(handles);
++        drop(joins);
+         if self.cancelled.load(Ordering::Acquire)
+             && let Some(gate) = gate
+         {
+@@ -715,102 +722,11 @@
+     }
+ 
+     fn subscribe_worker_completion(&self) -> GuestCancellationSubscription {
+-        self.worker_completion_wake.lock().unwrap().receiver.clone()
++        self.worker_joins.subscribe()
+     }
+ 
+     fn notify_worker_completion(&self) {
+-        let previous = { std::mem::take(&mut *self.worker_completion_wake.lock().unwrap()) };
+-        let _ = previous.sender.send(());
+-    }
+-
+-    fn join_worker(&self, worker: GuestWorkerHandle) {
+-        let error = match worker.handle.join() {
+-            Ok(Ok(_)) => None,
+-            Ok(Err(error)) => Some(Arc::new(error)),
+-            Err(payload) => Some(self.retain_joined_worker_panic(worker.tid, payload)),
+-        };
+-        self.worker_start_gates
+-            .lock()
+-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+-            .remove(&worker.tid);
+-        if let Some(error) = error {
+-            self.worker_errors
+-                .lock()
+-                .expect("KVM worker error lock poisoned")
+-                .entry(worker.tid)
+-                .or_default()
+-                .push(error);
+-        }
+-    }
+-
+-    /// Unfinished workers never leave the registry in this path. An actual
+-    /// leader Exec has exclusive production join ownership: guest workers are
+-    /// rejected by exec_process and their backends never physically join.
+-    fn join_finished_workers_for_exec(&self) -> (bool, bool) {
+-        let (finished, returning) = {
+-            let mut handles = self
+-                .worker_handles
+-                .lock()
+-                .expect("KVM guest worker-handle lock poisoned");
+-            let mut finished = Vec::new();
+-            let mut index = 0;
+-            while index < handles.len() {
+-                if handles[index].handle.is_finished() {
+-                    finished.push(handles.remove(index));
+-                } else {
+-                    index += 1;
+-                }
+-            }
+-            // Raw-handle registrations exist only in old internal fixtures.
+-            // They can still be observed cooperatively; every production
+-            // worker supplies its actual post-closure completion notice.
+-            let returning = handles.iter().any(|worker| {
+-                worker
+-                    .returning
+-                    .as_ref()
+-                    .is_none_or(|returning| returning.load(Ordering::Acquire))
+-            });
+-            (finished, returning)
+-        };
+-        for worker in finished {
+-            self.join_worker(worker);
+-        }
+-        let empty = self
+-            .worker_handles
+-            .lock()
+-            .expect("KVM guest worker-handle lock poisoned")
+-            .is_empty();
+-        (empty, returning)
+-    }
+-
+-    fn discard_unstarted_worker(&self, tid: i32) -> Result<bool> {
+-        let handle = {
+-            let mut handles = self
+-                .worker_handles
+-                .lock()
+-                .expect("KVM guest worker-handle lock poisoned");
+-            handles
+-                .iter()
+-                .position(|worker| {
+-                    worker.tid == tid
+-                        && worker
+-                            .start
+-                            .as_ref()
+-                            .is_some_and(ChildStartGate::is_cancelled)
+-                })
+-                .map(|index| handles.swap_remove(index).handle)
+-        };
+-        let Some(handle) = handle else {
+-            return Ok(false);
+-        };
+-        self.worker_start_gates
+-            .lock()
+-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+-            .remove(&tid);
+-        let _ = handle.join().map_err(|payload| {
+-            Error::SharedFailure(self.retain_joined_worker_panic(tid, payload))
+-        })??;
+-        Ok(true)
++        self.worker_joins.notify();
+     }
+ 
+     fn retain_joined_worker_panic(
+@@ -863,37 +779,12 @@
+         }
+     }
+ 
+-    pub(crate) fn join_workers(&self) {
+-        // A worker may register a nested clone while an earlier batch is joining.
+-        loop {
+-            let handles = std::mem::take(
+-                &mut *self
+-                    .worker_handles
+-                    .lock()
+-                    .expect("KVM guest worker-handle lock poisoned"),
+-            );
+-            if handles.is_empty() {
+-                return;
+-            }
+-            if self.cancelled.load(Ordering::Acquire) {
+-                self.cancel_pending_worker_gates(&handles);
+-            }
+-            for worker in handles {
+-                self.join_worker(worker);
+-            }
+-        }
+-    }
+-
+     pub(crate) fn teardown_result(&self) -> Result<()> {
+         let errors = self
+             .worker_errors
+             .lock()
+             .expect("KVM worker error lock poisoned");
+-        if errors.is_empty() {
+-            return Ok(());
+-        }
+-        Error::combine(
+-            errors
++        let mut collected: Vec<_> = errors
+                 .iter()
+                 .flat_map(|(&tid, errors)| {
+                     errors
+@@ -901,8 +792,10 @@
+                         .cloned()
+                         .map(move |error| Error::WorkerFailure { tid, error })
+                 })
+-                .collect(),
+-        )
++                .collect();
++        drop(errors);
++        collected.extend(self.worker_joins.errors().into_iter().map(Error::SharedFailure));
++        Error::combine(collected)
+     }
+ 
+     fn cancel_workers(&self) {
+@@ -4610,7 +4503,10 @@
+                         .err()
+                         .unwrap_or(Error::RunAborted)));
+                 }
+-                let (empty, returning) = self.thread_group.join_finished_workers_for_exec();
++                let (empty, returning) = match self.thread_group.advance_worker_joins_for_exec() {
++                    Ok(state) => state,
++                    Err(error) => return std::task::Poll::Ready(Err(error)),
++                };
+                 if let Err(error) = watch.check() {
+                     return std::task::Poll::Ready(Err(error));
+                 }
+--- /dev/null
++++ b/reverie-kvm/src/vm/worker_join.rs
+@@ -0,0 +1,479 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! One group-owned physical joiner for interruptible Exec callbacks. A returned
++//! main closure is eligible for a job, but neither it nor this helper may be
++//! physically joined by the callback: both can still run TLS destructors.
++
++use std::collections::BTreeMap;
++use std::sync::Condvar;
++use std::sync::MutexGuard;
++use std::thread::ThreadId;
++
++use super::*;
++
++type JoinedWorker = std::thread::Result<GuestWorkerResult>;
++
++pub(super) struct WorkerFlight {
++    target: ThreadId,
++    joiner: ThreadId,
++}
++
++enum HelperJob {
++    Queued(GuestWorkerHandle),
++    Joining,
++    Ready(i32, JoinedWorker),
++    Collecting,
++}
++
++#[derive(Default)]
++pub(super) struct JoinLedger {
++    pub(super) active: BTreeMap<i32, WorkerFlight>,
++    job: Option<HelperJob>,
++    handle: Option<std::thread::JoinHandle<()>>,
++    launching: bool,
++    ready: bool,
++    exited: bool,
++    stopping: bool,
++    reaping: bool,
++    draining: Option<ThreadId>,
++    failure: Option<Arc<Error>>,
++    errors: Vec<Arc<Error>>,
++    // These payloads are never dropped on the callback, helper, or join stack.
++    // Final group destruction retains its existing payload-destructor limits.
++    payloads: Vec<crate::failure::owned_future::PanicPayload>,
++}
++
++#[derive(Default)]
++pub(super) struct WorkerJoins {
++    state: Mutex<JoinLedger>,
++    changed: Condvar,
++    wake: Mutex<CancellationWake>,
++}
++
++// The owning leader backend must call join_workers on terminal teardown. Its
++// Drop implementation does so even when an Exec future is dropped. An idle
++// helper retains this ledger; Arc ownership alone is not a shutdown protocol.
++
++impl WorkerJoins {
++    pub(super) fn lock(&self) -> MutexGuard<'_, JoinLedger> {
++        self.state.lock().unwrap_or_else(|error| error.into_inner())
++    }
++
++    pub(super) fn subscribe(&self) -> GuestCancellationSubscription {
++        self.wake.lock().unwrap().receiver.clone()
++    }
++
++    pub(super) fn notify(&self) {
++        self.changed.notify_all();
++        let previous = { std::mem::take(&mut *self.wake.lock().unwrap()) };
++        let _ = previous.sender.send(());
++    }
++
++    pub(super) fn errors(&self) -> Vec<Arc<Error>> {
++        self.lock().errors.clone()
++    }
++
++    fn fail(state: &mut JoinLedger, error: Error) -> Arc<Error> {
++        if let Some(error) = &state.failure {
++            return error.clone();
++        }
++        let error = Arc::new(error);
++        state.errors.push(error.clone());
++        state.failure = Some(error.clone());
++        error
++    }
++
++    fn wait<'a>(&self, state: MutexGuard<'a, JoinLedger>) -> MutexGuard<'a, JoinLedger> {
++        self.changed.wait(state).unwrap_or_else(|error| error.into_inner())
++    }
++}
++
++/// Constructed before spawn, so dropping an uncalled closure after an inherited
++/// child spawn-hook panic still reports that the body never became ready.
++struct Bootstrap {
++    joins: Arc<WorkerJoins>,
++    entered: bool,
++}
++
++impl Drop for Bootstrap {
++    fn drop(&mut self) {
++        {
++            let mut state = self.joins.lock();
++            state.ready = false;
++            state.exited = true;
++            if !state.stopping {
++                let phase = if self.entered {
++                    "worker join helper"
++                } else {
++                    "worker join helper startup"
++                };
++                WorkerJoins::fail(&mut state, Error::GuestWorkerPanic.cleanup(phase));
++            }
++        }
++        self.joins.notify();
++    }
++}
++
++/// Parent-side spawn hooks can unwind before returning any handle. Originals
++/// have not moved, and this transaction cannot leave a permanent Launching bit.
++struct Launch<'a> {
++    joins: &'a WorkerJoins,
++    committed: bool,
++}
++
++impl Drop for Launch<'_> {
++    fn drop(&mut self) {
++        if !self.committed {
++            {
++                let mut state = self.joins.lock();
++                state.launching = false;
++                WorkerJoins::fail(
++                    &mut state,
++                    Error::GuestWorkerPanic.cleanup("worker join helper launch"),
++                );
++            }
++            self.joins.notify();
++        }
++    }
++}
++
++fn run_helper(mut bootstrap: Bootstrap, before_ready: impl FnOnce()) {
++    // Empty in production; the startup control uses this marker to prove an
++    // inherited child spawn-hook panic prevented the body from being entered.
++    before_ready();
++    bootstrap.entered = true;
++    let joins = bootstrap.joins.clone();
++    {
++        let mut state = joins.lock();
++        state.ready = true;
++    }
++    joins.notify();
++    loop {
++        let worker = {
++            let mut state = joins.lock();
++            loop {
++                if matches!(state.job, Some(HelperJob::Queued(_))) {
++                    let Some(HelperJob::Queued(worker)) =
++                        state.job.replace(HelperJob::Joining)
++                    else {
++                        unreachable!();
++                    };
++                    break worker;
++                }
++                if state.stopping {
++                    return;
++                }
++                state = joins.wait(state);
++            }
++        };
++        let tid = worker.tid;
++        // No registry lock is held here. The group owns our exact handle and
++        // the active entry throughout the worker's real pthread termination.
++        let result = worker.handle.join();
++        {
++            let mut state = joins.lock();
++            debug_assert!(matches!(state.job, Some(HelperJob::Joining)));
++            state.job = Some(HelperJob::Ready(tid, result));
++        }
++        joins.notify();
++    }
++}
++
++struct Drain<'a>(&'a WorkerJoins);
++
++impl Drop for Drain<'_> {
++    fn drop(&mut self) {
++        self.0.lock().draining = None;
++        self.0.notify();
++    }
++}
++
++impl GuestThreadGroup {
++    #[cfg(test)]
++    pub(super) fn has_owned_worker_joins(&self) -> bool {
++        let state = self.worker_joins.lock();
++        !state.active.is_empty() || !self.worker_handles.lock().unwrap().is_empty()
++    }
++
++    fn start_worker_join_helper(&self) -> Result<()> {
++        self.start_worker_join_helper_with(
++            std::thread::Builder::new().name("reverie-kvm-join".into()),
++            || {},
++        )
++    }
++
++    pub(super) fn start_worker_join_helper_with(
++        &self,
++        builder: std::thread::Builder,
++        before_ready: impl FnOnce() + Send + 'static,
++    ) -> Result<()> {
++        {
++            let mut state = self.worker_joins.lock();
++            if let Some(error) = &state.failure {
++                return Err(Error::SharedFailure(error.clone()));
++            }
++            if state.handle.is_some() || state.launching || state.reaping || state.draining.is_some() {
++                return Ok(());
++            }
++            state.launching = true;
++            state.ready = false;
++            state.exited = false;
++            state.stopping = false;
++        }
++        let mut launch = Launch { joins: &self.worker_joins, committed: false };
++        let bootstrap = Bootstrap { joins: self.worker_joins.clone(), entered: false };
++        // No originals are transferred until both Ready and this exact handle
++        // are in the ledger. Refusal returns the bootstrap owner to this scope.
++        match crate::failure::spawn_owned(builder, bootstrap, move |bootstrap| {
++            run_helper(bootstrap, before_ready)
++        }) {
++            Ok(handle) => {
++                let mut state = self.worker_joins.lock();
++                state.handle = Some(handle);
++                state.launching = false;
++                launch.committed = true;
++            }
++            Err((error, bootstrap)) => {
++                let error = {
++                    let mut state = self.worker_joins.lock();
++                    state.launching = false;
++                    launch.committed = true;
++                    WorkerJoins::fail(&mut state, Error::from(error).cleanup("worker join helper spawn"))
++                };
++                drop(bootstrap);
++                self.worker_joins.notify();
++                return Err(Error::SharedFailure(error));
++            }
++        }
++        self.worker_joins.notify();
++        Ok(())
++    }
++
++    /// Collect exactly once outside every ledger lock, retaining real errors
++    /// and opaque panic payloads through the same caches as direct teardown.
++    fn collect_worker_join(&self, tid: i32, joined: JoinedWorker, cache: bool) -> Result<()> {
++        enum JoinedError { Returned(Error), Panicked(Arc<Error>) }
++        let error = match joined {
++            Ok(result) => result.err().map(JoinedError::Returned),
++            Err(payload) => Some(JoinedError::Panicked(self.retain_joined_worker_panic(tid, payload))),
++        };
++        let gate = {
++            self.worker_start_gates.lock().unwrap_or_else(|error| error.into_inner()).remove(&tid)
++        };
++        drop(gate);
++        let result = match (cache, error) {
++            (_, None) => Ok(()),
++            (true, Some(error)) => {
++                let error = match error {
++                    JoinedError::Returned(error) => Arc::new(error),
++                    // Preserve the exact published Arc, including the direct
++                    // WorkerFailure identity required by existing controls.
++                    JoinedError::Panicked(error) => error,
++                };
++                self.worker_errors.lock().unwrap().entry(tid).or_default().push(error);
++                Ok(())
++            }
++            (false, Some(JoinedError::Returned(error))) => Err(error),
++            (false, Some(JoinedError::Panicked(error))) => Err(Error::SharedFailure(error)),
++        };
++        self.worker_joins.lock().active.remove(&tid);
++        self.worker_joins.notify();
++        result
++    }
++
++    fn collect_helper_result(&self) -> bool {
++        let ready = {
++            let mut state = self.worker_joins.lock();
++            if !matches!(state.job, Some(HelperJob::Ready(..))) {
++                return false;
++            }
++            let Some(HelperJob::Ready(tid, result)) = state.job.replace(HelperJob::Collecting) else {
++                unreachable!();
++            };
++            (tid, result)
++        };
++        let _ = self.collect_worker_join(ready.0, ready.1, true);
++        self.worker_joins.lock().job = None;
++        self.worker_joins.notify();
++        true
++    }
++
++    #[cfg(test)]
++    pub(super) fn worker_join_helper_state(&self) -> (Option<ThreadId>, bool) {
++        let state = self.worker_joins.lock();
++        (state.handle.as_ref().map(|handle| handle.thread().id()),
++         matches!(state.job, Some(HelperJob::Joining)))
++    }
++
++    #[cfg(test)]
++    pub(super) fn worker_join_helper_payload_addresses(&self) -> Vec<usize> {
++        self.worker_joins.lock().payloads.iter()
++            .map(|payload| (&**payload as *const dyn std::any::Any as *const ()) as usize)
++            .collect()
++    }
++
++    /// No physical join is performed by this method. The sole helper slot
++    /// prevents nested discard from queuing a child behind its enclosing worker.
++    pub(super) fn advance_worker_joins_for_exec(&self) -> Result<(bool, bool)> {
++        self.collect_helper_result();
++        let mut state = self.worker_joins.lock();
++        if let Some(error) = &state.failure {
++            return Err(Error::SharedFailure(error.clone()));
++        }
++        if state.draining.is_some() || state.reaping {
++            return Ok((false, false));
++        }
++        let mut handles = self.worker_handles.lock().unwrap();
++        if handles.is_empty() && state.active.is_empty() && state.job.is_none()
++            && !state.launching && (state.handle.is_none() || state.ready)
++        {
++            return Ok((true, false));
++        }
++        let eligible = handles.iter().position(|worker| worker.handle.is_finished());
++        let returning = handles.iter().any(|worker| {
++            !worker.handle.is_finished() && worker.returning.as_ref()
++                .is_none_or(|returning| returning.load(Ordering::Acquire))
++        });
++        if state.job.is_none() && let Some(index) = eligible {
++            if handles[index].handle.thread().id() == std::thread::current().id() {
++                return Err(Error::UnexpectedVcpuExit("Exec cannot join its own worker".into()));
++            }
++            if state.handle.is_none() && !state.launching {
++                drop(handles);
++                drop(state);
++                self.start_worker_join_helper()?;
++                return Ok((false, true));
++            }
++            if state.ready && let Some(helper) = state.handle.as_ref() {
++                let joiner = helper.thread().id();
++                let worker = handles.remove(index);
++                state.active.insert(worker.tid, WorkerFlight {
++                    target: worker.handle.thread().id(), joiner,
++                });
++                state.job = Some(HelperJob::Queued(worker));
++                drop(handles);
++                drop(state);
++                self.worker_joins.notify();
++                return Ok((false, returning));
++            }
++        }
++        Ok((false, returning))
++    }
++
++    /// Claim only this registered cancelled child. Another direct/helper join
++    /// retains it if it has already moved; the caller verifies the exact gate.
++    pub(super) fn discard_unstarted_worker(&self, tid: i32) -> Result<bool> {
++        let worker = {
++            let mut state = self.worker_joins.lock();
++            let mut handles = self.worker_handles.lock().unwrap();
++            let Some(index) = handles.iter().position(|worker| {
++                worker.tid == tid && worker.start.as_ref().is_some_and(ChildStartGate::is_cancelled)
++            }) else {
++                return Ok(false);
++            };
++            let joiner = std::thread::current().id();
++            if handles[index].handle.thread().id() == joiner {
++                return Err(Error::UnexpectedVcpuExit("worker cannot discard itself".into()));
++            }
++            let worker = handles.swap_remove(index);
++            state.active.insert(tid, WorkerFlight { target: worker.handle.thread().id(), joiner });
++            worker
++        };
++        let result = worker.handle.join();
++        self.collect_worker_join(tid, result, false)?;
++        Ok(true)
++    }
++
++    /// Terminal boundary only: the callback has ended and the caller has
++    /// published any failure before waiting for physical worker/helper exit.
++    pub(crate) fn join_workers(&self) {
++        let current = std::thread::current().id();
++        {
++            let mut state = self.worker_joins.lock();
++            while let Some(owner) = state.draining {
++                if owner == current {
++                    WorkerJoins::fail(&mut state, Error::UnexpectedVcpuExit("recursive worker drain".into()));
++                    return;
++                }
++                state = self.worker_joins.wait(state);
++            }
++            state.draining = Some(current);
++        }
++        let _drain = Drain(&self.worker_joins);
++        loop {
++            self.collect_helper_result();
++            let mut state = self.worker_joins.lock();
++            let mut handles = self.worker_handles.lock().unwrap();
++            // A pre-body failure cannot own a job; a later helper unwind can
++            // still leave a queued job untouched. Recover that original before
++            // waiting for the failed helper, without dropping its handle.
++            if state.exited && matches!(state.job, Some(HelperJob::Queued(_))) {
++                let Some(HelperJob::Queued(worker)) = state.job.take() else {
++                    unreachable!();
++                };
++                state.active.remove(&worker.tid);
++                handles.push(worker);
++            }
++            if let Some(worker) = handles.first() {
++                if worker.handle.thread().id() == current {
++                    WorkerJoins::fail(&mut state, Error::UnexpectedVcpuExit("worker cannot drain itself".into()));
++                    return;
++                }
++                let worker = handles.remove(0);
++                state.active.insert(worker.tid, WorkerFlight { target: worker.handle.thread().id(), joiner: current });
++                drop(handles);
++                drop(state);
++                if self.cancelled.load(Ordering::Acquire) {
++                    self.cancel_pending_worker_gates(std::slice::from_ref(&worker));
++                }
++                let tid = worker.tid;
++                let result = worker.handle.join();
++                let _ = self.collect_worker_join(tid, result, true);
++                continue;
++            }
++            drop(handles);
++            if matches!(state.job, Some(HelperJob::Ready(..))) {
++                drop(state);
++                continue;
++            }
++            if !state.active.is_empty() || state.job.is_some() || state.launching {
++                if state.active.values().any(|flight| flight.target == current || flight.joiner == current) {
++                    WorkerJoins::fail(&mut state, Error::UnexpectedVcpuExit("worker drain depends on itself".into()));
++                    return;
++                }
++                // The state check and condvar handoff share this lock. Every
++                // result/registration transition is committed before its wake.
++                drop(self.worker_joins.wait(state));
++                continue;
++            }
++            let Some(handle) = state.handle.take() else {
++                return;
++            };
++            state.stopping = true;
++            state.reaping = true;
++            drop(state);
++            self.worker_joins.notify();
++            // Never reached by advance_worker_joins_for_exec, even when the
++            // helper main closure has returned: helper TLS is user-extensible.
++            let result = handle.join();
++            {
++                let mut state = self.worker_joins.lock();
++                if let Err(payload) = result {
++                    WorkerJoins::fail(&mut state, Error::GuestWorkerPanic.cleanup("worker join helper"));
++                    state.payloads.push(payload);
++                }
++                state.reaping = false;
++                state.ready = false;
++                state.stopping = false;
++                state.exited = false;
++            }
++            self.worker_joins.notify();
++        }
++    }
++}
+--- a/reverie-kvm/src/vm/exec_wait_tests.rs
++++ b/reverie-kvm/src/vm/exec_wait_tests.rs
+@@ -343,3 +343,480 @@
+         .unwrap_err();
+     assert!(crate::failure::references_shared_error(&completed, &cause));
+ }
++
++// The controls below extend the two original controls without changing them.
++// A timeout records failure outside TLS destruction, where panicking is safe.
++struct HeldTlsExit {
++    entered: mpsc::Sender<()>,
++    release: mpsc::Receiver<()>,
++    done: mpsc::Sender<()>,
++    timed_out: Arc<AtomicBool>,
++    destroyed: Option<Arc<AtomicBool>>,
++    ordered: Arc<AtomicBool>,
++}
++
++impl Drop for HeldTlsExit {
++    fn drop(&mut self) {
++        let _ = self.entered.send(());
++        if self.release.recv_timeout(WAIT).is_err() {
++            self.timed_out.store(true, Ordering::Release);
++        }
++        self.ordered.store(
++            self.destroyed.as_ref().is_none_or(|flag| flag.load(Ordering::Acquire)),
++            Ordering::Release,
++        );
++        let _ = self.done.send(());
++    }
++}
++
++thread_local! {
++    static HELD_TLS_EXIT: std::cell::RefCell<Option<HeldTlsExit>> = const {
++        std::cell::RefCell::new(None)
++    };
++}
++
++struct TlsHold {
++    entered: mpsc::Receiver<()>,
++    release: Option<mpsc::Sender<()>>,
++    done: mpsc::Receiver<()>,
++    timed_out: Arc<AtomicBool>,
++    ordered: Arc<AtomicBool>,
++}
++
++impl TlsHold {
++    fn new(destroyed: Option<Arc<AtomicBool>>) -> (HeldTlsExit, Self) {
++        let (entered, wait_entered) = mpsc::channel();
++        let (release, wait_release) = mpsc::channel();
++        let (done, wait_done) = mpsc::channel();
++        let timed_out = Arc::new(AtomicBool::new(false));
++        let ordered = Arc::new(AtomicBool::new(false));
++        (HeldTlsExit { entered, release: wait_release, done,
++            timed_out: timed_out.clone(), destroyed, ordered: ordered.clone() },
++         Self { entered: wait_entered, release: Some(release), done: wait_done,
++            timed_out, ordered })
++    }
++
++    fn release(&mut self) {
++        if let Some(release) = self.release.take() {
++            let _ = release.send(());
++        }
++    }
++
++    fn assert_finished(&self) {
++        self.done.recv_timeout(WAIT).expect("TLS destruction did not finish");
++        assert!(!self.timed_out.load(Ordering::Acquire));
++        assert!(self.ordered.load(Ordering::Acquire));
++    }
++}
++
++impl Drop for TlsHold {
++    fn drop(&mut self) {
++        self.release();
++    }
++}
++
++struct GroupDrain(Arc<GuestThreadGroup>);
++
++impl Drop for GroupDrain {
++    fn drop(&mut self) {
++        self.0.cancel_workers();
++        self.0.join_workers();
++    }
++}
++
++fn bounded_until(mut condition: impl FnMut() -> bool) {
++    let deadline = std::time::Instant::now() + WAIT;
++    while !condition() {
++        assert!(std::time::Instant::now() < deadline, "bounded join control made no progress");
++        std::thread::yield_now();
++    }
++}
++
++#[test]
++fn exec_wait_success_requires_worker_tls_physical_completion() {
++    let backend = KvmBackend::new(0x10000).expect("Exec physical completion control requires /dev/kvm");
++    let group = backend.thread_group.clone();
++    let destroyed = Arc::new(AtomicBool::new(false));
++    let (probe, mut held) = TlsHold::new(None);
++    let handle = std::thread::spawn(move || {
++        HELD_TLS_EXIT.with(|slot| *slot.borrow_mut() = Some(probe));
++        Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
++    });
++    held.entered.recv_timeout(WAIT).unwrap();
++    assert!(handle.is_finished());
++    group.add_worker_handle(2, handle);
++    let waker = futures::task::noop_waker();
++    let mut cx = Context::from_waker(&waker);
++    let mut stop = Box::pin(std::future::pending());
++    let mut callback = Box::pin(Callback {
++        wait: Box::pin(backend.cancel_guest_threads_for_exec(stop.as_mut())),
++        destroyed: destroyed.clone(),
++    });
++    assert!(callback.as_mut().poll(&mut cx).is_pending());
++    bounded_until(|| {
++        assert!(callback.as_mut().poll(&mut cx).is_pending());
++        group.worker_join_helper_state().1
++    });
++    let helper = group.worker_join_helper_state().0.unwrap();
++    assert!(group.worker_handles.lock().unwrap().is_empty());
++    assert_eq!(group.worker_joins.lock().active.len(), 1);
++    assert!(held.done.try_recv().is_err());
++    held.release();
++    bounded_until(|| match callback.as_mut().poll(&mut cx) {
++        Poll::Ready(result) => { result.unwrap(); true },
++        Poll::Pending => false,
++    });
++    held.assert_finished();
++    assert!(!destroyed.load(Ordering::Acquire));
++    assert!(group.worker_joins.lock().active.is_empty());
++    assert_eq!(group.worker_join_helper_state().0, Some(helper));
++    group.teardown_result().unwrap();
++    drop(callback);
++    group.join_workers();
++    assert!(group.worker_join_helper_state().0.is_none());
++    assert!(destroyed.load(Ordering::Acquire));
++}
++
++#[test]
++fn refused_exec_join_helper_preserves_original_worker_and_gate() {
++    let group = Arc::new(GuestThreadGroup::default());
++    let _drain = GroupDrain(group.clone());
++    let (sender, receiver) = mpsc::channel();
++    let gate = ChildStartGate::new(sender);
++    let cause = Arc::new(Error::GuestClock("refused helper's original worker".into()));
++    let worker_cause = cause.clone();
++    group.add_unstarted_worker(2, gate.clone(), std::thread::spawn(move || {
++        assert_eq!(receiver.recv_timeout(WAIT).unwrap(), ChildStartCommand::Cancel);
++        Err(Error::SharedFailure(worker_cause))
++    }));
++    let error = group.start_worker_join_helper_with(
++        std::thread::Builder::new().stack_size(usize::MAX / 2), || {},
++    ).expect_err("impossible helper stack unexpectedly spawned");
++    let Error::SharedFailure(ref helper_cause) = error else { panic!("missing retained spawn error") };
++    assert_eq!(group.worker_handles.lock().unwrap().len(), 1);
++    assert!(group.worker_joins.lock().active.is_empty());
++    assert!(group.worker_join_helper_state().0.is_none());
++    assert!(!gate.is_cancelled());
++    assert!(group.worker_start_gates.lock().unwrap().contains_key(&2));
++    group.cancel_workers();
++    group.join_workers();
++    let completed = group.teardown_result().unwrap_err();
++    assert!(crate::failure::references_shared_error(&completed, helper_cause));
++    assert!(crate::failure::references_shared_error(&completed, &cause));
++    group.join_workers();
++    assert_eq!(group.worker_errors.lock().unwrap().get(&2).unwrap().len(), 1);
++    assert!(group.worker_start_gates.lock().unwrap().is_empty());
++}
++
++struct JoinPanicToken(Arc<AtomicUsize>);
++
++impl Drop for JoinPanicToken {
++    fn drop(&mut self) {
++        self.0.fetch_add(1, Ordering::SeqCst);
++    }
++}
++
++#[test]
++fn exec_join_helper_retains_exact_worker_panic_through_repeated_teardown() {
++    let group = Arc::new(GuestThreadGroup::default());
++    let drain = GroupDrain(group.clone());
++    let (probe, mut held) = TlsHold::new(None);
++    let drops = Arc::new(AtomicUsize::new(0));
++    let payload = Box::new(JoinPanicToken(drops.clone()));
++    let address = (&*payload as *const JoinPanicToken) as usize;
++    let handle = std::thread::spawn(move || -> GuestWorkerResult {
++        HELD_TLS_EXIT.with(|slot| *slot.borrow_mut() = Some(probe));
++        std::panic::resume_unwind(payload);
++    });
++    held.entered.recv_timeout(WAIT).unwrap();
++    assert!(handle.is_finished());
++    group.add_worker_handle(2, handle);
++    bounded_until(|| {
++        assert!(!group.advance_worker_joins_for_exec().unwrap().0);
++        group.worker_join_helper_state().1
++    });
++    assert_eq!(drops.load(Ordering::SeqCst), 0);
++    assert!(group.completed_worker_panics.lock().unwrap().is_empty());
++    held.release();
++    bounded_until(|| group.advance_worker_joins_for_exec().unwrap().0);
++    held.assert_finished();
++    let retained = {
++        let records = group.completed_worker_panics.lock().unwrap();
++        assert_eq!(records.len(), 1);
++        let payload = records[0]._join_payload.as_ref().unwrap();
++        assert_eq!((&**payload as *const dyn std::any::Any as *const ()) as usize, address);
++        records[0].error.clone()
++    };
++    for _ in 0..2 {
++        group.join_workers();
++        let error = group.teardown_result().unwrap_err();
++        assert!(crate::failure::references_shared_error(&error, &retained));
++        assert_eq!(group.worker_errors.lock().unwrap().get(&2).unwrap().len(), 1);
++        assert_eq!(drops.load(Ordering::SeqCst), 0);
++    }
++    drop(drain);
++    drop(group);
++    assert_eq!(drops.load(Ordering::SeqCst), 1);
++}
++
++#[test]
++fn exec_join_helper_does_not_capture_nested_discard_behind_another_worker() {
++    let group = Arc::new(GuestThreadGroup::default());
++    let _drain = GroupDrain(group.clone());
++    let (probe, mut held) = TlsHold::new(None);
++    let unrelated = std::thread::spawn(move || {
++        HELD_TLS_EXIT.with(|slot| *slot.borrow_mut() = Some(probe));
++        Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
++    });
++    held.entered.recv_timeout(WAIT).unwrap();
++    group.add_worker_handle(2, unrelated);
++    bounded_until(|| {
++        assert!(!group.advance_worker_joins_for_exec().unwrap().0);
++        group.worker_join_helper_state().1
++    });
++    let nested = group.clone();
++    let (proceed, wait_proceed) = mpsc::channel();
++    let (cleaned, wait_cleaned) = mpsc::channel();
++    let (release, wait_release) = mpsc::channel();
++    // Dropping this sender rescues A even when an assertion fails.
++    let enclosing = std::thread::spawn(move || {
++        wait_proceed.recv_timeout(WAIT).unwrap();
++        let (sender, receiver) = mpsc::channel();
++        let gate = ChildStartGate::new(sender);
++        nested.add_unstarted_worker(4, gate.clone(), std::thread::spawn(move || {
++            assert_eq!(receiver.recv_timeout(WAIT).unwrap(), ChildStartCommand::Cancel);
++            Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
++        }));
++        gate.cancel();
++        let discarded = nested.discard_unstarted_worker(4);
++        cleaned.send(discarded).unwrap();
++        let _ = wait_release.recv_timeout(WAIT);
++        Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
++    });
++    group.add_worker_handle(3, enclosing);
++    proceed.send(()).unwrap();
++    assert!(wait_cleaned.recv_timeout(WAIT).expect("nested discard waited for unrelated TLS").unwrap());
++    assert!(held.done.try_recv().is_err());
++    assert!(group.worker_join_helper_state().1);
++    assert_eq!(group.worker_handles.lock().unwrap().iter().map(|worker| worker.tid).collect::<Vec<_>>(), vec![3]);
++    assert!(!group.worker_start_gates.lock().unwrap().contains_key(&4));
++    release.send(()).unwrap();
++    held.release();
++    group.join_workers();
++    held.assert_finished();
++    group.teardown_result().unwrap();
++    assert!(group.worker_joins.lock().active.is_empty());
++}
++
++#[test]
++fn exec_join_helper_parent_spawn_hook_panic_restores_original_ownership() {
++    std::thread::spawn(|| {
++        let group = Arc::new(GuestThreadGroup::default());
++        let _drain = GroupDrain(group.clone());
++        let (sender, receiver) = mpsc::channel();
++        let gate = ChildStartGate::new(sender);
++        group.add_unstarted_worker(2, gate.clone(), std::thread::spawn(move || {
++            assert_eq!(receiver.recv_timeout(WAIT).unwrap(), ChildStartCommand::Cancel);
++            Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
++        }));
++        let drops = Arc::new(AtomicUsize::new(0));
++        let payload = Box::new(JoinPanicToken(drops.clone()));
++        let address = (&*payload as *const JoinPanicToken) as usize;
++        let payload: crate::failure::owned_future::PanicPayload = payload;
++        let hook_payload = Arc::new(Mutex::new(Some(payload)));
++        std::thread::add_spawn_hook(move |thread| {
++            if thread.name() == Some("reverie-kvm-join") {
++                let payload = { hook_payload.lock().unwrap().take() };
++                if let Some(payload) = payload {
++                    std::panic::resume_unwind(payload);
++                }
++            }
++            || {}
++        });
++        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            group.start_worker_join_helper_with(
++                std::thread::Builder::new().name("reverie-kvm-join".into()), || {},
++            )
++        })).expect_err("actual parent spawn hook did not panic");
++        assert_eq!((&*caught as *const dyn std::any::Any as *const ()) as usize, address);
++        assert_eq!(drops.load(Ordering::SeqCst), 0);
++        assert!(group.worker_join_helper_state().0.is_none());
++        assert_eq!(group.worker_handles.lock().unwrap().len(), 1);
++        assert!(group.worker_joins.lock().active.is_empty());
++        assert!(!gate.is_cancelled());
++        assert!(group.advance_worker_joins_for_exec().is_err());
++        group.cancel_workers();
++        group.join_workers();
++        assert!(group.worker_start_gates.lock().unwrap().is_empty());
++        assert_eq!(drops.load(Ordering::SeqCst), 0);
++        drop(caught);
++        assert_eq!(drops.load(Ordering::SeqCst), 1);
++    }).join().unwrap();
++}
++
++#[test]
++fn exec_join_helper_child_spawn_hook_panic_retains_handle_payload_and_originals() {
++    std::thread::spawn(|| {
++        let group = Arc::new(GuestThreadGroup::default());
++        let drain = GroupDrain(group.clone());
++        let (sender, receiver) = mpsc::channel();
++        let gate = ChildStartGate::new(sender);
++        let cause = Arc::new(Error::GuestClock("original survived child helper hook".into()));
++        let worker_cause = cause.clone();
++        group.add_unstarted_worker(2, gate.clone(), std::thread::spawn(move || {
++            assert_eq!(receiver.recv_timeout(WAIT).unwrap(), ChildStartCommand::Cancel);
++            Err(Error::SharedFailure(worker_cause))
++        }));
++        let drops = Arc::new(AtomicUsize::new(0));
++        let payload = Box::new(JoinPanicToken(drops.clone()));
++        let address = (&*payload as *const JoinPanicToken) as usize;
++        let payload: crate::failure::owned_future::PanicPayload = payload;
++        let (entered, wait_entered) = mpsc::channel();
++        let (release, wait_release) = mpsc::channel();
++        let hook_state = Arc::new(Mutex::new(Some((payload, entered, wait_release))));
++        std::thread::add_spawn_hook(move |thread| {
++            let state = if thread.name() == Some("reverie-kvm-join") {
++                hook_state.lock().unwrap().take()
++            } else { None };
++            move || {
++                if let Some((payload, entered, release)) = state {
++                    let _ = entered.send(());
++                    let _ = release.recv_timeout(WAIT);
++                    std::panic::resume_unwind(payload);
++                }
++            }
++        });
++        let body_entered = Arc::new(AtomicBool::new(false));
++        let body_flag = body_entered.clone();
++        group.start_worker_join_helper_with(
++            std::thread::Builder::new().name("reverie-kvm-join".into()),
++            move || { body_flag.store(true, Ordering::Release); },
++        ).unwrap();
++        wait_entered.recv_timeout(WAIT).unwrap();
++        let helper = group.worker_join_helper_state().0.unwrap();
++        assert!(!group.advance_worker_joins_for_exec().unwrap().0);
++        assert!(!body_entered.load(Ordering::Acquire));
++        let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
++        let waker = futures::task::waker(wakes.clone());
++        let mut cx = Context::from_waker(&waker);
++        let mut changed = Box::pin(group.subscribe_worker_completion());
++        assert!(changed.as_mut().poll(&mut cx).is_pending());
++        release.send(()).unwrap();
++        bounded_until(|| group.advance_worker_joins_for_exec().is_err()
++            && wakes.0.load(Ordering::SeqCst) > 0);
++        assert!(wakes.0.load(Ordering::SeqCst) > 0);
++        assert!(changed.as_mut().poll(&mut cx).is_ready());
++        let error = group.advance_worker_joins_for_exec().unwrap_err();
++        let Error::SharedFailure(ref startup_cause) = error else { panic!("startup failure lost typed owner") };
++        assert_eq!(group.worker_join_helper_state().0, Some(helper));
++        assert_eq!(group.worker_handles.lock().unwrap().len(), 1);
++        assert!(group.worker_joins.lock().active.is_empty());
++        assert!(!body_entered.load(Ordering::Acquire));
++        assert!(!gate.is_cancelled());
++        assert_eq!(drops.load(Ordering::SeqCst), 0);
++        group.cancel_workers();
++        group.join_workers();
++        assert_eq!(group.worker_join_helper_payload_addresses(), vec![address]);
++        assert!(group.worker_join_helper_state().0.is_none());
++        for _ in 0..2 {
++            let completed = group.teardown_result().unwrap_err();
++            assert!(crate::failure::references_shared_error(&completed, startup_cause));
++            assert!(crate::failure::references_shared_error(&completed, &cause));
++            group.join_workers();
++            assert_eq!(group.worker_errors.lock().unwrap().get(&2).unwrap().len(), 1);
++        }
++        assert_eq!(drops.load(Ordering::SeqCst), 0);
++        drop(drain);
++        drop(group);
++        assert_eq!(drops.load(Ordering::SeqCst), 1);
++    }).join().unwrap();
++}
++
++#[test]
++fn exec_join_helper_reuses_thread_and_defers_inherited_tls_to_outer_drain() {
++    std::thread::spawn(|| {
++        let backend = KvmBackend::new(0x10000).expect("helper TLS control requires /dev/kvm");
++        let group = backend.thread_group.clone();
++        let destroyed = Arc::new(AtomicBool::new(false));
++        let (probe, mut held) = TlsHold::new(Some(destroyed.clone()));
++        let hook_probe = Arc::new(Mutex::new(Some(probe)));
++        let installed = Arc::new(AtomicUsize::new(0));
++        let hook_installed = installed.clone();
++        std::thread::add_spawn_hook(move |thread| {
++            let probe = if thread.name() == Some("reverie-kvm-join") {
++                hook_probe.lock().unwrap().take()
++            } else { None };
++            let installed = hook_installed.clone();
++            move || {
++                if let Some(probe) = probe {
++                    HELD_TLS_EXIT.with(|slot| *slot.borrow_mut() = Some(probe));
++                    installed.fetch_add(1, Ordering::SeqCst);
++                }
++            }
++        });
++        let waker = futures::task::noop_waker();
++        let mut cx = Context::from_waker(&waker);
++        let mut helper = None;
++        for tid in [2, 3] {
++            destroyed.store(false, Ordering::Release);
++            group.add_worker_handle(tid, std::thread::spawn(|| {
++                Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()))
++            }));
++            let mut stop = Box::pin(std::future::pending());
++            let mut callback = Box::pin(Callback {
++                wait: Box::pin(backend.cancel_guest_threads_for_exec(stop.as_mut())),
++                destroyed: destroyed.clone(),
++            });
++            bounded_until(|| match callback.as_mut().poll(&mut cx) {
++                Poll::Ready(result) => { result.unwrap(); true },
++                Poll::Pending => false,
++            });
++            assert_eq!(installed.load(Ordering::SeqCst), 1);
++            let current = group.worker_join_helper_state().0.unwrap();
++            if let Some(previous) = helper { assert_eq!(current, previous); }
++            helper = Some(current);
++            assert!(held.entered.try_recv().is_err());
++            assert!(!destroyed.load(Ordering::Acquire));
++            drop(callback);
++        }
++        assert!(destroyed.load(Ordering::Acquire));
++        held.release();
++        group.join_workers();
++        held.entered.recv_timeout(WAIT).unwrap();
++        held.assert_finished();
++        assert!(group.worker_join_helper_state().0.is_none());
++        group.teardown_result().unwrap();
++    }).join().unwrap();
++}
++
++#[test]
++fn leader_backend_drop_physically_reaps_idle_exec_join_helper() {
++    let backend = KvmBackend::new(0x10000).expect("leader Drop join control requires /dev/kvm");
++    let group = backend.thread_group.clone();
++    let cause = Arc::new(Error::GuestClock("worker error survives leader Drop".into()));
++    let worker_cause = cause.clone();
++    group.add_worker_handle(2, std::thread::spawn(move || {
++        Err(Error::SharedFailure(worker_cause))
++    }));
++    let waker = futures::task::noop_waker();
++    let mut cx = Context::from_waker(&waker);
++    let mut stop = Box::pin(std::future::pending());
++    let mut callback = Box::pin(backend.cancel_guest_threads_for_exec(stop.as_mut()));
++    bounded_until(|| match callback.as_mut().poll(&mut cx) {
++        Poll::Ready(result) => { result.unwrap(); true },
++        Poll::Pending => false,
++    });
++    assert!(group.worker_join_helper_state().0.is_some());
++    assert!(!group.worker_join_helper_state().1);
++    assert!(group.worker_joins.lock().active.is_empty());
++    drop(callback);
++    // This is the actual production owner Drop, with no explicit group join.
++    drop(backend);
++    assert!(group.worker_join_helper_state().0.is_none());
++    assert!(group.worker_joins.lock().active.is_empty());
++    assert!(group.worker_handles.lock().unwrap().is_empty());
++    assert!(group.worker_start_gates.lock().unwrap().is_empty());
++    let error = group.teardown_result().unwrap_err();
++    assert!(crate::failure::references_shared_error(&error, &cause));
++    assert_eq!(group.worker_errors.lock().unwrap().get(&2).unwrap().len(), 1);
++}

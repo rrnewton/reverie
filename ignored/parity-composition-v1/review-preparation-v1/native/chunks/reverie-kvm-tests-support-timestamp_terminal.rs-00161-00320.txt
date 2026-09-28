@@ -1,0 +1,160 @@
+        if matches!(self.mode, 8 | 9) {
+            let result = guest.inject(call).await;
+            panic!("successful terminal injection must never return to the Tool: {result:?}");
+        }
+        guest.tail_inject(call).await
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        call: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        assert_eq!(self.mode, 7);
+        assert_eq!(guest.tid().as_raw(), 1);
+        assert!(matches!(call, Syscall::ExitGroup(_)));
+        guest.send_rpc((11, ExitStatus::SUCCESS)).await;
+        guest.tail_inject(call).await
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _tid: Pid,
+        global: &G,
+        started: bool,
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        assert!(started);
+        global.send_rpc((2, status)).await;
+        if self.mode == 2 {
+            Err(Errno::EIO.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        _pid: Pid,
+        global: &G,
+        status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        global.send_rpc((3, status)).await;
+        Ok(())
+    }
+}
+
+fn terminal_program() -> Vec<u8> {
+    let mut code = vec![
+        0x0f, 0x31, // rdtsc: callback must never return a value to this frame
+        0x0f, 0x31, // a resumed frame would produce a forbidden second callback
+        0xb8, 0xe7, 0, 0, 0, // mov eax, SYS_exit_group
+        0xbf, 77, 0, 0, 0, // mov edi, 77
+        0x0f, 0x05, 0x0f, 0x0b, // syscall; ud2
+    ];
+    code.resize(0x100, 0);
+    code.extend_from_slice(&[0x5a; 16]);
+    code
+}
+
+fn run_terminal(mode: u8, code: &[u8]) -> (reverie_kvm::ToolRunCompletion<TerminalLog>, [u8; 16]) {
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend.set_thread_ownership(ThreadOwnership::Tool);
+    backend
+        .install_static_elf(&static_elf(code), "/bin/timestamp-terminal")
+        .unwrap();
+    let completion = futures::executor::block_on(
+        backend.run_static_elf_with_tool_completion::<TerminalTool>(mode, true),
+    )
+    .unwrap();
+    let mut marker = [0; 16];
+    backend
+        .memory()
+        .read(LOAD_ADDRESS + 0x100, &mut marker)
+        .unwrap();
+    (completion, marker)
+}
+
+#[test]
+fn terminal_exit_preserves_status_and_consuming_cleanup() {
+    if !kvm_available("timestamp terminal exit control") {
+        return;
+    }
+    for mode in [0, 1, 2, 8, 9] {
+        let (completion, marker) = run_terminal(mode, &terminal_program());
+        assert_eq!(marker, [0x5a; 16]);
+        let expected_status = if matches!(mode, 1 | 9) { 29 } else { 23 };
+        let expected = ExitStatus::Exited(expected_status);
+        assert_eq!(
+            *completion.global_state.events.lock().unwrap(),
+            vec![
+                (0, 1, ExitStatus::SUCCESS),
+                (1, 1, ExitStatus::SUCCESS),
+                (2, 1, expected),
+                (3, 1, expected),
+            ],
+            "mode={mode}",
+        );
+        if mode == 2 {
+            let error = completion.result.unwrap_err();
+            eprintln!("actual terminal exit cleanup failure: {error:?}");
+            let Error::SharedFailure(cause) = error else {
+                panic!("expected exactly the real shared exit-hook failure");
+            };
+            assert!(
+                matches!(cause.as_ref(), Error::Reverie(reverie::Error::Errno(e)) if *e == Errno::EIO)
+            );
+        } else {
+            let (status, stdout, stderr) = completion.result.unwrap();
+            assert_eq!(status, expected_status);
+            assert!(stdout.is_empty());
+            assert!(stderr.is_empty());
+        }
+    }
+}
+
+#[test]
+fn nonterminal_tails_refuse_before_side_effects() {
+    if !kvm_available("timestamp nonterminal tail refusal") {
+        return;
+    }
+    for mode in [3, 4, 5, 6] {
+        let (completion, marker) = run_terminal(mode, &terminal_program());
+        assert_eq!(
+            marker, [0x5a; 16],
+            "refused uname must not write guest memory"
+        );
+        let error = completion.result.unwrap_err();
+        eprintln!("actual refused timestamp tail mode={mode}: {error:?}");
+        let Error::SharedFailure(cause) = error else {
+            panic!("refusal must have exactly one shared cause and no hidden cleanup error");
+        };
+        assert!(
+            matches!(cause.as_ref(), Error::Reverie(reverie::Error::Errno(e)) if *e == Errno::ENOSYS)
+        );
+        let events = completion.global_state.events.lock().unwrap();
+        assert_eq!(
+            *events,
+            vec![
+                (0, 1, ExitStatus::SUCCESS),
+                (1, 1, ExitStatus::SUCCESS),
+                (2, 1, ExitStatus::Exited(255)),
+                (3, 1, ExitStatus::Exited(255)),
+            ],
+            "mode={mode}: no new child/image or resumed timestamp",
+        );
+    }
+}
+
+fn sibling_terminal_program(park_leader: bool) -> Vec<u8> {
+    const STACK: u64 = LOAD_ADDRESS + 0x1900;
+    let flags = libc::CLONE_VM as u64
+        | libc::CLONE_FS as u64
+        | libc::CLONE_FILES as u64
+        | libc::CLONE_SIGHAND as u64
+        | libc::CLONE_THREAD as u64
+        | libc::CLONE_SYSVSEM as u64;
+    let mut code = vec![
+        0xb8, 0xb3, 0x01, 0, 0, // mov eax, SYS_clone3
+        0x48, 0xbf, // movabs rdi, clone_args
+    ];

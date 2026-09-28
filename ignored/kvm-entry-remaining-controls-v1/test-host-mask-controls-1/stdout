@@ -1,0 +1,7 @@
+
+running 2 tests
+test entry::signal::tests::kernel_mask_uses_the_flexible_array_offset ... ok
+test entry::signal::tests::reserved_signal_protocol ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 721 filtered out; finished in 0.01s
+

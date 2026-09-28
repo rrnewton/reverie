@@ -1,0 +1,12 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry/signal.rs:470:
+             unsafe {
+                 let mut action: libc::sigaction = std::mem::zeroed();
+                 assert_eq!(libc::sigaction(SIGNAL, std::ptr::null(), &mut action), 0);
+-                assert_eq!(
+-                    action.sa_sigaction,
+-                    foreign_handler as *const () as usize
+-                );
++                assert_eq!(action.sa_sigaction, foreign_handler as *const () as usize);
+             }
+             return;
+         }

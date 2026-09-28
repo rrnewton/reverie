@@ -1,0 +1,22 @@
+[
+  {
+    "path": "entry.rs",
+    "bytes": 46214,
+    "sha256": "8248ec4d8363b9796d4bff9fa20f010558480ccb36dc342755eda561a1bd67d5"
+  },
+  {
+    "path": "entry/owner.rs",
+    "bytes": 34802,
+    "sha256": "3add39ce0f58205e936dd86f6515d8bee23b840be833fa5b40c8a0a28c116de4"
+  },
+  {
+    "path": "failure.rs",
+    "bytes": 44691,
+    "sha256": "e0ce81d02d06f042d7890927e69130536540e5738423524f2df0266fa7f7ebf9"
+  },
+  {
+    "path": "error.rs",
+    "bytes": 20454,
+    "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+  }
+]

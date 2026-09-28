@@ -1,0 +1,9 @@
+gh-merge-verified: pr head c4df9b6a646b CORROBORATED against --expect-head c4df9b6a646b
+gh-merge-verified: PR 608 (rrnewton/reverie)
+  pr head    c4df9b6a646beaa506187058965876e56ebccc7a  (corroborated against c4df9b6a646b)
+  origin/main b13ad926a34f27bb39a349429a1d08e812d741b4
+  files changed by the branch: 3
+    arrived  (main == pr head): 3
+    absent   (main == merge base, change definitely not landed): 0
+    moved on (main matches neither, undecidable from blobs): 0
+  VERIFIED: every file the branch touches is byte-identical on origin/main.

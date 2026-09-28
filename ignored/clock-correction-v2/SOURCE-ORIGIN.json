@@ -1,0 +1,53 @@
+{
+  "base": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "base_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/BASE-MANIFEST.json",
+    "bytes": 708532,
+    "mode": 420,
+    "sha256": "6587502d58552c285da5014420fb4d8a8128c27d72fa7cac8754f559d36869ec"
+  },
+  "clock_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/SOURCE.patch",
+    "bytes": 30883,
+    "mode": 420,
+    "sha256": "f99e50b83981f3c42363bb7fc4968aa05939629741fd728b2abb4f0e6bf7b3ee"
+  },
+  "patch_stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/CLOCK-PATCH.stdout",
+    "bytes": 222,
+    "mode": 420,
+    "sha256": "534529826908d24a2baad2d25027389813c1c3b83b7489985951993f39bc4d98"
+  },
+  "patch_stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/CLOCK-PATCH.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "patch_returncode": 0,
+  "clock_paths_equal_frozen_C": [
+    "reverie-ptrace/src/perf.rs",
+    "reverie-ptrace/src/timer.rs",
+    "reverie-ptrace/src/task.rs",
+    "reverie-ptrace/src/tracer.rs",
+    "reverie-ptrace/src/clock_origin_tests.rs"
+  ],
+  "lock_origin": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "lock_copy": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "tracked_base_exact": true,
+  "base_submodule_gitlinks_preserved": true,
+  "source_only": true,
+  "no_live_scm_write": true,
+  "missing_product_AGENTS": "L/AGENTS.md absent; initial direct cat failed and is recorded here. Parent AGENTS applies; historical .skill_reset_20260816/AGENTS.md is outside edited paths."
+}

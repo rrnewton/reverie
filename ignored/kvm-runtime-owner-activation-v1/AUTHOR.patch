@@ -1,0 +1,1063 @@
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -1798,6 +1798,7 @@
+ 
+ /// A callback constructor can record a terminal signal before returning its
+ /// future. Retain that outcome even if construction itself then panics.
++#[cfg(test)]
+ async fn drive_handler_completion_from<B, F, T>(
+     build: B,
+     handler_signal: SharedHandlerSignal,
+@@ -1808,14 +1809,73 @@
+     B: FnOnce() -> F,
+     F: Future<Output = T>,
+ {
++    drive_handler_completion_from_inner(build, handler_signal, pending_child_starts, failure, None).await
++}
++
++async fn drive_entry_handler_completion_from<B, F, T>(
++    build: B,
++    handler_signal: SharedHandlerSignal,
++    pending_child_starts: SharedChildStarts,
++    failure: impl Future<Output = ()>,
++    watch: crate::entry::driver::EntryDriverWatch,
++) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>>
++where
++    B: FnOnce() -> F,
++    F: Future<Output = T>,
++{
++    drive_handler_completion_from_inner(build, handler_signal, pending_child_starts, failure, Some(watch)).await
++}
++
++async fn drive_handler_completion_from_inner<B, F, T>(
++    build: B,
++    handler_signal: SharedHandlerSignal,
++    pending_child_starts: SharedChildStarts,
++    failure: impl Future<Output = ()>,
++    watch: Option<crate::entry::driver::EntryDriverWatch>,
++) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>>
++where
++    B: FnOnce() -> F,
++    F: Future<Output = T>,
++{
+     use std::panic::AssertUnwindSafe;
+     use std::panic::catch_unwind;
+ 
+     use crate::failure::owned_future::CaughtFuture;
+ 
++    if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
++        // The factory itself can own user values with destructors. Keep the
++        // pending typed cause outside their separate destruction catch.
++        let mut completion = CaughtFuture {
++            output: Some(HandlerOutcome::RuntimeError(error)),
++            panics: Vec::new(),
++        };
++        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(build))) {
++            completion.panics.push(payload);
++        }
++        if let Some(signal) = handler_signal
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .take()
++        {
++            completion.output = Some(match signal {
++                HandlerSignal::RuntimeError(error) => HandlerOutcome::RuntimeError(
++                    crate::entry::driver::combine_pending::<()>(
++                        Err(error),
++                        watch.as_ref().unwrap().check(),
++                    ).unwrap_err(),
++                ),
++                signal => handler_signal_outcome(signal),
++            });
++        }
++        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(failure))) {
++            completion.panics.push(payload);
++        }
++        return completion;
++    }
++
+     match catch_unwind(AssertUnwindSafe(build)) {
+         Ok(future) => {
+-            drive_handler_completion(future, handler_signal, pending_child_starts, failure).await
++            drive_handler_completion_inner(future, handler_signal, pending_child_starts, failure, watch).await
+         }
+         Err(payload) => {
+             // Construction may have moved the only error owner into this slot
+@@ -1833,16 +1893,32 @@
+             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(failure))) {
+                 completion.panics.push(payload);
+             }
++            if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
++                if completion.output.is_none() {
++                    completion.output = Some(HandlerOutcome::RuntimeError(error));
++                }
++            }
+             completion
+         }
+     }
+ }
+ 
++#[cfg(any(test, feature = "native-test-support"))]
+ async fn drive_handler_completion<T>(
+     future: impl Future<Output = T>,
+     handler_signal: SharedHandlerSignal,
+     pending_child_starts: SharedChildStarts,
+     failure: impl Future<Output = ()>,
++) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
++    drive_handler_completion_inner(future, handler_signal, pending_child_starts, failure, None).await
++}
++
++async fn drive_handler_completion_inner<T>(
++    future: impl Future<Output = T>,
++    handler_signal: SharedHandlerSignal,
++    pending_child_starts: SharedChildStarts,
++    failure: impl Future<Output = ()>,
++    watch: Option<crate::entry::driver::EntryDriverWatch>,
+ ) -> crate::failure::owned_future::CaughtFuture<HandlerOutcome<T>> {
+     use std::panic::AssertUnwindSafe;
+     use std::panic::catch_unwind;
+@@ -1866,6 +1942,13 @@
+     // future, including an inline RPC that was pending when failure arrived.
+     let mut future = Box::pin(future);
+     let mut failure = Box::pin(failure);
++    let private_watch = watch.clone();
++    let mut private_failure = Box::pin(async move {
++        match private_watch {
++            Some(watch) => watch.wait().await,
++            None => std::future::pending::<()>().await,
++        }
++    });
+     let mut selected = None;
+     let mut select = |outcome| {
+         selected = Some(outcome);
+@@ -1874,10 +1957,35 @@
+     // This driver only borrows the callback. Its caught poll cannot destroy the
+     // callback allocation or an outcome already moved out of the signal slot.
+     let caught = catch_owned_future(poll_fn(|context| {
++        // Register the private wake before rechecking the sticky obligation.
++        let _ = private_failure.as_mut().poll(context);
++        if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
++            let prior = handler_signal.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
++            return select(match prior {
++                Some(HandlerSignal::RuntimeError(prior)) => HandlerOutcome::RuntimeError(
++                    crate::entry::driver::combine_pending::<()>(Err(prior), Err(error)).unwrap_err(),
++                ),
++                Some(signal) => handler_signal_outcome(signal),
++                None => HandlerOutcome::RuntimeError(error),
++            });
++        }
+         if failure.as_mut().poll(context).is_ready() {
+             return select(terminal());
+         }
+         let result = future.as_mut().poll(context);
++        if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
++            // Keep a selected typed callback value/nonlocal result intact.
++            // The outer finalizer maps its error before combining this sticky
++            // cause; dropping a Ready Err here would lose its actual payload.
++            let signal = handler_signal.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
++            if let Some(signal) = signal {
++                return select(handler_signal_outcome(signal));
++            }
++            return select(match result {
++                Poll::Ready(value) => HandlerOutcome::Returned(value),
++                Poll::Pending => HandlerOutcome::RuntimeError(error),
++            });
++        }
+         if failure.as_mut().poll(context).is_ready() {
+             return select(terminal());
+         }
+@@ -1894,6 +2002,9 @@
+         match result {
+             Poll::Ready(result) => select(HandlerOutcome::Returned(result)),
+             Poll::Pending => {
++                if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
++                    return select(HandlerOutcome::RuntimeError(error));
++                }
+                 let mut starts = pending_child_starts
+                     .lock()
+                     .expect("KVM child-start lock poisoned");
+@@ -1931,6 +2042,13 @@
+     }
+     if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(failure))) {
+         completion.panics.push(payload);
++    }
++    // Destructors may themselves capture a cause. Do not discard a selected
++    // value before its typed mapping; the production finalizer rechecks it.
++    if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
++        if completion.output.is_none() {
++            completion.output = Some(HandlerOutcome::RuntimeError(error));
++        }
+     }
+     completion
+ }
+@@ -2025,9 +2143,15 @@
+         let registers = kvm_registers(backend.vcpu.get_regs()?, 0);
+         let handler_signal = Arc::new(Mutex::new(None));
+         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
++        backend.check_entry_owner()?;
+         expose_tool_scratch(memory, tool_stack_top)?;
+         let mut _process_completed = false;
++        let callback_scope = backend.begin_entry_callback()?;
++        let callback_watch = backend.entry_driver_watch();
++        let callback_memory = backend.memory.clone();
++        executor.bind_address_space(&callback_memory);
+         let outcome = {
++            let memory = callback_memory;
+             let mut guest_executor = StaticElfSyscallExecutor {
+                 backend,
+                 executor,
+@@ -2060,19 +2184,25 @@
+                 tool_stack_top,
+                 stack_checked_out.clone(),
+             );
+-            drive_handler_completion_from(
++            drive_entry_handler_completion_from(
+                 || tool.handle_post_exec(&mut guest),
+                 handler_signal,
+                 pending_child_starts.clone(),
+                 wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
++                callback_watch.clone(),
+             )
+             .await
+         };
+-        let outcome = backend.finish_handler_completion(
++        drop(callback_scope);
++        backend.restore_entry_origin();
++        executor.bind_address_space(&backend.memory);
++
++        let outcome = backend.finish_entry_handler_completion(
+             outcome,
+             hide_tool_scratch(memory, tool_stack_top),
+             Error::PostExec,
+-        )?;
++            &callback_watch,
++        ).await?;
+         match outcome {
+             HandlerOutcome::Returned(Ok(())) => return Ok(CallbackOutcome::Completed(())),
+             HandlerOutcome::Returned(Err(error)) => return Err(Error::PostExec(error)),
+@@ -2174,9 +2304,15 @@
+ 
+     let handler_signal = Arc::new(Mutex::new(None));
+     let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
++    backend.check_entry_owner()?;
+     expose_tool_scratch(memory, tool_stack_top)?;
+     let mut _process_completed = false;
++    let callback_scope = backend.begin_entry_callback()?;
++    let callback_watch = backend.entry_driver_watch();
++    let callback_memory = backend.memory.clone();
++    executor.bind_address_space(&callback_memory);
+     let outcome = {
++        let memory = callback_memory;
+         let mut guest_executor = StaticElfSyscallExecutor {
+             backend,
+             executor,
+@@ -2208,19 +2344,25 @@
+             tool_stack_top,
+             stack_checked_out.clone(),
+         );
+-        drive_handler_completion_from(
++        drive_entry_handler_completion_from(
+             || tool.handle_syscall_event(&mut guest, syscall),
+             handler_signal,
+             pending_child_starts.clone(),
+             wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
++            callback_watch.clone(),
+         )
+         .await
+     };
+-    let outcome = backend.finish_handler_completion(
++    drop(callback_scope);
++    backend.restore_entry_origin();
++    executor.bind_address_space(&backend.memory);
++
++    let outcome = backend.finish_entry_handler_completion(
+         outcome,
+         hide_tool_scratch(memory, tool_stack_top),
+         Error::Reverie,
+-    )?;
++        &callback_watch,
++    ).await?;
+ 
+     match outcome {
+         HandlerOutcome::Returned(result) => result
+@@ -2504,6 +2646,7 @@
+         workers,
+         failure,
+         &panics,
++        None,
+     )
+     .await;
+     let mut payloads = panics.take();
+@@ -2536,6 +2679,7 @@
+     workers: Result<()>,
+     failure: Option<&FailureContext>,
+     panics: &crate::failure::tool_panics::ToolPanics,
++    backend: Option<&KvmBackend>,
+ ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+     let (pid, tid) = identity;
+     let report = |phase, error| match failure {
+@@ -2605,6 +2749,12 @@
+     )
+     .await
+     .map_err(|error| report("owner exit", error));
++    // Consuming hooks may use retained memory. Route their newly captured
++    // obligation before any physical child join, outside all callback scopes.
++    let entry = match backend {
++        Some(backend) => backend.route_entry_outcome(Ok(())).await,
++        None => Ok(()),
++    }.map_err(|error| report("entry completion", error));
+     // A peer can publish after this process's successful local outcome. Its
+     // terminal state must still select Cancel for every pending child gate.
+     let terminal = wait_for_failure(global_state, failure.map(|failure| failure.run.subscribe()))
+@@ -2616,6 +2766,7 @@
+             || owner.is_err()
+             || workers.is_err()
+             || process_status.is_err()
++            || entry.is_err()
+         {
+             executor.join_child_processes_after_failure()
+         } else {
+@@ -2630,6 +2781,7 @@
+         workers,
+         process_status,
+         owner,
++        entry,
+         children,
+     ]
+     .into_iter()
+@@ -2982,6 +3134,63 @@
+         ))
+     }
+ 
++    /// Recheck after actual callback destruction and typed result mapping.
++    /// Nonlocal outcomes keep their existing settlement path; the sticky entry
++    /// obligation is routed before the outer boundary publishes or joins.
++    async fn finish_entry_handler_completion<T, E>(
++        &mut self,
++        completion: crate::failure::owned_future::CaughtFuture<
++            HandlerOutcome<std::result::Result<T, E>>,
++        >,
++        hidden: Result<()>,
++        map_error: impl Fn(E) -> Error + Copy,
++        watch: &crate::entry::driver::EntryDriverWatch,
++    ) -> Result<HandlerOutcome<std::result::Result<T, E>>> {
++        let outcome = self.finish_handler_completion(completion, hidden, map_error)?;
++        let outcome = if let Err(entry) = watch.check() {
++        let error = match outcome {
++            HandlerOutcome::RuntimeError(error) => {
++                crate::entry::driver::combine_pending::<()>(Err(error), Err(entry)).unwrap_err()
++            }
++            HandlerOutcome::Returned(Err(error)) => {
++                crate::entry::driver::combine_pending::<()>(Err(map_error(error)), Err(entry)).unwrap_err()
++            }
++            HandlerOutcome::RunFailed => {
++                crate::entry::driver::combine_pending::<()>(Err(Error::RunAborted), Err(entry)).unwrap_err()
++            }
++            HandlerOutcome::Returned(Ok(value)) => {
++                // Retain the typed cause while discarding an ordinary success.
++                // A user value destructor must not unwind through that cause.
++                let panics = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(value)))
++                    .err().into_iter().collect();
++                self.tool_panic_owner().finish::<()>(
++                    crate::failure::owned_future::CaughtFuture {
++                        output: Some(Err(entry)),
++                        panics,
++                    },
++                    "Tool callback result",
++                ).unwrap_err()
++            }
++            outcome => {
++                // Preserve the actual nonlocal continuation and its settlement
++                // ownership. Routing releases foreign observers first; the
++                // retained cause still stops the next ordinary operation.
++                let _ = self.route_entry_outcome::<()>(Err(entry)).await;
++                return Ok(outcome);
++            }
++        };
++        HandlerOutcome::RuntimeError(error)
++        } else {
++            outcome
++        };
++        match outcome {
++            HandlerOutcome::RuntimeError(error) => Ok(HandlerOutcome::RuntimeError(
++                self.route_entry_outcome::<()>(Err(error)).await.unwrap_err(),
++            )),
++            outcome => Ok(outcome),
++        }
++    }
++
+     async fn finish_signal_boundary<G: GlobalTool>(
+         &mut self,
+         executor: &mut ElfExecutor,
+@@ -3075,6 +3284,7 @@
+             Err(Error::ExecWorkerTeardown(primary)) => (Err(*primary), true),
+             outcome => (outcome, false),
+         };
++        let outcome = self.route_entry_outcome(outcome).await;
+         let settlement = self
+             .finish_signal_boundary(
+                 executor,
+@@ -3097,6 +3307,7 @@
+             executor.finish_parked_delivery();
+         }
+         let outcome = outcome.map_err(|error| executor.with_signal_effects(error, None));
++        let outcome = self.route_entry_outcome(outcome).await;
+         let outcome = outcome.map_err(|error| self.report_tool_failure("execution", error));
+         // These futures own child ThreadState and consuming hooks. They were
+         // never polled inside the now-destroyed parent callback. Complete all
+@@ -3109,6 +3320,8 @@
+             (Ok(_), Err(error)) => Err(self.report_tool_failure("unstarted-child cleanup", error)),
+             (Err(error), Err(cleanup)) => Err(error.with_cleanup(vec![cleanup])),
+         };
++        let outcome = self.route_entry_outcome(outcome).await
++            .map_err(|error| self.report_tool_failure("unstarted-child entry cleanup", error));
+         let natural_exit = outcome.as_ref().is_ok_and(|exit| exit.joins_live_peers());
+         let cancelled_exit = retire_peer_cancelled_tool_worker(
+             executor,
+@@ -3136,6 +3349,11 @@
+         self.clear_registered_worker_tid_before_exit(executor);
+         executor.release_files_on_exit();
+         self.release_stdin_on_exit();
++        let outcome = self.route_entry_outcome(outcome).await
++            .map_err(|error| self.report_tool_failure("thread retirement entry cleanup", error));
++        let cancelled_exit = cancelled_exit.filter(|_| {
++            is_peer_cancelled_tool_worker(identity, start_permitted, &outcome)
++        });
+         if outcome.is_err() && cancelled_exit.is_none() {
+             // A failed worker must interrupt live siblings before a leader's
+             // natural join can block on an earlier handle. Cancellation does
+@@ -3169,6 +3387,7 @@
+             workers,
+             self.tool_failure.as_ref(),
+             &self.tool_panic_owner(),
++            Some(self),
+         )
+         .await
+     }
+@@ -3277,6 +3496,7 @@
+         global_state
+             .install_backend_signal_control(None)
+             .map_err(Error::Reverie)?;
++        let entry_scope = self.start_entry_driver();
+         let tool = Arc::new(T::new(pid, &config));
+         let subscriptions = T::subscriptions(&config);
+         let mut thread_state = tool.init_thread_state(pid, None);
+@@ -3289,8 +3509,13 @@
+             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+             let handler_signal = Arc::new(Mutex::new(None));
+             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
++            self.check_entry_owner()?;
+             expose_tool_scratch(&memory, tool_stack_top)?;
++            let callback_scope = self.begin_entry_callback()?;
++            let callback_watch = self.entry_driver_watch();
++            let callback_memory = self.memory.clone();
+             let start_outcome = {
++                let memory = callback_memory;
+                 let mut guest_executor = DirectSyscallExecutor {
+                     executor: &mut executor,
+                     vcpu: &self.vcpu,
+@@ -3314,19 +3539,24 @@
+                     tool_stack_top,
+                     stack_checked_out.clone(),
+                 );
+-                drive_handler_completion_from(
++                drive_entry_handler_completion_from(
+                     || tool.handle_thread_start(&mut guest),
+                     handler_signal,
+                     pending_child_starts,
+                     wait_for_failure(&global_state, None),
++                    callback_watch.clone(),
+                 )
+                 .await
+             };
+-            let start_outcome = self.finish_handler_completion(
++            drop(callback_scope);
++            self.restore_entry_origin();
++
++            let start_outcome = self.finish_entry_handler_completion(
+                 start_outcome,
+                 hide_tool_scratch(&memory, tool_stack_top),
+                 Error::Reverie,
+-            )?;
++                &callback_watch,
++            ).await?;
+             match start_outcome {
+                 HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                 HandlerOutcome::ThreadCancelled => {
+@@ -3348,6 +3578,7 @@
+             }
+ 
+             loop {
++                self.check_entry_owner()?;
+                 let changed = memory.entry_gate().subscribe();
+                 memory
+                     .entry_gate()
+@@ -3385,8 +3616,13 @@
+                             loop {
+                                 let handler_signal = Arc::new(Mutex::new(None));
+                                 let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
++                                self.check_entry_owner()?;
+                                 expose_tool_scratch(&memory, tool_stack_top)?;
++                                let callback_scope = self.begin_entry_callback()?;
++                                let callback_watch = self.entry_driver_watch();
++                                let callback_memory = self.memory.clone();
+                                 let outcome = {
++                                    let memory = callback_memory;
+                                     let mut guest_executor = DirectSyscallExecutor {
+                                         executor: &mut executor,
+                                         vcpu: &self.vcpu,
+@@ -3410,19 +3646,24 @@
+                                         tool_stack_top,
+                                         stack_checked_out.clone(),
+                                     );
+-                                    drive_handler_completion_from(
++                                    drive_entry_handler_completion_from(
+                                         || tool.handle_syscall_event(&mut guest, syscall),
+                                         handler_signal,
+                                         pending_child_starts,
+                                         wait_for_failure(&global_state, None),
++                                        callback_watch.clone(),
+                                     )
+                                     .await
+                                 };
+-                                let outcome = self.finish_handler_completion(
++                                drop(callback_scope);
++                                self.restore_entry_origin();
++
++                                let outcome = self.finish_entry_handler_completion(
+                                     outcome,
+                                     hide_tool_scratch(&memory, tool_stack_top),
+                                     Error::Reverie,
+-                                )?;
++                                    &callback_watch,
++                                ).await?;
+                                 break match outcome {
+                                     HandlerOutcome::Returned(result) => {
+                                         match classify_handler_result(result)? {
+@@ -3454,6 +3695,7 @@
+                         } else {
+                             executor.execute(&request, &memory)
+                         };
++                        self.check_entry_owner()?;
+                         // SAFETY: return_slot points into this vCPU's stable KVM_RUN
+                         // mapping. The vCPU remains stopped and is not run again while
+                         // the tool callback is active.
+@@ -3472,6 +3714,9 @@
+             crate::failure::owned_future::catch_owned_future(execution).await,
+             "direct Tool execution",
+         );
++        self.restore_entry_origin();
++        let entry_was_failed = self.check_entry_owner().is_err();
++        let outcome = self.route_entry_outcome(outcome).await;
+         if outcome.is_err() {
+             global_state.report_backend_failure(reverie::BackendFailure {
+                 pid,
+@@ -3496,6 +3741,15 @@
+                 .filter_map(Result::err)
+                 .collect(),
+         );
++        let late_entry = !entry_was_failed && self.check_entry_owner().is_err();
++        let result = self.route_entry_outcome(result).await;
++        let before_retirement_ok = result.is_ok();
++        let result = self.finish_entry_driver(entry_scope, result);
++        if (late_entry || before_retirement_ok) && result.is_err() {
++            global_state.report_backend_failure(reverie::BackendFailure {
++                pid, tid: pid, phase: "direct entry completion",
++            });
++        }
+         self.finish_public_tool_panic(result, None)?;
+         Ok(global_state)
+     }
+@@ -3578,6 +3832,7 @@
+         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
+         let failure = RunFailure::new(&global_state);
+         self.set_tool_failure(Some(FailureContext::new(failure.clone(), pid, pid)));
++        let entry_scope = self.start_entry_driver();
+         let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+         // Atomic run-level installation precedes Tool/thread construction and
+         // the first handle_thread_start. No capability is inferred from a PID.
+@@ -3587,8 +3842,9 @@
+             Ok(mode) => mode,
+             Err(error) => {
+                 let context = FailureContext::new(failure.clone(), pid, pid);
+-                let error =
+-                    context.publish("process signal control installation", Error::Reverie(error));
++                let result = self.route_entry_outcome::<()>(Err(Error::Reverie(error))).await;
++                let error = context.publish("process signal control installation",
++                    self.finish_entry_driver(entry_scope, result).unwrap_err());
+                 self.set_tool_failure(None);
+                 let global_state = Arc::try_unwrap(global_state).map_err(|_| {
+                     Error::UnexpectedVcpuExit("signal setup retained GlobalState".to_owned())
+@@ -3622,6 +3878,9 @@
+             (Ok(_), Some(publication)) => Err(publication),
+             (Err(error), Some(publication)) => Err(error.with_cleanup(vec![publication])),
+         };
++        let result = self.route_entry_outcome(result).await;
++        let result = self.finish_entry_driver(entry_scope, result)
++            .map_err(|error| self.report_tool_failure("entry driver completion", error));
+         // All owned children have returned. Do not leave the backend holding
+         // a reporter whose Weak owner is about to be consumed or released.
+         self.set_tool_failure(None);
+@@ -3792,6 +4051,7 @@
+         let mut process_completed = false;
+         let tool_stack_top = self.tool_stack_top();
+         let failure_subscription = self.failure_subscription(executor.is_traced_tree_root());
++        self.check_entry_owner()?;
+         expose_tool_scratch(memory, tool_stack_top)?;
+         let process_context = if let Some(fault) = fault {
+             ProcessExecutionContext::FaultBoundary(Box::new(fault.clone()))
+@@ -3818,7 +4078,12 @@
+         let continuation_site = executor
+             .signal_failure_context()
+             .map(|context| context.site);
++        let callback_scope = self.begin_entry_callback()?;
++        let callback_watch = self.entry_driver_watch();
++        let callback_memory = self.memory.clone();
++        executor.bind_address_space(&callback_memory);
+         let outcome = {
++            let memory = callback_memory;
+             let mut guest_executor = StaticElfSyscallExecutor {
+                 backend: self,
+                 executor,
+@@ -3852,19 +4117,25 @@
+                 tool_stack_top,
+                 stack_checked_out.clone(),
+             );
+-            drive_handler_completion_from(
++            drive_entry_handler_completion_from(
+                 || tool.handle_structured_signal_event(&mut guest, pending.event),
+                 handler_signal,
+                 pending_child_starts.clone(),
+                 wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
++                callback_watch.clone(),
+             )
+             .await
+         };
+-        let outcome = self.finish_handler_completion(
++        drop(callback_scope);
++        self.restore_entry_origin();
++        executor.bind_address_space(&self.memory);
++
++        let outcome = self.finish_entry_handler_completion(
+             outcome,
+             hide_tool_scratch(memory, tool_stack_top),
+             |error| Error::Reverie(error.into()),
+-        )?;
++            &callback_watch,
++        ).await?;
+         let replacement = match outcome {
+             HandlerOutcome::Returned(Ok(replacement)) => replacement,
+             HandlerOutcome::Returned(Err(errno)) => {
+@@ -3995,8 +4266,14 @@
+             self.vcpu.track_clock()?;
+             _registration = Some(self.register_guest_thread()?);
+             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
++            self.check_entry_owner()?;
+             expose_tool_scratch(&memory, tool_stack_top)?;
++            let callback_scope = self.begin_entry_callback()?;
++            let callback_watch = self.entry_driver_watch();
++            let callback_memory = self.memory.clone();
++            executor.bind_address_space(&callback_memory);
+             let start_outcome = {
++                let memory = callback_memory;
+                 let mut guest_executor = StaticElfSyscallExecutor {
+                     backend: self,
+                     executor,
+@@ -4027,19 +4304,25 @@
+                     tool_stack_top,
+                     stack_checked_out.clone(),
+                 );
+-                drive_handler_completion_from(
++                drive_entry_handler_completion_from(
+                     || tool.handle_thread_start(&mut guest),
+                     handler_signal,
+                     pending_child_starts.clone(),
+                     wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
++                    callback_watch.clone(),
+                 )
+                 .await
+             };
+-            let start_outcome = self.finish_handler_completion(
++            drop(callback_scope);
++            self.restore_entry_origin();
++            executor.bind_address_space(&self.memory);
++
++            let start_outcome = self.finish_entry_handler_completion(
+                 start_outcome,
+                 hide_tool_scratch(&memory, tool_stack_top),
+                 Error::Reverie,
+-            )?;
++                &callback_watch,
++            ).await?;
+             match start_outcome {
+                 HandlerOutcome::ThreadCancelled => {
+                     self.start_pending_tool_children(executor, &pending_child_starts)?;
+@@ -4222,6 +4505,7 @@
+             // borrowed elsewhere in the loop body.
+             let thread_ownership = self.thread_ownership;
+             loop {
++                self.check_entry_owner()?;
+                 let changed = memory.entry_gate().subscribe();
+                 let cancelled = self.entry_cancellation();
+                 memory
+@@ -4275,8 +4559,14 @@
+                             let handler_signal = Arc::new(Mutex::new(None));
+                             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                             let mut process_completed = false;
++                            self.check_entry_owner()?;
+                             expose_tool_scratch(&memory, tool_stack_top)?;
++                            let callback_scope = self.begin_entry_callback()?;
++                            let callback_watch = self.entry_driver_watch();
++                            let callback_memory = self.memory.clone();
++                            executor.bind_address_space(&callback_memory);
+                             let result = {
++                                let memory = callback_memory;
+                                 let mut guest_executor = StaticElfSyscallExecutor {
+                                     backend: self,
+                                     executor,
+@@ -4309,7 +4599,7 @@
+                                 );
+                                 match &boundary {
+                                     crate::vm::ToolInstructionBoundary::Timestamp(boundary) => {
+-                                        let completion = drive_handler_completion_from(
++                                        let completion = drive_entry_handler_completion_from(
+                                             || {
+                                                 tool.handle_rdtsc_event(
+                                                     &mut guest,
+@@ -4322,6 +4612,7 @@
+                                                 global_state.as_ref(),
+                                                 failure_subscription.clone(),
+                                             ),
++                                            callback_watch.clone(),
+                                         )
+                                         .await;
+                                         map_handler_completion(completion, |result| {
+@@ -4329,7 +4620,7 @@
+                                         })
+                                     }
+                                     crate::vm::ToolInstructionBoundary::Cpuid(boundary) => {
+-                                        let completion = drive_handler_completion_from(
++                                        let completion = drive_entry_handler_completion_from(
+                                             || {
+                                                 tool.handle_cpuid_event(
+                                                     &mut guest,
+@@ -4343,6 +4634,7 @@
+                                                 global_state.as_ref(),
+                                                 failure_subscription.clone(),
+                                             ),
++                                            callback_watch.clone(),
+                                         )
+                                         .await;
+                                         map_handler_completion(completion, |result| {
+@@ -4351,13 +4643,20 @@
+                                     }
+                                 }
+                             };
++                            drop(callback_scope);
++                            self.restore_entry_origin();
++                            executor.bind_address_space(&self.memory);
++
+                             // Hide scratch even on callback failure. The outer
+                             // process supervisor retains any committed effects.
+                             let hidden = hide_tool_scratch(&memory, tool_stack_top);
+                             let result =
+-                                self.finish_handler_completion(result, Ok(()), |error| {
+-                                    Error::Reverie(error.into())
+-                                })?;
++                                self.finish_entry_handler_completion(
++                                    result,
++                                    Ok(()),
++                                    |error| Error::Reverie(error.into()),
++                                    &callback_watch,
++                                ).await?;
+                             let value = match result {
+                                 HandlerOutcome::Returned(Ok(value)) => value,
+                                 HandlerOutcome::Returned(Err(error)) => {
+@@ -4615,6 +4914,7 @@
+                     loop {
+                         let handler_signal = Arc::new(Mutex::new(None));
+                         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
++                        self.check_entry_owner()?;
+                         expose_tool_scratch(&memory, tool_stack_top)?;
+                         let boundary = {
+                             let mut stop = pin!(wait_for_failure(
+@@ -4633,7 +4933,12 @@
+                             hide_tool_scratch(&memory, tool_stack_top)?;
+                             return Ok(self.cancelled_tool_thread_status(executor));
+                         };
++                        let callback_scope = self.begin_entry_callback()?;
++                        let callback_watch = self.entry_driver_watch();
++                        let callback_memory = self.memory.clone();
++                        executor.bind_address_space(&callback_memory);
+                         let outcome = {
++                            let memory = callback_memory;
+                             let mut guest_executor = StaticElfSyscallExecutor {
+                                 backend: self,
+                                 executor,
+@@ -4664,7 +4969,7 @@
+                                 tool_stack_top,
+                                 stack_checked_out.clone(),
+                             );
+-                            drive_handler_completion_from(
++                            drive_entry_handler_completion_from(
+                                 || tool.handle_syscall_event(&mut guest, syscall),
+                                 handler_signal,
+                                 pending_child_starts.clone(),
+@@ -4672,14 +4977,20 @@
+                                     global_state.as_ref(),
+                                     failure_subscription.clone(),
+                                 ),
++                                callback_watch.clone(),
+                             )
+                             .await
+                         };
+-                        let outcome = self.finish_handler_completion(
++                        drop(callback_scope);
++                        self.restore_entry_origin();
++                        executor.bind_address_space(&self.memory);
++
++                        let outcome = self.finish_entry_handler_completion(
+                             outcome,
+                             hide_tool_scratch(&memory, tool_stack_top),
+                             Error::Reverie,
+-                        )?;
++                            &callback_watch,
++                        ).await?;
+                         let classified = match outcome {
+                             HandlerOutcome::Returned(result) => {
+                                 let classified = match classify_handler_result(result) {
+@@ -5047,6 +5358,9 @@
+             crate::failure::owned_future::catch_owned_future(execution).await,
+             "Tool execution",
+         );
++        self.restore_entry_origin();
++        executor.bind_address_space(&self.memory);
++        let outcome = self.route_entry_outcome(outcome).await;
+         let outcome = outcome.map_err(|error| {
+             self.cleanup_unstarted_tool_children_after_error(executor, &pending_child_starts, error)
+         });
+@@ -6142,3 +6456,6 @@
+ 
+ #[cfg(test)]
+ mod consuming_panic_tests;
++
++#[cfg(test)]
++mod entry_owner_tests;
+--- a/reverie-kvm/src/runtime/entry_owner_tests.rs
++++ b/reverie-kvm/src/runtime/entry_owner_tests.rs
+@@ -0,0 +1,215 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! Finite private-driver controls. KVM setup only; no guest entry.
++
++use std::panic::resume_unwind;
++use std::sync::atomic::AtomicUsize;
++use std::task::Context;
++use std::task::Waker;
++
++use futures::task::ArcWake;
++
++use super::*;
++use crate::entry::owner::OperationOrigin;
++use crate::failure::owned_future::PanicPayload;
++
++#[derive(Default)]
++struct Counts {
++    polls: AtomicUsize,
++    drops: AtomicUsize,
++    wakes: AtomicUsize,
++}
++
++impl ArcWake for Counts {
++    fn wake_by_ref(this: &Arc<Self>) {
++        this.wakes.fetch_add(1, Ordering::SeqCst);
++    }
++}
++
++struct PendingCallback {
++    counts: Arc<Counts>,
++    origin: OperationOrigin,
++}
++
++impl Future for PendingCallback {
++    type Output = Result<()>;
++    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
++        assert_eq!(self.counts.polls.fetch_add(1, Ordering::SeqCst), 0);
++        Poll::Pending
++    }
++}
++
++impl Drop for PendingCallback {
++    fn drop(&mut self) {
++        assert!(!self.origin.callback_dropped());
++        assert_eq!(self.counts.drops.fetch_add(1, Ordering::SeqCst), 0);
++    }
++}
++
++fn backend() -> KvmBackend {
++    KvmBackend::new(0x10000).expect("entry owner controls require /dev/kvm")
++}
++
++#[test]
++fn private_entry_failure_wakes_pending_callback_before_scope_acknowledgement() {
++    let mut backend = backend();
++    let driver = backend.start_entry_driver();
++    let callback = backend.begin_entry_callback().unwrap().unwrap();
++    let origin = callback.origin();
++    let memory = backend.memory.clone();
++    let watch = backend.entry_driver_watch();
++    let counts = Arc::new(Counts::default());
++    let probe = PendingCallback { counts: counts.clone(), origin: origin.clone() };
++    let signal = Arc::new(Mutex::new(None));
++    let starts = Arc::new(Mutex::new(Vec::new()));
++    let mut driven = Box::pin(drive_entry_handler_completion_from(
++        || probe, signal, starts, std::future::pending(), watch.clone(),
++    ));
++    let waker = futures::task::waker(counts.clone());
++    let mut cx = Context::from_waker(&waker);
++    assert!(driven.as_mut().poll(&mut cx).is_pending());
++    assert_eq!(counts.polls.load(Ordering::SeqCst), 1);
++    assert_eq!(counts.drops.load(Ordering::SeqCst), 0);
++    let failure = memory.entry_gate().poison(memory.entry_origin(), Error::GuestClock("private wake".into()));
++    assert!(counts.wakes.load(Ordering::SeqCst) > 0);
++    let Poll::Ready(completion) = driven.as_mut().poll(&mut cx) else {
++        panic!("private cause did not end callback polling");
++    };
++    drop(driven);
++    assert_eq!(counts.polls.load(Ordering::SeqCst), 1);
++    assert_eq!(counts.drops.load(Ordering::SeqCst), 1);
++    assert!(!origin.callback_dropped());
++    assert!(completion.panics.is_empty());
++    drop(callback);
++    backend.restore_entry_origin();
++    assert!(origin.callback_dropped());
++    let result = futures::executor::block_on(backend.finish_entry_handler_completion(
++        completion, Ok(()), |error| error, &watch,
++    )).unwrap();
++    let HandlerOutcome::RuntimeError(error) = result else { panic!("private failure was hidden"); };
++    assert!(error.retains_primary(&failure.causes()[0]));
++    let retired = backend.finish_entry_driver(driver, Err::<(), _>(error));
++    assert!(retired.unwrap_err().retains_primary(&failure.causes()[0]));
++}
++
++struct DropPanic {
++    payload: Option<PanicPayload>,
++    drops: Arc<AtomicUsize>,
++}
++
++impl Drop for DropPanic {
++    fn drop(&mut self) {
++        assert_eq!(self.drops.fetch_add(1, Ordering::SeqCst), 0);
++        resume_unwind(self.payload.take().unwrap());
++    }
++}
++
++struct UnpolledFailure { _guard: DropPanic }
++impl Future for UnpolledFailure {
++    type Output = ();
++    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
++        panic!("pre-construction failure must not poll failure future");
++    }
++}
++
++#[test]
++fn existing_entry_failure_skips_factory_and_retains_both_destructor_payloads() {
++    let mut backend = backend();
++    let driver = backend.start_entry_driver();
++    let callback = backend.begin_entry_callback().unwrap().unwrap();
++    let watch = backend.entry_driver_watch();
++    let memory = backend.memory.clone();
++    let failure = memory.entry_gate().poison(memory.entry_origin(), Error::GuestClock("before factory".into()));
++    let build_calls = Arc::new(AtomicUsize::new(0));
++    let builder_drops = Arc::new(AtomicUsize::new(0));
++    let failure_drops = Arc::new(AtomicUsize::new(0));
++    let first = Box::new(201_u64);
++    let first_address = std::ptr::from_ref(first.as_ref()) as usize;
++    let second = Box::new(202_u64);
++    let second_address = std::ptr::from_ref(second.as_ref()) as usize;
++    let guard = DropPanic { payload: Some(first), drops: builder_drops.clone() };
++    let calls = build_calls.clone();
++    let build = move || {
++        let _guard = guard;
++        calls.fetch_add(1, Ordering::SeqCst);
++        std::future::pending::<Result<()>>()
++    };
++    let completion = futures::executor::block_on(drive_entry_handler_completion_from(
++        build,
++        Arc::new(Mutex::new(None)),
++        Arc::new(Mutex::new(Vec::new())),
++        UnpolledFailure { _guard: DropPanic { payload: Some(second), drops: failure_drops.clone() } },
++        watch,
++    ));
++    assert_eq!(build_calls.load(Ordering::SeqCst), 0);
++    assert_eq!(builder_drops.load(Ordering::SeqCst), 1);
++    assert_eq!(failure_drops.load(Ordering::SeqCst), 1);
++    assert_eq!(completion.panics.len(), 2);
++    for (actual, address, value) in [
++        (&completion.panics[0], first_address, 201),
++        (&completion.panics[1], second_address, 202),
++    ] {
++        let actual = actual.downcast_ref::<u64>().unwrap();
++        assert_eq!(std::ptr::from_ref(actual) as usize, address);
++        assert_eq!(*actual, value);
++    }
++    let Some(HandlerOutcome::RuntimeError(error)) = completion.output else {
++        panic!("dropping the uncalled factory lost the typed entry cause");
++    };
++    assert!(error.retains_primary(&failure.causes()[0]));
++    drop(callback);
++    backend.restore_entry_origin();
++    assert!(backend.finish_entry_driver(driver, Err::<(), _>(error)).is_err());
++}
++
++#[test]
++fn ready_typed_error_survives_entry_failure_and_outer_mapping() {
++    let mut backend = backend();
++    let driver = backend.start_entry_driver();
++    let callback = backend.begin_entry_callback().unwrap().unwrap();
++    let memory = backend.memory.clone();
++    let watch = backend.entry_driver_watch();
++    let original = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(libc::ENOSPC)));
++    let weak = Arc::downgrade(&original);
++    let mut original = Some(Error::SharedFailure(original));
++    let calls = Arc::new(AtomicUsize::new(0));
++    let polls = calls.clone();
++    let future = poll_fn(move |_| {
++        assert_eq!(polls.fetch_add(1, Ordering::SeqCst), 0);
++        memory.entry_gate().poison(memory.entry_origin(), Error::GuestClock("after Ready".into()));
++        Poll::Ready(Err::<(), _>(original.take().unwrap()))
++    });
++    let mut driven = Box::pin(drive_entry_handler_completion_from(
++        || future,
++        Arc::new(Mutex::new(None)),
++        Arc::new(Mutex::new(Vec::new())),
++        std::future::pending(),
++        watch.clone(),
++    ));
++    let mut cx = Context::from_waker(Waker::noop());
++    let Poll::Ready(completion) = driven.as_mut().poll(&mut cx) else { panic!("Ready error stayed pending"); };
++    drop(driven);
++    assert!(matches!(&completion.output, Some(HandlerOutcome::Returned(Err(_)))));
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    assert!(completion.panics.is_empty());
++    drop(callback);
++    backend.restore_entry_origin();
++    let result = futures::executor::block_on(backend.finish_entry_handler_completion(
++        completion, Ok(()), |error| error, &watch,
++    )).unwrap();
++    let HandlerOutcome::RuntimeError(error) = result else { panic!("entry cause was ignored"); };
++    let expected = weak.upgrade().expect("typed callback error was lost");
++    assert!(error.retains_primary(&expected));
++    assert!(matches!(expected.as_ref(), Error::HostIo(error) if error.raw_os_error() == Some(libc::ENOSPC)));
++    let gate = backend.memory.entry_gate().pending_failure().unwrap();
++    assert!(crate::failure::references_shared_error(&error, &gate.causes()[0]));
++    drop(expected);
++    drop(backend.finish_entry_driver(driver, Err::<(), _>(error)));
++    assert!(weak.upgrade().is_none());
++}

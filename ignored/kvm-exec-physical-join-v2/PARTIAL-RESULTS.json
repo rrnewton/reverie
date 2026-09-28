@@ -1,0 +1,80 @@
+{
+  "source_sha256": "524c86d4843278e052350800ab9d624786b97b5e400c95e4765cad5fa8a69d88",
+  "planned_declarations": 180,
+  "passed_declarations": 39,
+  "failed_declarations": 1,
+  "unlaunched_declarations": 140,
+  "test_phases": [
+    {
+      "phase": "test-owned-future-1",
+      "selected": 4,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.03959110798314214
+    },
+    {
+      "phase": "test-panic-drain-1",
+      "selected": 3,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.05262846685945988
+    },
+    {
+      "phase": "test-handler-scratch-1",
+      "selected": 2,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.05088805197738111
+    },
+    {
+      "phase": "test-injected-boundary-1",
+      "selected": 1,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.10436539398506284
+    },
+    {
+      "phase": "test-worker-panic-1",
+      "selected": 5,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.31342068989761174
+    },
+    {
+      "phase": "test-normal-cleanup-1",
+      "selected": 1,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.030349007109180093
+    },
+    {
+      "phase": "test-handler-destruction-1",
+      "selected": 1,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.04278634604997933
+    },
+    {
+      "phase": "test-caught-worker-1",
+      "selected": 1,
+      "raw_status": 101,
+      "accepted": false,
+      "elapsed_seconds": 2.0420518470928073
+    },
+    {
+      "phase": "test-exec-private-wait-1",
+      "selected": 10,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.1940749289933592
+    },
+    {
+      "phase": "test-entry-operations-1",
+      "selected": 12,
+      "raw_status": 0,
+      "accepted": true,
+      "elapsed_seconds": 0.04762367089278996
+    }
+  ],
+  "limitation": "Stopped at first test-phase failure. No full matrix, Hermit guest, comparison, or landing approval."
+}

@@ -1,0 +1,45 @@
+{
+  "binary": "/usr/bin/python3",
+  "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+  "arguments": [
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/before_exec.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-73/before-exec.json",
+    "b6588a095a191b66d691a0d7ed783b3a0f6239a6dfd78154c1ba8c62688f4b92"
+  ],
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/control-73-plan.json",
+      "a16c6e8c04a39baac155254dc0c8c6a4e2e1ad8941cd70d830fface49c8b02a5"
+    ]
+  },
+  "before_exec_spec_sha256": "b6588a095a191b66d691a0d7ed783b3a0f6239a6dfd78154c1ba8c62688f4b92",
+  "cpu_allowance_usec": 30000000,
+  "wall_seconds": 60,
+  "log_bytes": 16777216,
+  "payload_memory_bytes": 17179869184,
+  "safehermit_log_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-73/safehermit",
+  "wrapper_sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760",
+  "observer_sources": {
+    "observer.py": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179",
+    "unit_reference.py": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+    "before_exec.py": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+    "source-inputs.json": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+  },
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source",
+  "epoch": 1789762566.4596937,
+  "monotonic_ns": 1921495217922800,
+  "pid": 3936984,
+  "wrapper_identity": {
+    "pid": 3936984,
+    "start_ticks": 192149522,
+    "parent_pid": 3936941,
+    "state": "R",
+    "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+  }
+}

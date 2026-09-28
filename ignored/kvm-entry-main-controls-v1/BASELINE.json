@@ -1,0 +1,12 @@
+[
+  {
+    "path": "reverie-kvm/src/clock.rs",
+    "bytes": 37130,
+    "sha256": "f73f389d1ab1fb44f40a21f2e98f233962d9c74771cd0b937389f7385edac28a"
+  },
+  {
+    "path": "reverie-kvm/src/entry.rs",
+    "bytes": 47710,
+    "sha256": "d2515ffa8eeab5c590cc8f3621aee71fb053bc231046677a6a17a2491fcb9c60"
+  }
+]

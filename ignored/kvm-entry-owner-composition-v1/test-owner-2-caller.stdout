@@ -1,0 +1,17 @@
+{"raw_status": 101, "elapsed_seconds": 0.12659174506552517, "stream_bytes": {"stdout": 962, "stderr": 761}, "refusal": "selected test count/result mismatch", "terminal_service": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=[not set]\n", "executable_after": {"path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-composition-v1/retained-lib-2", "sha256": "1fad683cfe86d57ba382e1f48fd506dbd157e5974d21320bf13168f1721d5b3b", "bytes": 141144152}, "source_after": {"reverie-kvm/src/entry.rs": {"bytes": 46214, "sha256": "8248ec4d8363b9796d4bff9fa20f010558480ccb36dc342755eda561a1bd67d5"}, "reverie-kvm/src/entry/owner.rs": {"bytes": 34421, "sha256": "93452e1b6c9557440c20ec4db3499361238f21a12c144ac868a5f9dfd56d5331"}, "reverie-kvm/src/entry/signal.rs": {"bytes": 13944, "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"}, "reverie-kvm/src/error.rs": {"bytes": 20454, "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"}, "reverie-kvm/src/lib.rs": {"bytes": 1770, "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"}, "reverie-kvm/src/clock.rs": {"bytes": 37130, "sha256": "f73f389d1ab1fb44f40a21f2e98f233962d9c74771cd0b937389f7385edac28a"}, "reverie-kvm/src/vm.rs": {"bytes": 371966, "sha256": "b6eb3ffc679ec1044dff9c57711769350734820a77f7ca9267cb518d22189494"}, "reverie-kvm/src/runtime.rs": {"bytes": 224080, "sha256": "dafcdbde310260492fd0bc9637e863df736fd51e79586560cab19ccf7ef55a5c"}, "reverie-kvm/src/memory.rs": {"bytes": 131425, "sha256": "b2608e7c76baab2a7b00b61acf44d5080dd2829bc7d6bc26c65d7f62b542bec5"}, "reverie-kvm/src/cpuid_runtime_tests.rs": {"bytes": 5963, "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"}, "reverie-kvm/src/failure.rs": {"bytes": 28158, "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"}, "reverie-kvm/src/bootstrap.rs": {"bytes": 43344, "sha256": "46e856d87ac8fce52722af3655c4b5dfdb5e4b5ee09e32c0bb3597a010b4a0cc"}, "reverie-kvm/src/executor.rs": {"bytes": 1520775, "sha256": "bad4de60e4016f3e445c6fe484cce433b25f95758c8ca0272fdf72e46b183b9d"}, "Cargo.lock": {"bytes": 67056, "sha256": "0a5ecdf9fc94cf7eddad15c0ced7c61ed9f4db08a47f5e1a668d5a7f663c8419"}}, "identity_stable": true, "selection": {"summaries": [], "expected_passed": 8}}
+Running as unit: kvm-entry-owner-test-owner-2-2850267.service
+
+thread 'entry::owner::tests::capture_defers_last_owner_drop_after_retirement_and_rejection' (2850805) panicked at reverie-kvm/src/entry/owner.rs:638:17:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'entry::owner::tests::unwind_abandons_registration_but_preserves_pending_and_destruction' (2850845) panicked at reverie-kvm/src/entry/owner.rs:870:13:
+controlled callback owner unwind
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 7ms
+             CPU time consumed: 7ms
+                   Memory peak: 2.9M (swap: 0B)
+

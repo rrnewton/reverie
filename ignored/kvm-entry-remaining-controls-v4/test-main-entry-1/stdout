@@ -1,0 +1,13 @@
+
+running 8 tests
+test vm::tests::entry_main_tests::closed_tool_main_wait_uses_its_independent_global_scope ... ok
+test vm::tests::entry_main_tests::host_elf_main_closed_wait_group_exit_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::host_main_fresh_reopen_executes_finite_raw_and_elf_once ... ok
+test vm::tests::entry_main_tests::host_raw_main_closed_wait_poison_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::tool_direct_main_closed_wait_global_failure_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::tool_elf_main_closed_wait_global_failure_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::tool_elf_main_closed_wait_group_exit_stops_without_ioctl ... ok
+test vm::tests::entry_main_tests::tool_main_fresh_reopen_executes_finite_direct_and_elf_once ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.40s
+

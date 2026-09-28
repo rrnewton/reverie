@@ -1,0 +1,160 @@
+        libc::F_GETPIPE_SZ => {
+            // SAFETY: host_fd names a live descriptor; F_GETPIPE_SZ takes no third argument.
+            let result = unsafe { libc::fcntl(host_fd, libc::F_GETPIPE_SZ) };
+            if result < 0 {
+                io_error(std::io::Error::last_os_error())
+            } else {
+                i64::from(result)
+            }
+        }
+        libc::F_SETPIPE_SZ => {
+            let size = args[2] as libc::c_int;
+            // SAFETY: host_fd names a live descriptor; F_SETPIPE_SZ consumes one int size.
+            let result = unsafe { libc::fcntl(host_fd, libc::F_SETPIPE_SZ, size) };
+            if result < 0 {
+                io_error(std::io::Error::last_os_error())
+            } else {
+                i64::from(result)
+            }
+        }
+        _ => negative_errno(libc::ENOSYS),
+    }
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 12497..12535; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+// TODO-HUMAN-REVIEW(PR-136): Review descriptor object-identity cleanup.
+fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
+    let transaction = state.signal_transaction.clone();
+    let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+    let Ok(fd) = i32::try_from(raw_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    if let Some(retired) = state.remove_file(fd) {
+        state.cloexec_fds.remove(&fd);
+        state.random_device_fds.remove(&fd);
+        replace_signalfd_mask(state, fd, None);
+        state.proc_files.remove(&fd);
+        state.fdinfo_files.remove(&fd);
+        state.fd_object_inodes.remove(&fd);
+        cleanup_fd_object_inodes(state);
+        set_output_alias(state, fd, None);
+        drop(_transaction);
+        state.file_retirement.retire([retired]);
+        return 0;
+    }
+    if is_open_standard(state, fd) {
+        let retired = if fd == libc::STDIN_FILENO {
+            state.take_stdin()
+        } else {
+            None
+        };
+        state.closed_standard_fds.insert(fd);
+        state.cloexec_fds.remove(&fd);
+        state.random_device_fds.remove(&fd);
+        replace_signalfd_mask(state, fd, None);
+        state.fd_object_inodes.remove(&fd);
+        cleanup_fd_object_inodes(state);
+        set_output_alias(state, fd, None);
+        drop(_transaction);
+        state.file_retirement.retire(retired);
+        return 0;
+    }
+    negative_errno(libc::EBADF)
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 12587..12630; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
+    const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
+
+    let first = args[0];
+    let last = args[1];
+    let flags = args[2];
+    if first > last {
+        return negative_errno(libc::EINVAL);
+    }
+    if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+
+    let in_range = |fd: libc::c_int| {
+        let fd = u64::from(fd as u32);
+        first <= fd && fd <= last
+    };
+    let mut targets: Vec<libc::c_int> = state
+        .files
+        .keys()
+        .copied()
+        .filter(|&fd| in_range(fd))
+        .collect();
+    for standard in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        if in_range(standard) && is_open_standard(state, standard) {
+            targets.push(standard);
+        }
+    }
+
+    if flags & CLOSE_RANGE_CLOEXEC != 0 {
+        for fd in targets {
+            state.cloexec_fds.insert(fd);
+        }
+        return 0;
+    }
+
+    for fd in targets {
+        // Reuse the single-fd close path so every descriptor side table stays
+        // consistent. Each fd is known open here, so close never returns EBADF.
+        close(state, u64::from(fd as u32));
+    }
+    0
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 13903..14058; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+// TODO-HUMAN-REVIEW(PR-136): Review shared readlink guest path handling.
+fn readlink(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    readlink_at_impl(
+        memory,
+        state,
+        libc::AT_FDCWD,
+        args[0],
+        args[1],
+        args[2],
+        capture,
+    )
+}
+
+// TODO-HUMAN-REVIEW(PR-136): Review readlinkat guest-dirfd and procfd semantics.
+fn readlinkat(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    readlink_at_impl(
+        memory,
+        state,
+        args[0] as libc::c_int,
+        args[1],
+        args[2],
+        args[3],
+        capture,
+    )
+}
+
+// TODO-HUMAN-REVIEW(PR-136): Review shared readlinkat implementation semantics.
+fn readlink_at_impl(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path_address: u64,
+    output_address: u64,
+    raw_capacity: u64,
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let path = match read_c_string(memory, path_address, 4096) {
+        Ok(path) => path,
+        Err(error) => return read_c_string_errno(error),

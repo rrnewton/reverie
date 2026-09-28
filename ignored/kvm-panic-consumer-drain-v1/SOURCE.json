@@ -1,0 +1,22 @@
+{
+  "scope": "uncompiled private panic consumer drain; only ADDED-REGION.rs authored here",
+  "dispatch_base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "runtime_observed_sha256": "c4e1f7774569ac58e12e9e33a00882c68f83baf4b2cdc4fbecad84ea1ab236b1",
+  "runtime_observed_bytes": 238425,
+  "added_region_sha256": "36563bf4ecdf7cc2a9bb720de8fb11a1d882d927d557c8b176ade5195ac0dce7",
+  "added_region_bytes": 10775,
+  "added_region_line": 2432,
+  "owned_future_sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d",
+  "normal_drain_byte_identical": true,
+  "old_cleanup_test_byte_identical": true,
+  "old_cleanup_test_bytes": 3757,
+  "concurrent_outside_region_changes_present": true,
+  "new_test_declarations": [
+    "poll_and_drop_panics_preserve_pending_and_later_consumers",
+    "returned_error_and_drop_panic_preserve_later_real_errors",
+    "only_bare_abort_is_ignored_and_empty_drain_has_an_output"
+  ],
+  "tests_executed": 0,
+  "compiler_invocations": 0,
+  "formatter_invocations": 0
+}

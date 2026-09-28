@@ -1,0 +1,11 @@
+
+running 6 tests
+test vm::tests::entry_hypercall_tests::direct_tool_pending_response_failure_avoids_completion_entry ... ok
+test vm::tests::entry_hypercall_tests::direct_tool_pending_response_reopens_without_replaying_write ... ok
+test vm::tests::entry_hypercall_tests::direct_tool_written_response_failure_avoids_completion_entry ... ok
+test vm::tests::entry_hypercall_tests::direct_tool_written_response_reopens_and_reaches_hlt_once ... ok
+test vm::tests::entry_hypercall_tests::host_written_response_poison_avoids_completion_entry ... ok
+test vm::tests::entry_hypercall_tests::host_written_response_reopens_and_reaches_hlt_once ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 717 filtered out; finished in 0.21s
+

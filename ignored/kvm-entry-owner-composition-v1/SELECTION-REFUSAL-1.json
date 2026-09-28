@@ -1,0 +1,7 @@
+{
+  "raw_status": 1,
+  "phase": "preflight selection before tests",
+  "reason": "expected entry::tests::captured_owner_is_visible_before_wake_outside_registry_lock absent; actual declaration is entry::captured_owner_is_visible_before_wake_outside_registry_lock",
+  "test_launches": 0,
+  "other_selections": "seven owner declarations and eight exact declarations found as requested"
+}

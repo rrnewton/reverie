@@ -1,0 +1,24 @@
+{
+  "session_id": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "own_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rdtsc-v7-review-final-v1/native/01-source.final.txt",
+    "bytes": 7053,
+    "sha256": "5cb86b644be55556bf0cdcc288953c4ecbcc9f69e7b5933bfbd6736b5c9a1243",
+    "mode": 420
+  },
+  "own_terminal_audit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rdtsc-v7-review-final-v1/native/FINAL-READBACK.json",
+    "bytes": 7290,
+    "sha256": "4438f14f91d8a8c01a70c8326ca4047ee52d322adec35f7f08b13ef45089fcee",
+    "mode": 420
+  },
+  "own_grounding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/GROUNDING_AUTHENTICATION.json",
+    "bytes": 29119,
+    "sha256": "61eb7af4a2bc6b5c087a130fb2d5e04e3c2f6c8588cfbe33bac72e631bd9c96d",
+    "mode": 420
+  },
+  "prior_scope": "Timestamp PR at 68569; no approval of new CPUID/capture code transferred",
+  "peer_reports_supplied": false,
+  "source_read_order": "Prior source reading order limits remain in own original audit; canonical grounding separately authenticated"
+}

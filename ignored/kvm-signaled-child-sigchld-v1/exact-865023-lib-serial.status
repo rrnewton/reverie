@@ -1,0 +1,13 @@
+command=CARGO_INCREMENTAL=0 cargo test --offline -j1 -p reverie-kvm --lib -- --test-threads=1
+exit_code=0
+head=865023d1a9d2b82320a38e17e5a83bca1c4af3ee
+tree=86314b59b1923a8e52ef7007ece798d369fee2f4
+tests=776 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+elapsed=26.65s
+log_sha256=7a03a57bcf4f6350da6e4ddddd2768e8916d6d77af6e2b9eede90e789a08ff1f
+start_avail=443516465152
+lowest_observed_avail=443468771328
+end_avail=443468775424
+stop_threshold=438086664192
+floor=429496729600
+guard_tripped=0

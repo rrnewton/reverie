@@ -1,0 +1,103 @@
+        let error = result.expect_err("injected post-task-scan error unexpectedly succeeded");
+        assert!(error.to_string().contains("Input/output error"), "{error}");
+        assert!(!fail_once.load(Ordering::SeqCst));
+        assert!(!force_scan_once.load(Ordering::SeqCst));
+        assert_reaped("root", root_pid);
+        assert_reaped("task-scan thread", child_tid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn clone_parent_fails_closed_and_reaps_sibling() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
+            .observe_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn CLONE_PARENT fail-closed tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let first = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => Either::Left(result),
+                child = child_rx.recv() => Either::Right(child.expect("CLONE_PARENT observer closed")),
+            }
+        })
+        .await
+        .expect("tracee did not report CLONE_PARENT event");
+        let (sibling_pid, completed) = match first {
+            Either::Left(result) => (
+                child_rx
+                    .recv()
+                    .await
+                    .expect("completed tracee omitted CLONE_PARENT identity"),
+                Some(result),
+            ),
+            Either::Right(child_pid) => (child_pid, None),
+        };
+        let result = match completed {
+            Some(result) => result,
+            None => tokio::time::timeout(Duration::from_secs(3), &mut wait)
+                .await
+                .expect("CLONE_PARENT fail-closed cleanup hung"),
+        };
+        let error = result.expect_err("CLONE_PARENT LiteInst tracee unexpectedly succeeded");
+        assert!(error.to_string().contains("ENOTSUPP"), "{error}");
+        assert_reaped("root", root_pid);
+        assert_reaped("CLONE_PARENT sibling", sibling_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_at_clone_parent_event_reaps_sibling() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .pause_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn CLONE_PARENT cancellation tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let sibling_pid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("CLONE_PARENT tracee completed before cancellation: {result:?}"),
+                child = child_rx.recv() => child.expect("CLONE_PARENT hook closed"),
+            }
+        })
+        .await
+        .expect("tracee did not reach CLONE_PARENT cancellation window");
+
+        drop(wait);
+        assert_reaped("root", root_pid);
+        assert_reaped("CLONE_PARENT sibling", sibling_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_before_clone_parent_handler_reaps_sibling() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .pause_before_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn pre-handler CLONE_PARENT tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let sibling_pid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("CLONE_PARENT tracee completed before pre-handler cancellation: {result:?}"),
+                child = child_rx.recv() => child.expect("pre-handler CLONE_PARENT hook closed"),
+            }
+        })
+        .await
+        .expect("tracee did not reach pre-handler CLONE_PARENT window");
+
+        drop(wait);
+        assert_reaped("root", root_pid);
+        assert_reaped("CLONE_PARENT sibling", sibling_pid);
+    }
+}

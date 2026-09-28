@@ -1,0 +1,35 @@
+{
+  "scope": "A/B/C source-only correction; original measured failure preserved",
+  "records": [
+    {
+      "path": "before/reverie-kvm/src/vm/entry_multi_owner_tests.rs",
+      "bytes": 45549,
+      "sha256": "a2a2ce43b9a2ee0c08311aaaceb8c244164ca3dc6e59a24972c319c79dad4631"
+    },
+    {
+      "path": "source-1/reverie-kvm/src/vm/entry_multi_owner_tests.rs",
+      "bytes": 46366,
+      "sha256": "0f5c542bf4ec60073f1038f05957dc7d14001f3f1d1aee1f5b548b535d44c6ae"
+    },
+    {
+      "path": "AUTHOR.patch",
+      "bytes": 15883,
+      "sha256": "7e7a1a7a8ec420aa3858e6d8f6149cab7f7d3c4e0ef0b1ff2f0d117ab0238335"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 387,
+      "sha256": "a75c91edb052ec771bc09a16d1d2a98e318f4ce6838af8719b7a659154dd2b35"
+    },
+    {
+      "path": "INPUTS.json",
+      "bytes": 1965,
+      "sha256": "55600aa80ca65143a069e2681f6db419338e7a8c1af313baa1746f4177b12ff9"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 4658,
+      "sha256": "3b2d2512382626c1dbbe9a5c1c3777057a9771b27fa0b8d743edd037f4b792a1"
+    }
+  ]
+}

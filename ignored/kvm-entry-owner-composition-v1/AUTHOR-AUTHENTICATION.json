@@ -1,0 +1,21 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/TARGET.json",
+    "sha256": "50aab989bf5148ab0e8e66da05e883c79339d84361cfeeeef4b192a584ad9c81",
+    "authenticated_records": 3
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-preparation-v1/TARGET.json",
+    "sha256": "532992a30a6c7633541aa9072136f2a3e7315e17b5ee047a494e9dd830de540f",
+    "authenticated_records": 17
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-preparation-v1/failed-spawn-v1/TARGET.json",
+    "sha256": "ff72a4351d5116990ae80c79c4696323a760060ed8c8e780411c826913fbdf00",
+    "authenticated_records": 11
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-entry-preparation-review-v1/REVIEW.md",
+    "sha256": "2c57648dd544cff3e9c54573bfb1ddd10045df39b8528e0af960479adc4ac465"
+  }
+]

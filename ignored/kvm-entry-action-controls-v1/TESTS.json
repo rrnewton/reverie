@@ -1,0 +1,20 @@
+{
+  "declarations": [
+    "vm::tests::entry_action_tests::prepared_fork_parking_retains_setup_and_stops_before_snapshot",
+    "vm::tests::entry_action_tests::prepared_host_thread_parking_stops_before_child_effects",
+    "vm::tests::entry_action_tests::prepared_exec_parking_stops_before_image_replacement",
+    "vm::tests::entry_action_tests::prepared_tool_thread_parking_stops_before_child_state_and_start"
+  ],
+  "declaration_count": 4,
+  "events_per_site": [
+    "Failure",
+    "Cancel",
+    "Poison",
+    "Reopen"
+  ],
+  "planned_subcases": 16,
+  "planned_stopped_subcases": 12,
+  "planned_positive_subcases": 4,
+  "executed": false,
+  "scope": "Actual prepared action branches at real hypercall boundary; not whole public driver/original syscall-adapter coverage"
+}

@@ -1,0 +1,15 @@
+
+running 10 tests
+test vm::exec_wait_tests::exec_join_helper_child_spawn_hook_panic_retains_handle_payload_and_originals ... ok
+test vm::exec_wait_tests::exec_join_helper_does_not_capture_nested_discard_behind_another_worker ... ok
+test vm::exec_wait_tests::exec_join_helper_parent_spawn_hook_panic_restores_original_ownership ... ok
+test vm::exec_wait_tests::exec_join_helper_retains_exact_worker_panic_through_repeated_teardown ... ok
+test vm::exec_wait_tests::exec_join_helper_reuses_thread_and_defers_inherited_tls_to_outer_drain ... ok
+test vm::exec_wait_tests::exec_wait_private_failure_interrupts_worker_tls_destructor ... ok
+test vm::exec_wait_tests::exec_wait_private_failure_leaves_worker_owned_until_callback_destruction ... ok
+test vm::exec_wait_tests::exec_wait_success_requires_worker_tls_physical_completion ... ok
+test vm::exec_wait_tests::leader_backend_drop_physically_reaps_idle_exec_join_helper ... ok
+test vm::exec_wait_tests::refused_exec_join_helper_preserves_original_worker_and_gate ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 713 filtered out; finished in 0.16s
+

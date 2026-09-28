@@ -1,0 +1,94 @@
+[
+  {
+    "name": "malformed_json_control",
+    "refused": true,
+    "error": "JSONDecodeError('Expecting property name enclosed in double quotes: line 1 column 16 (char 15)')"
+  },
+  {
+    "name": "duplicate_start",
+    "refused": true,
+    "error": "RuntimeError('exactly four libtest lifecycle records required')"
+  },
+  {
+    "name": "ignored_outcome",
+    "refused": true,
+    "error": "RuntimeError('started/name/outcome lifecycle mismatch')"
+  },
+  {
+    "name": "wrong_test_name",
+    "refused": true,
+    "error": "RuntimeError('started/name/outcome lifecycle mismatch')"
+  },
+  {
+    "name": "mismatched_suite_count",
+    "refused": true,
+    "error": "RuntimeError('suite count differs: passed')"
+  },
+  {
+    "name": "ansi_wrapped_malformed_control",
+    "refused": true,
+    "error": "RuntimeError('tracing prefix/context/target mismatch')"
+  },
+  {
+    "name": "duplicate_terminal_record",
+    "refused": true,
+    "error": "RuntimeError('exactly four libtest lifecycle records required')"
+  },
+  {
+    "name": "missing_suite_completion",
+    "refused": true,
+    "error": "RuntimeError('exactly four libtest lifecycle records required')"
+  },
+  {
+    "name": "unframed_diagnostic",
+    "refused": true,
+    "error": "RuntimeError('unrecognized non-JSON record')"
+  },
+  {
+    "name": "cursor_control_in_trace",
+    "refused": true,
+    "error": "RuntimeError('unrecognized non-JSON record')"
+  },
+  {
+    "name": "missing_time_effect",
+    "refused": true,
+    "error": "RuntimeError('real time interception pair absent')"
+  },
+  {
+    "name": "nonzero_raw_status",
+    "refused": true,
+    "error": "RuntimeError('nonzero actual payload status')"
+  },
+  {
+    "name": "skip_marker_in_stderr",
+    "refused": true,
+    "error": "RuntimeError('unexpected stderr, including any skip marker')"
+  },
+  {
+    "name": "duplicate_json_event",
+    "refused": true,
+    "error": "RuntimeError('duplicate JSON key event')"
+  },
+  {
+    "name": "boolean_count",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/strict-count-addendum-v1/boolean_count.stdout",
+      "bytes": 9215,
+      "mode": 420,
+      "sha256": "56ae6fcdc603f39b298abdcdc73d6b89a476fea4ebec4d0dc8901428bedc24a7"
+    },
+    "refused": true,
+    "error": "RuntimeError('suite start count must be an integer, not a bool or float')"
+  },
+  {
+    "name": "floating_count",
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/strict-count-addendum-v1/floating_count.stdout",
+      "bytes": 9214,
+      "mode": 420,
+      "sha256": "73cbeb9dc8c4ebfd71f967bfdf7da9c4070d1f3e73bba1012bf1c598f5eac055"
+    },
+    "refused": true,
+    "error": "RuntimeError('suite start count must be an integer, not a bool or float')"
+  }
+]

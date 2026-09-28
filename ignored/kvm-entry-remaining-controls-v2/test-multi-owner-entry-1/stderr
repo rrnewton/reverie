@@ -1,0 +1,32 @@
+Running as unit: kvm-entry-owner-test-multi-owner-entry-1-3277288.service
+
+thread 'reverie-kvm-guest-4' (3278156) panicked at reverie-kvm/src/vm/entry_multi_owner_tests.rs:621:13:
+assertion `left == right` failed
+  left: Exited(0)
+ right: Exited(255)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'reverie-kvm-guest-3' (3278154) panicked at reverie-kvm/src/vm/entry_multi_owner_tests.rs:103:13:
+controller did not release a real worker callback within its bound
+
+thread 'vm::tests::entry_multi_owner_tests::public_elf_independent_c_publication_releases_peer_before_owner_a' (3278146) panicked at reverie-kvm/src/vm/entry_multi_owner_tests.rs:182:13:
+missing Consumed(B); observed [Started(Parent), Started(C), Callback(C), Started(A), Callback(A), Callback(Parent), Started(B), Copy(Parent), Callback(B), Effects(C), Copy(C), Effects(B), Effects(A), Copy(A), Dropped(Parent), Copy(B), Dropped(B), ForeignPending(B), ForeignPending(B), Dropped(C), Report(C, "Tool callback"), Hook(C), Consumed(C), ProcessConsumed(C), JoinStart(A, ThreadId(3), false), Report(B, "thread exit hook"), Dropped(A)]
+
+thread '<unnamed>' (3278150) panicked at reverie-kvm/src/vm/entry_multi_owner_tests.rs:391:13:
+assertion `left != right` failed: a derived root must not publish another owner's cause
+  left: Parent
+ right: Parent
+
+thread 'vm::tests::entry_multi_owner_tests::public_elf_multi_owner_healthy_callbacks_complete_once' (3291180) panicked at reverie-kvm/src/vm/entry_multi_owner_tests.rs:1090:38:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+thread 'vm::tests::entry_multi_owner_tests::public_elf_owner_a_publishes_after_real_peer_observation' (3291181) panicked at reverie-kvm/src/vm/entry_multi_owner_tests.rs:1090:38:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+thread 'vm::tests::entry_multi_owner_tests::public_elf_peer_b_keeps_own_error_before_owner_a_publication' (3291182) panicked at reverie-kvm/src/vm/entry_multi_owner_tests.rs:1090:38:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 5.088s
+             CPU time consumed: 24ms
+                   Memory peak: 17.6M (swap: 0B)

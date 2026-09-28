@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/prepare.py",
+    "control-76"
+  ],
+  "raw_status": 0,
+  "elapsed_seconds": 0.37685775104910135,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/launch/control-76-prepare.stdout",
+    "bytes": 207,
+    "mode": 420,
+    "sha256": "ab1a52b5441f448c60669a2cc32458164d23ca78a32f883cde1246b89d03d248"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/launch/control-76-prepare.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

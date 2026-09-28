@@ -1,0 +1,9 @@
+exit_code=143
+head=865023d1a9d2b82320a38e17e5a83bca1c4af3ee
+tree=86314b59b1923a8e52ef7007ece798d369fee2f4
+start_avail=444303204352
+lowest_observed_avail=434878713856
+end_avail=434878713856
+stop_threshold=438086664192
+floor=429496729600
+guard_tripped=1

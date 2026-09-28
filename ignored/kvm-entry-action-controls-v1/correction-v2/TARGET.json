@@ -1,0 +1,35 @@
+{
+  "kind": "unexecuted-author-correction",
+  "records": [
+    {
+      "bytes": 25767,
+      "path": "BASE-entry_action_tests.rs",
+      "sha256": "11004f3313f81d46178a88c5b9a297da6dc9136193748c39eedc2c690e899f29"
+    },
+    {
+      "bytes": 378,
+      "path": "EVIDENCE.json",
+      "sha256": "399436f1d91de3e45c0d9f2e1fa0568305b34f7ca4644372294e14a09d803af0"
+    },
+    {
+      "bytes": 2362,
+      "path": "REPORT.md",
+      "sha256": "80c7dc1926fe766c78ced30e3118990e211c6add4dcfd872310b27aabc515c14"
+    },
+    {
+      "bytes": 478,
+      "path": "SOURCE.json",
+      "sha256": "b96b924cc15bed74a817d5f3c4506263e26c2610281250c29b7d6dc757d4a299"
+    },
+    {
+      "bytes": 2017,
+      "path": "SOURCE.patch",
+      "sha256": "c21f7d52b135b511b97358fce5f6976234b8a01300fe4a5499e5b1356603604a"
+    },
+    {
+      "bytes": 26797,
+      "path": "source-2/reverie-kvm/src/vm/entry_action_tests.rs",
+      "sha256": "e9e67fc026e695f3174c09b8d96941e3f0b0857f04f403033419f745fa683bfe"
+    }
+  ]
+}

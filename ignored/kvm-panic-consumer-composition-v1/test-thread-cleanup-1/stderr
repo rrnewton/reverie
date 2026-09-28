@@ -1,0 +1,7 @@
+Running as unit: kvm-panic-consumer-test-thread-cleanup-1-3947144.service
+reverie-kvm guest thread 42 tool loop failed: KVM execution stopped after a fatal run failure
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 78ms
+             CPU time consumed: 15ms
+                   Memory peak: 8.6M (swap: 0B)

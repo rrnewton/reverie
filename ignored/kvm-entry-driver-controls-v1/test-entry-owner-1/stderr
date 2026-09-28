@@ -1,0 +1,10 @@
+Running as unit: kvm-entry-owner-test-entry-owner-1-1372326.service
+
+thread 'entry::owner::tests::unwind_abandons_registration_but_preserves_pending_and_destruction' (1372608) panicked at reverie-kvm/src/entry/owner.rs:890:13:
+controlled callback owner unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 8ms
+             CPU time consumed: 7ms
+                   Memory peak: 3.4M (swap: 0B)

@@ -1,0 +1,788 @@
+--- a/reverie-kvm/src/memory.rs
++++ b/reverie-kvm/src/memory.rs
+@@ -44,6 +44,8 @@
+     test_vector_copy_observer: Option<Arc<dyn Fn(usize, EntryOrigin) + Send + Sync>>,
+     #[cfg(test)]
+     test_syscall_dispatch_observer: Option<SyscallDispatchObserver>,
++    #[cfg(test)]
++    test_backing_contention: Option<Arc<dyn Fn() + Send + Sync>>,
+ }
+ 
+ impl std::fmt::Debug for GuestMemory {
+@@ -362,11 +364,19 @@
+             test_vector_copy_observer: None,
+             #[cfg(test)]
+             test_syscall_dispatch_observer: None,
++            #[cfg(test)]
++            test_backing_contention: None,
+         })
+     }
+ 
+     pub(crate) fn entry_gate(&self) -> Arc<EntryGate> {
+         self.mapping.entry_gate.clone()
++    }
++
++    #[cfg(test)]
++    pub(crate) fn test_mapping_owners(&self) -> impl Fn() -> usize + Send + Sync + 'static + use<> {
++        let mapping = Arc::downgrade(&self.mapping);
++        move || mapping.strong_count()
+     }
+ 
+     /// Attribution belongs to this handle, not to every alias of the Mapping.
+@@ -957,6 +967,19 @@
+         _copy: &CopyAccess,
+     ) -> Result<()> {
+         let offset = self.checked_offset(guest_address, destination.len())?;
++        #[cfg(test)]
++        if let Some(observe) = &self.test_backing_contention {
++            // Record a real failed lock attempt while the actual short-copy
++            // admission remains owned. The normal blocking lock below is
++            // unchanged; successful or poisoned probes do not report waiting.
++            let contended = matches!(
++                self.mapping.slice.backing.host_access.try_lock(),
++                Err(std::sync::TryLockError::WouldBlock)
++            );
++            if contended {
++                observe();
++            }
++        }
+         let _guard = self
+             .mapping
+             .slice
+@@ -1921,6 +1944,10 @@
+         Ok(total)
+     }
+ }
++
++#[cfg(test)]
++#[path = "memory/entry_snapshot_tests.rs"]
++mod entry_snapshot_tests;
+ 
+ #[cfg(test)]
+ mod tests {
+--- a/reverie-kvm/src/entry.rs
++++ b/reverie-kvm/src/entry.rs
+@@ -309,6 +309,8 @@
+     retired_origins: Vec<EntryOrigin>,
+     #[cfg(test)]
+     copy_waits: usize,
++    #[cfg(test)]
++    copy_waiters: Vec<std::thread::ThreadId>,
+ }
+ 
+ struct ChangeSignal {
+@@ -424,6 +426,25 @@
+     prepare_probe: Mutex<Option<Arc<PrepareProbe>>>,
+ }
+ 
++#[cfg(test)]
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub(crate) struct TestMemberState {
++    pub(crate) id: u64,
++    pub(crate) run: u64,
++    pub(crate) stopped: bool,
++}
++
++#[cfg(test)]
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub(crate) struct TestGateState {
++    pub(crate) open: bool,
++    pub(crate) closed: bool,
++    pub(crate) copies: usize,
++    pub(crate) copy_waits: usize,
++    pub(crate) copy_waiters: Vec<std::thread::ThreadId>,
++    pub(crate) members: Vec<TestMemberState>,
++}
++
+ impl std::fmt::Debug for EntryGate {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         let state = self.state.lock().unwrap();
+@@ -437,6 +458,27 @@
+ }
+ 
+ impl EntryGate {
++    #[cfg(test)]
++    pub(crate) fn test_state(&self) -> TestGateState {
++        let state = self.state.lock().unwrap();
++        TestGateState {
++            open: state.admission == Admission::Open,
++            closed: matches!(state.admission, Admission::Closed(_)),
++            copies: state.copies,
++            copy_waits: state.copy_waits,
++            copy_waiters: state.copy_waiters.clone(),
++            members: state
++                .members
++                .iter()
++                .map(|(&id, member)| TestMemberState {
++                    id,
++                    run: member.run,
++                    stopped: member.activity == Activity::Stopped,
++                })
++                .collect(),
++        }
++    }
++
+     pub(crate) fn new() -> Arc<Self> {
+         let (sender, receiver) = oneshot::channel();
+         Arc::new(Self {
+@@ -456,6 +498,8 @@
+                 retired_origins: Vec::new(),
+                 #[cfg(test)]
+                 copy_waits: 0,
++                #[cfg(test)]
++                copy_waiters: Vec::new(),
+             }),
+         })
+     }
+@@ -576,8 +620,11 @@
+             #[cfg(test)]
+             {
+                 state.copy_waits += 1;
++                state.copy_waiters.push(std::thread::current().id());
+             }
+             state = changed.wait(state).unwrap();
++            #[cfg(test)]
++            state.copy_waiters.retain(|thread| *thread != std::thread::current().id());
+         }
+     }
+ 
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -4924,6 +4924,7 @@
+     include!("vm/entry_main_tests.rs");
+     include!("vm/entry_spawn_tests.rs");
+     include!("vm/entry_hypercall_tests.rs");
++    include!("vm/entry_construction_tests.rs");
+     include!("vm/entry_race_tests.rs");
+     include!("vm/entry_multi_owner_tests.rs");
+     include!("vm/entry_action_tests.rs");
+--- a/reverie-kvm/src/memory/entry_snapshot_tests.rs
++++ b/reverie-kvm/src/memory/entry_snapshot_tests.rs
+@@ -0,0 +1,287 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++use std::future::Future;
++use std::sync::mpsc;
++use std::task::Context;
++use std::time::Duration;
++use std::time::Instant;
++
++use futures::FutureExt;
++
++use super::*;
++
++const WAIT: Duration = Duration::from_secs(5);
++const BASE: u64 = 0x1000;
++const LENGTH: usize = 1024 * 1024 + PAGE_SIZE;
++
++// Release every controlled host wait before joining, including during an
++// assertion's unwind. No worker waits for the controller to finish close.
++#[derive(Default)]
++struct Workers {
++    releases: Vec<mpsc::Sender<()>>,
++    handles: Vec<std::thread::JoinHandle<()>>,
++}
++
++impl Workers {
++    fn spawn<T: Send + 'static>(
++        &mut self,
++        body: impl FnOnce() -> T + Send + 'static,
++    ) -> mpsc::Receiver<T> {
++        let (send, receive) = mpsc::channel();
++        self.handles.push(std::thread::spawn(move || {
++            let result = body();
++            let _ = send.send(result);
++        }));
++        receive
++    }
++
++    fn join(&mut self) {
++        while let Some(handle) = self.handles.last() {
++            let deadline = Instant::now() + WAIT;
++            while !handle.is_finished() {
++                assert!(Instant::now() < deadline, "snapshot worker did not return");
++                std::thread::yield_now();
++            }
++            self.handles.pop().unwrap().join().unwrap();
++        }
++    }
++}
++
++impl Drop for Workers {
++    fn drop(&mut self) {
++        for release in self.releases.drain(..) {
++            let _ = release.send(());
++        }
++        for handle in self.handles.drain(..) {
++            let result = handle.join();
++            if !std::thread::panicking() {
++                result.unwrap();
++            }
++        }
++    }
++}
++
++fn memory() -> (GuestMemory, Vec<u8>) {
++    let memory = GuestMemory::new(BASE, LENGTH).unwrap();
++    let expected: Vec<_> = (0..LENGTH).map(|offset| (offset % 251) as u8).collect();
++    memory.write_raw(BASE, &expected).unwrap();
++    (memory, expected)
++}
++
++fn wait_for_copy(gate: &crate::entry::EntryGate, minimum: usize) {
++    let deadline = Instant::now() + WAIT;
++    loop {
++        // This takes the real admission mutex after Condvar::wait released it.
++        // It cannot observe merely a thread launched before copy_blocking.
++        let state = gate.test_state();
++        if state.copy_waiters.len() >= minimum {
++            assert_eq!(state.copy_waiters.len(), minimum);
++            assert!(state.copy_waits >= state.copy_waiters.len());
++            assert_eq!(state.copies, 0);
++            assert!(!state.open);
++            return;
++        }
++        assert!(Instant::now() < deadline, "copy did not wait on the closed gate");
++        std::thread::yield_now();
++    }
++}
++
++fn assert_snapshot(snapshot: &GuestMemory, expected: &[u8], source: &GuestMemory) {
++    assert!(!Arc::ptr_eq(&snapshot.entry_gate(), &source.entry_gate()));
++    assert_ne!(snapshot.host_address(), source.host_address());
++    let mut bytes = vec![0xff; expected.len()];
++    snapshot.read_raw(BASE, &mut bytes).unwrap();
++    assert_eq!(bytes, expected);
++}
++
++fn admitted_copy_case(user: bool) {
++    let (memory, expected) = memory();
++    let gate = memory.entry_gate();
++    let mut workers = Workers::default();
++    let (held, hold_observed) = mpsc::channel();
++    let (release, released) = mpsc::channel();
++    workers.releases.push(release.clone());
++    let source = memory.clone();
++    let snapshot = workers.spawn(move || {
++        source.snapshot_with_sparse_copy(|source, destination, length| {
++            held.send(()).unwrap();
++            released.recv_timeout(WAIT).unwrap();
++            copy_sparse_file(source, destination, length)
++        })
++    });
++    hold_observed.recv_timeout(WAIT).unwrap();
++    assert!(matches!(
++        memory.mapping.slice.backing.host_access.try_lock(),
++        Err(std::sync::TryLockError::WouldBlock)
++    ));
++    assert_eq!(gate.test_state().copies, 0);
++
++    let (contended, contention) = mpsc::channel();
++    let mut reader = memory.clone();
++    reader.test_backing_contention = Some(Arc::new(move || {
++        contended.send(()).unwrap();
++    }));
++    let read = workers.spawn(move || {
++        let mut bytes = vec![0xff; LENGTH];
++        let result = if user {
++            reader.user().read(BASE, &mut bytes)
++        } else {
++            reader.read_raw(BASE, &mut bytes)
++        };
++        result.map(|()| bytes)
++    });
++    contention.recv_timeout(WAIT).unwrap();
++    assert_eq!(gate.test_state().copies, 1);
++    let mut closing = Box::pin(gate.try_close().unwrap().unwrap().finish());
++    assert!(
++        closing
++            .as_mut()
++            .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
++            .is_pending(),
++        "the actual admitted read still depends on the held backing lock"
++    );
++    assert!(!gate.test_state().closed);
++    assert!(matches!(read.try_recv(), Err(mpsc::TryRecvError::Empty)));
++
++    // An independent observer releases the host operation without waiting for
++    // either the admitted reader or the incomplete close. The close future is
++    // retained across this release rather than dropped to manufacture progress.
++    let observed_gate = gate.clone();
++    let (observe, observation) = mpsc::channel();
++    workers.releases.push(observe.clone());
++    let observer = workers.spawn(move || {
++        observation.recv_timeout(WAIT).unwrap();
++        let state = observed_gate.test_state();
++        assert_eq!(state.copies, 1);
++        assert!(!state.open);
++        assert!(!state.closed);
++        release.send(()).unwrap();
++    });
++    observe.send(()).unwrap();
++    observer.recv_timeout(WAIT).unwrap();
++    assert_eq!(read.recv_timeout(WAIT).unwrap().unwrap(), expected);
++    let closed = closing
++        .now_or_never()
++        .expect("finished admitted read must release this same close")
++        .unwrap();
++    assert_eq!(gate.test_state().copies, 0);
++    assert!(gate.test_state().closed);
++    // A sparse-copy fallback may itself be waiting for fresh source admission.
++    // Reopen before awaiting its full constructor or any worker join.
++    drop(closed);
++    let snapshot = snapshot.recv_timeout(WAIT).unwrap().unwrap();
++    assert_snapshot(&snapshot, &expected, &memory);
++    assert!(gate.pending_failure().is_none());
++    workers.join();
++}
++
++#[test]
++fn sparse_host_operation_keeps_close_pending_for_admitted_raw_read() {
++    admitted_copy_case(false);
++}
++
++#[test]
++fn sparse_host_operation_keeps_close_pending_for_admitted_user_read() {
++    admitted_copy_case(true);
++}
++
++fn no_admitted_copy_case(force_fallback: bool) {
++    let (memory, expected) = memory();
++    let gate = memory.entry_gate();
++    let mut workers = Workers::default();
++    let (held, hold_observed) = mpsc::channel();
++    let (release, released) = mpsc::channel();
++    workers.releases.push(release.clone());
++    let (host_returned, host_return) = mpsc::channel();
++    let source = memory.clone();
++    let snapshot = workers.spawn(move || {
++        source.snapshot_with_sparse_copy(|source, destination, length| {
++            // SAFETY: duplicate the actual snapshot destination descriptor so
++            // the controller can inspect the deliberately dirty prefix without
++            // inventing a Mapping or bypassing a production short-copy token.
++            let duplicate = unsafe { libc::fcntl(destination, libc::F_DUPFD_CLOEXEC, 0) };
++            assert!(duplicate >= 0);
++            let duplicate = unsafe { OwnedFd::from_raw_fd(duplicate) };
++            held.send(duplicate).unwrap();
++            released.recv_timeout(WAIT).unwrap();
++            let result = if force_fallback {
++                let dirty = [0xa5; 257];
++                // SAFETY: the actual snapshot helper owns both backing locks;
++                // this fd write is the injected partial host operation.
++                assert_eq!(
++                    unsafe { libc::pwrite(destination, dirty.as_ptr().cast(), dirty.len(), 0) },
++                    dirty.len() as isize
++                );
++                Err(io::Error::other("partial sparse copy requires full fallback"))
++            } else {
++                copy_sparse_file(source, destination, length)
++            };
++            host_returned.send(result.is_ok()).unwrap();
++            result
++        })
++    });
++    let destination = hold_observed.recv_timeout(WAIT).unwrap();
++    assert_eq!(gate.test_state().copies, 0);
++    let closed = gate
++        .try_close()
++        .unwrap()
++        .unwrap()
++        .finish()
++        .now_or_never()
++        .expect("the held sparse fd operation is not a short-copy lease")
++        .unwrap();
++    assert!(gate.test_state().closed);
++    assert!(matches!(snapshot.try_recv(), Err(mpsc::TryRecvError::Empty)));
++    let reader = memory.clone();
++    let read = workers.spawn(move || {
++        let mut bytes = vec![0xff; LENGTH];
++        reader.user().read(BASE, &mut bytes).map(|()| bytes)
++    });
++    wait_for_copy(&gate, 1);
++    assert!(matches!(read.try_recv(), Err(mpsc::TryRecvError::Empty)));
++    release.send(()).unwrap();
++    let sparse_succeeded = host_return.recv_timeout(WAIT).unwrap();
++    if !sparse_succeeded {
++        // One external reader and the real first fallback read are both denied.
++        wait_for_copy(&gate, 2);
++        assert!(matches!(snapshot.try_recv(), Err(mpsc::TryRecvError::Empty)));
++    }
++    if force_fallback {
++        assert!(!sparse_succeeded);
++        let mut prefix = [0; 258];
++        // SAFETY: this owned fd is the actual destination. The observed denied
++        // fallback has not acquired any source copy token or written bytes.
++        assert_eq!(
++            unsafe {
++                libc::pread(destination.as_raw_fd(), prefix.as_mut_ptr().cast(), prefix.len(), 0)
++            },
++            prefix.len() as isize
++        );
++        assert_eq!(&prefix[..257], &[0xa5; 257]);
++        assert_eq!(prefix[257], 0);
++    }
++    assert!(gate.test_state().closed);
++    assert_eq!(gate.test_state().copies, 0);
++    drop(closed);
++    assert_eq!(read.recv_timeout(WAIT).unwrap().unwrap(), expected);
++    let snapshot = snapshot.recv_timeout(WAIT).unwrap().unwrap();
++    assert_snapshot(&snapshot, &expected, &memory);
++    assert!(gate.pending_failure().is_none());
++    workers.join();
++}
++
++#[test]
++fn sparse_host_operation_without_admitted_copy_allows_close() {
++    no_admitted_copy_case(false);
++}
++
++#[test]
++fn partial_sparse_fallback_waits_for_reopen_and_overwrites_full_destination() {
++    no_admitted_copy_case(true);
++}
+--- a/reverie-kvm/src/vm/entry_construction_tests.rs
++++ b/reverie-kvm/src/vm/entry_construction_tests.rs
+@@ -0,0 +1,337 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++// Exercise the actual constructor shared by both CLONE_THREAD execution paths.
++// This does not claim that a guest clone syscall or a Tool callback was run.
++mod entry_construction_tests {
++    use std::sync::mpsc;
++    use std::time::Duration;
++    use std::time::Instant;
++
++    use super::*;
++
++    const WAIT: Duration = Duration::from_secs(5);
++    const CHILD_TID: i32 = 72;
++
++    struct Constructor {
++        closed: Option<crate::entry::Closed>,
++        worker: Option<std::thread::JoinHandle<()>>,
++    }
++
++    impl Drop for Constructor {
++        fn drop(&mut self) {
++            // The full constructor needs gated memory. Never wait for its host
++            // thread while retaining the token that prevents its first copy.
++            drop(self.closed.take());
++            if let Some(worker) = self.worker.take() {
++                let result = worker.join();
++                if !std::thread::panicking() {
++                    result.unwrap();
++                }
++            }
++        }
++    }
++
++    struct Constructed {
++        parent: KvmBackend,
++        child: KvmBackend,
++        gate: Arc<crate::entry::EntryGate>,
++        parent_member: crate::entry::TestMemberState,
++        child_id: u64,
++        data: u64,
++        owners: Box<dyn Fn() -> usize + Send + Sync>,
++    }
++
++    fn construct_while_closed() -> Constructed {
++        let mut parent = KvmBackend::new(16 * 1024 * 1024)
++            .expect("thread construction control requires actual /dev/kvm");
++        // inc byte [rsp-8]; mov eax,SYS_getpid; syscall; ud2.
++        // A real return-park Hlt will stop before the deliberately invalid tail.
++        let mut code = vec![0xfe, 0x44, 0x24, 0xf8, 0xb8];
++        code.extend_from_slice(&(libc::SYS_getpid as u32).to_le_bytes());
++        code.extend_from_slice(&[0x0f, 0x05, 0x0f, 0x0b]);
++        parent
++            .install_static_elf(&minimal_test_elf(&code), "/bin/entry-construction")
++            .unwrap();
++        let registers = parent.vcpu.get_regs().unwrap();
++        let data = registers.rsp - 8;
++        parent.memory.write_raw(data, &[0]).unwrap();
++        let xsave = parent.vcpu.get_xsave().unwrap();
++        let cpuid = parent.cpuid_policy;
++        let group = parent.thread_group.clone();
++        let gate = parent.memory.entry_gate();
++        let owners = Box::new(parent.memory.test_mapping_owners());
++        assert_eq!(owners(), 2, "backend and CountedVcpu own the same Mapping");
++        let before = gate.test_state();
++        assert!(before.open);
++        assert_eq!(before.members.len(), 1);
++        let parent_member = before.members[0].clone();
++        assert!(parent_member.stopped);
++        assert_eq!(parent_member.run, 0);
++        let closed = gate
++            .try_close()
++            .unwrap()
++            .unwrap()
++            .finish()
++            .now_or_never()
++            .expect("stopped parent must close without executing it")
++            .unwrap();
++        let memory = parent.memory.clone();
++        let (send, receive) = mpsc::channel();
++        let worker = std::thread::spawn(move || {
++            let result = KvmBackend::from_thread_state(
++                memory,
++                registers,
++                xsave,
++                None,
++                cpuid,
++                CHILD_TID,
++                group,
++            );
++            let _ = send.send(result);
++        });
++        let host_thread = worker.thread().id();
++        let mut constructor = Constructor {
++            closed: Some(closed),
++            worker: Some(worker),
++        };
++        let deadline = Instant::now() + WAIT;
++        let blocked = loop {
++            let state = gate.test_state();
++            if state.copy_waiters.contains(&host_thread) {
++                break state;
++            }
++            assert!(Instant::now() < deadline, "actual constructor did not reach copy admission");
++            std::thread::yield_now();
++        };
++        assert!(blocked.closed);
++        assert!(!blocked.open);
++        assert_eq!(blocked.copies, 0);
++        assert_eq!(blocked.copy_waiters, vec![host_thread]);
++        assert!(blocked.copy_waits >= 1);
++        assert_eq!(blocked.members.len(), 2);
++        assert_eq!(blocked.members[0], parent_member);
++        let child_member = &blocked.members[1];
++        let child_id = child_member.id;
++        assert!(child_id > parent_member.id);
++        assert_eq!(child_member.run, 0);
++        assert!(child_member.stopped);
++        assert_eq!(owners(), 4, "both actual vCPUs retain the shared Mapping");
++        assert!(matches!(receive.try_recv(), Err(mpsc::TryRecvError::Empty)));
++        assert!(gate.pending_failure().is_none());
++
++        // Registration was observed through the same mutex that the actual
++        // first gated constructor copy released in Condvar::wait. Reopen before
++        // asking for completion; no constructor latency claim is involved.
++        drop(constructor.closed.take());
++        let child = receive.recv_timeout(WAIT).unwrap().unwrap();
++        constructor.worker.take().unwrap().join().unwrap();
++        let after = gate.test_state();
++        assert!(after.open);
++        assert_eq!(after.members, blocked.members);
++        assert!(after.copy_waiters.is_empty());
++        assert_eq!(after.copies, 0);
++        assert!(child.is_guest_thread);
++        assert!(child.thread_slot.is_some());
++        assert!(Arc::ptr_eq(&child.memory.entry_gate(), &gate));
++        assert_eq!(child.memory.host_address(), parent.memory.host_address());
++        assert_eq!(owners(), 4);
++        Constructed {
++            parent,
++            child,
++            gate,
++            parent_member,
++            child_id,
++            data,
++            owners,
++        }
++    }
++
++    fn assert_parent_only(
++        gate: &crate::entry::EntryGate,
++        parent: &crate::entry::TestMemberState,
++        owners: &dyn Fn() -> usize,
++    ) {
++        let state = gate.test_state();
++        assert_eq!(state.members, vec![parent.clone()]);
++        assert_eq!(state.copies, 0);
++        assert!(state.copy_waiters.is_empty());
++        assert!(gate.pending_failure().is_none());
++        assert_eq!(owners(), 2, "retired child must release both Mapping owners");
++    }
++
++    #[test]
++    fn thread_constructor_registers_while_closed_then_enters_and_retires() {
++        for tracked in [false, true] {
++            let Constructed {
++                parent,
++                mut child,
++                gate,
++                parent_member,
++                child_id,
++                data,
++                owners,
++            } = construct_while_closed();
++            let probe = Arc::new(crate::clock::RunProbe::default());
++            child.vcpu.set_run_probe(probe.clone());
++            if tracked {
++                child.vcpu.track_clock().unwrap();
++            }
++            assert_eq!(
++                try_set_syscall_return_park(
++                    &mut child.memory,
++                    child.hypercall_instruction,
++                    child.syscall_trampoline_address,
++                    child.syscall_frame_address,
++                    true,
++                )
++                .unwrap(),
++                Some(())
++            );
++            let expected_halt = syscall_hypercall_address(
++                child.hypercall_instruction,
++                child.syscall_trampoline_address,
++                child.syscall_frame_address,
++            ) + child.hypercall_instruction.len() as u64 + 1;
++            probe.arm();
++            let request = match child.vcpu.run().unwrap().expect("reopened constructor") {
++                VcpuExit::Hypercall(exit) => {
++                    assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
++                    assert_eq!(exit.args[0], child.syscall_frame_address);
++                    let request = SyscallRequest::read_from(&child.memory, exit.args[0]).unwrap();
++                    *exit.ret = 37;
++                    request
++                }
++                exit => panic!("expected actual getpid hypercall, got {exit:?}"),
++            };
++            assert_eq!(request.number(), libc::SYS_getpid as u64);
++            assert!(matches!(child.vcpu.run().unwrap(), Some(VcpuExit::Hlt)));
++            let load = |counter: &std::sync::atomic::AtomicUsize| counter.load(Ordering::SeqCst);
++            assert_eq!(load(&probe.untracked_runs), if tracked { 0 } else { 2 });
++            assert_eq!(load(&probe.tracked_runs), if tracked { 2 } else { 0 });
++            assert_eq!(load(&probe.prepare.mask_installs), 2);
++            assert_eq!(load(&probe.clock_begins), if tracked { 2 } else { 0 });
++            assert_eq!(load(&probe.intervals_created), if tracked { 2 } else { 0 });
++            let registers = child.vcpu.get_regs().unwrap();
++            assert_eq!(registers.rip, expected_halt, "Hlt must be the real return park");
++            assert_eq!(registers.rax, 37, "the private response was consumed exactly");
++            let mut byte = [0xff];
++            parent.memory.read_raw(data, &mut byte).unwrap();
++            assert_eq!(byte, [1], "the finite guest effect executed once");
++            let stopped = gate.test_state();
++            assert_eq!(stopped.members[1].id, child_id);
++            assert_eq!(stopped.members[1].run, 2);
++            assert!(stopped.members[1].stopped);
++            let closed = gate
++                .try_close()
++                .unwrap()
++                .unwrap()
++                .finish()
++                .now_or_never()
++                .unwrap()
++                .unwrap();
++            drop(child);
++            assert_parent_only(&gate, &parent_member, owners.as_ref());
++            assert!(gate.test_state().closed);
++            drop(closed);
++
++            // An ordinary fresh constructor receives a new participant identity
++            // and can retire unentered without reusing the old stopped target.
++            let fresh = KvmBackend::from_thread_state(
++                parent.memory.clone(),
++                parent.vcpu.get_regs().unwrap(),
++                parent.vcpu.get_xsave().unwrap(),
++                None,
++                parent.cpuid_policy,
++                CHILD_TID + 1,
++                parent.thread_group.clone(),
++            )
++            .unwrap();
++            let state = gate.test_state();
++            assert_eq!(state.members[1].id, child_id + 1);
++            assert_eq!(state.members[1].run, 0);
++            assert!(state.members[1].stopped);
++            drop(fresh);
++            assert_parent_only(&gate, &parent_member, owners.as_ref());
++            drop(parent);
++            assert!(gate.test_state().members.is_empty());
++            assert_eq!(owners(), 0, "no stopped backend retains the Mapping");
++        }
++    }
++
++    fn unentered_retirement(refuse_spawn: bool) {
++        let Constructed {
++            parent,
++            child,
++            gate,
++            parent_member,
++            child_id,
++            data,
++            owners,
++        } = construct_while_closed();
++        let closed = gate
++            .try_close()
++            .unwrap()
++            .unwrap()
++            .finish()
++            .now_or_never()
++            .unwrap()
++            .unwrap();
++        let child = if refuse_spawn {
++            let probe = Arc::new(crate::failure::spawn_refusal::Probe::default());
++            let refusal = crate::failure::spawn_refusal::Guard::arm(probe.clone());
++            let result = crate::failure::spawn_owned::<_, (), _>(
++                std::thread::Builder::new(),
++                child,
++                |_child| panic!("refused OS spawn must never enter its child closure"),
++            );
++            let (error, child) = match result {
++                Err(refused) => refused,
++                Ok(worker) => {
++                    let _ = worker.join();
++                    panic!("actual OS thread creation did not refuse");
++                }
++            };
++            assert_eq!(probe.consumed(), 1);
++            assert_eq!(
++                probe.error().unwrap(),
++                crate::failure::spawn_refusal::ObservedError::read(&error)
++            );
++            drop(refusal);
++            child
++        } else {
++            child
++        };
++        let state = gate.test_state();
++        assert!(state.closed);
++        assert_eq!(state.members[1].id, child_id);
++        assert_eq!(state.members[1].run, 0);
++        assert!(state.members[1].stopped);
++        assert_eq!(owners(), 4, "refusal preserves the actual unentered child owner");
++        drop(child);
++        assert_parent_only(&gate, &parent_member, owners.as_ref());
++        assert!(gate.test_state().closed);
++        drop(closed);
++        let mut byte = [0xff];
++        parent.memory.read_raw(data, &mut byte).unwrap();
++        assert_eq!(byte, [0], "never-started guest must have no instruction effect");
++        drop(parent);
++        assert!(gate.test_state().members.is_empty());
++        assert_eq!(owners(), 0);
++    }
++
++    #[test]
++    fn never_entered_thread_constructor_retires_while_closed() {
++        unentered_retirement(false);
++    }
++
++    #[test]
++    fn refused_real_thread_spawn_preserves_then_retires_unentered_participant() {
++        unentered_retirement(true);
++    }
++}

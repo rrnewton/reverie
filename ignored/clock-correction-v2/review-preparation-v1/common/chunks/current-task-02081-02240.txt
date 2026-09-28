@@ -1,0 +1,160 @@
+        let mut step = move |task| RootStopLease::new(task, held_root_stop.clone()).step(None);
+        let mut observe = |wait: &Wait| {
+            if let (Some(armer), Wait::Stopped(task, event)) = (armer.as_ref(), wait) {
+                armer.arm(task, event)?;
+            }
+            Ok(())
+        };
+        let task = match self
+            .timer
+            .handle_signal(task, &mut step, &mut observe)
+            .await
+        {
+            Err(HandleFailure::ImproperSignal(task)) => return Ok((false, task)),
+            Err(HandleFailure::Cancelled(task)) => return Ok((true, task)),
+            Err(HandleFailure::TraceError(e)) => return Err(e),
+            Err(HandleFailure::Event(wait)) => self.abort(Ok(wait)).await,
+            Ok(task) => task,
+        };
+        #[cfg(test)]
+        if let Some(sender) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.pause_precise_timer_step.as_ref())
+        {
+            let _ = sender.send(task.pid());
+            future::pending::<()>().await;
+        }
+        self.process_state.clone().handle_timer_event(self).await;
+        self.timer.finalize_requests();
+        Ok((true, task))
+    }
+
+    /// Handle a state change in the guest, and leave it in a stopped state.
+    /// Return the signal that the process would be resumed with, if any.
+    ///
+    /// Preconditions:
+    ///  * running on the ptracer pthread
+    ///
+    /// Postconditions:
+    ///  * guest thread may or may not be stopped, depending on value of GuestNext
+    async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
+        self.timer.observe_event();
+        let tid = self.tid();
+
+        #[cfg(test)]
+        if let Some((pause, sender)) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.pause_root_stop.as_ref())
+        {
+            let selected = match &event {
+                Event::Seccomp => match pause {
+                    RootStopPause::Seccomp => true,
+                    RootStopPause::Signal(_) => false,
+                },
+                Event::Signal(actual) => match pause {
+                    RootStopPause::Seccomp => false,
+                    RootStopPause::Signal(expected) => expected == actual,
+                },
+                Event::NewChild(..)
+                | Event::Exec(_)
+                | Event::VforkDone
+                | Event::Exit
+                | Event::Stop
+                | Event::Syscall => false,
+            };
+            if selected {
+                let _ = sender.send(stopped.pid());
+                future::pending::<()>().await;
+            }
+        }
+
+        match event {
+            Event::Signal(sig) => self
+                .handle_signal(stopped, sig)
+                .await
+                .tracee_context(tid, "handle signal-delivery stop"),
+            Event::Exec(former_tid) => self
+                .handle_exec_event(stopped, former_tid)
+                .await
+                .tracee_context(tid, "handle exec stop"),
+            Event::Seccomp => self.handle_seccomp(stopped).await,
+            Event::NewChild(op, child) => self
+                .dispatch_new_task(op, stopped, child, None, None)
+                .await
+                .tracee_context(tid, "handle new tracee stop"),
+            Event::VforkDone => self
+                .handle_vfork_done_event(stopped)
+                .await
+                .tracee_context(tid, "handle vfork completion stop"),
+            task_state => panic!("unknown task state for tracee {}: {:?}", tid, task_state),
+        }
+    }
+
+    async fn get_stop_tx(&self) -> Option<(Arc<AtomicBool>, mpsc::Sender<(Pid, Suspended)>)> {
+        for child in self.child_threads.lock().await.deref_mut().into_iter() {
+            if child.id() == self.tid() {
+                return Some((child.suspended.clone(), child.wait_all_stop_tx.take()?));
+            }
+        }
+        None
+    }
+
+    // TODO-HUMAN-REVIEW(PR-103): Review rewritten rt_sigreturn tail execution.
+    async fn resume_injected_rt_sigreturn(
+        &mut self,
+        task: Stopped,
+        frame: &InjectedSyscallFrame,
+    ) -> Result<Wait, TraceError> {
+        let mut regs = task.getregs()?;
+        frame.copy_to_user_regs(&mut regs);
+        *regs.syscall_mut() = Sysno::rt_sigreturn as Reg;
+        *regs.orig_syscall_mut() = Sysno::rt_sigreturn as Reg;
+
+        // rt_sigreturn consumes the signal frame at the original guest stack
+        // pointer and does not return to its caller. Run it from Reverie's
+        // seccomp-allowed private page, then follow the restored guest state.
+        *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
+        task.setregs(&regs)?;
+        self.resume_stopped(task, None)?.next_state().await
+    }
+
+    // TODO-HUMAN-REVIEW(PR-102): Review rewritten-syscall dispatch and result handling.
+    async fn handle_injected_syscall(
+        &mut self,
+        task: Stopped,
+        frame_address: usize,
+        trap_rflags: u64,
+    ) -> Result<Wait, TraceError> {
+        let mut frame = self.read_injected_syscall_frame(&task, frame_address)?;
+        let syscall = frame.syscall();
+        let (nr, args) = syscall.into_parts();
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        if nr == Sysno::rt_sigreturn {
+            return self.resume_injected_rt_sigreturn(task, &frame).await;
+        }
+
+        frame.emulate_syscall_entry(trap_rflags);
+        self.write_injected_syscall_frame(&task, frame_address, &frame)?;
+
+        if !self
+            .global_state
+            .subscriptions
+            .iter_syscalls()
+            .any(|subscribed| subscribed == nr)
+        {
+            self.injected_syscall_frame = Some(frame_address);
+            let result = self.untraced_syscall(task, nr, args).await?;
+            let task = self.assume_stopped();
+            self.write_injected_syscall_result(&task, result)?;
+            self.injected_syscall_frame = None;
+            let signal = self.take_pending_signal_for_resume(
+                LiteinstActivationOperation::ResumeInjectedSyscall,
+            )?;
+            return self.resume_stopped(task, signal)?.next_state().await;
+        }
+
+        let span = tracing::trace_span!(

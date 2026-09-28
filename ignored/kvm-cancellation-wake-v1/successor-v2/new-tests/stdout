@@ -1,0 +1,9 @@
+
+running 4 tests
+test vm::tests::cancellation_wake_tests::root_can_resubscribe_after_worker_only_cancellation ... ok
+test vm::tests::cancellation_wake_tests::subscriptions_cover_registration_before_and_after_publication ... ok
+test vm::tests::cancellation_wake_tests::subscriptions_survive_exec_rearm_and_wake_on_later_cancellation ... ok
+test vm::tests::cancellation_wake_tests::wake_callbacks_observe_published_state_outside_group_locks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 566 filtered out; finished in 0.00s
+

@@ -1,0 +1,24 @@
+{
+  "kind": "private owner primitive source preparation; not compiled or executed",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry/owner.rs",
+    "bytes": 27132,
+    "sha256": "1f226b4264b2738b31f5673c638273dd4854d3213d3e8ff21212d7232bc9d906"
+  },
+  "test_declarations": [
+    "capture_records_before_deferred_notification_and_retains_arcs",
+    "nested_destruction_keeps_generation_and_parent_dependency",
+    "scope_acknowledgement_follows_owned_future_destruction",
+    "retirement_preserves_both_sides_of_capture_race",
+    "live_callback_retirement_is_abandonment_not_destruction",
+    "unwind_abandons_registration_but_preserves_pending_and_destruction",
+    "origins_are_weak_and_misuse_returns_typed_protocol_errors"
+  ],
+  "module_declaration_edited_by_this_author": false,
+  "compiler_or_tests_executed": false,
+  "product_write_scope": [
+    "reverie-kvm/src/entry/owner.rs"
+  ]
+}

@@ -1,0 +1,28 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -1992,8 +1992,12 @@
+             _ => error,
+         };
+         loop {
++            #[cfg(test)]
++            crate::runtime::entry_wait_observation::observe(crate::runtime::entry_wait_observation::Site::Parking, crate::runtime::entry_wait_observation::Boundary::BeforeSubscription);
+             let changed = gate.subscribe();
+             let cancelled = self.entry_cancellation();
++            #[cfg(test)]
++            crate::runtime::entry_wait_observation::observe(crate::runtime::entry_wait_observation::Site::Parking, crate::runtime::entry_wait_observation::Boundary::AfterSubscription);
+             if let Err(failure) = gate.admit_operation() {
+                 return Err(with_actual_error(&mut parked, failure.error()));
+             }
+@@ -4181,8 +4185,12 @@
+             }
+         }
+         loop {
++            #[cfg(test)]
++            crate::runtime::entry_wait_observation::observe(crate::runtime::entry_wait_observation::Site::HostMain, crate::runtime::entry_wait_observation::Boundary::BeforeSubscription);
+             let changed = self.memory.entry_gate().subscribe();
+             let cancelled = self.entry_cancellation();
++            #[cfg(test)]
++            crate::runtime::entry_wait_observation::observe(crate::runtime::entry_wait_observation::Site::HostMain, crate::runtime::entry_wait_observation::Boundary::AfterSubscription);
+             self.memory
+                 .entry_gate()
+                 .admit_operation()

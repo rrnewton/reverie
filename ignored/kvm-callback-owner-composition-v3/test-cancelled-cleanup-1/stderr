@@ -1,0 +1,6 @@
+Running as unit: kvm-callback-owner-test-cancelled-cleanup-1-1294591.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 293ms
+             CPU time consumed: 69ms
+                   Memory peak: 9M (swap: 0B)

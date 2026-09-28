@@ -1,0 +1,160 @@
+                    chaos_epoch: tool_local::chaos_epoch_sentinel(),
+                    chaos_slowdown_factor: RcbTimeMultiplier::ONE,
+                    chaos_slowdown_active: false,
+                    pending_chaos_epochs: Vec::new(),
+                    max_timeslice_end: None,
+                    last_rcb_timer: None,
+                    last_rcb_timer_is_max: false,
+
+                    record_or_replay,
+                    preemption_points: None,
+
+                    // We only get to the point of creating child threads if we're past the first execve.
+                    past_global_first_execve: true,
+                    interrupt_at: self.cfg.interrupts_for_thread(dettid),
+
+                    // `copy_process()` sets `p->robust_list = NULL` for every
+                    // new task, thread or process alike. The child re-registers
+                    // its own head before it can own a robust futex.
+                    robust_list_head: None,
+                    robust_list_process: if clone_flags.contains(CloneFlags::CLONE_THREAD) {
+                        Arc::clone(&pts.1.robust_list_process)
+                    } else {
+                        Arc::new(Mutex::new(tool_local::RobustListProcessState::default()))
+                    },
+                }
+            }
+        }
+    }
+
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        guest.thread_state_mut().thread_start_entered = true;
+        let new_dettid = DetTid::from_raw(guest.tid().into()); // TODO(T78538674): virtualize pid/tid:
+        assert_eq!(new_dettid, guest.thread_state().dettid);
+        let detpid = select_thread_start_detpid(guest.thread_state().detpid, guest.pid());
+        let is_root_thread = is_root_thread_start(guest.is_root_process(), new_dettid, detpid);
+        trace!(
+            "[tid {}] detcore handle_thread_start, pid={}",
+            guest.tid(),
+            detpid
+        );
+
+        // Delayed initialization of thread_state for this new thread:
+        let thread_state = guest.thread_state_mut();
+        thread_state.detpid = Some(detpid);
+        if thread_state.recover_process_mm_id(detpid) {
+            debug!(
+                "[detcore, dtid {}] recovered process memory identity {} for unparented thread state",
+                new_dettid, detpid
+            );
+        }
+
+        if let Some(vfork) = guest.thread_state_mut().pending_vfork.take() {
+            create_vfork_child_thread(guest, new_dettid, vfork).await;
+        } else if is_root_thread {
+            // There is no fork event to catch for the root thread.
+            debug!(
+                "[detcore, dtid {}] root thread start, scheduling.. full config:\n {:?}",
+                &new_dettid,
+                guest.config()
+            );
+            let physical_ids = if guest
+                .config()
+                .backend_requires_thread_directed_process_signals
+            {
+                Some((
+                    guest.pid().as_raw(),
+                    guest
+                        .thread_state()
+                        .physical_tid
+                        .expect("backend requires a host thread ID before registration"),
+                ))
+            } else {
+                None
+            };
+            if let Some(post_exec_mm) =
+                create_child_thread(guest, new_dettid, 0, None, libc::SIGCHLD, physical_ids).await
+            {
+                guest.thread_state_mut().mm_id = post_exec_mm;
+            }
+        }
+
+        // Except for the root task, let's block until it's our turn to go:
+        let th = tool_global::thread_start_request(&self.cfg, guest, detpid).await;
+
+        // Finish the delayed initialization of the full threadstate:
+        {
+            let ts = guest.thread_state_mut();
+            ts.preemption_points = th.map(|x| x.into_iter());
+            ts.next_timeslice(&self.cfg); // Must be after preemption_points is set.
+        }
+
+        // The prehook is a noop for a thread just starting.  Can't end the timeslice.  There's no
+        // RCB progress to record.  However, we call it for consistency with all the other handlers.
+        self.pre_handler_hook(guest, true).await;
+        // ^ precise_branch=true: There should have been ZERO prior instructions before this,
+        // because the thread hasn't done anything yet.
+
+        self.record_or_replay
+            .handle_thread_start(&mut guest.into_guest())
+            .await?;
+
+        self.post_handler_hook(guest).await;
+        Ok(())
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        guest.thread_state_mut().past_global_first_execve = true;
+        // A successful exec clears the kernel's clear_child_tid registration.
+        // Mirror that reset before any replacement-image syscall can run.
+        if guest.config().sequentialize_threads {
+            tool_global::set_child_tid_address(guest, 0).await;
+        }
+
+        tool_global::mark_past_first_execve(guest).await;
+        self.pre_handler_hook(guest, false).await;
+
+        let auxv = guest.auxv();
+        let initialized = guest
+            .thread_state_mut()
+            .complete_initial_random_auxv(auxv.at_random().map(|p| p.as_raw()))
+            .expect("authenticated initial random handoff no longer matches this image");
+        // The successful early write already emitted the ordinary auxv INFO
+        // record. Consume only its fact here: no second draw, write or event.
+        if !initialized && let Some(ptr) = auxv.at_random() {
+            // It is safe to mutate this address since libc has not yet had a
+            // chance to modify or copy the auxv table.
+            let memory = guest.memory();
+            let dettid = guest.thread_state().dettid;
+            let ptr = unsafe { ptr.into_mut() };
+            random::initialize_auxv(
+                guest.thread_state_mut().thread_prng(),
+                memory,
+                ptr.cast(),
+                dettid,
+            )?;
+        }
+
+        // Successful exec never returns through handle_syscall_event, so the
+        // nested recorder/replayer needs this callback to commit or retire its
+        // pending exec state before the replacement image issues another exec.
+        self.record_or_replay
+            .handle_post_exec(&mut guest.into_guest())
+            .await?;
+
+        self.post_handler_hook(guest).await;
+        Ok(())
+    }
+
+    /// A timer fires to preempt the guest and give other threads a turn.
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        info!(
+            "[detcore, dtid {}] inbound timer preemption event",
+            guest.thread_state().dettid
+        );
+        if guest.config().preemption_stacktrace {
+            let mut file_writer: Box<dyn Write> =
+                match &guest.config().preemption_stacktrace_log_file {
+                    Some(path) => Box::new(
+                        File::create(path).expect("Failed to open preemption stacktrace log file"),
+                    ),

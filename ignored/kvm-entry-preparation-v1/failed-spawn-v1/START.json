@@ -1,0 +1,16 @@
+{
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/executor.rs",
+      "bytes": 1515599,
+      "sha256": "f5acb6f08a9466b5ae27d29e03452f7d15cd495c20de25ff51dccb631e9a4cc8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/vm.rs",
+      "bytes": 371072,
+      "sha256": "1e8a4990dd2fdec3c87e2086523488bcfdf8c8337f8ee20289029c587a4bf0bb"
+    }
+  ],
+  "scope": "executor storage and two vm failed-spawn arms only",
+  "product_execution": false
+}

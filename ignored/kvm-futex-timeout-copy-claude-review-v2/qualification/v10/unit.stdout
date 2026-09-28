@@ -1,0 +1,11 @@
+
+running 6 tests
+test executor::entry_host_wait_tests::futex_allow_lists_every_linux_command_and_clock_combination ... ok
+test executor::entry_host_wait_tests::futex_timeout_copy_accepts_unaligned_readonly_cross_page_input ... ok
+test executor::entry_host_wait_tests::futex_timeout_import_and_non_pi_word_alignment_follow_linux_fault_order ... ok
+test executor::entry_host_wait_tests::queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes ... ok
+test executor::entry_host_wait_tests::allocation_held_mmap_file_read_does_not_hold_unchanged_mapping_fence ... ok
+test executor::entry_host_wait_tests::matching_futex_wait_observes_copied_finite_timeout ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 784 filtered out; finished in 0.01s
+

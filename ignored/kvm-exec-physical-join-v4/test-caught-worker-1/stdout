@@ -1,0 +1,6 @@
+
+running 1 test
+test runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 676 filtered out; finished in 0.00s
+

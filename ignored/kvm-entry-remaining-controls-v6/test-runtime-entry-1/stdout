@@ -1,0 +1,8 @@
+
+running 3 tests
+test runtime::entry_owner_tests::existing_entry_failure_skips_factory_and_retains_both_destructor_payloads ... ok
+test runtime::entry_owner_tests::private_entry_failure_wakes_pending_callback_before_scope_acknowledgement ... ok
+test runtime::entry_owner_tests::ready_typed_error_survives_entry_failure_and_outer_mapping ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 734 filtered out; finished in 0.10s
+

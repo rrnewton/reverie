@@ -1,0 +1,24 @@
+{
+  "started": [
+    "cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.143992369
+    }
+  ]
+}

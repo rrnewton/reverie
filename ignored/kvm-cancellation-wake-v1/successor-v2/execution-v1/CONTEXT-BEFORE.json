@@ -1,0 +1,144 @@
+{
+  "created_utc": "2026-09-19T11:22:50.059401+00:00",
+  "authorization": "Root admits seven frozen sequential phases; stop first actual failure; no source mutation or rerun.",
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/TARGET.json",
+    "bytes": 5162,
+    "mode": 420,
+    "symlink_target": null,
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/TARGET.json",
+    "sha256": "217c4fd4728f039a238b8fd98dca7b19f5013cd6099ecdcf01fa56a967eb0e77"
+  },
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/run.py",
+    "bytes": 6604,
+    "mode": 420,
+    "symlink_target": null,
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/run.py",
+    "sha256": "9fa8dcec635b12355c717e7cd79c0ec8a8cce0970394a69bf7d9229425ca0e53"
+  },
+  "contract": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/CALLER-CONTRACT.json",
+    "bytes": 2793,
+    "mode": 420,
+    "symlink_target": null,
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/CALLER-CONTRACT.json",
+    "sha256": "2ad93e1c7014c1aa233a336e374b8691807e6a12b264b9827b86b0dfb8d9577e"
+  },
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "lockfile": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "symlink_target": null,
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/Cargo.lock",
+    "sha256": "0a5ecdf9fc94cf7eddad15c0ced7c61ed9f4db08a47f5e1a668d5a7f663c8419"
+  },
+  "tools": [
+    {
+      "identity": {
+        "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "bytes": 35930328,
+        "mode": 493,
+        "symlink_target": null,
+        "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+      },
+      "version_argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "--version",
+        "--verbose"
+      ],
+      "version_raw_status": 0,
+      "version_stdout": "cargo 1.99.0-nightly (3efb1f477 2026-07-17)\nrelease: 1.99.0-nightly\ncommit-hash: 3efb1f477e99b42974b982d939fd100303cdf7db\ncommit-date: 2026-07-17\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.4 (sys:0.21.0 vendored)\nlibcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)\nssl: OpenSSL 3.6.3 9 Jun 2026\nos: CentOS 9.0.0 [64-bit]\n",
+      "version_stderr": ""
+    },
+    {
+      "identity": {
+        "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+        "bytes": 647712,
+        "mode": 493,
+        "symlink_target": null,
+        "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+        "sha256": "9da19b28ed198d7a7e3bd1ba5f6490b3d56c9b324f514bd05a5ed3f4661c95de"
+      },
+      "version_argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+        "--version",
+        "--verbose"
+      ],
+      "version_raw_status": 0,
+      "version_stdout": "rustc 1.99.0-nightly (26ae60a9e 2026-07-28)\nbinary: rustc\ncommit-hash: 26ae60a9eeb20b4935be49d7a931a650fa1d2923\ncommit-date: 2026-07-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0-nightly\nLLVM version: 22.1.8\n",
+      "version_stderr": ""
+    },
+    {
+      "identity": {
+        "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "bytes": 5255768,
+        "mode": 493,
+        "symlink_target": null,
+        "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+      },
+      "version_argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--version"
+      ],
+      "version_raw_status": 0,
+      "version_stdout": "rustfmt 1.10.0-nightly (26ae60a9ee 2026-07-28)\n",
+      "version_stderr": ""
+    }
+  ],
+  "source": {
+    "reverie-kvm/src/vm.rs": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/vm.rs",
+      "bytes": 349822,
+      "mode": 420,
+      "symlink_target": null,
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/vm.rs",
+      "sha256": "36bcf417a7c53d55a58a6be34ca8fe6ebf04faeb315f4a7b6472c09dd38eb9d4"
+    },
+    "reverie-kvm/src/entry.rs": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs",
+      "bytes": 38135,
+      "mode": 420,
+      "symlink_target": null,
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs",
+      "sha256": "3eb4ef4f86872afa4682904795238d3a194d6c7d74f5e9b3d8fcd45df0cf233b"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry/signal.rs",
+      "bytes": 13944,
+      "mode": 420,
+      "symlink_target": null,
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry/signal.rs",
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/error.rs",
+      "bytes": 20454,
+      "mode": 420,
+      "symlink_target": null,
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/error.rs",
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/lib.rs",
+      "bytes": 1770,
+      "mode": 420,
+      "symlink_target": null,
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/lib.rs",
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    }
+  },
+  "phases": [
+    "compile",
+    "inventory",
+    "new-tests",
+    "exec-rearm",
+    "poisoned-state",
+    "late-start",
+    "format-check"
+  ]
+}

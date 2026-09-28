@@ -1,0 +1,50 @@
+You are the independent actual Claude-family adversarial reviewer of Reverie pull request https://github.com/rrnewton/reverie/pull/603. You have read-only tools only. Do not edit files, execute commands, delegate, or publish comments. Return a complete review report in your final response.
+
+Review target: base f7bd85e11dd258112148ed2cba6531501a1a00d9, exact head c4376212990ae5072a7bcfd0223ec52003cbaac0, tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1. The complete 258,096-byte binary diff is BASE-TO-HEAD.patch, SHA-256 505d6305a9542d492be8aab4f667fe0a690bd12ec09e9f53553b1f8e148dd79d. The exact 2,756-byte follow-up from prior reviewed head 6152ee999a41324be36456bb0a9b94a703711068 is FOLLOWUP-FROM-V5.patch, SHA-256 91758615052dfeb221eab4b793fe7c5a7f85d6c5c5a7d0c7a8c14b681f02745b; it changes only reverie/src/tool.rs and reverie/src/process_signal_control.rs documentation. INPUTS.json binds the immutable packet.
+
+`candidate/` contains complete exact-head snapshots of reverie-kvm/src, reverie-kvm/tests, and reverie/src. `before/` contains base versions of every changed path. QUALIFICATION.md and `qualification/` contain retained exact-head results. PROPOSED-PR-BODY.md is the exact description proposed for landing. `context/claude-review-v5.txt` is your complete actual prior CHANGES REQUESTED review at 6152ee99; reconcile its required finding rather than assuming it was fixed. Its exit record, source metadata, manifest, qualification, proposed body, and all qualification logs are also supplied in context. Earlier v2-v4 reviews and the historical a2e race log remain supplied. `consumer/` contains complete exact Hermit source files at 3fe4f5929d07bc8a38e92aa16551c1cf436f60c4; HERMIT-WAIT-CONTRACT.md gives routing claims to verify, not conclusions to trust.
+
+Apply both code-review and deterministic-scheduling-review. Before reading the proposal, diff, qualification, or candidate code, read these primary files completely in this exact order: primary/paper.txt including its artifact appendix; primary/scheduler.rs including every test; primary/PROJECT_VISION.md; primary/hermit-v2-roadmap.md. The roadmap's dated measurements are history. Then read both context skill files completely. If anything is missing or truncated, state the limitation.
+
+Intended behavior and boundary:
+
+- Freeze an exact-generation process-family result at logical process exit. Parent disposition, waitability, pending generation, full ExitStatus, uid and CPU ticks must not be resampled from host join timing.
+- A logically terminal transitive root must not steal a grandchild from its live direct parent. Only a logically terminal exact direct parent makes a later child transition RunTeardownChild. Both host retirement orders must converge on the direct-parent outcome; unsupported live-descendant reparenting remains fail-closed.
+- Make child publication at-most-once by exact generation. Direct and Tool paths hard-enforce the frozen identity/status. Managed wait mismatch or stale effect is a typed backend run failure, not a guest errno or panic.
+- Tool child publication arms PublicationFenced before callback construction and first poll. Ordinary Pending preserves immediate WNOHANG; an already-armed fence holds the parent only through the Tool's synchronous prefix and Ready-or-Failed commit. The slot mutex is not held while Tool code runs. Success and failure wake waiters without duplication or resurrection.
+- The synchronous Tool prefix must commit publication/suppression without awaiting and without blocking on the fenced parent wait or other guest progress. Work after waitability publication may await parent progress on the same pinned future.
+- Tool-controlled publish_child_exit may take the run-wide child-publication lock alone for duplicate preflight. Its committing KVM path nests Tool scheduler -> exact-parent process-signal transaction -> run-wide registry and signal-state locks. No reverse Tool callback or fenced-parent/guest-progress wait may occur while those backend locks are retained.
+- Wait publication never reaps backend state. Hermit injects wait4/waitid before scheduler-shadow retirement; WNOWAIT and errors consume neither side.
+- Dropping a provisional task never manufactures family success. A missing explicit lifecycle-to-family transition fails closed.
+- Reparenting, stopped/continued publication, later SIG_IGN zombie flushing, broader default-SIGCHLD fidelity, nonzero production uid/ticks, and the unbounded wait without diagnosis if a Tool violates the prefix contract remain named residuals.
+- The later Hermit consumer still must implement its two-stage Exit/callback fence and update its pin. This patch supplies Reverie API/backend ordering only. Do not credit it with complete KVM determinism, parity, record/replay, or the Hermit consumer.
+
+Your v5 review found the fence technically sound and F1/F2/F3 resolved, but requested one documentation correction before landing. Scrutinize the exact c4376212 follow-up, not this prose summary:
+
+1. `tool.rs` now says the callback's synchronous prefix must neither reach an await nor otherwise block on parent progress because KVM may hold a concurrent parent wait across the whole prefix. It preserves the post-publication await boundary.
+2. `ProcessSignalControl::publish_child_exit` now distinguishes the standalone KVM duplicate preflight from the committing path, states the scheduler -> exact-parent transaction -> run-wide registry/signal-state order, and prohibits reverse Tool callbacks or waiting for the fenced parent/guest progress. It uses “may” rather than claiming every default, rejection, or duplicate path takes the transaction. Verify every lock and callback claim against production.
+3. PROPOSED-PR-BODY.md now says the fence spans the whole synchronous prefix, names its nonblocking obligation and lock order, and no longer calls the interval only bounded bookkeeping.
+
+Two independent source reviews approved the exact 2,756-byte follow-up after rejecting an earlier overbroad wording. Re-evaluate it yourself. V5 findings 2-7 were explicitly acceptable to defer; new blockers remain welcome. In particular verify that the public contract is sufficient for the intended Hermit consumer to publish while holding its scheduler reservation without creating a reverse lock edge.
+
+Verification evidence must be assessed adversarially. Every current qualification log records exact command/cwd, pre/post head and tree, exit code, and disk floor. The first final-head parallel library run had three timing-sensitive fixture failures; the first serialized run had a sibling delayed-waiter failure. Both raw runs are retained, all four exact retries passed, and complete parallel/serialized retries passed 774/774. The prior v5 nonblocking-EOF EAGAIN failure is also retained. Decide whether these disclosed failures affect the documentation-only follow-up; do not hide or relabel them. Exact-main Hermit safehermit, record/replay, and full parity evidence do not exist yet and must not be inferred.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification,
+and gate with the base revision. Determine whether the implementation now meets
+the original requirement or whether the requirement was changed to admit the
+implementation. Call out either result explicitly, including when no lowering
+of the bar is present.
+
+State all four categories explicitly.
+
+Report findings first with severity, exact file/line evidence, impact and required correction. Then give goalpost assessment, separate conclusions for the determinism guarantee and Linux/POSIX semantics, verification actually inspected with limitations, residual risks, and an exact-head APPROVE or CHANGES REQUESTED verdict. Distinguish a blocker to this Reverie prerequisite from the still-required external Hermit consumer.

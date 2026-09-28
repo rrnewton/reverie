@@ -1,0 +1,160 @@
++    }
++
++    fn finish_initial_exec(&mut self) {
++        if self.initial_command == InitialCommand::InitializingExec {
++            // Current setup makes no Tool callback in this interval. Retire
++            // any new internal request as well, without revisiting a taken one.
++            self.retire_initial_event();
++            self.initial_command = InitialCommand::Ordinary;
++        }
+     }
+ 
+     pub fn observe_event(&mut self) {
+@@ -807,7 +905,11 @@ impl TimerImpl {
+     }
+ 
+     pub fn cancel(&self) -> Result<(), Errno> {
+-        self.timer.disable()
++        if self.initial_command == InitialCommand::Ordinary {
++            self.timer.disable()
++        } else {
++            Ok(())
++        }
+     }
+ 
+     fn is_timer_generated_signal(signal: &libc::siginfo_t) -> bool {
+@@ -820,7 +922,8 @@ impl TimerImpl {
+     }
+ 
+     fn generated_signal(&self, signal: &libc::siginfo_t) -> bool {
+-        signal.si_signo == MARKER_SIGNAL as i32
++        self.initial_command == InitialCommand::Ordinary
++            && signal.si_signo == MARKER_SIGNAL as i32
+             // If we sent an artificial signal, it doesn't have any siginfo
+             && (self.send_artificial_signal
+             // If not, the fd should match. This could possibly lead to a
+@@ -836,6 +939,10 @@ impl TimerImpl {
+     }
+ 
+     pub fn finalize_requests(&self) {
++        if self.initial_command != InitialCommand::Ordinary {
++            debug_assert!(!self.send_artificial_signal);
++            return;
++        }
+         if self.send_artificial_signal {
+             debug!("Sending artificial timer signal");
+ 
+@@ -1059,6 +1166,86 @@ mod tests {
+     #[cfg(target_arch = "x86_64")]
+     use super::PmuConfig;
+ 
++    #[test]
++    fn initial_command_requests_retire_without_physical_notification() {
++        use reverie::Errno;
++        use reverie::Pid;
++
++        use super::ActiveEvent;
++        use super::EventStatus;
++        use super::InitialCommand;
++        use super::TimerEventRequest;
++        use super::TimerImpl;
++
++        let pid = Pid::from_raw(unsafe { libc::getpid() });
++        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
++        let mut timer = TimerImpl::new(pid, tid, true).expect("control requires a working PMU");
++        timer.fail_next_notification = Some(Errno::EIO);
++        for (request, expected) in [
++            (
++                TimerEventRequest::Precise(1),
++                ActiveEvent::Precise {
++                    clock_target: 1,
++                    offset: 0,
++                },
++            ),
++            (
++                TimerEventRequest::PreciseInstruction(4, 7),
++                ActiveEvent::Precise {
++                    clock_target: 4,
++                    offset: 7,
++                },
++            ),
++            (
++                TimerEventRequest::Imprecise(1_000_000),
++                ActiveEvent::Imprecise {
++                    clock_min: 1_000_000,
++                },
++            ),
++        ] {
++            timer.request_event(request).unwrap();
++            assert_eq!(timer.held_initial_event, Some(expected));
++            assert_eq!(timer.event, expected);
++            assert_eq!(timer.timer_status, EventStatus::Scheduled);
++            timer.finalize_requests();
++            assert!(!timer.send_artificial_signal);
++            assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
++        }
++        let retained = timer.held_initial_event;
++        assert_eq!(
++            timer.request_event(TimerEventRequest::Precise(0)),
++            Err(Errno::EINVAL)
++        );
++        assert_eq!(timer.held_initial_event, retained);
++        assert_eq!(timer.timer_status, EventStatus::Scheduled);
++        timer.observe_event();
++        assert_eq!(timer.timer_status, EventStatus::Armed);
++        timer.begin_initial_exec();
++        assert_eq!(timer.initial_command, InitialCommand::InitializingExec);
++        assert_eq!(timer.held_initial_event, None);
++        assert_eq!(timer.timer_status, EventStatus::Cancelled);
++        timer.begin_initial_exec();
++        assert_eq!(timer.held_initial_event, None);
++        // An internal request in backend initialization is a new held record,
++        // not permission to reactivate the request just retired at exec.
++        timer
++            .request_event(TimerEventRequest::Imprecise(9))
++            .unwrap();
++        timer.finalize_requests();
++        timer.finish_initial_exec();
++        assert_eq!(timer.initial_command, InitialCommand::Ordinary);
++        assert_eq!(timer.held_initial_event, None);
++        assert_eq!(timer.timer_status, EventStatus::Cancelled);
++        assert!(!timer.send_artificial_signal);
++        assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
++        assert_eq!(
++            timer.request_event(TimerEventRequest::Precise(1)),
++            Err(Errno::EIO)
++        );
++        assert_eq!(timer.fail_next_notification, None);
++        assert_eq!(timer.timer_status, EventStatus::Cancelled);
++    }
++
+     #[cfg(target_arch = "x86_64")]
+     #[test]
+     fn amd_epyc_9d85_uses_reduced_skid_margin() {
+diff --git a/reverie-ptrace/src/tracer.rs b/reverie-ptrace/src/tracer.rs
+index efaced98..3c8e468d 100644
+--- a/reverie-ptrace/src/tracer.rs
++++ b/reverie-ptrace/src/tracer.rs
+@@ -1942,6 +1942,9 @@ pub struct TracerBuilder<T: Tool + 'static> {
+ 
+     /// Whether to collect general ptrace activity statistics.
+     backend_stats_request: BackendStatsRequest,
++
++    #[cfg(all(test, target_arch = "x86_64"))]
++    clock_test_launcher_branches: u64,
+ }
+ 
+ impl<T: Tool + 'static> TracerBuilder<T> {
+@@ -1955,6 +1958,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
+             injected_syscall_trap: None,
+             liteinst_runtime: None,
+             backend_stats_request: BackendStatsRequest::DISABLED,
++            #[cfg(all(test, target_arch = "x86_64"))]
++            clock_test_launcher_branches: 0,
+         }
+     }
+ 
+@@ -2386,8 +2391,26 @@ impl<T: Tool + 'static> TracerBuilder<T> {
+         command.env("ASAN_OPTIONS", "detect_leaks=0");
+ 
+         let intercept_rdtsc = events.has_rdtsc();

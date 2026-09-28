@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-public-panics-1-1290263.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 72ms
+             CPU time consumed: 14ms
+                   Memory peak: 8.4M (swap: 0B)

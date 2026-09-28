@@ -1,0 +1,160 @@
+        self.is_a_daemon = true;
+
+        tracing::info!("[reverie] daemonizing pid {} ..", pid);
+        if self
+            .daemonizer
+            .send(self.daemon_kill_switch.subscribe())
+            .await
+            .is_err()
+        {
+            tracing::error!(%pid, "failed to notify orphan reaper while daemonizing tracee");
+            self.ndaemons.fetch_sub(1, Ordering::SeqCst);
+            self.is_a_daemon = false;
+            return;
+        }
+
+        if self.ndaemons.load(Ordering::SeqCst) == self.ntasks.load(Ordering::SeqCst) {
+            let _ = self.daemon_kill_switch.send(());
+        }
+    }
+
+    async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
+        // Call a non-templatized function to reduce code bloat.
+        let (nr, args) = syscall.into_parts();
+        self.do_inject(nr, args).await
+    }
+
+    #[allow(unreachable_code)]
+    async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        // Call a non-templatized function to reduce code bloat.
+        let (nr, args) = syscall.into_parts();
+        self.do_tail_inject(nr, args).await
+    }
+
+    fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), reverie::Error> {
+        let rcbs = match sched {
+            TimerSchedule::Rcbs(r) => r,
+            TimerSchedule::Time(dur) => Timer::as_ticks(dur),
+            //if timer is imprecise there is no really a point in trying to single step any further than r
+            TimerSchedule::RcbsAndInstructions(r, _) => r,
+        };
+        self.timer
+            .request_event(TimerEventRequest::Imprecise(rcbs))?;
+        Ok(())
+    }
+
+    fn set_timer_precise(&mut self, sched: TimerSchedule) -> Result<(), reverie::Error> {
+        match sched {
+            TimerSchedule::Rcbs(r) => self.timer.request_event(TimerEventRequest::Precise(r))?,
+            TimerSchedule::Time(dur) => self
+                .timer
+                .request_event(TimerEventRequest::Precise(Timer::as_ticks(dur)))?,
+            TimerSchedule::RcbsAndInstructions(r, i) => self
+                .timer
+                .request_event(TimerEventRequest::PreciseInstruction(r, i))?,
+        };
+        Ok(())
+    }
+
+    fn read_clock(&mut self) -> Result<u64, reverie::Error> {
+        Ok(self.timer.read_clock())
+    }
+
+    fn backtrace(&mut self) -> Option<Backtrace> {
+        use unwind::Accessors;
+        use unwind::AddressSpace;
+        use unwind::Byteorder;
+        use unwind::Cursor;
+        use unwind::PTraceState;
+        use unwind::RegNum;
+
+        let mut frames = Vec::new();
+
+        let space = AddressSpace::new(Accessors::ptrace(), Byteorder::DEFAULT).ok()?;
+        let state = PTraceState::new(self.tid.as_raw() as u32).ok()?;
+        let mut cursor = Cursor::remote(&space, &state).ok()?;
+
+        loop {
+            let ip = cursor.register(RegNum::IP).ok()?;
+            let is_signal = cursor.is_signal_frame().ok()?;
+
+            frames.push(Frame { ip, is_signal });
+
+            if !cursor.step().ok()? {
+                break;
+            }
+        }
+
+        // TODO: Take a snapshot of `/proc/self/maps` so the backtrace can be
+        // processed offline?
+
+        Some(Backtrace::new(self.tid(), frames))
+    }
+
+    fn has_cpuid_interception(&self) -> bool {
+        self.has_cpuid_interception
+    }
+}
+
+#[async_trait]
+impl<L: Tool + 'static> GlobalRPC<L::GlobalState> for TracedTask<L> {
+    async fn send_rpc<'a>(
+        &'a self,
+        args: <L::GlobalState as GlobalTool>::Request,
+    ) -> <L::GlobalState as GlobalTool>::Response {
+        let wrapped = WrappedFrom(self.tid(), &self.global_state);
+        wrapped.send_rpc(args).await
+    }
+
+    fn config(&self) -> &<L::GlobalState as GlobalTool>::Config {
+        &self.global_state.cfg
+    }
+}
+
+/// Wrap a GlobalState with a Tid from which the messages originate.  This enables the
+/// GlobalRPC instance below.
+struct WrappedFrom<'a, G: GlobalTool>(Tid, &'a GlobalState<G>);
+
+#[async_trait]
+impl<'a, G: GlobalTool> GlobalRPC<G> for WrappedFrom<'a, G> {
+    async fn send_rpc(&self, args: G::Request) -> G::Response {
+        // In debugging mode we round-trip through a serialized representation
+        // to make sure it works.
+        let deserial = if cfg!(debug_assertions) {
+            let serial = bincode::serde::encode_to_vec(&args, bincode::config::legacy())
+                .expect("GlobalRPC request must serialize in debug validation mode");
+            bincode::serde::decode_from_slice(&serial, bincode::config::legacy())
+                .expect("serialized GlobalRPC request must deserialize in debug validation mode")
+                .0
+        } else {
+            args
+        };
+        self.1.gs_ref.receive_rpc(self.0, deserial).await
+    }
+    fn config(&self) -> &G::Config {
+        &self.1.cfg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn command_bootstrap_arguments_preserve_types_and_raw_tail() {
+        let args = super::SyscallArgs::new(0x1000, 0x2000, 0, 41, 0x3000, 43);
+        let render = |nr, command_bootstrap| {
+            format!(
+                "{:?}",
+                super::SyscallArgsForLog {
+                    nr,
+                    args,
+                    command_bootstrap,
+                }
+            )
+        };
+        assert_eq!(
+            render(super::Sysno::execve, true),
+            "SyscallArgs { arg0: <hostaddr 0x1000>, arg1: <hostaddr 0x2000>, arg2: 0, arg3: 41, arg4: 12288, arg5: 43 }"
+        );
+        for nr in [
+            super::Sysno::execve,
+            super::Sysno::write,

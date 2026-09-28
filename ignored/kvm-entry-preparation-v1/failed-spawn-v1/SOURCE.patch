@@ -1,0 +1,254 @@
+--- before/reverie-kvm/src/executor.rs
++++ after/reverie-kvm/src/executor.rs
+@@ -8,6 +8,7 @@
+ 
+ use std::ffi::CStr;
+ use std::ffi::CString;
++use std::future::Future;
+ use std::io::Write;
+ use std::os::fd::AsRawFd;
+ use std::os::fd::FromRawFd;
+@@ -15,6 +16,7 @@
+ use std::os::unix::ffi::OsStrExt;
+ use std::os::unix::ffi::OsStringExt;
+ use std::os::unix::fs::FileExt;
++use std::pin::Pin;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+ use std::sync::atomic::AtomicBool;
+@@ -1175,6 +1177,10 @@
+     // TODO-HUMAN-REVIEW(PR-235): Review concurrent KVM process lifecycle ownership.
+     pending_processes: std::collections::BTreeMap<i32, PendingProcess>,
+     completed_processes: Vec<std::thread::JoinHandle<crate::Result<()>>>,
++    // Failed host spawns still own constructed child Tool state. Retain its
++    // consuming cleanup without polling inside the parent's borrowed callback.
++    // Mutex makes the executor Sync while each owned future only needs Send.
++    unstarted_tool_cleanup: Mutex<Vec<UnstartedToolCleanup>>,
+     // Exiting workers transfer forks to their process owner before returning.
+     transferred_processes: Arc<Mutex<std::collections::BTreeMap<i32, Vec<OwnedChildProcesses>>>>,
+     child_completion_sender: std::sync::mpsc::Sender<i32>,
+@@ -1190,6 +1196,9 @@
+     completed_signal_effects: Vec<reverie::SignalDequeue>,
+     signal_effect_raw_result: Option<i64>,
+ }
++
++pub(crate) type UnstartedToolCleanup =
++    Pin<Box<dyn Future<Output = crate::Result<()>> + Send + 'static>>;
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub(crate) enum ChildStartCommand {
+@@ -1906,6 +1915,25 @@
+ }
+ 
+ impl ElfExecutor {
++    /// Retain an unpolled child consumer. The outer owner must publish the
++    /// parent failure before taking and polling these futures outside callbacks.
++    pub(crate) fn retain_unstarted_tool_cleanup(&mut self, cleanup: UnstartedToolCleanup) {
++        self.unstarted_tool_cleanup
++            .get_mut()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .push(cleanup);
++    }
++
++    /// Transfer every retained consumer exactly once; no future is polled or
++    /// dropped while a registry guard is held. Each result remains typed.
++    pub(crate) fn take_unstarted_tool_cleanup(&mut self) -> Vec<UnstartedToolCleanup> {
++        std::mem::take(
++            self.unstarted_tool_cleanup
++                .get_mut()
++                .unwrap_or_else(|poisoned| poisoned.into_inner()),
++        )
++    }
++
+     pub(crate) fn bind_address_space(&mut self, memory: &GuestMemory) {
+         self.address_space = Some(memory.clone());
+     }
+@@ -1981,6 +2009,7 @@
+             sigchld_auto_reap,
+             pending_processes: std::collections::BTreeMap::new(),
+             completed_processes: Vec::new(),
++            unstarted_tool_cleanup: Mutex::new(Vec::new()),
+             transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+             child_completion_sender,
+             child_completion_receiver: Mutex::new(child_completion_receiver),
+@@ -2415,6 +2444,7 @@
+             sigchld_auto_reap: Arc::new(AtomicBool::new(sigchld_auto_reap)),
+             pending_processes: std::collections::BTreeMap::new(),
+             completed_processes: Vec::new(),
++            unstarted_tool_cleanup: Mutex::new(Vec::new()),
+             transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+             child_completion_sender,
+             child_completion_receiver: Mutex::new(child_completion_receiver),
+@@ -2514,6 +2544,7 @@
+             sigchld_auto_reap: self.sigchld_auto_reap.clone(),
+             pending_processes: std::collections::BTreeMap::new(),
+             completed_processes: Vec::new(),
++            unstarted_tool_cleanup: Mutex::new(Vec::new()),
+             transferred_processes: self.transferred_processes.clone(),
+             child_completion_sender,
+             child_completion_receiver: Mutex::new(child_completion_receiver),
+@@ -37638,6 +37669,86 @@
+     }
+ 
+     #[test]
++    fn unstarted_tool_cleanup_retains_children_unpolled_and_transfers_once() {
++        fn require_send_sync<T: Send + Sync>() {}
++        require_send_sync::<ElfExecutor>();
++
++        let root = TestDir::new();
++        let mut parent = ElfExecutor::new(test_state(&root.0), false);
++        assert!(parent.take_unstarted_tool_cleanup().is_empty());
++        let child_tid = parent.state.pid + 1;
++        let child_pid = child_tid + 1;
++        let mut worker = parent.thread_child(child_tid).unwrap();
++        let mut process = parent.fork_child(child_pid, false, false).unwrap();
++        assert!(worker.take_unstarted_tool_cleanup().is_empty());
++        assert!(process.take_unstarted_tool_cleanup().is_empty());
++        let observed = [
++            (worker.state.task_lifecycle.clone(), child_tid),
++            (process.state.task_lifecycle.clone(), child_pid),
++        ];
++        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++        let primary = Arc::new(crate::Error::RunAborted);
++        let hook_error = Arc::new(crate::Error::UnexpectedVcpuExit(
++            "controlled deferred child consuming failure".to_owned(),
++        ));
++        for (index, child) in [worker, process].into_iter().enumerate() {
++            let polls = polls.clone();
++            let primary = primary.clone();
++            let hook_error = hook_error.clone();
++            // Deliberately Send but not Sync: only the queue's mutex supplies
++            // the executor's Sync bound. It must never poll this inline.
++            let not_sync = std::cell::Cell::new(0);
++            parent.retain_unstarted_tool_cleanup(Box::pin(async move {
++                not_sync.set(1);
++                std::future::ready(()).await;
++                assert_eq!(not_sync.get(), 1);
++                polls.fetch_add(1, Ordering::SeqCst);
++                drop(child);
++                if index == 0 {
++                    Err(crate::Error::RunAborted)
++                } else {
++                    Err(crate::Error::WithCleanup {
++                        primary,
++                        cleanup: vec![hook_error],
++                    })
++                }
++            }));
++        }
++        assert_eq!(polls.load(Ordering::SeqCst), 0);
++        for (lifecycle, tid) in &observed {
++            assert!(lifecycle.lock().unwrap().get(*tid).is_some());
++        }
++        // Retained consumers belong to this exact executor, not a copied child.
++        let mut next_worker = parent.thread_child(child_pid + 1).unwrap();
++        let mut next_process = parent.fork_child(child_pid + 2, false, false).unwrap();
++        assert!(next_worker.take_unstarted_tool_cleanup().is_empty());
++        assert!(next_process.take_unstarted_tool_cleanup().is_empty());
++        let mut retained = parent.take_unstarted_tool_cleanup().into_iter();
++        assert!(parent.take_unstarted_tool_cleanup().is_empty());
++        assert_eq!(polls.load(Ordering::SeqCst), 0);
++        assert!(matches!(
++            futures::executor::block_on(retained.next().unwrap()),
++            Err(crate::Error::RunAborted)
++        ));
++        let error = futures::executor::block_on(retained.next().unwrap()).unwrap_err();
++        let crate::Error::WithCleanup {
++            primary: actual,
++            cleanup,
++        } = error
++        else {
++            panic!("deferred cleanup lost its typed aggregate");
++        };
++        assert!(Arc::ptr_eq(&actual, &primary));
++        assert_eq!(cleanup.len(), 1);
++        assert!(Arc::ptr_eq(&cleanup[0], &hook_error));
++        assert!(retained.next().is_none());
++        assert_eq!(polls.load(Ordering::SeqCst), 2);
++        for (lifecycle, tid) in &observed {
++            assert!(lifecycle.lock().unwrap().get(*tid).is_none());
++        }
++    }
++
++    #[test]
+     fn child_process_cleanup_joins_every_handle_and_preserves_each_error() {
+         let root = TestDir::new();
+         let mut executor = ElfExecutor::new(test_state(&root.0), false);
+--- before/reverie-kvm/src/vm.rs
++++ after/reverie-kvm/src/vm.rs
+@@ -2593,19 +2593,25 @@
+                         error,
+                         (mut child, child_tool, child_thread_state, global_state, config, _),
+                     )) => {
+-                        return child
+-                            .backend
+-                            .finish_unstarted_tool(
+-                                &mut child.executor,
+-                                child_tool,
+-                                (child_pid, child_pid),
+-                                global_state.as_ref(),
+-                                &config,
+-                                child_thread_state,
+-                                Some(Error::HostIo(error)),
+-                            )
+-                            .await
+-                            .map(|_| unreachable!("failed spawn completed successfully"));
++                        // Publish the original spawn failure through the parent
++                        // first. Its outer owner consumes this child afterward,
++                        // outside the still-borrowed parent Tool callback.
++                        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
++                            child
++                                .backend
++                                .finish_unstarted_tool(
++                                    &mut child.executor,
++                                    child_tool,
++                                    (child_pid, child_pid),
++                                    global_state.as_ref(),
++                                    &config,
++                                    child_thread_state,
++                                    Some(Error::RunAborted),
++                                )
++                                .await
++                                .map(|_| unreachable!("failed spawn completed successfully"))
++                        }));
++                        return Err(Error::HostIo(error));
+                     }
+                 };
+                 pending_child_starts
+@@ -2860,18 +2866,24 @@
+                             _,
+                         ),
+                     )) => {
+-                        return child
+-                            .finish_unstarted_tool(
+-                                &mut child_executor,
+-                                child_tool,
+-                                (tgid, child_tid_pid),
+-                                global_state.as_ref(),
+-                                &config,
+-                                child_thread_state,
+-                                Some(Error::HostIo(error)),
+-                            )
+-                            .await
+-                            .map(|_| unreachable!("failed spawn completed successfully"));
++                        // A failed spawn never starts this child. Retain its
++                        // consuming hooks until the parent has published the
++                        // original error and released its borrowed callback.
++                        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
++                            child
++                                .finish_unstarted_tool(
++                                    &mut child_executor,
++                                    child_tool,
++                                    (tgid, child_tid_pid),
++                                    global_state.as_ref(),
++                                    &config,
++                                    child_thread_state,
++                                    Some(Error::RunAborted),
++                                )
++                                .await
++                                .map(|_| unreachable!("failed spawn completed successfully"))
++                        }));
++                        return Err(Error::HostIo(error));
+                     }
+                 };
+                 self.thread_group

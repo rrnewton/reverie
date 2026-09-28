@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-cleanup-entry-1-1401487.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 1.872s
+             CPU time consumed: 129ms
+                   Memory peak: 7.3M (swap: 0B)

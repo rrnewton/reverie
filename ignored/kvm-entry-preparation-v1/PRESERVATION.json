@@ -1,0 +1,91 @@
+{
+  "test_suffixes": [
+    {
+      "file": "vm",
+      "original_declarations": 73,
+      "candidate_declarations": 74,
+      "only_insertions": [
+        [
+          "insert",
+          5,
+          5,
+          5,
+          145
+        ]
+      ],
+      "all_original_test_suffix_bytes_preserved": true
+    },
+    {
+      "file": "memory",
+      "original_declarations": 36,
+      "candidate_declarations": 37,
+      "only_insertions": [
+        [
+          "insert",
+          457,
+          457,
+          457,
+          522
+        ]
+      ],
+      "all_original_test_suffix_bytes_preserved": true
+    },
+    {
+      "file": "bootstrap",
+      "original_declarations": 10,
+      "candidate_declarations": 10,
+      "only_insertions": [],
+      "all_original_test_suffix_bytes_preserved": true
+    },
+    {
+      "file": "runtime",
+      "original_declarations": 18,
+      "candidate_declarations": 18,
+      "only_insertions": [],
+      "all_original_test_suffix_bytes_preserved": true
+    }
+  ],
+  "unchanged_functions": [
+    {
+      "marker": "pub(crate) fn capture(",
+      "bytes": 569,
+      "sha256": "f2b4457edeec4b8e81defd22046b28d975f24095d3d4b5d46b59f79a5a044636"
+    },
+    {
+      "marker": "pub(crate) fn capture_for_action(",
+      "bytes": 865,
+      "sha256": "cd7061898f985d0a4c678ef0d2f4abc0d8af8363048974d4d705999bbc8a9a86"
+    },
+    {
+      "marker": "pub(crate) fn completed_syscall_boundary_registers(",
+      "bytes": 591,
+      "sha256": "9eb8568a946ff178650a179a9238d8a49e28e528bae4891df89d11aca6a2b26b"
+    },
+    {
+      "marker": "async fn park_process_action(",
+      "bytes": 3024,
+      "sha256": "e7af2093053e92655c0f9b794d9cfa4890469f31b3ac3b19060b9f0d61b63be3"
+    }
+  ],
+  "product_execution": false,
+  "removed_blocking_park_helper_current_callers": [],
+  "runtime_proposal": {
+    "applied_by_author": false,
+    "coordinator_reported_application": true,
+    "base": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-preparation-v1/BASE-runtime.rs",
+      "bytes": 213900,
+      "sha256": "3deaeabdecb157d1f5a4358eb8820bc6c0d41ebb9a8a2655146e270f54f102ed"
+    },
+    "proposal": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-preparation-v1/PROPOSED-runtime.rs",
+      "bytes": 215531,
+      "sha256": "6906a8d00c4c1a9acc125fdaaeba080d6a843d9fc8d786edeb80cab680f6a072"
+    },
+    "patch": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-preparation-v1/RUNTIME-CALLER.patch",
+      "bytes": 3788,
+      "sha256": "34bbc9c5b2abf02fe52ea4d7c4d7d10ea11d3997fb1aa7d384015a717f57e316"
+    }
+  }
+}

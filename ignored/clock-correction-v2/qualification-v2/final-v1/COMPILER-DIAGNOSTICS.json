@@ -1,0 +1,14 @@
+[
+  {
+    "phase": "compile",
+    "messages": []
+  },
+  {
+    "phase": "core-check",
+    "messages": []
+  },
+  {
+    "phase": "clippy",
+    "messages": []
+  }
+]

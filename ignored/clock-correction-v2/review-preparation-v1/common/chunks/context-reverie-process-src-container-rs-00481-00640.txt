@@ -1,0 +1,160 @@
+    ///
+    /// # Implementation
+    ///
+    /// This modifies `/proc/{pid}/gid_map` where `{pid}` is the PID of the child
+    /// process. See [`user_namespaces(7)`] for more details.
+    ///
+    /// [`user_namespaces(7)`]: https://man7.org/linux/man-pages/man7/user_namespaces.7.html
+    pub fn map_gid(&mut self, inside_gid: libc::gid_t, outside_gid: libc::gid_t) -> &mut Self {
+        self.map_gid_range(inside_gid, outside_gid, 1)
+    }
+
+    /// Maps potentially many group IDs inside the new user namespace to group
+    /// IDs outside of the user namespace.
+    ///
+    /// Implies `Namespace::USER`.
+    ///
+    /// # Implementation
+    ///
+    /// This modifies `/proc/{pid}/gid_map` where `{pid}` is the PID of the child
+    /// process. See [`user_namespaces(7)`] for more details.
+    ///
+    /// [`user_namespaces(7)`]: https://man7.org/linux/man-pages/man7/user_namespaces.7.html
+    pub fn map_gid_range(
+        &mut self,
+        starting_inside_gid: libc::gid_t,
+        starting_outside_gid: libc::gid_t,
+        count: u32,
+    ) -> &mut Self {
+        self.namespace |= Namespace::USER;
+        self.gid_map
+            .push((starting_inside_gid, starting_outside_gid, count));
+        self
+    }
+
+    /// Sets the hostname of the container.
+    ///
+    /// Implies `Namespace::UTS`, which requires `CAP_SYS_ADMIN`.
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    ///
+    /// let container = Container::new().map_root().hostname("foobar.local");
+    /// ```
+    pub fn hostname<S: Into<OsString>>(&mut self, hostname: S) -> &mut Self {
+        self.namespace |= Namespace::UTS;
+        self.hostname = Some(hostname.into());
+        self
+    }
+
+    /// Sets the domain name of the container.
+    ///
+    /// Implies `Namespace::UTS`, which requires `CAP_SYS_ADMIN`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    ///
+    /// let container = Container::new().map_root().domainname("foobar");
+    /// ```
+    pub fn domainname<S: Into<OsString>>(&mut self, domainname: S) -> &mut Self {
+        self.namespace |= Namespace::UTS;
+        self.domainname = Some(domainname.into());
+        self
+    }
+
+    /// Gets the hostname of the container.
+    pub fn get_hostname(&self) -> Option<&OsStr> {
+        self.hostname.as_ref().map(AsRef::as_ref)
+    }
+
+    /// Gets the domainname of the container.
+    pub fn get_domainname(&self) -> Option<&OsStr> {
+        self.domainname.as_ref().map(AsRef::as_ref)
+    }
+
+    /// Adds a file system to be mounted. Note that these are mounted in the same
+    /// order as given.
+    ///
+    /// Implies `Namespace::MOUNT`. Note that `Namespace::USER` should also have
+    /// been set and `map_uid` should have been called in order to gain the
+    /// privileges required to mount.
+    pub fn mount(&mut self, mount: Mount) -> &mut Self {
+        self.namespace |= Namespace::MOUNT;
+        self.mounts.push(mount);
+        self
+    }
+
+    /// Adds multiple mounts.
+    pub fn mounts<I>(&mut self, mounts: I) -> &mut Self
+    where
+        I: IntoIterator<Item = Mount>,
+    {
+        self.namespace |= Namespace::MOUNT;
+        self.mounts.extend(mounts);
+        self
+    }
+
+    /// Sets up the container to have local networking only. This will prevent
+    /// any network communication to the outside world.
+    ///
+    /// Implies `Namespace::NETWORK` and `Namespace::MOUNT`.
+    ///
+    /// This also causes a fresh `/sys` to be mounted to avoid seeing the host
+    /// network interfaces in `/sys/class/net`.
+    pub fn local_networking_only(&mut self) -> &mut Self {
+        if !self.local_networking_only {
+            self.local_networking_only = true;
+            self.namespace |= Namespace::NETWORK;
+            self.mount(Mount::sysfs("/sys"));
+        }
+        self
+    }
+
+    /// Sets the seccomp filter. The filter is loaded immediately before `execve`
+    /// and *after* all `pre_exec` callbacks have been executed. Thus, you will
+    /// still be able to call filtered syscalls from `pre_exec` callbacks.
+    pub fn seccomp(&mut self, filter: seccomp::Filter) -> &mut Self {
+        self.seccomp = Some(filter);
+        self
+    }
+
+    /// Indicates that we want to listen for seccomp events using
+    /// [seccomp_unotify(2)](https://man7.org/linux/man-pages/man2/seccomp_unotify.2.html).
+    ///
+    /// If this is set, the seccomp listener file descriptor will be accessible
+    /// via the `Child`.
+    pub fn seccomp_notify(&mut self) -> &mut Self {
+        self.seccomp_notify = true;
+        self
+    }
+
+    /// Sets the controlling pseudoterminal for the child process).
+    ///
+    /// In the child process, this has the effect of:
+    ///  1. Creating a new session (with `setsid()`).
+    ///  2. Using an `ioctl` to set the controlling terminal.
+    ///  3. Setting this file descriptor as the stdio streams.
+    ///
+    /// NOTE: Since this modifies the stdio streams, calling this will reset
+    /// [`Self::stdin`], [`Self::stdout`], and [`Self::stderr`] back to
+    /// [`Stdio::inherit()`].
+    pub fn pty(&mut self, child: PtyChild) -> &mut Self {
+        self.pty = Some(child);
+        self.stdin = Stdio::inherit();
+        self.stdout = Stdio::inherit();
+        self.stderr = Stdio::inherit();
+        self
+    }
+
+    /// Sets the CPU to which the child threads/processes will be pinned.
+    pub fn affinity(&mut self, affinity: usize) -> &mut Self {
+        self.affinity = Some(affinity);
+        self
+    }
+
+    /// Called by the child process after `clone` to get itself set up for either
+    /// `execve` or running an arbitrary function.
+    ///
+    /// NOTE: Although this function takes `&mut self`, it is only called in the

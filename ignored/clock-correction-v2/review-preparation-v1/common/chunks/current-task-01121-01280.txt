@@ -1,0 +1,160 @@
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TracedTask")
+            .field("tid", &self.tid)
+            .field("pid", &self.pid)
+            .field("ppid", &self.ppid)
+            .finish()
+    }
+}
+
+impl<L: Tool> TracedTask<L> {
+    /// Create a new TracedTask.
+    pub(crate) fn new(
+        tid: Pid,
+        cfg: <L::GlobalState as GlobalTool>::Config,
+        gs_ref: Arc<L::GlobalState>,
+        options: TracedTaskOptions<'_>,
+        orphanage: mpsc::Sender<Child>,
+        daemon_kill_switch: broadcast::Sender<()>,
+        mut gdbserver: Option<GdbServer>,
+    ) -> Self {
+        let process_state = Arc::new(L::new(tid, &cfg));
+        let global_state = GlobalState {
+            gs_ref,
+            cfg,
+            subscriptions: Arc::new(options.events.clone()),
+            sequentialized_guest: Arc::new(
+                gdbserver
+                    .as_ref()
+                    .map(|s| s.sequentialized_guest)
+                    .unwrap_or(false),
+            ),
+            injected_syscall_trap: options.injected_syscall_trap.clone(),
+            liteinst_runtime: options.liteinst_runtime,
+            backend_stats: options.backend_stats,
+        };
+        let thread_state = process_state.init_thread_state(tid, None);
+        let (next_state, next_state_rx) = mpsc::channel(1);
+        let (daemonizer, daemonizer_rx) = mpsc::channel(1);
+        let (gdb_resume_tx, gdb_resume_rx) = mpsc::channel(1);
+        let (gdb_request_tx, gdb_request_rx) = mpsc::channel(1);
+        let (exit_suspend_tx, exit_suspend_rx) = mpsc::channel(16);
+        Self {
+            tid,
+            pid: tid,
+            ppid: None,
+            thread_state,
+            process_state,
+            global_state,
+            command_bootstrap: options.command_bootstrap,
+            has_cpuid_interception: false,
+            pending_syscall: None,
+            pending_syscall_already_skipped: false,
+            injected_syscall_frame: None,
+            liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
+            liteinst_entry_guard: None,
+            liteinst_failure: None,
+            next_state,
+            next_state_rx: Some(next_state_rx),
+            timer: if options.command_bootstrap {
+                Timer::for_initial_command(tid, tid)
+            } else {
+                Timer::new(tid, tid)
+            },
+            cancel_handler: Arc::new(AtomicBool::new(false)),
+            pending_signal: None,
+            child_procs: Arc::new(Mutex::new(Children::new())),
+            child_threads: Arc::new(Mutex::new(Children::new())),
+            orphanage,
+            daemon_kill_switch,
+            daemonizer,
+            daemonizer_rx: Some(daemonizer_rx),
+            ntasks: Arc::new(AtomicUsize::new(1)),
+            ndaemons: Arc::new(AtomicUsize::new(0)),
+            is_a_daemon: false,
+            gdbserver_start_tx: gdbserver.as_mut().and_then(|s| s.server_tx.take()),
+            gdb_stop_tx: gdbserver
+                .as_mut()
+                .and_then(|s| s.inferior_attached_tx.take()),
+            attached_by_gdb: false,
+            resumed_by_gdb: None,
+            gdb_resume_tx: Some(gdb_resume_tx),
+            gdb_resume_rx: Some(gdb_resume_rx),
+            breakpoints: HashMap::new(),
+            suspended: Arc::new(AtomicBool::new(false)),
+            gdb_request_tx: Some(gdb_request_tx),
+            gdb_request_rx: Some(gdb_request_rx),
+            exit_suspend_tx: Some(exit_suspend_tx),
+            exit_suspend_rx: Some(exit_suspend_rx),
+            needs_step_over: Arc::new(Mutex::new(())),
+            suspended_tasks: BTreeMap::new(),
+            stack_checked_out: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Create a child TracedTask corresponding to a clone()
+    fn cloned(&self, child: Pid) -> Self {
+        let global_state = self.global_state.clone();
+        let process_state = self.process_state.clone();
+        let thread_state =
+            process_state.init_thread_state(child, Some((self.tid, &self.thread_state)));
+        let (next_state, next_state_rx) = mpsc::channel(1);
+        let (daemonizer, daemonizer_rx) = mpsc::channel(1);
+        let (gdb_resume_tx, gdb_resume_rx) = mpsc::channel(1);
+        let (gdb_request_tx, gdb_request_rx) = mpsc::channel(1);
+        let (exit_suspend_tx, exit_suspend_rx) = mpsc::channel(16);
+        self.ntasks.fetch_add(1, Ordering::SeqCst);
+        Self {
+            tid: child,
+            pid: self.pid,
+            ppid: self.ppid,
+            thread_state,
+            process_state,
+            global_state,
+            command_bootstrap: false,
+            has_cpuid_interception: self.has_cpuid_interception,
+            pending_syscall: None,
+            pending_syscall_already_skipped: false,
+            injected_syscall_frame: None,
+            liteinst_runtime: self.liteinst_runtime.clone(),
+            liteinst_entry_guard: None,
+            liteinst_failure: None,
+            next_state,
+            next_state_rx: Some(next_state_rx),
+            timer: Timer::new(self.pid, child),
+            cancel_handler: Arc::new(AtomicBool::new(false)),
+            pending_signal: None,
+            child_procs: self.child_procs.clone(),
+            child_threads: self.child_threads.clone(),
+            orphanage: self.orphanage.clone(),
+            daemon_kill_switch: self.daemon_kill_switch.clone(),
+            daemonizer,
+            daemonizer_rx: Some(daemonizer_rx),
+            ntasks: self.ntasks.clone(),
+            ndaemons: self.ndaemons.clone(),
+            is_a_daemon: self.is_a_daemon,
+            gdbserver_start_tx: None,
+            gdb_stop_tx: None,
+            attached_by_gdb: self.attached_by_gdb,
+            resumed_by_gdb: self.resumed_by_gdb,
+            gdb_resume_tx: Some(gdb_resume_tx),
+            gdb_resume_rx: Some(gdb_resume_rx),
+            breakpoints: self.breakpoints.clone(),
+            suspended: Arc::new(AtomicBool::new(false)),
+            gdb_request_tx: Some(gdb_request_tx),
+            gdb_request_rx: Some(gdb_request_rx),
+            exit_suspend_tx: Some(exit_suspend_tx),
+            exit_suspend_rx: Some(exit_suspend_rx),
+            needs_step_over: self.needs_step_over.clone(),
+            suspended_tasks: BTreeMap::new(),
+            stack_checked_out: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Create a child TracedTask corresponding to a fork()
+    fn forked(&self, child: Pid) -> Self {
+        let process_state = Arc::new(L::new(child, &self.global_state.cfg));
+        let thread_state =
+            process_state.init_thread_state(child, Some((self.tid, &self.thread_state)));
+        let (next_state, next_state_rx) = mpsc::channel(1);
+        let (daemonizer, daemonizer_rx) = mpsc::channel(1);

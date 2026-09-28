@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "git",
+    "apply",
+    "--check",
+    "--reverse",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-lint-driver-corrections-v1/changes.patch"
+  ],
+  "returncode": 0
+}

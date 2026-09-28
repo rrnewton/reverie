@@ -1,0 +1,18 @@
+{
+  "at_utc": "2026-09-18T20:39:51.308707+00:00",
+  "completely_visible": 162,
+  "total": 164,
+  "missing": [
+    {
+      "index": 145,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/complete-terminal-admission-tests-00001-00160.txt"
+    },
+    {
+      "index": 146,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/complete-terminal-admission-tests-00161-00189.txt"
+    }
+  ],
+  "raw_prefix_bytes": 2577181,
+  "raw_prefix_sha256": "a0de51f5e2b46ff070fbcdb59a4fc8fefb7f3da826aa0fa85d2dfdb0e4e71257",
+  "scope": "Interim literal coverage only; review active, no verdict or final audit"
+}

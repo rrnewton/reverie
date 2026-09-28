@@ -1,0 +1,6 @@
+Running as unit: kvm-callback-owner-test-exec-cleanup-1-1100069.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 42ms
+             CPU time consumed: 11ms
+                   Memory peak: 8.1M (swap: 0B)

@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-spawn-entry-1-2817272.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 144ms
+             CPU time consumed: 22ms
+                   Memory peak: 14.7M (swap: 0B)

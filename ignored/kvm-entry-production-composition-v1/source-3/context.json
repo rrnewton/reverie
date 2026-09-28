@@ -1,0 +1,58 @@
+{
+  "head": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "files": {
+    "status": {
+      "bytes": 320,
+      "sha256": "912ad893e7b3c5c27893b1b3a6e93a0b3683f3cf86100d5122ef67076656a6b0"
+    },
+    "diff": {
+      "bytes": 112706,
+      "sha256": "ca03290152f4bb0deda8b2e85c4ca0e0eb759040a4de2e24b828351687f34878"
+    },
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 41766,
+      "sha256": "f994483af60226c2bfc4544b8030ce6691b3401cc11fcc7628846fd39f005d41"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    },
+    "reverie-kvm/src/clock.rs": {
+      "bytes": 36869,
+      "sha256": "3999e56a011af67406cd3a2f99233aca1e276cee50cfcfd6fea5114c884ed612"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 359703,
+      "sha256": "1c633337850332d82432864b46ed5f75332031dc34be9e1ee51af305e09bfdfe"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 213900,
+      "sha256": "3deaeabdecb157d1f5a4358eb8820bc6c0d41ebb9a8a2655146e270f54f102ed"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "bytes": 122685,
+      "sha256": "2d8e46a93b20e49707e98a19d749aa7fac5414254f47cd7ab9ab06c4b88e4857"
+    },
+    "reverie-kvm/src/cpuid_runtime_tests.rs": {
+      "bytes": 5963,
+      "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 28158,
+      "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"
+    },
+    "reverie-kvm/src/bootstrap.rs": {
+      "bytes": 43765,
+      "sha256": "6bad9d324f954c104ae8b75e5522f446cb2cc2c817a22cd3dad04b11cfb86ffa"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    }
+  }
+}

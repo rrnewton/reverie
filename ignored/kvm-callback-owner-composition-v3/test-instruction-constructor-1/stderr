@@ -1,0 +1,6 @@
+Running as unit: kvm-callback-owner-test-instruction-constructor-1-1302280.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 67ms
+             CPU time consumed: 18ms
+                   Memory peak: 8.2M (swap: 0B)

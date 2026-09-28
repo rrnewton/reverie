@@ -1,0 +1,253 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.33s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+
+running 23 tests
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+reserved stdin native=true reader=Ok(0) backend_alive=false
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+exit-files terminal syscall tid=1 status=0
+reserved stdin native=false reader=Ok(0) backend_alive=true
+
+thread '<unnamed>' (797767) panicked at reverie-kvm/tests/support/terminal_fork.rs:226:21:
+assertion `left == right` failed
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (797767) panicked at reverie-kvm/tests/support/terminal_fork.rs:304:9:
+assertion `left == right` failed
+  left: Exited(255)
+ right: Exited(0)
+
+thread '<unnamed>' (797767) panicked at reverie-kvm/tests/support/terminal_fork.rs:318:9:
+assertion `left == right` failed
+  left: Exited(255)
+ right: Exited(0)
+test terminal_fork::terminal_exit_releases_reserved_stdin_description ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.04s
+
+test terminal_fork::terminal_exit_releases_reserved_stdin_description ... ok
+exit-files native mode=0 code=0 exact_stdout=EOF
+exit-files native mode=2 code=0 exact_stdout=EOF
+exit-files native mode=1 code=0 exact_stdout=EOF
+exit-files before read tid=1 fd=3
+exit-files completed read tid=1 result=832
+exit-files before read tid=1 fd=3
+exit-files completed read tid=1 result=832
+exit-files before read tid=1 fd=3
+exit-files completed read tid=1 result=832
+exit-files terminal syscall tid=1 status=0
+exit-files before read tid=2 fd=3
+exit-files completed read tid=2 result=0
+exit-files terminal syscall tid=2 status=0
+exit-files terminal syscall tid=1 status=0
+exit-files before read tid=2 fd=3
+exit-files completed read tid=2 result=0
+exit-files terminal syscall tid=2 status=0
+exit-files terminal syscall tid=2 status=0
+exit-files before read tid=1 fd=3
+exit-files completed read tid=1 result=1
+exit-files before read tid=1 fd=3
+exit-files completed read tid=1 result=0
+exit-files terminal syscall tid=1 status=0
+terminal fork mode=2 early=false result=Err(WithCleanup { primary: SharedFailure(Reverie(Errno(EIO))), cleanup: [SharedFailure(Reverie(Errno(E2BIG)))] }) at_return=[Event { kind: "start", pid: 1, value: 797757 }, Event { kind: "start", pid: 2, value: 797815 }, Event { kind: "start", pid: 3, value: 797826 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 3, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "write", pid: 3, value: 2 }, Event { kind: "wait-event", pid: 2, value: 0 }, Event { kind: "wait-event", pid: 3, value: 0 }, Event { kind: "wait-collected", pid: 2, value: 0 }, Event { kind: "wait-collected", pid: 3, value: 0 }, Event { kind: "parent-ready", pid: 1, value: 2 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "thread-exit", pid: 3, value: 0 }, Event { kind: "process-exit", pid: 3, value: 0 }, Event { kind: "tool-drop", pid: 3, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "host-exit", pid: 3, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }] global_dropped=true
+test terminal_fork::cancellation_preserves_completed_child_errors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.14s
+
+test terminal_fork::cancellation_preserves_completed_child_errors ... ok
+parent-exit acknowledgment mode=14 result=Ok((Log { control: Control { state: Mutex { data: State { events: [Event { kind: "start", pid: 1, value: 797909 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797946 }, Event { kind: "blocked", pid: 2, value: 0 }, Event { kind: "parent-marker", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "parent-exit-ack", pid: 2, value: 1 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }, Event { kind: "test terminal_fork::terminal_exit_releases_parent_pipe_writer_before_joining_child ... host-exitok"
+, pid: 1, value
+: test result: 0ok }. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out], ; finished in 0.17sparent_ready
+
+: true, release_first_error: false, release_child: false, global_dropped: false }, poisoned: false, .. }, changed: Condvar { .. } }, mode: 14 }, 0, [99, 104, 105, 108, 100, 10], [99, 104, 105, 108, 100, 32, 115, 116, 100, 101, 114, 114, 10])) events=[Event { kind: "start", pid: 1, value: 797909 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797946 }, Event { kind: "blocked", pid: 2, value: 0 }, Event { kind: "parent-marker", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "parent-exit-ack", pid: 2, value: 1 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }]
+test terminal_fork::terminal_parent_thread_exit_precedes_fork_join ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.17s
+
+test terminal_fork::terminal_exit_releases_parent_pipe_writer_before_joining_child ... ok
+test terminal_fork::terminal_parent_thread_exit_precedes_fork_join ... ok
+parent-exit acknowledgment mode=18 result=Ok((Log { control: Control { state: Mutex { data: State { events: [Event { kind: "start", pid: 1, value: 797917 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797959 }, Event { kind: "blocked", pid: 2, value: 0 }, Event { kind: "parent-marker", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "parent-exit-ack", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 1, value: 0 }], parent_ready: true, release_first_error: false, release_child: false, global_dropped: false }, poisoned: false, .. }, changed: Condvar { .. } }, mode: 18 }, 0, [99, 104, 105, 108, 100, 10], [99, 104, 105, 108, 100, 32, 115, 116, 100, 101, 114, 114, 10])) events=[Event { kind: "start", pid: 1, value: 797917 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797959 }, Event { kind: "blocked", pid: 2, value: 0 }, Event { kind: "parent-marker", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "parent-exit-ack", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }]
+test terminal_fork::terminal_exit_explicit_pipe_close_control ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.23s
+
+parent-exit acknowledgment mode=15 result=Ok((Log { control: Control { state: Mutex { data: State { events: [Event { kind: "start", pid: 1, value: 797907 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797971 }, Event { kind: "blocked", pid: 2, value: 0 }, Event { kind: "parent-marker", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 2, value: 0 }test terminal_fork::terminal_parent_process_exit_precedes_fork_join ... , Eventok { 
+kind: "host-exit", pid: 2
+, test result: valueok: 0. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out }, Event { ; finished in 0.24skind
+
+: "thread-exit", pid: 1, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "host-exit", pid: test terminal_fork::terminal_exit_preserves_live_sibling_shared_files ... 1ok, 
+value: 0 }]
+, test result: parent_readyok: . 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered outtrue, ; finished in 0.24srelease_first_error
+
+: false, release_child: false, global_dropped: false }, poisoned: false, .. }, changed: Condvar { .. } }, mode: 15 }, 0, [], [])) events=[Event { kind: "start", pid: 1, value: 797907 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797971 }, Event { kind: "blocked", pid: 2, value: 0 }, Event { kind: "parent-marker", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }]
+test terminal_fork::terminal_worker_thread_exit_precedes_leader_hook ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.24s
+
+test terminal_fork::terminal_exit_explicit_pipe_close_control ... ok
+test terminal_fork::terminal_exit_preserves_live_sibling_shared_files ... ok
+test terminal_fork::terminal_parent_process_exit_precedes_fork_join ... ok
+test terminal_fork::terminal_worker_thread_exit_precedes_leader_hook ... ok
+terminal fork mode=terminal fork mode=10 early= early=falsefalse result= result=OkOk((((LogLog {  { controlcontrol: : ControlControl {  { statestate: : MutexMutex {  { datadata: : StateState {  { eventsevents: : [[EventEvent {  { kindkind: : ""startstart"", , pidpid: : 11, , valuevalue: : 797762797779 } }, , EventEvent {  { kindkind: : ""startstart"", , pidpid: : 22, , valuevalue: : 797814797816 } }, , EventEvent {  { kindkind: : ""blockedblocked"", , pidpid: : 22, , valuevalue: : 00 } }, , EventEvent {  { kindkind: : ""parent-readyparent-ready"", , pidpid: : 11, , valuevalue: : 10 } }, , EventEvent {  { kindkind: : ""writethread-exit"", , pidpid: : 11, , valuevalue: : 10 } }, , EventEvent {  { kindkind: : ""thread-exitprocess-exit"", , pidpid: : 11, , valuevalue: : 00 } }, , EventEvent {  { kindkind: : ""process-exittool-drop"", , pidpid: : 11, , valuevalue: : 00 } }, , EventEvent {  { kindkind: : ""tool-dropwrite"", , pidpid: : 12, , valuevalue: : 01 } }, , EventEvent {  { kindkind: : ""writewrite"", , pidpid: : 22, , valuevalue: : 12 } }, , Event { Eventkind { : kind": write""thread-exit, "pid, : pid2: , 2value, : value2:  }0,  }Event,  { Eventkind { : kind": thread-exit""process-exit, "pid, : pid2: , 2value, : value0:  }0,  }Event,  { Eventkind { : kind": process-exit""tool-drop, "pid, : pid2: , 2value, : value0:  }0,  }Event,  { Eventkind { : kind": tool-drop""host-exit, "pid, : pid2: , 2value, : value0:  }0,  }Event,  { Eventkind { : kind": host-exit""host-exit, "pid, : pid2: , 1value, : value0:  }0,  }Event] { , kindparent_ready: : "truehost-exit, "release_first_error, : pidfalse: , 1release_child, : valuetrue: , 0global_dropped }: ]false,  }parent_ready, : poisonedtrue: , falserelease_first_error, .. }: , falsechanged, : release_childCondvar:  { .. }true }, , global_droppedmode: : false0 } }, , poisoned0: , false[, .. }99, , changed: Condvar { .. }104 }, , 105mode, : 1081,  }100, , 010, ][, 112[, 9997, , 104114, , 105101, , 108110, , 100116, , 3210, , 11599, , 116104, , 100105, , 101108, , 114100, , 11410, ]10, ][)99),  at_return=104[, Event105 { , kind108: , "100start, "32, , pid115: , 1116, , value100: , 797779101 }, , 114Event,  { 114kind, : 10"]start)"),  at_return=pid[: Event2 { , kindvalue: : "797816start }", , Eventpid { : kind1: , "valueblocked: "797762,  }pid, : Event2 { , kindvalue: : "0start }", , Eventpid { : kind2: , "valueparent-ready: "797814,  }pid, : Event1 { , kindvalue: : "0blocked }", , Eventpid { : kind2: , "valuethread-exit: "0,  }pid, : Event1 { , kindvalue: : "0parent-ready }", , Eventpid { : kind1: , "valueprocess-exit: "1,  }pid, : Event1 { , kindvalue: : "0write }", , Eventpid { : kind1: , "valuetool-drop: "1,  }pid, : Event1 { , kindvalue: : "0thread-exit }", , Eventpid { : kind1: , "valuewrite: "0,  }pid, : Event2 { , kindvalue: : "1process-exit }", , Eventpid { : kind1: , "valuewrite: "0,  }pid, : Event2 { , kindvalue: : "2tool-drop }", , Eventpid { : kind1: , "valuethread-exit: "0,  }pid, : Event2 { , kindvalue: : "0write }", , Eventpid { : kind2: , "valueprocess-exit: "1,  }pid, : Event2 { , kindvalue: : "0write }", , Eventpid { : kind2: , "valuetool-drop: "2,  }pid, : Event2 { , kindvalue: : "0thread-exit }", , Eventpid { : kind2: , "valuehost-exit: "0,  }pid, : Event2 { , kindvalue: : "0process-exit }"],  global_dropped=pidfalse: 
+2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }] global_dropped=false
+test terminal_fork::cancellation_joins_live_fork_and_captures_output ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.44s
+
+test terminal_fork::ordinary_exit_joins_live_fork_and_captures_output ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.44s
+
+test terminal_fork::cancellation_joins_live_fork_and_captures_output ... ok
+test terminal_fork::ordinary_exit_joins_live_fork_and_captures_output ... ok
+terminal route mode=13 early=false result=Err(SharedFailure(Reverie(Io(Custom { kind: Other, error: "controlled fatal Tool callback" })))) events=[Event { kind: "start", pid: 1, value: 797911 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797948 }, Event { kind: "blocked", pid: 2, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 255 }, Event { kind: "process-exit", pid: 1, value: 255 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }] global_dropped=true
+parent-exit acknowledgment mode=16 result=Ok((Log { control: Control { state: Mutex { data: State { events: [Event { kind: "start", pid: 1, value: 797908 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797968 }, Event { kind: "start", pid: 3, value: 797977 }, Event { kind: "blocked", pid: 3, value: 0 }, Event { kind: "parent-marker", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "parent-exit-ack", pid: 3, value: 1 }, Event { kind: "write", pid: 3, value: 1 }, Event { kind: "write", pid: 3, value: 2 }, Event { kind: "thread-exit", pid: 3, value: 0 }, Event { kind: "process-exit", pid: 3, value: 0 }, Event { kind: "tool-drop", pid: 3, value: 0 }, Event { kind: "host-exit", pid: 3, value: 0 }, Event { kind: "host-exit", pid: 1, value: 0 }], parent_ready: true, test terminal_fork::terminal_route_fatal_tool_error_joins_fork ... release_first_errorok: 
+false, release_child: false, global_dropped
+: test result: falseok }. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out, poisoned: ; finished in 0.56sfalse
+
+, .. }, changed: Condvar { .. } }, mode: 16 }, 0, [99, 104, 105, 108, 100, 10], [99, 104, 105, 108, 100, 32, 115, 116, 100, 101, 114, 114, 10])) events=[Event { kind: "start", pid: 1, value: 797908 }, Event { kind: "post-exec", pid: 1, value: 0 }, Event { kind: "start", pid: 2, value: 797968 }, Event { kind: "start", pid: 3, value: 797977 }, Event { kind: "blocked", pid: 3, value: 0 }, Event { kind: "parent-marker", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "parent-exit-ack", pid: 3, value: 1 }, Event { kind: "write", pid: 3, value: 1 }, Event { kind: "write", pid: 3, value: 2 }, Event { kind: "thread-exit", pid: 3, value: 0 }, Event { kind: "process-exit", pid: 3, value: 0 }, Event { kind: "tool-drop", pid: 3, value: 0 }, Event { kind: "host-exit", pid: 3, value: 0 }]
+test terminal_fork::terminal_parent_thread_exit_precedes_worker_owned_fork_join ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.56s
+
+test terminal_fork::terminal_route_fatal_tool_error_joins_fork ... ok
+test terminal_fork::terminal_parent_thread_exit_precedes_worker_owned_fork_join ... ok
+terminal fork mode=3 early=false result=Err(SharedFailure(Reverie(Errno(EIO)))) at_return=[Event { kind: "start", pid: 1, value: 797775 }, Event { kind: "start", pid: 2, value: 797818 }, Event { kind: "start", pid: 3, value: 797828 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 3, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kindterminal route mode=: 12" early=writefalse" result=, Errpid(: SharedFailure3(, valuePostExec: (2 }, Event { kindEIO: )terminal fork mode="wait-event)5") early=,  events=falsepid[ result=: EventErr2 { (, kindSharedFailurevalue: (: "Reverie0start( }"Errno, , (Eventpid { EIO: kind)1: ), ")valuethread-exit): "terminal route mode= at_return=797901, 11[ }pidterminal fork mode= early=Event, : 4false { Event2 early= result=kind { , falseOk: kindvalue result=(": : Err(start"0(Log"post-exec }WithCleanup { , ",  { controlpid, Eventprimary: : pid { : Control1: kindSharedFailure { , 1: (statevalue, "Reverie: : valueprocess-exit(Mutex797783: "Errno {  }0, (data,  }pid: Event, ENOSPC: State { Event)2 { kind { ), events: kind)value: ": , : [start"cleanup0Event"start:  } { , "[, kindpid, EventSharedFailure: : pid { ("2: kindReveriestart, 2: ("value, "Errno, : valuewait-event(pid797819: "EACCES:  }797941, )1,  }pid), Event, : )value { Event3, : kind { , terminal fork exec mode=SharedFailure797904: kindvalue7( }": :  early=Reverie, start"0false(Event"blocked } result=Errno { , ", Err(kindpid, Event(EIO: : pid { terminal fork exec mode=WorkerFailure)"3: kind6 { )post-exec, 2:  early=tid)"value, "false: , , : valuethread-exit result=3SharedFailurepid797829: "Err, (:  }0, (errorReverie1,  }pidWorkerFailure: (, Event, :  { SharedFailureterminal fork exec mode=Errnovalue { Event3tid(9(: kind { , : Reverie early=E2BIG0: kindvalue3(false) }": : , Errno result=), write"0error(Err)Event"parent-marker }: (]EIO { , ", SharedFailureWithCleanup })kindpid, Event( { )): : pid { Reverieprimary at_return=)"terminal route mode=2: terminal fork exec mode=kind(: [ }start10, 18: ErrnoWorkerFailureEvent)" early=value,  early="( {  {  at_return=, false: valuefalseprocess-exittidkindEIO[pid result=1:  result=": : )Event: Ok( }0Err, 3") { 2(,  }(pid, start)kind, LogEvent, WithCleanup: error" }: value {  { Event { 3: , )": controlkind { primary, SharedFailurepid at_return=start797961: : kind: value(: [" }Control": WorkerFailure: 1ReverieEvent, ,  { write" { 0, ( { pidEventstate"post-exectid }valueErrnokind:  { : , ": , : (: 1kindMutexpid, 3Event797731"EIO, :  { : pid,  {  }start)value"data3: errorkind, "): start: , 1: : Event, )797892"Statevalue, SharedFailure" { pid } },  { : value(blockedkindReverie: , , pidevents1: ": (1cleanupEvent: :  }0, "Errno, :  { [3[,  }pidstart(valuekindSharedFailure, EventEvent, : ": EIO: (value {  { Event3, 797894)"Reverie: kindkind { , pid })post-exec(797973: : kindvalue: , )"Errno }"": : 2Event }, (, startwrite"0,  { , pidENOSPCEvent""thread-exit }valuekindcleanup: ) { , , ", : : : 1)kindpidpid, Event797813"[, ): : : pid {  }post-execSharedFailurevalue, "12: kind, "(: SharedFailureblocked, , 1: Event, Reverie0("valuevalue, " { pid( }Reverie, : : valueparent-ready"kind: Errno, (pid7979122: , : 1(EventErrno:  } }255pid", ENOSPC { (3, ,  }: startvalue)kindEACCES, EventEvent, 1": ): )value {  { Event, value, 0)"): kindkind { : pid }, start)0: : kind3: , SharedFailure",  }"":  }3Event(, SharedFailure, post-execwrite", ,  { Reveriepid(Event""process-exitEventvaluekind(: Reverie { , , " { : : Errno2(kindpidpid, kind797822"(, Errno: : : pid:  }startEACCESvalue("13: ", "): E2BIGparent-marker, , 1thread-exitEvent, )797933)"valuevalue, " { pid) }), : : value, kind: , , )pid02: pid: 2SharedFailureEvent]:  } }255: ", ( {  }1, ,  }1writevalueReveriekind), EventEvent, , ": (:  at_return=value {  { Eventvalue, 797938Errno"[: kindkind { : pid }(blockedEvent0: : kind0: , E2BIG" {  }"":  }2Event), kind, startwait-event", ,  { )pid: Event""tool-dropEventvaluekind): " { , , " { : : ]2startkindpidpid: , kind1" }, ": : 2pid:  }blocked)value, "2, : ", " at_return=: pidthread-exit, value1process-exitEvent, [0: "value: , " { pidEvent }1, : 0value, kind:  { , , pid797949 }: pid: 2kindEventvalue:  }, 0: ", :  { : 2, Event }1writevalue"kind797895, Event { , , ": start:  }value { Eventvalue, 0kind"", : kind { : pid }: , startEvent0: kind0: , "pid" {  }":  }3Eventthread-exit: , kind, blocked", ,  { "1pid: Event"writeEventvaluekind, , : " { , " { : : pidvalue3post-execkindpid, kind1": : , ": : pid:  }start2797893value, "2: ", ",  }: pidhost-exit, 2tool-dropEvent, value, 797945: "value, " { pid: Event }1, : value, kind: 0 { , , pid0: pid: 3 }kindEventvalue:  }1: ", , :  { : 2,  }1writevalueEvent"kind0, Event, , ":  { post-exec:  }value { Eventvalue, 797965kind"", : kind { : pid }: , thread-exitEvent0: kind0: , "pid" {  }":  }2Eventprocess-exit: , kind, start", ,  { "1pid: Event"writeEventvaluekind, , : " { , " { : : pidvalue3startkindpid, kind2": : , ": : pid:  }thread-exit20value, "3: ", ",  }: pidthread-exit, 2tool-dropEvent, value, 0: "value, " { pid: Event }2, : value, kind: 0 { , , pid797972: pid: 3 }kindEventvalue:  }2: ", , :  { : 1,  }2writevalueEvent"kind797937, Event, , ":  { start:  }value { Eventvalue, 0kind"", : kind { : pid }: , host-exitEvent0: kind0: , "pid" {  }":  }3Eventwait-event: , kind, parent-marker", ,  { "2pid: Event"thread-exitEventvaluekind, , : " { , " { : : pidvalue3blockedkindpid, kind2": : , ", : : pid:  }host-exit3797935valuepid"1: ", ",  }: : process-exit, 2host-exitEvent, value, 02"value, " { pid: Event }, , : value, kind: 0 { , valuepid0: pid: 3 }kindEvent: :  }0: ", , :  { 01,  }2wait-eventvalueEvent"kind }, Event, , ":  { blocked: , value { Eventvalue, 0kind""Event: kind { : pid }: , thread-exit { 0: kind0: , "pid"kind }":  }2Eventthread-exit: , : , thread-exit", ,  { ", 2pid"Event"process-exitEventvaluekindpid, : start { , " { : : : value1"kindpid, kind0"3: , , : : pid:  }thread-exit, 0valuepid"3: ", "value }: : tool-drop, 2tool-dropEvent, : , 03"value, " { pid0Event }, , : value, kind:  } { , valuepid37: pid: 1, kindEvent: :  }0: ", Event:  { 7979601,  }3thread-exitvalue { "kind }, Event, , ": kindstart: , value { Eventvalue, 0: ""Event: kind { : pid }", process-exit { 0: kind0: , process-exitpid"kind }":  }2Event": , : , host-exit", ,  { , 3pid"Event"tool-dropEventvaluekindpid, : thread-exit { , ",  { : : : value1"kindpidpidkind0"3: , , : : : :  }process-exit, 797952valuepid"32", "value }: : write, , host-exitEvent, : , 03"valuevalue" { pid0Event }, , : : , kind:  } { , valuepid00pid: 1, kindEvent: :  } }: ", Event:  { 03, , 3process-exitvalue { "kind }, EventEvent, ": kindthread-exit: , value {  { value, 0: ""Event: kindkind: pid }", tool-drop { 1: : 0: , blockedpid"kind }"" }2Event": , : , thread-exithost-exit],  { , 3pid"Event"" global_dropped=valuekindpid, : host-exit { , , true: : : value1"kindpidpid
+0"3: , , : : :  }tool-drop, 0valuepid"12, ", value }: : write, , Eventpid: , 03"valuevalue { : 0Event }, , : : kind1 }test terminal_fork::cancellation_finishes_later_children_after_first_child_error ...  { , valuepid370: , , okkindEvent: :  } }"valueEvent
+:  { 03, ]wait-event:  { "kind
+ }, Event global_dropped="0kindhost-exit: test result: , value { true,  }: ""okEvent: kind
+pid, ", write. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out { 2: : Eventparent-readypid"; finished in 0.78skind }"3 { ": , 
+
+: , process-exit, kind, 3pid"Event"value: pid, : thread-exit { , : ": value2"kindpid0write1: , , : :  }", 0valuepid"1, , value }: : thread-exit, Eventpid: , 11"value { : 5Event }, , : kind2 } { , valuepid37: , , kindEvent: :  }"valueEvent:  { 03, thread-exit:  { "kind }, Event"1kindthread-exit: , valuetest terminal_fork::terminal_route_post_exec_error_joins_fork ...  { ,  }: ""Event: okkindpid, ", write { 0
+: : Eventwritepid"kind }"3
+ { ": , : , tool-drop, test result: kind, 1pid"Event"valueok: pid, : process-exit { , : . 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out": value2"kindpid0write; finished in 0.78s1: , , : :  }"
+
+, 0valuepid"1, , value }: : process-exit, Eventpid: , 21"value { : 1Event }, , : kind2 } { , valuepid0: , , kindEvent: :  }"valueEvent:  { 03, process-exit:  { "kind }, Event"2kindprocess-exit: , value { ,  }, Event { kind: ""Event: kindpid: ", thread-exit { 0: : "thread-exitpid"kind }"3thread-exit": , : , write, ", 1pid"Event"value, pid, : tool-drop { , : pid: value2"kindpid0: 1: , , : :  }2, 0valuepid"2, , value }: : tool-drop, Eventvaluetest terminal_fork::cancellation_finishes_later_children_after_first_child_error ... : ok, 01"value { : 0
+Event }, , : kind0 } { , valuepid1:  }, kindEvent: :  }", Event:  { 03, blockedEvent { "kind }, Event" { kindtool-drop: , value { , kind: ""Event: kindpid: ", process-exit { 0: : "process-exitpid"kind }"3process-exit": , : , write, ", 1pid"Event"value, pid, : write { , : pid: value2"kindpid0: 1: , , : :  }2, 0valuepid"2, , value }: : host-exit, Eventvalue: , 02"value { : 0Event }, , : kind0 } { , valuepid2:  }, kindEvent: :  }", Event:  { 13, parent-readyEvent { "kind }, Event" { kindwrite: , value { , kind: ""Event: kindpid: ", tool-drop { 0: : "tool-droppid"kind }"1tool-drop": , : , thread-exit, ", 2pid"Event"value, pid, : write { , : pid: value2"kindpid4: 1: , , : :  }2, 1valuepid"2, , value }: : host-exit, Eventvalue: , 02"value { : 0Event }, , : kind0 } { , valuepid0:  }, kindEvent: :  }", Event:  { 21, thread-exitEvent { "kind }, Event" { kindwrite: , value { , kind: ""Event: kindpid: ", host-exit { 0test terminal_fork::terminal_route_post_exec_error_joins_fork ... : : "tool-droppid"kind }ok"1host-exit": , : ]
+process-exit, ", 2pid", "value, pid, : thread-exitparent_ready, : pid: value2": pid0: 2: , , true: 2 }2, 2valuepid, , , , value }: : release_first_errorvalueEventvalue: , 02: :  { : 0Event }, false0kind0 } { ]value,  }:  }, kind global_dropped=: release_child, "]Event: true0: Eventprocess-exit global_dropped= { "
+ }true { "truekindthread-exit, , kind, 
+: "Eventglobal_dropped: pid",  { : ": host-exitpidkindfalsetool-drop1": :  }", , 2", , valuepid, process-exitpoisonedpid: : value": : 02: , false2 }, 0pid, .. }, , value }: , valueEvent: , 2changed:  { 0Event, : 0kind } { valueCondvar }: , kind:  { .. }, "Event: 0 }Eventtool-drop { " },  { "kindprocess-exit, modekind, : "Event: : pid",  { 11": tool-droppidkind }host-exit1": : , ", , 2"0, valuepid, tool-drop, pid: : value"[: 03: , test terminal_fork::backend_exec_failure_joins_live_fork ... 992 }, test terminal_fork::injected_exec_failure_joins_live_fork ... 0pidok, , , valueok }: 
+104valueEvent: 
+, 2, 
+test result: : 
+ { 0Event, 105ok0test result: kind } { value, . 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out }ok: , kind: 108; finished in 0.78s, . 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out"; finished in 0.78sEvent: 0, 
+
+Eventtool-drop
+
+ { " }100 { "kindtool-drop, , kind, : "Event10: pid",  { ]": host-exitpidkind, host-exit2": : [", , 2"99, valuepid, host-exit, pid: : value"104: 03: , , 1 }, 0pid105, , value }: , valueEvent: , 2108:  { 0Event, , 0kind } { value100 }: ]kind: , ]" global_dropped=: 032, host-exittrue" }, parent_ready"
+host-exit]115: , " global_dropped=, truepid, true116, : pid
+, release_first_error2: 100: , 2, falsevalue, 101, : value, release_child0: 114test terminal_fork::ordinary_exit_finishes_later_children_after_first_child_error ... :  }0, oktrue,  }114
+, Event], global_dropped { 
+ global_dropped=10: kindtest result: true]false: ok
+) }". 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out), tool-drop events=; finished in 0.78spoisoned"[
+
+: , Eventfalsepid { , .. }: kind, 3: changed, ": valuestartCondvar: " { .. }0,  } }pid: , , 1modeEvent, :  { value10kind:  }: 797904, " }37host-exit, , "Event[,  { 99pidkind, : : 1043"test terminal_fork::backend_exec_failure_preserves_child_and_owner_errors ... , , post-execok105value"
+, : , 108
+0pid, test result:  }: 100ok]1, . 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out global_dropped=, 10; finished in 0.78struevalue]
+
+
+: , 0[ }99, , 104test terminal_fork::injected_exec_failure_preserves_child_and_owner_errors ... Event, ok { 105
+kind, : 108"
+, starttest result: 100"ok, . 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out, 32pid; finished in 0.78s, : 
+
+1152, , 116value, : 100797961,  }101, , Eventtest terminal_fork::cancellation_consumes_hooks_and_preserves_all_errors ... 114test terminal_fork::backend_exec_failure_joins_live_fork ...  { ok, okkind
+114
+: , 
+"test terminal_fork::injected_exec_failure_joins_live_fork ... 10test result: startok]ok"
+). 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out, ); finished in 0.78spid events=
+
+: [3Event,  { valuekind: : 797973" }start, "Event,  { pidkind: : 1", blockedvalue": , 797912pid }: , 3Event,  { valuekind: : 0" }post-exec, "Event,  { pidkind: : 1", parent-markervalue": , 0pid }: , 1Event,  { valuekind: : 0" }start, "Event,  { pidkind: : 2", thread-exitvalue": , 797949pid }: , 2Event,  { valuekind: : 0" }blocked, "Event,  { pidkind: : 2", host-exitvalue": , 0pid }: , 2Event,  { valuekind: : 0" }start, "Event,  { pidkind: : 3", thread-exitvalue": , 797972pid }: , 1Event,  { valuekind: : 0" }parent-marker, "Event,  { pidkind: : 1", process-exitvalue": , 0pid }: , 1Event,  { valuekind: test terminal_fork::ordinary_exit_finishes_later_children_after_first_child_error ... : 0ok" }
+thread-exit, "Event,  { pidkind: : 3", tool-dropvalue": , 37pid }: , 1Event,  { valuekind: : 0" }host-exit, "Event,  { pidkind: : 3", writevalue": , 0pid }: , 3Event,  { valuekind: : 1" }thread-exit, "Event,  { pidkind: : 1", writevalue": , 37pid }: , 3Event,  { valuekind: : 2" }process-exit, "Event,  { pidkind: : 1", thread-exitvalue": , 37pid }: , 3Event,  { valuekind: : 0" }tool-drop, "Event,  { pidkind: : 1", process-exitvalue": , 0pid }: , 3Event,  { valuekind: : 0" }write, "Event,  { pidkind: : 2", tool-dropvalue": , 1pid }: test terminal_fork::cancellation_consumes_hooks_and_preserves_all_errors ... , 3okEvent, 
+ { test terminal_fork::backend_exec_failure_preserves_child_and_owner_errors ... valuekindok: : 
+0" }write, "Event,  { pidkind: : 2test terminal_fork::injected_exec_failure_preserves_child_and_owner_errors ... ", okhost-exitvalue
+": , 2pid }: , 3Event,  { valuekind: : 0" }thread-exit]" global_dropped=, falsepid
+: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }] global_dropped=false
+test terminal_fork::terminal_route_cancelled_worker_joins_its_fork ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.78s
+
+test terminal_fork::terminal_route_group_exit_joins_root_fork ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.78s
+
+test terminal_fork::terminal_route_group_exit_joins_root_fork ... ok
+test terminal_fork::terminal_route_cancelled_worker_joins_its_fork ... ok
+
+thread 'terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic' (797763) panicked at reverie-kvm/tests/support/terminal_fork.rs:473:5:
+parent never reached cancellation/exit: State { events: [Event { kind: "start", pid: 1, value: 797767 }, Event { kind: "start", pid: 2, value: 797820 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "wait-event", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }], parent_ready: false, release_first_error: false, release_child: false, global_dropped: false }
+
+thread 'reverie-kvm-process-2' (797820) panicked at reverie-kvm/tests/support/terminal_fork.rs:49:43:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+test terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic ... FAILED
+
+failures:
+
+failures:
+    terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 335 filtered out; finished in 5.00s
+
+
+thread 'reverie-kvm-process-2' (797820) panicked at reverie-kvm/tests/support/terminal_fork.rs:40:14:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+thread 'terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic' (797678) panicked at reverie-kvm/tests/support/terminal_fork.rs:424:9:
+terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic: status=ExitStatus(unix_wait_status(25856))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic ... FAILED
+
+failures:
+
+failures:
+    terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic
+
+test result: FAILED. 22 passed; 1 failed; 0 ignored; 0 measured; 313 filtered out; finished in 5.07s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

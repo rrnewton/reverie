@@ -1,0 +1,25 @@
+Running as unit: kvm-entry-owner-check-2-2850911.service
+    Checking serde v1.0.229
+    Checking futures-util v0.3.34
+    Checking syscalls v0.6.18
+    Checking tokio v1.53.1
+    Checking futures-executor v0.3.34
+    Checking futures v0.3.34
+    Checking bincode v2.0.1
+    Checking thiserror v2.0.20
+    Checking derive_more v1.0.0
+    Checking reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-memory)
+    Checking scroll v0.13.0
+    Checking reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-syscalls)
+    Checking reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-process)
+    Checking linked-hash-map v0.5.6
+    Checking goblin v0.10.7
+    Checking reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie)
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.27s
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 8.288s
+             CPU time consumed: 13.062s
+                   Memory peak: 641.7M (swap: 0B)
+                      IO Bytes: read 48.3M

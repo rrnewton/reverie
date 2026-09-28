@@ -1,0 +1,37 @@
+{
+  "status": "FROZEN PREPARATION; ROOT MUST AUTHORIZE LAUNCH",
+  "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+  "stage": "linear-parity-composition",
+  "expected_actual_model": "claude-opus-5[1m]",
+  "grounding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-v2-20260918",
+  "base": "6e3915b70a71657a08f0028b3f70d6074116206a",
+  "base_tree": "8e9a1d6b22b421992508e26855a568314a12bddf",
+  "head": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "frozen_source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source",
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/SOURCE-MANIFEST.json",
+    "bytes": 472053,
+    "sha256": "dfd21968df3b73ba28a7388f3504b8891e3f13035dab6f364e69fbe2947d1211",
+    "mode": 420
+  },
+  "scope": "Independent whole linear CPUID plus captured-pipe identity source review; no activation, clock-policy repair or whole-backend parity claim",
+  "qualification": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-result-v2/READBACK.json",
+    "bytes": 1033,
+    "sha256": "40a0ea5f0f6453d0ad3ea1d0ec21cfe82dd15ce5dcdf95dcd5790615801204a0",
+    "mode": 420
+  },
+  "hermit_context": "39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435",
+  "mandatory_documents": 55,
+  "mandatory_chunks": 164,
+  "mandatory_lines": 19525,
+  "parent": "0d1b4999b5af370f8a7a13f3d98c99d1ac55c091",
+  "committed_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/common/COMMITTED-BINDING.json",
+    "bytes": 663298,
+    "sha256": "043606748aa3de1e0033d0b60768d4541d253bb9ceaa5febc37ef0e116750943",
+    "mode": 420
+  },
+  "expected_symlinks": 7
+}

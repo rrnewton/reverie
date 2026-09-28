@@ -1,0 +1,33 @@
+{
+  "repository": "https://github.com/rrnewton/reverie",
+  "pull_request": "https://github.com/rrnewton/reverie/pull/603",
+  "base": "f7bd85e11dd258112148ed2cba6531501a1a00d9",
+  "head": "e1ee50dad596f33903caa80313ff8eb32be34754",
+  "tree": "d21731c768d50d9a4980e3657a4f088424eae6c0",
+  "patch_sha256": "b4216063340b5574c83035cffc31232c7f1e73dd1b5b449f51f51fda4daa8e35",
+  "candidate_files": 120,
+  "changed_files": [
+    "reverie-kvm/src/child_exit_signal_tests.rs",
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/process_signal_publication.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/runtime/native_test_support.rs",
+    "reverie-kvm/src/runtime/signal_cleanup_completion_tests.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/terminal_fork.rs",
+    "reverie/src/guest.rs",
+    "reverie/src/process_signal_control.rs",
+    "reverie/src/tool.rs"
+  ],
+  "consumer_repository_head": "3fe4f5929d07bc8a38e92aa16551c1cf436f60c4",
+  "consumer_repository_tree": "11f519db98522ea49a16f5c98f3a294b3a0c37f2",
+  "prior_review": {
+    "head": "d794a5e32c096d942e965bad399e7928683b8c43",
+    "tree": "f2cf92f97e4539e127639a4dc4a3e1c140589e19",
+    "verdict": "CHANGES REQUESTED",
+    "packet": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-child-exit-publication-claude-review-v2"
+  }
+}

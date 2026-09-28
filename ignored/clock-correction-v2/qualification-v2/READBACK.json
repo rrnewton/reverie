@@ -1,0 +1,51 @@
+{
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/TARGET.json",
+    "bytes": 2227,
+    "mode": 420,
+    "sha256": "c01fe71e9f784013be5c657d20e9578467f9b463efe0fb70365e9eefceda34eb"
+  },
+  "caller_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/CALLER-TARGET.json",
+    "bytes": 2973,
+    "mode": 420,
+    "sha256": "d3d43d3d072b164e6140ca8335dd72ba4c3430d6b33110d228b0858070ab0ed5"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/INPUTS.json",
+    "bytes": 6626045,
+    "mode": 420,
+    "sha256": "d684e797399a36c060d3cd0b943e3a18f97b8646566d8ea82b48b0d866755141"
+  },
+  "regular_files": 22690,
+  "literal_aliases": 37,
+  "absent_outputs": 139,
+  "all_eleven_helpers_identical": true,
+  "phase_and_selector_continuity": "Exact original records after source/output path substitution; selectors byte-identical",
+  "planned_phases": 45,
+  "exact_declarations": 38,
+  "library_declarations": 37,
+  "integration_declarations": 1,
+  "new_declarations": 7,
+  "new_modes": 8,
+  "source_fix_only_two_imports": true,
+  "private_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target",
+    "identity": [
+      48,
+      841148552,
+      212630
+    ]
+  },
+  "private_lease": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lane.lease",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+    "identity": [
+      48,
+      841148553,
+      212630
+    ],
+    "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state"
+  },
+  "no_execution": true
+}

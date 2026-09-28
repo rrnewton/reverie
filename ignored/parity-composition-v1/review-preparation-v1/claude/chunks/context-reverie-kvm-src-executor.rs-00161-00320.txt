@@ -1,0 +1,160 @@
+        sync_file_range(state, args)
+    } else if number == libc::SYS_pipe as u64 {
+        pipe2(memory, state, args[0], 0)
+    } else if number == libc::SYS_pipe2 as u64 {
+        pipe2(memory, state, args[0], args[1])
+    } else if number == libc::SYS_select as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        select(memory, state, args)
+    } else if number == libc::SYS_poll as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        poll(memory, state, args)
+    } else if number == libc::SYS_ppoll as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        ppoll(memory, state, args)
+    } else if number == libc::SYS_epoll_create1 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        epoll_create1(state, args[0])
+    } else if number == libc::SYS_epoll_ctl as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        epoll_ctl(memory, state, args)
+    } else if number == libc::SYS_epoll_wait as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        epoll_wait(memory, state, args, false)
+    } else if number == libc::SYS_epoll_pwait as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        epoll_wait(memory, state, args, true)
+    } else if number == libc::SYS_eventfd as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        eventfd2(state, args[0], 0)
+    } else if number == libc::SYS_eventfd2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        eventfd2(state, args[0], args[1])
+    } else if number == libc::SYS_signalfd as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        signalfd(memory, state, args, 0)
+    } else if number == libc::SYS_signalfd4 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        signalfd(memory, state, args, args[3])
+    } else if number == libc::SYS_timerfd_create as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        timerfd_create(state, args[0], args[1])
+    } else if number == libc::SYS_timerfd_settime as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        timerfd_settime(memory, state, args)
+    } else if number == libc::SYS_timerfd_gettime as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        timerfd_gettime(memory, state, args)
+    } else if number == libc::SYS_pidfd_open as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-235): Review self-only virtual pidfd translation.
+        pidfd_open(state, args)
+    } else if number == libc::SYS_socket as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        socket(state, args)
+    } else if number == libc::SYS_setsockopt as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        setsockopt(memory, state, args)
+    } else if number == libc::SYS_getsockopt as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-230): Review bounded SO_TYPE copy-out semantics.
+        getsockopt(memory, state, args)
+    } else if number == libc::SYS_bind as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        bind(memory, state, args)
+    } else if number == libc::SYS_listen as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        listen(state, args)
+    } else if number == libc::SYS_getsockname as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        getsockname(memory, state, args)
+    } else if number == libc::SYS_socketpair as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        socketpair(memory, state, args)
+    } else if number == libc::SYS_connect as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        connect(memory, state, args)
+    } else if number == libc::SYS_shutdown as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        shutdown(state, args)
+    } else if number == libc::SYS_sendto as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sendto(memory, state, args)
+    } else if number == libc::SYS_recvfrom as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        recvfrom(memory, state, args)
+    } else if number == libc::SYS_sendmsg as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sendmsg(memory, state, args)
+    } else if number == libc::SYS_recvmsg as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        recvmsg(memory, state, args)
+    } else if number == libc::SYS_recvmmsg as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        recvmmsg(memory, state, args)
+    } else if number == libc::SYS_ioctl as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        ioctl(memory, state, args, capture_output)
+    } else if number == libc::SYS_dup as u64 {
+        duplicate_fd(state, args[0], None, 0, false)
+    } else if number == libc::SYS_dup2 as u64 {
+        duplicate_fd(state, args[0], Some(args[1]), 0, false)
+    } else if number == libc::SYS_dup3 as u64 {
+        duplicate_fd(state, args[0], Some(args[1]), args[2], true)
+    } else if number == libc::SYS_fcntl as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        fcntl(memory, state, args)
+    } else if number == libc::SYS_open as u64 {
+        open(memory, state, args, capture_output)
+    } else if number == libc::SYS_openat as u64 {
+        openat(memory, state, args, capture_output)
+    } else if number == libc::SYS_creat as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        creat(memory, state, args, capture_output)
+    } else if number == libc::SYS_memfd_create as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        memfd_create(memory, state, args)
+    } else if number == libc::SYS_fstat as u64 {
+        fstat(memory, state, args, capture_metadata)
+    } else if number == libc::SYS_stat as u64 {
+        path_stat(memory, state, args, 0, capture_metadata)
+    } else if number == libc::SYS_lstat as u64 {
+        path_stat(
+            memory,
+            state,
+            args,
+            libc::AT_SYMLINK_NOFOLLOW,
+            capture_metadata,
+        )
+    } else if number == libc::SYS_newfstatat as u64 {
+        newfstatat(memory, state, args, capture_metadata)
+    } else if number == libc::SYS_statx as u64 {
+        statx(memory, state, args, capture_metadata)
+    } else if number == libc::SYS_statfs as u64 {
+        statfs(memory, state, args)
+    } else if number == libc::SYS_fstatfs as u64 {
+        fstatfs(memory, state, args)
+    } else if number == libc::SYS_access as u64 {
+        access(memory, state, args)
+    } else if number == libc::SYS_faccessat as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        faccessat(memory, state, args)
+    } else if number == libc::SYS_faccessat2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        faccessat2(memory, state, args)
+    } else if number == libc::SYS_mkdir as u64 {
+        mkdir_at(memory, state, libc::AT_FDCWD, args[0], args[1])
+    } else if number == libc::SYS_mkdirat as u64 {
+        mkdir_at(memory, state, args[0] as libc::c_int, args[1], args[2])
+    } else if number == libc::SYS_unlink as u64 {
+        unlink_at(memory, state, libc::AT_FDCWD, args[0], 0)
+    } else if number == libc::SYS_rmdir as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-111): Review rmdir->unlinkat(AT_REMOVEDIR) mapping.
+        // rmdir(path) is unlinkat(AT_FDCWD, path, AT_REMOVEDIR). Without this
+        // arm the guest's bare rmdir(2) fell through to ENOSYS, so coreutils
+        // `rmdir` (and `mktemp -d` cleanup) failed under the KVM backend even
+        // though `rm -rf`, which uses unlinkat(AT_REMOVEDIR), worked.
+        unlink_at(
+            memory,
+            state,

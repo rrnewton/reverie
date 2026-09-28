@@ -1,0 +1,8 @@
+{
+  "correction_executed": false,
+  "prior_action_result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v1/test-action-entry-1/result.json",
+  "prior_action_result_sha256": "0a8f72eac2f819144e845b3754b119aa3abe4497c91022d4de57b88568dba657",
+  "prior_failed": 2,
+  "prior_passed": 2,
+  "prior_raw_status": 101
+}

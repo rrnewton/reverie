@@ -1,0 +1,6 @@
+
+running 1 test
+test memory::tests::entry_copy_tests::try_raw_write_defers_closed_copy_and_retains_poison_and_bounds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 580 filtered out; finished in 0.00s
+

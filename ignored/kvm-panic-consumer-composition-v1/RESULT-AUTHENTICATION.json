@@ -1,0 +1,550 @@
+{
+  "scope": "static authentication of retained results by the runner author, not independent review",
+  "phases": [
+    {
+      "phase": "format-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.25897725904360414,
+      "cpu_text": [
+        "210ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-format-1-3842356.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 0,
+      "result_sha256": "c1e2d0c7bed825b3ef50700317fdcdd8116d2e7ca0236e4a47e8c5ae77bb03f1"
+    },
+    {
+      "phase": "compile-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 12.5286231150385,
+      "cpu_text": [
+        "18.532s"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-compile-1-3856327.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 0,
+      "result_sha256": "ba3796e13f74d3da9812151ab4e1f50af82b19d5ccadd22ffa9861eb405d3a43"
+    },
+    {
+      "phase": "check-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 1.6009825861547142,
+      "cpu_text": [
+        "1.556s"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-check-1-3880331.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 0,
+      "result_sha256": "0f6ffb0ff67d856c950820665983683a6c862f9bf911ee58349829ab78fb8b37"
+    },
+    {
+      "phase": "inventory-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.03851131000556052,
+      "cpu_text": [
+        "3ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-inventory-1-3880251.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 0,
+      "result_sha256": "cc70cad69d27dde619078432742251cf385177fe8ff66209509d5894e5da8c4b"
+    },
+    {
+      "phase": "test-owned-future-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.02111525391228497,
+      "cpu_text": [
+        "6ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": null,
+      "observed_cgroup_absent": null,
+      "passed_declarations": 4,
+      "result_sha256": "e77a27e181ac5f1711cfa1b9b1d625b5bc36c17969ec957459b4615438ec0d65"
+    },
+    {
+      "phase": "test-panic-drain-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.13198900991119444,
+      "cpu_text": [
+        "6ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-panic-drain-1-3919542.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 3,
+      "result_sha256": "345bc4bcd25c1e82114eb6fb2ddd56080742c6cb041e8e05c8b7326af2e892be"
+    },
+    {
+      "phase": "test-handler-scratch-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.016991280019283295,
+      "cpu_text": [
+        "5ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-handler-scratch-1-3921752.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 2,
+      "result_sha256": "c163c508e3391c384f7d03539ec81e2d59fddb77b90672126a44e927efbb6be7"
+    },
+    {
+      "phase": "test-injected-boundary-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.5338411189150065,
+      "cpu_text": [
+        "10ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-injected-boundary-1-3923734.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "f1c05c4b379c59069d230eabda96f24c2284c05577514707a47a6565ccd1f546"
+    },
+    {
+      "phase": "test-worker-panic-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.3025328670628369,
+      "cpu_text": [
+        "16ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": null,
+      "observed_cgroup_absent": null,
+      "passed_declarations": 3,
+      "result_sha256": "de348ea31d942929c22aa175eefaf8c9f47ca39425ed52ff0bb1724a11183271"
+    },
+    {
+      "phase": "test-normal-cleanup-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.049505064031109214,
+      "cpu_text": [
+        "4ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-normal-cleanup-1-3928917.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "23a1283c9a75d8f1a3c6ffdf5a3d9f253aaffb06a1fd57bbf0d47ce9ded53850"
+    },
+    {
+      "phase": "test-handler-destruction-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.16664901794865727,
+      "cpu_text": [
+        "6ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": null,
+      "observed_cgroup_absent": null,
+      "passed_declarations": 1,
+      "result_sha256": "e917f8ca3a32e38d67f2745f8057188c9e9f67e5fb8ab4dc23545d94ec89d82d"
+    },
+    {
+      "phase": "test-caught-worker-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.20893496903590858,
+      "cpu_text": [
+        "7ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": null,
+      "observed_cgroup_absent": null,
+      "passed_declarations": 1,
+      "result_sha256": "69665950ab5ea95060ce0bdd71e56da397fbc8d3a797223716e0b33b0be47295"
+    },
+    {
+      "phase": "test-action-preparation-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.7560861380770802,
+      "cpu_text": [
+        "19ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-action-preparation-1-3935547.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "f7a3ef8216965b3b36968addf566d61698204930357d86addf75e810ccb6000d"
+    },
+    {
+      "phase": "test-boundary-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.0453535181004554,
+      "cpu_text": [
+        "5ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-boundary-1-3938212.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "43bbc6603e1a18ae5ca96d4797f447ab2ec3ab6b1651af3bfd21bcddb7fa1091"
+    },
+    {
+      "phase": "test-boundary-cleanup-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.07825109804980457,
+      "cpu_text": [
+        "6ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-boundary-cleanup-1-3940698.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "d5f43ad2e8336c2c2d85744424306b53aa0282069b5e5e9b947250be0a9b1bdc"
+    },
+    {
+      "phase": "test-fork-cleanup-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.1422670369502157,
+      "cpu_text": [
+        "17ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": null,
+      "observed_cgroup_absent": null,
+      "passed_declarations": 1,
+      "result_sha256": "0dcdc3d16a13e901ff94bad373c0633c5d0688a1c2f801db2ef2cf2e86469c0b"
+    },
+    {
+      "phase": "test-thread-cleanup-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.09073106409050524,
+      "cpu_text": [
+        "15ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-thread-cleanup-1-3947144.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "ce9821a9e90c5fe804b8fc71f7bc4302b349d287a8109f85936408d6fc5332b6"
+    },
+    {
+      "phase": "test-partial-start-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.22333631804212928,
+      "cpu_text": [
+        "9ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-partial-start-1-3949782.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "976cf4accf53069193813b00ae8e43f611746741f1b2c598e492f082fdf56f54"
+    },
+    {
+      "phase": "test-cancelled-cleanup-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 1.416499510873109,
+      "cpu_text": [
+        "70ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-cancelled-cleanup-1-3951937.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "25fa774d5d8127925766a87c4354865799eea14314071538da7a5ec993566881"
+    },
+    {
+      "phase": "test-exec-cleanup-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.18916269089095294,
+      "cpu_text": [
+        "14ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-exec-cleanup-1-3955084.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "b9e8ff3599f7eeb1958b0136efb5ede377b816ec15ab8915c4c0ce6fcc975cdd"
+    },
+    {
+      "phase": "test-cleanup-storage-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.04418751783668995,
+      "cpu_text": [
+        "4ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-cleanup-storage-1-3959152.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "e03b5ccd485414677e357755808f362d0aa460a390f51350c3dd29b47c5609cc"
+    },
+    {
+      "phase": "test-cancellation-locks-1",
+      "raw_status": 0,
+      "accepted": true,
+      "wall_seconds": 0.019424634985625744,
+      "cpu_text": [
+        "5ms"
+      ],
+      "terminal_fields": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "Result": "success",
+        "ExecMainCode": "0",
+        "ExecMainStatus": "0",
+        "ControlGroup": "",
+        "CPUUsageNSec": "[not set]"
+      },
+      "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-cancellation-locks-1-3960508.service",
+      "observed_cgroup_absent": true,
+      "passed_declarations": 1,
+      "result_sha256": "ccd68f7406e4538265df7bfe4fa703dd268e7038b98f692c7456781bd6367672"
+    }
+  ],
+  "total_phases": 22,
+  "test_phases": 18,
+  "passed_declarations": 26,
+  "sum_phase_wall_seconds": 18.863952378975227,
+  "sum_test_wall_seconds": 4.436858108732849,
+  "owned_long_lived_handles": [
+    {
+      "handle": 2072,
+      "phase": "compile-1",
+      "collected_raw_status": 0
+    },
+    {
+      "handle": 12419,
+      "phase": "check-1",
+      "collected_raw_status": 0
+    }
+  ]
+}

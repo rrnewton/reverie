@@ -1,0 +1,13 @@
+Running as unit: kvm-entry-owner-test-caught-worker-1-286081.service
+
+thread 'runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join' (286469) panicked at reverie-kvm/src/runtime/failure_tests.rs:153:9:
+native control did not reach its ordering boundary
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (286473) panicked at reverie-kvm/src/runtime/failure_tests.rs:520:25:
+called `Result::unwrap()` on an `Err` value: SendError { .. }
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 2.005s
+             CPU time consumed: 1.999s
+                   Memory peak: 2.2M (swap: 0B)

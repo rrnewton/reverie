@@ -1,0 +1,8 @@
+{
+  "old": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "rescue": "refs/rescue/kvm-clock-before-linear-base-20260918",
+  "new": "b5e2ab49cd99e5d456fa0238b8cebd75958c529f",
+  "tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "carried_commits": 0,
+  "reason": "Published prior commits landed with byte-identical whole tree; new clock work starts on actual landed base."
+}

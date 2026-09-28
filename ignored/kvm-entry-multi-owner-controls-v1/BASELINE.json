@@ -1,0 +1,23 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "baseline_manifest_sha256": "f74effb8842eaa3d9a8178c96fdde293cf210bfc36fe824a1f38f8c3f096dd55",
+  "source": {
+    "reverie-kvm/src/entry/driver.rs": {
+      "bytes": 16482,
+      "sha256": "6c998b3d57e888b280aff4a07f155d45dae22940c8052e144d09556b7eb0834a"
+    },
+    "reverie-kvm/src/vm/worker_join.rs": {
+      "bytes": 20480,
+      "sha256": "eeeb36521f0ab630ed21f95ac96462608ead0961e23b8da4046fb26be671b9da"
+    },
+    "reverie-kvm/src/executor.rs": {
+      "bytes": 1529595,
+      "sha256": "bf20f163c44a9bf36fc4b4eeafec18207e2b179e1eff02af8e7a7e6d671bf7df"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "bytes": 133314,
+      "sha256": "6f054f26edac817a4ae9db2c28d6c34b00e8a192e42e1c50528584a8024fa88d"
+    }
+  }
+}

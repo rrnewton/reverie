@@ -1,0 +1,94 @@
+{
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/REPORT.md",
+    "bytes": 2419,
+    "sha256": "99e7ae412528a5ffe9540613cc1571c183a2924c8a0cac492528a2b7d8df813a",
+    "mode": 420
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/DISPATCH-PLAN.md",
+    "bytes": 4470,
+    "sha256": "5a5fc5a98f8a2e32ef21764d458167997bade34e00b8feab021743c8de8db526",
+    "mode": 420
+  },
+  "source_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/SOURCE-CONTEXT-BINDING.json",
+    "bytes": 849657,
+    "sha256": "2ca47c415fd6c77e59071a1a7196c7d27102d976448ebee72d206c2e5485f0dd",
+    "mode": 420
+  },
+  "helpers": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/HELPER-CONTINUITY.json",
+    "bytes": 4189,
+    "sha256": "9a932eca1e818f5476da9ad1181491aa89dec666f326bda536484522f47d1c14",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/PREPARATION-INPUTS.json",
+    "bytes": 112507,
+    "sha256": "58d8879455a3f8519f96b66f1c28bd113cc71bc55d03fd90d48055638e1b6fec",
+    "mode": 420
+  },
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/TARGET.json",
+    "bytes": 2227,
+    "sha256": "c01fe71e9f784013be5c657d20e9578467f9b463efe0fb70365e9eefceda34eb",
+    "mode": 420
+  },
+  "qualification_pending": true,
+  "committed_head_pending": true,
+  "lanes": {
+    "claude": {
+      "prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/claude/prompt.DRAFT.txt",
+        "bytes": 8824,
+        "sha256": "b12ff10894169e4c7acca5d897f4c60ccffe634fb830a93fb5d8d2c133147866",
+        "mode": 420
+      },
+      "target": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/claude/TARGET.DRAFT.json",
+        "bytes": 1330,
+        "sha256": "d3c45ac50fc7898caeb51b808f74ecc5a7061eb27a7c7de687c1b560dc0b2c32",
+        "mode": 420
+      },
+      "inputs": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/claude/inputs.DRAFT.json",
+        "bytes": 986088,
+        "sha256": "585804c998aec115f859a9861ea8ff99f38385484411b45149a455ffe326c6d1",
+        "mode": 420
+      },
+      "coverage": {
+        "mandatory_documents": 72,
+        "mandatory_chunks": 290,
+        "mandatory_lines": 34272
+      }
+    },
+    "native": {
+      "prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/native/01-source.prompt.DRAFT.txt",
+        "bytes": 8718,
+        "sha256": "7e9bc1e2bd7f344a1720f860cb6bbc5e5bc520a0901be18a5ec95b792ccc15b9",
+        "mode": 420
+      },
+      "target": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/native/TARGET.DRAFT.json",
+        "bytes": 1325,
+        "sha256": "61627d04cd6a56f5342b4275171f9b37fe12b10672f495e4ae1cd66abb4fbe7c",
+        "mode": 420
+      },
+      "inputs": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/native/inputs.DRAFT.json",
+        "bytes": 985152,
+        "sha256": "8d8d321cdad30e2b1dc4e1eb2d61f03c0fdb745602f7b3fecd160493beb07111",
+        "mode": 420
+      },
+      "coverage": {
+        "mandatory_documents": 71,
+        "mandatory_chunks": 288,
+        "mandatory_lines": 34265
+      }
+    }
+  },
+  "execution_count": 0,
+  "product_mutations": 0
+}

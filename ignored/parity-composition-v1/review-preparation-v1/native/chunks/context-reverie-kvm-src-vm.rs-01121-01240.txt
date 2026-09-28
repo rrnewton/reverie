@@ -1,0 +1,120 @@
+                .map(|action| {
+                    let (frame_address, _) = signal_boundary
+                        .expect("a process action can only originate at a syscall boundary");
+                    CompletedSyscallBoundary::capture_for_action(self, frame_address, None, action)
+                })
+                .transpose()?;
+            if let Some(action) = process_action {
+                let outcome = self.run_process_action_at_boundary(
+                    executor,
+                    action,
+                    continuation.expect("a process action has a continuation policy"),
+                )?;
+                returns_to_original_image = !outcome.image_replaced;
+                if let Some((_, result)) = signal_boundary.as_mut() {
+                    *result = outcome.syscall_result;
+                }
+            }
+
+            // exit/exit_group never return to userspace, so pending delivery
+            // cannot replace an exit already selected by the syscall.
+            let mut pending_exit = executor.take_exit();
+            if returns_to_original_image
+                && pending_exit.is_none()
+                && let Some((frame_address, result)) = signal_boundary
+            {
+                self.deliver_pending_signal_at_syscall_boundary(executor, frame_address, result)?;
+            }
+
+            pending_exit = pending_exit.or_else(|| executor.take_exit());
+            if let Some(exit) = pending_exit {
+                return self.finish_static_elf_thread(executor, exit);
+            }
+        }
+    }
+
+    fn finish_static_elf_thread(
+        &mut self,
+        executor: &mut ElfExecutor,
+        exit: ProcessExit,
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        executor.retire_current_thread(exit.status, exit.group);
+        self.clear_registered_worker_tid_before_exit(executor);
+        executor.release_files_on_exit();
+        self.release_stdin_on_exit();
+        if exit.group {
+            self.request_guest_thread_group_exit(exit.status);
+        }
+        let status = if self.is_guest_thread {
+            exit.status
+        } else {
+            if exit.group {
+                self.cancel_guest_threads();
+            } else {
+                self.join_guest_threads();
+            }
+            self.guest_worker_teardown_result()?;
+            executor.process_exit_status().ok_or_else(|| {
+                Error::UnexpectedVcpuExit(
+                    "KVM process has no final task exit status after joining workers".to_owned(),
+                )
+            })?
+        };
+        let (stdout, stderr) = executor.take_output();
+        Ok((status, stdout, stderr))
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 3714..3737; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+    /// Runs until the guest halts, invoking `handler` for each syscall vmcall.
+    pub fn run<F>(&mut self, mut handler: F) -> Result<()>
+    where
+        F: FnMut(Syscall, &GuestMemory) -> i64,
+    {
+        self.set_rdtsc_interception(false)?;
+        self.set_cpuid_interception(false)?;
+        loop {
+            let vcpu_exit = self.vcpu.run()?;
+            Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+            match vcpu_exit {
+                VcpuExit::Hypercall(exit) => {
+                    if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                        return Err(Error::UnexpectedHypercall(exit.nr));
+                    }
+                    let syscall =
+                        SyscallRequest::read_from(&self.memory, exit.args[0])?.into_syscall()?;
+                    *exit.ret = handler(syscall, &self.memory) as u64;
+                }
+                VcpuExit::Hlt => return Ok(()),
+                exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+            }
+        }
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 3817..3842; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+        .iter()
+        .find(|entry| entry.function == 0x8000_0001)
+        .is_some_and(|entry| entry.ecx & (1 << 2) != 0);
+    if supports_vmmcall {
+        return Ok(VMMCALL);
+    }
+    Err(Error::HypercallInstructionUnsupported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    include!("cpuid_runtime_tests.rs");
+
+    mod initialization_tests {
+        use std::io::Seek;
+        use std::io::SeekFrom;
+        use std::io::Write;
+        use std::os::unix::fs::MetadataExt;
+        use std::process::Child;
+        use std::process::Command;
+        use std::process::Stdio;
+        use std::sync::atomic::AtomicU64;
+        use std::time::Duration;
+        use std::time::Instant;
+

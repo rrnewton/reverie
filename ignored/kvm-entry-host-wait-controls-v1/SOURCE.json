@@ -1,0 +1,29 @@
+{
+  "declared_head": "4ea79f6da7100709fea0e0a5591b0945d438e34f",
+  "owned_source": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/executor.rs",
+      "bytes": 1530057,
+      "sha256": "cb7e9ca678cd9302bf58e014c00ecdc2f01e4fcab0305f40a56b88f0d671decd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/executor/entry_host_wait_tests.rs",
+      "bytes": 10703,
+      "sha256": "0a5959a7e57dd09e89b5d7e98e705233c58945b893841feff065d5a4c8e008c2"
+    }
+  ],
+  "bound_dependency_reads": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/memory.rs",
+      "bytes": 134566,
+      "sha256": "e5674f5bfc18a4c7c89aefe982943c6e89e5d784f4aeabda762f646b136046a6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs",
+      "bytes": 59493,
+      "sha256": "753bf90a774afc3c72e3b2b1b0ac61faba8b899b63674fe170f89984ed76090b"
+    }
+  ],
+  "dependency_limit": "Other author owns memory/entry and their cfg(test) helpers; these observed hashes are not an authorization or full combined source freeze. Root supplies final assembled identity.",
+  "preservation": "Removing the exact cfg(test) include and observer call reproduces the full original executor.rs byte-for-byte. No existing test/production statements changed."
+}

@@ -1,0 +1,11 @@
+
+running 6 tests
+test runtime::callback_completion_tests::constructor_panic_recovers_owned_signal_before_failure_future_destruction ... ok
+test runtime::callback_completion_tests::owned_runtime_error_survives_actual_callback_destructor_panic ... ok
+test runtime::callback_completion_tests::owned_runtime_error_survives_failure_future_destructor_panic ... ok
+test runtime::callback_completion_tests::owned_runtime_error_survives_normal_callback_destruction ... ok
+test runtime::callback_completion_tests::polling_panic_recovers_owned_error_before_callback_destructor_panic ... ok
+test runtime::callback_completion_tests::selected_runtime_error_survives_discarded_ready_value_panic ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 717 filtered out; finished in 0.00s
+

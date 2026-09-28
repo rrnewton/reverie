@@ -1,0 +1,716 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -1201,6 +1201,7 @@
+     pub(crate) syscall_frame_address: u64,
+     thread_group: Arc<GuestThreadGroup>,
+     pub(crate) tool_failure: Option<crate::failure::FailureContext>,
++    pub(crate) entry_driver: Option<crate::entry::owner::DriverOwner>,
+     tool_panics: Arc<crate::failure::tool_panics::ToolPanics>,
+     // Public root/direct runs can resume a panic after returning their Tool
+     // ownership. Keep the accompanying diagnostics on this backend.
+@@ -1286,6 +1287,47 @@
+ }
+ 
+ impl KvmBackend {
++    /// The lexical scope remains with the invocation that will retire it.
++    /// Child construction can carry parent memory views until this binding.
++    pub(crate) fn start_entry_driver(&mut self) -> crate::entry::owner::DriverScope {
++        assert!(self.entry_driver.is_none(), "KVM entry driver already active");
++        let scope = crate::entry::owner::DriverScope::new();
++        self.entry_driver = Some(scope.owner());
++        self.restore_entry_origin();
++        scope
++    }
++
++    pub(crate) fn entry_driver_owner(&self) -> Option<crate::entry::owner::DriverOwner> {
++        self.entry_driver.clone()
++    }
++
++    pub(crate) fn set_operation_origin(
++        &mut self,
++        origin: Option<crate::entry::owner::OperationOrigin>,
++    ) {
++        self.memory.set_operation_origin(origin.clone());
++        self.vcpu.set_operation_origin(origin);
++    }
++
++    pub(crate) fn restore_entry_origin(&mut self) {
++        let origin = self.entry_driver.as_ref().map(|owner| owner.origin());
++        self.set_operation_origin(origin);
++    }
++
++    /// The caller holds this guard outside the owned callback future and its
++    /// complete borrow scope, then restores ordinary views after destruction.
++    pub(crate) fn begin_entry_callback(
++        &mut self,
++    ) -> Result<Option<crate::entry::owner::CallbackScope>> {
++        self.check_entry_owner()?;
++        let Some(owner) = self.entry_driver_owner() else {
++            return Ok(None);
++        };
++        let callback = owner.begin_callback(None)?;
++        self.set_operation_origin(Some(callback.origin()));
++        Ok(Some(callback))
++    }
++
+     pub(crate) fn set_tool_failure(&mut self, origin: Option<crate::failure::FailureContext>) {
+         self.vcpu.set_failure_context(origin.clone());
+         self.memory.set_failure_context(origin.clone());
+@@ -1421,6 +1463,7 @@
+             syscall_frame_address: SYSCALL_FRAME_ADDRESS,
+             thread_group: Arc::new(GuestThreadGroup::default()),
+             tool_failure: None,
++            entry_driver: None,
+             tool_panics: Arc::default(),
+             completed_tool_panics: Mutex::new(Vec::new()),
+             thread_slot: None,
+@@ -1757,7 +1800,11 @@
+     }
+ 
+     fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
+-        let memory = self.memory.snapshot()?;
++        let mut memory = self.memory.snapshot()?;
++        // Snapshot preparation is still part of the issuing operation. The
++        // actual child receives its independent origin only when it runs.
++        memory.set_failure_context(self.tool_failure.clone());
++        memory.set_operation_origin(self.memory.entry_origin().operation);
+         hide_tool_scratch_pages(&memory)?;
+         Ok(KvmProcessSnapshot {
+             memory,
+@@ -2063,7 +2110,6 @@
+         write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
+ 
+         let mut child = Self::from_process_snapshot(child_snapshot)?;
+-        child_executor.bind_address_space(&child.memory);
+         // Forked children inherit the parent's thread ownership so execution and
+         // `is_backend_owned_syscall`'s futex classification stay consistent.
+         child.thread_ownership = self.thread_ownership;
+@@ -2072,6 +2118,8 @@
+                 .as_ref()
+                 .map(|failure| failure.for_process(Pid::from_raw(child_pid))),
+         );
++        child.set_operation_origin(self.memory.entry_origin().operation);
++        child_executor.bind_address_space(&child.memory);
+         child.exit_collector = self.exit_collector.clone();
+         write_tid_best_effort(&mut child.memory, child_tid, child_pid);
+         let (fs_base, gs_base) = child_executor.segment_bases();
+@@ -2094,10 +2142,22 @@
+         }))
+     }
+ 
++    #[cfg(test)]
+     fn finish_forked_process(
+         &mut self,
+         executor: &mut ElfExecutor,
+         mut child: ForkedProcess,
++        status: ExitStatus,
++        stdout: Vec<u8>,
++        stderr: Vec<u8>,
++    ) -> Result<()> {
++        self.finish_forked_process_inner(executor, &mut child, status, stdout, stderr)
++    }
++
++    fn finish_forked_process_inner(
++        &mut self,
++        executor: &mut ElfExecutor,
++        child: &mut ForkedProcess,
+         status: ExitStatus,
+         stdout: Vec<u8>,
+         stderr: Vec<u8>,
+@@ -2109,6 +2169,7 @@
+             child.executor.take_clear_child_tid(),
+             0,
+         );
++        child.backend.check_entry_owner()?;
+         let completion = executor.child_completion(status);
+         executor.record_child_completion(child.pid, completion)?;
+         executor.append_output(stdout, stderr);
+@@ -2167,9 +2228,45 @@
+                 else {
+                     return Ok(ProcessActionOutcome::cancelled());
+                 };
+-                let (code, stdout, stderr) =
+-                    child.backend.run_static_elf_process(&mut child.executor)?;
+-                self.finish_forked_process(executor, child, code, stdout, stderr)?;
++                // This fork runs on the parent's call stack, including during
++                // injection. It is nested work, not an independent driver
++                // that can await the parent's terminal publication.
++                child.backend.entry_driver = self.entry_driver_owner();
++                child.backend.set_operation_origin(self.memory.entry_origin().operation);
++                child.executor.bind_address_space(&child.backend.memory);
++                let result = child.backend.run_static_elf_process(&mut child.executor);
++                let result = match result {
++                    Ok((status, stdout, stderr)) => self.finish_forked_process_inner(
++                        executor, &mut child, status, stdout, stderr,
++                    ),
++                    Err(error) => Err(error),
++                };
++                if let Err(error) = result {
++                    if self.entry_driver.is_some() {
++                        // KvmBackend::drop cancels/joins. Keep that destruction
++                        // outside the enclosing callback along with every
++                        // nested owned consumer, after outer publication.
++                        let transfer = ChildToolPanicTransfer {
++                            parent: self.tool_panic_owner(),
++                            child: child.backend.tool_panic_owner(),
++                        };
++                        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
++                            let transfer = transfer;
++                            child.backend.restore_entry_origin();
++                            child.executor.bind_address_space(&child.backend.memory);
++                            let cleanup = crate::runtime::finish_unstarted_tool_cleanups_with_panics(
++                                &mut child.executor, &child.backend.tool_panics,
++                            ).await;
++                            child.backend.cancel_guest_threads_after_failure();
++                            let workers = child.backend.guest_worker_teardown_result();
++                            let children = child.executor.join_child_processes_after_failure();
++                            drop(transfer);
++                            Error::combine([cleanup, workers, children]
++                                .into_iter().filter_map(Result::err).collect())
++                        }));
++                    }
++                    return Err(error);
++                }
+             }
+             // TODO-HUMAN-REVIEW(PR-172): Review concurrent CLONE_THREAD lifecycle semantics.
+             ProcessAction::Thread {
+@@ -2217,7 +2314,8 @@
+                 // execution and futex classification stay consistent.
+                 self.debug_assert_thread_ownership_consistent();
+                 child.thread_ownership = self.thread_ownership;
+-                child.set_tool_failure(self.tool_failure.clone());
++                child.set_tool_failure(self.tool_failure.as_ref()
++                    .map(|failure| failure.for_thread(Pid::from_raw(child_tid))));
+                 child.exit_collector = self.exit_collector.clone();
+                 child
+                     .memory
+@@ -2248,9 +2346,33 @@
+                 let handle = std::thread::Builder::new()
+                     .name(format!("reverie-kvm-guest-{child_tid}"))
+                     .spawn(move || {
++                        let driver = child.start_entry_driver();
++                        child_executor.bind_address_space(&child.memory);
+                         let execution =
+                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                 let result = child.run_static_elf_process(&mut child_executor);
++                                child.restore_entry_origin();
++                                child_executor.bind_address_space(&child.memory);
++                                let result = futures::executor::block_on(
++                                    child.route_entry_outcome(result),
++                                );
++                                let result = result.map_err(|error| {
++                                    child.report_tool_failure("host worker outcome", error)
++                                });
++                                let cleanup = futures::executor::block_on(
++                                    crate::runtime::finish_unstarted_tool_cleanups_with_panics(
++                                        &mut child_executor, &child.tool_panics,
++                                    ),
++                                );
++                                let result = match (result, cleanup) {
++                                    (Ok(value), Ok(())) => Ok(value),
++                                    (Ok(_), Err(error)) => Err(error),
++                                    (Err(error), Ok(())) => Err(error),
++                                    (Err(error), Err(cleanup)) => Err(error.with_cleanup(vec![cleanup])),
++                                };
++                                let result = futures::executor::block_on(
++                                    child.route_entry_outcome(result),
++                                );
+                                 let failure = child.tool_failure.clone();
+                                 let result = finish_host_worker_outcome(
+                                     failure.as_ref(),
+@@ -2268,6 +2390,11 @@
+                                         }
+                                     },
+                                 );
++                                // Clear-TID is best effort, but a captured
++                                // entry failure still belongs to this driver.
++                                let result = futures::executor::block_on(
++                                    child.route_entry_outcome(result),
++                                ).map_err(|error| child.report_tool_failure("host worker retirement", error));
+                                 if let Err(error) = &result
+                                     && child.thread_group.take_worker_error_report(child_tid)
+                                 {
+@@ -2278,11 +2405,16 @@
+                                 result
+                             }));
+                         match execution {
+-                            Ok(result) => result,
+-                            Err(payload) => child.finish_panicked_guest_worker(
++                            Ok(result) => {
++                                let result = child.finish_entry_driver(driver, result)
++                                    .map_err(|error| child.report_tool_failure("host worker completion", error));
++                                child.finish_deferred_worker_panic(child_tid, result)
++                            }
++                            Err(payload) => child.finish_panicked_guest_worker_with_entry(
+                                 &mut child_executor,
+                                 child_tid,
+                                 payload,
++                                Some(driver),
+                             ),
+                         }
+                     })?;
+@@ -2309,6 +2441,7 @@
+                 // new address space becomes visible. Leaving a sibling vCPU
+                 // alive lets it execute stale instructions in the replacement
+                 // image and can turn an otherwise successful exec into a fault.
++                self.check_entry_owner()?;
+                 self.cancel_guest_threads();
+                 self.guest_worker_teardown_result()
+                     .map_err(|error| Error::ExecWorkerTeardown(Box::new(error)))?;
+@@ -2479,6 +2612,7 @@
+         executor: &mut ElfExecutor,
+         starts: &SharedChildStarts,
+     ) -> Result<()> {
++        self.check_entry_owner()?;
+         if let Err(error) = crate::runtime::start_pending_children(starts) {
+             return Err(self.cleanup_unstarted_tool_children_after_error(executor, starts, error));
+         }
+@@ -2636,6 +2770,9 @@
+                         config,
+                         subscriptions,
+                     )| {
++                        let driver = child.backend.start_entry_driver();
++                        child.executor.bind_address_space(&child.backend.memory);
++                        let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                         let start = start_receiver.recv();
+                         let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                         let failure = match start {
+@@ -2670,6 +2807,8 @@
+                                 ),
+                             )
+                         };
++                        child.backend.restore_entry_origin();
++                        child.executor.bind_address_space(&child.backend.memory);
+                         let result = match result {
+                             Ok((status, _, _)) => {
+                                 write_tid_best_effort(
+@@ -2677,6 +2816,11 @@
+                                     child.executor.take_clear_child_tid(),
+                                     0,
+                                 );
++                                // A best-effort clear can have captured a real
++                                // gate failure despite its unit return value.
++                                futures::executor::block_on(
++                                    child.backend.route_entry_outcome(Ok(())),
++                                )?;
+                                 let waitable = !auto_reap.load(Ordering::SeqCst);
+                                 let completion =
+                                     ChildCompletion::from_waitability(status, waitable);
+@@ -2711,12 +2855,25 @@
+                                         },
+                                         "child wait hook",
+                                     )
+-                                    .map_err(|error| {
+-                                        child.backend.report_tool_failure("child wait hook", error)
+-                                    })
+                             }
+                             Err(error) => Err(error),
+                         };
++                        result
++                        }));
++                        let result = match execution {
++                            Ok(result) => result,
++                            Err(payload) => child.backend.finish_panicked_tool_process_owner(
++                                &mut child.executor,
++                                payload,
++                            ),
++                        };
++                        child.backend.restore_entry_origin();
++                        child.executor.bind_address_space(&child.backend.memory);
++                        let result = futures::executor::block_on(
++                            child.backend.route_entry_outcome(result),
++                        ).map_err(|error| child.backend.report_tool_failure("fork owner completion", error));
++                        let result = child.backend.finish_entry_driver(driver, result)
++                            .map_err(|error| child.backend.report_tool_failure("fork owner retirement", error));
+                         if result.is_err() {
+                             *child_completion
+                                 .lock()
+@@ -2744,9 +2901,10 @@
+                         };
+                         executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+                             let transfer = transfer;
+-                            let result = child
+-                                .backend
+-                                .finish_unstarted_tool(
++                            let driver = child.backend.start_entry_driver();
++                            child.executor.bind_address_space(&child.backend.memory);
++                            let caught = crate::failure::owned_future::catch_owned_future_from(|| {
++                                child.backend.finish_unstarted_tool(
+                                     &mut child.executor,
+                                     child_tool,
+                                     (child_pid, child_pid),
+@@ -2755,7 +2913,14 @@
+                                     child_thread_state,
+                                     Some(Error::RunAborted),
+                                 )
+-                                .await;
++                            }).await;
++                            let result = child.backend.tool_panic_owner()
++                                .finish(caught, "unstarted fork owner");
++                            child.backend.restore_entry_origin();
++                            child.executor.bind_address_space(&child.backend.memory);
++                            let result = child.backend.route_entry_outcome(result).await;
++                            let result = child.backend.finish_entry_driver(driver, result)
++                                .map_err(|error| child.backend.report_tool_failure("unstarted fork completion", error));
+                             drop(transfer);
+                             result.map(|_| unreachable!("failed spawn completed successfully"))
+                         }));
+@@ -2931,6 +3096,8 @@
+                         config,
+                         subscriptions,
+                     )| {
++                        let driver = child.start_entry_driver();
++                        child_executor.bind_address_space(&child.memory);
+                         let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                             || {
+                                 let start = start_receiver.recv();
+@@ -2966,11 +3133,16 @@
+                                         ),
+                                     )
+                                 };
++                                child.restore_entry_origin();
++                                child_executor.bind_address_space(&child.memory);
+                                 child.release_thread_slot();
+                                 clear_tid_and_wake(
+                                     &mut child.memory,
+                                     child_executor.take_clear_child_tid(),
+                                 );
++                                let result = futures::executor::block_on(
++                                    child.route_entry_outcome(result),
++                                ).map_err(|error| child.report_tool_failure("Tool worker retirement", error));
+                                 let peer_cancelled = crate::runtime::is_peer_cancelled_tool_worker(
+                                     (tgid, child_tid_pid),
+                                     !cancel,
+@@ -2992,11 +3164,16 @@
+                             },
+                         ));
+                         match execution {
+-                            Ok(result) => child.finish_deferred_worker_panic(child_tid, result),
+-                            Err(payload) => child.finish_panicked_guest_worker(
++                            Ok(result) => {
++                                let result = child.finish_entry_driver(driver, result)
++                                    .map_err(|error| child.report_tool_failure("Tool worker completion", error));
++                                child.finish_deferred_worker_panic(child_tid, result)
++                            }
++                            Err(payload) => child.finish_panicked_guest_worker_with_entry(
+                                 &mut child_executor,
+                                 child_tid,
+                                 payload,
++                                Some(driver),
+                             ),
+                         }
+                     },
+@@ -3024,8 +3201,10 @@
+                         };
+                         executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+                             let transfer = transfer;
+-                            let result = child
+-                                .finish_unstarted_tool(
++                            let driver = child.start_entry_driver();
++                            child_executor.bind_address_space(&child.memory);
++                            let caught = crate::failure::owned_future::catch_owned_future_from(|| {
++                                child.finish_unstarted_tool(
+                                     &mut child_executor,
+                                     child_tool,
+                                     (tgid, child_tid_pid),
+@@ -3034,7 +3213,14 @@
+                                     child_thread_state,
+                                     Some(Error::RunAborted),
+                                 )
+-                                .await;
++                            }).await;
++                            let result = child.tool_panic_owner()
++                                .finish(caught, "unstarted thread owner");
++                            child.restore_entry_origin();
++                            child_executor.bind_address_space(&child.memory);
++                            let result = child.route_entry_outcome(result).await;
++                            let result = child.finish_entry_driver(driver, result)
++                                .map_err(|error| child.report_tool_failure("unstarted thread completion", error));
+                             drop(transfer);
+                             result.map(|_| unreachable!("failed spawn completed successfully"))
+                         }));
+@@ -4078,6 +4264,10 @@
+         if exit.group {
+             self.request_guest_thread_group_exit(exit.status);
+         }
++        // Best-effort writes and Errno adapters can conceal a captured cause.
++        // An inline child must hand that cause back to its enclosing callback
++        // before cancellation or a physical join can depend on destruction.
++        self.check_entry_owner()?;
+         let status = if self.is_guest_thread {
+             exit.status
+         } else {
+@@ -4222,17 +4412,30 @@
+         self.cancel_guest_threads();
+     }
+ 
++    #[cfg(test)]
+     fn finish_panicked_guest_worker(
+         &mut self,
+         executor: &mut ElfExecutor,
+         tid: i32,
+         payload: Box<dyn std::any::Any + Send>,
+     ) -> ! {
++        self.finish_panicked_guest_worker_with_entry(executor, tid, payload, None)
++    }
++
++    fn finish_panicked_guest_worker_with_entry(
++        &mut self,
++        executor: &mut ElfExecutor,
++        tid: i32,
++        payload: Box<dyn std::any::Any + Send>,
++        driver: Option<crate::entry::owner::DriverScope>,
++    ) -> ! {
+         // The callback and its borrowed Tool references have already unwound.
+         // Keep the original JoinHandle panic while releasing this worker's
+         // resources and transferring independent forks to the process owner.
+         let failure = self.tool_failure.clone();
+         let group = self.thread_group.clone();
++        self.restore_entry_origin();
++        executor.bind_address_space(&self.memory);
+         // A previous callback/consumer panic may already be deferred. Keep it
+         // ahead of this unexpected outer unwind and all cleanup that follows.
+         self.tool_panics.append(vec![payload]);
+@@ -4240,6 +4443,8 @@
+         // child consumers still exist. Transfer this exact executor's ledger,
+         // retaining the panic as the primary cause.
+         let error = executor.with_signal_effects(Error::GuestWorkerPanic, None);
++        let error = futures::executor::block_on(self.route_entry_outcome::<()>(Err(error)))
++            .expect_err("caught worker panic must remain a failure");
+         let error = publish_caught_worker_panic(failure.as_ref(), tid, error);
+         // The previous executor has already unwound out of block_on. Each
+         // retained child now gets its own polling and destruction catch, while
+@@ -4247,22 +4452,63 @@
+         let cleanup = futures::executor::block_on(
+             crate::runtime::finish_unstarted_tool_cleanups_with_panics(executor, &self.tool_panics),
+         );
++        executor.retire_failed_thread();
++        self.clear_registered_worker_tid_before_exit(executor);
++        executor.release_files_on_exit();
++        self.release_stdin_on_exit();
++        executor.transfer_child_processes_to_owner();
++        let result = futures::executor::block_on(self.route_entry_outcome::<()>(Err(
++            error.with_cleanup(cleanup.err().into_iter().collect()),
++        )));
++        let result = match driver {
++            Some(driver) => self.finish_entry_driver(driver, result),
++            None => result,
++        };
++        let error = result.map_err(|error| self.report_tool_failure("worker panic retirement", error))
++            .expect_err("caught worker panic retirement must remain a failure");
+         let mut payloads = self.tool_panics.take().into_iter();
+         let original = payloads
+             .next()
+             .expect("caught worker lost its original panic");
+         let record = WorkerPanicRecord {
+-            error: Arc::new(error.with_cleanup(cleanup.err().into_iter().collect())),
++            error: Arc::new(error),
+             _cleanup_panics: payloads.collect(),
+             _join_payload: None,
+         };
+-        resume_worker_panic_record(&group, tid, record, original, || {
+-            executor.retire_failed_thread();
+-            self.clear_registered_worker_tid_before_exit(executor);
+-            executor.release_files_on_exit();
+-            self.release_stdin_on_exit();
+-            executor.transfer_child_processes_to_owner();
+-        })
++        resume_worker_panic_record(&group, tid, record, original, || {})
++    }
++
++    /// An unexpected fork-owner unwind has already destroyed the interrupted
++    /// Tool state. Consume only separately retained children, and preserve the
++    /// original payload for the normal process-owner propagation below.
++    fn finish_panicked_tool_process_owner(
++        &mut self,
++        executor: &mut ElfExecutor,
++        payload: crate::failure::owned_future::PanicPayload,
++    ) -> Result<()> {
++        self.tool_panics.append(vec![payload]);
++        self.restore_entry_origin();
++        executor.bind_address_space(&self.memory);
++        let error = executor.with_signal_effects(Error::GuestWorkerPanic, None);
++        let error = futures::executor::block_on(self.route_entry_outcome::<()>(Err(error)))
++            .expect_err("caught fork panic must remain a failure");
++        let error = self.report_tool_failure("fork owner panic", error);
++        let cleanup = futures::executor::block_on(
++            crate::runtime::finish_unstarted_tool_cleanups_with_panics(executor, &self.tool_panics),
++        );
++        executor.retire_failed_thread();
++        self.clear_registered_worker_tid_before_exit(executor);
++        executor.release_files_on_exit();
++        self.release_stdin_on_exit();
++        let error = futures::executor::block_on(self.route_entry_outcome::<()>(Err(
++            error.with_cleanup(cleanup.err().into_iter().collect()),
++        ))).map_err(|error| self.report_tool_failure("fork panic retirement", error))
++            .expect_err("caught fork panic retirement must remain a failure");
++        // The publication above releases dependent peers before either join.
++        self.cancel_guest_threads_after_failure();
++        let workers = self.guest_worker_teardown_result();
++        let children = executor.join_child_processes_after_failure();
++        Err(error.with_cleanup([workers, children].into_iter().filter_map(Result::err).collect()))
+     }
+ 
+     pub(crate) fn record_guest_worker_failure(&self, tid: i32) {
+@@ -9692,3 +9938,7 @@
+ #[cfg(test)]
+ #[path = "terminal_vm_tests.rs"]
+ mod terminal_tests;
++
++#[cfg(test)]
++#[path = "vm/entry_owner_tests.rs"]
++mod entry_owner_tests;
+--- /dev/null
++++ b/reverie-kvm/src/vm/entry_owner_tests.rs
+@@ -0,0 +1,151 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! Setup-only controls for backend owner binding and the caught-worker owner
++//! boundary. These construct the callback and retained consumer; no KVM_RUN,
++//! actual failed spawn, or guest callback dispatch is exercised here.
++
++use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
++use std::sync::atomic::AtomicUsize;
++use std::task::{Context, Poll};
++
++use super::*;
++use crate::entry::owner::DriverLifecycle;
++use crate::failure::owned_future::PanicPayload;
++
++#[test]
++fn child_driver_rebinds_inherited_callback_view_and_preserves_generation() {
++    let mut parent = KvmBackend::new(0x10000).expect("owner binding control requires /dev/kvm");
++    let parent_scope = parent.start_entry_driver();
++    let parent_callback = parent.begin_entry_callback().unwrap().unwrap();
++    let parent_view = parent.memory.clone();
++    let parent_origin = parent_view.entry_origin().operation.unwrap();
++    let mut child = KvmBackend::new_with_memory_and_cpuid_policy(
++        parent.memory.clone(), CpuidPolicy::default(), None,
++    ).expect("child binding control requires /dev/kvm");
++    assert!(child.entry_driver_owner().is_none());
++    assert!(child.memory.entry_origin().operation.unwrap().same_callback(&parent_origin));
++
++    let child_scope = child.start_entry_driver();
++    let child_owner = child.entry_driver_owner().unwrap();
++    let ordinary = child.memory.entry_origin().operation.unwrap();
++    assert!(ordinary.same_driver(&child_owner.origin()));
++    assert!(!ordinary.same_driver(&parent_origin));
++    assert_eq!(ordinary.callback_id(), None);
++
++    let first = child.begin_entry_callback().unwrap().unwrap();
++    let retained = child.memory.clone();
++    let first_origin = retained.entry_origin().operation.unwrap();
++    drop(first);
++    child.restore_entry_origin();
++    let second = child.begin_entry_callback().unwrap().unwrap();
++    let second_origin = child.memory.entry_origin().operation.unwrap();
++    assert!(first_origin.same_driver(&second_origin));
++    assert!(!first_origin.same_callback(&second_origin));
++    assert!(first_origin.callback_dropped());
++    assert!(!second_origin.callback_dropped());
++    assert!(retained.entry_origin().operation.unwrap().same_callback(&first_origin));
++    assert!(!parent_origin.callback_dropped());
++    drop(second);
++    child.restore_entry_origin();
++    child.finish_entry_driver(child_scope, Ok(())).unwrap();
++    assert_eq!(child_owner.lifecycle(), DriverLifecycle::Retired);
++    assert!(child.entry_driver_owner().is_none());
++    assert!(child.memory.entry_origin().operation.is_none());
++    assert!(!parent_origin.callback_dropped());
++    drop(parent_callback);
++    parent.restore_entry_origin();
++    parent.finish_entry_driver(parent_scope, Ok(())).unwrap();
++    assert_eq!(parent_origin.lifecycle(), DriverLifecycle::Retired);
++}
++
++struct CallbackDrop {
++    payload: Option<PanicPayload>,
++}
++
++impl Future for CallbackDrop {
++    type Output = ();
++    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
++        Poll::Ready(())
++    }
++}
++
++impl Drop for CallbackDrop {
++    fn drop(&mut self) {
++        resume_unwind(self.payload.take().unwrap());
++    }
++}
++
++#[test]
++fn caught_worker_driver_retires_after_pending_consumer_and_before_payload_resume() {
++    let mut backend = KvmBackend::new(0x10000).expect("owner unwind control requires /dev/kvm");
++    backend.is_guest_thread = true;
++    let group = backend.thread_group.clone();
++    let state = crate::executor::native_loaded_state(Path::new("/"));
++    let lifecycle = state.task_lifecycle.clone();
++    let leader = ElfExecutor::new(state, false);
++    let mut executor = leader.thread_child(2).unwrap();
++    let global = Arc::new(());
++    let run = crate::failure::RunFailure::new(&global);
++    backend.set_tool_failure(Some(crate::failure::FailureContext::new(
++        run.clone(), Pid::from_raw(1), Pid::from_raw(2),
++    )));
++    let driver = backend.start_entry_driver();
++    executor.bind_address_space(&backend.memory);
++    let owner = backend.entry_driver_owner().unwrap();
++    let callback = backend.begin_entry_callback().unwrap().unwrap();
++    let origin = callback.origin();
++    let cause = Arc::new(Error::GuestClock("captured callback owner cause".to_owned()));
++    backend.memory.entry_gate().poison(
++        backend.memory.entry_origin(), Error::SharedFailure(cause.clone()),
++    );
++    let cleanup = Arc::new(Error::GuestClock("retained child consumer cause".to_owned()));
++    let consumer_cleanup = cleanup.clone();
++    let consumer_owner = owner.clone();
++    let consumer_run = run.clone();
++    let consumer_lifecycle = lifecycle.clone();
++    let polls = Arc::new(AtomicUsize::new(0));
++    let consumer_polls = polls.clone();
++    executor.retain_unstarted_tool_cleanup(Box::pin(async move {
++        std::future::poll_fn(|cx| {
++            assert_eq!(consumer_owner.lifecycle(), DriverLifecycle::Active);
++            assert!(consumer_run.published_primary().is_some());
++            assert!(consumer_lifecycle.lock().unwrap().get(2).is_some());
++            match consumer_polls.fetch_add(1, Ordering::SeqCst) {
++                0 => {
++                    cx.waker().wake_by_ref();
++                    Poll::Pending
++                }
++                1 => Poll::Ready(()),
++                _ => panic!("completed consumer was polled again"),
++            }
++        }).await;
++        Err(Error::SharedFailure(consumer_cleanup))
++    }));
++    let original = Box::new(0x6f776e65725f6472_u64);
++    let address = std::ptr::from_ref(original.as_ref()) as usize;
++    let caught = catch_unwind(AssertUnwindSafe(|| {
++        // The scope is outside the owned future and acknowledges only after
++        // the real future destructor starts the caught unwind.
++        let _callback = callback;
++        futures::executor::block_on(Box::pin(CallbackDrop { payload: Some(original) }));
++    })).expect_err("constructed callback destructor must panic");
++    assert!(origin.callback_dropped());
++    let resumed = catch_unwind(AssertUnwindSafe(|| {
++        backend.finish_panicked_guest_worker_with_entry(&mut executor, 2, caught, Some(driver));
++    })).expect_err("worker must resume the exact original panic");
++    assert_eq!(std::ptr::from_ref(resumed.downcast_ref::<u64>().unwrap()) as usize, address);
++    assert_eq!(owner.lifecycle(), DriverLifecycle::Retired);
++    assert!(backend.entry_driver_owner().is_none());
++    assert_eq!(polls.load(Ordering::SeqCst), 2);
++    assert!(lifecycle.lock().unwrap().get(2).is_none());
++    assert!(executor.take_unstarted_tool_cleanup().is_empty());
++    let diagnostic = group.reported_worker_panics.lock().unwrap().get(&2).unwrap().error.clone();
++    assert!(crate::failure::references_shared_error(&diagnostic, &cause));
++    assert!(crate::failure::references_shared_error(&diagnostic, &cleanup));
++}

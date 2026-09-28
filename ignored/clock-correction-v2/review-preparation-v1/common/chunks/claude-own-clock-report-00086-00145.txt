@@ -1,0 +1,60 @@
+**Design sections:** REPORT failure table, row 2; PLAN control 6.
+**Source:** `PRIMARY_FUNCTIONS.txt` — `fs/exec.c:1091-1128` (point of no return at 1112), `fs/exec.c:1194-1222` (`perf_event_exec()` at 1217, inside `begin_new_exec`), `fs/exec.c:1678-1723` (`ptrace_event(PTRACE_EVENT_EXEC)` at 1719, reached only after `search_binary_handler` returns ≥ 0).
+
+The bound excerpts do establish the two clauses the design needs in general: a failure *before* `begin_new_exec` never reaches activation, and a failure *after* line 1112 is fatal so no old image resumes. They do **not** establish that a missing `PT_INTERP` target fails before `begin_new_exec` — that ordering lives in `fs/binfmt_elf.c`, which is not among the bound primary functions. The fixture is well chosen and I expect it is right, but the design's own rule ("the proposed runtime control must witness the actual host behavior") is the operative one here.
+
+**Required correction.** PLAN control 6 must assert the observed `execve` error **and** the positive absence of any `PTRACE_EVENT_EXEC` for that attempt — not merely the failure exit status, which a post-commit fatal failure would also produce.
+
+## F6 — LOW. The design's singular "the existing post-exec step" is two steps in two branches
+
+`handle_exec_event` steps at `task.rs:2935` (LiteInst branch) and `task.rs:2996-2997` (non-LiteInst, `wait_for_signal(SIGTRAP)`), both before `tracee_preinit` at `task.rs:3004`, and its tail differs again (`resume_stopped` vs `step_stopped`, `task.rs:3092-3093`). The ordering requirement must hold for both. Note also that with `enable_on_exec` the *counting* of that first instruction is guaranteed by the kernel (`perf_event_exec()` at `fs/exec.c:1217` precedes `ptrace_event` at 1719), so the transition point is not timing-critical for the count — it is critical only so the private state machine does not treat a live counter as disabled. The design's stated reason is slightly stronger than the mechanism requires; stating it accurately avoids an implementer over-constraining the placement.
+
+## F7 — LOW (evidence hygiene). Two bound documents disagree about whether the cross-backend comparison ran
+
+`comparison-schema-adjudication-v1/REPORT.md` line 7 says of plan sha256 `bf63fac3db5cea9d97ad53daf0b12f15dc205b27ec99400397255e3233520e0d`: "The comparison has not run." `original-measurement-results-v2/RESULTS.json` records a `current-kvm-ptrace` phase with that **same plan sha256**, `raw_status: 1`, `accepted: false`, and a full readback. The retained `current-kvm-ptrace/comparison.json` exists with `verdict: "diverged"`.
+
+Resolution, from the artifacts rather than either prose: **it ran and it failed.** The adjudication packet predates the measurement run and its sentence is stale. It is not a relabelling of a failure as a pass — the failure is preserved everywhere that matters — but a cold reader could take it as denying the failed run, so it should be dated or corrected.
+
+## What I checked and judge sound
+
+- **Provenance isolation.** `command_bootstrap` is set true at exactly one site (`tracer.rs:2506`, the Command `spawn`), false at `tracer.rs:2658` (`spawn_fn`), `task.rs:1226` (`cloned`), `task.rs:1284` (`forked`). It is cleared at `task.rs:2874`, the first statement of `handle_exec_event`, before any post-exec Tool callback. The design's requirement to read the private state *before* that clear is correctly placed. `TracerBuilder` exposes only Command spawn and function spawn — there is no attach-existing-process constructor, and GDB attaches to an already-constructed `TracedTask`. The design invents no attach support.
+- **Which instructions count.** The 223 are user-mode (`exclude_kernel(1)`, `perf.rs`) launcher branches after `traceme_and_stop()` inside `init_tracee` (`tracer.rs`, the pre_exec callback) — the remainder of `Container::setup`, the seccomp filter load, and `libc::execvpe`. `container.rs` runs pre_exec callbacks *before* installing the filter, exactly as the design states; I verified that ordering and the accompanying comment directly. The design's refusal to split those contributions further is honest.
+- **One-shot activation.** `event_enable_on_exec` clears `attr.enable_on_exec` unconditionally at `core.c:4673` before deciding, so later execs are inert with no further tracer action. The design's "this transition occurs once" is guaranteed by the kernel, not just by convention.
+- **Child constructors.** Both child paths construct a fresh immediate `Timer`; the design's prohibition on making a child wait for its own future exec is correct — a child that branches before exec must count those branches.
+- **Unsupported PMU.** `Timer::new` leaves `inner: None`; `read_clock` would panic through `inner()`. The design's "preserve current refusal/capability semantics, no zero-clock fallback" is right, and the implementer must use `inner_noinit`/`inner_mut_noinit`.
+- **`generated_signal` aliasing.** The design's step 2 caution is precisely correct and I verified why: `timer.rs:802-812` returns true for *any* `MARKER_SIGNAL` when `send_artificial_signal` is set, with no fd check. Keeping the "artificial send happened" fact separate from "a short request is pending" is load-bearing, and PLAN control 1 must assert it rather than assume it.
+- **aarch64 / LiteInst.** Correctly unclaimed; `PmuConfig::new()` on aarch64 assumes BR_RETIRED with skid 1000 and `has_precise_ip()` returns true unconditionally, so parity there would need its own evidence.
+
+---
+
+# Determinism
+
+**Sound, and I can state the proof from source rather than from the design's summary.**
+
+Detcore consumes the Reverie clock only as a **delta**: `update_logical_time_rcbs` (`detcore/src/lib.rs`) reads `guest.read_clock()`, asserts `committed_clock_value <= clock_value`, computes `delta_rcbs = clock_value - committed_clock_value`, charges that into `thread_logical_time`, and stores `committed_clock_value = clock_value`. `committed_clock_value` starts at 0. Timer requests are relative (`post_handler_hook` computes `rcbs_remaining` and calls `set_timer_precise(Rcbs(rcbs_remaining))`) and `TimerImpl::request_event` converts them to an absolute target in the *same* counter (`clock = self.read_clock() + delivery`, `timer.rs:785`).
+
+Therefore:
+1. Moving the origin changes exactly one quantity — the first delta, from 223 to 0. Every subsequent delta is a difference and is untouched. That matches the measurement exactly: the cross-backend offset is a **constant** 2,230 ns from turn 2 through turn 16, and the final totals differ by 9,112,750 − 9,110,520 = 2,230.
+2. Timer coordinates stay internally consistent because both the request and the target live in the same counter.
+3. The origin is fixed by a **guest-causal** kernel event — the guest's own successful `execve` — not by host timing. `perf_event_exec()` runs at a fixed point inside `begin_new_exec`, the same point on every run.
+4. The `committed_clock_value <= clock_value` assertion cannot be broken: both start at 0 and the counter only counts up; `enable_on_exec` starts counting, it never resets.
+5. Nothing is rounded, frozen, reset, coarsened or compensated. `Guest::read_clock`'s documented contract at `reverie/src/guest.rs:420-423` already declares the starting value implementation-specific, so the change is inside the contract. Against `continuous-virtual-time-is-sacred`, removing launcher work from guest virtual time is a fidelity *improvement*: it makes the guest's clock measure the guest.
+
+The only behavioural change for a long-running guest is that its first timeslice gains 223 RCBs (0.001115% of the 20,000,000 target) — deterministically, and in the correct direction.
+
+Residual host-timed input: PMU skid on the *sampling* event, unchanged by this design.
+
+# Linux / POSIX semantics
+
+No guest-visible Linux interface changes. `read_clock` is a Reverie-internal clock with no POSIX counterpart, and its starting value is documented as implementation-specific. The exec paths are respected rather than reinterpreted: pre-commit failure returns to the old image with no activation; post-commit failure is fatal by construction (`bprm->point_of_no_return = true`, `fs/exec.c:1112`); `PTRACE_EVENT_EXEC` is reported only on success (`fs/exec.c:1719`). `init_tracee`'s documented loss of `execve` error reporting (the fd 3..256 close) is acknowledged, not papered over, and the design explicitly declines to claim a repair for it.
+
+The one semantic change is the timer-delivery difference in **F1**: a start-time request that today produces a (premature, launcher-context) `handle_timer_event` would produce no callback. That is permitted by `Guest::set_timer`'s cancellation rule, but it must be *stated*, and the negative observation must be preserved rather than left to "record whether".
+
+# Evidence and goalpost-moving
+
+## Assessment of all four targets
+
+**1. Weakening an assertion so a test passes — NO.** No assertion is changed. Three existing tests are named for retention: `command_bootstrap_ends_before_post_exec_and_later_guest_exec`, `spawn_fn_never_has_command_bootstrap_provenance`, `precise_timer_delivery_reaches_tool`. The one clause that *could* hide a weakening is PLAN control 5's "Do not require delivery of a request which the documented event-cancellation rule cancels." I examined it against `reverie/src/guest.rs:402-404` and it is a correct statement of the existing contract, not a relaxation invented to fit. It is nevertheless the sentence that would let F1 pass unnoticed, which is why F1 requires the outcome be *recorded*, not merely permitted.
+
+**2. Tolerance widened, exemption added, case skipped, comparator relaxed — NO.** PLAN 3 requires "the same strict full comparisons and bounds", "Compare all records across backends and preserve any remaining disagreement", and "do not replace the cross-backend result with a sidecar result"; `RESULTS.json` already carries `"sidecars_cannot_override": true`. The `AllRecordsV1` structured-event guard is explicitly not relaxed: `FACTS.json` records `original_accepted: false`, `new_execution: false`, and the adjudication proves the *effective* comparator already uses `require_structured_events: true` at `detcore/src/logdiff.rs:1705-1723` rather than arguing the flag should be loosened. The retained cross-backend report itself shows `require_structured_events: true`. Bounds are restated identically (30 CPU / 60 wall for comparisons, 22/57 for guests, 16 GiB, zero swap, 16 MiB stderr, 64 MiB stdout, 16 MiB read, 100 GiB floor).
+

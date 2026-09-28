@@ -1,0 +1,155 @@
+     type Stack = KvmStack;
+ 
+@@ -2344,9 +2356,10 @@
+         T: Tool,
+         E: SyscallExecutor,
+     {
+-        // This public non-ELF loop has no timestamp consumer. Establish its
++        // This public non-ELF loop has no instruction consumer. Establish its
+         // ownership locally even if the vCPU previously ran a subscribed Tool.
+         self.set_rdtsc_interception(false)?;
++        self.set_cpuid_interception(false)?;
+         self.vcpu.track_clock()?;
+         let tool_stack_top = self.tool_stack_top();
+         let pid = Pid::from_raw(self.root_pid);
+@@ -2600,6 +2613,9 @@
+             // removing Guest on which to acknowledge its pending-state effects.
+             return Err(Error::SignalObservationRequiresToolThreads);
+         }
++        // Capture setup can fail before image consumption or any Tool state.
++        // Keep this root owner until the later executor and its workers retire.
++        let capture_owner = self.prepare_captured_output(capture_output)?;
+         let mut loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+         // Output capture replaces stdout and stderr with the executor's pipes,
+         // but an explicitly configured stdin remains the guest's input. Use
+@@ -2615,7 +2631,7 @@
+         let tool = Arc::new(T::new(pid, &config));
+         let subscriptions = T::subscriptions(&config);
+         let thread_state = tool.init_thread_state(pid, None);
+-        let mut executor = ElfExecutor::new(loaded, capture_output);
++        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+         let result = self
+             .run_static_elf_process_with_tool(
+                 &mut executor,
+@@ -2949,6 +2965,7 @@
+             // any user instruction. New fork/thread vCPUs start unarmed; the
+             // tool-less Host worker loop never inherits trapping without a hook.
+             self.set_rdtsc_interception(subscriptions.has_rdtsc())?;
++            self.set_cpuid_interception(subscriptions.has_cpuid())?;
+             self.vcpu.track_clock()?;
+             _registration = Some(self.register_guest_thread()?);
+             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+@@ -3171,9 +3188,8 @@
+                         (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
+                     }
+                     VcpuExit::Hlt => {
+-                        if let Some(boundary) = self.timestamp_counter_exception()? {
+-                            let request = boundary.instruction.request;
+-                            executor.set_current_user_stack_pointer(boundary.registers.rsp);
++                        if let Some(boundary) = self.tool_instruction_exception()? {
++                            executor.set_current_user_stack_pointer(boundary.user_registers().rsp);
+                             let handler_signal = Arc::new(Mutex::new(None));
+                             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                             let mut process_completed = false;
+@@ -3183,7 +3199,7 @@
+                                     backend: self,
+                                     executor,
+                                     memory: memory.clone(),
+-                                    process_context: ProcessExecutionContext::Timestamp,
++                                    process_context: ProcessExecutionContext::Instruction,
+                                     callback_site: None,
+                                     original_syscall: None,
+                                     signal_guard: SignalGuard::Ordinary,
+@@ -3209,7 +3225,28 @@
+                                     stack_checked_out.clone(),
+                                 );
+                                 drive_handler(
+-                                    tool.handle_rdtsc_event(&mut guest, request),
++                                    async {
++                                        match &boundary {
++                                            crate::vm::ToolInstructionBoundary::Timestamp(
++                                                boundary,
++                                            ) => tool
++                                                .handle_rdtsc_event(
++                                                    &mut guest,
++                                                    boundary.instruction.request,
++                                                )
++                                                .await
++                                                .map(crate::vm::ToolInstructionResult::Timestamp),
++                                            crate::vm::ToolInstructionBoundary::Cpuid(boundary) => {
++                                                tool.handle_cpuid_event(
++                                                    &mut guest,
++                                                    boundary.registers.rax as u32,
++                                                    boundary.registers.rcx as u32,
++                                                )
++                                                .await
++                                                .map(crate::vm::ToolInstructionResult::Cpuid)
++                                            }
++                                        }
++                                    },
+                                     handler_signal,
+                                     pending_child_starts,
+                                     wait_for_failure(
+@@ -3249,13 +3286,14 @@
+                                     hidden?;
+                                     let exit = executor.take_exit().ok_or_else(|| {
+                                         Error::UnexpectedVcpuExit(
+-                                            "terminal timestamp injection lost its exit".to_owned(),
++                                            "terminal instruction injection lost its exit"
++                                                .to_owned(),
+                                         )
+                                     })?;
+                                     if exit.group {
+                                         self.request_guest_thread_group_exit(exit.status);
+                                     }
+-                                    // The original timestamp never resumes. Normal
++                                    // The original instruction never resumes. Normal
+                                     // retirement and consuming hooks own cleanup.
+                                     return Ok(exit.into());
+                                 }
+@@ -3263,7 +3301,7 @@
+                                 | HandlerOutcome::ParkedFatal(_)
+                                 | HandlerOutcome::ParkedCancelled(_) => {
+                                     return Err(Error::UnexpectedVcpuExit(
+-                                        "nonreturning timestamp callback outcome".to_owned(),
++                                        "nonreturning instruction callback outcome".to_owned(),
+                                     )
+                                     .with_cleanup(hidden.err().into_iter().collect()));
+                                 }
+@@ -3271,14 +3309,14 @@
+                             hidden?;
+                             if process_completed {
+                                 return Err(Error::UnexpectedVcpuExit(
+-                                    "timestamp callback changed the process continuation"
++                                    "instruction callback changed the process continuation"
+                                         .to_owned(),
+                                 ));
+                             }
+                             if let Some((segment, address)) = executor.take_segment() {
+                                 set_user_segment_base(&self.vcpu, segment, address)?;
+                             }
+-                            self.resume_timestamp_counter(boundary, value)?;
++                            self.resume_tool_instruction(boundary, value)?;
+                             continue;
+                         }
+                         if self.try_resume_vmware_backdoor_probe()? {
+--- a/reverie-kvm/src/terminal_runtime_tests.rs
++++ b/reverie-kvm/src/terminal_runtime_tests.rs
+@@ -166,7 +166,7 @@
+ // can tail out of a timestamp callback without a syscall return transport.
+ #[test]
+ fn timestamp_exit_admission_preserves_returning_ordinary_injections() {
+-    let context = ProcessExecutionContext::Timestamp;
++    let context = ProcessExecutionContext::Instruction;
+     for (number, tail, ordinary) in [
+         (libc::SYS_exit, true, true),
+         (libc::SYS_exit_group, true, true),
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -70,6 +70,7 @@
+ use crate::elf::initial_thread_name;
+ use crate::elf::load_static_elf;
+ use crate::elf::load_static_elf_file;
++use crate::executor::CapturedOutput;
+ use crate::executor::ChildCompletion;
+ use crate::executor::ChildStartCommand;

@@ -1,0 +1,8 @@
+
+running 3 tests
+test vm::tests::entry_spawn_tests::public_elf_refused_fork_retains_child_until_published_cleanup ... ok
+test vm::tests::entry_spawn_tests::public_elf_refused_tool_thread_retains_child_until_published_cleanup ... ok
+test vm::tests::entry_spawn_tests::unarmed_spawn_owned_starts_exact_initialized_state ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 720 filtered out; finished in 0.14s
+

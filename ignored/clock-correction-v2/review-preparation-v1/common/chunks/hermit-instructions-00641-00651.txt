@@ -1,0 +1,11 @@
+  the exact failure in a note.
+- Work committed and pushed but blocked on another PR or a reverie pin bump —
+  name the blocker and the dependency SHAs.
+
+**Neither tag — the work is not done, so the task stays open:**
+
+- Code written but uncommitted or not pushed. Do not use a stash as a handoff.
+- "It builds/tests pass locally" with no pushed branch and no open PR.
+- A green local `cargo test` presented as project completion — a local run is
+  not a landing, and one backend passing is not "done" across all backends.
+- Tests marked `#[ignore]`, masked, or deleted to make a checkout look green.

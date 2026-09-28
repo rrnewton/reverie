@@ -1,0 +1,10 @@
+
+running 5 tests
+test failure::panic_cleanup_tests::no_retained_panic_cleanup_preserves_existing_completion ... ok
+test failure::panic_cleanup_tests::retained_panic_cleanup_folds_two_distinct_records_once ... ok
+test failure::panic_cleanup_tests::retained_panic_cleanup_keeps_first_cause_wrappers_and_signal_effect_identity ... ok
+test failure::panic_cleanup_tests::retained_panic_cleanup_skips_only_exact_already_returned_arcs ... ok
+test failure::panic_cleanup_tests::retained_send_only_payload_outlives_publication_and_completion ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 672 filtered out; finished in 0.00s
+

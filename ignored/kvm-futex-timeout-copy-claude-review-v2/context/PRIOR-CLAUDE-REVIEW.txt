@@ -1,0 +1,175 @@
+I have read all four primary files in the required order, both context skill files, the full diff, the candidate/base sources on the execution path, and every retained qualification artifact. Report follows.
+
+---
+
+# Adversarial review — rrnewton/reverie PR 608
+
+**Review target:** `rrnewton/reverie` `123df7c4c0169006fbfe1f11a1553fe333eac937` .. **`8865eb263cb44530364cb90eda6cdb40826aba7d`** (tree `077163b7251b650cd88991634fa35041cf8d10b6`)
+**Scope reviewed:** `reverie-kvm/src/executor.rs` (`futex`, +2 test assertions), `reverie-kvm/src/executor/entry_host_wait_tests.rs` (+2 tests, 4 assertion updates)
+
+---
+
+## Findings
+
+### F1 — BLOCKING (evidence, not defect): the two new deny-by-default gates have no allow-side test
+
+`candidate/reverie-kvm/src/executor.rs:1056-1063` and `:1064-1081` introduce two guards that did not exist at base:
+
+* a `FUTEX_CLOCK_REALTIME` allow-set of exactly three commands, else `ENOSYS`;
+* a command allow-set of exactly thirteen commands, else `ENOSYS`.
+
+At base, every unrecognised operation was forwarded to the host kernel, which decided. The head now decides locally. **Only the refusing side is tested.** `entry_host_wait_tests.rs:196-232` proves `FUTEX_WAIT|FUTEX_CLOCK_REALTIME → ENOSYS` and `op=99 → ENOSYS`. Nothing anywhere in the crate proves that any of the thirteen allowed commands is *not* refused, and nothing proves that `FUTEX_WAIT_BITSET|FUTEX_CLOCK_REALTIME`, `FUTEX_WAIT_REQUEUE_PI|FUTEX_CLOCK_REALTIME`, or `FUTEX_LOCK_PI2|FUTEX_CLOCK_REALTIME` still pass through.
+
+I enumerated every `futex(` call site in the crate (`Grep` over `candidate/reverie-kvm/src`): the adapter is exercised with exactly four operations — `FUTEX_WAIT`, `FUTEX_WAKE`, `FUTEX_CMP_REQUEUE`, `FUTEX_UNLOCK_PI` — plus the five-operation malformed-timespec loop at `entry_host_wait_tests.rs:284-296`, which returns `EINVAL` *before* reaching either gate and therefore proves nothing about them. So **10 of 13 allowed commands, and 3 of 3 clock-allowed combinations, have zero positive coverage.**
+
+I checked the constants at `:1015-1030` individually against the kernel UAPI (`FUTEX_WAIT`=0 … `FUTEX_LOCK_PI2`=13, `FUTEX_PRIVATE_FLAG`=128, `FUTEX_CLOCK_REALTIME`=256) and against `do_futex`'s switch — they are all correct, and `FUTEX_FD`(2) is correctly absent. **There is no live defect here.** But the code-review skill requires "a qualifying case to pass and a violating case to be refused when the change introduces or alters a guard," and the stated intent ("preserve early `ENOSYS` for *unsupported* futex commands") asserts exactly the untested half. A single-character slip in `FUTEX_WAKE_BITSET`, `FUTEX_WAKE_OP`, `FUTEX_REQUEUE`, `FUTEX_TRYLOCK_PI` or `FUTEX_CMP_REQUEUE_PI` would silently convert a working operation into `ENOSYS` with a fully green 788/788 suite. Those operations are load-bearing for glibc condvars and for the 62,456-futex QEMU boot the roadmap measures.
+
+Note that four of the local constants are cross-checked only incidentally: the malformed-timespec loop uses `libc::FUTEX_LOCK_PI2`, `libc::FUTEX_WAIT_REQUEUE_PI`, `libc::FUTEX_LOCK_PI`, `libc::FUTEX_WAIT_BITSET`, `libc::FUTEX_WAIT`, so a mismatch in *those* five would change the errno and fail. `FUTEX_WAKE`(1), `FUTEX_REQUEUE`(3), `FUTEX_WAKE_OP`(5), `FUTEX_TRYLOCK_PI`(8), `FUTEX_WAKE_BITSET`(10), `FUTEX_CMP_REQUEUE_PI`(12) are cross-checked by nothing.
+
+**Required correction:** add a table-driven test over all thirteen allowed commands asserting `futex(...) != negative_errno(libc::ENOSYS)` (an aligned, unmapped word gives a deterministic non-`ENOSYS` errno without needing a real futex operation), and over the three clock-allowed commands with `FUTEX_CLOCK_REALTIME` set. Where `libc` exports the constant, use `libc::FUTEX_*` so the local constants are cross-checked.
+
+### F2 — MINOR: the `unsafe` block's SAFETY comment no longer describes the pointers it passes
+
+`candidate/reverie-kvm/src/executor.rs:1134-1136` still reads:
+
+> `// SAFETY: translated pointers remain within the shared guest mapping for the duration of the syscall.`
+
+After this change `fourth` (`:1106-1108`) is **not** in the guest mapping — it is `std::ptr::from_ref(&timeout)`, a pointer into the calling host thread's stack frame. The comment is now false for the very pointer this patch introduces, on the one `unsafe` block in the function. Relatedly, `:1153` was narrowed from `drop((uaddr, timeout_operand, second_operand))` to `drop((uaddr, second_operand))`, so `timeout` is no longer named by the explicit end-of-life idiom the other two operands use.
+
+I checked the lifetime question and the code **is sound**: `timeout` is bound in the function's outermost block, `std::ptr::from_ref` forces a materialised stack slot, and Rust emits `StorageDead` at end of block, i.e. after the `libc::syscall`. It is also moot in practice, because `sys_futex` copies `utime` at syscall entry (`get_timespec64`) and never re-reads it while sleeping — which is precisely why the copy is safe across a blocking wait. But the safety argument is now carried entirely implicitly, and the one comment that used to carry it is wrong.
+
+**Required correction:** update the SAFETY comment to state that `fourth` is host-owned stack storage live for the whole call, and either re-add `timeout` to the `drop(...)` tuple at `:1153` or state in the comment why it is unnecessary.
+
+### F3 — MINOR: the stated benefit ("allows the unchanged-mapping fence to close") is not what changed
+
+The intent says the copy allows "the unchanged-mapping entry fence to close while the wait remains in the host kernel." The fence already closed at base: `base/reverie-kvm/src/executor/entry_host_wait_tests.rs:145-153` performs `try_close()...now_or_never()` and asserts `gate.test_state().closed` with **two** retained operands. `EntryGate::retain_operand`'s own contract (`candidate/reverie-kvm/src/entry.rs:703-706`) says "Closing still waits only for short copies, so ordinary unchanged fences do not wait on a blocking kernel operation."
+
+The measurable delta is 2→1 retained operands and 4→3 mapping owners. And because mapping *publication* is refused whenever `retained_operands != 0` (`candidate/reverie-kvm/src/entry.rs:1309-1318`), the surviving futex-word operand still blocks publication for the entire wait, exactly as before. So the retention change buys a smaller pinned set, not a newly reachable state transition.
+
+This is not a defect — the change is a strict reduction — but it matters because this is the load-bearing justification offered for the copy. The two genuine justifications, which I did verify, are (a) Linux fault-order fidelity (F4/F5) and (b) elimination of the guest-memory TOCTOU that the head's *own* new validation would otherwise introduce: at base nothing read the timespec but the kernel, so there was one read; at head the adapter validates a value and then guarantees the kernel sees that exact value rather than a racing re-read of guest memory.
+
+**Required correction:** restate the justification in the PR description/commit body. No code change.
+
+### F4 — MINOR: `futex_timeout_import_and_non_pi_word_alignment_follow_linux_fault_order` does not test what its `WAIT_REQUEUE_PI` comment claims
+
+`candidate/reverie-kvm/src/executor/entry_host_wait_tests.rs:311-327` is commented "WAIT_REQUEUE_PI resolves its PI destination before the primary wait word," and asserts `EFAULT` for `uaddr1 = MAPPED_WORD+1` (mapped, misaligned), `uaddr2 = WORD` (unmapped, aligned).
+
+The adapter resolves `args[0]` first (`:1101`) then `args[4]` (`:1122`); Linux `futex_wait_requeue_pi` resolves `uaddr2` first, then `uaddr` via `futex_wait_setup`. Both orders yield `EFAULT` for this input, so the assertion passes **for the wrong reason** and is insensitive to the ordering it names. The surrounding comment does honestly disclose that the PI commands "intentionally retain their existing adapter translation order," so this is a mislabelled test, not a concealed divergence.
+
+The real residual divergence (out of the declared scope, stated here for the record): with `uaddr1` inaccessible and `uaddr2` misaligned, Linux returns `EINVAL` and the adapter returns `EFAULT`. Same class for `FUTEX_CMP_REQUEUE_PI`.
+
+**Required correction:** reword the comment to say the assertion holds under either order and that PI ordering is unverified, or delete the ordering claim.
+
+### F5 — INFORMATIONAL: pre-existing errno-precedence divergences the patch does not close (and does not worsen)
+
+Verified against the kernel, all present at base and unchanged:
+
+* `futex_wait`/`futex_wake` check `if (!bitset) return -EINVAL;` **before** `get_futex_key`. `FUTEX_WAIT_BITSET`/`FUTEX_WAKE_BITSET` with `val3 == 0` and an aligned-but-inaccessible word → Linux `EINVAL`, adapter `EFAULT`.
+* `futex_requeue` checks `nr_wake < 0 || nr_requeue < 0` before either key. Negative counts with an aligned-but-inaccessible `uaddr1` → Linux `EINVAL`, adapter `EFAULT`.
+* `futex_lock_pi` runs `refill_pi_state_cache()` (`ENOMEM`) before the key; not modelled.
+* PI `uaddr`/`uaddr2` alignment precedence is left to host-address congruence, so the result depends on host placement for the PI commands (the comment at `:1083-1087` says so explicitly).
+* `FUTEX_PRIVATE_FLAG` keys resolve on the *host* `mm` + host address. Cross-guest-process private/shared futex identity is unmodelled.
+
+No correction required for this PR; these are correctly excluded by the declared boundary.
+
+### F6 — INFORMATIONAL: missing positive control for the timeout *value* and for `ETIMEDOUT`
+
+No test asserts `ETIMEDOUT`. The copied value is nonetheless covered indirectly and non-vacuously: `queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes` (`:86-88`, tv_sec = 5) would fail if the value were zeroed or garbage, because a 0-timeout `FUTEX_WAIT` returns `ETIMEDOUT` immediately and the requeue loop at `:121-138` would exhaust its 2 s deadline. Pointer validity is directly covered twice: a bad `fourth` produces kernel `EFAULT`, and `futex_timeout_copy_accepts_unaligned_readonly_cross_page_input:384-387` asserts `EAGAIN`, which the kernel can only return after successfully copying `utime`. Also untested: a malformed timespec combined with `FUTEX_CLOCK_REALTIME` on a non-clock-allowed command (`EINVAL` must beat `ENOSYS`; the code at `:1046` / `:1056` gets this right).
+
+---
+
+## Goalpost-moving assessment
+
+All four categories stated explicitly.
+
+**Assertions weakened: NO.** Two assertion groups changed.
+
+1. `candidate/reverie-kvm/src/executor.rs:16286-16289`: `futex(&[WORD, FUTEX_CMP_REQUEUE, 0, 1, uaddr2=1, 0])` changed from `EFAULT` to `EINVAL`. I checked this against the kernel independently rather than accepting the comment: `futex_requeue` reaches `get_futex_key(uaddr2)`, whose first act is `if (unlikely((address % sizeof(u32)) != 0)) return -EINVAL;` — and `1 % 4 != 0`. **`EINVAL` is Linux's answer; the base expectation was Linux-incorrect.** The assertion remains an exact equality against one specific errno; nothing was broadened to a range, a `matches!`, or an `is_err()`. This is a correction toward fidelity, not an accommodation of the implementation.
+2. `candidate/reverie-kvm/src/executor/entry_host_wait_tests.rs:144` and `:158`: `owners()` 4 → 3. This tracks the intended one-fewer retained mapping owner (controller + waiter + word, instead of + word + timeout) and is *accompanied by two new assertions* — `retained_operands == 1` at `:146` and `:157` — that did not exist at base. Net: strictly more constrained.
+
+**Tolerance widened, exemption added, case skipped, or comparator relaxed: NO.** No test deleted, no `#[ignore]`, no `cfg` gating, no `#[allow(...)]` added, no tolerance or timing slack introduced. The full-library run reports `0 ignored` and `0 filtered out` (`qualification/v9/full-lib.out:792`), and the base run reported the same denominator (788), so no case left the suite. The suite grew by 2 tests.
+
+The strongest positive evidence against goalpost moving is in the retained iteration history: `qualification/v7/clippy.err:89-109` shows clippy failing with `-D warnings` on two `manual_is_multiple_of` errors, and the lint output literally offered the escape hatch — "to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`". The author instead applied the suggested rewrite (`!args[0].is_multiple_of(...)` at `:1097` and `:1118`). That is the exact temptation this rule exists for, declined and evidenced.
+
+**Failure renamed or relabelled as a pass: NO.** The one real failure — `positioned_vectored_io_handles_pipes_partial_writes_and_sigpipe`, `left: 4 / right: -32`, at `qualification/v6/full-lib.out:796-805` — is retained in full with its panic message, is unrelated to futex (a pwritev/pipe SIGPIPE case), was not reclassified, was not quarantined, and the test was not modified by this diff. The base comment "Invalid timeout and second pointers still refuse at their old stage" was replaced with an accurate two-line description, not a euphemism.
+
+**Check deleted instead of satisfied: NO.** One check moved and one was removed from the retained set: `guest_host_address(memory, args[3], size_of::<timespec>())` no longer runs. It was *replaced* by a stricter equivalent — `read_guest_struct` at `:1042` performs the same `translate` + `user_accessible_prefix` accessibility check via `read_admitted` (`candidate/reverie-kvm/src/memory.rs:1655-1671`) and then adds the `timespec64_valid` check at `:1046` that base did not perform at all. Coverage increased. Separately, the `drop` tuple at `:1153` lost `timeout_operand`, which is F2 (a documentation regression), not a removed check.
+
+**Verdict on this section: no lowering of the bar is present anywhere in this diff.**
+
+---
+
+## Conclusion: determinism guarantee
+
+**Supported, within a correctly narrow scope, with one clarification the PR narrative gets wrong (F3).**
+
+The host-timed inputs on this path and where each stops influencing guest-visible order:
+
+* *Guest memory content of the timespec* — at base, read once by the host kernel from a live guest mapping; at head, read once by the adapter under a copy admission at `:1042` and then frozen in host storage. The value the kernel sees is provably the value the adapter validated. A racing guest writer can no longer make the validated value and the acted-upon value differ. **Improvement.**
+* *Mapping publication racing a sleeping wait* — unchanged. Publication is refused while any operand is retained (`entry.rs:1309`), and the futex word is retained for the whole call. The timeout no longer participates, so no stale guest mapping can be reached through it.
+* *Stack-pointer lifetime* — sound (F2), and moot because `sys_futex` copies `utime` at entry.
+* *Cross-thread alias* — none: the copy is a stack local of the calling thread; `fourth` for non-timeout commands remains the integer `args[3]`.
+* *Errno precedence as a function of host placement* — **strictly reduced.** For the seven covered non-PI key-first commands, a misaligned word now yields `EINVAL` from a guest-address computation at `:1097`/`:1118` rather than depending on whether the host mapping happened to preserve the guest's low address bits. For the PI commands it still does; disclosed.
+* *Host real time for the timeout itself* — **unchanged and still host-timed.** The guest timespec is forwarded verbatim; there is no virtual-time conversion. This is correctly bounded by `candidate/reverie-kvm/src/runtime.rs:223-239`: under `ThreadOwnership::Tool` `futex` routes to Detcore's scheduler and never reaches this adapter, so the host-real-time path applies only to `ThreadOwnership::Host` threads that are already outside the deterministic envelope. This patch neither closes nor widens that hole.
+
+No new lost, duplicated, or reordered event; no new blocking class (both base and head take a copy admission before the host call); no leak on the new early-return paths — `uaddr`'s `RetainedOperand::drop` runs normally on the `uaddr2`-alignment `return` at `:1120`, and the `ENOSYS`/`EINVAL` paths return before any operand is retained. Liveness unaffected: every new path is a terminating early return.
+
+Per the roadmap's own definition, this is one prerequisite and no more. It does not establish KVM determinism, backend parity, or record/replay, and I do not credit it with any of those.
+
+## Conclusion: Linux and POSIX semantics
+
+**Supported for everything the tests reach; unverified for the majority of the newly gated command set (F1).**
+
+Checked against the kernel rather than against the comments:
+
+* **Timeout-bearing set** at `:1037-1041` is `{WAIT, LOCK_PI, WAIT_BITSET, WAIT_REQUEUE_PI, LOCK_PI2}` — byte-for-byte `futex_cmd_has_timeout()`. `CMP_REQUEUE`, `CMP_REQUEUE_PI`, `REQUEUE` and `WAKE_OP` correctly keep argument four as the integer `val2`, forwarded at `:1108`.
+* **Validation** at `:1046` (`tv_sec < 0 || tv_nsec ∉ [0, 1e9)`) is `timespec64_valid()`, including the unsigned-cast treatment of negative `tv_nsec`.
+* **Import order** — timeout `EFAULT`/`EINVAL` precede the clock `ENOSYS` (`:1056`) which precedes the command `ENOSYS` (`:1064`) which precedes word translation (`:1101`). That is `sys_futex` → `do_futex` → `get_futex_key` exactly. Tested at `entry_host_wait_tests.rs:244-297`.
+* **Alignment before accessibility** for the covered commands matches `get_futex_key`'s `address % sizeof(u32)` check preceding `access_ok`. Tested at `:330-351` for both words.
+* **`FUTEX_UNLOCK_PI` correctly excluded** from the precheck, because `futex_unlock_pi` does `get_user(uval, uaddr)` before `get_futex_key` — so a misaligned inaccessible address must fault. Tested at `:236-243`. This distinction is genuinely careful and I could not fault it.
+* **Copy semantics** — `read_guest_struct` is a bytewise 16-byte read with no alignment requirement, matching `get_timespec64`'s `copy_from_user`. The unaligned, cross-page, read-only-page case is directly tested at `entry_host_wait_tests.rs:355-395`, including the partial-range fault when only the second page is revoked. The adapter's all-or-nothing prefix check versus Linux's copy-then-fail is not guest-observable for a read.
+* **Null timeout** → `fourth = 0` → infinite wait. Correct.
+* `FUTEX_WAIT_BITSET|FUTEX_CLOCK_REALTIME` is forwarded with the flag intact, so the host applies absolute-realtime semantics. This adapter does **not** carry the relative-vs-absolute conversion bug the roadmap records for detcore — but that is my reading of the code, not a tested property (F1).
+
+The gaps are F1, F4, and the pre-existing F5 divergences.
+
+## Verification actually inspected, with limitations
+
+Artifacts I opened and what they show. `qualification/v8` and `v9` carry `source.patch` sha256 `3dac00de…` (14,400 bytes); `BASE-TO-HEAD.patch` is 14,528 bytes, and the 128-byte delta is exactly the two `index` lines' abbreviated-vs-full hashes (2 × 2 × 32). **v8/v9 are the exact head.** `v6`/`v7` carry `c3d4263d…` (12,682 bytes) — a superseded revision.
+
+| Claim | Artifact | Verified |
+| --- | --- | --- |
+| 5 focused futex tests pass, 8.11 s | `v8/focused.out:2-9`, `v8/focused.err:4` | **Yes.** All 5 named and `ok`; 783 filtered out. Caveat: `finished in 0.00s` — 8.07 s of the 8.11 s is compilation. |
+| `cargo clippy -p reverie-kvm --lib --tests -- -D warnings` passes, 11.61 s | `v9/clippy.status` = `0`, `v9/clippy.out` empty, `v9/clippy.err:3` | **Partly.** Pass and timing confirmed; the command line itself is not recorded anywhere in the packet, so the flags are unverifiable. |
+| Full lib 788/788, 0 failed, 0 ignored, 11.33 s | `v9/full-lib.out:792`, `v9/full-lib.err:3` | **Yes.** `788 passed; 0 failed; 0 ignored; 0 filtered out; finished in 11.19s`. |
+| Superseded run had one unrelated pipe failure | `v6/full-lib.out:475, 796-805` | **Yes.** `positioned_vectored_io_handles_pipes_partial_writes_and_sigpipe`, `left: 4 / right: -32` (EPIPE). Unrelated to futex. |
+| Its exact isolated retry passed | `v7/unrelated-retry.out:3-5` | **Yes.** 1 passed, 787 filtered. |
+| Failure/retries retained, not hidden | whole `v6`/`v7` tree | **Yes**, including the clippy failure at `v7/clippy.err` and the `v8/clippy.refused` disk-gate refusal ("below 408 GiB build-start gate"). |
+| Formatting and diff checks passed | — | **Not verifiable.** No `fmt.*` or `diff.*` artifact exists in the packet or in `INPUTS.json`. |
+| No GitHub CI signals | — | Accepted as stated; read-only session, no means to check. |
+
+**What this proves and does not prove.** One green 788-test run at the exact head, plus a targeted 5-test run and a clean clippy, is adequate evidence that the change compiles, lints, and does not regress the existing suite. It is *not* evidence of stability: the suite demonstrably contains at least one host-timing-flaky test (the pipe/SIGPIPE case), and a single pass of a suite known to flake bounds nothing. It is also not determinism evidence in the sense the deterministic-scheduling-review skill means — there is no repeated `--strict --verify` run, no backend-parity comparison, and no end-to-end guest program here at all. Every test is a unit test that calls `futex()` directly. That is appropriate for a Reverie-layer prerequisite, but it means the guest-visible claims rest on unit assertions plus my reading of the kernel, not on an executed guest.
+
+**Packet limitations:**
+* `QUALIFICATION.md` is referenced by the prompt but **is not present** in the packet and is not listed in `INPUTS.json`. I assessed the raw artifacts instead.
+* No proposal or PR-description document is included; the "intended behavior and boundary" text in `prompt.txt` is the only statement of intent.
+* `primary/paper.txt` appears to end mid-list in §A.7 (last line is the `--working-dir` bullet); there is no §A.8. The abstract through §9, references, and §A.1–A.6 are complete, and the figures/tables are text-extraction-mangled but legible. This did not limit the review.
+* `primary/scheduler.rs` (8,437 lines) was read in full, including every test.
+
+## Residual risks
+
+1. Ten of thirteen allowed futex commands are locally gated with no positive test (F1). Highest-consequence risk in the diff.
+2. PI command ordering and PI TID identity remain host-dependent and unmodelled; `FUTEX_CMP_REQUEUE_PI`/`FUTEX_WAIT_REQUEUE_PI` fault precedence can differ from Linux (F4, F5).
+3. Private/shared futex key identity across guest processes is unmodelled.
+4. The futex timeout remains host real time on the `ThreadOwnership::Host` path; nothing here advances virtual-time fidelity.
+5. `host_operand`'s read probe cannot distinguish read from write access, so `FUTEX_WAKE_OP`/requeue-PI second words that Linux resolves with `FUTEX_WRITE` are admitted on read-only memory. Pre-existing.
+6. The adapter's command allow-set is now a hardcoded mirror of `do_futex`'s switch and will silently drift if the kernel adds an op. A comment naming the kernel file it mirrors would help.
+7. Hermit pinning and exact-main real-KVM CLI checks remain outstanding, as the boundary states.
+
+---
+
+## Verdict
+
+**CHANGES REQUESTED**, bound to `8865eb263cb44530364cb90eda6cdb40826aba7d`.
+
+To be unambiguous about what this verdict is and is not: I found **no correctness defect** in the implementation, **no goalpost moving in any of the four categories**, and the Linux fault-and-validation ordering the patch claims is, where I could check it against the kernel, correct — including the non-obvious `FUTEX_UNLOCK_PI` exclusion. The single blocking item is **F1**: this diff introduces two new deny-by-default gates over the entire `SYS_futex` ABI and tests only the refusing side, which is precisely the one-sided-guard case both context skills name. The fix is mechanical — one table-driven test over the thirteen allowed commands and the three clock-allowed combinations, preferring `libc::FUTEX_*` constants so the local constants are cross-checked — and I would expect to approve on that plus the F2 SAFETY-comment correction and the F4 comment reword. F3 is a PR-narrative correction with no code change.

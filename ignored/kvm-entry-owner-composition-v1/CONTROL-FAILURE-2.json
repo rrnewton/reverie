@@ -1,0 +1,10 @@
+{
+  "raw_status": 101,
+  "owner_tests_passed": 7,
+  "owner_tests_failed": 1,
+  "cause": "Wake counter sampled after controller completion poll; Shared::poll re-registers and wakes that observer on storing ready result.",
+  "correction": "Snapshot exact one disconnect wake immediately after releasing notification, before permitting controller final poll; retain zero wakes while gate locked and one final owner checks. Confirm final total two separately.",
+  "dependency_path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/future/shared.rs",
+  "dependency_sha256": "bb281d9e3868a3e1f02dd61a60c357721fb804a01543606af625000c789fd8d8",
+  "production_source_changed": false
+}

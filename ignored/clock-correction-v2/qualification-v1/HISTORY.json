@@ -1,0 +1,76 @@
+{
+  "previous_failed_elf": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/retained-binaries/ptrace.elf",
+    "bytes": 169738536,
+    "mode": 365,
+    "sha256": "afa612aa7bf1ad22864ea37ac84591c51e276f5ca46ac76faa738abb3b93eb91"
+  },
+  "prior_clock_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/SOURCE.patch",
+    "bytes": 30883,
+    "mode": 420,
+    "sha256": "f99e50b83981f3c42363bb7fc4968aa05939629741fd728b2abb4f0e6bf7b3ee"
+  },
+  "prior_clock_source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/source/reverie-ptrace/src/clock_origin_tests.rs",
+    "bytes": 13201,
+    "mode": 420,
+    "sha256": "9302e59ad14822aed2d614d214b56ea138cc18a711fae47d7835bbc6c5096f29"
+  },
+  "observation_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/clock-boundary-observation-v2/final-v1/TARGET.json",
+    "bytes": 3151,
+    "mode": 420,
+    "sha256": "be2f527f8ca04a36a95c7b83419ddf4d521ff31f71fce1e2eaa093cce800e7db"
+  },
+  "observation_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/clock-boundary-observation-v2/final-v1/REPORT.md",
+    "bytes": 10780,
+    "mode": 420,
+    "sha256": "802a94c49c62b033a032ecf7f2019ffb7e8f6668ce2c04250cda1b0af44814a7"
+  },
+  "observation_proposal": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/clock-boundary-observation-v2/final-v1/PROPOSAL.md",
+    "bytes": 15673,
+    "mode": 420,
+    "sha256": "dcfe86e862f6aeae9fe18de4140cef9c15713865acf3b93155703e0b7ae38eab"
+  },
+  "observation_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/clock-boundary-observation-v2/final-v1/RESULTS.json",
+    "bytes": 8095,
+    "mode": 420,
+    "sha256": "ee3ccc40b65f1a39bf9e5f49c5e10851f03afd1b9f2567e0ae1482b5b575a2ba"
+  },
+  "observation_readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/clock-boundary-observation-v2/final-v1/READBACK.json",
+    "bytes": 824,
+    "mode": 420,
+    "sha256": "ccf381682bdaeb17fa4e196d37afaf21345b76ad2639c9747d20d3580260bf13"
+  },
+  "original_failed_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/final-v1/RESULTS.json",
+    "bytes": 39102,
+    "mode": 420,
+    "sha256": "364d9a2a65b38982fa9e55ccb74d7cacdc76db3664ed19093c1af9d6c9f6b384"
+  },
+  "baseline_failed_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/final-v1/RESULTS.json",
+    "bytes": 14129,
+    "mode": 420,
+    "sha256": "a90b31ae922e5382eb86b9aabc6d0e3a6e00ac74cac5e0021b02a6bc1062b388"
+  },
+  "old_metadata_terminal_proof": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/metadata-terminal-diagnosis-v1/final-v1/READBACK.json",
+    "bytes": 3624,
+    "mode": 420,
+    "sha256": "8b74e133cb14b1e93e94aeddd42d718e3a5d44cf85e6fac868a7996e214f3756"
+  },
+  "first_debugger_refusal": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/clock-boundary-observation-v1/final-v1/RESULTS.json",
+    "bytes": 5699,
+    "mode": 420,
+    "sha256": "00d179b23c972f2eff0ee47e2916265f57f1bf8a1f7a24fd3b36582c450c8e5a"
+  },
+  "old_unresolved_lease_not_accessed": true,
+  "new_source_and_target_independent": true
+}

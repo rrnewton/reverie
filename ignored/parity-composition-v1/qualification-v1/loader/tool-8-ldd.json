@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "/usr/bin/ldd",
+    "/usr/bin/gcc"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source",
+  "wall_limit_seconds": 5,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 0.05133777693845332,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/loader/tool-8-ldd.stdout",
+    "bytes": 192,
+    "mode": 420,
+    "sha256": "487fd77c40e54b09a131824d4030684eed861dce42babafb244e39efcadae802"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/loader/tool-8-ldd.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "url": "https://github.com/rrnewton/reverie/pull/587",
+  "head": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "state": "OPEN",
+  "draft": true,
+  "body_exact_bytes": 4323,
+  "body_sha256": "30afd7bdab0eb7c7dc154fbcbea226e8a5fe1d0f9a7b8db607d0ea25db173723",
+  "body_same_including_trailing_newline": true,
+  "first_assertion_required_incorrectly_stripped_newline": true
+}

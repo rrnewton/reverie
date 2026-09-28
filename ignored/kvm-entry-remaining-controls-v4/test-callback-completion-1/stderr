@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-callback-completion-1-4110535.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 8ms
+             CPU time consumed: 7ms
+                   Memory peak: 2.5M (swap: 0B)

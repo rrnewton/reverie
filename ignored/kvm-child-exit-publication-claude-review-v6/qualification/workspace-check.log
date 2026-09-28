@@ -1,0 +1,52 @@
+[evidence begin]
+command cargo check --workspace --all-targets 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+expected_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+pre_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+pre_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+disk_before_bytes 442680033280
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:39:58Z
+
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+warning: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+warning: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: SaBRe source build completed in 1.33s (jobs=16)
+warning: reverie-e9patch@0.2.0: e9patch source build completed in 3.89s (jobs=16)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache MISS key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1789907169
+warning: reverie-dbt@0.2.0: DynamoRIO source build completed in 12.52s (jobs=16)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache PUBLISHED key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed install=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+    Checking reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie)
+    Checking reverie-rpc-transport v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-rpc-transport)
+    Checking reverie-preload v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-preload)
+    Checking reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-ptrace)
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Checking reverie-util v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-util)
+    Checking reverie-sabre-stats v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre-stats)
+    Checking reverie-dbt v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-dbt)
+    Checking reverie-sabre v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre)
+    Checking riptrace-tool v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/riptrace/tool)
+    Checking reverie-liteinst v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-liteinst)
+    Checking reverie-e9patch v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-e9patch)
+    Checking reverie-sabre-strace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre-strace)
+    Checking reverie-examples v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-examples)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.59s
+
+[evidence end]
+exit_code 0
+post_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+post_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+disk_after_bytes 442518392832
+completed_at 2026-09-20T15:40:02Z

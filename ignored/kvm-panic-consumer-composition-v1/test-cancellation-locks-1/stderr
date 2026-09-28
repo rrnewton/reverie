@@ -1,0 +1,6 @@
+Running as unit: kvm-panic-consumer-test-cancellation-locks-1-3960508.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 5ms
+             CPU time consumed: 5ms
+                   Memory peak: 1.3M (swap: 0B)

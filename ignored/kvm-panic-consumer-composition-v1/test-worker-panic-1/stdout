@@ -1,0 +1,8 @@
+
+running 3 tests
+test vm::worker_panic_tests::caught_callback_drop_panic_drains_pending_tool_hook_before_worker_retirement ... ok
+test vm::worker_panic_tests::discard_cancelled_worker_preserves_reported_cause_and_all_panic_payloads ... ok
+test vm::worker_panic_tests::joined_worker_retains_cleanup_poll_and_drop_panics_and_later_typed_errors ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 607 filtered out; finished in 0.21s
+

@@ -1,0 +1,1 @@
+Initial snapshot refused before any launch because copied support.py still pointed at the v2 output directory. Expected plan97fea15c..., foundv2d87a8bc1.... No snapshot or qualification command ran. Corrected only output directory, preserved v2 packet.

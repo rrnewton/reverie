@@ -1,0 +1,2433 @@
+diff --git a/reverie-kvm/src/clock.rs b/reverie-kvm/src/clock.rs
+index ae0df8df..3efb6d62 100644
+--- a/reverie-kvm/src/clock.rs
++++ b/reverie-kvm/src/clock.rs
+@@ -28,6 +28,10 @@ use reverie::pmu::PmuProfile;
+ 
+ use crate::Error;
+ use crate::Result;
++use crate::entry::Participant;
++use crate::entry::RunEntry;
++use crate::failure::FailureContext;
++use crate::memory::GuestMemory;
+ 
+ fn failure(message: impl Into<String>) -> Error {
+     Error::GuestClock(message.into())
+@@ -41,6 +45,9 @@ fn host_failure(operation: &str) -> Error {
+ /// access does not: VcpuFd::run can only be called inside this module.
+ pub(crate) struct CountedVcpu {
+     fd: VcpuFd,
++    participant: Participant,
++    // Keep the Mapping alive independently of the backend field's drop order.
++    memory: GuestMemory,
+     clock: GuestClock,
+     image_is_elf: bool,
+     initial_elf_ran: bool,
+@@ -55,13 +62,24 @@ impl Deref for CountedVcpu {
+ }
+ 
+ impl CountedVcpu {
+-    pub(crate) fn new(fd: VcpuFd) -> Self {
+-        Self {
++    pub(crate) fn new(fd: VcpuFd, memory: GuestMemory) -> Result<Self> {
++        let participant = memory
++            .entry_gate()
++            .register()
++            .map_err(|failure| failure.error())?;
++        Ok(Self {
+             fd,
++            participant,
++            memory,
+             clock: GuestClock::default(),
+             image_is_elf: false,
+             initial_elf_ran: false,
+-        }
++        })
++    }
++
++    pub(crate) fn set_failure_context(&mut self, origin: Option<FailureContext>) {
++        self.participant.set_origin(origin.clone());
++        self.memory.set_failure_context(origin);
+     }
+ 
+     /// Only initial installation creates a new thread lifetime. Exec retains
+@@ -109,18 +127,53 @@ impl CountedVcpu {
+         self.clock.read()
+     }
+ 
+-    pub(crate) fn run(&mut self) -> Result<VcpuExit<'_>> {
++    /// None means admission was closed: no clock interval or KVM_RUN occurred.
++    /// The caller retains its prepared continuation and waits outside this
++    /// method, with no signal-mask, CPU-affinity or borrowed-exit guard alive.
++    pub(crate) fn run(&mut self) -> Result<Option<VcpuExit<'_>>> {
++        // Declare entry first: unwinding must retire the clock and restore CPU
++        // affinity before entry withdraws its target and restores the mask.
++        let Some(entry) = self
++            .participant
++            .prepare(&self.fd)
++            .map_err(|failure| failure.error())?
++        else {
++            return Ok(None);
++        };
+         if !self.clock.tracking {
+             self.clock.ran_untracked = true;
+             self.initial_elf_ran |= self.image_is_elf;
+-            return self.fd.run().map_err(Error::Kvm);
++            return finish_entry(self.fd.run().map_err(Error::Kvm), entry).map(Some);
+         }
+-        let interval = self.clock.begin()?;
++        let interval = match self.clock.begin() {
++            Ok(interval) => interval,
++            Err(error) => return finish_entry(Err(error), entry),
++        };
+         self.initial_elf_ran |= self.image_is_elf;
+         let result = self.fd.run();
+         // VcpuExit borrows only fd. Always finish the separate clock interval,
+         // including EINTR and other KVM errors, before exposing that exit.
+-        finish_run(result, interval)
++        finish_entry(finish_run(result, interval), entry).map(Some)
++    }
++}
++
++fn finish_entry<T>(result: Result<T>, entry: RunEntry<'_>) -> Result<T> {
++    match result {
++        // An actual ioctl error, including EINTR, retains the caller's existing
++        // policy when clock and entry cleanup succeeded. Do not poison a whole
++        // address space merely because KVM_RUN was interrupted.
++        Err(Error::Kvm(error)) => match entry.finish(Ok(())) {
++            Ok(()) => Err(Error::Kvm(error)),
++            Err(failure) => Err(failure.error().with_cleanup(vec![Error::Kvm(error)])),
++        },
++        Err(error) => match entry.finish(Err(error)) {
++            Err(failure) => Err(failure.error()),
++            Ok(()) => unreachable!("failed clock setup or cleanup admitted success"),
++        },
++        Ok(exit) => {
++            entry.finish(Ok(())).map_err(|failure| failure.error())?;
++            Ok(exit)
++        }
+     }
+ }
+ 
+@@ -559,6 +612,49 @@ mod tests {
+ 
+     use super::*;
+ 
++    #[test]
++    fn counted_vcpu_closed_admission_and_clock_failure_preserve_state() {
++        let original_affinity = affinity().unwrap();
++        let mut backend = crate::KvmBackend::new(0x10000).expect("this control requires /dev/kvm");
++        backend.install_real_mode_program(0, &[0xf4]).unwrap();
++        backend.vcpu.track_clock().unwrap();
++        let original_registers = backend.vcpu.get_regs().unwrap();
++        let gate = backend.memory.entry_gate();
++        let closed =
++            futures::executor::block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
++        assert!(backend.vcpu.run().unwrap().is_none());
++        assert_eq!(backend.vcpu.get_regs().unwrap(), original_registers);
++        assert_eq!(backend.vcpu.read_clock().unwrap(), 0);
++        assert!(!backend.vcpu.clock.ran_untracked);
++        assert!(same_affinity(&affinity().unwrap(), &original_affinity));
++        drop(closed);
++        assert!(matches!(backend.vcpu.run().unwrap(), Some(VcpuExit::Hlt)));
++        assert_eq!(backend.vcpu.get_regs().unwrap().rip, 1);
++        assert_eq!(backend.vcpu.read_clock().unwrap(), 0);
++        assert!(same_affinity(&affinity().unwrap(), &original_affinity));
++
++        // A refused admission must not even begin the clock. After reopening,
++        // the exact clock error becomes the gate cause, not an abandonment
++        // error produced by dropping an unacknowledged setup guard.
++        let closed =
++            futures::executor::block_on(gate.try_close().unwrap().unwrap().finish()).unwrap();
++        backend.vcpu.clock.poison("counted entry setup control");
++        let before = backend.vcpu.get_regs().unwrap();
++        assert!(backend.vcpu.run().unwrap().is_none());
++        assert!(gate.pending_failure().is_none());
++        drop(closed);
++        let error = backend.vcpu.run().unwrap_err();
++        assert!(
++            matches!(error.primary(), Error::GuestClock(message) if message.contains("counted entry setup control"))
++        );
++        assert_eq!(backend.vcpu.get_regs().unwrap(), before);
++        assert!(matches!(
++            gate.pending_failure().unwrap().error(),
++            Error::SharedFailure(_)
++        ));
++        assert!(same_affinity(&affinity().unwrap(), &original_affinity));
++    }
++
+     fn counter_bytes(value: CounterRead) -> Vec<u8> {
+         [value.value, value.enabled, value.running]
+             .into_iter()
+diff --git a/reverie-kvm/src/cpuid_runtime_tests.rs b/reverie-kvm/src/cpuid_runtime_tests.rs
+index 94ad7a4e..7faf3dd4 100644
+--- a/reverie-kvm/src/cpuid_runtime_tests.rs
++++ b/reverie-kvm/src/cpuid_runtime_tests.rs
+@@ -29,7 +29,14 @@ mod cpuid_runtime_controls {
+                 )
+                 .unwrap();
+             backend.set_cpuid_interception(true).unwrap();
+-            assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
++            assert!(matches!(
++                backend
++                    .vcpu
++                    .run()
++                    .unwrap()
++                    .expect("test entry admission was unexpectedly closed"),
++                VcpuExit::Hlt
++            ));
+             let fault = backend.static_elf_exception().unwrap().unwrap();
+             assert_eq!(fault.instruction_pointer, BOUNDARY - 2);
+             assert_eq!(fault.vector, if crosses_page { 14 } else { 13 });
+diff --git a/reverie-kvm/src/error.rs b/reverie-kvm/src/error.rs
+index 2ae27036..60d20df6 100644
+--- a/reverie-kvm/src/error.rs
++++ b/reverie-kvm/src/error.rs
+@@ -13,6 +13,15 @@ use thiserror::Error;
+ /// Errors produced by the KVM backend prototype.
+ #[derive(Debug, Error)]
+ pub enum Error {
++    /// Admission or retirement of guest execution could not be completed.
++    #[error("KVM entry control failed during {operation}: {source}")]
++    EntryControl {
++        /// Host operation whose failure made admission terminal.
++        operation: &'static str,
++        /// Original host error, including its errno where one exists.
++        #[source]
++        source: std::io::Error,
++    },
+     /// A process-pending operation committed before readiness failed.
+     #[error("process signal publication committed {receipt:?}, then failed: {errno}")]
+     ProcessSignalPublication {
+diff --git a/reverie-kvm/src/lib.rs b/reverie-kvm/src/lib.rs
+index 0ded189a..3bb67b8e 100644
+--- a/reverie-kvm/src/lib.rs
++++ b/reverie-kvm/src/lib.rs
+@@ -20,6 +20,7 @@ mod clock;
+ mod cpuid;
+ mod cpuid_instruction;
+ mod elf;
++mod entry;
+ mod error;
+ mod executor;
+ mod failure;
+diff --git a/reverie-kvm/src/memory.rs b/reverie-kvm/src/memory.rs
+index dd426e5e..8935b94d 100644
+--- a/reverie-kvm/src/memory.rs
++++ b/reverie-kvm/src/memory.rs
+@@ -21,13 +21,27 @@ use reverie::syscalls::MemoryAccess;
+ 
+ use crate::Error;
+ use crate::Result;
++use crate::entry::CopyAccess;
++use crate::entry::EntryGate;
++use crate::failure::FailureContext;
+ 
+ const PAGE_SIZE: usize = 4096;
+ 
+ /// A contiguous, page-aligned guest-physical memory region.
+-#[derive(Clone, Debug)]
++#[derive(Clone)]
+ pub struct GuestMemory {
+     mapping: Arc<Mapping>,
++    failure_context: Option<FailureContext>,
++    #[cfg(test)]
++    after_vector_copy: Option<Arc<dyn Fn(usize) + Send + Sync>>,
++}
++
++impl std::fmt::Debug for GuestMemory {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("GuestMemory")
++            .field("mapping", &self.mapping)
++            .finish_non_exhaustive()
++    }
+ }
+ 
+ #[derive(Debug)]
+@@ -103,6 +117,7 @@ struct Mapping {
+     guest_base: u64,
+     address_space: Mutex<AddressSpaceState>,
+     allocation: Mutex<()>,
++    entry_gate: Arc<EntryGate>,
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -312,10 +327,56 @@ impl GuestMemory {
+                 guest_base,
+                 address_space: Mutex::new(AddressSpaceState::new(guest_base, size)),
+                 allocation: Mutex::new(()),
++                entry_gate: EntryGate::new(),
+             }),
++            failure_context: None,
++            #[cfg(test)]
++            after_vector_copy: None,
+         })
+     }
+ 
++    pub(crate) fn entry_gate(&self) -> Arc<EntryGate> {
++        self.mapping.entry_gate.clone()
++    }
++
++    /// Attribution belongs to this handle, not to every alias of the Mapping.
++    pub(crate) fn set_failure_context(&mut self, context: Option<FailureContext>) {
++        self.failure_context = context;
++    }
++
++    fn copy_access(&self) -> Result<CopyAccess> {
++        self.mapping
++            .entry_gate
++            .copy_blocking(self.failure_context.clone())
++            .map_err(|failure| failure.error())
++    }
++
++    fn check_copy_failure(&self) -> Result<()> {
++        match self.mapping.entry_gate.pending_failure() {
++            Some(failure) => Err(failure.error()),
++            None => Ok(()),
++        }
++    }
++
++    fn with_copy<T>(&self, operation: impl FnOnce(&CopyAccess) -> Result<T>) -> Result<T> {
++        // Admission precedes translation, permission and backing locks. An
++        // enclosing allocation transaction (snapshot/mmap) may remain owned;
++        // no admitted helper acquires allocation, and close never needs it.
++        let copy = self.copy_access()?;
++        let result = operation(&copy);
++        // An admitted operation may have effects before poison. Keep them,
++        // but do not turn an observed backend failure into ordinary success.
++        self.check_copy_failure()?;
++        result
++    }
++
++    #[cfg(test)]
++    fn after_vector_copy(&self, total: usize) {
++        if let Some(hook) = &self.after_vector_copy {
++            hook(total);
++        }
++    }
++
+     pub(crate) fn snapshot(&self) -> Result<Self> {
+         self.snapshot_with_sparse_copy(copy_sparse_file)
+     }
+@@ -326,6 +387,7 @@ impl GuestMemory {
+     ) -> Result<Self> {
+         const COPY_CHUNK: usize = 1024 * 1024;
+ 
++        self.check_copy_failure()?;
+         let _allocation = self.allocation_guard();
+         let snapshot = Self::new(self.guest_base(), self.len())?;
+         let user_access = self
+@@ -384,6 +446,9 @@ impl GuestMemory {
+             .address_space
+             .lock()
+             .expect("guest memory access map lock poisoned") = user_access;
++        // The sparse fd operation is not a copy lease or a global snapshot
++        // fence. Fallback byte copies each take their own short admission.
++        self.check_copy_failure()?;
+         Ok(snapshot)
+     }
+ 
+@@ -754,18 +819,34 @@ impl GuestMemory {
+     /// Copies bytes from guest memory into a host buffer.
+     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
+     pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
+-        self.checked_offset(guest_address, destination.len())?;
+-        if self.user_accessible_prefix(guest_address, destination.len())? != destination.len() {
+-            return Err(Error::GuestMemoryAccessDenied {
+-                address: guest_address,
+-                length: destination.len(),
+-            });
+-        }
+-        self.read_raw(guest_address, destination)
++        self.with_copy(|copy| {
++            self.checked_offset(guest_address, destination.len())?;
++            if self.user().user_accessible_prefix_admitted(
++                guest_address,
++                destination.len(),
++                copy,
++            )? != destination.len()
++            {
++                return Err(Error::GuestMemoryAccessDenied {
++                    address: guest_address,
++                    length: destination.len(),
++                });
++            }
++            self.read_raw_admitted(guest_address, destination, copy)
++        })
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
+     pub(crate) fn read_raw(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
++        self.with_copy(|copy| self.read_raw_admitted(guest_address, destination, copy))
++    }
++
++    fn read_raw_admitted(
++        &self,
++        guest_address: u64,
++        destination: &mut [u8],
++        _copy: &CopyAccess,
++    ) -> Result<()> {
+         let offset = self.checked_offset(guest_address, destination.len())?;
+         let _guard = self
+             .mapping
+@@ -789,14 +870,20 @@ impl GuestMemory {
+     /// Copies bytes from a host slice into guest memory.
+     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
+     pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
+-        self.checked_offset(guest_address, source.len())?;
+-        if self.user_accessible_prefix(guest_address, source.len())? != source.len() {
+-            return Err(Error::GuestMemoryAccessDenied {
+-                address: guest_address,
+-                length: source.len(),
+-            });
+-        }
+-        self.write_raw(guest_address, source)
++        self.with_copy(|copy| {
++            self.checked_offset(guest_address, source.len())?;
++            if self
++                .user()
++                .user_accessible_prefix_admitted(guest_address, source.len(), copy)?
++                != source.len()
++            {
++                return Err(Error::GuestMemoryAccessDenied {
++                    address: guest_address,
++                    length: source.len(),
++                });
++            }
++            self.write_raw_admitted(guest_address, source, copy)
++        })
+     }
+ 
+     #[cfg(test)]
+@@ -819,6 +906,15 @@ impl GuestMemory {
+ 
+     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
+     pub(crate) fn write_raw(&self, guest_address: u64, source: &[u8]) -> Result<()> {
++        self.with_copy(|copy| self.write_raw_admitted(guest_address, source, copy))
++    }
++
++    fn write_raw_admitted(
++        &self,
++        guest_address: u64,
++        source: &[u8],
++        _copy: &CopyAccess,
++    ) -> Result<()> {
+         let offset = self.checked_offset(guest_address, source.len())?;
+         let _guard = self
+             .mapping
+@@ -841,18 +937,33 @@ impl GuestMemory {
+     /// Zeros a guest-physical address range.
+     // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
+     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
+-        self.checked_offset(guest_address, length)?;
+-        if self.user_accessible_prefix(guest_address, length)? != length {
+-            return Err(Error::GuestMemoryAccessDenied {
+-                address: guest_address,
+-                length,
+-            });
+-        }
+-        self.zero_raw(guest_address, length)
++        self.with_copy(|copy| {
++            self.checked_offset(guest_address, length)?;
++            if self
++                .user()
++                .user_accessible_prefix_admitted(guest_address, length, copy)?
++                != length
++            {
++                return Err(Error::GuestMemoryAccessDenied {
++                    address: guest_address,
++                    length,
++                });
++            }
++            self.zero_raw_admitted(guest_address, length, copy)
++        })
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
+     pub(crate) fn zero_raw(&self, guest_address: u64, length: usize) -> Result<()> {
++        self.with_copy(|copy| self.zero_raw_admitted(guest_address, length, copy))
++    }
++
++    fn zero_raw_admitted(
++        &self,
++        guest_address: u64,
++        length: usize,
++        _copy: &CopyAccess,
++    ) -> Result<()> {
+         let offset = self.checked_offset(guest_address, length)?;
+         let _guard = self
+             .mapping
+@@ -876,6 +987,15 @@ impl GuestMemory {
+     /// the backing range, including through another mapping, just as they
+     /// must for [`Self::zero_raw`].
+     pub(crate) fn discard_pages(&self, guest_address: u64, length: usize) -> Result<()> {
++        self.with_copy(|copy| self.discard_pages_admitted(guest_address, length, copy))
++    }
++
++    fn discard_pages_admitted(
++        &self,
++        guest_address: u64,
++        length: usize,
++        _copy: &CopyAccess,
++    ) -> Result<()> {
+         let offset = self.checked_offset(guest_address, length)?;
+         if length == 0 {
+             return Ok(());
+@@ -976,7 +1096,7 @@ impl UserMemory {
+         self.memory.guest_end()
+     }
+ 
+-    fn translate(&self, address: u64, length: usize) -> Result<u64> {
++    fn translate_admitted(&self, address: u64, length: usize, _copy: &CopyAccess) -> Result<u64> {
+         self.memory
+             .mapping
+             .address_space
+@@ -985,28 +1105,49 @@ impl UserMemory {
+             .translate(address, length)
+     }
+ 
+-    fn read_translated_raw(&self, address: u64, destination: &mut [u8]) -> Result<()> {
+-        let physical = self.translate(address, destination.len())?;
+-        self.memory.read_raw(physical, destination)
++    fn read_translated_raw_admitted(
++        &self,
++        address: u64,
++        destination: &mut [u8],
++        copy: &CopyAccess,
++    ) -> Result<()> {
++        let physical = self.translate_admitted(address, destination.len(), copy)?;
++        self.memory.read_raw_admitted(physical, destination, copy)
+     }
+ 
+-    fn write_translated_raw(&self, address: u64, source: &[u8]) -> Result<()> {
+-        let physical = self.translate(address, source.len())?;
+-        self.memory.write_raw(physical, source)
++    fn write_translated_raw_admitted(
++        &self,
++        address: u64,
++        source: &[u8],
++        copy: &CopyAccess,
++    ) -> Result<()> {
++        let physical = self.translate_admitted(address, source.len(), copy)?;
++        self.memory.write_raw_admitted(physical, source, copy)
+     }
+ 
+     /// Tool scratch is initialized before it is temporarily exposed to the
+     /// injected syscall. Preserve that existing privileged staging operation.
+     pub(crate) fn write_injection(&self, address: u64, source: &[u8]) -> Result<()> {
+-        self.write_translated_raw(address, source)
++        self.memory
++            .with_copy(|copy| self.write_translated_raw_admitted(address, source, copy))
+     }
+ 
+     pub(crate) fn host_operand(&self, address: u64, length: usize) -> Result<HostMemoryOperand> {
++        self.memory
++            .with_copy(|copy| self.host_operand_admitted(address, length, copy))
++    }
++
++    fn host_operand_admitted(
++        &self,
++        address: u64,
++        length: usize,
++        copy: &CopyAccess,
++    ) -> Result<HostMemoryOperand> {
+         // Preserve the existing Accessible probe, including its actual read;
+         // PI/requeue operands do not gain a new permission policy here.
+         let mut probe = vec![0; length];
+-        self.read(address, &mut probe)?;
+-        self.retain_translated_range(address, length)
++        self.read_admitted(address, &mut probe, copy)?;
++        self.retain_translated_range_admitted(address, length, copy)
+     }
+ 
+     /// Retain a range already admitted by the caller's exact copy/check. This
+@@ -1016,7 +1157,17 @@ impl UserMemory {
+         address: u64,
+         length: usize,
+     ) -> Result<HostMemoryOperand> {
+-        let physical = self.translate(address, length)?;
++        self.memory
++            .with_copy(|copy| self.retain_translated_range_admitted(address, length, copy))
++    }
++
++    fn retain_translated_range_admitted(
++        &self,
++        address: u64,
++        length: usize,
++        copy: &CopyAccess,
++    ) -> Result<HostMemoryOperand> {
++        let physical = self.translate_admitted(address, length, copy)?;
+         let offset = self.memory.checked_offset(physical, length)?;
+         Ok(HostMemoryOperand {
+             _memory: self.memory.clone(),
+@@ -1024,25 +1175,43 @@ impl UserMemory {
+         })
+     }
+     pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
+-        self.translate(guest_address, destination.len())?;
+-        if self.user_accessible_prefix(guest_address, destination.len())? != destination.len() {
++        self.memory
++            .with_copy(|copy| self.read_admitted(guest_address, destination, copy))
++    }
++
++    fn read_admitted(
++        &self,
++        guest_address: u64,
++        destination: &mut [u8],
++        copy: &CopyAccess,
++    ) -> Result<()> {
++        self.translate_admitted(guest_address, destination.len(), copy)?;
++        if self.user_accessible_prefix_admitted(guest_address, destination.len(), copy)?
++            != destination.len()
++        {
+             return Err(Error::GuestMemoryAccessDenied {
+                 address: guest_address,
+                 length: destination.len(),
+             });
+         }
+-        self.read_translated_raw(guest_address, destination)
++        self.read_translated_raw_admitted(guest_address, destination, copy)
+     }
+ 
+     pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
+-        self.translate(guest_address, source.len())?;
+-        if self.user_accessible_prefix(guest_address, source.len())? != source.len() {
++        self.memory
++            .with_copy(|copy| self.write_admitted(guest_address, source, copy))
++    }
++
++    fn write_admitted(&self, guest_address: u64, source: &[u8], copy: &CopyAccess) -> Result<()> {
++        self.translate_admitted(guest_address, source.len(), copy)?;
++        if self.user_accessible_prefix_admitted(guest_address, source.len(), copy)? != source.len()
++        {
+             return Err(Error::GuestMemoryAccessDenied {
+                 address: guest_address,
+                 length: source.len(),
+             });
+         }
+-        self.write_translated_raw(guest_address, source)
++        self.write_translated_raw_admitted(guest_address, source, copy)
+     }
+ 
+     pub(crate) fn copy_to_user(&self, guest_address: u64, source: &[u8]) -> Result<()> {
+@@ -1068,10 +1237,21 @@ impl UserMemory {
+     }
+ 
+     fn write_user_prefix(&self, guest_address: u64, source: &[u8], partial: bool) -> Result<usize> {
++        self.memory
++            .with_copy(|copy| self.write_user_prefix_admitted(guest_address, source, partial, copy))
++    }
++
++    fn write_user_prefix_admitted(
++        &self,
++        guest_address: u64,
++        source: &[u8],
++        partial: bool,
++        copy: &CopyAccess,
++    ) -> Result<usize> {
+         if source.is_empty() {
+             return Ok(0);
+         }
+-        self.translate(guest_address, 1)?;
++        self.translate_admitted(guest_address, 1, copy)?;
+         let requested_end = guest_address.checked_add(source.len() as u64).ok_or(
+             Error::GuestMemoryAccessDenied {
+                 address: guest_address,
+@@ -1100,27 +1280,46 @@ impl UserMemory {
+         let length = usize::try_from(cursor - guest_address).expect("copyout prefix fits usize");
+         if length == source.len() || (partial && length != 0) {
+             let physical = access.translate(guest_address, length)?;
+-            self.memory.write_raw(physical, &source[..length])?;
++            self.memory
++                .write_raw_admitted(physical, &source[..length], copy)?;
+         }
+         Ok(length)
+     }
+ 
+     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
+-        self.translate(guest_address, length)?;
+-        if self.user_accessible_prefix(guest_address, length)? != length {
++        self.memory
++            .with_copy(|copy| self.zero_admitted(guest_address, length, copy))
++    }
++
++    fn zero_admitted(&self, guest_address: u64, length: usize, copy: &CopyAccess) -> Result<()> {
++        self.translate_admitted(guest_address, length, copy)?;
++        if self.user_accessible_prefix_admitted(guest_address, length, copy)? != length {
+             return Err(Error::GuestMemoryAccessDenied {
+                 address: guest_address,
+                 length,
+             });
+         }
+-        self.memory
+-            .zero_raw(self.translate(guest_address, length)?, length)
++        self.memory.zero_raw_admitted(
++            self.translate_admitted(guest_address, length, copy)?,
++            length,
++            copy,
++        )
+     }
+ 
+     pub(crate) fn user_accessible_prefix(
+         &self,
+         guest_address: u64,
+         length: usize,
++    ) -> Result<usize> {
++        self.memory
++            .with_copy(|copy| self.user_accessible_prefix_admitted(guest_address, length, copy))
++    }
++
++    fn user_accessible_prefix_admitted(
++        &self,
++        guest_address: u64,
++        length: usize,
++        _copy: &CopyAccess,
+     ) -> Result<usize> {
+         if length == 0 {
+             return Ok(0);
+@@ -1162,6 +1361,16 @@ impl UserMemory {
+     }
+ 
+     pub(crate) fn user_writable_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
++        self.memory
++            .with_copy(|copy| self.user_writable_prefix_admitted(guest_address, length, copy))
++    }
++
++    fn user_writable_prefix_admitted(
++        &self,
++        guest_address: u64,
++        length: usize,
++        _copy: &CopyAccess,
++    ) -> Result<usize> {
+         if length == 0 {
+             return Ok(0);
+         }
+@@ -1226,12 +1435,18 @@ impl MemoryAccess for GuestMemory {
+                 continue;
+             }
+ 
++            // Admission errors are backend failures, never ordinary faults.
++            // The admitted helpers below can only produce layout/access
++            // faults; poison is checked separately even after a real prefix.
++            let copy = self.copy_access().map_err(|_| Errno::EIO)?;
+             let requested = (read_from[source_index].len() - source_offset)
+                 .min(write_to[destination_index].len() - destination_offset);
+             let address = read_from[source_index].as_ptr() as u64 + source_offset as u64;
+             let count = self
+-                .user_accessible_prefix(address, requested)
++                .user()
++                .user_accessible_prefix_admitted(address, requested, &copy)
+                 .unwrap_or_default();
++            self.check_copy_failure().map_err(|_| Errno::EIO)?;
+             if count == 0 {
+                 return if total == 0 {
+                     Err(Errno::EFAULT)
+@@ -1241,7 +1456,8 @@ impl MemoryAccess for GuestMemory {
+             }
+             let destination =
+                 &mut write_to[destination_index][destination_offset..destination_offset + count];
+-            if self.read_raw(address, destination).is_err() {
++            if self.read_raw_admitted(address, destination, &copy).is_err() {
++                self.check_copy_failure().map_err(|_| Errno::EIO)?;
+                 return if total == 0 {
+                     Err(Errno::EFAULT)
+                 } else {
+@@ -1251,6 +1467,9 @@ impl MemoryAccess for GuestMemory {
+             source_offset += count;
+             destination_offset += count;
+             total += count;
++            #[cfg(test)]
++            self.after_vector_copy(total);
++            self.check_copy_failure().map_err(|_| Errno::EIO)?;
+             if count < requested {
+                 return Ok(total);
+             }
+@@ -1281,14 +1500,17 @@ impl MemoryAccess for GuestMemory {
+                 continue;
+             }
+ 
++            let copy = self.copy_access().map_err(|_| Errno::EIO)?;
+             let count = (read_from[source_index].len() - source_offset)
+                 .min(write_to[destination_index].len() - destination_offset);
+             let address =
+                 write_to[destination_index].as_mut_ptr() as u64 + destination_offset as u64;
+             let requested = count;
+             let count = self
+-                .user_accessible_prefix(address, requested)
++                .user()
++                .user_accessible_prefix_admitted(address, requested, &copy)
+                 .unwrap_or_default();
++            self.check_copy_failure().map_err(|_| Errno::EIO)?;
+             if count == 0 {
+                 return if total == 0 {
+                     Err(Errno::EFAULT)
+@@ -1297,7 +1519,8 @@ impl MemoryAccess for GuestMemory {
+                 };
+             }
+             let source = &read_from[source_index][source_offset..source_offset + count];
+-            if self.write_raw(address, source).is_err() {
++            if self.write_raw_admitted(address, source, &copy).is_err() {
++                self.check_copy_failure().map_err(|_| Errno::EIO)?;
+                 return if total == 0 {
+                     Err(Errno::EFAULT)
+                 } else {
+@@ -1307,6 +1530,9 @@ impl MemoryAccess for GuestMemory {
+             source_offset += count;
+             destination_offset += count;
+             total += count;
++            #[cfg(test)]
++            self.after_vector_copy(total);
++            self.check_copy_failure().map_err(|_| Errno::EIO)?;
+             if count < requested {
+                 return Ok(total);
+             }
+@@ -1452,12 +1678,15 @@ impl MemoryAccess for UserMemory {
+                 continue;
+             }
+ 
++            // Keep gate failure out of the ordinary EFAULT/partial mapping.
++            let copy = self.memory.copy_access().map_err(|_| Errno::EIO)?;
+             let requested = (read_from[source_index].len() - source_offset)
+                 .min(write_to[destination_index].len() - destination_offset);
+             let address = read_from[source_index].as_ptr() as u64 + source_offset as u64;
+             let count = self
+-                .user_accessible_prefix(address, requested)
++                .user_accessible_prefix_admitted(address, requested, &copy)
+                 .unwrap_or_default();
++            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
+             if count == 0 {
+                 return if total == 0 {
+                     Err(Errno::EFAULT)
+@@ -1467,7 +1696,11 @@ impl MemoryAccess for UserMemory {
+             }
+             let destination =
+                 &mut write_to[destination_index][destination_offset..destination_offset + count];
+-            if self.read_translated_raw(address, destination).is_err() {
++            if self
++                .read_translated_raw_admitted(address, destination, &copy)
++                .is_err()
++            {
++                self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
+                 return if total == 0 {
+                     Err(Errno::EFAULT)
+                 } else {
+@@ -1477,6 +1710,9 @@ impl MemoryAccess for UserMemory {
+             source_offset += count;
+             destination_offset += count;
+             total += count;
++            #[cfg(test)]
++            self.memory.after_vector_copy(total);
++            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
+             if count < requested {
+                 return Ok(total);
+             }
+@@ -1507,14 +1743,16 @@ impl MemoryAccess for UserMemory {
+                 continue;
+             }
+ 
++            let copy = self.memory.copy_access().map_err(|_| Errno::EIO)?;
+             let count = (read_from[source_index].len() - source_offset)
+                 .min(write_to[destination_index].len() - destination_offset);
+             let address =
+                 write_to[destination_index].as_mut_ptr() as u64 + destination_offset as u64;
+             let requested = count;
+             let count = self
+-                .user_accessible_prefix(address, requested)
++                .user_accessible_prefix_admitted(address, requested, &copy)
+                 .unwrap_or_default();
++            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
+             if count == 0 {
+                 return if total == 0 {
+                     Err(Errno::EFAULT)
+@@ -1523,7 +1761,11 @@ impl MemoryAccess for UserMemory {
+                 };
+             }
+             let source = &read_from[source_index][source_offset..source_offset + count];
+-            if self.write_translated_raw(address, source).is_err() {
++            if self
++                .write_translated_raw_admitted(address, source, &copy)
++                .is_err()
++            {
++                self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
+                 return if total == 0 {
+                     Err(Errno::EFAULT)
+                 } else {
+@@ -1533,6 +1775,9 @@ impl MemoryAccess for UserMemory {
+             source_offset += count;
+             destination_offset += count;
+             total += count;
++            #[cfg(test)]
++            self.memory.after_vector_copy(total);
++            self.memory.check_copy_failure().map_err(|_| Errno::EIO)?;
+             if count < requested {
+                 return Ok(total);
+             }
+@@ -1547,6 +1792,394 @@ mod tests {
+ 
+     use super::*;
+ 
++    mod entry_copy_tests {
++        use std::sync::atomic::AtomicUsize;
++        use std::sync::atomic::Ordering;
++
++        use futures::FutureExt;
++        use reverie::syscalls::Addr;
++        use reverie::syscalls::AddrSlice;
++        use reverie::syscalls::AddrSliceMut;
++
++        use super::*;
++
++        const BASE: u64 = 0x1000;
++
++        fn cause() -> Arc<Error> {
++            Arc::new(Error::EntryControl {
++                operation: "controlled memory-copy poison",
++                source: io::Error::other("controlled memory-copy poison"),
++            })
++        }
++
++        fn assert_cause<T>(result: Result<T>, cause: &Arc<Error>) {
++            match result {
++                Err(error) => assert!(error.retains_primary(cause), "{error}"),
++                Ok(_) => panic!("poison became typed success"),
++            }
++        }
++
++        #[test]
++        fn clones_share_gate_but_new_views_and_snapshots_do_not() {
++            let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
++            memory.write_raw(BASE, b"data").unwrap();
++            let mut clone = memory.clone();
++            let global = Arc::new(());
++            let run = crate::failure::RunFailure::new(&global);
++            clone.set_failure_context(Some(FailureContext::new(
++                run.clone(),
++                reverie::Pid::from_raw(3),
++                reverie::Pid::from_raw(4),
++            )));
++            assert!(memory.failure_context.is_none());
++            assert!(clone.clone().failure_context.is_some());
++            assert!(Arc::ptr_eq(&memory.entry_gate(), &clone.entry_gate()));
++            assert!(format!("{clone:?}").contains("GuestMemory"));
++
++            let view = GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone()).unwrap();
++            let sparse = clone.snapshot().unwrap();
++            let fallback = clone
++                .snapshot_with_sparse_copy(|_, _, _| Err(io::Error::other("forced fallback")))
++                .unwrap();
++            for fresh in [&view, &sparse, &fallback] {
++                assert!(!Arc::ptr_eq(&memory.entry_gate(), &fresh.entry_gate()));
++                assert!(fresh.failure_context.is_none());
++            }
++            let original = cause();
++            let pending = clone
++                .entry_gate()
++                .poison(None, Error::SharedFailure(original.clone()));
++            assert!(Arc::ptr_eq(
++                &pending,
++                &memory.entry_gate().pending_failure().unwrap()
++            ));
++            assert_cause(memory.write(BASE, b"stop"), &original);
++            for fresh in [&view, &sparse, &fallback] {
++                let mut bytes = [0; 4];
++                fresh.read_raw(BASE, &mut bytes).unwrap();
++                assert_eq!(&bytes, b"data");
++            }
++            assert!(
++                run.primary().is_none(),
++                "memory must not publish Tool failure"
++            );
++        }
++
++        #[test]
++        fn typed_access_poison_preserves_cause_bytes_and_empty_distinctions() {
++            let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
++            memory.write_raw(BASE, b"keep").unwrap();
++            // A separate test view observes effects without bypassing the
++            // poisoned Mapping's admission. No production shared-view claim.
++            let observer =
++                GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone()).unwrap();
++            let original = cause();
++            memory
++                .entry_gate()
++                .poison(None, Error::SharedFailure(original.clone()));
++            let mut user = memory.user();
++            assert_cause(memory.read(BASE, &mut [0; 4]), &original);
++            assert_cause(memory.read_raw(BASE, &mut [0; 4]), &original);
++            assert_cause(memory.write(BASE, b"lost"), &original);
++            assert_cause(memory.write_raw(BASE, b"lost"), &original);
++            assert_cause(memory.zero(BASE, 4), &original);
++            assert_cause(memory.zero_raw(BASE, 4), &original);
++            assert_cause(memory.discard_pages(BASE, PAGE_SIZE), &original);
++            assert_cause(user.read(BASE, &mut [0; 4]), &original);
++            assert_cause(user.write(BASE, b"lost"), &original);
++            assert_cause(user.zero(BASE, 4), &original);
++            assert_cause(user.write_injection(BASE, b"lost"), &original);
++            assert_cause(user.copy_to_user(BASE, b"lost"), &original);
++            assert_cause(user.copy_to_user_prefix(BASE, b"lost"), &original);
++            assert_cause(user.put_user_i32(BASE, 0), &original);
++            assert_cause(user.user_accessible_prefix(BASE, 4), &original);
++            assert_cause(user.user_writable_prefix(BASE, 4), &original);
++            assert_cause(user.host_operand(BASE, 4), &original);
++            assert_cause(user.retain_translated_range(BASE, 4), &original);
++            assert_cause(memory.snapshot(), &original);
++            assert_cause(memory.read(u64::MAX, &mut []), &original);
++            assert_cause(user.copy_to_user_prefix(u64::MAX, &[]), &original);
++            assert_cause(user.user_accessible_prefix(u64::MAX, 0), &original);
++            let mut bytes = [0; 4];
++            observer.read_raw(BASE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"keep");
++        }
++
++        fn vector_poison_case<M: MemoryAccess>(
++            mut adapter: M,
++            memory: &GuestMemory,
++            observer: &GuestMemory,
++            original: &Arc<Error>,
++            poison_after: usize,
++            write: bool,
++        ) {
++            let result;
++            let mut output = [0xa5; 4];
++            if write {
++                let source = [io::IoSlice::new(b"AB"), io::IoSlice::new(b"CD")];
++                // SAFETY: MemoryAccess treats these guest addresses only as
++                // remote operands; this caller never dereferences the slice.
++                let mut destination = unsafe {
++                    AddrSliceMut::from_raw_parts(AddrMut::from_raw(BASE as usize).unwrap(), 4)
++                };
++                result =
++                    adapter.write_vectored(&source, &mut [unsafe { destination.as_ioslice_mut() }]);
++            } else {
++                // SAFETY: as above, this is an address descriptor for the
++                // actual adapter, not a host dereference of the guest address.
++                let source =
++                    unsafe { AddrSlice::from_raw_parts(Addr::from_raw(BASE as usize).unwrap(), 4) };
++                let (left, right) = output.split_at_mut(2);
++                result = adapter.read_vectored(
++                    &[unsafe { source.as_ioslice() }],
++                    &mut [io::IoSliceMut::new(left), io::IoSliceMut::new(right)],
++                );
++            }
++            assert_eq!(result, Err(Errno::EIO));
++            let mut expected = [0xa5; 4];
++            expected[..poison_after].copy_from_slice(&b"ABCD"[..poison_after]);
++            if write {
++                observer.read_raw(BASE, &mut output).unwrap();
++            }
++            assert_eq!(
++                output, expected,
++                "actual prefix must remain; suffix must not change"
++            );
++            assert_cause(memory.read(BASE, &mut [0]), original);
++            assert_eq!(
++                MemoryAccess::read(&adapter, Addr::from_raw(BASE as usize).unwrap(), &mut [0]),
++                Err(Errno::EIO)
++            );
++            assert_eq!(
++                MemoryAccess::write(
++                    &mut adapter,
++                    AddrMut::from_raw(BASE as usize).unwrap(),
++                    b"x"
++                ),
++                Err(Errno::EIO)
++            );
++            // Empty trait transfers do not acquire admission or erase poison.
++            assert_eq!(adapter.read_vectored(&[], &mut []), Ok(0));
++            assert_eq!(adapter.write_vectored(&[], &mut []), Ok(0));
++            assert_eq!(
++                MemoryAccess::read(&adapter, Addr::from_raw(usize::MAX).unwrap(), &mut []),
++                Ok(0)
++            );
++            assert_eq!(
++                MemoryAccess::write(&mut adapter, AddrMut::from_raw(usize::MAX).unwrap(), &[]),
++                Ok(0)
++            );
++            assert!(memory.entry_gate().pending_failure().is_some());
++        }
++
++        #[test]
++        fn both_vectored_adapters_return_eio_before_between_and_after_actual_portions() {
++            for user in [false, true] {
++                for write in [false, true] {
++                    for poison_after in [0, 2, 4] {
++                        let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
++                        memory
++                            .write_raw(BASE, if write { &[0xa5; 4] } else { b"ABCD" })
++                            .unwrap();
++                        let observer =
++                            GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone())
++                                .unwrap();
++                        let original = cause();
++                        let gate = memory.entry_gate();
++                        let calls = Arc::new(AtomicUsize::new(0));
++                        let hook_calls = calls.clone();
++                        let hook_cause = original.clone();
++                        memory.after_vector_copy = Some(Arc::new(move |total| {
++                            hook_calls.fetch_add(1, Ordering::Relaxed);
++                            if total == poison_after {
++                                gate.poison(None, Error::SharedFailure(hook_cause.clone()));
++                            }
++                        }));
++                        if poison_after == 0 {
++                            memory
++                                .entry_gate()
++                                .poison(None, Error::SharedFailure(original.clone()));
++                        }
++                        if user {
++                            vector_poison_case(
++                                memory.user(),
++                                &memory,
++                                &observer,
++                                &original,
++                                poison_after,
++                                write,
++                            );
++                        } else {
++                            vector_poison_case(
++                                memory.clone(),
++                                &memory,
++                                &observer,
++                                &original,
++                                poison_after,
++                                write,
++                            );
++                        }
++                        assert_eq!(calls.load(Ordering::Relaxed), poison_after / 2);
++                    }
++                }
++            }
++        }
++
++        fn healthy_adapter<M: MemoryAccess>(mut adapter: M) {
++            let address = AddrMut::from_raw(BASE as usize).unwrap();
++            assert_eq!(MemoryAccess::write(&mut adapter, address, b"RO"), Ok(2));
++            let boundary = BASE as usize + PAGE_SIZE - 2;
++            assert_eq!(
++                MemoryAccess::write(&mut adapter, AddrMut::from_raw(boundary).unwrap(), b"ABCD"),
++                Ok(2)
++            );
++            let mut bytes = [0xa5; 4];
++            assert_eq!(
++                MemoryAccess::read(&adapter, Addr::from_raw(boundary).unwrap(), &mut bytes),
++                Ok(2)
++            );
++            assert_eq!(bytes, [b'A', b'B', 0xa5, 0xa5]);
++            assert_eq!(
++                MemoryAccess::read(
++                    &adapter,
++                    Addr::from_raw(BASE as usize - 1).unwrap(),
++                    &mut [0]
++                ),
++                Err(Errno::EFAULT)
++            );
++            assert_eq!(
++                MemoryAccess::write(
++                    &mut adapter,
++                    AddrMut::from_raw(BASE as usize - 1).unwrap(),
++                    b"x"
++                ),
++                Err(Errno::EFAULT)
++            );
++            assert_eq!(adapter.read_vectored(&[], &mut []), Ok(0));
++            assert_eq!(adapter.write_vectored(&[], &mut []), Ok(0));
++        }
++
++        #[test]
++        fn healthy_adapters_keep_accessible_writes_faults_and_partial_counts() {
++            for user in [false, true] {
++                let memory = GuestMemory::new(BASE, 2 * PAGE_SIZE).unwrap();
++                memory
++                    .map_user_permissions(BASE, PAGE_SIZE as u64, true, false)
++                    .unwrap();
++                memory
++                    .map_user_range(BASE + PAGE_SIZE as u64, PAGE_SIZE as u64, true)
++                    .unwrap();
++                memory.enable_user_access();
++                if user {
++                    healthy_adapter(memory.user());
++                } else {
++                    healthy_adapter(memory.clone());
++                }
++                assert!(memory.user().copy_to_user(BASE, b"denied").is_err());
++                assert!(memory.user().put_user_i32(BASE, 0).is_err());
++                let mut bytes = [0; 2];
++                memory.read_raw(BASE, &mut bytes).unwrap();
++                assert_eq!(&bytes, b"RO");
++                assert!(memory.user().read(memory.guest_end(), &mut []).is_ok());
++                assert!(memory.user().read(u64::MAX, &mut []).is_err());
++                assert_eq!(memory.user().copy_to_user_prefix(u64::MAX, &[]).unwrap(), 0);
++            }
++        }
++
++        #[test]
++        fn admitted_nested_copies_finish_while_close_waits_and_operands_hold_no_lease() {
++            let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
++            memory.write_raw(BASE, b"data").unwrap();
++            let gate = memory.entry_gate();
++            let copy = memory.copy_access().unwrap();
++            let closing = gate.try_close().unwrap().unwrap();
++            let mut finish = Box::pin(closing.finish());
++            assert!(finish.as_mut().now_or_never().is_none());
++            let user = memory.user();
++            let mut bytes = [0; 4];
++            user.read_admitted(BASE, &mut bytes, &copy).unwrap();
++            assert_eq!(&bytes, b"data");
++            assert_eq!(
++                user.write_user_prefix_admitted(BASE, b"next", true, &copy)
++                    .unwrap(),
++                4
++            );
++            user.zero_admitted(BASE + 4, 4, &copy).unwrap();
++            assert!(finish.as_mut().now_or_never().is_none());
++            drop(copy);
++            let closed = finish
++                .now_or_never()
++                .expect("last copy did not retire")
++                .unwrap();
++            assert!(gate.try_copy(None).unwrap().is_none());
++            drop(closed);
++            let operand = user.host_operand(BASE, 4).unwrap();
++            let closed = gate
++                .try_close()
++                .unwrap()
++                .unwrap()
++                .finish()
++                .now_or_never()
++                .expect("retained operand held a copy lease")
++                .unwrap();
++            assert!(memory.mapping.address_space.try_lock().is_ok());
++            assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
++            assert_eq!(operand.address(), memory.host_address() as usize);
++            drop(closed);
++            memory.read_raw(BASE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"next");
++        }
++
++        #[test]
++        fn copy_unwind_captures_handle_origin_without_publishing_tool_failure() {
++            let mut memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
++            let global = Arc::new(());
++            let run = crate::failure::RunFailure::new(&global);
++            memory.set_failure_context(Some(FailureContext::new(
++                run.clone(),
++                reverie::Pid::from_raw(3),
++                reverie::Pid::from_raw(5),
++            )));
++            assert!(
++                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                    let _copy = memory.copy_access().unwrap();
++                    panic!("controlled admitted-copy unwind");
++                }))
++                .is_err()
++            );
++            let failure = memory.entry_gate().pending_failure().unwrap();
++            assert!(failure.origin.is_some());
++            assert!(matches!(
++                failure.error().primary(),
++                Error::EntryControl {
++                    operation: "host copy unwound",
++                    ..
++                }
++            ));
++            assert!(
++                run.primary().is_none(),
++                "memory helpers must capture, never publish"
++            );
++        }
++
++        #[test]
++        fn snapshot_fallback_refuses_a_retained_failure_before_copying() {
++            let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
++            memory.write_raw(BASE, b"keep").unwrap();
++            let original = cause();
++            let result = memory.snapshot_with_sparse_copy(|_, _, _| {
++                memory
++                    .entry_gate()
++                    .poison(None, Error::SharedFailure(original.clone()));
++                Err(io::Error::other("force fallback after poison"))
++            });
++            assert_cause(result, &original);
++            assert!(memory.mapping.allocation.try_lock().is_ok());
++            assert!(memory.mapping.address_space.try_lock().is_ok());
++            assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
++        }
++    }
++
+     #[test]
+     fn identity_view_preserves_tool_writes_copyout_faults_and_partial_reads() {
+         use reverie::syscalls::Addr;
+diff --git a/reverie-kvm/src/runtime.rs b/reverie-kvm/src/runtime.rs
+index b26531c0..7040efd6 100644
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -227,6 +227,7 @@ where
+ }
+ 
+ enum InjectionCompletion {
++    ThreadCancelled,
+     Returns {
+         syscall_result: Option<i64>,
+     },
+@@ -998,6 +999,9 @@ where
+             let expose_result = expose_tool_scratch(&self.memory, self.backend.tool_stack_top());
+             let outcome = action_result?;
+             expose_result?;
++            if outcome.cancelled {
++                return Ok(InjectionCompletion::ThreadCancelled);
++            }
+             *self.process_completed = true;
+             if outcome.image_replaced || self.executor.has_pending_exit() {
+                 Ok(InjectionCompletion::DoesNotReturn {
+@@ -1349,6 +1353,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
+                 pending_child_starts: self.pending_child_starts.clone(),
+             };
+             match self.executor.complete_injection(context).await {
++                Ok(InjectionCompletion::ThreadCancelled) => {
++                    self.signal_handler(HandlerSignal::ThreadCancelled);
++                    return std::future::pending().await;
++                }
+                 Ok(InjectionCompletion::DoesNotReturn {
+                     image_replaced,
+                     process_exited,
+@@ -2654,7 +2662,22 @@ impl KvmBackend {
+             }
+ 
+             loop {
+-                let vcpu_exit = self.vcpu.run()?;
++                let changed = memory.entry_gate().subscribe();
++                memory
++                    .entry_gate()
++                    .admit_operation()
++                    .map_err(|failure| failure.error())?;
++                if wait_for_failure(&global_state, None)
++                    .now_or_never()
++                    .is_some()
++                {
++                    return Err(Error::RunAborted);
++                }
++                let Some(vcpu_exit) = self.vcpu.run()? else {
++                    let failure = pin!(wait_for_failure(&global_state, None));
++                    let _ = futures::future::select(changed, failure).await;
++                    continue;
++                };
+                 Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+                 match vcpu_exit {
+                     VcpuExit::Hypercall(exit) => {
+@@ -2860,7 +2883,7 @@ impl KvmBackend {
+         let pid = Pid::from_raw(self.root_pid);
+         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
+         let failure = RunFailure::new(&global_state);
+-        self.tool_failure = Some(FailureContext::new(failure.clone(), pid, pid));
++        self.set_tool_failure(Some(FailureContext::new(failure.clone(), pid, pid)));
+         let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+         // Atomic run-level installation precedes Tool/thread construction and
+         // the first handle_thread_start. No capability is inferred from a PID.
+@@ -2872,7 +2895,7 @@ impl KvmBackend {
+                 let context = FailureContext::new(failure.clone(), pid, pid);
+                 let error =
+                     context.publish("process signal control installation", Error::Reverie(error));
+-                self.tool_failure = None;
++                self.set_tool_failure(None);
+                 let global_state = Arc::try_unwrap(global_state).map_err(|_| {
+                     Error::UnexpectedVcpuExit("signal setup retained GlobalState".to_owned())
+                 })?;
+@@ -2907,7 +2930,7 @@ impl KvmBackend {
+         };
+         // All owned children have returned. Do not leave the backend holding
+         // a reporter whose Weak owner is about to be consumed or released.
+-        self.tool_failure = None;
++        self.set_tool_failure(None);
+         let global_state = match Arc::try_unwrap(global_state) {
+             Ok(global) => global,
+             Err(_) => {
+@@ -3232,7 +3255,7 @@ impl KvmBackend {
+         <T::GlobalState as GlobalTool>::Config: 'static,
+     {
+         if let Some(failure) = &self.tool_failure {
+-            self.tool_failure = Some(failure.for_thread(tid));
++            self.set_tool_failure(Some(failure.for_thread(tid)));
+         }
+         executor.observe_ignored_signals_with_tool();
+         if T::observe_signal_dequeues(config) {
+@@ -3482,6 +3505,12 @@ impl KvmBackend {
+             // borrowed elsewhere in the loop body.
+             let thread_ownership = self.thread_ownership;
+             loop {
++                let changed = memory.entry_gate().subscribe();
++                let cancelled = self.entry_cancellation();
++                memory
++                    .entry_gate()
++                    .admit_operation()
++                    .map_err(|failure| failure.error())?;
+                 if wait_for_failure(global_state.as_ref(), failure_subscription.clone())
+                     .now_or_never()
+                     .is_some()
+@@ -3499,7 +3528,19 @@ impl KvmBackend {
+                     return Ok(self.cancelled_tool_thread_status(executor));
+                 }
+                 let vcpu_exit = match self.vcpu.run() {
+-                    Ok(exit) => exit,
++                    Ok(Some(exit)) => exit,
++                    Ok(None) => {
++                        let stop = pin!(wait_for_failure(
++                            global_state.as_ref(),
++                            failure_subscription.clone()
++                        ));
++                        let _ = futures::future::select(
++                            futures::future::select(changed, cancelled),
++                            stop,
++                        )
++                        .await;
++                        continue;
++                    }
+                     Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                     Err(error) => return Err(error),
+                 };
+@@ -4079,6 +4120,9 @@ impl KvmBackend {
+                         )
+                         .await;
+                     let outcome = outcome?;
++                    if outcome.cancelled {
++                        return Ok(self.cancelled_tool_thread_status(executor));
++                    }
+                     if !outcome.image_replaced {
+                         result = outcome.syscall_result;
+                         returned_registers = process_syscall_return_registers(
+diff --git a/reverie-kvm/src/vm.rs b/reverie-kvm/src/vm.rs
+index e84d27bf..b578cd51 100644
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -7,15 +7,20 @@
+  */
+ 
+ use std::fs::File;
++use std::future::Future;
+ use std::os::fd::AsRawFd;
+ use std::os::fd::FromRawFd;
+ use std::path::Path;
++use std::pin::Pin;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+ use std::sync::OnceLock;
+ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+ 
++use futures::FutureExt;
++use futures::channel::oneshot;
++use futures::future::Shared;
+ use kvm_bindings::CpuId;
+ use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
+ use kvm_bindings::kvm_enable_cap;
+@@ -315,6 +320,7 @@ struct GuestWorkerHandle {
+ pub(crate) struct ProcessActionOutcome {
+     pub(crate) image_replaced: bool,
+     pub(crate) syscall_result: i64,
++    pub(crate) cancelled: bool,
+ }
+ 
+ impl ProcessActionOutcome {
+@@ -322,6 +328,7 @@ impl ProcessActionOutcome {
+         Self {
+             image_replaced: false,
+             syscall_result,
++            cancelled: false,
+         }
+     }
+ 
+@@ -329,6 +336,33 @@ impl ProcessActionOutcome {
+         Self {
+             image_replaced: true,
+             syscall_result: 0,
++            cancelled: false,
++        }
++    }
++
++    fn cancelled() -> Self {
++        Self {
++            image_replaced: false,
++            // No guest result is installed for this terminal disposition.
++            syscall_result: 0,
++            cancelled: true,
++        }
++    }
++}
++
++pub(crate) type GuestCancellationSubscription = Shared<oneshot::Receiver<()>>;
++
++struct CancellationWake {
++    sender: oneshot::Sender<()>,
++    receiver: GuestCancellationSubscription,
++}
++
++impl Default for CancellationWake {
++    fn default() -> Self {
++        let (sender, receiver) = oneshot::channel();
++        Self {
++            sender,
++            receiver: receiver.shared(),
+         }
+     }
+ }
+@@ -338,6 +372,7 @@ impl ProcessActionOutcome {
+ pub(crate) struct GuestThreadGroup {
+     cancelled: AtomicBool,
+     cancelled_after_failure: AtomicBool,
++    cancellation_wake: Mutex<CancellationWake>,
+     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
+     // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
+     exit_status: Mutex<Option<ExitStatus>>,
+@@ -413,6 +448,34 @@ pub(crate) fn finish_caught_worker_panic(
+ }
+ 
+ impl GuestThreadGroup {
++    /// Subscribe before rechecking the caller's existing cancellation and exit
++    /// predicates. Readiness only requests another recheck; it grants no entry
++    /// and does not decide whether worker cancellation applies to the root.
++    /// Take a fresh subscription after every wake, including an irrelevant one.
++    pub(crate) fn subscribe_cancellation(&self) -> GuestCancellationSubscription {
++        self.cancellation_wake
++            .lock()
++            .expect("KVM cancellation wake lock poisoned")
++            .receiver
++            .clone()
++    }
++
++    /// Called after publishing state and releasing every group registry lock.
++    fn notify_cancellation(&self) {
++        let previous = {
++            let mut wake = self
++                .cancellation_wake
++                .lock()
++                .expect("KVM cancellation wake lock poisoned");
++            std::mem::take(&mut *wake)
++        };
++        // Install a pending generation before invoking any wake callback. In
++        // particular, exec rearm and a root ignoring worker-only cancellation
++        // must not inherit a permanently-ready notification. Send outside the
++        // notification lock too: a callback may immediately subscribe again.
++        let _ = previous.sender.send(());
++    }
++
+     #[cfg(test)]
+     pub(crate) fn has_worker_handles(&self) -> bool {
+         !self.worker_handles.lock().unwrap().is_empty()
+@@ -488,6 +551,8 @@ impl GuestThreadGroup {
+                 libc::pthread_kill(worker, worker_interrupt_signal());
+             }
+         }
++        drop(workers);
++        self.notify_cancellation();
+     }
+ 
+     pub(crate) fn add_worker_handle(
+@@ -672,6 +737,8 @@ impl GuestThreadGroup {
+                 libc::pthread_kill(worker, worker_interrupt_signal());
+             }
+         }
++        drop(workers);
++        self.notify_cancellation();
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-211): Review KVM exec sibling cancellation ordering.
+@@ -947,6 +1014,9 @@ impl ProcessActionContinuation {
+         // Never restore after a failed action: its partial process state must
+         // remain observable to the caller's fatal cleanup path.
+         let outcome = action_result?;
++        if outcome.cancelled {
++            return Ok(outcome);
++        }
+         match (self, outcome.image_replaced) {
+             (Self::Restore(boundary), _) | (Self::Exec(boundary), false) => {
+                 boundary.restore(backend)?;
+@@ -1035,6 +1105,16 @@ struct InitializedKvmResources {
+ }
+ 
+ impl KvmBackend {
++    pub(crate) fn set_tool_failure(&mut self, origin: Option<crate::failure::FailureContext>) {
++        self.vcpu.set_failure_context(origin.clone());
++        self.memory.set_failure_context(origin.clone());
++        self.tool_failure = origin;
++    }
++
++    pub(crate) fn entry_cancellation(&self) -> GuestCancellationSubscription {
++        self.thread_group.subscribe_cancellation()
++    }
++
+     pub(crate) fn failure_subscription(
+         &self,
+         is_traced_tree_root: bool,
+@@ -1150,7 +1230,7 @@ impl KvmBackend {
+             }
+         };
+         Ok(Self {
+-            vcpu: crate::clock::CountedVcpu::new(vcpu),
++            vcpu: crate::clock::CountedVcpu::new(vcpu, memory.clone())?,
+             vm,
+             memory,
+             _kvm: kvm,
+@@ -1590,6 +1670,66 @@ impl KvmBackend {
+         Ok(())
+     }
+ 
++    // The prepared action owns its frame and any earlier child state while
++    // admission is closed. Only this one entry is retried; the action is not.
++    async fn park_process_action(
++        &mut self,
++        phase: &'static str,
++        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++    ) -> Result<bool> {
++        let gate = self.memory.entry_gate();
++        let mut prepared = false;
++        loop {
++            let changed = gate.subscribe();
++            let cancelled = self.entry_cancellation();
++            gate.admit_operation().map_err(|failure| failure.error())?;
++            if stop.as_mut().now_or_never().is_some() {
++                return Err(Error::RunAborted);
++            }
++            if self.guest_thread_group_exit_status().is_some() || self.guest_thread_is_cancelled() {
++                return Ok(false);
++            }
++            if !prepared {
++                set_syscall_return_park(
++                    &mut self.memory,
++                    self.hypercall_instruction,
++                    self.syscall_trampoline_address,
++                    self.syscall_frame_address,
++                    true,
++                )?;
++                prepared = true;
++                continue;
++            }
++            // Keep the borrowed VcpuExit entirely inside a synchronous helper.
++            if let Some(parked) = self.try_park_process_action(phase)? {
++                set_syscall_return_park(
++                    &mut self.memory,
++                    self.hypercall_instruction,
++                    self.syscall_trampoline_address,
++                    self.syscall_frame_address,
++                    false,
++                )?;
++                parked?;
++                return Ok(true);
++            }
++            let _ =
++                futures::future::select(futures::future::select(changed, cancelled), stop.as_mut())
++                    .await;
++        }
++    }
++
++    fn try_park_process_action(&mut self, phase: &'static str) -> Result<Option<Result<()>>> {
++        let Some(exit) = self.vcpu.run()? else {
++            return Ok(None);
++        };
++        Self::record_exit(self.exit_collector.as_deref(), &exit);
++        Ok(Some(match exit {
++            VcpuExit::Hlt => Ok(()),
++            exit => Err(Error::UnexpectedVcpuExit(format!("{phase}: {exit:?}"))),
++        }))
++    }
++
++    #[cfg(test)]
+     #[allow(clippy::too_many_arguments)]
+     fn prepare_forked_process(
+         &mut self,
+@@ -1604,33 +1744,47 @@ impl KvmBackend {
+         park_syscall_return: bool,
+         fault: Option<&PageZeroFault>,
+     ) -> Result<ForkedProcess> {
++        let mut stop = std::pin::pin!(std::future::pending());
++        futures::executor::block_on(self.prepare_forked_process_admitted(
++            executor,
++            child_pid,
++            child_stack,
++            parent_tid,
++            child_tid,
++            clear_child_tid,
++            clear_sighand,
++            share_address_space,
++            park_syscall_return,
++            fault,
++            stop.as_mut(),
++        ))?
++        .ok_or_else(|| Error::UnexpectedVcpuExit("test fork was cancelled".to_owned()))
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    async fn prepare_forked_process_admitted(
++        &mut self,
++        executor: &ElfExecutor,
++        child_pid: i32,
++        child_stack: Option<u64>,
++        parent_tid: Option<u64>,
++        child_tid: Option<u64>,
++        clear_child_tid: Option<u64>,
++        clear_sighand: bool,
++        share_address_space: bool,
++        park_syscall_return: bool,
++        fault: Option<&PageZeroFault>,
++        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++    ) -> Result<Option<ForkedProcess>> {
+         let mut child_executor =
+             executor.fork_child(child_pid, clear_sighand, share_address_space)?;
+         child_executor.set_clear_child_tid(clear_child_tid);
+-        if park_syscall_return {
+-            set_syscall_return_park(
+-                &mut self.memory,
+-                self.hypercall_instruction,
+-                self.syscall_trampoline_address,
+-                self.syscall_frame_address,
+-                true,
+-            )?;
+-            let vcpu_exit = self.vcpu.run()?;
+-            Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+-            let parked = match vcpu_exit {
+-                VcpuExit::Hlt => Ok(()),
+-                exit => Err(Error::UnexpectedVcpuExit(format!(
+-                    "parent did not park at fork: {exit:?}"
+-                ))),
+-            };
+-            set_syscall_return_park(
+-                &mut self.memory,
+-                self.hypercall_instruction,
+-                self.syscall_trampoline_address,
+-                self.syscall_frame_address,
+-                false,
+-            )?;
+-            parked?;
++        if park_syscall_return
++            && !self
++                .park_process_action("parent did not park at fork", stop)
++                .await?
++        {
++            return Ok(None);
+         }
+         let child_snapshot = self.snapshot_process()?;
+         write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
+@@ -1640,10 +1794,11 @@ impl KvmBackend {
+         // Forked children inherit the parent's thread ownership so execution and
+         // `is_backend_owned_syscall`'s futex classification stay consistent.
+         child.thread_ownership = self.thread_ownership;
+-        child.tool_failure = self
+-            .tool_failure
+-            .as_ref()
+-            .map(|failure| failure.for_process(Pid::from_raw(child_pid)));
++        child.set_tool_failure(
++            self.tool_failure
++                .as_ref()
++                .map(|failure| failure.for_process(Pid::from_raw(child_pid))),
++        );
+         child.exit_collector = self.exit_collector.clone();
+         write_tid_best_effort(&mut child.memory, child_tid, child_pid);
+         let (fs_base, gs_base) = child_executor.segment_bases();
+@@ -1659,11 +1814,11 @@ impl KvmBackend {
+         if let Some(fault) = fault {
+             fault.configure_child(&mut child, child_stack)?;
+         }
+-        Ok(ForkedProcess {
++        Ok(Some(ForkedProcess {
+             pid: child_pid,
+             backend: child,
+             executor: child_executor,
+-        })
++        }))
+     }
+ 
+     fn finish_forked_process(
+@@ -1694,12 +1849,13 @@ impl KvmBackend {
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-156): Review process actions completed during Tool injection.
+-    fn run_process_action_inner(
++    async fn run_process_action_inner(
+         &mut self,
+         executor: &mut ElfExecutor,
+         action: ProcessAction,
+         park_syscall_return: bool,
+         fault: Option<&PageZeroFault>,
++        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+     ) -> Result<ProcessActionOutcome> {
+         let outcome = match &action {
+             ProcessAction::Fork { child_pid, .. } => {
+@@ -1720,18 +1876,24 @@ impl KvmBackend {
+                 clear_sighand,
+                 share_address_space,
+             } => {
+-                let mut child = self.prepare_forked_process(
+-                    executor,
+-                    child_pid,
+-                    child_stack,
+-                    parent_tid,
+-                    child_tid,
+-                    clear_child_tid,
+-                    clear_sighand,
+-                    share_address_space,
+-                    park_syscall_return,
+-                    fault,
+-                )?;
++                let Some(mut child) = self
++                    .prepare_forked_process_admitted(
++                        executor,
++                        child_pid,
++                        child_stack,
++                        parent_tid,
++                        child_tid,
++                        clear_child_tid,
++                        clear_sighand,
++                        share_address_space,
++                        park_syscall_return,
++                        fault,
++                        stop.as_mut(),
++                    )
++                    .await?
++                else {
++                    return Ok(ProcessActionOutcome::cancelled());
++                };
+                 let (code, stdout, stderr) =
+                     child.backend.run_static_elf_process(&mut child.executor)?;
+                 self.finish_forked_process(executor, child, code, stdout, stderr)?;
+@@ -1752,30 +1914,12 @@ impl KvmBackend {
+                 self.memory
+                     .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
+ 
+-                if park_syscall_return {
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        true,
+-                    )?;
+-                    let vcpu_exit = self.vcpu.run()?;
+-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+-                    let parked = match vcpu_exit {
+-                        VcpuExit::Hlt => Ok(()),
+-                        exit => Err(Error::UnexpectedVcpuExit(format!(
+-                            "parent did not park at thread clone: {exit:?}"
+-                        ))),
+-                    };
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        false,
+-                    )?;
+-                    parked?;
++                if park_syscall_return
++                    && !self
++                        .park_process_action("parent did not park at thread clone", stop.as_mut())
++                        .await?
++                {
++                    return Ok(ProcessActionOutcome::cancelled());
+                 }
+                 let child_registers = self.vcpu.get_regs()?;
+ 
+@@ -1800,7 +1944,7 @@ impl KvmBackend {
+                 // execution and futex classification stay consistent.
+                 self.debug_assert_thread_ownership_consistent();
+                 child.thread_ownership = self.thread_ownership;
+-                child.tool_failure = self.tool_failure.clone();
++                child.set_tool_failure(self.tool_failure.clone());
+                 child.exit_collector = self.exit_collector.clone();
+                 child
+                     .memory
+@@ -1881,30 +2025,12 @@ impl KvmBackend {
+                 if self.is_guest_thread {
+                     return Err(Error::GuestThreadExecUnsupported);
+                 }
+-                if park_syscall_return {
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        true,
+-                    )?;
+-                    let vcpu_exit = self.vcpu.run()?;
+-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+-                    let parked = match vcpu_exit {
+-                        VcpuExit::Hlt => Ok(()),
+-                        exit => Err(Error::UnexpectedVcpuExit(format!(
+-                            "process did not park before exec: {exit:?}"
+-                        ))),
+-                    };
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        false,
+-                    )?;
+-                    parked?;
++                if park_syscall_return
++                    && !self
++                        .park_process_action("process did not park before exec", stop.as_mut())
++                        .await?
++                {
++                    return Ok(ProcessActionOutcome::cancelled());
+                 }
+                 // A successful exec terminates every sibling thread before the
+                 // new address space becomes visible. Leaving a sibling vCPU
+@@ -1934,8 +2060,15 @@ impl KvmBackend {
+         action: ProcessAction,
+         park_syscall_return: bool,
+     ) -> Result<()> {
+-        self.run_process_action_inner(executor, action, park_syscall_return, None)
+-            .map(|_| ())
++        let mut stop = std::pin::pin!(std::future::pending());
++        futures::executor::block_on(self.run_process_action_inner(
++            executor,
++            action,
++            park_syscall_return,
++            None,
++            stop.as_mut(),
++        ))
++        .map(|_| ())
+     }
+ 
+     /// Cancels and joins children created by a Tool action whose parent
+@@ -2106,7 +2239,14 @@ impl KvmBackend {
+         action: ProcessAction,
+         continuation: ProcessActionContinuation,
+     ) -> Result<ProcessActionOutcome> {
+-        let result = self.run_process_action_inner(executor, action, true, None);
++        let mut stop = std::pin::pin!(std::future::pending());
++        let result = futures::executor::block_on(self.run_process_action_inner(
++            executor,
++            action,
++            true,
++            None,
++            stop.as_mut(),
++        ));
+         continuation.finish(self, result)
+     }
+ 
+@@ -2126,6 +2266,19 @@ impl KvmBackend {
+         T::GlobalState: 'static,
+         <T::GlobalState as GlobalTool>::Config: 'static,
+     {
++        let global = context.global_state.clone();
++        let local = self.failure_subscription(executor.is_traced_tree_root());
++        let mut stop = std::pin::pin!(async {
++            match global.as_ref() {
++                Some(global) => crate::failure::wait_for_failure(global.as_ref(), local).await,
++                None => match local {
++                    Some(local) => {
++                        let _ = local.await;
++                    }
++                    None => std::future::pending().await,
++                },
++            }
++        });
+         match action {
+             ProcessAction::Fork {
+                 child_pid,
+@@ -2136,18 +2289,24 @@ impl KvmBackend {
+                 clear_sighand,
+                 share_address_space,
+             } => {
+-                let child = self.prepare_forked_process(
+-                    executor,
+-                    child_pid,
+-                    child_stack,
+-                    parent_tid,
+-                    child_tid,
+-                    clear_child_tid,
+-                    clear_sighand,
+-                    share_address_space,
+-                    park_syscall_return,
+-                    fault,
+-                )?;
++                let Some(child) = self
++                    .prepare_forked_process_admitted(
++                        executor,
++                        child_pid,
++                        child_stack,
++                        parent_tid,
++                        child_tid,
++                        clear_child_tid,
++                        clear_sighand,
++                        share_address_space,
++                        park_syscall_return,
++                        fault,
++                        stop.as_mut(),
++                    )
++                    .await?
++                else {
++                    return Ok(ProcessActionOutcome::cancelled());
++                };
+ 
+                 let child_pid = Pid::from_raw(child.pid);
+                 let global_state = context.global_state.ok_or_else(|| {
+@@ -2323,7 +2482,14 @@ impl KvmBackend {
+             // never reaches the host waiter — is unrepresentable now that one
+             // enum drives both decisions.)
+             ProcessAction::Thread { .. } if self.thread_ownership.executes_on_host() => {
+-                self.run_process_action_inner(executor, action, park_syscall_return, fault)
++                self.run_process_action_inner(
++                    executor,
++                    action,
++                    park_syscall_return,
++                    fault,
++                    stop.as_mut(),
++                )
++                .await
+             }
+             // `ThreadOwnership::Tool`: a CLONE_THREAD worker runs its own vCPU on
+             // a fresh OS thread but shares the guest address space, file table,
+@@ -2349,30 +2515,12 @@ impl KvmBackend {
+                 self.memory
+                     .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
+ 
+-                if park_syscall_return {
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        true,
+-                    )?;
+-                    let vcpu_exit = self.vcpu.run()?;
+-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+-                    let parked = match vcpu_exit {
+-                        VcpuExit::Hlt => Ok(()),
+-                        exit => Err(Error::UnexpectedVcpuExit(format!(
+-                            "parent did not park at thread clone: {exit:?}"
+-                        ))),
+-                    };
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        false,
+-                    )?;
+-                    parked?;
++                if park_syscall_return
++                    && !self
++                        .park_process_action("parent did not park at thread clone", stop.as_mut())
++                        .await?
++                {
++                    return Ok(ProcessActionOutcome::cancelled());
+                 }
+                 let child_registers = self.vcpu.get_regs()?;
+ 
+@@ -2396,7 +2544,7 @@ impl KvmBackend {
+                 // execution and futex classification stay consistent.
+                 self.debug_assert_thread_ownership_consistent();
+                 child.thread_ownership = self.thread_ownership;
+-                child.tool_failure = self.tool_failure.clone();
++                child.set_tool_failure(self.tool_failure.clone());
+                 child.exit_collector = self.exit_collector.clone();
+                 child
+                     .memory
+@@ -2444,7 +2592,7 @@ impl KvmBackend {
+                 let child_thread_state = child_tool
+                     .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
+                 if let Some(failure) = &child.tool_failure {
+-                    child.tool_failure = Some(failure.for_thread(child_tid_pid));
++                    child.set_tool_failure(Some(failure.for_thread(child_tid_pid)));
+                 }
+                 let pending_child_starts = context.pending_child_starts;
+                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
+@@ -2575,7 +2723,16 @@ impl KvmBackend {
+                     .push(PendingChildStart::tool_thread(child_tid, start_gate));
+                 Ok(ProcessActionOutcome::returned(i64::from(child_tid)))
+             }
+-            other => self.run_process_action_inner(executor, other, park_syscall_return, fault),
++            other => {
++                self.run_process_action_inner(
++                    executor,
++                    other,
++                    park_syscall_return,
++                    fault,
++                    stop.as_mut(),
++                )
++                .await
++            }
+         }
+     }
+ 
+@@ -2628,6 +2785,9 @@ impl KvmBackend {
+         let result = self
+             .run_process_action_with_tool_inner(executor, action, false, context, Some(fault))
+             .await;
++        if result.as_ref().is_ok_and(|outcome| outcome.cancelled) {
++            return result;
++        }
+         let restored = fault.restore_boundary(self);
+         match result {
+             Err(error) => Err(error),
+@@ -3384,6 +3544,12 @@ impl KvmBackend {
+             }
+         }
+         loop {
++            let changed = self.memory.entry_gate().subscribe();
++            let cancelled = self.entry_cancellation();
++            self.memory
++                .entry_gate()
++                .admit_operation()
++                .map_err(|failure| failure.error())?;
+             if let Some(status) = self.guest_thread_group_exit_status() {
+                 return self.finish_static_elf_thread(
+                     executor,
+@@ -3403,7 +3569,11 @@ impl KvmBackend {
+                 );
+             }
+             let vcpu_exit = match self.vcpu.run() {
+-                Ok(exit) => exit,
++                Ok(Some(exit)) => exit,
++                Ok(None) => {
++                    futures::executor::block_on(futures::future::select(changed, cancelled));
++                    continue;
++                }
+                 Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                 Err(error) => return Err(error),
+             };
+@@ -3512,6 +3682,19 @@ impl KvmBackend {
+                     action,
+                     continuation.expect("a process action has a continuation policy"),
+                 )?;
++                if outcome.cancelled {
++                    let exit = match self.guest_thread_group_exit_status() {
++                        Some(status) => ProcessExit {
++                            status,
++                            group: true,
++                        },
++                        None => ProcessExit {
++                            status: ExitStatus::SUCCESS,
++                            group: false,
++                        },
++                    };
++                    return self.finish_static_elf_thread(executor, exit);
++                }
+                 returns_to_original_image = !outcome.image_replaced;
+                 if let Some((_, result)) = signal_boundary.as_mut() {
+                     *result = outcome.syscall_result;
+@@ -3729,7 +3912,11 @@ impl KvmBackend {
+         self.set_rdtsc_interception(false)?;
+         self.set_cpuid_interception(false)?;
+         loop {
+-            let vcpu_exit = self.vcpu.run()?;
++            let changed = self.memory.entry_gate().subscribe();
++            let Some(vcpu_exit) = self.vcpu.run()? else {
++                let _ = futures::executor::block_on(changed);
++                continue;
++            };
+             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+             match vcpu_exit {
+                 VcpuExit::Hypercall(exit) => {
+@@ -3738,7 +3925,12 @@ impl KvmBackend {
+                     }
+                     let syscall =
+                         SyscallRequest::read_from(&self.memory, exit.args[0])?.into_syscall()?;
+-                    *exit.ret = handler(syscall, &self.memory) as u64;
++                    let result = handler(syscall, &self.memory);
++                    self.memory
++                        .entry_gate()
++                        .admit_operation()
++                        .map_err(|failure| failure.error())?;
++                    *exit.ret = result as u64;
+                 }
+                 VcpuExit::Hlt => return Ok(()),
+                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+@@ -3836,6 +4028,170 @@ mod tests {
+ 
+     include!("cpuid_runtime_tests.rs");
+ 
++    mod cancellation_wake_tests {
++        use std::sync::Weak;
++        use std::sync::atomic::AtomicUsize;
++        use std::task::Context;
++
++        use super::*;
++
++        #[test]
++        fn subscriptions_cover_registration_before_and_after_publication() {
++            for exit_group in [false, true] {
++                let group = GuestThreadGroup::default();
++                let first = group.subscribe_cancellation();
++                let second = group.subscribe_cancellation();
++                let unpolled = first.clone();
++                drop(group.subscribe_cancellation());
++                assert!(first.clone().now_or_never().is_none());
++                assert!(second.clone().now_or_never().is_none());
++                assert!(!group.cancelled.load(Ordering::Acquire));
++
++                if exit_group {
++                    group.request_exit_group(ExitStatus::Exited(19));
++                } else {
++                    group.cancel_workers();
++                }
++                assert_eq!(first.now_or_never(), Some(Ok(())));
++                assert_eq!(second.now_or_never(), Some(Ok(())));
++                assert_eq!(unpolled.now_or_never(), Some(Ok(())));
++
++                // A late subscriber must see the published predicate on its
++                // recheck even though its new notification is still pending.
++                let late = group.subscribe_cancellation();
++                assert!(group.cancelled.load(Ordering::Acquire));
++                assert_eq!(
++                    group.exit_status(),
++                    exit_group.then_some(ExitStatus::Exited(19))
++                );
++                assert!(late.clone().now_or_never().is_none());
++                if exit_group {
++                    group.request_exit_group(ExitStatus::Exited(23));
++                } else {
++                    group.cancel_workers();
++                }
++                assert_eq!(late.now_or_never(), Some(Ok(())));
++                assert_eq!(
++                    group.exit_status(),
++                    exit_group.then_some(ExitStatus::Exited(19)),
++                    "notification must preserve the first exit status"
++                );
++            }
++        }
++
++        #[test]
++        fn root_can_resubscribe_after_worker_only_cancellation() {
++            let group = GuestThreadGroup::default();
++            let old = group.subscribe_cancellation();
++            group.cancel_workers();
++            assert_eq!(old.now_or_never(), Some(Ok(())));
++
++            // The root's existing exit predicate ignores worker-only cancel.
++            let next = group.subscribe_cancellation();
++            assert_eq!(group.exit_status(), None);
++            assert!(group.cancelled.load(Ordering::Acquire));
++            assert!(next.clone().now_or_never().is_none());
++
++            group.request_exit_group(ExitStatus::Exited(31));
++            assert_eq!(next.now_or_never(), Some(Ok(())));
++            assert_eq!(group.exit_status(), Some(ExitStatus::Exited(31)));
++            assert!(group.subscribe_cancellation().now_or_never().is_none());
++        }
++
++        #[test]
++        fn subscriptions_survive_exec_rearm_and_wake_on_later_cancellation() {
++            let group = GuestThreadGroup::default();
++            let old = group.subscribe_cancellation();
++            group.record_worker_failure(2);
++            group.request_exit_group(ExitStatus::Exited(41));
++            assert_eq!(old.now_or_never(), Some(Ok(())));
++            assert!(group.cancelled_after_failure.load(Ordering::Acquire));
++
++            let before_rearm = group.subscribe_cancellation();
++            group.join_workers();
++            group.rearm_after_exec();
++            assert!(!group.cancelled.load(Ordering::Acquire));
++            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
++            assert_eq!(group.exit_status(), None);
++            assert!(before_rearm.clone().now_or_never().is_none());
++            let after_rearm = group.subscribe_cancellation();
++            assert!(after_rearm.clone().now_or_never().is_none());
++
++            group.cancel_workers();
++            assert_eq!(before_rearm.now_or_never(), Some(Ok(())));
++            assert_eq!(after_rearm.now_or_never(), Some(Ok(())));
++            assert!(group.cancelled.load(Ordering::Acquire));
++            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
++            assert_eq!(group.exit_status(), None);
++        }
++
++        struct CancellationWakeProbe {
++            group: Weak<GuestThreadGroup>,
++            expected_status: Option<ExitStatus>,
++            expected_failure: bool,
++            wakes: AtomicUsize,
++        }
++
++        impl futures::task::ArcWake for CancellationWakeProbe {
++            fn wake_by_ref(probe: &Arc<Self>) {
++                let group = probe.group.upgrade().unwrap();
++                assert!(group.cancelled.load(Ordering::Acquire));
++                assert_eq!(
++                    group.cancelled_after_failure.load(Ordering::Acquire),
++                    probe.expected_failure
++                );
++                assert_eq!(
++                    *group.exit_status.try_lock().unwrap(),
++                    probe.expected_status
++                );
++                assert!(group.root.try_lock().is_ok());
++                assert!(group.workers.try_lock().is_ok());
++                assert!(group.worker_handles.try_lock().is_ok());
++                assert!(group.worker_start_gates.try_lock().is_ok());
++                assert!(group.worker_errors.try_lock().is_ok());
++                assert!(group.reported_worker_panics.try_lock().is_ok());
++                assert!(group.failure_state.try_lock().is_ok());
++                assert!(group.transport_slots.try_lock().is_ok());
++                assert!(group.cancellation_wake.try_lock().is_ok());
++                assert!(group.subscribe_cancellation().now_or_never().is_none());
++                probe.wakes.fetch_add(1, Ordering::Relaxed);
++            }
++        }
++
++        #[test]
++        fn wake_callbacks_observe_published_state_outside_group_locks() {
++            for after_failure in [false, true] {
++                for exit_group in [false, true] {
++                    let group = Arc::new(GuestThreadGroup::default());
++                    if after_failure {
++                        group.record_worker_failure(2);
++                    }
++                    let probe = Arc::new(CancellationWakeProbe {
++                        group: Arc::downgrade(&group),
++                        expected_status: exit_group.then_some(ExitStatus::Exited(47)),
++                        expected_failure: after_failure,
++                        wakes: AtomicUsize::new(0),
++                    });
++                    let waker = futures::task::waker(probe.clone());
++                    let mut subscription = group.subscribe_cancellation();
++                    assert!(
++                        subscription
++                            .poll_unpin(&mut Context::from_waker(&waker))
++                            .is_pending()
++                    );
++                    assert_eq!(probe.wakes.load(Ordering::Relaxed), 0);
++                    if exit_group {
++                        group.request_exit_group(ExitStatus::Exited(47));
++                    } else {
++                        group.cancel_workers();
++                    }
++                    assert!(probe.wakes.load(Ordering::Relaxed) > 0);
++                    assert_eq!(subscription.now_or_never(), Some(Ok(())));
++                }
++            }
++        }
++    }
++
+     mod initialization_tests {
+         use std::io::Seek;
+         use std::io::SeekFrom;
+@@ -4866,7 +5222,12 @@ mod tests {
+         let trampoline_offset = trampoline_hypercall - backend.syscall_trampoline_address;
+         backend.syscall_trampoline_address = ENTRY + 12 - trampoline_offset;
+ 
+-        let frame_address = match backend.vcpu.run().unwrap() {
++        let frame_address = match backend
++            .vcpu
++            .run()
++            .unwrap()
++            .expect("test entry admission was unexpectedly closed")
++        {
+             VcpuExit::Hypercall(exit) => {
+                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+                 *exit.ret = 0;
+@@ -4945,6 +5306,7 @@ mod tests {
+             ProcessActionOutcome {
+                 image_replaced: false,
+                 syscall_result: expected_result,
++                cancelled: false,
+             }
+         );
+         let mut restored_frame = [0; FRAME_SIZE];
+@@ -4982,6 +5344,7 @@ mod tests {
+             ProcessActionOutcome {
+                 image_replaced: false,
+                 syscall_result: expected_exec_result,
++                cancelled: false,
+             },
+             "the injected Exec result belongs to the Tool"
+         );
+@@ -5387,11 +5750,11 @@ mod tests {
+ 
+         let global = Arc::new(ForkFailureIdentityLog::default());
+         let failure = crate::failure::RunFailure::new(&global);
+-        parent.tool_failure = Some(crate::failure::FailureContext::new(
++        parent.set_tool_failure(Some(crate::failure::FailureContext::new(
+             failure.clone(),
+             Pid::from_raw(1),
+             Pid::from_raw(1),
+-        ));
++        )));
+         let mut child = parent
+             .prepare_forked_process(
+                 &executor, 2, None, None, None, None, false, false, false, None,
+@@ -5509,7 +5872,12 @@ mod tests {
+             .install_static_elf(&minimal_test_elf(&code), "/bin/fatal-process-memory")
+             .unwrap();
+         let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);
+-        match parent.vcpu.run().unwrap() {
++        match parent
++            .vcpu
++            .run()
++            .unwrap()
++            .expect("test entry admission was unexpectedly closed")
++        {
+             VcpuExit::Hypercall(exit) => {
+                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+                 *exit.ret = 0;
+@@ -5636,7 +6004,14 @@ mod tests {
+                 registers.rcx = 0x7777;
+                 registers.r11 = 0x8888;
+                 backend.vcpu.set_regs(&registers).unwrap();
+-                assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
++                assert!(matches!(
++                    backend
++                        .vcpu
++                        .run()
++                        .unwrap()
++                        .expect("test entry admission was unexpectedly closed"),
++                    VcpuExit::Hlt
++                ));
+                 let fault = backend.capture_page_zero_fault(&executor).unwrap().unwrap();
+                 let mut frame_before = [0; PAGE_SIZE as usize];
+                 let mut exception_before = [0; PAGE_SIZE as usize];
+@@ -5747,7 +6122,12 @@ mod tests {
+             .install_static_elf(&minimal_test_elf(&code), "/bin/fatal-process-memory")
+             .unwrap();
+         let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);
+-        match parent.vcpu.run().unwrap() {
++        match parent
++            .vcpu
++            .run()
++            .unwrap()
++            .expect("test entry admission was unexpectedly closed")
++        {
+             VcpuExit::Hypercall(exit) => {
+                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+                 *exit.ret = 0;
+@@ -6459,7 +6839,7 @@ mod tests {
+                     Pid::from_raw(1),
+                     Pid::from_raw(1),
+                 );
+-                cleanup.backend.tool_failure = Some(context.clone());
++                cleanup.backend.set_tool_failure(Some(context.clone()));
+                 let action = if thread {
+                     ProcessAction::Thread {
+                         child_tid: 2,
+@@ -6667,7 +7047,14 @@ mod tests {
+                 )
+                 .unwrap();
+             backend.set_rdtsc_interception(true).unwrap();
+-            assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
++            assert!(matches!(
++                backend
++                    .vcpu
++                    .run()
++                    .unwrap()
++                    .expect("test entry admission was unexpectedly closed"),
++                VcpuExit::Hlt
++            ));
+             let fault = backend.static_elf_exception().unwrap().unwrap();
+             assert_eq!(fault.instruction_pointer, BOUNDARY - 2);
+             assert_eq!(fault.vector, if rdtscp { 14 } else { 13 });
+@@ -6778,7 +7165,12 @@ mod tests {
+         // before its manual first guest entry, just as the production runner does.
+         backend.vcpu.track_clock().unwrap();
+         let mut executor = ElfExecutor::new(backend.static_elf.take().unwrap(), false);
+-        let frame_address = match backend.vcpu.run().unwrap() {
++        let frame_address = match backend
++            .vcpu
++            .run()
++            .unwrap()
++            .expect("test entry admission was unexpectedly closed")
++        {
+             VcpuExit::Hypercall(exit) => {
+                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+                 *exit.ret = 0;

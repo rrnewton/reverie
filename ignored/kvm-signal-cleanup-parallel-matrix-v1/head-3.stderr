@@ -1,0 +1,199 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+thread 'clock::tests::unwind_closes_counter_and_poison_prevents_future_success' (889913) panicked at reverie-kvm/src/clock.rs:1027:13:
+simulated vCPU unwinding
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index' (889914) panicked at reverie-kvm/src/cpuid.rs:152:9:
+fixed CPUID profile contains duplicate leaf 0xd, subleaf 0x0
+actual rejected MSR transfers: read 1/2; write 0/1
+
+thread 'entry::owner::tests::unwind_abandons_registration_but_preserves_pending_and_destruction' (889976) panicked at reverie-kvm/src/entry/owner.rs:900:13:
+controlled callback owner unwind
+number=19 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+syscall=59 case=path result=Some(-14) expected=-14
+syscall=59 case=argv result=Some(-14) expected=-14
+syscall=59 case=envp result=Some(-14) expected=-14
+syscall=59 case=missing result=Some(-2) expected=-2
+
+thread '<unnamed>' (890544) panicked at reverie-kvm/src/process_signal_publication.rs:1323:17:
+controlled authoritative-table poison
+syscall=59 case=malformed result=Some(-8) expected=-8
+capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::capture_identity_keeps_closed_standard_descriptors_closed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.00s
+
+
+stderr:
+capture closed standard descriptors completed
+
+
+thread '<unnamed>' (890575) panicked at reverie-kvm/src/executor.rs:37910:25:
+forced completed child panic
+
+thread '<unnamed>' (890515) panicked at reverie-kvm/src/executor.rs:37875:26:
+forced pending child panic
+
+thread 'memory::tests::entry_copy_tests::copy_unwind_captures_handle_origin_without_publishing_tool_failure' (890630) panicked at reverie-kvm/src/memory.rs:2307:21:
+controlled admitted-copy unwind
+
+thread 'memory::tests::entry_copy_tests::retired_memory_origin_retains_cause_without_expired_publisher' (890634) panicked at reverie-kvm/src/memory.rs:2400:21:
+copy after owner retirement
+
+thread 'memory::tests::entry_copy_tests::retained_memory_copy_keeps_its_issuing_callback_generation' (890633) panicked at reverie-kvm/src/memory.rs:2347:21:
+retained callback copy unwind
+syscall=19 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=4096 full_file_and_buffer_match=true
+number=19 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.01s
+
+
+stderr:
+
+thread 'executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind' (890542) panicked at reverie-kvm/src/capture_identity_tests.rs:332:17:
+intentional capture cleanup unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+capture final owner cleanup completed
+
+isolated file-table control status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::shared_file_table_install_emfile_preserves_original_descriptions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.01s
+
+
+stderr:
+file-table EMFILE control completed
+
+number=20 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+
+thread 'runtime::signal_cleanup_completion_tests::poisoned_signal_cleanup_child_state_becomes_a_typed_invariant_error' (890752) panicked at reverie-kvm/src/runtime/signal_cleanup_completion_tests.rs:326:13:
+controlled child-start lock poison
+untouched snapshot: SEEK_DATA(0)=-1, error=Some(Os { code: 6, kind: Uncategorized, message: "No such device or address" }), initial_enxio=true, sparse_copy=Ok(())
+
+thread 'executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards' (890127) panicked at reverie-kvm/src/executor.rs:26722:65:
+called `Result::unwrap()` on an `Err` value: Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+
+thread 'runtime::tests::same_thread_stack_checkout_still_panics' (890804) panicked at reverie-kvm/src/runtime.rs:1652:9:
+cannot retrieve a KVM guest stack while its previous guard is live
+
+thread '<unnamed>' (890539) panicked at reverie-kvm/src/executor.rs:37884:29:
+forced completion lock poison
+number=20 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+syscall=19 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=0 full_file_and_buffer_match=true
+syscall=59 case=valid result=Some(-38) expected=-38
+syscall=322 case=path result=Some(-14) expected=-14
+syscall=322 case=argv result=Some(-14) expected=-14
+syscall=322 case=envp result=Some(-14) expected=-14
+syscall=322 case=missing result=Some(-2) expected=-2
+signalfd keeper child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::process_signal_publication::tests::active_carrier_preparation_emfile_has_no_guest_descriptor_effect ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.00s
+
+
+stderr:
+signalfd keeper EMFILE control completed
+
+number=295 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+syscall=322 case=malformed result=Some(-8) expected=-8
+
+thread '<unnamed>' (890939) panicked at reverie-kvm/src/terminal_vm_tests.rs:32:54:
+forced worker panic
+number=295 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+
+thread '<unnamed>' (891119) panicked at reverie-kvm/src/vm.rs:9813:17:
+controlled worker failure-state poison
+number=296 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+syscall=19 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=4096 full_file_and_buffer_match=true
+syscall=322 case=valid result=Some(-38) expected=-38
+number=296 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+
+thread '<unnamed>' (891197) panicked at reverie-kvm/src/vm.rs:9833:21:
+controlled start-gate registry poison
+capture child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.09s
+
+
+stderr:
+capture setup EMFILE control completed
+
+syscall=19 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=0 full_file_and_buffer_match=true
+number=327 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+number=327 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+syscall=19 count=1 length=9223372036854775806 offset=5 native=4096 mediated=4096 position=4101 full_file_and_buffer_match=true
+reverie-kvm guest thread 42 tool loop failed: KVM execution stopped after a fatal run failure
+
+thread '<unnamed>' (891343) panicked at reverie-kvm/src/vm.rs:9833:21:
+controlled start-gate registry poison
+number=328 separate_tail=false result=-95 position=4096 file_unchanged=true memory_unchanged=true
+park=true result=Err(GuestThreadExecUnsupported) cancelled=true exit_status=Some(Exited(127)) registers_unchanged=true memory_unchanged=true
+syscall=19 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=5 full_file_and_buffer_match=true
+park=false result=Err(GuestThreadExecUnsupported) cancelled=true exit_status=Some(Exited(127)) registers_unchanged=true memory_unchanged=true
+syscall=19 count=1 length=9223372036854775807 offset=5 native=4096 mediated=4096 position=4101 full_file_and_buffer_match=true
+number=328 separate_tail=true result=-95 position=4096 file_unchanged=true memory_unchanged=true
+syscall=19 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=5 full_file_and_buffer_match=true
+syscall=20 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=4096 full_file_and_buffer_match=true
+syscall=20 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=0 full_file_and_buffer_match=true
+syscall=20 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=4096 full_file_and_buffer_match=true
+syscall=20 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=0 full_file_and_buffer_match=true
+syscall=20 count=1 length=9223372036854775806 offset=5 native=4091 mediated=4091 position=4096 full_file_and_buffer_match=true
+syscall=20 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=5 full_file_and_buffer_match=true
+syscall=20 count=1 length=9223372036854775807 offset=5 native=4091 mediated=4091 position=4096 full_file_and_buffer_match=true
+syscall=20 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=5 full_file_and_buffer_match=true
+syscall=295 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=295 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=295 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=295 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=295 count=1 length=9223372036854775806 offset=5 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=295 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=295 count=1 length=9223372036854775807 offset=5 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=295 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=296 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=296 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=296 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=296 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=296 count=1 length=9223372036854775806 offset=5 native=4091 mediated=4091 position=11 full_file_and_buffer_match=true
+syscall=296 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=296 count=1 length=9223372036854775807 offset=5 native=4091 mediated=4091 position=11 full_file_and_buffer_match=true
+syscall=296 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=327 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=327 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=327 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=327 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=327 count=1 length=9223372036854775806 offset=5 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=327 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=327 count=1 length=9223372036854775807 offset=5 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=327 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=328 count=1 length=9223372036854775806 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=328 count=2 length=9223372036854775806 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=328 count=1 length=9223372036854775807 offset=0 native=4096 mediated=4096 position=11 full_file_and_buffer_match=true
+syscall=328 count=2 length=9223372036854775807 offset=0 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=328 count=1 length=9223372036854775806 offset=5 native=4091 mediated=4091 position=11 full_file_and_buffer_match=true
+syscall=328 count=2 length=9223372036854775806 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+syscall=328 count=1 length=9223372036854775807 offset=5 native=4091 mediated=4091 position=11 full_file_and_buffer_match=true
+syscall=328 count=2 length=9223372036854775807 offset=5 native=-14 mediated=-14 position=11 full_file_and_buffer_match=true
+reverie-kvm guest thread 4 tool loop failed: Reverie tool failed: B callback; KVM execution stopped after a fatal run failure; committed signal effects: 1 removals, 0 publication receipts; KVM execution stopped after a fatal run failure
+reverie-kvm guest thread 2 tool loop failed: KVM execution stopped after a fatal run failure
+reverie-kvm guest thread 3 tool loop failed: host filesystem operation failed: Owner died (os error 130); committed signal effects: 1 removals, 0 publication receipts; Reverie tool failed: A exit; host filesystem operation failed: Owner died (os error 130)
+error: test failed, to rerun pass `-p reverie-kvm --lib`

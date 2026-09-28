@@ -1,0 +1,151 @@
+--- before/reverie-kvm/src/memory.rs
++++ after/reverie-kvm/src/memory.rs
+@@ -907,6 +907,24 @@
+     // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
+     pub(crate) fn write_raw(&self, guest_address: u64, source: &[u8]) -> Result<()> {
+         self.with_copy(|copy| self.write_raw_admitted(guest_address, source, copy))
++    }
++
++    /// Attempts one short copy without parking the calling executor. A closed
++    /// gate returns None before inspecting layout or taking a backing lock.
++    /// The owner must subscribe, recheck its stop predicates and await before
++    /// retrying; None is neither a completed copy nor a guest memory fault.
++    pub(crate) fn try_write_raw(&self, guest_address: u64, source: &[u8]) -> Result<Option<()>> {
++        let Some(copy) = self
++            .mapping
++            .entry_gate
++            .try_copy(self.failure_context.clone())
++            .map_err(|failure| failure.error())?
++        else {
++            return Ok(None);
++        };
++        let result = self.write_raw_admitted(guest_address, source, &copy);
++        self.check_copy_failure()?;
++        result.map(Some)
+     }
+ 
+     fn write_raw_admitted(
+@@ -2178,6 +2196,72 @@
+             assert!(memory.mapping.address_space.try_lock().is_ok());
+             assert!(memory.mapping.slice.backing.host_access.try_lock().is_ok());
+         }
++
++        #[test]
++        fn try_raw_write_defers_closed_copy_and_retains_poison_and_bounds() {
++            let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
++            memory.write_raw(BASE, b"keep").unwrap();
++            // This separate test view observes the bytes while the original
++            // Mapping is closed; it grants no production shared-view policy.
++            let observer =
++                GuestMemory::from_backing_slice(BASE, memory.mapping.slice.clone()).unwrap();
++            let gate = memory.entry_gate();
++            let closed = gate
++                .try_close()
++                .unwrap()
++                .unwrap()
++                .finish()
++                .now_or_never()
++                .expect("idle Mapping did not close")
++                .unwrap();
++            // Holding these locks makes any premature backing/state access a
++            // test deadlock rather than a falsely successful admission check.
++            {
++                let _state = memory.mapping.address_space.lock().unwrap();
++                let _backing = memory.mapping.slice.backing.host_access.lock().unwrap();
++                assert_eq!(memory.try_write_raw(BASE, b"lost").unwrap(), None);
++                assert_eq!(memory.try_write_raw(u64::MAX, b"x").unwrap(), None);
++            }
++            let mut bytes = [0; 4];
++            observer.read_raw(BASE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"keep");
++            drop(closed);
++            assert_eq!(memory.try_write_raw(BASE, b"next").unwrap(), Some(()));
++            observer.read_raw(BASE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"next");
++            assert_eq!(
++                memory.try_write_raw(memory.guest_end(), &[]).unwrap(),
++                Some(())
++            );
++            for (address, source) in [
++                (BASE - 1, b"x".as_slice()),
++                (memory.guest_end() - 1, b"xy".as_slice()),
++            ] {
++                let expected = memory.write_raw(address, source).unwrap_err();
++                let actual = memory.try_write_raw(address, source).unwrap_err();
++                assert_eq!(actual.to_string(), expected.to_string());
++                assert!(matches!(
++                    actual,
++                    Error::InvalidGuestAddress {
++                        address: found_address,
++                        length,
++                        guest_base,
++                        guest_end,
++                    } if found_address == address
++                        && length == source.len()
++                        && guest_base == BASE
++                        && guest_end == memory.guest_end()
++                ));
++            }
++            observer.read_raw(BASE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"next");
++            let original = cause();
++            gate.poison(None, Error::SharedFailure(original.clone()));
++            assert_cause(memory.try_write_raw(BASE, b"lost"), &original);
++            assert_cause(memory.try_write_raw(u64::MAX, &[]), &original);
++            observer.read_raw(BASE, &mut bytes).unwrap();
++            assert_eq!(&bytes, b"next");
++        }
+     }
+ 
+     #[test]
+--- before/reverie-kvm/src/bootstrap.rs
++++ after/reverie-kvm/src/bootstrap.rs
+@@ -452,6 +452,39 @@
+     syscall_frame_address: u64,
+     park: bool,
+ ) -> Result<()> {
++    let (address, byte) = syscall_return_park_byte(
++        hypercall_instruction,
++        syscall_trampoline_address,
++        syscall_frame_address,
++        park,
++    );
++    memory.write_raw(address, &[byte])
++}
++
++/// The async owner retains its parking stage when admission is closed. This
++/// helper neither waits for reopening nor executes a guest instruction.
++pub(crate) fn try_set_syscall_return_park(
++    memory: &mut GuestMemory,
++    hypercall_instruction: [u8; 3],
++    syscall_trampoline_address: u64,
++    syscall_frame_address: u64,
++    park: bool,
++) -> Result<Option<()>> {
++    let (address, byte) = syscall_return_park_byte(
++        hypercall_instruction,
++        syscall_trampoline_address,
++        syscall_frame_address,
++        park,
++    );
++    memory.try_write_raw(address, &[byte])
++}
++
++fn syscall_return_park_byte(
++    hypercall_instruction: [u8; 3],
++    syscall_trampoline_address: u64,
++    syscall_frame_address: u64,
++    park: bool,
++) -> (u64, u8) {
+     let trampoline = syscall_trampoline(hypercall_instruction, syscall_frame_address);
+     let return_offset = (syscall_hypercall_address(
+         hypercall_instruction,
+@@ -464,7 +497,7 @@
+     } else {
+         trampoline[return_offset]
+     };
+-    memory.write_raw(syscall_trampoline_address + return_offset as u64, &[byte])
++    (syscall_trampoline_address + return_offset as u64, byte)
+ }
+ 
+ fn write_descriptor_tables(memory: &mut GuestMemory) -> Result<()> {

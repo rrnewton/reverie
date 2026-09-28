@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-injected-boundary-1-1273058.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 72ms
+             CPU time consumed: 8ms
+                   Memory peak: 2.7M (swap: 0B)

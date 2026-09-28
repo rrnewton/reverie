@@ -1,0 +1,82 @@
+PHASE control-08 SELECTOR cpuid_dispatch::cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-08/stdout SHA256 712c8890bb10cee5ceb832128867755da926658ae900dcd427973c1b253f5bb5
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid_dispatch::cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact" }
+{ "type": "test", "name": "cpuid_dispatch::cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.158364198 }
+END STREAM
+
+PHASE control-08 SELECTOR cpuid_dispatch::cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-08/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-09 SELECTOR cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-09/stdout SHA256 f37e6ac248f27788e6053a9694b14ecba3ddf6ffcc983f1380937d40313ec33b
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed" }
+{ "type": "test", "name": "cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.143992369 }
+END STREAM
+
+PHASE control-09 SELECTOR cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-09/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-10 SELECTOR cpuid_dispatch::unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-10/stdout SHA256 96a87512a31e3b61b62e20d4d5104743dcc140ae9d4146cd66a9937811d92bc4
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid_dispatch::unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy" }
+{ "type": "test", "name": "cpuid_dispatch::unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.165351235 }
+END STREAM
+
+PHASE control-10 SELECTOR cpuid_dispatch::unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-10/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-11 SELECTOR cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-11/stdout SHA256 5aa43f83b32f904bce94d5159bc7da222a1209757903bdf737ce0002cefe0e63
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec" }
+{ "type": "test", "name": "cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.08022993 }
+END STREAM
+
+PHASE control-11 SELECTOR cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-11/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-12 SELECTOR cpuid_dispatch::cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-12/stdout SHA256 97ba25b1c7d8f7926b5c1aa3db79a1792eede2d377e0ee5f7c12f6b846649a50
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid_dispatch::cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges" }
+{ "type": "test", "name": "cpuid_dispatch::cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.041362749 }
+END STREAM
+
+PHASE control-12 SELECTOR cpuid_dispatch::cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-12/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-13 SELECTOR cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-13/stdout SHA256 f6970565afefcaaf5618b0ab4b1a0f33032d76863ffb0328cdbebacdb65affac
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup" }
+{ "type": "test", "name": "cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.476023688 }
+END STREAM
+
+PHASE control-13 SELECTOR cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-13/stderr SHA256 d236d9e7c8fe619ced9113d4b443daca23500285a28c2b25f997656d2c4c61c0
+actual terminal exit cleanup failure: SharedFailure(Reverie(Errno(EIO)))
+END STREAM
+
+PHASE control-14 SELECTOR cpuid_terminal::nonterminal_tails_refuse_before_side_effects STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-14/stdout SHA256 4e8e208cb62ba336f5280084d2d8825517f5b7a32ab318e450f1c35b5462e3d6
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid_terminal::nonterminal_tails_refuse_before_side_effects" }
+{ "type": "test", "name": "cpuid_terminal::nonterminal_tails_refuse_before_side_effects", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.550922734 }
+END STREAM
+
+PHASE control-14 SELECTOR cpuid_terminal::nonterminal_tails_refuse_before_side_effects STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-14/stderr SHA256 3919f4cc6e6333c87962c8f5f7b90f097da5ad435a73fa18e3d9e51bd8ac31ae
+actual refused CPUID tail mode=3: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused CPUID tail mode=4: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused CPUID tail mode=5: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused CPUID tail mode=6: SharedFailure(Reverie(Errno(ENOSYS)))
+END STREAM
+
+PHASE control-15 SELECTOR cpuid_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-15/stdout SHA256 96872150969cd2869c86fa9de4a6a0b551fd931045f771fa6ed6fb8b7f8eface
+{ "type": "suite", "event": "started", "test_count": 1 }

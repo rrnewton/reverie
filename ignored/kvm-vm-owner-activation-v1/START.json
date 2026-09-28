@@ -1,0 +1,6 @@
+{
+  "file": "reverie-kvm/src/vm.rs",
+  "bytes": 390011,
+  "sha256": "30e4287a9bd5b9686862f13800a663bbc02852419ce714fe96f8a9ec1f557e47",
+  "scope": "vm.rs driver lifetime implementation only; no SCM/compiler/formatter/tests"
+}

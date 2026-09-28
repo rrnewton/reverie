@@ -1,0 +1,15 @@
+{"raw_status": 0, "elapsed_seconds": 0.04499337496235967, "stream_bytes": {"stdout": 192, "stderr": 579}, "refusal": null, "source_unchanged": true}
+Running as unit: kvm-cancel-wake-late-start-469885.service
+
+thread '<unnamed>' (469959) panicked at reverie-kvm/src/vm.rs:8367:21:
+controlled start-gate registry poison
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread '<unnamed>' (469961) panicked at reverie-kvm/src/vm.rs:8367:21:
+controlled start-gate registry poison
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 4ms
+             CPU time consumed: 3ms
+                   Memory peak: 1.4M (swap: 0B)
+

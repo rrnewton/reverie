@@ -1,0 +1,160 @@
+            return Ok(());
+        }
+
+        if let Some(stop_tx) = self.gdb_stop_tx.as_ref() {
+            let request_tx = self.gdb_request_tx.clone();
+            let resume_tx = self.gdb_resume_tx.clone();
+            let stop = StoppedInferior {
+                reason,
+                request_tx: request_tx.ok_or(Errno::EIO)?,
+                resume_tx: resume_tx.ok_or(Errno::EIO)?,
+            };
+            if stop_tx.send(stop).await.is_err() {
+                tracing::warn!(
+                    tid = %self.tid(),
+                    "GDB stop channel closed while reporting tracee stop"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_gdb_request(&mut self, request: Option<GdbRequest>) {
+        if let Some(request) = request {
+            match request {
+                GdbRequest::SetBreakpoint(bkpt, reply_tx) => {
+                    if bkpt.ty == BreakpointType::Software {
+                        let result = self.add_breakpoint(bkpt.addr).await;
+                        let _ = reply_tx.send(result);
+                    }
+                }
+                GdbRequest::RemoveBreakpoint(bkpt, reply_tx) => {
+                    if bkpt.ty == BreakpointType::Software {
+                        let result = self.remove_breakpoint(bkpt.addr).await;
+                        let _ = reply_tx.send(result);
+                    }
+                }
+                GdbRequest::ReadInferiorMemory(addr, length, reply_tx) => {
+                    let result = self.read_inferior_memory(addr, length);
+                    let _ = reply_tx.send(result);
+                }
+                GdbRequest::WriteInferiorMemory(addr, length, data, reply_tx) => {
+                    let result = self.write_inferior_memory(addr, length, data);
+                    let _ = reply_tx.send(result);
+                }
+                GdbRequest::ReadRegisters(reply_tx) => {
+                    let result = self.read_registers();
+                    let _ = reply_tx.send(result);
+                }
+                GdbRequest::WriteRegisters(core_regs, reply_tx) => {
+                    let result = self.write_registers(core_regs);
+                    let _ = reply_tx.send(result);
+                }
+            }
+        }
+    }
+
+    async fn handle_gdb_resume(
+        &mut self,
+        resume: Option<ResumeInferior>,
+        task: Stopped,
+        resume_action: ExpectedGdbResume,
+    ) -> Result<(Running, Option<ResumeInferior>), TraceError> {
+        match resume {
+            None => Ok((self.resume_stopped(task, None)?, None)),
+            Some(resume) => {
+                let is_resume = resume_action == ExpectedGdbResume::Resume || resume.detach;
+                let is_step_only = resume_action == ExpectedGdbResume::StepOnly;
+                // During a step-over, gdb normally single-steps over the
+                // breakpoint installed at the current PC. But if gdb has already
+                // removed that breakpoint it issues a plain continue instead of a
+                // single-step. This happens, for example, after `finish`: gdb
+                // implements it with a temporary breakpoint at the return address
+                // which it deletes as soon as it is hit, so when the user then
+                // resumes there is no breakpoint left to step over. No step-over
+                // is required in that case, so resume normally rather than
+                // treating the continue as an unexpected action (which used to
+                // panic here).
+                let is_step_over = resume_action == ExpectedGdbResume::StepOver;
+                let running = match resume.action {
+                    ResumeAction::Step(sig) => self.step_stopped(task, sig)?,
+                    ResumeAction::Continue(sig) if is_resume => self.resume_stopped(task, sig)?,
+                    ResumeAction::Continue(sig) if is_step_only => self.step_stopped(task, sig)?,
+                    ResumeAction::Continue(sig) if is_step_over => {
+                        self.resume_stopped(task, sig)?
+                    }
+                    action => panic!(
+                        "[pid = {}] unexpected resume action {:?}, expecting: {:?}",
+                        task.pid(),
+                        action,
+                        resume_action,
+                    ),
+                };
+                Ok((running, Some(resume)))
+            }
+        }
+    }
+
+    async fn await_gdb_resume(
+        &mut self,
+        task: Stopped,
+        resume_action: ExpectedGdbResume,
+    ) -> Result<Running, TraceError> {
+        if !self.attached_by_gdb {
+            return self.resume_stopped(task, None);
+        }
+
+        let mut resume_rx = self.gdb_resume_rx.take().ok_or(Errno::EIO)?;
+        let mut gdb_request_rx = self.gdb_request_rx.take().ok_or(Errno::EIO)?;
+
+        let mut resume_future = Box::pin(resume_rx.recv());
+
+        let (running, resumed) = loop {
+            let request_future = Box::pin(gdb_request_rx.recv());
+
+            match future::select(request_future, resume_future).await {
+                Either::Left((gdb_request, pending_resume_future)) => {
+                    self.handle_gdb_request(gdb_request).await;
+                    resume_future = pending_resume_future;
+                }
+                Either::Right((resume_request, _)) => {
+                    break self
+                        .handle_gdb_resume(resume_request, task, resume_action)
+                        .await?;
+                }
+            }
+        };
+
+        self.gdb_request_rx = Some(gdb_request_rx);
+        self.gdb_resume_rx = Some(resume_rx);
+
+        if let Some(resumed) = resumed {
+            if resumed.detach {
+                tracing::debug!(
+                    target: "reverie_ptrace::lifecycle",
+                    parent: &tracing::debug_span!(
+                        target: "reverie_ptrace::lifecycle",
+                        "tracee.detach",
+                        tid = %self.tid(),
+                        reason = "GDB detach"
+                    ),
+                    "GDB detached from tracee"
+                );
+                // no longer report stop event to gdb
+                // self.gdb_stop_tx = None;
+                self.attached_by_gdb = false;
+            }
+
+            self.resumed_by_gdb = Some(resumed.action);
+        }
+
+        Ok(running)
+    }
+
+    /// Resume from a software breakpoint set by gdb. The resume action is
+    /// initiated from gdb (client).
+    // NB: caller to %rip accordingly prior to hitting breakpoint.
+    async fn resume_from_swbreak(
+        &mut self,
+        task: Stopped,
+        regs: libc::user_regs_struct,

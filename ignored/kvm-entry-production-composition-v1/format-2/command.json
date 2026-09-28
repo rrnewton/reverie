@@ -1,0 +1,122 @@
+{
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/clock.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs"
+  ],
+  "environment": {
+    "HOME": "/home/newton",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_TERM_COLOR": "never",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TZ": "UTC",
+    "RUSTUP_TOOLCHAIN": "nightly-2026-07-29",
+    "RUSTUP_AUTO_INSTALL": "0"
+  },
+  "service": [
+    "/usr/bin/systemd-run",
+    "--user",
+    "--wait",
+    "--pipe",
+    "--collect",
+    "--unit",
+    "kvm-entry-production-format-2-1361578",
+    "--property=CPUQuota=200%",
+    "--property=MemoryMax=12G",
+    "--property=MemorySwapMax=0",
+    "--property=LimitCORE=0",
+    "--property=RuntimeMaxSec=30",
+    "--property=TimeoutStopSec=10",
+    "--property=KillMode=control-group",
+    "--working-directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+    "/usr/bin/env",
+    "-i",
+    "HOME=/home/newton",
+    "PATH=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin",
+    "CARGO_HOME=/home/newton/.cargo",
+    "CARGO_TARGET_DIR=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1",
+    "RUSTC=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_BUILD_JOBS=2",
+    "CARGO_NET_OFFLINE=true",
+    "CARGO_TERM_COLOR=never",
+    "LANG=C",
+    "LC_ALL=C",
+    "TZ=UTC",
+    "RUSTUP_TOOLCHAIN=nightly-2026-07-29",
+    "RUSTUP_AUTO_INSTALL=0",
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/clock.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs"
+  ],
+  "source": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 41552,
+      "sha256": "620997fa8cb6f47e261a2ee99104a86493b610a942bfc2aae5394beef54e559a"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    },
+    "reverie-kvm/src/clock.rs": {
+      "bytes": 36789,
+      "sha256": "b930c4c49b470af5142809c5d75167a54104272214921647993b7baa5ed470e0"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 355161,
+      "sha256": "b1e1a6e24ed77129a39b68ef897818ae550c27f238dcb9c08282c1f8d9abc65e"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 213900,
+      "sha256": "3deaeabdecb157d1f5a4358eb8820bc6c0d41ebb9a8a2655146e270f54f102ed"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "bytes": 118772,
+      "sha256": "ab7537c4e07b2466b036066b1b92d9060d6e248f7c17775c2dd1e34a6f16f606"
+    },
+    "reverie-kvm/src/cpuid_runtime_tests.rs": {
+      "bytes": 5963,
+      "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 28158,
+      "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"
+    },
+    "Cargo.lock": {
+      "bytes": 67056,
+      "sha256": "0a5ecdf9fc94cf7eddad15c0ced7c61ed9f4db08a47f5e1a668d5a7f663c8419"
+    }
+  },
+  "wall_seconds": 30,
+  "stream_cap_bytes": 16777216,
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe"
+}

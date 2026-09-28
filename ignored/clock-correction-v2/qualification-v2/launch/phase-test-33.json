@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/phase.py",
+    "launch",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-33-plan.json",
+    "0d93383cb755681ff25e29d552ee835466c11273a1ed901b21f5a90ff30115f4"
+  ],
+  "returncode": 0,
+  "elapsed_seconds": 8.387479162076488,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/launch/phase-test-33.stdout",
+    "bytes": 2424,
+    "mode": 420,
+    "sha256": "322c14548a8b8cb0142c113619d8809dc357d7f743b386f06ab28f9830722633"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/launch/phase-test-33.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -1,0 +1,1269 @@
+﻿2026-09-20T18:25:39.1050143Z Current runner version: '2.337.0'
+2026-09-20T18:25:39.1074948Z ##[group]Runner Image Provisioner
+2026-09-20T18:25:39.1075936Z Hosted Compute Agent
+2026-09-20T18:25:39.1076650Z Version: 20260828.587
+2026-09-20T18:25:39.1077322Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+2026-09-20T18:25:39.1078102Z Build Date: 2026-08-28T16:44:25Z
+2026-09-20T18:25:39.1078849Z Worker ID: {54e4464b-01eb-47b7-8a24-3e7fff02fab0}
+2026-09-20T18:25:39.1079569Z Azure Region: westus
+2026-09-20T18:25:39.1080127Z ##[endgroup]
+2026-09-20T18:25:39.1081773Z ##[group]Operating System
+2026-09-20T18:25:39.1082458Z Ubuntu
+2026-09-20T18:25:39.1083240Z 24.04.5
+2026-09-20T18:25:39.1083837Z LTS
+2026-09-20T18:25:39.1084370Z ##[endgroup]
+2026-09-20T18:25:39.1084995Z ##[group]Runner Image
+2026-09-20T18:25:39.1085665Z Image: ubuntu-24.04
+2026-09-20T18:25:39.1086265Z Version: 20260907.300.1
+2026-09-20T18:25:39.1087518Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260907.300/images/ubuntu/Ubuntu2404-Readme.md
+2026-09-20T18:25:39.1089106Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260907.300
+2026-09-20T18:25:39.1090106Z ##[endgroup]
+2026-09-20T18:25:39.1091393Z ##[group]GITHUB_TOKEN Permissions
+2026-09-20T18:25:39.1093676Z Contents: read
+2026-09-20T18:25:39.1094635Z Metadata: read
+2026-09-20T18:25:39.1095279Z Packages: read
+2026-09-20T18:25:39.1095838Z ##[endgroup]
+2026-09-20T18:25:39.1098032Z Secret source: Actions
+2026-09-20T18:25:39.1099027Z Cache mode: write
+2026-09-20T18:25:39.1100003Z Prepare workflow directory
+2026-09-20T18:25:39.1512708Z Prepare all required actions
+2026-09-20T18:25:39.1560123Z Getting action download info
+2026-09-20T18:25:39.5049758Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-09-20T18:25:39.6025282Z Download action repository 'dtolnay/rust-toolchain@nightly' (SHA:be39649afda95dbf70f87cce95f68b8d5797b296)
+2026-09-20T18:25:39.7854013Z Download action repository 'actions/cache@v4' (SHA:0057852bfaa89a56745cba8c7296529d2fc39830)
+2026-09-20T18:25:40.0110048Z Complete job name: Regular tests (GitHub-hosted)
+2026-09-20T18:25:40.0891461Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-09-20T18:25:40.0900570Z ##[group]Run actions/checkout@v4
+2026-09-20T18:25:40.0901308Z with:
+2026-09-20T18:25:40.0901737Z   submodules: false
+2026-09-20T18:25:40.0902209Z   repository: rrnewton/reverie
+2026-09-20T18:25:40.0906369Z   token: ***
+2026-09-20T18:25:40.0906815Z   ssh-strict: true
+2026-09-20T18:25:40.0907251Z   ssh-user: git
+2026-09-20T18:25:40.0907703Z   persist-credentials: true
+2026-09-20T18:25:40.0908183Z   clean: true
+2026-09-20T18:25:40.0908618Z   sparse-checkout-cone-mode: true
+2026-09-20T18:25:40.0909129Z   fetch-depth: 1
+2026-09-20T18:25:40.0909585Z   fetch-tags: false
+2026-09-20T18:25:40.0910025Z   show-progress: true
+2026-09-20T18:25:40.0910502Z   lfs: false
+2026-09-20T18:25:40.0910928Z   set-safe-directory: true
+2026-09-20T18:25:40.0911430Z   allow-unsafe-pr-checkout: false
+2026-09-20T18:25:40.0912196Z env:
+2026-09-20T18:25:40.0912612Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:40.0913266Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:40.0913772Z ##[endgroup]
+2026-09-20T18:25:40.2088744Z Syncing repository: rrnewton/reverie
+2026-09-20T18:25:40.2091201Z ##[group]Getting Git version info
+2026-09-20T18:25:40.2092446Z Working directory is '/home/runner/work/reverie/reverie'
+2026-09-20T18:25:40.2094496Z [command]/usr/bin/git version
+2026-09-20T18:25:40.2205585Z git version 2.55.0
+2026-09-20T18:25:40.2265566Z ##[endgroup]
+2026-09-20T18:25:40.2272908Z Temporarily overriding HOME='/home/runner/work/_temp/1688496a-3bcb-428b-ba9c-3e464c28006d' before making global git config changes
+2026-09-20T18:25:40.2275692Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-20T18:25:40.2278901Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/reverie/reverie
+2026-09-20T18:25:40.2365570Z Deleting the contents of '/home/runner/work/reverie/reverie'
+2026-09-20T18:25:40.2368172Z ##[group]Initializing the repository
+2026-09-20T18:25:40.2378866Z [command]/usr/bin/git init /home/runner/work/reverie/reverie
+2026-09-20T18:25:40.2479875Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-09-20T18:25:40.2482026Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-09-20T18:25:40.2484034Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-09-20T18:25:40.2485390Z hint: call:
+2026-09-20T18:25:40.2487230Z hint:
+2026-09-20T18:25:40.2487943Z hint: 	git config --global init.defaultBranch <name>
+2026-09-20T18:25:40.2489122Z hint:
+2026-09-20T18:25:40.2490183Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-09-20T18:25:40.2491684Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-09-20T18:25:40.2492478Z hint:
+2026-09-20T18:25:40.2492917Z hint: 	git branch -m <name>
+2026-09-20T18:25:40.2493681Z hint:
+2026-09-20T18:25:40.2494338Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-09-20T18:25:40.2496073Z Initialized empty Git repository in /home/runner/work/reverie/reverie/.git/
+2026-09-20T18:25:40.2498558Z [command]/usr/bin/git remote add origin https://github.com/rrnewton/reverie
+2026-09-20T18:25:40.2558041Z ##[endgroup]
+2026-09-20T18:25:40.2560348Z ##[group]Disabling automatic garbage collection
+2026-09-20T18:25:40.2563488Z [command]/usr/bin/git config --local gc.auto 0
+2026-09-20T18:25:40.2592399Z ##[endgroup]
+2026-09-20T18:25:40.2593513Z ##[group]Setting up auth
+2026-09-20T18:25:40.2600906Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-20T18:25:40.2634952Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-20T18:25:40.2997040Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-20T18:25:40.3041732Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-20T18:25:40.3288606Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-20T18:25:40.3325800Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-20T18:25:40.3550357Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-09-20T18:25:40.3588074Z ##[endgroup]
+2026-09-20T18:25:40.3588949Z ##[group]Fetching the repository
+2026-09-20T18:25:40.3598578Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +865023d1a9d2b82320a38e17e5a83bca1c4af3ee:refs/remotes/origin/codex/kvm-signal-cleanup-default-20260919
+2026-09-20T18:25:41.4895543Z From https://github.com/rrnewton/reverie
+2026-09-20T18:25:41.4899217Z  * [new ref]         865023d1a9d2b82320a38e17e5a83bca1c4af3ee -> origin/codex/kvm-signal-cleanup-default-20260919
+2026-09-20T18:25:41.4906799Z ##[endgroup]
+2026-09-20T18:25:41.4909466Z ##[group]Determining the checkout info
+2026-09-20T18:25:41.4912606Z ##[endgroup]
+2026-09-20T18:25:41.4915098Z [command]/usr/bin/git sparse-checkout disable
+2026-09-20T18:25:41.4964971Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-09-20T18:25:41.4998180Z ##[group]Checking out the ref
+2026-09-20T18:25:41.5008984Z [command]/usr/bin/git checkout --progress --force -B codex/kvm-signal-cleanup-default-20260919 refs/remotes/origin/codex/kvm-signal-cleanup-default-20260919
+2026-09-20T18:25:41.7542353Z Switched to a new branch 'codex/kvm-signal-cleanup-default-20260919'
+2026-09-20T18:25:41.7552983Z branch 'codex/kvm-signal-cleanup-default-20260919' set up to track 'origin/codex/kvm-signal-cleanup-default-20260919'.
+2026-09-20T18:25:41.7556657Z ##[endgroup]
+2026-09-20T18:25:41.7603263Z [command]/usr/bin/git log -1 --format=%H
+2026-09-20T18:25:41.7629966Z 865023d1a9d2b82320a38e17e5a83bca1c4af3ee
+2026-09-20T18:25:41.7904681Z ##[group]Run sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
+2026-09-20T18:25:41.7905452Z [36;1msudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev[0m
+2026-09-20T18:25:41.7945707Z shell: /usr/bin/bash -e {0}
+2026-09-20T18:25:41.7946049Z env:
+2026-09-20T18:25:41.7946302Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:41.7946611Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:41.7946903Z ##[endgroup]
+2026-09-20T18:25:42.7263626Z Reading package lists...
+2026-09-20T18:25:42.9163533Z Building dependency tree...
+2026-09-20T18:25:42.9174027Z Reading state information...
+2026-09-20T18:25:43.0807813Z zlib1g-dev is already the newest version (1:1.3.dfsg-3.1ubuntu2.2).
+2026-09-20T18:25:43.0808576Z The following additional packages will be installed:
+2026-09-20T18:25:43.0818373Z   cmake-data libjsoncpp25 librhash0
+2026-09-20T18:25:43.0824747Z Suggested packages:
+2026-09-20T18:25:43.0825183Z   cmake-doc cmake-format elpa-cmake-mode ninja-build liblzma-doc
+2026-09-20T18:25:43.1032890Z The following NEW packages will be installed:
+2026-09-20T18:25:43.1039570Z   cmake cmake-data libjsoncpp25 liblzma-dev librhash0 libunwind-dev
+2026-09-20T18:25:43.1255568Z 0 upgraded, 6 newly installed, 0 to remove and 1 not upgraded.
+2026-09-20T18:25:43.1256109Z Need to get 15.6 MB of archives.
+2026-09-20T18:25:43.1256497Z After this operation, 56.1 MB of additional disk space will be used.
+2026-09-20T18:25:43.1257122Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+2026-09-20T18:25:43.2036582Z Get:2 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libjsoncpp25 amd64 1.9.5-6build1 [82.8 kB]
+2026-09-20T18:25:43.2649684Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 librhash0 amd64 1.4.3-3build1 [129 kB]
+2026-09-20T18:25:43.3265346Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 cmake-data all 3.28.3-1build7 [2155 kB]
+2026-09-20T18:25:43.4271796Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 cmake amd64 3.28.3-1build7 [11.2 MB]
+2026-09-20T18:25:43.7112691Z Get:6 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 liblzma-dev amd64 5.6.1+really5.4.5-1ubuntu0.3 [176 kB]
+2026-09-20T18:25:43.7733997Z Get:7 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libunwind-dev amd64 1.6.2-3build1.1 [1906 kB]
+2026-09-20T18:25:44.0538610Z Fetched 15.6 MB in 1s (22.4 MB/s)
+2026-09-20T18:25:44.0797994Z Selecting previously unselected package libjsoncpp25:amd64.
+2026-09-20T18:25:44.1087083Z (Reading database ... 
+2026-09-20T18:25:44.1093972Z (Reading database ... 5%
+2026-09-20T18:25:44.1098915Z (Reading database ... 10%
+2026-09-20T18:25:44.1099353Z (Reading database ... 15%
+2026-09-20T18:25:44.1099865Z (Reading database ... 20%
+2026-09-20T18:25:44.1100270Z (Reading database ... 25%
+2026-09-20T18:25:44.1100714Z (Reading database ... 30%
+2026-09-20T18:25:44.1101101Z (Reading database ... 35%
+2026-09-20T18:25:44.1101428Z (Reading database ... 40%
+2026-09-20T18:25:44.1101858Z (Reading database ... 45%
+2026-09-20T18:25:44.1102319Z (Reading database ... 50%
+2026-09-20T18:25:44.1160050Z (Reading database ... 55%
+2026-09-20T18:25:44.2339098Z (Reading database ... 60%
+2026-09-20T18:25:44.4281606Z (Reading database ... 65%
+2026-09-20T18:25:44.5968925Z (Reading database ... 70%
+2026-09-20T18:25:44.7323031Z (Reading database ... 75%
+2026-09-20T18:25:44.9108574Z (Reading database ... 80%
+2026-09-20T18:25:45.0783094Z (Reading database ... 85%
+2026-09-20T18:25:45.1839003Z (Reading database ... 90%
+2026-09-20T18:25:45.3427777Z (Reading database ... 95%
+2026-09-20T18:25:45.3428426Z (Reading database ... 100%
+2026-09-20T18:25:45.3429781Z (Reading database ... 201818 files and directories currently installed.)
+2026-09-20T18:25:45.3467233Z Preparing to unpack .../0-libjsoncpp25_1.9.5-6build1_amd64.deb ...
+2026-09-20T18:25:45.3510818Z Unpacking libjsoncpp25:amd64 (1.9.5-6build1) ...
+2026-09-20T18:25:45.3750776Z Selecting previously unselected package librhash0:amd64.
+2026-09-20T18:25:45.3870806Z Preparing to unpack .../1-librhash0_1.4.3-3build1_amd64.deb ...
+2026-09-20T18:25:45.3881116Z Unpacking librhash0:amd64 (1.4.3-3build1) ...
+2026-09-20T18:25:45.4118603Z Selecting previously unselected package cmake-data.
+2026-09-20T18:25:45.4238242Z Preparing to unpack .../2-cmake-data_3.28.3-1build7_all.deb ...
+2026-09-20T18:25:45.4305514Z Unpacking cmake-data (3.28.3-1build7) ...
+2026-09-20T18:25:45.9919580Z Selecting previously unselected package cmake.
+2026-09-20T18:25:46.0056290Z Preparing to unpack .../3-cmake_3.28.3-1build7_amd64.deb ...
+2026-09-20T18:25:46.0067453Z Unpacking cmake (3.28.3-1build7) ...
+2026-09-20T18:25:46.1625118Z Selecting previously unselected package liblzma-dev:amd64.
+2026-09-20T18:25:46.1751795Z Preparing to unpack .../4-liblzma-dev_5.6.1+really5.4.5-1ubuntu0.3_amd64.deb ...
+2026-09-20T18:25:46.1762809Z Unpacking liblzma-dev:amd64 (5.6.1+really5.4.5-1ubuntu0.3) ...
+2026-09-20T18:25:46.2039198Z Selecting previously unselected package libunwind-dev:amd64.
+2026-09-20T18:25:46.2164750Z Preparing to unpack .../5-libunwind-dev_1.6.2-3build1.1_amd64.deb ...
+2026-09-20T18:25:46.2176987Z Unpacking libunwind-dev:amd64 (1.6.2-3build1.1) ...
+2026-09-20T18:25:46.2833760Z Setting up libjsoncpp25:amd64 (1.9.5-6build1) ...
+2026-09-20T18:25:46.2862343Z Setting up liblzma-dev:amd64 (5.6.1+really5.4.5-1ubuntu0.3) ...
+2026-09-20T18:25:46.2886897Z Setting up librhash0:amd64 (1.4.3-3build1) ...
+2026-09-20T18:25:46.2917950Z Setting up cmake-data (3.28.3-1build7) ...
+2026-09-20T18:25:46.2989071Z Setting up libunwind-dev:amd64 (1.6.2-3build1.1) ...
+2026-09-20T18:25:46.3016756Z Setting up cmake (3.28.3-1build7) ...
+2026-09-20T18:25:46.3046277Z Processing triggers for man-db (2.12.0-4build2) ...
+2026-09-20T18:25:46.3070158Z Not building database; man-db/auto-update is not 'true'.
+2026-09-20T18:25:46.3085143Z Processing triggers for libc-bin (2.39-0ubuntu8.8) ...
+2026-09-20T18:25:46.9928072Z 
+2026-09-20T18:25:46.9928650Z Running kernel seems to be up-to-date.
+2026-09-20T18:25:46.9928960Z 
+2026-09-20T18:25:46.9929081Z No services need to be restarted.
+2026-09-20T18:25:46.9929334Z 
+2026-09-20T18:25:46.9929451Z No containers need to be restarted.
+2026-09-20T18:25:46.9929677Z 
+2026-09-20T18:25:46.9929826Z No user sessions are running outdated binaries.
+2026-09-20T18:25:46.9930102Z 
+2026-09-20T18:25:46.9930357Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+2026-09-20T18:25:47.8062406Z ##[group]Run dtolnay/rust-toolchain@nightly
+2026-09-20T18:25:47.8062735Z with:
+2026-09-20T18:25:47.8062943Z   components: clippy, rustfmt
+2026-09-20T18:25:47.8063510Z   toolchain: nightly
+2026-09-20T18:25:47.8063727Z env:
+2026-09-20T18:25:47.8063929Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:47.8064187Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:47.8064432Z ##[endgroup]
+2026-09-20T18:25:47.8131537Z ##[start-action display=Parse toolchain version;id=__dtolnay_rust-toolchain.parse]
+2026-09-20T18:25:47.8176144Z ##[group]Run if [[ -z $toolchain ]]; then
+2026-09-20T18:25:47.8176484Z [36;1mif [[ -z $toolchain ]]; then[0m
+2026-09-20T18:25:47.8177048Z [36;1m  # GitHub does not enforce `required: true` inputs itself. https://github.com/actions/runner/issues/1070[0m
+2026-09-20T18:25:47.8177648Z [36;1m  echo "'toolchain' is a required input" >&2[0m
+2026-09-20T18:25:47.8177946Z [36;1m  exit 1[0m
+2026-09-20T18:25:47.8178330Z [36;1melif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then[0m
+2026-09-20T18:25:47.8178752Z [36;1m  if [[ Linux == macOS ]]; then[0m
+2026-09-20T18:25:47.8179293Z [36;1m    echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:47.8180004Z [36;1m  else[0m
+2026-09-20T18:25:47.8180412Z [36;1m    echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:47.8180910Z [36;1m  fi[0m
+2026-09-20T18:25:47.8181215Z [36;1melif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then[0m
+2026-09-20T18:25:47.8181763Z [36;1m  echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:47.8182232Z [36;1melif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then[0m
+2026-09-20T18:25:47.8182762Z [36;1m  echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:47.8183573Z [36;1melse[0m
+2026-09-20T18:25:47.8183823Z [36;1m  echo "toolchain=$toolchain" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:47.8184119Z [36;1mfi[0m
+2026-09-20T18:25:47.8223270Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:47.8223639Z env:
+2026-09-20T18:25:47.8223834Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:47.8224106Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:47.8224364Z   toolchain: nightly
+2026-09-20T18:25:47.8224583Z ##[endgroup]
+2026-09-20T18:25:47.8308827Z ##[end-action id=__dtolnay_rust-toolchain.parse;outcome=success;conclusion=success;duration_ms=17]
+2026-09-20T18:25:47.8321355Z ##[start-action display=Construct rustup command line;id=__dtolnay_rust-toolchain.flags]
+2026-09-20T18:25:47.8348661Z ##[group]Run echo "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT
+2026-09-20T18:25:47.8349314Z [36;1mecho "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:47.8349981Z [36;1mecho "components=$(for c in ${components//,/ }; do echo -n ' --component' $c; done)" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:47.8350536Z [36;1mecho "downgrade= --allow-downgrade" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:47.8385633Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:47.8385973Z env:
+2026-09-20T18:25:47.8386175Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:47.8386431Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:47.8386670Z   targets: 
+2026-09-20T18:25:47.8386868Z   components: clippy, rustfmt
+2026-09-20T18:25:47.8387101Z ##[endgroup]
+2026-09-20T18:25:47.8456050Z ##[end-action id=__dtolnay_rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=13]
+2026-09-20T18:25:47.8458228Z ##[start-action display=Set $CARGO_HOME;id=__dtolnay_rust-toolchain.__run]
+2026-09-20T18:25:47.8475883Z ##[group]Run echo CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV
+2026-09-20T18:25:47.8476554Z [36;1mecho CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV[0m
+2026-09-20T18:25:47.8510145Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:47.8510485Z env:
+2026-09-20T18:25:47.8510681Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:47.8510931Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:47.8511180Z ##[endgroup]
+2026-09-20T18:25:47.8572734Z ##[end-action id=__dtolnay_rust-toolchain.__run;outcome=success;conclusion=success;duration_ms=11]
+2026-09-20T18:25:47.8575386Z ##[start-action display=Install rustup if needed;id=__dtolnay_rust-toolchain.__run_2]
+2026-09-20T18:25:47.8599077Z ##[group]Run if ! command -v rustup &>/dev/null; then
+2026-09-20T18:25:47.8599452Z [36;1mif ! command -v rustup &>/dev/null; then[0m
+2026-09-20T18:25:47.8600227Z [36;1m  curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y[0m
+2026-09-20T18:25:47.8600971Z [36;1m  echo "$CARGO_HOME/bin" >> $GITHUB_PATH[0m
+2026-09-20T18:25:47.8601264Z [36;1mfi[0m
+2026-09-20T18:25:47.8636206Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:47.8636553Z env:
+2026-09-20T18:25:47.8636746Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:47.8637012Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:47.8637479Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:47.8637728Z ##[endgroup]
+2026-09-20T18:25:47.8698401Z ##[end-action id=__dtolnay_rust-toolchain.__run_2;outcome=success;conclusion=success;duration_ms=12]
+2026-09-20T18:25:47.8700767Z ##[start-action display=Install rustup if needed on windows;id=__dtolnay_rust-toolchain.__run_3]
+2026-09-20T18:25:47.8707335Z ##[end-action id=__dtolnay_rust-toolchain.__run_3;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-09-20T18:25:47.8718722Z ##[start-action display=rustup toolchain install nightly;id=__dtolnay_rust-toolchain.__run_4]
+2026-09-20T18:25:47.8737012Z ##[group]Run rustup toolchain install nightly --component clippy --component rustfmt --profile minimal --allow-downgrade --no-self-update
+2026-09-20T18:25:47.8737944Z [36;1mrustup toolchain install nightly --component clippy --component rustfmt --profile minimal --allow-downgrade --no-self-update[0m
+2026-09-20T18:25:47.8774194Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:47.8774545Z env:
+2026-09-20T18:25:47.8774739Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:47.8774986Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:47.8775250Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:47.8775502Z   RUSTUP_PERMIT_COPY_RENAME: 1
+2026-09-20T18:25:47.8775747Z ##[endgroup]
+2026-09-20T18:25:47.9319621Z info: syncing channel updates for nightly-x86_64-unknown-linux-gnu
+2026-09-20T18:25:48.0282289Z info: latest update on 2026-09-20 for version 1.100.0-nightly (feaadeeac 2026-09-19)
+2026-09-20T18:25:48.0283731Z info: downloading 5 components
+2026-09-20T18:25:56.1038478Z 
+2026-09-20T18:25:56.1104678Z   nightly-x86_64-unknown-linux-gnu installed - rustc 1.100.0-nightly (feaadeeac 2026-09-19)
+2026-09-20T18:25:56.1105161Z 
+2026-09-20T18:25:56.1160179Z ##[end-action id=__dtolnay_rust-toolchain.__run_4;outcome=success;conclusion=success;duration_ms=8244]
+2026-09-20T18:25:56.1168481Z ##[start-action display=rustup default nightly;id=__dtolnay_rust-toolchain.__run_5]
+2026-09-20T18:25:56.1187205Z ##[group]Run rustup default nightly
+2026-09-20T18:25:56.1187506Z [36;1mrustup default nightly[0m
+2026-09-20T18:25:56.1223943Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:56.1224297Z env:
+2026-09-20T18:25:56.1224496Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:56.1224745Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:56.1225004Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:56.1225249Z ##[endgroup]
+2026-09-20T18:25:56.1320864Z info: using existing install for nightly-x86_64-unknown-linux-gnu
+2026-09-20T18:25:56.1327068Z info: default toolchain set to nightly-x86_64-unknown-linux-gnu
+2026-09-20T18:25:56.1327420Z 
+2026-09-20T18:25:56.1388980Z   nightly-x86_64-unknown-linux-gnu unchanged - rustc 1.100.0-nightly (feaadeeac 2026-09-19)
+2026-09-20T18:25:56.1389711Z 
+2026-09-20T18:25:56.1391442Z info: note that the toolchain 'nightly-2026-07-29-x86_64-unknown-linux-gnu' is currently in use (overridden by '/home/runner/work/reverie/reverie/rust-toolchain.toml')
+2026-09-20T18:25:56.1404740Z ##[end-action id=__dtolnay_rust-toolchain.__run_5;outcome=success;conclusion=success;duration_ms=23]
+2026-09-20T18:25:56.1407162Z ##[start-action display=Create cachekey;id=__dtolnay_rust-toolchain.rustc-version]
+2026-09-20T18:25:56.1425236Z ##[group]Run DATE=$(rustc +nightly --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')
+2026-09-20T18:25:56.1426091Z [36;1mDATE=$(rustc +nightly --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')[0m
+2026-09-20T18:25:56.1426760Z [36;1mHASH=$(rustc +nightly --version --verbose | sed -ne 's/^commit-hash: //p')[0m
+2026-09-20T18:25:56.1427278Z [36;1mecho "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT[0m
+2026-09-20T18:25:56.1461413Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:56.1461763Z env:
+2026-09-20T18:25:56.1461960Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:56.1462373Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:56.1462639Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:56.1462886Z ##[endgroup]
+2026-09-20T18:25:56.1759698Z ##[end-action id=__dtolnay_rust-toolchain.rustc-version;outcome=success;conclusion=success;duration_ms=35]
+2026-09-20T18:25:56.1762556Z ##[start-action display=Disable incremental compilation;id=__dtolnay_rust-toolchain.__run_6]
+2026-09-20T18:25:56.1780075Z ##[group]Run if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+2026-09-20T18:25:56.1780462Z [36;1mif [ -z "${CARGO_INCREMENTAL+set}" ]; then[0m
+2026-09-20T18:25:56.1780803Z [36;1m  echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV[0m
+2026-09-20T18:25:56.1781082Z [36;1mfi[0m
+2026-09-20T18:25:56.1817527Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:56.1817873Z env:
+2026-09-20T18:25:56.1818066Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:56.1818313Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:56.1818573Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:56.1818834Z ##[endgroup]
+2026-09-20T18:25:56.1878225Z ##[end-action id=__dtolnay_rust-toolchain.__run_6;outcome=success;conclusion=success;duration_ms=11]
+2026-09-20T18:25:56.1880434Z ##[start-action display=Enable colors in Cargo output;id=__dtolnay_rust-toolchain.__run_7]
+2026-09-20T18:25:56.1896068Z ##[group]Run if [ -z "${CARGO_TERM_COLOR+set}" ]; then
+2026-09-20T18:25:56.1896435Z [36;1mif [ -z "${CARGO_TERM_COLOR+set}" ]; then[0m
+2026-09-20T18:25:56.1896789Z [36;1m  echo CARGO_TERM_COLOR=always >> $GITHUB_ENV[0m
+2026-09-20T18:25:56.1897122Z [36;1mfi[0m
+2026-09-20T18:25:56.1930953Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:56.1931293Z env:
+2026-09-20T18:25:56.1931487Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:56.1931747Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:56.1932001Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:56.1932255Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:25:56.1932468Z ##[endgroup]
+2026-09-20T18:25:56.1989248Z ##[end-action id=__dtolnay_rust-toolchain.__run_7;outcome=success;conclusion=success;duration_ms=10]
+2026-09-20T18:25:56.1991387Z ##[start-action display=Enable Cargo sparse registry;id=__dtolnay_rust-toolchain.__run_8]
+2026-09-20T18:25:56.2008233Z ##[group]Run # implemented in 1.66, stabilized in 1.68, made default in 1.70
+2026-09-20T18:25:56.2008803Z [36;1m# implemented in 1.66, stabilized in 1.68, made default in 1.70[0m
+2026-09-20T18:25:56.2009518Z [36;1mif [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then[0m
+2026-09-20T18:25:56.2010261Z [36;1m  if rustc +nightly --version --verbose | grep -q '^release: 1\.6[89]\.'; then[0m
+2026-09-20T18:25:56.2011032Z [36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+2026-09-20T18:25:56.2011591Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV[0m
+2026-09-20T18:25:56.2012104Z [36;1m  elif rustc +nightly --version --verbose | grep -q '^release: 1\.6[67]\.'; then[0m
+2026-09-20T18:25:56.2012695Z [36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+2026-09-20T18:25:56.2013500Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV[0m
+2026-09-20T18:25:56.2013860Z [36;1m  fi[0m
+2026-09-20T18:25:56.2014051Z [36;1mfi[0m
+2026-09-20T18:25:56.2047095Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:56.2047433Z env:
+2026-09-20T18:25:56.2047625Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:56.2047868Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:56.2048121Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:56.2048366Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:25:56.2048574Z ##[endgroup]
+2026-09-20T18:25:56.2320051Z ##[end-action id=__dtolnay_rust-toolchain.__run_8;outcome=success;conclusion=success;duration_ms=32]
+2026-09-20T18:25:56.2322435Z ##[start-action display=Work around spurious network errors in curl 8.0;id=__dtolnay_rust-toolchain.__run_9]
+2026-09-20T18:25:56.2339737Z ##[group]Run # https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation
+2026-09-20T18:25:56.2340508Z [36;1m# https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation[0m
+2026-09-20T18:25:56.2341135Z [36;1mif rustc +nightly --version --verbose | grep -q '^release: 1\.7[01]\.'; then[0m
+2026-09-20T18:25:56.2341598Z [36;1m  echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV[0m
+2026-09-20T18:25:56.2341910Z [36;1mfi[0m
+2026-09-20T18:25:56.2375649Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:56.2375987Z env:
+2026-09-20T18:25:56.2376179Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:56.2376424Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:56.2376693Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:56.2376956Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:25:56.2377164Z ##[endgroup]
+2026-09-20T18:25:56.2540818Z ##[end-action id=__dtolnay_rust-toolchain.__run_9;outcome=success;conclusion=success;duration_ms=21]
+2026-09-20T18:25:56.2545632Z ##[start-action display=rustc +nightly --version --verbose;id=__dtolnay_rust-toolchain.__run_10]
+2026-09-20T18:25:56.2561841Z ##[group]Run rustc +nightly --version --verbose
+2026-09-20T18:25:56.2562195Z [36;1mrustc +nightly --version --verbose[0m
+2026-09-20T18:25:56.2596136Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-09-20T18:25:56.2596475Z env:
+2026-09-20T18:25:56.2596666Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:56.2596911Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:56.2597164Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:56.2597418Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:25:56.2597629Z ##[endgroup]
+2026-09-20T18:25:56.2745597Z rustc 1.100.0-nightly (feaadeeac 2026-09-19)
+2026-09-20T18:25:56.2746477Z binary: rustc
+2026-09-20T18:25:56.2747128Z commit-hash: feaadeeaca7db0594da854e7c8c07495341c7439
+2026-09-20T18:25:56.2747791Z commit-date: 2026-09-19
+2026-09-20T18:25:56.2748251Z host: x86_64-unknown-linux-gnu
+2026-09-20T18:25:56.2748709Z release: 1.100.0-nightly
+2026-09-20T18:25:56.2748998Z LLVM version: 23.1.1
+2026-09-20T18:25:56.2760717Z ##[end-action id=__dtolnay_rust-toolchain.__run_10;outcome=success;conclusion=success;duration_ms=21]
+2026-09-20T18:25:56.2816818Z ##[group]Run rustc scripts/check-skill-discovery.rs -o "$RUNNER_TEMP/check-skill-discovery"
+2026-09-20T18:25:56.2817566Z [36;1mrustc scripts/check-skill-discovery.rs -o "$RUNNER_TEMP/check-skill-discovery"[0m
+2026-09-20T18:25:56.2818078Z [36;1m"$RUNNER_TEMP/check-skill-discovery"[0m
+2026-09-20T18:25:56.2852021Z shell: /usr/bin/bash -e {0}
+2026-09-20T18:25:56.2852283Z env:
+2026-09-20T18:25:56.2852487Z   CARGO_TERM_COLOR: always
+2026-09-20T18:25:56.2852760Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:25:56.2853351Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:25:56.2853653Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:25:56.2853884Z ##[endgroup]
+2026-09-20T18:25:56.2951840Z info: syncing channel updates for nightly-2026-07-29-x86_64-unknown-linux-gnu
+2026-09-20T18:25:56.4118924Z info: latest update on 2026-07-29 for version 1.99.0-nightly (26ae60a9e 2026-07-28)
+2026-09-20T18:25:56.4119655Z info: downloading 5 components
+2026-09-20T18:26:04.2303819Z warn: the missing active toolchain `nightly-2026-07-29-x86_64-unknown-linux-gnu` has been auto-installed
+2026-09-20T18:26:04.2304807Z warn: this might cause rustup commands to take longer time to finish than expected
+2026-09-20T18:26:04.2305558Z info: you may opt out with `RUSTUP_AUTO_INSTALL=0` or `rustup set auto-install disable`
+2026-09-20T18:26:04.7457001Z check-skill-discovery: host . — canonical .claude/skills, Claude mirror .llms/skills, Codex .agents/skills, policy absent (tolerated while skills are regrown), 0 skill(s)
+2026-09-20T18:26:04.7460681Z check-skill-discovery: host reverie-liteinst — canonical .llms/skills, Claude mirror .claude/skills, Codex .agents/skills, policy absent (tolerated while skills are regrown), 3 skill(s): liteinst-binary-instrumentation, liteinst-testing, liteinst-tool-lifecycle
+2026-09-20T18:26:04.7462569Z check-skill-discovery: PASS (discovered 2 host(s) and 3 skill(s); each is reachable by both Claude and Codex)
+2026-09-20T18:26:05.3829383Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-09-20T18:26:05.3831289Z ##[group]Run actions/cache@v4
+2026-09-20T18:26:05.3831532Z with:
+2026-09-20T18:26:05.3831818Z   path: target/*/reverie-dbt-native-cache/dynamorio-install-*
+2026-09-20T18:26:05.3832349Z   key: dynamorio-Linux-1df24c79f791b30c5652905e3a035de7c687f6d24573f468c51e170edc19df11
+2026-09-20T18:26:05.3832817Z   enableCrossOsArchive: false
+2026-09-20T18:26:05.3833324Z   fail-on-cache-miss: false
+2026-09-20T18:26:05.3833576Z   lookup-only: false
+2026-09-20T18:26:05.3833785Z   save-always: false
+2026-09-20T18:26:05.3833978Z env:
+2026-09-20T18:26:05.3834180Z   CARGO_TERM_COLOR: always
+2026-09-20T18:26:05.3834420Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:26:05.3834718Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:26:05.3834976Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:26:05.3835184Z ##[endgroup]
+2026-09-20T18:26:05.4873093Z (node:2598) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-09-20T18:26:05.4874306Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-09-20T18:26:05.7272812Z Cache not found for input keys: dynamorio-Linux-1df24c79f791b30c5652905e3a035de7c687f6d24573f468c51e170edc19df11
+2026-09-20T18:26:05.7357527Z ##[group]Run cargo build --workspace --all-features
+2026-09-20T18:26:05.7357935Z [36;1mcargo build --workspace --all-features[0m
+2026-09-20T18:26:05.7394082Z shell: /usr/bin/bash -e {0}
+2026-09-20T18:26:05.7394339Z env:
+2026-09-20T18:26:05.7394538Z   CARGO_TERM_COLOR: always
+2026-09-20T18:26:05.7394795Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:26:05.7395067Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:26:05.7395325Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:26:05.7395534Z ##[endgroup]
+2026-09-20T18:26:05.7990526Z [1m[92m    Updating[0m crates.io index
+2026-09-20T18:26:05.8001030Z [1m[92m    Updating[0m git repository `https://github.com/rrnewton/liteinst2`
+2026-09-20T18:26:06.4191416Z [1m[92m     Locking[0m 263 packages to latest compatible versions
+2026-09-20T18:26:06.4209373Z [1m[92m      Adding[0m addr2line v0.26.1 [1m[33m(available: v0.27.1)[0m
+2026-09-20T18:26:06.4221072Z [1m[92m      Adding[0m atomic v0.5.3 [1m[33m(available: v0.6.1)[0m
+2026-09-20T18:26:06.4222825Z [1m[92m      Adding[0m bincode v1.3.3 [1m[33m(available: v3.0.0)[0m
+2026-09-20T18:26:06.4224615Z [1m[92m      Adding[0m bincode v2.0.1 [1m[33m(available: v3.0.0)[0m
+2026-09-20T18:26:06.4266395Z [1m[92m      Adding[0m clap v3.2.25 [1m[33m(available: v4.6.7)[0m
+2026-09-20T18:26:06.4302101Z [1m[92m      Adding[0m colored v2.2.0 [1m[33m(available: v3.1.1)[0m
+2026-09-20T18:26:06.4307913Z [1m[92m      Adding[0m darling v0.14.4 [1m[33m(available: v0.24.1)[0m
+2026-09-20T18:26:06.4312708Z [1m[92m      Adding[0m derive_more v1.0.0 [1m[33m(available: v2.1.1)[0m
+2026-09-20T18:26:06.4314810Z [1m[92m      Adding[0m dirs v2.0.2 [1m[33m(available: v7.0.0)[0m
+2026-09-20T18:26:06.4330884Z [1m[92m      Adding[0m generic-array v0.14.7 [1m[33m(available: v0.14.9)[0m
+2026-09-20T18:26:06.4349212Z [1m[92m      Adding[0m heapless v0.8.0 [1m[33m(available: v0.9.3)[0m
+2026-09-20T18:26:06.4350255Z [1m[92m      Adding[0m heck v0.3.3 [1m[33m(available: v0.5.0)[0m
+2026-09-20T18:26:06.4378572Z [1m[92m      Adding[0m nix v0.30.1 [1m[33m(available: v0.31.3)[0m
+2026-09-20T18:26:06.4386487Z [1m[92m      Adding[0m object v0.36.7 [1m[33m(available: v0.40.0)[0m
+2026-09-20T18:26:06.4396068Z [1m[92m      Adding[0m perf-event-open-sys v5.0.0 [1m[33m(available: v7.0.0)[0m
+2026-09-20T18:26:06.4411665Z [1m[92m      Adding[0m raw-cpuid v10.7.0 [1m[33m(available: v11.6.0)[0m
+2026-09-20T18:26:06.4490875Z [1m[92m      Adding[0m sha2 v0.10.9 [1m[33m(available: v0.11.0)[0m
+2026-09-20T18:26:06.4508403Z [1m[92m      Adding[0m syn v1.0.109 [1m[33m(available: v3.0.6)[0m
+2026-09-20T18:26:06.4536166Z [1m[92m      Adding[0m syscalls v0.6.18 [1m[33m(available: v0.8.1)[0m
+2026-09-20T18:26:06.4679130Z [1m[92m Downloading[0m crates ...
+2026-09-20T18:26:06.5124213Z [1m[92m  Downloaded[0m anstyle-query v1.1.5
+2026-09-20T18:26:06.5154498Z [1m[92m  Downloaded[0m atomic v0.5.3
+2026-09-20T18:26:06.5168766Z [1m[92m  Downloaded[0m errno v0.3.14
+2026-09-20T18:26:06.5169471Z [1m[92m  Downloaded[0m futures-sink v0.3.34
+2026-09-20T18:26:06.5181155Z [1m[92m  Downloaded[0m foreign-types-macros v0.2.4
+2026-09-20T18:26:06.5193040Z [1m[92m  Downloaded[0m lazy_static v1.5.0
+2026-09-20T18:26:06.5223816Z [1m[92m  Downloaded[0m adler2 v2.0.1
+2026-09-20T18:26:06.5241096Z [1m[92m  Downloaded[0m anstyle v1.0.14
+2026-09-20T18:26:06.5261656Z [1m[92m  Downloaded[0m anstyle-parse v1.0.0
+2026-09-20T18:26:06.5283717Z [1m[92m  Downloaded[0m bincode v1.3.3
+2026-09-20T18:26:06.5319178Z [1m[92m  Downloaded[0m bitflags v1.3.2
+2026-09-20T18:26:06.5364686Z [1m[92m  Downloaded[0m block-buffer v0.10.4
+2026-09-20T18:26:06.5379361Z [1m[92m  Downloaded[0m clap_derive v4.6.7
+2026-09-20T18:26:06.5411508Z [1m[92m  Downloaded[0m clap_lex v0.2.4
+2026-09-20T18:26:06.5423547Z [1m[92m  Downloaded[0m clap_lex v1.1.1
+2026-09-20T18:26:06.5438701Z [1m[92m  Downloaded[0m close-err v1.0.2
+2026-09-20T18:26:06.5449635Z [1m[92m  Downloaded[0m colorchoice v1.0.5
+2026-09-20T18:26:06.5464073Z [1m[92m  Downloaded[0m convert_case v0.6.0
+2026-09-20T18:26:06.5482319Z [1m[92m  Downloaded[0m cpufeatures v0.2.17
+2026-09-20T18:26:06.5501828Z [1m[92m  Downloaded[0m crossbeam-utils v0.8.23
+2026-09-20T18:26:06.5541685Z [1m[92m  Downloaded[0m crypto-common v0.1.7
+2026-09-20T18:26:06.5554781Z [1m[92m  Downloaded[0m dirs v2.0.2
+2026-09-20T18:26:06.5571928Z [1m[92m  Downloaded[0m fnv v1.0.7
+2026-09-20T18:26:06.5584395Z [1m[92m  Downloaded[0m foreign-types-shared v0.3.1
+2026-09-20T18:26:06.5596874Z [1m[92m  Downloaded[0m futures-executor v0.3.34
+2026-09-20T18:26:06.5615899Z [1m[92m  Downloaded[0m generic-array v0.14.7
+2026-09-20T18:26:06.5635908Z [1m[92m  Downloaded[0m heck v0.5.0
+2026-09-20T18:26:06.5654658Z [1m[92m  Downloaded[0m itoa v1.0.18
+2026-09-20T18:26:06.5675225Z [1m[92m  Downloaded[0m anstream v1.0.0
+2026-09-20T18:26:06.5703909Z [1m[92m  Downloaded[0m addr2line v0.26.1
+2026-09-20T18:26:06.5729849Z [1m[92m  Downloaded[0m darling_core v0.14.4
+2026-09-20T18:26:06.5802670Z [1m[92m  Downloaded[0m futures v0.3.34
+2026-09-20T18:26:06.5869092Z [1m[92m  Downloaded[0m heapless v0.8.0
+2026-09-20T18:26:06.5909452Z [1m[92m  Downloaded[0m indexmap v2.14.2
+2026-09-20T18:26:06.5956022Z [1m[92m  Downloaded[0m matchers v0.2.0
+2026-09-20T18:26:06.5965995Z [1m[92m  Downloaded[0m plain v0.2.3
+2026-09-20T18:26:06.5977165Z [1m[92m  Downloaded[0m atty v0.2.14
+2026-09-20T18:26:06.5987158Z [1m[92m  Downloaded[0m cc v1.4.7
+2026-09-20T18:26:06.6017686Z [1m[92m  Downloaded[0m cfg-if v0.1.10
+2026-09-20T18:26:06.6028244Z [1m[92m  Downloaded[0m clap v4.6.7
+2026-09-20T18:26:06.6125884Z [1m[92m  Downloaded[0m colored v2.2.0
+2026-09-20T18:26:06.6152256Z [1m[92m  Downloaded[0m darling v0.14.4
+2026-09-20T18:26:06.6185889Z [1m[92m  Downloaded[0m deranged v0.5.8
+2026-09-20T18:26:06.6198903Z [1m[92m  Downloaded[0m derive_more v1.0.0
+2026-09-20T18:26:06.6297189Z [1m[92m  Downloaded[0m equivalent v1.0.2
+2026-09-20T18:26:06.6306791Z [1m[92m  Downloaded[0m futures-core v0.3.34
+2026-09-20T18:26:06.6319504Z [1m[92m  Downloaded[0m hashbrown v0.12.3
+2026-09-20T18:26:06.6356606Z [1m[92m  Downloaded[0m iana-time-zone v0.1.65
+2026-09-20T18:26:06.6384585Z [1m[92m  Downloaded[0m mimalloc v0.1.52
+2026-09-20T18:26:06.6394743Z [1m[92m  Downloaded[0m time-core v0.1.9
+2026-09-20T18:26:06.6405131Z [1m[92m  Downloaded[0m tokio-macros v2.7.2
+2026-09-20T18:26:06.6415029Z [1m[92m  Downloaded[0m virtue v0.0.18
+2026-09-20T18:26:06.6439869Z [1m[92m  Downloaded[0m aho-corasick v1.1.5
+2026-09-20T18:26:06.6492050Z [1m[92m  Downloaded[0m anyhow v1.0.104
+2026-09-20T18:26:06.6532178Z [1m[92m  Downloaded[0m cfg-if v1.0.5
+2026-09-20T18:26:06.6544706Z [1m[92m  Downloaded[0m cpp_demangle v0.5.1
+2026-09-20T18:26:06.6572053Z [1m[92m  Downloaded[0m dirs-sys v0.3.7
+2026-09-20T18:26:06.6582310Z [1m[92m  Downloaded[0m flate2 v1.1.10
+2026-09-20T18:26:06.6632032Z [1m[92m  Downloaded[0m foldhash v0.1.5
+2026-09-20T18:26:06.6643465Z [1m[92m  Downloaded[0m heck v0.3.3
+2026-09-20T18:26:06.6654990Z [1m[92m  Downloaded[0m hex v0.4.3
+2026-09-20T18:26:06.6670342Z [1m[92m  Downloaded[0m linked-hash-map v0.5.6
+2026-09-20T18:26:06.6680649Z [1m[92m  Downloaded[0m os_str_bytes v6.6.1
+2026-09-20T18:26:06.6700630Z [1m[92m  Downloaded[0m pin-project-lite v0.2.17
+2026-09-20T18:26:06.6759363Z [1m[92m  Downloaded[0m smallvec v1.16.1
+2026-09-20T18:26:06.6772765Z [1m[92m  Downloaded[0m strsim v0.11.1
+2026-09-20T18:26:06.6786302Z [1m[92m  Downloaded[0m thiserror-impl v2.0.20
+2026-09-20T18:26:06.6800137Z [1m[92m  Downloaded[0m tracing-serde v0.2.0
+2026-09-20T18:26:06.6808348Z [1m[92m  Downloaded[0m zmij v1.0.23
+2026-09-20T18:26:06.6825693Z [1m[92m  Downloaded[0m byteorder v1.5.0
+2026-09-20T18:26:06.6840676Z [1m[92m  Downloaded[0m chrono v0.4.45
+2026-09-20T18:26:06.6906501Z [1m[92m  Downloaded[0m clap v3.2.25
+2026-09-20T18:26:06.7039164Z [1m[92m  Downloaded[0m clap_derive v3.2.25
+2026-09-20T18:26:06.7058330Z [1m[92m  Downloaded[0m crc32fast v1.5.2
+2026-09-20T18:26:06.7078241Z [1m[92m  Downloaded[0m darling_macro v0.14.4
+2026-09-20T18:26:06.7084063Z [1m[92m  Downloaded[0m digest v0.10.7
+2026-09-20T18:26:06.7101621Z [1m[92m  Downloaded[0m fallible-iterator v0.3.0
+2026-09-20T18:26:06.7113522Z [1m[92m  Downloaded[0m goblin v0.10.7
+2026-09-20T18:26:06.7185574Z [1m[92m  Downloaded[0m num_threads v0.1.7
+2026-09-20T18:26:06.7195214Z [1m[92m  Downloaded[0m once_cell v1.21.4
+2026-09-20T18:26:06.7221230Z [1m[92m  Downloaded[0m parking_lot v0.12.5
+2026-09-20T18:26:06.7246761Z [1m[92m  Downloaded[0m perf-event-open-sys v5.0.0
+2026-09-20T18:26:06.7266383Z [1m[92m  Downloaded[0m serde_derive v1.0.229
+2026-09-20T18:26:06.7296526Z [1m[92m  Downloaded[0m log v0.4.34
+2026-09-20T18:26:06.7320682Z [1m[92m  Downloaded[0m memchr v2.8.3
+2026-09-20T18:26:06.7375480Z [1m[92m  Downloaded[0m mio v1.2.3
+2026-09-20T18:26:06.7435956Z [1m[92m  Downloaded[0m pkg-config v0.3.34
+2026-09-20T18:26:06.7450487Z [1m[92m  Downloaded[0m zlib-rs v0.6.8
+2026-09-20T18:26:06.7504531Z [1m[92m  Downloaded[0m futures-macro v0.3.34
+2026-09-20T18:26:06.7514632Z [1m[92m  Downloaded[0m num-traits v0.2.19
+2026-09-20T18:26:06.7540074Z [1m[92m  Downloaded[0m version_check v0.9.5
+2026-09-20T18:26:06.7552206Z [1m[92m  Downloaded[0m vmm-sys-util v0.15.0
+2026-09-20T18:26:06.7587354Z [1m[92m  Downloaded[0m bincode_derive v2.0.1
+2026-09-20T18:26:06.7597031Z [1m[92m  Downloaded[0m foreign-types v0.5.0
+2026-09-20T18:26:06.7605810Z [1m[92m  Downloaded[0m heck v0.4.1
+2026-09-20T18:26:06.7618450Z [1m[92m  Downloaded[0m ident_case v1.0.1
+2026-09-20T18:26:06.7626683Z [1m[92m  Downloaded[0m is_terminal_polyfill v1.70.2
+2026-09-20T18:26:06.7635822Z [1m[92m  Downloaded[0m parking_lot_core v0.9.12
+2026-09-20T18:26:06.7656453Z [1m[92m  Downloaded[0m unwind v0.4.2
+2026-09-20T18:26:06.7664926Z [1m[92m  Downloaded[0m async-trait v0.1.92
+2026-09-20T18:26:06.7701727Z [1m[92m  Downloaded[0m autocfg v1.5.1
+2026-09-20T18:26:06.7720255Z [1m[92m  Downloaded[0m crossbeam-channel v0.5.17
+2026-09-20T18:26:06.7759715Z [1m[92m  Downloaded[0m fastrand v2.5.0
+2026-09-20T18:26:06.7773394Z [1m[92m  Downloaded[0m futures-channel v0.3.34
+2026-09-20T18:26:06.7791666Z [1m[92m  Downloaded[0m futures-task v0.3.34
+2026-09-20T18:26:06.7803472Z [1m[92m  Downloaded[0m getrandom v0.4.3
+2026-09-20T18:26:06.7840595Z [1m[92m  Downloaded[0m paste v1.0.15
+2026-09-20T18:26:06.7872467Z [1m[92m  Downloaded[0m utf8parse v0.2.2
+2026-09-20T18:26:06.7882011Z [1m[92m  Downloaded[0m bitflags v2.13.2
+2026-09-20T18:26:06.7926605Z [1m[92m  Downloaded[0m bytes v1.12.1
+2026-09-20T18:26:06.7961211Z [1m[92m  Downloaded[0m derive_more-impl v1.0.0
+2026-09-20T18:26:06.8007730Z [1m[92m  Downloaded[0m gimli v0.33.0
+2026-09-20T18:26:06.8082270Z [1m[92m  Downloaded[0m hash32 v0.3.1
+2026-09-20T18:26:06.8096623Z [1m[92m  Downloaded[0m indexmap v1.9.3
+2026-09-20T18:26:06.8128405Z [1m[92m  Downloaded[0m kvm-ioctls v0.25.0
+2026-09-20T18:26:06.8149576Z [1m[92m  Downloaded[0m bincode v2.0.1
+2026-09-20T18:26:06.8201288Z [1m[92m  Downloaded[0m futures v0.1.31
+2026-09-20T18:26:06.8305675Z [1m[92m  Downloaded[0m futures-io v0.3.34
+2026-09-20T18:26:06.8314114Z [1m[92m  Downloaded[0m hashbrown v0.17.1
+2026-09-20T18:26:06.8366819Z [1m[92m  Downloaded[0m clap_builder v4.6.7
+2026-09-20T18:26:06.8430161Z [1m[92m  Downloaded[0m libmimalloc-sys v0.1.49
+2026-09-20T18:26:06.8588187Z [1m[92m  Downloaded[0m futures-util v0.3.34
+2026-09-20T18:26:06.8721110Z [1m[92m  Downloaded[0m hashbrown v0.15.5
+2026-09-20T18:26:06.8769261Z [1m[92m  Downloaded[0m kvm-bindings v0.14.1
+2026-09-20T18:26:06.8798427Z [1m[92m  Downloaded[0m lock_api v0.4.14
+2026-09-20T18:26:06.8810982Z [1m[92m  Downloaded[0m libc v0.2.189
+2026-09-20T18:26:06.9246585Z [1m[92m  Downloaded[0m iced-x86 v1.21.0
+2026-09-20T18:26:06.9541798Z [1m[92m  Downloaded[0m powerfmt v0.2.0
+2026-09-20T18:26:06.9554394Z [1m[92m  Downloaded[0m thiserror v2.0.20
+2026-09-20T18:26:06.9620887Z [1m[92m  Downloaded[0m unwind-sys v0.1.4
+2026-09-20T18:26:06.9630785Z [1m[92m  Downloaded[0m proc-macro-error v1.0.4
+2026-09-20T18:26:06.9665790Z [1m[92m  Downloaded[0m procfs v0.18.0
+2026-09-20T18:26:06.9707020Z [1m[92m  Downloaded[0m static_assertions v1.1.0
+2026-09-20T18:26:06.9720828Z [1m[92m  Downloaded[0m tracing-attributes v0.1.31
+2026-09-20T18:26:06.9747122Z [1m[92m  Downloaded[0m twox-hash v2.1.4
+2026-09-20T18:26:06.9769427Z [1m[92m  Downloaded[0m typed-arena v2.0.2
+2026-09-20T18:26:06.9781284Z [1m[92m  Downloaded[0m quote v1.0.47
+2026-09-20T18:26:06.9808336Z [1m[92m  Downloaded[0m serde v1.0.229
+2026-09-20T18:26:06.9842339Z [1m[92m  Downloaded[0m textwrap v0.16.4
+2026-09-20T18:26:06.9867834Z [1m[92m  Downloaded[0m scopeguard v1.2.0
+2026-09-20T18:26:06.9879555Z [1m[92m  Downloaded[0m proc-macro2 v1.0.107
+2026-09-20T18:26:06.9908612Z [1m[92m  Downloaded[0m rand_core v0.10.1
+2026-09-20T18:26:06.9924369Z [1m[92m  Downloaded[0m tracing-log v0.2.0
+2026-09-20T18:26:06.9937247Z [1m[92m  Downloaded[0m simd-adler32 v0.3.10
+2026-09-20T18:26:06.9955390Z [1m[92m  Downloaded[0m rustc-demangle v0.1.28
+2026-09-20T18:26:06.9971706Z [1m[92m  Downloaded[0m scroll_derive v0.13.2
+2026-09-20T18:26:06.9979693Z [1m[92m  Downloaded[0m thread_local v1.1.10
+2026-09-20T18:26:06.9992572Z [1m[92m  Downloaded[0m num-conv v0.2.2
+2026-09-20T18:26:07.0000797Z [1m[92m  Downloaded[0m unicode-xid v0.2.6
+2026-09-20T18:26:07.0013386Z [1m[92m  Downloaded[0m procfs-core v0.18.0
+2026-09-20T18:26:07.0048086Z [1m[92m  Downloaded[0m memoffset v0.9.1
+2026-09-20T18:26:07.0060104Z [1m[92m  Downloaded[0m never-say-never v6.6.666
+2026-09-20T18:26:07.0073182Z [1m[92m  Downloaded[0m ruzstd v0.8.3
+2026-09-20T18:26:07.0125048Z [1m[92m  Downloaded[0m serde_repr v0.1.21
+2026-09-20T18:26:07.0145258Z [1m[92m  Downloaded[0m strsim v0.10.0
+2026-09-20T18:26:07.0159063Z [1m[92m  Downloaded[0m proc-macro-error-attr v1.0.4
+2026-09-20T18:26:07.0168531Z [1m[92m  Downloaded[0m scroll v0.13.0
+2026-09-20T18:26:07.0181905Z [1m[92m  Downloaded[0m stable_deref_trait v1.2.1
+2026-09-20T18:26:07.0190906Z [1m[92m  Downloaded[0m termcolor v1.4.1
+2026-09-20T18:26:07.0202860Z [1m[92m  Downloaded[0m time-macros v0.2.32
+2026-09-20T18:26:07.0227176Z [1m[92m  Downloaded[0m tempfile v3.27.0
+2026-09-20T18:26:07.0251962Z [1m[92m  Downloaded[0m shlex v2.0.1
+2026-09-20T18:26:07.0264895Z [1m[92m  Downloaded[0m sharded-slab v0.1.7
+2026-09-20T18:26:07.0297677Z [1m[92m  Downloaded[0m unty v0.0.4
+2026-09-20T18:26:07.0307538Z [1m[92m  Downloaded[0m sha2 v0.10.9
+2026-09-20T18:26:07.0332860Z [1m[92m  Downloaded[0m signal-hook-registry v1.4.8
+2026-09-20T18:26:07.0344285Z [1m[92m  Downloaded[0m slab v0.4.12
+2026-09-20T18:26:07.0356643Z [1m[92m  Downloaded[0m unicase v2.9.0
+2026-09-20T18:26:07.0370090Z [1m[92m  Downloaded[0m symlink v0.1.0
+2026-09-20T18:26:07.0381397Z [1m[92m  Downloaded[0m tracing-appender v0.2.5
+2026-09-20T18:26:07.0396469Z [1m[92m  Downloaded[0m memmap2 v0.9.11
+2026-09-20T18:26:07.0413026Z [1m[92m  Downloaded[0m socket2 v0.6.5
+2026-09-20T18:26:07.0430586Z [1m[92m  Downloaded[0m syn v1.0.109
+2026-09-20T18:26:07.0523372Z [1m[92m  Downloaded[0m unicode-ident v1.0.26
+2026-09-20T18:26:07.0550525Z [1m[92m  Downloaded[0m miniz_oxide v0.9.1
+2026-09-20T18:26:07.0574969Z [1m[92m  Downloaded[0m ruzstd v0.7.3
+2026-09-20T18:26:07.0613628Z [1m[92m  Downloaded[0m tracing-core v0.1.36
+2026-09-20T18:26:07.0639898Z [1m[92m  Downloaded[0m unicode-segmentation v1.13.3
+2026-09-20T18:26:07.0668403Z [1m[92m  Downloaded[0m syscalls v0.6.18
+2026-09-20T18:26:07.0716892Z [1m[92m  Downloaded[0m tokio-stream v0.1.19
+2026-09-20T18:26:07.0768179Z [1m[92m  Downloaded[0m raw-cpuid v10.7.0
+2026-09-20T18:26:07.0801269Z [1m[92m  Downloaded[0m regex v1.13.1
+2026-09-20T18:26:07.0853471Z [1m[92m  Downloaded[0m serde_json v1.0.151
+2026-09-20T18:26:07.0926516Z [1m[92m  Downloaded[0m tracing-subscriber v0.3.23
+2026-09-20T18:26:07.1008916Z [1m[92m  Downloaded[0m linux-raw-sys v0.12.1
+2026-09-20T18:26:07.1628484Z [1m[92m  Downloaded[0m tokio-util v0.7.19
+2026-09-20T18:26:07.1709119Z [1m[92m  Downloaded[0m unicode-width v0.2.2
+2026-09-20T18:26:07.1763774Z [1m[92m  Downloaded[0m find-msvc-tools v0.1.13
+2026-09-20T18:26:07.1779677Z [1m[92m  Downloaded[0m regex-automata v0.4.18
+2026-09-20T18:26:07.1919359Z [1m[92m  Downloaded[0m terminal_size v0.4.4
+2026-09-20T18:26:07.1932223Z [1m[92m  Downloaded[0m nix v0.31.3
+2026-09-20T18:26:07.2050677Z [1m[92m  Downloaded[0m serde_core v1.0.229
+2026-09-20T18:26:07.2077416Z [1m[92m  Downloaded[0m syn v2.0.119
+2026-09-20T18:26:07.2181712Z [1m[92m  Downloaded[0m nu-ansi-term v0.50.3
+2026-09-20T18:26:07.2205734Z [1m[92m  Downloaded[0m time v0.3.55
+2026-09-20T18:26:07.2359218Z [1m[92m  Downloaded[0m typenum v1.20.1
+2026-09-20T18:26:07.2393162Z [1m[92m  Downloaded[0m object v0.39.1
+2026-09-20T18:26:07.2506799Z [1m[92m  Downloaded[0m regex-syntax v0.8.11
+2026-09-20T18:26:07.2572404Z [1m[92m  Downloaded[0m nix v0.30.1
+2026-09-20T18:26:07.2687671Z [1m[92m  Downloaded[0m object v0.36.7
+2026-09-20T18:26:07.2793230Z [1m[92m  Downloaded[0m tracing v0.1.44
+2026-09-20T18:26:07.2948157Z [1m[92m  Downloaded[0m twox-hash v1.6.3
+2026-09-20T18:26:07.2966085Z [1m[92m  Downloaded[0m rustix v1.1.5
+2026-09-20T18:26:07.3237828Z [1m[92m  Downloaded[0m tokio v1.53.1
+2026-09-20T18:26:07.3691821Z [1m[92m  Downloaded[0m syn v3.0.6
+2026-09-20T18:26:07.3801556Z [1m[92m  Downloaded[0m cfg_aliases v0.2.2
+2026-09-20T18:26:07.4630182Z [1m[92m   Compiling[0m proc-macro2 v1.0.107
+2026-09-20T18:26:07.4630849Z [1m[92m   Compiling[0m unicode-ident v1.0.26
+2026-09-20T18:26:07.4631436Z [1m[92m   Compiling[0m quote v1.0.47
+2026-09-20T18:26:07.4631966Z [1m[92m   Compiling[0m libc v0.2.189
+2026-09-20T18:26:07.5194999Z [1m[92m   Compiling[0m serde_core v1.0.229
+2026-09-20T18:26:07.6236650Z [1m[92m   Compiling[0m cfg-if v1.0.5
+2026-09-20T18:26:07.6524147Z [1m[92m   Compiling[0m serde v1.0.229
+2026-09-20T18:26:07.8464605Z [1m[92m   Compiling[0m autocfg v1.5.1
+2026-09-20T18:26:08.3849293Z [1m[92m   Compiling[0m syn v3.0.6
+2026-09-20T18:26:08.4004686Z [1m[92m   Compiling[0m memchr v2.8.3
+2026-09-20T18:26:09.0944517Z [1m[92m   Compiling[0m pin-project-lite v0.2.17
+2026-09-20T18:26:09.1314303Z [1m[92m   Compiling[0m smallvec v1.16.1
+2026-09-20T18:26:09.2014855Z [1m[92m   Compiling[0m parking_lot_core v0.9.12
+2026-09-20T18:26:09.3064679Z [1m[92m   Compiling[0m cfg_aliases v0.2.2
+2026-09-20T18:26:09.3264314Z [1m[92m   Compiling[0m scopeguard v1.2.0
+2026-09-20T18:26:09.3364725Z [1m[92m   Compiling[0m unicode-segmentation v1.13.3
+2026-09-20T18:26:09.3654418Z [1m[92m   Compiling[0m lock_api v0.4.14
+2026-09-20T18:26:09.7112936Z [1m[92m   Compiling[0m futures-sink v0.3.34
+2026-09-20T18:26:09.7594617Z [1m[92m   Compiling[0m futures-core v0.3.34
+2026-09-20T18:26:09.8114661Z [1m[92m   Compiling[0m lazy_static v1.5.0
+2026-09-20T18:26:09.8415370Z [1m[92m   Compiling[0m syscalls v0.6.18
+2026-09-20T18:26:09.8504179Z [1m[92m   Compiling[0m parking_lot v0.12.5
+2026-09-20T18:26:09.9354783Z [1m[92m   Compiling[0m bitflags v2.13.2
+2026-09-20T18:26:10.0294694Z [1m[92m   Compiling[0m rustix v1.1.5
+2026-09-20T18:26:10.1184854Z [1m[92m   Compiling[0m errno v0.3.14
+2026-09-20T18:26:10.1995042Z [1m[92m   Compiling[0m memoffset v0.9.1
+2026-09-20T18:26:10.2184431Z [1m[92m   Compiling[0m linux-raw-sys v0.12.1
+2026-09-20T18:26:10.2844571Z [1m[92m   Compiling[0m signal-hook-registry v1.4.8
+2026-09-20T18:26:10.3175379Z [1m[92m   Compiling[0m futures-channel v0.3.34
+2026-09-20T18:26:10.4856798Z [1m[92m   Compiling[0m nix v0.30.1
+2026-09-20T18:26:10.5043292Z [1m[92m   Compiling[0m socket2 v0.6.5
+2026-09-20T18:26:10.7554997Z [1m[92m   Compiling[0m mio v1.2.3
+2026-09-20T18:26:11.0144333Z [1m[92m   Compiling[0m syn v2.0.119
+2026-09-20T18:26:11.2394968Z [1m[92m   Compiling[0m num-traits v0.2.19
+2026-09-20T18:26:11.3304742Z [1m[92m   Compiling[0m crc32fast v1.5.2
+2026-09-20T18:26:11.4635452Z [1m[92m   Compiling[0m futures-io v0.3.34
+2026-09-20T18:26:11.5502176Z [1m[92m   Compiling[0m slab v0.4.12
+2026-09-20T18:26:11.6666128Z [1m[92m   Compiling[0m thiserror v2.0.20
+2026-09-20T18:26:11.8664253Z [1m[92m   Compiling[0m futures v0.1.31
+2026-09-20T18:26:12.4822217Z [1m[92m   Compiling[0m serde_derive v1.0.229
+2026-09-20T18:26:13.0625624Z [1m[92m   Compiling[0m serde_repr v0.1.21
+2026-09-20T18:26:13.3674654Z [1m[92m   Compiling[0m tokio-macros v2.7.2
+2026-09-20T18:26:13.8714412Z [1m[92m   Compiling[0m futures-macro v0.3.34
+2026-09-20T18:26:14.4881798Z [1m[92m   Compiling[0m futures-task v0.3.34
+2026-09-20T18:26:14.5995031Z [1m[92m   Compiling[0m futures-util v0.3.34
+2026-09-20T18:26:14.9265289Z [1m[92m   Compiling[0m thiserror-impl v2.0.20
+2026-09-20T18:26:15.9565350Z [1m[92m   Compiling[0m bytes v1.12.1
+2026-09-20T18:26:16.2015452Z [1m[92m   Compiling[0m simd-adler32 v0.3.10
+2026-09-20T18:26:16.3484594Z [1m[92m   Compiling[0m adler2 v2.0.1
+2026-09-20T18:26:16.4176635Z [1m[92m   Compiling[0m bitflags v1.3.2
+2026-09-20T18:26:16.4584663Z [1m[92m   Compiling[0m tokio v1.53.1
+2026-09-20T18:26:16.5154960Z [1m[92m   Compiling[0m virtue v0.0.18
+2026-09-20T18:26:16.5914715Z [1m[92m   Compiling[0m miniz_oxide v0.9.1
+2026-09-20T18:26:17.0804915Z [1m[92m   Compiling[0m bincode_derive v2.0.1
+2026-09-20T18:26:17.2849823Z [1m[92m   Compiling[0m futures-executor v0.3.34
+2026-09-20T18:26:17.7894906Z [1m[92m   Compiling[0m unty v0.0.4
+2026-09-20T18:26:17.8215241Z [1m[92m   Compiling[0m iana-time-zone v0.1.65
+2026-09-20T18:26:18.0444411Z [1m[92m   Compiling[0m bincode v2.0.1
+2026-09-20T18:26:18.1834484Z [1m[92m   Compiling[0m chrono v0.4.45
+2026-09-20T18:26:18.9274465Z [1m[92m   Compiling[0m flate2 v1.1.10
+2026-09-20T18:26:19.3274466Z [1m[92m   Compiling[0m futures v0.3.34
+2026-09-20T18:26:19.3734745Z [1m[92m   Compiling[0m async-trait v0.1.92
+2026-09-20T18:26:19.8694644Z [1m[92m   Compiling[0m colored v2.2.0
+2026-09-20T18:26:20.1514453Z [1m[92m   Compiling[0m anyhow v1.0.104
+2026-09-20T18:26:20.1865070Z [1m[92m   Compiling[0m convert_case v0.6.0
+2026-09-20T18:26:20.3764663Z [1m[92m   Compiling[0m paste v1.0.15
+2026-09-20T18:26:20.4277653Z [1m[92m   Compiling[0m twox-hash v2.1.4
+2026-09-20T18:26:20.5116997Z [1m[92m   Compiling[0m object v0.39.1
+2026-09-20T18:26:20.5194246Z [1m[92m   Compiling[0m unicode-xid v0.2.6
+2026-09-20T18:26:20.5684764Z [1m[92m   Compiling[0m static_assertions v1.1.0
+2026-09-20T18:26:20.5972123Z [1m[92m   Compiling[0m cpp_demangle v0.5.1
+2026-09-20T18:26:20.6634508Z [1m[92m   Compiling[0m twox-hash v1.6.3
+2026-09-20T18:26:20.8577277Z [1m[92m   Compiling[0m derive_more-impl v1.0.0
+2026-09-20T18:26:20.9204732Z [1m[92m   Compiling[0m ruzstd v0.8.3
+2026-09-20T18:26:22.4115160Z [1m[92m   Compiling[0m reverie-process v0.2.0 (/home/runner/work/reverie/reverie/reverie-process)
+2026-09-20T18:26:22.8865198Z [1m[92m   Compiling[0m reverie-memory v0.2.0 (/home/runner/work/reverie/reverie/reverie-memory)
+2026-09-20T18:26:23.0054470Z [1m[92m   Compiling[0m memmap2 v0.9.11
+2026-09-20T18:26:23.1624659Z [1m[92m   Compiling[0m hex v0.4.3
+2026-09-20T18:26:23.3669551Z [1m[92m   Compiling[0m byteorder v1.5.0
+2026-09-20T18:26:23.5525244Z [1m[92m   Compiling[0m equivalent v1.0.2
+2026-09-20T18:26:23.5914498Z [1m[92m   Compiling[0m foldhash v0.1.5
+2026-09-20T18:26:23.7044536Z [1m[92m   Compiling[0m hashbrown v0.17.1
+2026-09-20T18:26:23.8924319Z [1m[92m   Compiling[0m object v0.36.7
+2026-09-20T18:26:24.0395234Z [1m[92m   Compiling[0m procfs v0.18.0
+2026-09-20T18:26:24.1705088Z [1m[92m   Compiling[0m hashbrown v0.15.5
+2026-09-20T18:26:24.2484821Z [1m[92m   Compiling[0m indexmap v2.14.2
+2026-09-20T18:26:24.3614726Z [1m[92m   Compiling[0m procfs-core v0.18.0
+2026-09-20T18:26:24.9104961Z [1m[92m   Compiling[0m derive_more v1.0.0
+2026-09-20T18:26:25.2524511Z [1m[92m   Compiling[0m ruzstd v0.7.3
+2026-09-20T18:26:26.1296063Z [1m[92m   Compiling[0m fallible-iterator v0.3.0
+2026-09-20T18:26:26.4284992Z [1m[92m   Compiling[0m rustc-demangle v0.1.28
+2026-09-20T18:26:26.8394583Z [1m[92m   Compiling[0m typed-arena v2.0.2
+2026-09-20T18:26:26.9081033Z [1m[92m   Compiling[0m gimli v0.33.0
+2026-09-20T18:26:28.3854826Z [1m[92m   Compiling[0m reverie-syscalls v0.2.0 (/home/runner/work/reverie/reverie/reverie-syscalls)
+2026-09-20T18:26:29.4914334Z [1m[92m   Compiling[0m addr2line v0.26.1
+2026-09-20T18:26:29.6524540Z [1m[92m   Compiling[0m raw-cpuid v10.7.0
+2026-09-20T18:26:30.7774766Z [1m[92m   Compiling[0m linked-hash-map v0.5.6
+2026-09-20T18:26:30.9134897Z [1m[92m   Compiling[0m never-say-never v6.6.666
+2026-09-20T18:26:30.9405049Z [1m[92m   Compiling[0m once_cell v1.21.4
+2026-09-20T18:26:31.0844893Z [1m[92m   Compiling[0m version_check v0.9.5
+2026-09-20T18:26:31.2954360Z [1m[92m   Compiling[0m tracing-core v0.1.36
+2026-09-20T18:26:31.8685070Z [1m[92m   Compiling[0m zmij v1.0.23
+2026-09-20T18:26:32.0365065Z [1m[92m   Compiling[0m serde_json v1.0.151
+2026-09-20T18:26:32.4364539Z [1m[92m   Compiling[0m tracing-attributes v0.1.31
+2026-09-20T18:26:32.5044484Z [1m[92m   Compiling[0m aho-corasick v1.1.5
+2026-09-20T18:26:32.8174833Z [1m[92m   Compiling[0m reverie-core v0.2.0 (/home/runner/work/reverie/reverie/reverie)
+2026-09-20T18:26:33.5175056Z [1m[92m   Compiling[0m itoa v1.0.18
+2026-09-20T18:26:33.6416483Z [1m[92m   Compiling[0m getrandom v0.4.3
+2026-09-20T18:26:33.7344598Z [1m[92m   Compiling[0m regex-syntax v0.8.11
+2026-09-20T18:26:34.7925141Z [1m[92m   Compiling[0m reverie-rpc-transport v0.2.0 (/home/runner/work/reverie/reverie/reverie-rpc-transport)
+2026-09-20T18:26:35.4895688Z [1m[92m   Compiling[0m regex-automata v0.4.18
+2026-09-20T18:26:36.6731211Z [1m[92m   Compiling[0m tracing v0.1.44
+2026-09-20T18:26:36.8455062Z [1m[92m   Compiling[0m scroll_derive v0.13.2
+2026-09-20T18:26:36.9044811Z [1m[92m   Compiling[0m log v0.4.34
+2026-09-20T18:26:37.0534941Z [1m[92m   Compiling[0m fastrand v2.5.0
+2026-09-20T18:26:37.2155237Z [1m[92m   Compiling[0m tempfile v3.27.0
+2026-09-20T18:26:37.2584722Z [1m[92m   Compiling[0m plain v0.2.3
+2026-09-20T18:26:37.3084577Z [1m[92m   Compiling[0m pkg-config v0.3.34
+2026-09-20T18:26:37.4774995Z [1m[92m   Compiling[0m scroll v0.13.0
+2026-09-20T18:26:37.5991935Z [1m[92m   Compiling[0m reverie-preload v0.2.0 (/home/runner/work/reverie/reverie/reverie-preload)
+2026-09-20T18:26:37.6894838Z [1m[92m   Compiling[0m time-core v0.1.9
+2026-09-20T18:26:37.7485111Z [1m[92m   Compiling[0m unwind-sys v0.1.4
+2026-09-20T18:26:37.8455140Z [1m[92m   Compiling[0m num_threads v0.1.7
+2026-09-20T18:26:37.8664683Z [1m[92m   Compiling[0m deranged v0.5.8
+2026-09-20T18:26:37.9424798Z [1m[92m   Compiling[0m powerfmt v0.2.0
+2026-09-20T18:26:38.0815132Z [1m[92m   Compiling[0m num-conv v0.2.2
+2026-09-20T18:26:38.1869378Z [1m[92m   Compiling[0m matchers v0.2.0
+2026-09-20T18:26:38.3184605Z [1m[92m   Compiling[0m tracing-log v0.2.0
+2026-09-20T18:26:38.4634737Z [1m[92m   Compiling[0m tracing-serde v0.2.0
+2026-09-20T18:26:38.5604790Z [1m[92m   Compiling[0m sharded-slab v0.1.7
+2026-09-20T18:26:38.5735130Z [1m[92m   Compiling[0m thread_local v1.1.10
+2026-09-20T18:26:38.7534952Z [1m[92m   Compiling[0m nu-ansi-term v0.50.3
+2026-09-20T18:26:38.9524461Z [1m[92m   Compiling[0m time v0.3.55
+2026-09-20T18:26:39.0625037Z [1m[92m   Compiling[0m foreign-types-macros v0.2.4
+2026-09-20T18:26:39.0814548Z [1m[92m   Compiling[0m unwind v0.4.2
+2026-09-20T18:26:39.1915208Z [1m[92m   Compiling[0m foreign-types-shared v0.3.1
+2026-09-20T18:26:39.3694382Z [1m[92m   Compiling[0m goblin v0.10.7
+2026-09-20T18:26:39.4241282Z [1m[92m   Compiling[0m foreign-types v0.5.0
+2026-09-20T18:26:39.4674607Z [1m[92m   Compiling[0m generic-array v0.14.7
+2026-09-20T18:26:39.5594690Z [1m[92m   Compiling[0m tokio-util v0.7.19
+2026-09-20T18:26:39.8674846Z [1m[92m   Compiling[0m iced-x86 v1.21.0
+2026-09-20T18:26:41.3194597Z [1m[92m   Compiling[0m tracing-subscriber v0.3.23
+2026-09-20T18:26:41.3404930Z [1m[92m   Compiling[0m perf-event-open-sys v5.0.0
+2026-09-20T18:26:41.6154556Z [1m[92m   Compiling[0m tokio-stream v0.1.19
+2026-09-20T18:26:42.1965319Z [1m[92m   Compiling[0m safeptrace v0.2.0 (/home/runner/work/reverie/reverie/safeptrace)
+2026-09-20T18:26:43.4044605Z [1m[92m   Compiling[0m close-err v1.0.2
+2026-09-20T18:26:43.4514404Z [1m[92m   Compiling[0m typenum v1.20.1
+2026-09-20T18:26:44.1181011Z [1m[92m   Compiling[0m nix v0.31.3
+2026-09-20T18:26:44.6824345Z [1m[92m   Compiling[0m block-buffer v0.10.4
+2026-09-20T18:26:44.7554648Z [1m[92m   Compiling[0m crypto-common v0.1.7
+2026-09-20T18:26:44.8134364Z [1m[92m   Compiling[0m digest v0.10.7
+2026-09-20T18:26:44.9504966Z [1m[92m   Compiling[0m unicode-width v0.2.2
+2026-09-20T18:26:45.1364386Z [1m[92m   Compiling[0m cpufeatures v0.2.17
+2026-09-20T18:26:45.1644988Z [1m[92m   Compiling[0m sha2 v0.10.9
+2026-09-20T18:26:45.5034951Z [1m[92m   Compiling[0m utf8parse v0.2.2
+2026-09-20T18:26:45.5504587Z [1m[92m   Compiling[0m unicase v2.9.0
+2026-09-20T18:26:45.5544190Z [1m[92m   Compiling[0m crossbeam-utils v0.8.23
+2026-09-20T18:26:45.6814578Z [1m[92m   Compiling[0m anstyle-parse v1.0.0
+2026-09-20T18:26:45.7144655Z [1m[92m   Compiling[0m anstyle-query v1.1.5
+2026-09-20T18:26:45.7204231Z [1m[92m   Compiling[0m anstyle v1.0.14
+2026-09-20T18:26:45.7526932Z [1m[92m   Compiling[0m is_terminal_polyfill v1.70.2
+2026-09-20T18:26:45.7915795Z [1m[92m   Compiling[0m colorchoice v1.0.5
+2026-09-20T18:26:45.8394542Z [1m[92m   Compiling[0m vmm-sys-util v0.15.0
+2026-09-20T18:26:45.8684865Z [1m[92m   Compiling[0m anstream v1.0.0
+2026-09-20T18:26:46.1094470Z [1m[92m   Compiling[0m terminal_size v0.4.4
+2026-09-20T18:26:46.1815260Z [1m[92m   Compiling[0m heck v0.5.0
+2026-09-20T18:26:46.2565264Z [1m[92m   Compiling[0m strsim v0.11.1
+2026-09-20T18:26:46.3114567Z [1m[92m   Compiling[0m kvm-ioctls v0.25.0
+2026-09-20T18:26:46.3934981Z [1m[92m   Compiling[0m clap_lex v1.1.1
+2026-09-20T18:26:46.4194376Z [1m[92m   Compiling[0m clap_derive v4.6.7
+2026-09-20T18:26:46.5605117Z [1m[92m   Compiling[0m clap_builder v4.6.7
+2026-09-20T18:26:46.6024988Z [1m[92m   Compiling[0m kvm-bindings v0.14.1
+2026-09-20T18:26:47.3614955Z [1m[92m   Compiling[0m crossbeam-channel v0.5.17
+2026-09-20T18:26:47.9185015Z [1m[92m   Compiling[0m symlink v0.1.0
+2026-09-20T18:26:47.9594648Z [1m[92m   Compiling[0m tracing-appender v0.2.5
+2026-09-20T18:26:49.1854558Z [1m[92m   Compiling[0m clap v4.6.7
+2026-09-20T18:26:49.7234990Z [1m[92m   Compiling[0m reverie-kvm v0.2.0 (/home/runner/work/reverie/reverie/reverie-kvm)
+2026-09-20T18:26:50.8265373Z [1m[92m   Compiling[0m reverie-util v0.2.0 (/home/runner/work/reverie/reverie/reverie-util)
+2026-09-20T18:26:51.7524494Z [1m[92m   Compiling[0m syn v1.0.109
+2026-09-20T18:26:54.2174944Z [1m[92m   Compiling[0m reverie-e9patch v0.2.0 (/home/runner/work/reverie/reverie/reverie-e9patch)
+2026-09-20T18:26:57.4935082Z [1m[92m   Compiling[0m reverie-ptrace v0.2.0 (/home/runner/work/reverie/reverie/reverie-ptrace)
+2026-09-20T18:27:02.4945181Z [1m[92m   Compiling[0m liteinst2 v0.1.0 (https://github.com/rrnewton/liteinst2?rev=4dab7f01d4d6d394e968fbfad842019f72743c81#4dab7f01)
+2026-09-20T18:27:04.7784576Z [1m[92m   Compiling[0m strsim v0.10.0
+2026-09-20T18:27:05.1984482Z [1m[92m   Compiling[0m ident_case v1.0.1
+2026-09-20T18:27:05.3344377Z [1m[92m   Compiling[0m fnv v1.0.7
+2026-09-20T18:27:05.3494904Z [1m[92m   Compiling[0m reverie-liteinst v0.2.0 (/home/runner/work/reverie/reverie/reverie-liteinst)
+2026-09-20T18:27:05.4022171Z [1m[92m   Compiling[0m darling_core v0.14.4
+2026-09-20T18:27:07.7794578Z [1m[92m   Compiling[0m darling_macro v0.14.4
+2026-09-20T18:27:08.0884783Z [1m[92m   Compiling[0m find-msvc-tools v0.1.13
+2026-09-20T18:27:08.2864788Z [1m[92m   Compiling[0m shlex v2.0.1
+2026-09-20T18:27:08.4997825Z [1m[92m   Compiling[0m cc v1.4.7
+2026-09-20T18:27:09.1194643Z [1m[92m   Compiling[0m darling v0.14.4
+2026-09-20T18:27:09.1724784Z [1m[92m   Compiling[0m heck v0.3.3
+2026-09-20T18:27:09.4104516Z [1m[92m   Compiling[0m bincode v1.3.3
+2026-09-20T18:27:09.4174859Z [1m[92m   Compiling[0m reverie-rpc-macros v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-rpc-macros)
+2026-09-20T18:27:09.8814520Z [1m[92m   Compiling[0m proc-macro-error-attr v1.0.4
+2026-09-20T18:27:10.0063836Z [1m[92m   Compiling[0m heapless v0.8.0
+2026-09-20T18:27:10.1187854Z [1m[92m   Compiling[0m libmimalloc-sys v0.1.49
+2026-09-20T18:27:10.1337525Z [1m[92m   Compiling[0m reverie-rpc v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-rpc)
+2026-09-20T18:27:10.2363836Z [1m[92m   Compiling[0m reverie-sabre v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-sabre)
+2026-09-20T18:27:10.2694998Z [1m[92m   Compiling[0m reverie-dbt v0.2.0 (/home/runner/work/reverie/reverie/reverie-dbt)
+2026-09-20T18:27:10.5264556Z [1m[92m   Compiling[0m proc-macro-error v1.0.4
+2026-09-20T18:27:10.6664989Z [1m[92m   Compiling[0m hash32 v0.3.1
+2026-09-20T18:27:10.7494714Z [1m[92m   Compiling[0m dirs-sys v0.3.7
+2026-09-20T18:27:10.7604589Z [1m[92m   Compiling[0m stable_deref_trait v1.2.1
+2026-09-20T18:27:10.7904593Z [1m[92m   Compiling[0m cfg-if v0.1.10
+2026-09-20T18:27:11.1220125Z [1m[92m   Compiling[0m dirs v2.0.2
+2026-09-20T18:27:12.7994376Z [1m[92m   Compiling[0m mimalloc v0.1.52
+2026-09-20T18:27:13.2735178Z [1m[92m   Compiling[0m reverie-sabre-macros v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-sabre-macros)
+2026-09-20T18:27:13.8029106Z [1m[92m   Compiling[0m reverie-sabre-stats v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-sabre-stats)
+2026-09-20T18:27:14.4720588Z [1m[92m   Compiling[0m nostd-print v0.2.0 (/home/runner/work/reverie/reverie/experimental/nostd-print)
+2026-09-20T18:27:14.6244353Z [1m[92m   Compiling[0m indexmap v1.9.3
+2026-09-20T18:27:14.7805840Z [1m[92m   Compiling[0m atomic v0.5.3
+2026-09-20T18:27:15.1784272Z [1m[92m   Compiling[0m reverie-host v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-host)
+2026-09-20T18:27:15.4164524Z [1m[92m   Compiling[0m hashbrown v0.12.3
+2026-09-20T18:27:15.8258464Z [1m[92m   Compiling[0m heck v0.4.1
+2026-09-20T18:27:15.9484475Z [1m[92m   Compiling[0m os_str_bytes v6.6.1
+2026-09-20T18:27:16.1424531Z [1m[92m   Compiling[0m clap_lex v0.2.4
+2026-09-20T18:27:16.3294715Z [1m[92m   Compiling[0m clap_derive v3.2.25
+2026-09-20T18:27:17.2385417Z [1m[33mwarning[0m: reverie-e9patch@0.2.0: e9patch source build completed in 22.56s (jobs=4)
+2026-09-20T18:27:18.5731941Z [1m[92m   Compiling[0m riptrace-rpc v0.2.0 (/home/runner/work/reverie/reverie/experimental/riptrace/rpc)
+2026-09-20T18:27:18.7265586Z [1m[92m   Compiling[0m textwrap v0.16.4
+2026-09-20T18:27:19.0615616Z [1m[92m   Compiling[0m reverie-examples v0.2.0 (/home/runner/work/reverie/reverie/reverie-examples)
+2026-09-20T18:27:19.1670501Z [1m[92m   Compiling[0m regex v1.13.1
+2026-09-20T18:27:19.6902948Z [1m[92m   Compiling[0m atty v0.2.14
+2026-09-20T18:27:19.7278763Z [1m[92m   Compiling[0m termcolor v1.4.1
+2026-09-20T18:27:20.2402958Z [1m[92m   Compiling[0m clap v3.2.25
+2026-09-20T18:27:21.3995136Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+2026-09-20T18:27:21.3997660Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+2026-09-20T18:27:21.4124829Z [1m[33mwarning[0m: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+2026-09-20T18:27:21.4154024Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |          ^
+2026-09-20T18:27:21.4174711Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+2026-09-20T18:27:21.4244775Z [1m[33mwarning[0m: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+2026-09-20T18:27:21.4273940Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |     ^~~~
+2026-09-20T18:27:21.4318757Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+2026-09-20T18:27:21.4345168Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+2026-09-20T18:27:21.4404280Z [1m[33mwarning[0m: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+2026-09-20T18:27:21.4433905Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |          ^
+2026-09-20T18:27:21.4475582Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+2026-09-20T18:27:21.4504511Z [1m[33mwarning[0m: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+2026-09-20T18:27:21.4544098Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |     ^~~~
+2026-09-20T18:27:21.4615828Z [1m[33mwarning[0m: reverie-sabre@0.2.0: SaBRe source build completed in 3.31s (jobs=4)
+2026-09-20T18:27:23.5705160Z [1m[92m   Compiling[0m reverie-sabre-strace v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-sabre-strace)
+2026-09-20T18:27:29.2704732Z [1m[92m   Compiling[0m riptrace v0.2.0 (/home/runner/work/reverie/reverie/experimental/riptrace)
+2026-09-20T18:28:29.2735091Z [1m[92m   Compiling[0m riptrace-tool v0.2.0 (/home/runner/work/reverie/reverie/experimental/riptrace/tool)
+2026-09-20T18:28:44.2859466Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO build cache MISS key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1789928832
+2026-09-20T18:28:44.2861395Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO source build completed in 81.73s (jobs=4)
+2026-09-20T18:28:44.2864314Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO build cache PUBLISHED key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed install=/home/runner/work/reverie/reverie/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+2026-09-20T18:28:47.2886617Z [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 2m 41s
+2026-09-20T18:28:47.3668675Z ##[group]Run reverie-dbt/scripts/test-identity-policy.sh
+2026-09-20T18:28:47.3669141Z [36;1mreverie-dbt/scripts/test-identity-policy.sh[0m
+2026-09-20T18:28:47.3704957Z shell: /usr/bin/bash -e {0}
+2026-09-20T18:28:47.3705217Z env:
+2026-09-20T18:28:47.3705414Z   CARGO_TERM_COLOR: always
+2026-09-20T18:28:47.3705674Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:28:47.3705947Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:28:47.3706204Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:28:47.3706416Z ##[endgroup]
+2026-09-20T18:28:47.4968660Z [1m[92m   Compiling[0m proc-macro2 v1.0.107
+2026-09-20T18:28:47.4983515Z [1m[92m   Compiling[0m generic-array v0.14.7
+2026-09-20T18:28:47.4995898Z [1m[92m   Compiling[0m typenum v1.20.1
+2026-09-20T18:28:47.5001399Z [1m[92m   Compiling[0m futures-core v0.3.34
+2026-09-20T18:28:47.5158904Z [1m[92m   Compiling[0m futures-sink v0.3.34
+2026-09-20T18:28:47.5614846Z [1m[92m   Compiling[0m futures-channel v0.3.34
+2026-09-20T18:28:47.5798361Z [1m[92m   Compiling[0m rustix v1.1.5
+2026-09-20T18:28:47.7459803Z [1m[92m   Compiling[0m lock_api v0.4.14
+2026-09-20T18:28:47.8444706Z [1m[92m   Compiling[0m chrono v0.4.45
+2026-09-20T18:28:47.9334688Z [1m[92m   Compiling[0m parking_lot v0.12.5
+2026-09-20T18:28:48.2204565Z [1m[92m   Compiling[0m quote v1.0.47
+2026-09-20T18:28:48.4284563Z [1m[92m   Compiling[0m syn v3.0.6
+2026-09-20T18:28:48.8520562Z [1m[92m   Compiling[0m syn v2.0.119
+2026-09-20T18:28:49.4372342Z [1m[92m   Compiling[0m block-buffer v0.10.4
+2026-09-20T18:28:49.5047560Z [1m[92m   Compiling[0m crypto-common v0.1.7
+2026-09-20T18:28:49.5594391Z [1m[92m   Compiling[0m bytes v1.12.1
+2026-09-20T18:28:50.2257221Z [1m[92m   Compiling[0m procfs-core v0.18.0
+2026-09-20T18:28:52.2084707Z [1m[92m   Compiling[0m digest v0.10.7
+2026-09-20T18:28:52.3424445Z [1m[92m   Compiling[0m cpufeatures v0.2.17
+2026-09-20T18:28:52.3654426Z [1m[92m   Compiling[0m sha2 v0.10.9
+2026-09-20T18:28:52.4711830Z [1m[92m   Compiling[0m serde_derive v1.0.229
+2026-09-20T18:28:52.6634747Z [1m[92m   Compiling[0m serde_repr v0.1.21
+2026-09-20T18:28:52.9521973Z [1m[92m   Compiling[0m futures-macro v0.3.34
+2026-09-20T18:28:53.5648185Z [1m[92m   Compiling[0m tokio-macros v2.7.2
+2026-09-20T18:28:53.5775372Z [1m[92m   Compiling[0m futures-util v0.3.34
+2026-09-20T18:28:53.7564626Z [1m[92m   Compiling[0m derive_more-impl v1.0.0
+2026-09-20T18:28:54.0674728Z [1m[92m   Compiling[0m thiserror-impl v2.0.20
+2026-09-20T18:28:55.1085285Z [1m[92m   Compiling[0m thiserror v2.0.20
+2026-09-20T18:28:55.1494781Z [1m[92m   Compiling[0m tokio v1.53.1
+2026-09-20T18:28:55.3544430Z [1m[92m   Compiling[0m serde v1.0.229
+2026-09-20T18:28:55.8674973Z [1m[92m   Compiling[0m syscalls v0.6.18
+2026-09-20T18:28:56.2904608Z [1m[92m   Compiling[0m futures-executor v0.3.34
+2026-09-20T18:28:56.4151844Z [1m[92m   Compiling[0m futures v0.3.34
+2026-09-20T18:28:56.4480770Z [1m[92m   Compiling[0m reverie-memory v0.2.0 (/home/runner/work/reverie/reverie/reverie-memory)
+2026-09-20T18:28:56.4984456Z [1m[92m   Compiling[0m bincode v2.0.1
+2026-09-20T18:28:56.5664373Z [1m[92m   Compiling[0m linked-hash-map v0.5.6
+2026-09-20T18:28:56.7064600Z [1m[92m   Compiling[0m procfs v0.18.0
+2026-09-20T18:28:57.3502151Z [1m[92m   Compiling[0m async-trait v0.1.92
+2026-09-20T18:28:57.9444630Z [1m[92m   Compiling[0m derive_more v1.0.0
+2026-09-20T18:28:58.0565459Z [1m[92m   Compiling[0m reverie-syscalls v0.2.0 (/home/runner/work/reverie/reverie/reverie-syscalls)
+2026-09-20T18:28:58.1364635Z [1m[92m   Compiling[0m serde_json v1.0.151
+2026-09-20T18:28:58.2344713Z [1m[92m   Compiling[0m tracing-attributes v0.1.31
+2026-09-20T18:28:59.3234811Z [1m[92m   Compiling[0m reverie-dbt v0.2.0 (/home/runner/work/reverie/reverie/reverie-dbt)
+2026-09-20T18:28:59.3948794Z [1m[92m   Compiling[0m tracing-core v0.1.36
+2026-09-20T18:28:59.7444991Z [1m[92m   Compiling[0m reverie-process v0.2.0 (/home/runner/work/reverie/reverie/reverie-process)
+2026-09-20T18:28:59.9455070Z [1m[92m   Compiling[0m tempfile v3.27.0
+2026-09-20T18:29:01.6706908Z [1m[92m   Compiling[0m tracing v0.1.44
+2026-09-20T18:29:02.2749193Z [1m[92m   Compiling[0m reverie-core v0.2.0 (/home/runner/work/reverie/reverie/reverie)
+2026-09-20T18:29:03.6725129Z [1m[92m   Compiling[0m reverie-rpc-transport v0.2.0 (/home/runner/work/reverie/reverie/reverie-rpc-transport)
+2026-09-20T18:29:08.0069282Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO build cache HIT key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1789928942 install=/home/runner/work/reverie/reverie/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+2026-09-20T18:29:11.0140139Z [1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 23.60s
+2026-09-20T18:29:12.4010098Z PASS: DBT virtual identity and pidfd_open policy
+2026-09-20T18:29:12.4057234Z ##[group]Run cargo test --workspace --all-features -- --test-threads=1 --skip container::tests::bind_to_low_port --skip container::tests::mount_error_from_child_is_returned --skip container::tests::test_directory_is_available_after_mount --skip container::tests::pin_affinity_to_all_cores --skip tests::domainname --skip tests::hostname --skip tests::local_networking_loopback_flags --skip tests::local_networking_ping --skip tests::local_networking_there_can_be_only_one --skip tests::mount_and_move_tmpfs --skip tests::mount_bind --skip tests::mount_bind_readonly_rejects_writes --skip tests::mount_devpts_basic --skip tests::mount_devpts_isolated --skip tests::mount_proc --skip tests::mount_tmpfs --skip tests::pid_namespace --skip tests::port_isolation --skip tests::seccomp_notify --skip tests::uid_namespace
+2026-09-20T18:29:12.4062561Z [36;1mcargo test --workspace --all-features -- --test-threads=1 --skip container::tests::bind_to_low_port --skip container::tests::mount_error_from_child_is_returned --skip container::tests::test_directory_is_available_after_mount --skip container::tests::pin_affinity_to_all_cores --skip tests::domainname --skip tests::hostname --skip tests::local_networking_loopback_flags --skip tests::local_networking_ping --skip tests::local_networking_there_can_be_only_one --skip tests::mount_and_move_tmpfs --skip tests::mount_bind --skip tests::mount_bind_readonly_rejects_writes --skip tests::mount_devpts_basic --skip tests::mount_devpts_isolated --skip tests::mount_proc --skip tests::mount_tmpfs --skip tests::pid_namespace --skip tests::port_isolation --skip tests::seccomp_notify --skip tests::uid_namespace[0m
+2026-09-20T18:29:12.4100110Z shell: /usr/bin/bash -e {0}
+2026-09-20T18:29:12.4100363Z env:
+2026-09-20T18:29:12.4100554Z   CARGO_TERM_COLOR: always
+2026-09-20T18:29:12.4100809Z   RUSTFLAGS: -C link-arg=-llzma
+2026-09-20T18:29:12.4101071Z   CARGO_HOME: /home/runner/.cargo
+2026-09-20T18:29:12.4101318Z   CARGO_INCREMENTAL: 0
+2026-09-20T18:29:12.4101540Z ##[endgroup]
+2026-09-20T18:29:12.4959994Z [1m[92m Downloading[0m crates ...
+2026-09-20T18:29:12.5706527Z [1m[92m  Downloaded[0m env_filter v2.0.0
+2026-09-20T18:29:12.5725140Z [1m[92m  Downloaded[0m quickcheck v1.1.0
+2026-09-20T18:29:12.5745357Z [1m[92m  Downloaded[0m test-case-core v3.3.1
+2026-09-20T18:29:12.5761014Z [1m[92m  Downloaded[0m quickcheck_macros v1.2.0
+2026-09-20T18:29:12.5784098Z [1m[92m  Downloaded[0m test-case-macros v3.3.1
+2026-09-20T18:29:12.5804106Z [1m[92m  Downloaded[0m env_logger v0.11.11
+2026-09-20T18:29:12.5819593Z [1m[92m  Downloaded[0m num_cpus v1.17.0
+2026-09-20T18:29:12.5852510Z [1m[92m  Downloaded[0m rand v0.10.3
+2026-09-20T18:29:12.5890327Z [1m[92m  Downloaded[0m test-case v3.3.1
+2026-09-20T18:29:12.6944119Z [1m[92m   Compiling[0m getrandom v0.4.3
+2026-09-20T18:29:12.6947671Z [1m[92m   Compiling[0m rand_core v0.10.1
+2026-09-20T18:29:12.7017310Z [1m[33mwarning[0m: reverie-e9patch@0.2.0: e9patch source build completed in 22.56s (jobs=4)
+2026-09-20T18:29:12.7022356Z [1m[92m   Compiling[0m reverie-rpc-macros v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-rpc-macros)
+2026-09-20T18:29:12.7024942Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO build cache MISS key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1789928832
+2026-09-20T18:29:12.7026870Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO source build completed in 81.73s (jobs=4)
+2026-09-20T18:29:12.7029952Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO build cache PUBLISHED key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed install=/home/runner/work/reverie/reverie/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+2026-09-20T18:29:12.7032452Z [1m[92m   Compiling[0m shlex v2.0.1
+2026-09-20T18:29:12.7825094Z [1m[92m   Compiling[0m find-msvc-tools v0.1.13
+2026-09-20T18:29:12.8336213Z [1m[92m   Compiling[0m reverie-sabre-macros v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-sabre-macros)
+2026-09-20T18:29:12.9275011Z [1m[92m   Compiling[0m tempfile v3.27.0
+2026-09-20T18:29:13.0144639Z [1m[92m   Compiling[0m cc v1.4.7
+2026-09-20T18:29:13.1315276Z [1m[92m   Compiling[0m reverie-rpc v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-rpc)
+2026-09-20T18:29:13.1926382Z [1m[92m   Compiling[0m test-case-core v3.3.1
+2026-09-20T18:29:13.1996635Z [1m[92m   Compiling[0m reverie-host v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-host)
+2026-09-20T18:29:13.3204847Z [1m[92m   Compiling[0m reverie-liteinst v0.2.0 (/home/runner/work/reverie/reverie/reverie-liteinst)
+2026-09-20T18:29:13.4285089Z [1m[92m   Compiling[0m reverie-e9patch v0.2.0 (/home/runner/work/reverie/reverie/reverie-e9patch)
+2026-09-20T18:29:13.9574801Z [1m[92m   Compiling[0m reverie-dbt v0.2.0 (/home/runner/work/reverie/reverie/reverie-dbt)
+2026-09-20T18:29:14.9954022Z [1m[92m   Compiling[0m libmimalloc-sys v0.1.49
+2026-09-20T18:29:15.6875459Z [1m[92m   Compiling[0m reverie-sabre v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-sabre)
+2026-09-20T18:29:16.3446176Z [1m[92m   Compiling[0m reverie-examples v0.2.0 (/home/runner/work/reverie/reverie/reverie-examples)
+2026-09-20T18:29:16.7654862Z [1m[92m   Compiling[0m mimalloc v0.1.52
+2026-09-20T18:29:16.8003581Z [1m[92m   Compiling[0m test-case-macros v3.3.1
+2026-09-20T18:29:17.0735039Z [1m[92m   Compiling[0m test-case v3.3.1
+2026-09-20T18:29:17.1027121Z [1m[92m   Compiling[0m riptrace-rpc v0.2.0 (/home/runner/work/reverie/reverie/experimental/riptrace/rpc)
+2026-09-20T18:29:17.2494806Z [1m[92m   Compiling[0m env_filter v2.0.0
+2026-09-20T18:29:17.5195026Z [1m[92m   Compiling[0m env_logger v0.11.11
+2026-09-20T18:29:17.7814818Z [1m[92m   Compiling[0m rand v0.10.3
+2026-09-20T18:29:18.1454757Z [1m[92m   Compiling[0m quickcheck v1.1.0
+2026-09-20T18:29:19.0804731Z [1m[92m   Compiling[0m quickcheck_macros v1.2.0
+2026-09-20T18:29:19.2944461Z [1m[92m   Compiling[0m num_cpus v1.17.0
+2026-09-20T18:29:19.4254934Z [1m[92m   Compiling[0m riptrace v0.2.0 (/home/runner/work/reverie/reverie/experimental/riptrace)
+2026-09-20T18:29:19.5964822Z [1m[92m   Compiling[0m reverie-process v0.2.0 (/home/runner/work/reverie/reverie/reverie-process)
+2026-09-20T18:29:19.6834795Z [1m[92m   Compiling[0m safeptrace v0.2.0 (/home/runner/work/reverie/reverie/safeptrace)
+2026-09-20T18:29:23.9225647Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+2026-09-20T18:29:23.9228229Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+2026-09-20T18:29:23.9254471Z [1m[33mwarning[0m: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+2026-09-20T18:29:23.9264255Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |          ^
+2026-09-20T18:29:23.9266064Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+2026-09-20T18:29:23.9267868Z [1m[33mwarning[0m: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+2026-09-20T18:29:23.9268979Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |     ^~~~
+2026-09-20T18:29:23.9270734Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+2026-09-20T18:29:23.9273580Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+2026-09-20T18:29:23.9279986Z [1m[33mwarning[0m: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+2026-09-20T18:29:23.9281968Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |          ^
+2026-09-20T18:29:23.9283932Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /home/runner/work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+2026-09-20T18:29:23.9285854Z [1m[33mwarning[0m: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+2026-09-20T18:29:23.9286884Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |     ^~~~
+2026-09-20T18:29:23.9288055Z [1m[33mwarning[0m: reverie-sabre@0.2.0: SaBRe source build completed in 3.53s (jobs=4)
+2026-09-20T18:29:25.1827079Z [1m[92m   Compiling[0m reverie-sabre-strace v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-sabre-strace)
+2026-09-20T18:29:25.7445736Z [1m[92m   Compiling[0m riptrace-tool v0.2.0 (/home/runner/work/reverie/reverie/experimental/riptrace/tool)
+2026-09-20T18:30:14.1851026Z [1m[92m   Compiling[0m reverie-ptrace v0.2.0 (/home/runner/work/reverie/reverie/reverie-ptrace)
+2026-09-20T18:30:44.5345574Z [1m[92m   Compiling[0m reverie-util v0.2.0 (/home/runner/work/reverie/reverie/reverie-util)
+2026-09-20T18:30:45.4855346Z [1m[92m   Compiling[0m reverie-kvm v0.2.0 (/home/runner/work/reverie/reverie/reverie-kvm)
+2026-09-20T18:30:51.7545065Z [1m[92m   Compiling[0m reverie-preload v0.2.0 (/home/runner/work/reverie/reverie/reverie-preload)
+2026-09-20T18:30:53.1722769Z [1m[92m   Compiling[0m reverie-rpc-transport v0.2.0 (/home/runner/work/reverie/reverie/reverie-rpc-transport)
+2026-09-20T18:31:00.7136605Z [1m[92m   Compiling[0m reverie-core v0.2.0 (/home/runner/work/reverie/reverie/reverie)
+2026-09-20T18:31:01.4575842Z [1m[92m   Compiling[0m reverie-sabre-stats v0.2.0 (/home/runner/work/reverie/reverie/experimental/reverie-sabre-stats)
+2026-09-20T18:31:04.9024988Z [1m[92m   Compiling[0m reverie-syscalls v0.2.0 (/home/runner/work/reverie/reverie/reverie-syscalls)
+2026-09-20T18:31:06.3325829Z [1m[92m   Compiling[0m reverie-memory v0.2.0 (/home/runner/work/reverie/reverie/reverie-memory)
+2026-09-20T18:31:06.9506054Z [1m[92m   Compiling[0m nostd-print v0.2.0 (/home/runner/work/reverie/reverie/experimental/nostd-print)
+2026-09-20T18:31:42.2205631Z [1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 2m 29s
+2026-09-20T18:31:42.2864356Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nostd_print-361ca3c731e01ac6)
+2026-09-20T18:31:42.2874676Z 
+2026-09-20T18:31:42.2874865Z running 0 tests
+2026-09-20T18:31:42.2875081Z 
+2026-09-20T18:31:42.2875530Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-09-20T18:31:42.2876186Z 
+2026-09-20T18:31:42.2878841Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie-eba74639179f28d0)
+2026-09-20T18:31:42.2887275Z 
+2026-09-20T18:31:42.2887456Z running 14 tests
+2026-09-20T18:31:42.2897237Z test auxv::tests::builds_from_backend_entries ... ok
+2026-09-20T18:31:42.2897707Z test auxv::tests::smoke ... ok
+2026-09-20T18:31:42.2898175Z test backend_stats::tests::counter_snapshot_sorts_and_combines_typed_keys ... ok
+2026-09-20T18:31:42.2899085Z test backend_stats::tests::disabled_request_does_not_call_snapshot_source ... ok
+2026-09-20T18:31:42.2899740Z test backend_stats::tests::patch_shape_collector_deduplicates_rips_and_uses_exact_buckets ... ok
+2026-09-20T18:31:42.2900518Z test backend_stats::tests::patch_shape_collector_keeps_equal_rips_distinct_across_processes_and_execs ... ok
+2026-09-20T18:31:42.2901257Z test backend_stats::tests::patch_shape_rejects_boundary_at_instruction_end - should panic ... ok
+2026-09-20T18:31:42.2902779Z test regs::tests::test_multi_line_x86 ... ok
+2026-09-20T18:31:42.2904150Z test regs::tests::test_single_line_x86 ... ok
+2026-09-20T18:31:42.2905148Z test signal::tests::signal_event_preserves_raw_realtime_number_payload_and_target ... ok
+2026-09-20T18:31:42.2906325Z test signal::tests::signal_event_rejects_invalid_or_incoherent_numbers ... ok
+2026-09-20T18:31:42.2907007Z test subscription::tests::compose ... ok
+2026-09-20T18:31:42.2907900Z test subscription::tests::smoke ... ok
+2026-09-20T18:31:42.2908675Z test timer::tests::record_then_take_counts_and_resets ... ok
+2026-09-20T18:31:42.2909104Z 
+2026-09-20T18:31:42.2909794Z test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-09-20T18:31:42.2910419Z 
+2026-09-20T18:31:42.2911138Z [1m[92m     Running[0m tests/signal_bridge.rs (target/debug/deps/signal_bridge-dad2ee0434657936)
+2026-09-20T18:31:42.2920773Z 
+2026-09-20T18:31:42.2920995Z running 4 tests
+2026-09-20T18:31:42.2922732Z test child_exit_signal_default_refuses_before_publication ... ok
+2026-09-20T18:31:42.2923990Z test legacy_bridge_preserves_unchanged_event_bytes_and_suppression ... ok
+2026-09-20T18:31:42.2925041Z test legacy_bridge_refuses_incoherent_replacement_and_raw_realtime_signal ... ok
+2026-09-20T18:31:42.2926177Z test structured_hook_can_replace_signal_with_coherent_explicit_siginfo ... ok
+2026-09-20T18:31:42.2926748Z 
+2026-09-20T18:31:42.2927191Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-09-20T18:31:42.2927806Z 
+2026-09-20T18:31:42.2928622Z [1m[92m     Running[0m tests/validate_script_source.rs (target/debug/deps/validate_script_source-2b164a6670cff211)
+2026-09-20T18:31:42.2937299Z 
+2026-09-20T18:31:42.2937471Z running 1 test
+2026-09-20T18:31:42.2939394Z test validation_ledger_writer_follows_the_discovered_parent ... ok
+2026-09-20T18:31:42.2939777Z 
+2026-09-20T18:31:42.2940040Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-09-20T18:31:42.2940394Z 
+2026-09-20T18:31:42.2941584Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_dbt-0bbc54182c027109)
+2026-09-20T18:31:42.2953787Z 
+2026-09-20T18:31:42.2953935Z running 116 tests
+2026-09-20T18:31:42.2956373Z test backend_stats::tests::absorb_wire_stream_rejects_trailing_partial_record ... ok
+2026-09-20T18:31:42.2957344Z test backend_stats::tests::aggregation_is_order_independent ... ok
+2026-09-20T18:31:42.2958792Z test backend_stats::tests::aggregation_sums_additive_and_maxes_peaks ... ok
+2026-09-20T18:31:42.2959802Z test backend_stats::tests::decode_rejects_bad_magic_version_and_truncation ... ok
+2026-09-20T18:31:42.2960821Z test backend_stats::tests::disabled_request_does_not_collect_snapshot ... ok
+2026-09-20T18:31:42.2961781Z test backend_stats::tests::display_is_deterministic_and_contains_no_raw_identity ... ok
+2026-09-20T18:31:42.2962595Z test backend_stats::tests::dr_stats_absent_is_counted_and_excluded_from_translation_totals ... ok
+2026-09-20T18:31:42.2964773Z test backend_stats::tests::runtime_kind_counts_are_deterministic ... ok
+2026-09-20T18:31:42.2965755Z test backend_stats::tests::unknown_runtime_code_decodes_to_unknown_not_error ... ok
+2026-09-20T18:31:42.2966627Z test backend_stats::tests::wire_record_round_trips_exactly ... ok
+2026-09-20T18:31:42.2967842Z test evidence::tests::backend_failure_truncates_without_publishing_an_artifact ... ok
+2026-09-20T18:31:42.2968909Z test evidence::tests::collector_accepts_a_child_announced_after_its_final_frame ... ok
+2026-09-20T18:31:42.2970296Z test evidence::tests::collector_accepts_root_final_before_descendant_final ... ok
+2026-09-20T18:31:42.2971501Z test evidence::tests::collector_acknowledges_only_an_exact_transport_retry ... ok
+2026-09-20T18:31:48.4693453Z test evidence::tests::collector_process_state_is_bounded ... ok
+2026-09-20T18:31:48.4696079Z test evidence::tests::collector_refuses_a_backend_failure_from_any_process ... ok
+2026-09-20T18:31:48.4697077Z test evidence::tests::collector_refuses_a_changed_same_sequence_retry ... ok
+2026-09-20T18:31:48.4698024Z test evidence::tests::collector_refuses_an_announced_child_without_final_evidence ... ok
+2026-09-20T18:31:48.4700535Z test evidence::tests::collector_rejects_data_and_lifecycle_before_initialization ... ok
+2026-09-20T18:31:48.4701500Z test evidence::tests::collector_rejects_duplicate_final ... ok
+2026-09-20T18:31:48.4702835Z test evidence::tests::collector_rejects_duplicate_malformed_and_truncated_initialization ... ok
+2026-09-20T18:31:48.4704311Z test evidence::tests::collector_reports_a_child_backend_failure_before_a_missing_root_final ... ok
+2026-09-20T18:31:48.4705305Z test evidence::tests::collector_requires_exact_final_outcome ... ok
+2026-09-20T18:31:48.4706241Z test evidence::tests::collector_requires_exec_before_cancel_and_accepts_valid_cancel ... ok
+2026-09-20T18:31:48.4707341Z test evidence::tests::collector_requires_exec_for_restart_and_reinitializes_the_new_image ... ok
+2026-09-20T18:31:48.4708414Z test evidence::tests::collector_retains_backend_failure_across_exec_and_exact_retry ... ok
+2026-09-20T18:31:48.4709733Z test evidence::tests::collector_retains_process_image_initializations_in_the_raw_artifact ... ok
+2026-09-20T18:31:48.4710919Z test evidence::tests::decoder_filters_each_authenticated_process_image_initialization_record ... ok
+2026-09-20T18:31:48.4711966Z test evidence::tests::decoder_rejects_truncation_and_digest_changes ... ok
+2026-09-20T18:31:48.4713326Z test evidence::tests::decoder_requires_exact_initialization_and_rejects_lookalikes ... ok
+2026-09-20T18:31:48.4715072Z test evidence::tests::denied_publication_truncates_the_output ... ok
+2026-09-20T18:31:48.4718905Z test evidence::tests::evidence_session_can_be_claimed_only_before_one_run ... ok
+2026-09-20T18:31:48.4719940Z test evidence::tests::framed_evidence_round_trips_and_rejects_injected_lines ... ok
+2026-09-20T18:31:48.4720941Z test evidence::tests::independent_artifacts_return_only_comparable_records ... ok
+2026-09-20T18:31:48.4728368Z test evidence::tests::native_initialization_record_matches_the_decoder_protocol ... ok
+2026-09-20T18:31:48.4742999Z test evidence::tests::native_internal_exits_mark_the_final_outcome ... ok
+2026-09-20T18:31:48.4752859Z test evidence::tests::native_processes_finalize_after_their_runtime_output ... ok
+2026-09-20T18:31:48.4758017Z test evidence::tests::native_runtime_abi_is_checked_before_runtime_callbacks ... ok
+2026-09-20T18:31:48.4769130Z test evidence::tests::native_runtime_callbacks_are_page_isolated_and_sealed_before_use ... ok
+2026-09-20T18:31:48.4776584Z test evidence::tests::native_shutdown_precedes_evidence_background_quiescence ... ok
+2026-09-20T18:31:48.4789067Z test evidence::tests::native_syscall_exit_defers_final_to_thread_and_process_exit ... ok
+2026-09-20T18:31:48.4806815Z test evidence::tests::process_clone_result_callback_runs_after_the_kernel_result ... ok
+2026-09-20T18:31:48.5849459Z test evidence::tests::reparented_group_member_can_send_its_first_start_and_data ... ok
+2026-09-20T18:31:48.5850741Z test launcher::tests::a_post_launch_evidence_failure_never_reports_a_spawn_kind ... ok
+2026-09-20T18:31:48.5851945Z test launcher::tests::an_error_without_exit_status_keeps_its_own_kind ... ok
+2026-09-20T18:31:48.5907826Z test launcher::tests::cancellable_output_reader_stops_with_a_live_writer ... ok
+2026-09-20T18:31:48.5912185Z test launcher::tests::client_arguments_and_isolation_flag_precede_guest_separator ... ok
+2026-09-20T18:31:48.5944010Z test launcher::tests::diagnostic_descriptor_198_clears_cloexec_and_survives_exec ... ok
+2026-09-20T18:31:48.5945314Z test launcher::tests::diagnostic_file_keeps_live_summary_out_of_guest_stderr ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.5995517Z test launcher::tests::diagnostic_file_preserves_process_group_cleanup_and_exit_status ... FAILED
+2026-09-20T18:31:48.5996557Z test launcher::tests::diagnostic_file_rejects_a_read_only_handle ... ok
+2026-09-20T18:31:48.6017287Z test launcher::tests::diagnostic_file_separates_guest_stderr_from_diagnostics ... FAILED
+2026-09-20T18:31:48.6018358Z test launcher::tests::exact_environment_replaces_launcher_environment ... ok
+2026-09-20T18:31:48.6019451Z test launcher::tests::failed_guest_status_is_preserved_before_coordinator_connection ... ok
+2026-09-20T18:31:48.6073743Z test launcher::tests::keeps_diagnostics_out_of_guest_stderr_redirections ... ok
+2026-09-20T18:31:48.6074795Z test launcher::tests::missing_or_closed_diagnostic_descriptor_fails_closed ... ok
+2026-09-20T18:31:48.6076601Z test launcher::tests::native_runtime_abi_mismatch_fails_before_guest_execution ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6078049Z test launcher::tests::preserves_bare_non_script_program_token ... ok
+2026-09-20T18:31:48.6078694Z test launcher::tests::process_group_modes_are_opt_in ... ok
+2026-09-20T18:31:48.6098705Z test launcher::tests::process_group_wait_times_out_while_a_live_member_remains ... ok
+2026-09-20T18:31:48.6100409Z test launcher::tests::protected_evidence_initializes_when_tracing_is_off ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6119688Z test launcher::tests::protected_evidence_keeps_a_backend_failure_after_sender_lookup_misses ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6121827Z test launcher::tests::protected_evidence_preserves_a_normal_guest_exit_101 ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6123321Z test launcher::tests::protected_evidence_preserves_a_normal_guest_signal_with_an_exit_callback ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6125154Z test launcher::tests::protected_evidence_refuses_a_backend_failure_before_returning_output ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6126552Z test launcher::tests::protected_evidence_refuses_a_valid_frame_from_outside_the_guest_tree ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6127762Z test launcher::tests::protected_evidence_refuses_an_announced_child_killed_before_start ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6128896Z test launcher::tests::protected_evidence_rejects_direct_emitter_entry ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6130330Z test launcher::tests::protected_evidence_rejects_disclosed_credentials_and_config_mutation ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6131889Z test launcher::tests::protected_evidence_retries_after_a_dropped_acknowledgement ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6132984Z test launcher::tests::quiet_live_runtime_does_not_write_to_guest_stderr ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-09-20T18:31:48.6134057Z test launcher::tests::resolves_bare_shebang_program_from_command_path ... ok
+2026-09-20T18:31:48.6134610Z test launcher::tests::resolves_bare_shebang_program_from_exact_environment_path ... ok
+2026-09-20T18:31:48.6135147Z test launcher::tests::resolves_relative_path_from_guest_directory ... ok
+2026-09-20T18:31:48.6135667Z test launcher::tests::resolves_source_root_and_cmake_directory_layouts ... ok
+2026-09-20T18:31:48.6136464Z test launcher::tests::resolves_symlinked_shebang_program_without_canonicalizing ... ok
+2026-09-20T18:31:48.6155305Z test launcher::tests::returns_when_child_exits_while_input_source_is_blocked ... ok
+2026-09-20T18:31:48.6157848Z test launcher::tests::stats_sink_drain_of_a_truncated_stream_is_an_error ... ok
+2026-09-20T18:31:48.6159908Z test launcher::tests::stats_sink_drain_of_missing_file_yields_an_empty_snapshot ... ok
+2026-09-20T18:31:48.6162774Z test launcher::tests::stats_sink_drains_and_aggregates_appended_records ... ok
+2026-09-20T18:31:48.6165452Z test launcher::tests::stats_sink_passes_the_records_path_to_the_client ... ok
+2026-09-20T18:31:48.6267871Z test launcher::tests::supplies_captured_standard_input ... ok
+2026-09-20T18:31:48.6289249Z test launcher::tests::unset_diagnostic_file_preserves_the_shared_stderr_stream ... FAILED
+2026-09-20T18:31:48.6292579Z test launcher::tests::wraps_guest_program_arguments_directory_and_environment ... ok
+2026-09-20T18:31:48.6295193Z test launcher::tests::wraps_shebang_program_with_its_interpreter ... ok
+2026-09-20T18:31:48.6295926Z test tests::align_up_rounds_to_power_of_two ... ok
+2026-09-20T18:31:48.6296935Z test tests::backtrace_returns_none_when_registers_are_unavailable ... ok
+2026-09-20T18:31:48.6298362Z test tests::backtrace_walks_the_guest_frame_pointer_chain ... ok
+2026-09-20T18:31:48.6304050Z test tests::copied_vfork_first_syscall_uses_the_copied_child_path ... ok
+2026-09-20T18:31:48.6306866Z test tests::copied_vfork_is_classified_before_the_shared_memory_return ... ok
+2026-09-20T18:31:48.6308714Z test tests::core_file_io_syscalls_dispatch_through_guest ... ok
+2026-09-20T18:31:48.6309939Z test tests::dbt_stack_allocations_are_valid_in_process_and_aligned ... ok
+2026-09-20T18:31:48.6310871Z test tests::deterministic_ports_advance_past_explicit_bindings ... ok
+2026-09-20T18:31:48.6311672Z test tests::deterministic_random_stream_positions_do_not_collide ... ok
+2026-09-20T18:31:48.6312453Z test tests::deterministic_random_streams_are_reproducible_and_distinct ... ok
+2026-09-20T18:31:48.6313630Z test tests::duplicated_descriptors_inherit_random_tracking ... ok
+2026-09-20T18:31:48.6315167Z test tests::explicit_port_collision_is_still_refused ... ok
+2026-09-20T18:31:48.6539777Z test tests::independent_runtimes_keep_deterministic_ports_without_host_collision ... ok
+2026-09-20T18:31:48.6540639Z test tests::port_zero_runtime_child ... ok
+2026-09-20T18:31:48.6541323Z test tests::ppid_reflects_constructed_parent_and_root_status ... ok
+2026-09-20T18:31:48.6542121Z test tests::procfs_snapshots_cover_volatile_files ... ok
+2026-09-20T18:31:48.6542813Z test tests::prototype_tool_uses_shared_guest_contract ... ok
+2026-09-20T18:31:48.6544474Z test tests::prototype_tool_virtualizes_uname_release ... ok
+2026-09-20T18:31:48.6545789Z test tests::rewrite_filter_covers_deterministic_policies ... ok
+2026-09-20T18:31:48.6798441Z test tests::run_ready_resumes_a_cross_thread_woken_future ... ok
+2026-09-20T18:31:48.6799547Z test tests::set_regs_forwards_exact_register_file_to_native_writer ... ok
+2026-09-20T18:31:48.6800325Z test tests::set_regs_surfaces_writer_failure_as_errno ... ok
+2026-09-20T18:31:48.6817591Z test tests::signal_wait_translation_requires_a_tail_injected_wait_record ... ok
+2026-09-20T18:31:48.6818899Z test tests::tail_inject_defers_exact_syscall_and_suspends ... ok
+2026-09-20T18:31:48.6819710Z test tests::thread_init_records_process_ppid_for_current_ppid ... ok
+2026-09-20T18:31:48.6820604Z test tools::tests::chaos_default_config_truncates_without_interrupting ... ok
+2026-09-20T18:31:48.6821512Z test tools::tests::chaos_read_alternates_interrupt_and_truncation ... ok
+2026-09-20T18:31:48.6822395Z test tools::tests::chaos_read_respects_no_read_and_disabled_interrupt ... ok
+2026-09-20T18:31:48.6824636Z test tools::tests::chrome_trace_settles_pending_and_computes_durations ... ok
+2026-09-20T18:31:48.6826676Z test tools::tests::chrome_trace_tracks_multiple_threads_independently ... ok
+2026-09-20T18:31:48.6828384Z test tools::tests::counter2_host_persists_thread_state_and_runs_exit_lifecycle ... ok
+2026-09-20T18:31:48.6829115Z 
+2026-09-20T18:31:48.6829274Z failures:
+2026-09-20T18:31:48.6829495Z 
+2026-09-20T18:31:48.6830100Z ---- launcher::tests::diagnostic_file_preserves_process_group_cleanup_and_exit_status stdout ----
+2026-09-20T18:31:48.6830936Z 
+2026-09-20T18:31:48.6831733Z thread 'launcher::tests::diagnostic_file_preserves_process_group_cleanup_and_exit_status' (14656) panicked at reverie-dbt/src/launcher.rs:1955:9:
+2026-09-20T18:31:48.6832857Z assertion `left == right` failed
+2026-09-20T18:31:48.6833444Z   left: Some(2)
+2026-09-20T18:31:48.6833643Z  right: Some(7)
+2026-09-20T18:31:48.6833969Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-09-20T18:31:48.6834289Z 
+2026-09-20T18:31:48.6834682Z ---- launcher::tests::diagnostic_file_separates_guest_stderr_from_diagnostics stdout ----
+2026-09-20T18:31:48.6835181Z 
+2026-09-20T18:31:48.6835785Z thread 'launcher::tests::diagnostic_file_separates_guest_stderr_from_diagnostics' (14662) panicked at reverie-dbt/src/launcher.rs:1845:9:
+2026-09-20T18:31:48.6836412Z assertion `left == right` failed
+2026-09-20T18:31:48.6836653Z   left: Some(2)
+2026-09-20T18:31:48.6836847Z  right: Some(7)
+2026-09-20T18:31:48.6836956Z 
+2026-09-20T18:31:48.6837212Z ---- launcher::tests::unset_diagnostic_file_preserves_the_shared_stderr_stream stdout ----
+2026-09-20T18:31:48.6837556Z 
+2026-09-20T18:31:48.6837968Z thread 'launcher::tests::unset_diagnostic_file_preserves_the_shared_stderr_stream' (14705) panicked at reverie-dbt/src/launcher.rs:1870:9:
+2026-09-20T18:31:48.6838596Z assertion failed: output.status.success()
+2026-09-20T18:31:48.6838802Z 
+2026-09-20T18:31:48.6838806Z 
+2026-09-20T18:31:48.6838877Z failures:
+2026-09-20T18:31:48.6839204Z     launcher::tests::diagnostic_file_preserves_process_group_cleanup_and_exit_status
+2026-09-20T18:31:48.6839731Z     launcher::tests::diagnostic_file_separates_guest_stderr_from_diagnostics
+2026-09-20T18:31:48.6840235Z     launcher::tests::unset_diagnostic_file_preserves_the_shared_stderr_stream
+2026-09-20T18:31:48.6840527Z 
+2026-09-20T18:31:48.6840802Z test result: FAILED. 100 passed; 3 failed; 13 ignored; 0 measured; 0 filtered out; finished in 6.39s
+2026-09-20T18:31:48.6841179Z 
+2026-09-20T18:31:48.6841620Z [1m[91merror[0m: test failed, to rerun pass `-p reverie-dbt --lib`
+2026-09-20T18:31:48.6936032Z ##[error]Process completed with exit code 101.
+2026-09-20T18:31:48.7108975Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-09-20T18:31:48.7110284Z Post job cleanup.
+2026-09-20T18:31:48.9246264Z [command]/usr/bin/git version
+2026-09-20T18:31:48.9309492Z git version 2.55.0
+2026-09-20T18:31:48.9353044Z Temporarily overriding HOME='/home/runner/work/_temp/04133eb2-3fa8-4c7f-8e0f-2f9880b6f1f8' before making global git config changes
+2026-09-20T18:31:48.9354348Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-20T18:31:48.9359657Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/reverie/reverie
+2026-09-20T18:31:48.9403148Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-20T18:31:48.9438568Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-20T18:31:48.9806203Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-20T18:31:48.9839077Z http.https://github.com/.extraheader
+2026-09-20T18:31:48.9850278Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-09-20T18:31:48.9889520Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-20T18:31:49.0169784Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-20T18:31:49.0209469Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-20T18:31:49.0653488Z Cleaning up orphan processes
+2026-09-20T18:31:49.1123767Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4, actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

@@ -1,0 +1,12 @@
+command=CARGO_INCREMENTAL=0 cargo clippy --offline -j1 -p reverie-kvm --all-targets -- -D warnings
+exit_code=0
+head=865023d1a9d2b82320a38e17e5a83bca1c4af3ee
+tree=86314b59b1923a8e52ef7007ece798d369fee2f4
+elapsed=44.12s
+log_sha256=734000d7b9c35a7c0d97db3151b20965e1c4b78ca3135842aba54231e502a181
+start_avail=443489648640
+lowest_observed_avail=443449278464
+end_avail=443449278464
+stop_threshold=438086664192
+floor=429496729600
+guard_tripped=0

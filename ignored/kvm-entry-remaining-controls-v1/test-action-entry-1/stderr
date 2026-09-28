@@ -1,0 +1,17 @@
+Running as unit: kvm-entry-owner-test-action-entry-1-2768351.service
+
+thread 'vm::tests::entry_action_tests::prepared_host_thread_parking_stops_before_child_effects' (2768534) panicked at reverie-kvm/src/vm/entry_action_tests.rs:584:13:
+assertion `left == right` failed
+  left: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
+ right: []
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'vm::tests::entry_action_tests::prepared_tool_thread_parking_stops_before_child_state_and_start' (2768571) panicked at reverie-kvm/src/vm/entry_action_tests.rs:584:13:
+assertion `left == right` failed
+  left: [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
+ right: []
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 616ms
+             CPU time consumed: 122ms
+                   Memory peak: 14.7M (swap: 0B)

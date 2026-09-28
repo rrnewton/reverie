@@ -1,0 +1,8 @@
+d320361955589bc999d5a0285652bd776faefbc79a078094c721db33e682f6c8  ignored/kvm-signaled-child-sigchld-v1/claude-exact.patch
+54feb17326d9090788626bc3c25d64cc8e62ca72f5bfdca08bd7e7eb9988a60d  reverie-kvm/src/executor.rs
+09bee513f9204d077ab4e2dd5221c5c2dcf837df803178ef4a47c27ac199f327  reverie-kvm/src/child_exit_signal_tests.rs
+98f8aac11fb82dbb8145d94476a3873a458ad8c30e2d3f2b5f4907f56411b1bb  reverie/src/guest.rs
+a9b6a3364354cd774d891f784dd8122db461c9c658a50363b5ef6581ed1c1d19  ignored/kvm-signaled-child-sigchld-v1/exact-865023-focused-tests-v3.status
+1bac93a21d901d111823cb30f4df849591dae70fe6320909a576f4215b479dc8  ignored/kvm-signaled-child-sigchld-v1/exact-865023-lib-serial.status
+286942b6725cc12f5a48e74b8c43b40fc259bce7ec91f92ae6a5d71cc91734bf  ignored/kvm-signaled-child-sigchld-v1/exact-865023-clippy-all-targets.status
+01d2480637bf6acbd9cdd684736cfd7359838ef63d4aa1097f7b5719607f53d3  ignored/kvm-signaled-child-sigchld-v1/REMOTE-CI-CLASSIFICATION.md

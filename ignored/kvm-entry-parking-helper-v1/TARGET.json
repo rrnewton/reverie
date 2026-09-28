@@ -1,0 +1,59 @@
+{
+  "scope": "two-file park-byte helper successor",
+  "predecessor_memory_target": "4a9494ab4f1e80216b87eeebccff867a4282aeda2208bcdcfc5ae2f1ebfa7e01",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/BASE-memory.rs",
+      "bytes": 118772,
+      "sha256": "ab7537c4e07b2466b036066b1b92d9060d6e248f7c17775c2dd1e34a6f16f606"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/BASE-bootstrap.rs",
+      "bytes": 42817,
+      "sha256": "7c008be09ef0e1bcefff4f8651742276cffaf6fac82526e9dad37e348299e81a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/START.json",
+      "bytes": 680,
+      "sha256": "9c57305959c00b9aa2fa2fdf8feb2ed13eb9a141b7855012f05b51a4f1e11918"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/memory.rs",
+      "bytes": 122685,
+      "sha256": "2d8e46a93b20e49707e98a19d749aa7fac5414254f47cd7ab9ab06c4b88e4857"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/bootstrap.rs",
+      "bytes": 43765,
+      "sha256": "6bad9d324f954c104ae8b75e5522f446cb2cc2c817a22cd3dad04b11cfb86ffa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/DELTA.patch",
+      "bytes": 6233,
+      "sha256": "de49bd053defe4a8137965ae7b5f0c93caa191a6b79704e26d325ca727e09c67"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/FORMAT.json",
+      "bytes": 453,
+      "sha256": "b35e86d65f81d7fbe0f11cbb94c2658f3d0ce347ba2fc91707b6bbe663f1bc40"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/PRESERVATION.json",
+      "bytes": 859,
+      "sha256": "eff99353eae05496206e313b657742d933a644f85f0eb64dae7ba8640ac93a01"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/REPORT.md",
+      "bytes": 2639,
+      "sha256": "683cee1c9f986cb365839a8330a52cd3e7f07f366e8c358b2020af8cb8cfc504"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-helper-v1/TEST-PLAN.json",
+      "bytes": 910,
+      "sha256": "f8001c632e92f444d661112b6b4027dc79d3eb25914c9c96e53bad1c6c0ade2c"
+    }
+  ],
+  "live_source_matches": true,
+  "product_execution": false
+}

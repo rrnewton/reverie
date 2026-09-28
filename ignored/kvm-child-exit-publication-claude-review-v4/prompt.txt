@@ -1,0 +1,41 @@
+You are the independent actual Claude-family adversarial reviewer of Reverie pull request https://github.com/rrnewton/reverie/pull/603. You have read-only tools only. Do not edit files, execute commands, delegate, or publish comments. Return a complete review report in your final response.
+
+Review target: base f7bd85e11dd258112148ed2cba6531501a1a00d9, exact head a2e414dca1227903a56dcf5bf8a7bc0bf2f6ea06, tree 859eb9e457f6a4fc86e17be13d349bdaf7363ade. The complete 240,803-byte binary diff is BASE-TO-HEAD.patch, SHA-256 ed53ad69e5686d017c124faa238636e56f99028544c1ce45c5c0a6863b0f545e. INPUTS.json binds the immutable packet. `candidate/` contains complete exact-head snapshots of reverie-kvm/src, reverie-kvm/tests, and reverie/src. `before/` contains base versions of every changed path. QUALIFICATION.md and qualification/ contain retained exact-tree results. `context/claude-review-v3.txt` is your actual prior CHANGES REQUESTED review at e1ee50da; reconcile every blocker and residual rather than assuming it was fixed. Earlier v1/v2 reviews are also supplied. `consumer/` contains complete exact Hermit source files at 3fe4f5929d07bc8a38e92aa16551c1cf436f60c4; HERMIT-WAIT-CONTRACT.md gives routing claims to verify, not conclusions to trust.
+
+Apply both code-review and deterministic-scheduling-review. Before reading the proposal, diff, qualification, or candidate code, read these primary files completely in this exact order: primary/paper.txt including its artifact appendix; primary/scheduler.rs including every test; primary/PROJECT_VISION.md; primary/hermit-v2-roadmap.md. The roadmap's dated measurements are history. Then read both context skill files completely. If anything is missing or truncated, state the limitation.
+
+Intended behavior and boundary:
+
+- Freeze an exact-generation process-family result at logical process exit. Parent disposition, waitability, pending generation, full ExitStatus, uid and CPU ticks must not be resampled from host join timing.
+- Track live and waitable-zombie descendants. Reaped or auto-reaped descendants permit parent completion; a live/waitable descendant under a live ancestor fails closed because Linux reparenting is not implemented. Once any retained ancestor is terminal, later descendant transitions are consuming teardown, remove exact edges, suppress dead-family callbacks, and do not manufacture host-order-dependent errors.
+- A late exact peer failure replaces prior successful Root, Child, or RunTeardownChild state and detaches successful waitability, while preserving an earlier typed fatal cause.
+- Distinguish vanished exact parent generation, missing exact parent-child relation, ancestry cycle, and ambiguous parents as typed fatal states. No production invariant failure may panic, loop, or silently choose BTree order.
+- Make child publication at-most-once by exact generation. The legacy generation-free queue surface refuses under ToolControlled signal control.
+- Capture exact parent/child identities while live. Poll the callback through its synchronous admission prefix before waitability; the same pinned future may await parent progress. Direct and Tool paths must hard-enforce the same frozen child identity/status. A successful process leader must report the authoritative final process status even after explicit cancellation and a late peer group-exit transition.
+- Wait publication never reaps backend state. Hermit injects wait4/waitid before scheduler-shadow retirement. KVM retires the exact family zombie selected by the successful backend wait; WNOWAIT and errors consume neither. A managed mismatch or stale effect is a typed backend run failure, not a guest errno or panic.
+- Preserve the bounded Linux exit-signal semantics described by the patch. Reparenting, stopped/continued events, nonzero production uid/ticks, later SIG_IGN zombie flushing, and broader default-SIGCHLD fidelity remain named residuals.
+- The later Hermit consumer still must implement the two-stage Exit/callback fence and update its pin. This patch supplies Reverie API/backend ordering only. Do not credit it with complete KVM determinism, parity, record/replay, or the Hermit consumer.
+
+Your v3 review requested three corrections. Scrutinize the exact a2e414dc follow-up, not its prose summary:
+
+1. F1: `finish_tool_process_after_workers_with_panics` now refreshes `process_exit_status()` for every successful process leader, not only a natural exit; the Tool Child and RunTeardownChild arms use ordinary release-active hard validation for exact identity/status before callback or waitability publication. The Direct RunTeardownChild comment explains why its synchronous caller stack is refused. Decide whether this covers explicit-cancellation plus late-peer status authority without turning a legitimate order into a false fatal. The release-mode validator log exists specifically because the old checks were `debug_assert` only.
+2. F2: managed wait mismatch and stale unconsumed effects return typed `crate::Error` from internal `execute_checked`. KvmGuest injection converts that to `HandlerOutcome::RuntimeError`, never an errno; the unsubscribed static path propagates the typed error. Ancestry cycles and multiple parents are stored typed terminal family results and mapped to typed public errors. Verify every production caller and ensure no irreversible wait removal can resume guest execution after a typed error. Check that no test-only raw wrapper leaks into production.
+3. F3: one test contains both decisive permutations for the same root-child-grandchild shape: middle exits under live root -> explicit unsupported reparenting; root terminal first -> consuming teardown. The code comment names this deterministic-within-schedule compatibility cost. The PR description will state that the guest-causal order can change pass/refusal and that Linux PID-namespace teardown is not implemented. Decide whether the test exposes the boundary rather than relabeling it.
+
+Also re-evaluate v3 low findings 4-8 and residual risks. In particular inspect callback-before-waitability atomicity, zero uid/ticks, default SIGCHLD behavior, missing stop/continue, state bounds, numeric PID bridge, nonleader waits, native-test-support resampling, cancellation with missing terminal transition, and lock ordering. New blockers are welcome; do not approve merely because named findings changed.
+
+Verification evidence must be assessed adversarially. The parallel terminal-fork run timed out one case at the fixture's fixed 5-second controller deadline; the exact case passed alone in 0.08 seconds and the full serialized 23-case set passed. All logs are retained. Decide whether this is a host-load artifact or blocks. Exact-main Hermit `safehermit`, record/replay, and full parity evidence do not exist yet and must not be inferred.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation meets the original requirement or changed it to admit the implementation. State all four categories explicitly.
+
+Report findings first with severity, exact file/line evidence, impact and required correction. Then give goalpost assessment, separate conclusions for the determinism guarantee and Linux/POSIX semantics, verification actually inspected with limitations, residual risks, and an exact-head APPROVE or CHANGES REQUESTED verdict. Distinguish a blocker to this Reverie prerequisite from the still-required external Hermit consumer.

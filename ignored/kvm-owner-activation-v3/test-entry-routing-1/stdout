@@ -1,0 +1,18 @@
+
+running 13 tests
+test entry::driver::tests::already_retained_secondary_owner_cause_is_promoted_once ... ok
+test entry::driver::tests::competing_publication_releases_peer_but_keeps_origin_obligation ... ok
+test entry::driver::tests::independent_peer_error_does_not_wait_or_lose_its_signal_effects ... ok
+test entry::driver::tests::last_failure_context_disconnects_only_after_gate_unlock ... ok
+test entry::driver::tests::peer_promotion_preserves_nonempty_ledger_and_worker_context_exactly_once ... ok
+test entry::driver::tests::peer_waits_for_publication_after_origin_callback_destruction ... ok
+test entry::driver::tests::private_watch_ignores_callback_drop_and_rechecks_rotating_notifications ... ok
+test entry::driver::tests::rejected_old_view_survives_prior_publication_and_independent_peer_error ... ok
+test entry::driver::tests::repeated_completion_keeps_late_causes_without_duplicate_shared_references ... ok
+test entry::driver::tests::retained_entry_failure_does_not_keep_its_run_alive ... ok
+test entry::driver::tests::retained_old_generation_captures_without_acknowledging_current_callback ... ok
+test entry::driver::tests::retired_or_abandoned_origin_does_not_imply_publication ... ok
+test entry::driver::tests::suspended_peer_rechecks_abandonment_when_terminal_notification_wins ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 643 filtered out; finished in 0.00s
+

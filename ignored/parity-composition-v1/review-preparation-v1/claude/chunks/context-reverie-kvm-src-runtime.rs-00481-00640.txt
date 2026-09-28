@@ -1,0 +1,160 @@
+                    pid,
+                    // run_with_tool drives a single root thread (tid == pid).
+                    pid,
+                    tool.clone(),
+                    memory.clone(),
+                    &auxv,
+                    registers,
+                    &mut thread_state,
+                    &mut guest_executor,
+                    &global_state,
+                    None,
+                    &config,
+                    &subscriptions,
+                    handler_signal.clone(),
+                    pending_child_starts.clone(),
+                    tool_stack_top,
+                    stack_checked_out.clone(),
+                );
+                drive_handler(
+                    tool.handle_thread_start(&mut guest),
+                    handler_signal,
+                    pending_child_starts,
+                    wait_for_failure(&global_state, None),
+                )
+                .await
+            };
+            hide_tool_scratch(&memory, tool_stack_top)?;
+            match start_outcome {
+                HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                HandlerOutcome::ThreadCancelled => {
+                    return Ok(ExitStatus::SUCCESS);
+                }
+                HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                HandlerOutcome::ParkedFatal(_) | HandlerOutcome::ParkedCancelled(_) => {
+                    return Err(Error::UnexpectedVcpuExit(
+                        "parked outcome outside its original syscall callback".to_owned(),
+                    ));
+                }
+                HandlerOutcome::RuntimeError(error) => return Err(error),
+                HandlerOutcome::TailInjected { .. } => {}
+            }
+
+            loop {
+                let vcpu_exit = self.vcpu.run()?;
+                Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+                match vcpu_exit {
+                    VcpuExit::Hypercall(exit) => {
+                        if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                            return Err(Error::UnexpectedHypercall(exit.nr));
+                        }
+                        let frame_address = exit.args[0];
+                        let return_slot = std::ptr::from_mut(exit.ret) as usize;
+                        let registers = self.vcpu.get_regs()?;
+                        let request = SyscallRequest::read_from(&memory, frame_address)?;
+                        let syscall = request.into_syscall()?;
+                        let subscribed = subscriptions
+                            .iter_syscalls()
+                            .any(|number| number == syscall.number());
+                        let result = if subscribed {
+                            // Same `ERESTARTSYS` restart protocol as the
+                            // process-syscall path below; see
+                            // `classify_handler_result`.
+                            loop {
+                                let handler_signal = Arc::new(Mutex::new(None));
+                                let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                                expose_tool_scratch(&memory, tool_stack_top)?;
+                                let outcome = {
+                                    let mut guest_executor = DirectSyscallExecutor {
+                                        executor: &mut executor,
+                                        vcpu: &self.vcpu,
+                                    };
+                                    let mut guest = KvmGuest::<T>::new(
+                                        pid,
+                                        // run_with_tool drives a single root thread.
+                                        pid,
+                                        tool.clone(),
+                                        memory.clone(),
+                                        &auxv,
+                                        kvm_registers(registers, request.number()),
+                                        &mut thread_state,
+                                        &mut guest_executor,
+                                        &global_state,
+                                        None,
+                                        &config,
+                                        &subscriptions,
+                                        handler_signal.clone(),
+                                        pending_child_starts.clone(),
+                                        tool_stack_top,
+                                        stack_checked_out.clone(),
+                                    );
+                                    drive_handler(
+                                        tool.handle_syscall_event(&mut guest, syscall),
+                                        handler_signal,
+                                        pending_child_starts,
+                                        wait_for_failure(&global_state, None),
+                                    )
+                                    .await
+                                };
+                                hide_tool_scratch(&memory, tool_stack_top)?;
+                                break match outcome {
+                                    HandlerOutcome::Returned(result) => {
+                                        match classify_handler_result(result)? {
+                                            Some(raw) => raw,
+                                            None => continue,
+                                        }
+                                    }
+                                    HandlerOutcome::TailInjected { result, .. } => {
+                                        result_to_raw(result)
+                                    }
+                                    HandlerOutcome::ThreadCancelled => {
+                                        return Ok(ExitStatus::SUCCESS);
+                                    }
+                                    HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                                    HandlerOutcome::ParkedFatal(_)
+                                    | HandlerOutcome::ParkedCancelled(_) => {
+                                        return Err(Error::UnexpectedVcpuExit(
+                                            "parked outcome outside its original syscall callback"
+                                                .to_owned(),
+                                        ));
+                                    }
+                                    HandlerOutcome::RuntimeError(error) => return Err(error),
+                                };
+                            }
+                        } else {
+                            executor.execute(&request, &memory)
+                        };
+                        // SAFETY: return_slot points into this vCPU's stable KVM_RUN
+                        // mapping. The vCPU remains stopped and is not run again while
+                        // the tool callback is active.
+                        unsafe {
+                            (return_slot as *mut u64).write(result as u64);
+                        }
+                    }
+                    VcpuExit::Hlt => {
+                        return Ok(ExitStatus::SUCCESS);
+                    }
+                    exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+                }
+            }
+        }
+        .await;
+        if outcome.is_err() {
+            global_state.report_backend_failure(reverie::BackendFailure {
+                pid,
+                tid: pid,
+                phase: "direct Tool execution",
+            });
+        }
+        let status = outcome.as_ref().copied().unwrap_or(ExitStatus::Exited(255));
+        let cleanup = self
+            .notify_tool_exit(
+                tool,
+                (pid, pid),
+                &global_state,
+                &config,
+                thread_state,
+                status,
+            )
+            .await;
+        Error::combine(

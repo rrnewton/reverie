@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.052811883
+    }
+  ]
+}

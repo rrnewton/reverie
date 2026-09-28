@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-instruction-constructor-1-3092056.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 336ms
+             CPU time consumed: 21ms
+                   Memory peak: 8.2M (swap: 0B)

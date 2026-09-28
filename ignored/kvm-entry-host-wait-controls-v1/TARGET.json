@@ -1,0 +1,45 @@
+{
+  "scope": "Two new Host-neighbor source controls, unexecuted author packet",
+  "records": [
+    {
+      "path": "BASE-executor.rs",
+      "bytes": 1529884,
+      "sha256": "4609d36452b011e7f1c4b787cae669ee6e6f97f8e85eb4223af319f044626ff7"
+    },
+    {
+      "path": "BASE.json",
+      "bytes": 423,
+      "sha256": "a52462b8176353124f2e1ff6839f6b7e14072837885436d0cfc585d3b278cdc2"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 3987,
+      "sha256": "a59b26ee4486c745dc680290fabd4dd2212a6640c4def987874be6cc409f6900"
+    },
+    {
+      "path": "SOURCE-entry_host_wait_tests.rs",
+      "bytes": 10703,
+      "sha256": "0a5959a7e57dd09e89b5d7e98e705233c58945b893841feff065d5a4c8e008c2"
+    },
+    {
+      "path": "SOURCE-executor.rs",
+      "bytes": 1530057,
+      "sha256": "cb7e9ca678cd9302bf58e014c00ecdc2f01e4fcab0305f40a56b88f0d671decd"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 1476,
+      "sha256": "f66ee66436e8a62eb94965ebd62efbae40fe1361b933a2f9a5b95e9635e3ad0d"
+    },
+    {
+      "path": "SOURCE.patch",
+      "bytes": 11791,
+      "sha256": "d7d86d94e721cc0fc97753ede3ed574e92295db2cd5de03e517c935a3a0bc008"
+    },
+    {
+      "path": "TESTS.json",
+      "bytes": 429,
+      "sha256": "26583b3a00872953850cfa156c0d4a640ce32d30fbca273194273dc8440a2638"
+    }
+  ]
+}

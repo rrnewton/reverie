@@ -1,0 +1,45 @@
+{
+  "head": "4ea79f6da7100709fea0e0a5591b0945d438e34f",
+  "branch": "codex/kvm-entry-ownership-20260919",
+  "files": {
+    "reverie-kvm/src/memory.rs": {
+      "sha256": "e5674f5bfc18a4c7c89aefe982943c6e89e5d784f4aeabda762f646b136046a6",
+      "size": 134566,
+      "author_after_sha256": "e5674f5bfc18a4c7c89aefe982943c6e89e5d784f4aeabda762f646b136046a6"
+    },
+    "reverie-kvm/src/entry.rs": {
+      "sha256": "753bf90a774afc3c72e3b2b1b0ac61faba8b899b63674fe170f89984ed76090b",
+      "size": 59493,
+      "author_after_sha256": "753bf90a774afc3c72e3b2b1b0ac61faba8b899b63674fe170f89984ed76090b"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "sha256": "44498a541b782d67ecf850be2fc4d66a603980236068781eb3dd51be51a18bcc",
+      "size": 415138,
+      "author_after_sha256": "92dee7e3985cd5aae9508f2707b99a4317e70ff951f2043f238a163041f12d6b"
+    },
+    "reverie-kvm/src/memory/entry_snapshot_tests.rs": {
+      "sha256": "7c7608142e3c1ded04e29c68db5339aea7f8fef95a0fafd335dd2182a8551ad9",
+      "size": 10549,
+      "author_after_sha256": "7c7608142e3c1ded04e29c68db5339aea7f8fef95a0fafd335dd2182a8551ad9"
+    },
+    "reverie-kvm/src/vm/entry_construction_tests.rs": {
+      "sha256": "be990a0d1fac50aaf93b34815a90df7ea278654110a35919a916e5c990a739d8",
+      "size": 13251,
+      "author_after_sha256": "be990a0d1fac50aaf93b34815a90df7ea278654110a35919a916e5c990a739d8"
+    }
+  },
+  "new_test_declarations": [
+    "memory::entry_snapshot_tests::sparse_host_operation_keeps_close_pending_for_admitted_raw_read",
+    "memory::entry_snapshot_tests::sparse_host_operation_keeps_close_pending_for_admitted_user_read",
+    "memory::entry_snapshot_tests::sparse_host_operation_without_admitted_copy_allows_close",
+    "memory::entry_snapshot_tests::partial_sparse_fallback_waits_for_reopen_and_overwrites_full_destination",
+    "vm::tests::entry_construction_tests::thread_constructor_registers_while_closed_then_enters_and_retires",
+    "vm::tests::entry_construction_tests::never_entered_thread_constructor_retires_while_closed",
+    "vm::tests::entry_construction_tests::refused_real_thread_spawn_preserves_then_retires_unentered_participant"
+  ],
+  "test_count": 7,
+  "concurrent_shared_file_changes": {
+    "reverie-kvm/src/vm.rs": "Actual after includes concurrent root edits beyond this author include. AUTHOR-PATCH.patch contains this author delta only."
+  },
+  "qualification": "source only; no compiler, formatter, test, or guest execution"
+}

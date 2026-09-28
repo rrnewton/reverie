@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-fork-cleanup-1-1411648.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 77ms
+             CPU time consumed: 16ms
+                   Memory peak: 14.6M (swap: 0B)

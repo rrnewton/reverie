@@ -1,0 +1,16 @@
+{
+  "files": {
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 412707,
+      "sha256": "aff8fdbdfe2472ab9baf6aae82471d15e8d3f8cc31d04c7833b54034ed730203"
+    },
+    "reverie-kvm/src/vm/entry_action_tests.rs": {
+      "bytes": 22555,
+      "sha256": "cc785f6ebb773ce10ab71c538bfcf8e0904212d689b1b1369b743e47cd6bde33"
+    }
+  },
+  "snapshot_directory": "source-1",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "incremental_vm_baseline_sha256": "27a4d4cd81818e3c8d5336e07c725201bd2a41ea6252733193fab18a061e0455",
+  "root_still_adds_include_and_formats": true
+}

@@ -1,0 +1,11 @@
+Running as unit: kvm-entry-production-memory-1-1256336.service
+
+thread 'memory::tests::entry_copy_tests::copy_unwind_captures_handle_origin_without_publishing_tool_failure' (1256397) panicked at reverie-kvm/src/memory.rs:2146:21:
+controlled admitted-copy unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+untouched snapshot: SEEK_DATA(0)=-1, error=Some(Os { code: 6, kind: Uncategorized, message: "No such device or address" }), initial_enxio=true, sparse_copy=Ok(())
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 9ms
+             CPU time consumed: 9ms
+                   Memory peak: 16.7M (swap: 0B)

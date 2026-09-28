@@ -1,0 +1,37 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/clippy-plan.json",
+      "b8dc7f549d1fb0907336896afe92389f00611b58b1510bdbaa7d93ae6ef894e7"
+    ]
+  },
+  "pid": 3165078,
+  "start_ticks": 192551627,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "f47d005127ca0d563298f6993f8a5a26047db68b4a3fe1001623937ef445040a",
+  "monotonic_ns": 1925516338094697,
+  "note": "Written before exec; this is not proof that the payload started."
+}

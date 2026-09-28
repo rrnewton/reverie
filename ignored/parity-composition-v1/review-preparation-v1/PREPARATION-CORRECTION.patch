@@ -1,0 +1,32 @@
+--- initial/prepare_packet.py
++++ current/prepare_packet.py
+@@ -17,7 +17,10 @@
+  a=rec(r['path']);assert all(a[k]==v for k,v in r.items()if k in a),(r,a);return a
+ def put(p,value):
+  p=Path(p);p.parent.mkdir(parents=True,exist_ok=True)
+- with p.open('x')as f:f.write(value if isinstance(value,str)else json.dumps(value,indent=2)+'\n')
++ text=value if isinstance(value,str)else json.dumps(value,indent=2)+'\n'
++ if p.exists():
++  assert p.read_text()==text,('prepared bytes differ; no overwrite',p);return
++ with p.open('x')as f:f.write(text)
+ def git(*args,repo=L):
+  r=subprocess.run(['/usr/bin/git','-C',str(repo),*args],env={**os.environ,'GIT_OPTIONAL_LOCKS':'0','GIT_NO_LAZY_FETCH':'1'},capture_output=True,timeout=30)
+  assert r.returncode==0,(args,r.stderr.decode());return r.stdout
+@@ -47,7 +50,7 @@
+   else:out.append([lo,hi])
+  return out
+ 
+-C=P/'common';C.mkdir(exist_ok=False)
++C=P/'common';C.mkdir(exist_ok=True)
+ assert git('rev-parse',BASE+'^{tree}').decode().strip()==BTREE
+ assert git('rev-parse',V7+'^{tree}').decode().strip()==BTREE
+ linear=json.loads((B/'LINEAR-SOURCE-PLAN.json').read_text());changed=sorted(set(linear['first_commit_paths']+linear['second_commit_paths']))
+@@ -124,7 +127,7 @@
+ put(C/'HERMIT-CONTEXT.json',dict(commit=HSHA,files=h_records,scope='Existing consumer context only; no new Hermit review or runtime result'))
+ # Bound qualification preparation, caller, and preserved original refusal only. Active phase/result files are excluded.
+ Q=B/'qualification-v2';groups=json.loads((Q/'SELECTORS.json').read_text())['groups'];assert len(groups)==83
+-selected=[dict(phase=k,artifact=v['artifact'],name=v['names'][0],source=v['source'],purpose=v['purpose'])for k,v in groups.items()];assert len({(v['artifact'],v['name'])for v in selected})==83
++selected=[dict(phase=k,artifact=v['artifact'],name=v['names'][0],source=v['source'],purpose=v.get('purpose'))for k,v in groups.items()];assert len({(v['artifact'],v['name'])for v in selected})==83
+ put(C/'SELECTED-DECLARATIONS.json',dict(declarations=selected,counts=dict(collections.Counter(x['artifact']for x in selected)),planned_only=True,qualification_results_pending=True))
+ caller_names=['prepare.py','phase.py','common.py','cache_lease.py','bind_dependencies.py','retain_artifacts.py','execute_continuation.py','observer/observer.py']
+ callers=[]

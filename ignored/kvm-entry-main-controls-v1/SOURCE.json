@@ -1,0 +1,17 @@
+[
+  {
+    "path": "reverie-kvm/src/clock.rs",
+    "bytes": 39575,
+    "sha256": "4fb8916f471576ca180c74b54e3635a80374ec9b52546c039372820857cee472"
+  },
+  {
+    "path": "reverie-kvm/src/entry.rs",
+    "bytes": 51241,
+    "sha256": "5330bcb424236c13b90911bf56423e71b82dfc42e21be690a7e1a1f1601f9516"
+  },
+  {
+    "path": "reverie-kvm/src/vm/entry_main_tests.rs",
+    "bytes": 22986,
+    "sha256": "cb43bb62fbe3a47b313733a1d0b3da97fc4dddad5e397964168f0726e22880f8"
+  }
+]

@@ -1,0 +1,50 @@
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.91s
+     Running unittests src/lib.rs (target/debug/deps/reverie-4d148342b6af1802)
+
+running 14 tests
+test auxv::tests::builds_from_backend_entries ... ok
+test backend_stats::tests::counter_snapshot_sorts_and_combines_typed_keys ... ok
+test backend_stats::tests::disabled_request_does_not_call_snapshot_source ... ok
+test auxv::tests::smoke ... ok
+test backend_stats::tests::patch_shape_collector_deduplicates_rips_and_uses_exact_buckets ... ok
+test backend_stats::tests::patch_shape_collector_keeps_equal_rips_distinct_across_processes_and_execs ... ok
+test backend_stats::tests::patch_shape_rejects_boundary_at_instruction_end - should panic ... ok
+test regs::tests::test_multi_line_x86 ... ok
+test regs::tests::test_single_line_x86 ... ok
+test signal::tests::signal_event_preserves_raw_realtime_number_payload_and_target ... ok
+test signal::tests::signal_event_rejects_invalid_or_incoherent_numbers ... ok
+test subscription::tests::compose ... ok
+test subscription::tests::smoke ... ok
+test timer::tests::record_then_take_counts_and_resets ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/signal_bridge.rs (target/debug/deps/signal_bridge-dd256ce600e076b1)
+
+running 4 tests
+test legacy_bridge_preserves_unchanged_event_bytes_and_suppression ... ok
+test child_exit_signal_default_refuses_before_publication ... ok
+test legacy_bridge_refuses_incoherent_replacement_and_raw_realtime_signal ... ok
+test structured_hook_can_replace_signal_with_coherent_explicit_siginfo ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/validate_script_source.rs (target/debug/deps/validate_script_source-70097dcd6eff80a4)
+
+running 1 test
+test validation_ledger_writer_follows_the_discovered_parent ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie
+
+running 4 tests
+test reverie/src/backend.rs - backend::Backend (line 118) ... ignored
+test reverie/src/guest.rs - guest::Guest::tail_inject (line 185) - compile ... ok
+test reverie/src/guest.rs - guest::Guest::backtrace (line 463) ... ok
+test reverie/src/tool.rs - tool::Tool (line 331) ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.33s; merged doctests compilation took 0.32s

@@ -1,0 +1,39 @@
+{
+  "records": [
+    {
+      "path": "AUTHOR.patch",
+      "sha256": "1cdc7473e23398c796a056874561b8a107c7f2d45513cdc99151c2cb032c5887",
+      "bytes": 28907
+    },
+    {
+      "path": "BASE.txt",
+      "sha256": "7692e87f3fe110f0232a37777e0781a0e7756ed2d844d7dc45088eab8189e6ba",
+      "bytes": 41
+    },
+    {
+      "path": "REPORT.md",
+      "sha256": "58d1a391dc54397c46244d74c50f019770e223bff6f53361b3f2ad673164d9a9",
+      "bytes": 7557
+    },
+    {
+      "path": "SOURCE.json",
+      "sha256": "e370251e91337383cfff23f9bdbae1fce79c1fd13d0aa30f0a7802de9e7d4be7",
+      "bytes": 684
+    },
+    {
+      "path": "source-after/reverie-kvm/src/clock.rs",
+      "sha256": "144ffb96a48d91c2130810d032dbabbabee41a79119205df2ed660116e56edf9",
+      "bytes": 41273
+    },
+    {
+      "path": "source-after/reverie-kvm/src/vm/entry_hypercall_tests.rs",
+      "sha256": "bf20d951afd1fb4b1c78785a07f7e39b778254890e251c3b93a50c71969d845d",
+      "bytes": 26004
+    },
+    {
+      "path": "source-before/clock.rs",
+      "sha256": "4fb8916f471576ca180c74b54e3635a80374ec9b52546c039372820857cee472",
+      "bytes": 39575
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+
+running 4 tests
+test failure::tool_panics::tests::no_panic_preserves_success_and_typed_errors_without_new_wrappers ... ok
+test failure::tool_panics::tests::panic_promotes_wrapped_abort_and_publishes_its_complete_effects_subtree ... ok
+test failure::tool_panics::tests::real_error_effects_and_two_exact_payloads_keep_their_original_ownership ... ok
+test failure::tool_panics::tests::take_transfers_only_pending_payloads_once_and_accepts_a_later_batch ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 673 filtered out; finished in 0.00s
+

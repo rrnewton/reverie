@@ -1,0 +1,7 @@
+exit_code=0
+elapsed_seconds=685
+completed_at=2026-09-20T14:22:56-07:00
+inputs_verify_rc=0
+prompt_sha256=2b41b66ac8bfb858f01badd072fa56a28219d312da63ac94619b25def429e316
+output_bytes=1736681
+stderr_bytes=93

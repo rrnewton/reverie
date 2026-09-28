@@ -1,0 +1,160 @@
+                            tid,
+                            &tool,
+                            &memory,
+                            &auxv,
+                            returned_registers,
+                            request.number(),
+                            frame_address,
+                            &mut thread_state,
+                            &global_state,
+                            config,
+                            subscriptions,
+                            &stack_checked_out,
+                            false,
+                        )
+                        .await?
+                    };
+                    let pending = match pending {
+                        CallbackOutcome::Completed(pending) => pending,
+                        CallbackOutcome::ThreadCancelled => {
+                            return Ok(self.cancelled_tool_thread_status(executor));
+                        }
+                    };
+                    if let Some((segment, address)) = executor.take_segment() {
+                        set_user_segment_base(&self.vcpu, segment, address)?;
+                    }
+                    pending_exit = pending_exit.or_else(|| executor.take_exit());
+                    let mut delivered = false;
+                    if pending_exit.is_none()
+                        && let Some(pending) = pending
+                    {
+                        let signal_registers = if restart_requested
+                            && executor.caught_signal_restarts_syscall(pending)
+                        {
+                            restarted_registers.expect("restart registers were constructed")
+                        } else {
+                            returned_registers
+                        };
+                        delivered = self.deliver_selected_signal_from_registers(
+                            executor,
+                            frame_address,
+                            signal_registers,
+                            pending,
+                        )?;
+                    }
+                    pending_exit = pending_exit.or_else(|| executor.take_exit());
+                    if restart_requested && !delivered && pending_exit.is_none() {
+                        // Suppression, an ignored replacement, or a replacement
+                        // newly blocked by its signal number means no handler ran;
+                        // resume by re-executing the original syscall rather than
+                        // leaking EINTR or the kernel-private ERESTARTSYS value.
+                        stage_process_syscall_return(
+                            &mut memory,
+                            &self.vcpu,
+                            frame_address,
+                            restarted_registers.expect("restart registers were constructed"),
+                        )?;
+                    }
+                }
+                executor.finish_parked_delivery();
+                pending_exit = pending_exit.or_else(|| executor.take_exit());
+                if let Some(exit) = pending_exit {
+                    if exit.group {
+                        self.request_guest_thread_group_exit(exit.status);
+                    }
+                    return Ok(exit.into());
+                }
+            }
+        }
+        .await;
+        let outcome = outcome.map_err(|error| {
+            self.cleanup_unstarted_tool_children_after_error(executor, &pending_child_starts, error)
+        });
+        self.finish_tool_process(
+            executor,
+            tool,
+            (pid, tid),
+            global_state.as_ref(),
+            config,
+            thread_state,
+            outcome,
+            true,
+        )
+        .await
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 4202..4252; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+        fn read_clock(&self) -> Result<u64> {
+            Err(Error::GuestClock(
+                "side-effect test has no guest counter".into(),
+            ))
+        }
+
+        fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> i64 {
+            match request.number() as libc::c_long {
+                libc::SYS_write => self.state.output_bytes += request.args()[2] as usize,
+                libc::SYS_pipe2 => self.state.descriptors += 2,
+                libc::SYS_fork | libc::SYS_clone => {
+                    self.state.tasks += 1;
+                    self.state.pending_process_action = true;
+                }
+                libc::SYS_execve | libc::SYS_execveat => {
+                    self.state.address_space_generation += 1;
+                    self.state.pending_process_action = true;
+                }
+                libc::SYS_mmap => self.state.address_space_generation += 1,
+                libc::SYS_kill | libc::SYS_tkill | libc::SYS_tgkill => {
+                    self.state.pending_signal = true
+                }
+                libc::SYS_exit | libc::SYS_exit_group => self.state.exited = true,
+                number => panic!("unexpected side-effect probe syscall {number}"),
+            }
+            0
+        }
+
+        fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+            !injection_can_be_nonreturning(request)
+        }
+
+        fn complete_injection<'a>(
+            &'a mut self,
+            _context: ToolContext<'a, crate::StraceTool>,
+        ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+        where
+            crate::StraceTool: 'a,
+        {
+            self.state.completion_callbacks += 1;
+            Box::pin(async {
+                Ok(InjectionCompletion::DoesNotReturn {
+                    image_replaced: true,
+                    process_exited: true,
+                })
+            })
+        }
+
+        fn tail_injection_allowed(&self, _request: &SyscallRequest) -> bool {
+            false
+        }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 4261..4295; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+        fn read_clock(&self) -> Result<u64> {
+            Err(Error::GuestClock(
+                "side-effect test has no guest counter".into(),
+            ))
+        }
+
+        fn execute(&mut self, request: &SyscallRequest, _memory: &GuestMemory) -> i64 {
+            match request.number() as libc::c_long {
+                libc::SYS_execve | libc::SYS_execveat => {
+                    self.state.address_space_generation += 1;
+                    self.state.pending_process_action = true;
+                }
+                libc::SYS_kill | libc::SYS_tkill | libc::SYS_tgkill => {
+                    self.state.pending_signal = true
+                }
+                libc::SYS_exit | libc::SYS_exit_group => self.state.exited = true,
+                number => panic!("unexpected nonreturning probe syscall {number}"),
+            }
+            0
+        }
+

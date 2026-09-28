@@ -1,0 +1,12 @@
+Running as unit: kvm-entry-owner-test-wait-entry-1-2768895.service
+
+thread 'vm::tests::entry_wait_tests::host_elf_same_run_second_close_waits_before_fresh_reopen' (2769517) panicked at reverie-kvm/src/vm/entry_wait_tests.rs:352:17:
+assertion `left == right` failed
+  left: (3, 4)
+ right: (3, 3)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 387ms
+             CPU time consumed: 71ms
+                   Memory peak: 10.6M (swap: 0B)

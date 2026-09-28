@@ -1,0 +1,17 @@
+
+running 4 tests
+test vm::tests::entry_multi_owner_tests::public_elf_independent_c_publication_releases_peer_before_owner_a ... FAILED
+test vm::tests::entry_multi_owner_tests::public_elf_multi_owner_healthy_callbacks_complete_once ... FAILED
+test vm::tests::entry_multi_owner_tests::public_elf_owner_a_publishes_after_real_peer_observation ... FAILED
+test vm::tests::entry_multi_owner_tests::public_elf_peer_b_keeps_own_error_before_owner_a_publication ... FAILED
+
+failures:
+
+failures:
+    vm::tests::entry_multi_owner_tests::public_elf_independent_c_publication_releases_peer_before_owner_a
+    vm::tests::entry_multi_owner_tests::public_elf_multi_owner_healthy_callbacks_complete_once
+    vm::tests::entry_multi_owner_tests::public_elf_owner_a_publishes_after_real_peer_observation
+    vm::tests::entry_multi_owner_tests::public_elf_peer_b_keeps_own_error_before_owner_a_publication
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 719 filtered out; finished in 5.08s
+

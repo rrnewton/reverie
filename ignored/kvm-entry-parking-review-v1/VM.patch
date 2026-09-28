@@ -1,0 +1,1037 @@
+diff --git a/reverie-kvm/src/vm.rs b/reverie-kvm/src/vm.rs
+index e84d27bf..b578cd51 100644
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -7,15 +7,20 @@
+  */
+ 
+ use std::fs::File;
++use std::future::Future;
+ use std::os::fd::AsRawFd;
+ use std::os::fd::FromRawFd;
+ use std::path::Path;
++use std::pin::Pin;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+ use std::sync::OnceLock;
+ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+ 
++use futures::FutureExt;
++use futures::channel::oneshot;
++use futures::future::Shared;
+ use kvm_bindings::CpuId;
+ use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
+ use kvm_bindings::kvm_enable_cap;
+@@ -315,6 +320,7 @@ struct GuestWorkerHandle {
+ pub(crate) struct ProcessActionOutcome {
+     pub(crate) image_replaced: bool,
+     pub(crate) syscall_result: i64,
++    pub(crate) cancelled: bool,
+ }
+ 
+ impl ProcessActionOutcome {
+@@ -322,6 +328,7 @@ impl ProcessActionOutcome {
+         Self {
+             image_replaced: false,
+             syscall_result,
++            cancelled: false,
+         }
+     }
+ 
+@@ -329,6 +336,33 @@ impl ProcessActionOutcome {
+         Self {
+             image_replaced: true,
+             syscall_result: 0,
++            cancelled: false,
++        }
++    }
++
++    fn cancelled() -> Self {
++        Self {
++            image_replaced: false,
++            // No guest result is installed for this terminal disposition.
++            syscall_result: 0,
++            cancelled: true,
++        }
++    }
++}
++
++pub(crate) type GuestCancellationSubscription = Shared<oneshot::Receiver<()>>;
++
++struct CancellationWake {
++    sender: oneshot::Sender<()>,
++    receiver: GuestCancellationSubscription,
++}
++
++impl Default for CancellationWake {
++    fn default() -> Self {
++        let (sender, receiver) = oneshot::channel();
++        Self {
++            sender,
++            receiver: receiver.shared(),
+         }
+     }
+ }
+@@ -338,6 +372,7 @@ impl ProcessActionOutcome {
+ pub(crate) struct GuestThreadGroup {
+     cancelled: AtomicBool,
+     cancelled_after_failure: AtomicBool,
++    cancellation_wake: Mutex<CancellationWake>,
+     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
+     // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
+     exit_status: Mutex<Option<ExitStatus>>,
+@@ -413,6 +448,34 @@ pub(crate) fn finish_caught_worker_panic(
+ }
+ 
+ impl GuestThreadGroup {
++    /// Subscribe before rechecking the caller's existing cancellation and exit
++    /// predicates. Readiness only requests another recheck; it grants no entry
++    /// and does not decide whether worker cancellation applies to the root.
++    /// Take a fresh subscription after every wake, including an irrelevant one.
++    pub(crate) fn subscribe_cancellation(&self) -> GuestCancellationSubscription {
++        self.cancellation_wake
++            .lock()
++            .expect("KVM cancellation wake lock poisoned")
++            .receiver
++            .clone()
++    }
++
++    /// Called after publishing state and releasing every group registry lock.
++    fn notify_cancellation(&self) {
++        let previous = {
++            let mut wake = self
++                .cancellation_wake
++                .lock()
++                .expect("KVM cancellation wake lock poisoned");
++            std::mem::take(&mut *wake)
++        };
++        // Install a pending generation before invoking any wake callback. In
++        // particular, exec rearm and a root ignoring worker-only cancellation
++        // must not inherit a permanently-ready notification. Send outside the
++        // notification lock too: a callback may immediately subscribe again.
++        let _ = previous.sender.send(());
++    }
++
+     #[cfg(test)]
+     pub(crate) fn has_worker_handles(&self) -> bool {
+         !self.worker_handles.lock().unwrap().is_empty()
+@@ -488,6 +551,8 @@ impl GuestThreadGroup {
+                 libc::pthread_kill(worker, worker_interrupt_signal());
+             }
+         }
++        drop(workers);
++        self.notify_cancellation();
+     }
+ 
+     pub(crate) fn add_worker_handle(
+@@ -672,6 +737,8 @@ impl GuestThreadGroup {
+                 libc::pthread_kill(worker, worker_interrupt_signal());
+             }
+         }
++        drop(workers);
++        self.notify_cancellation();
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-211): Review KVM exec sibling cancellation ordering.
+@@ -947,6 +1014,9 @@ impl ProcessActionContinuation {
+         // Never restore after a failed action: its partial process state must
+         // remain observable to the caller's fatal cleanup path.
+         let outcome = action_result?;
++        if outcome.cancelled {
++            return Ok(outcome);
++        }
+         match (self, outcome.image_replaced) {
+             (Self::Restore(boundary), _) | (Self::Exec(boundary), false) => {
+                 boundary.restore(backend)?;
+@@ -1035,6 +1105,16 @@ struct InitializedKvmResources {
+ }
+ 
+ impl KvmBackend {
++    pub(crate) fn set_tool_failure(&mut self, origin: Option<crate::failure::FailureContext>) {
++        self.vcpu.set_failure_context(origin.clone());
++        self.memory.set_failure_context(origin.clone());
++        self.tool_failure = origin;
++    }
++
++    pub(crate) fn entry_cancellation(&self) -> GuestCancellationSubscription {
++        self.thread_group.subscribe_cancellation()
++    }
++
+     pub(crate) fn failure_subscription(
+         &self,
+         is_traced_tree_root: bool,
+@@ -1150,7 +1230,7 @@ impl KvmBackend {
+             }
+         };
+         Ok(Self {
+-            vcpu: crate::clock::CountedVcpu::new(vcpu),
++            vcpu: crate::clock::CountedVcpu::new(vcpu, memory.clone())?,
+             vm,
+             memory,
+             _kvm: kvm,
+@@ -1590,6 +1670,66 @@ impl KvmBackend {
+         Ok(())
+     }
+ 
++    // The prepared action owns its frame and any earlier child state while
++    // admission is closed. Only this one entry is retried; the action is not.
++    async fn park_process_action(
++        &mut self,
++        phase: &'static str,
++        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++    ) -> Result<bool> {
++        let gate = self.memory.entry_gate();
++        let mut prepared = false;
++        loop {
++            let changed = gate.subscribe();
++            let cancelled = self.entry_cancellation();
++            gate.admit_operation().map_err(|failure| failure.error())?;
++            if stop.as_mut().now_or_never().is_some() {
++                return Err(Error::RunAborted);
++            }
++            if self.guest_thread_group_exit_status().is_some() || self.guest_thread_is_cancelled() {
++                return Ok(false);
++            }
++            if !prepared {
++                set_syscall_return_park(
++                    &mut self.memory,
++                    self.hypercall_instruction,
++                    self.syscall_trampoline_address,
++                    self.syscall_frame_address,
++                    true,
++                )?;
++                prepared = true;
++                continue;
++            }
++            // Keep the borrowed VcpuExit entirely inside a synchronous helper.
++            if let Some(parked) = self.try_park_process_action(phase)? {
++                set_syscall_return_park(
++                    &mut self.memory,
++                    self.hypercall_instruction,
++                    self.syscall_trampoline_address,
++                    self.syscall_frame_address,
++                    false,
++                )?;
++                parked?;
++                return Ok(true);
++            }
++            let _ =
++                futures::future::select(futures::future::select(changed, cancelled), stop.as_mut())
++                    .await;
++        }
++    }
++
++    fn try_park_process_action(&mut self, phase: &'static str) -> Result<Option<Result<()>>> {
++        let Some(exit) = self.vcpu.run()? else {
++            return Ok(None);
++        };
++        Self::record_exit(self.exit_collector.as_deref(), &exit);
++        Ok(Some(match exit {
++            VcpuExit::Hlt => Ok(()),
++            exit => Err(Error::UnexpectedVcpuExit(format!("{phase}: {exit:?}"))),
++        }))
++    }
++
++    #[cfg(test)]
+     #[allow(clippy::too_many_arguments)]
+     fn prepare_forked_process(
+         &mut self,
+@@ -1604,33 +1744,47 @@ impl KvmBackend {
+         park_syscall_return: bool,
+         fault: Option<&PageZeroFault>,
+     ) -> Result<ForkedProcess> {
++        let mut stop = std::pin::pin!(std::future::pending());
++        futures::executor::block_on(self.prepare_forked_process_admitted(
++            executor,
++            child_pid,
++            child_stack,
++            parent_tid,
++            child_tid,
++            clear_child_tid,
++            clear_sighand,
++            share_address_space,
++            park_syscall_return,
++            fault,
++            stop.as_mut(),
++        ))?
++        .ok_or_else(|| Error::UnexpectedVcpuExit("test fork was cancelled".to_owned()))
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    async fn prepare_forked_process_admitted(
++        &mut self,
++        executor: &ElfExecutor,
++        child_pid: i32,
++        child_stack: Option<u64>,
++        parent_tid: Option<u64>,
++        child_tid: Option<u64>,
++        clear_child_tid: Option<u64>,
++        clear_sighand: bool,
++        share_address_space: bool,
++        park_syscall_return: bool,
++        fault: Option<&PageZeroFault>,
++        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++    ) -> Result<Option<ForkedProcess>> {
+         let mut child_executor =
+             executor.fork_child(child_pid, clear_sighand, share_address_space)?;
+         child_executor.set_clear_child_tid(clear_child_tid);
+-        if park_syscall_return {
+-            set_syscall_return_park(
+-                &mut self.memory,
+-                self.hypercall_instruction,
+-                self.syscall_trampoline_address,
+-                self.syscall_frame_address,
+-                true,
+-            )?;
+-            let vcpu_exit = self.vcpu.run()?;
+-            Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+-            let parked = match vcpu_exit {
+-                VcpuExit::Hlt => Ok(()),
+-                exit => Err(Error::UnexpectedVcpuExit(format!(
+-                    "parent did not park at fork: {exit:?}"
+-                ))),
+-            };
+-            set_syscall_return_park(
+-                &mut self.memory,
+-                self.hypercall_instruction,
+-                self.syscall_trampoline_address,
+-                self.syscall_frame_address,
+-                false,
+-            )?;
+-            parked?;
++        if park_syscall_return
++            && !self
++                .park_process_action("parent did not park at fork", stop)
++                .await?
++        {
++            return Ok(None);
+         }
+         let child_snapshot = self.snapshot_process()?;
+         write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
+@@ -1640,10 +1794,11 @@ impl KvmBackend {
+         // Forked children inherit the parent's thread ownership so execution and
+         // `is_backend_owned_syscall`'s futex classification stay consistent.
+         child.thread_ownership = self.thread_ownership;
+-        child.tool_failure = self
+-            .tool_failure
+-            .as_ref()
+-            .map(|failure| failure.for_process(Pid::from_raw(child_pid)));
++        child.set_tool_failure(
++            self.tool_failure
++                .as_ref()
++                .map(|failure| failure.for_process(Pid::from_raw(child_pid))),
++        );
+         child.exit_collector = self.exit_collector.clone();
+         write_tid_best_effort(&mut child.memory, child_tid, child_pid);
+         let (fs_base, gs_base) = child_executor.segment_bases();
+@@ -1659,11 +1814,11 @@ impl KvmBackend {
+         if let Some(fault) = fault {
+             fault.configure_child(&mut child, child_stack)?;
+         }
+-        Ok(ForkedProcess {
++        Ok(Some(ForkedProcess {
+             pid: child_pid,
+             backend: child,
+             executor: child_executor,
+-        })
++        }))
+     }
+ 
+     fn finish_forked_process(
+@@ -1694,12 +1849,13 @@ impl KvmBackend {
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-156): Review process actions completed during Tool injection.
+-    fn run_process_action_inner(
++    async fn run_process_action_inner(
+         &mut self,
+         executor: &mut ElfExecutor,
+         action: ProcessAction,
+         park_syscall_return: bool,
+         fault: Option<&PageZeroFault>,
++        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+     ) -> Result<ProcessActionOutcome> {
+         let outcome = match &action {
+             ProcessAction::Fork { child_pid, .. } => {
+@@ -1720,18 +1876,24 @@ impl KvmBackend {
+                 clear_sighand,
+                 share_address_space,
+             } => {
+-                let mut child = self.prepare_forked_process(
+-                    executor,
+-                    child_pid,
+-                    child_stack,
+-                    parent_tid,
+-                    child_tid,
+-                    clear_child_tid,
+-                    clear_sighand,
+-                    share_address_space,
+-                    park_syscall_return,
+-                    fault,
+-                )?;
++                let Some(mut child) = self
++                    .prepare_forked_process_admitted(
++                        executor,
++                        child_pid,
++                        child_stack,
++                        parent_tid,
++                        child_tid,
++                        clear_child_tid,
++                        clear_sighand,
++                        share_address_space,
++                        park_syscall_return,
++                        fault,
++                        stop.as_mut(),
++                    )
++                    .await?
++                else {
++                    return Ok(ProcessActionOutcome::cancelled());
++                };
+                 let (code, stdout, stderr) =
+                     child.backend.run_static_elf_process(&mut child.executor)?;
+                 self.finish_forked_process(executor, child, code, stdout, stderr)?;
+@@ -1752,30 +1914,12 @@ impl KvmBackend {
+                 self.memory
+                     .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
+ 
+-                if park_syscall_return {
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        true,
+-                    )?;
+-                    let vcpu_exit = self.vcpu.run()?;
+-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+-                    let parked = match vcpu_exit {
+-                        VcpuExit::Hlt => Ok(()),
+-                        exit => Err(Error::UnexpectedVcpuExit(format!(
+-                            "parent did not park at thread clone: {exit:?}"
+-                        ))),
+-                    };
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        false,
+-                    )?;
+-                    parked?;
++                if park_syscall_return
++                    && !self
++                        .park_process_action("parent did not park at thread clone", stop.as_mut())
++                        .await?
++                {
++                    return Ok(ProcessActionOutcome::cancelled());
+                 }
+                 let child_registers = self.vcpu.get_regs()?;
+ 
+@@ -1800,7 +1944,7 @@ impl KvmBackend {
+                 // execution and futex classification stay consistent.
+                 self.debug_assert_thread_ownership_consistent();
+                 child.thread_ownership = self.thread_ownership;
+-                child.tool_failure = self.tool_failure.clone();
++                child.set_tool_failure(self.tool_failure.clone());
+                 child.exit_collector = self.exit_collector.clone();
+                 child
+                     .memory
+@@ -1881,30 +2025,12 @@ impl KvmBackend {
+                 if self.is_guest_thread {
+                     return Err(Error::GuestThreadExecUnsupported);
+                 }
+-                if park_syscall_return {
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        true,
+-                    )?;
+-                    let vcpu_exit = self.vcpu.run()?;
+-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+-                    let parked = match vcpu_exit {
+-                        VcpuExit::Hlt => Ok(()),
+-                        exit => Err(Error::UnexpectedVcpuExit(format!(
+-                            "process did not park before exec: {exit:?}"
+-                        ))),
+-                    };
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        false,
+-                    )?;
+-                    parked?;
++                if park_syscall_return
++                    && !self
++                        .park_process_action("process did not park before exec", stop.as_mut())
++                        .await?
++                {
++                    return Ok(ProcessActionOutcome::cancelled());
+                 }
+                 // A successful exec terminates every sibling thread before the
+                 // new address space becomes visible. Leaving a sibling vCPU
+@@ -1934,8 +2060,15 @@ impl KvmBackend {
+         action: ProcessAction,
+         park_syscall_return: bool,
+     ) -> Result<()> {
+-        self.run_process_action_inner(executor, action, park_syscall_return, None)
+-            .map(|_| ())
++        let mut stop = std::pin::pin!(std::future::pending());
++        futures::executor::block_on(self.run_process_action_inner(
++            executor,
++            action,
++            park_syscall_return,
++            None,
++            stop.as_mut(),
++        ))
++        .map(|_| ())
+     }
+ 
+     /// Cancels and joins children created by a Tool action whose parent
+@@ -2106,7 +2239,14 @@ impl KvmBackend {
+         action: ProcessAction,
+         continuation: ProcessActionContinuation,
+     ) -> Result<ProcessActionOutcome> {
+-        let result = self.run_process_action_inner(executor, action, true, None);
++        let mut stop = std::pin::pin!(std::future::pending());
++        let result = futures::executor::block_on(self.run_process_action_inner(
++            executor,
++            action,
++            true,
++            None,
++            stop.as_mut(),
++        ));
+         continuation.finish(self, result)
+     }
+ 
+@@ -2126,6 +2266,19 @@ impl KvmBackend {
+         T::GlobalState: 'static,
+         <T::GlobalState as GlobalTool>::Config: 'static,
+     {
++        let global = context.global_state.clone();
++        let local = self.failure_subscription(executor.is_traced_tree_root());
++        let mut stop = std::pin::pin!(async {
++            match global.as_ref() {
++                Some(global) => crate::failure::wait_for_failure(global.as_ref(), local).await,
++                None => match local {
++                    Some(local) => {
++                        let _ = local.await;
++                    }
++                    None => std::future::pending().await,
++                },
++            }
++        });
+         match action {
+             ProcessAction::Fork {
+                 child_pid,
+@@ -2136,18 +2289,24 @@ impl KvmBackend {
+                 clear_sighand,
+                 share_address_space,
+             } => {
+-                let child = self.prepare_forked_process(
+-                    executor,
+-                    child_pid,
+-                    child_stack,
+-                    parent_tid,
+-                    child_tid,
+-                    clear_child_tid,
+-                    clear_sighand,
+-                    share_address_space,
+-                    park_syscall_return,
+-                    fault,
+-                )?;
++                let Some(child) = self
++                    .prepare_forked_process_admitted(
++                        executor,
++                        child_pid,
++                        child_stack,
++                        parent_tid,
++                        child_tid,
++                        clear_child_tid,
++                        clear_sighand,
++                        share_address_space,
++                        park_syscall_return,
++                        fault,
++                        stop.as_mut(),
++                    )
++                    .await?
++                else {
++                    return Ok(ProcessActionOutcome::cancelled());
++                };
+ 
+                 let child_pid = Pid::from_raw(child.pid);
+                 let global_state = context.global_state.ok_or_else(|| {
+@@ -2323,7 +2482,14 @@ impl KvmBackend {
+             // never reaches the host waiter — is unrepresentable now that one
+             // enum drives both decisions.)
+             ProcessAction::Thread { .. } if self.thread_ownership.executes_on_host() => {
+-                self.run_process_action_inner(executor, action, park_syscall_return, fault)
++                self.run_process_action_inner(
++                    executor,
++                    action,
++                    park_syscall_return,
++                    fault,
++                    stop.as_mut(),
++                )
++                .await
+             }
+             // `ThreadOwnership::Tool`: a CLONE_THREAD worker runs its own vCPU on
+             // a fresh OS thread but shares the guest address space, file table,
+@@ -2349,30 +2515,12 @@ impl KvmBackend {
+                 self.memory
+                     .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
+ 
+-                if park_syscall_return {
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        true,
+-                    )?;
+-                    let vcpu_exit = self.vcpu.run()?;
+-                    Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+-                    let parked = match vcpu_exit {
+-                        VcpuExit::Hlt => Ok(()),
+-                        exit => Err(Error::UnexpectedVcpuExit(format!(
+-                            "parent did not park at thread clone: {exit:?}"
+-                        ))),
+-                    };
+-                    set_syscall_return_park(
+-                        &mut self.memory,
+-                        self.hypercall_instruction,
+-                        self.syscall_trampoline_address,
+-                        self.syscall_frame_address,
+-                        false,
+-                    )?;
+-                    parked?;
++                if park_syscall_return
++                    && !self
++                        .park_process_action("parent did not park at thread clone", stop.as_mut())
++                        .await?
++                {
++                    return Ok(ProcessActionOutcome::cancelled());
+                 }
+                 let child_registers = self.vcpu.get_regs()?;
+ 
+@@ -2396,7 +2544,7 @@ impl KvmBackend {
+                 // execution and futex classification stay consistent.
+                 self.debug_assert_thread_ownership_consistent();
+                 child.thread_ownership = self.thread_ownership;
+-                child.tool_failure = self.tool_failure.clone();
++                child.set_tool_failure(self.tool_failure.clone());
+                 child.exit_collector = self.exit_collector.clone();
+                 child
+                     .memory
+@@ -2444,7 +2592,7 @@ impl KvmBackend {
+                 let child_thread_state = child_tool
+                     .init_thread_state(child_tid_pid, Some((context.tid, context.thread_state)));
+                 if let Some(failure) = &child.tool_failure {
+-                    child.tool_failure = Some(failure.for_thread(child_tid_pid));
++                    child.set_tool_failure(Some(failure.for_thread(child_tid_pid)));
+                 }
+                 let pending_child_starts = context.pending_child_starts;
+                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
+@@ -2575,7 +2723,16 @@ impl KvmBackend {
+                     .push(PendingChildStart::tool_thread(child_tid, start_gate));
+                 Ok(ProcessActionOutcome::returned(i64::from(child_tid)))
+             }
+-            other => self.run_process_action_inner(executor, other, park_syscall_return, fault),
++            other => {
++                self.run_process_action_inner(
++                    executor,
++                    other,
++                    park_syscall_return,
++                    fault,
++                    stop.as_mut(),
++                )
++                .await
++            }
+         }
+     }
+ 
+@@ -2628,6 +2785,9 @@ impl KvmBackend {
+         let result = self
+             .run_process_action_with_tool_inner(executor, action, false, context, Some(fault))
+             .await;
++        if result.as_ref().is_ok_and(|outcome| outcome.cancelled) {
++            return result;
++        }
+         let restored = fault.restore_boundary(self);
+         match result {
+             Err(error) => Err(error),
+@@ -3384,6 +3544,12 @@ impl KvmBackend {
+             }
+         }
+         loop {
++            let changed = self.memory.entry_gate().subscribe();
++            let cancelled = self.entry_cancellation();
++            self.memory
++                .entry_gate()
++                .admit_operation()
++                .map_err(|failure| failure.error())?;
+             if let Some(status) = self.guest_thread_group_exit_status() {
+                 return self.finish_static_elf_thread(
+                     executor,
+@@ -3403,7 +3569,11 @@ impl KvmBackend {
+                 );
+             }
+             let vcpu_exit = match self.vcpu.run() {
+-                Ok(exit) => exit,
++                Ok(Some(exit)) => exit,
++                Ok(None) => {
++                    futures::executor::block_on(futures::future::select(changed, cancelled));
++                    continue;
++                }
+                 Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                 Err(error) => return Err(error),
+             };
+@@ -3512,6 +3682,19 @@ impl KvmBackend {
+                     action,
+                     continuation.expect("a process action has a continuation policy"),
+                 )?;
++                if outcome.cancelled {
++                    let exit = match self.guest_thread_group_exit_status() {
++                        Some(status) => ProcessExit {
++                            status,
++                            group: true,
++                        },
++                        None => ProcessExit {
++                            status: ExitStatus::SUCCESS,
++                            group: false,
++                        },
++                    };
++                    return self.finish_static_elf_thread(executor, exit);
++                }
+                 returns_to_original_image = !outcome.image_replaced;
+                 if let Some((_, result)) = signal_boundary.as_mut() {
+                     *result = outcome.syscall_result;
+@@ -3729,7 +3912,11 @@ impl KvmBackend {
+         self.set_rdtsc_interception(false)?;
+         self.set_cpuid_interception(false)?;
+         loop {
+-            let vcpu_exit = self.vcpu.run()?;
++            let changed = self.memory.entry_gate().subscribe();
++            let Some(vcpu_exit) = self.vcpu.run()? else {
++                let _ = futures::executor::block_on(changed);
++                continue;
++            };
+             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+             match vcpu_exit {
+                 VcpuExit::Hypercall(exit) => {
+@@ -3738,7 +3925,12 @@ impl KvmBackend {
+                     }
+                     let syscall =
+                         SyscallRequest::read_from(&self.memory, exit.args[0])?.into_syscall()?;
+-                    *exit.ret = handler(syscall, &self.memory) as u64;
++                    let result = handler(syscall, &self.memory);
++                    self.memory
++                        .entry_gate()
++                        .admit_operation()
++                        .map_err(|failure| failure.error())?;
++                    *exit.ret = result as u64;
+                 }
+                 VcpuExit::Hlt => return Ok(()),
+                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+@@ -3836,6 +4028,170 @@ mod tests {
+ 
+     include!("cpuid_runtime_tests.rs");
+ 
++    mod cancellation_wake_tests {
++        use std::sync::Weak;
++        use std::sync::atomic::AtomicUsize;
++        use std::task::Context;
++
++        use super::*;
++
++        #[test]
++        fn subscriptions_cover_registration_before_and_after_publication() {
++            for exit_group in [false, true] {
++                let group = GuestThreadGroup::default();
++                let first = group.subscribe_cancellation();
++                let second = group.subscribe_cancellation();
++                let unpolled = first.clone();
++                drop(group.subscribe_cancellation());
++                assert!(first.clone().now_or_never().is_none());
++                assert!(second.clone().now_or_never().is_none());
++                assert!(!group.cancelled.load(Ordering::Acquire));
++
++                if exit_group {
++                    group.request_exit_group(ExitStatus::Exited(19));
++                } else {
++                    group.cancel_workers();
++                }
++                assert_eq!(first.now_or_never(), Some(Ok(())));
++                assert_eq!(second.now_or_never(), Some(Ok(())));
++                assert_eq!(unpolled.now_or_never(), Some(Ok(())));
++
++                // A late subscriber must see the published predicate on its
++                // recheck even though its new notification is still pending.
++                let late = group.subscribe_cancellation();
++                assert!(group.cancelled.load(Ordering::Acquire));
++                assert_eq!(
++                    group.exit_status(),
++                    exit_group.then_some(ExitStatus::Exited(19))
++                );
++                assert!(late.clone().now_or_never().is_none());
++                if exit_group {
++                    group.request_exit_group(ExitStatus::Exited(23));
++                } else {
++                    group.cancel_workers();
++                }
++                assert_eq!(late.now_or_never(), Some(Ok(())));
++                assert_eq!(
++                    group.exit_status(),
++                    exit_group.then_some(ExitStatus::Exited(19)),
++                    "notification must preserve the first exit status"
++                );
++            }
++        }
++
++        #[test]
++        fn root_can_resubscribe_after_worker_only_cancellation() {
++            let group = GuestThreadGroup::default();
++            let old = group.subscribe_cancellation();
++            group.cancel_workers();
++            assert_eq!(old.now_or_never(), Some(Ok(())));
++
++            // The root's existing exit predicate ignores worker-only cancel.
++            let next = group.subscribe_cancellation();
++            assert_eq!(group.exit_status(), None);
++            assert!(group.cancelled.load(Ordering::Acquire));
++            assert!(next.clone().now_or_never().is_none());
++
++            group.request_exit_group(ExitStatus::Exited(31));
++            assert_eq!(next.now_or_never(), Some(Ok(())));
++            assert_eq!(group.exit_status(), Some(ExitStatus::Exited(31)));
++            assert!(group.subscribe_cancellation().now_or_never().is_none());
++        }
++
++        #[test]
++        fn subscriptions_survive_exec_rearm_and_wake_on_later_cancellation() {
++            let group = GuestThreadGroup::default();
++            let old = group.subscribe_cancellation();
++            group.record_worker_failure(2);
++            group.request_exit_group(ExitStatus::Exited(41));
++            assert_eq!(old.now_or_never(), Some(Ok(())));
++            assert!(group.cancelled_after_failure.load(Ordering::Acquire));
++
++            let before_rearm = group.subscribe_cancellation();
++            group.join_workers();
++            group.rearm_after_exec();
++            assert!(!group.cancelled.load(Ordering::Acquire));
++            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
++            assert_eq!(group.exit_status(), None);
++            assert!(before_rearm.clone().now_or_never().is_none());
++            let after_rearm = group.subscribe_cancellation();
++            assert!(after_rearm.clone().now_or_never().is_none());
++
++            group.cancel_workers();
++            assert_eq!(before_rearm.now_or_never(), Some(Ok(())));
++            assert_eq!(after_rearm.now_or_never(), Some(Ok(())));
++            assert!(group.cancelled.load(Ordering::Acquire));
++            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
++            assert_eq!(group.exit_status(), None);
++        }
++
++        struct CancellationWakeProbe {
++            group: Weak<GuestThreadGroup>,
++            expected_status: Option<ExitStatus>,
++            expected_failure: bool,
++            wakes: AtomicUsize,
++        }
++
++        impl futures::task::ArcWake for CancellationWakeProbe {
++            fn wake_by_ref(probe: &Arc<Self>) {
++                let group = probe.group.upgrade().unwrap();
++                assert!(group.cancelled.load(Ordering::Acquire));
++                assert_eq!(
++                    group.cancelled_after_failure.load(Ordering::Acquire),
++                    probe.expected_failure
++                );
++                assert_eq!(
++                    *group.exit_status.try_lock().unwrap(),
++                    probe.expected_status
++                );
++                assert!(group.root.try_lock().is_ok());
++                assert!(group.workers.try_lock().is_ok());
++                assert!(group.worker_handles.try_lock().is_ok());
++                assert!(group.worker_start_gates.try_lock().is_ok());
++                assert!(group.worker_errors.try_lock().is_ok());
++                assert!(group.reported_worker_panics.try_lock().is_ok());
++                assert!(group.failure_state.try_lock().is_ok());
++                assert!(group.transport_slots.try_lock().is_ok());
++                assert!(group.cancellation_wake.try_lock().is_ok());
++                assert!(group.subscribe_cancellation().now_or_never().is_none());
++                probe.wakes.fetch_add(1, Ordering::Relaxed);
++            }
++        }
++
++        #[test]
++        fn wake_callbacks_observe_published_state_outside_group_locks() {
++            for after_failure in [false, true] {
++                for exit_group in [false, true] {
++                    let group = Arc::new(GuestThreadGroup::default());
++                    if after_failure {
++                        group.record_worker_failure(2);
++                    }
++                    let probe = Arc::new(CancellationWakeProbe {
++                        group: Arc::downgrade(&group),
++                        expected_status: exit_group.then_some(ExitStatus::Exited(47)),
++                        expected_failure: after_failure,
++                        wakes: AtomicUsize::new(0),
++                    });
++                    let waker = futures::task::waker(probe.clone());
++                    let mut subscription = group.subscribe_cancellation();
++                    assert!(
++                        subscription
++                            .poll_unpin(&mut Context::from_waker(&waker))
++                            .is_pending()
++                    );
++                    assert_eq!(probe.wakes.load(Ordering::Relaxed), 0);
++                    if exit_group {
++                        group.request_exit_group(ExitStatus::Exited(47));
++                    } else {
++                        group.cancel_workers();
++                    }
++                    assert!(probe.wakes.load(Ordering::Relaxed) > 0);
++                    assert_eq!(subscription.now_or_never(), Some(Ok(())));
++                }
++            }
++        }
++    }
++
+     mod initialization_tests {
+         use std::io::Seek;
+         use std::io::SeekFrom;
+@@ -4866,7 +5222,12 @@ mod tests {
+         let trampoline_offset = trampoline_hypercall - backend.syscall_trampoline_address;
+         backend.syscall_trampoline_address = ENTRY + 12 - trampoline_offset;
+ 
+-        let frame_address = match backend.vcpu.run().unwrap() {
++        let frame_address = match backend
++            .vcpu
++            .run()
++            .unwrap()
++            .expect("test entry admission was unexpectedly closed")
++        {
+             VcpuExit::Hypercall(exit) => {
+                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+                 *exit.ret = 0;
+@@ -4945,6 +5306,7 @@ mod tests {
+             ProcessActionOutcome {
+                 image_replaced: false,
+                 syscall_result: expected_result,
++                cancelled: false,
+             }
+         );
+         let mut restored_frame = [0; FRAME_SIZE];
+@@ -4982,6 +5344,7 @@ mod tests {
+             ProcessActionOutcome {
+                 image_replaced: false,
+                 syscall_result: expected_exec_result,
++                cancelled: false,
+             },
+             "the injected Exec result belongs to the Tool"
+         );
+@@ -5387,11 +5750,11 @@ mod tests {
+ 
+         let global = Arc::new(ForkFailureIdentityLog::default());
+         let failure = crate::failure::RunFailure::new(&global);
+-        parent.tool_failure = Some(crate::failure::FailureContext::new(
++        parent.set_tool_failure(Some(crate::failure::FailureContext::new(
+             failure.clone(),
+             Pid::from_raw(1),
+             Pid::from_raw(1),
+-        ));
++        )));
+         let mut child = parent
+             .prepare_forked_process(
+                 &executor, 2, None, None, None, None, false, false, false, None,
+@@ -5509,7 +5872,12 @@ mod tests {
+             .install_static_elf(&minimal_test_elf(&code), "/bin/fatal-process-memory")
+             .unwrap();
+         let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);
+-        match parent.vcpu.run().unwrap() {
++        match parent
++            .vcpu
++            .run()
++            .unwrap()
++            .expect("test entry admission was unexpectedly closed")
++        {
+             VcpuExit::Hypercall(exit) => {
+                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+                 *exit.ret = 0;
+@@ -5636,7 +6004,14 @@ mod tests {
+                 registers.rcx = 0x7777;
+                 registers.r11 = 0x8888;
+                 backend.vcpu.set_regs(&registers).unwrap();
+-                assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
++                assert!(matches!(
++                    backend
++                        .vcpu
++                        .run()
++                        .unwrap()
++                        .expect("test entry admission was unexpectedly closed"),
++                    VcpuExit::Hlt
++                ));
+                 let fault = backend.capture_page_zero_fault(&executor).unwrap().unwrap();
+                 let mut frame_before = [0; PAGE_SIZE as usize];
+                 let mut exception_before = [0; PAGE_SIZE as usize];
+@@ -5747,7 +6122,12 @@ mod tests {
+             .install_static_elf(&minimal_test_elf(&code), "/bin/fatal-process-memory")
+             .unwrap();
+         let mut executor = ElfExecutor::new(parent.static_elf.take().unwrap(), true);
+-        match parent.vcpu.run().unwrap() {
++        match parent
++            .vcpu
++            .run()
++            .unwrap()
++            .expect("test entry admission was unexpectedly closed")
++        {
+             VcpuExit::Hypercall(exit) => {
+                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+                 *exit.ret = 0;
+@@ -6459,7 +6839,7 @@ mod tests {
+                     Pid::from_raw(1),
+                     Pid::from_raw(1),
+                 );
+-                cleanup.backend.tool_failure = Some(context.clone());
++                cleanup.backend.set_tool_failure(Some(context.clone()));
+                 let action = if thread {
+                     ProcessAction::Thread {
+                         child_tid: 2,
+@@ -6667,7 +7047,14 @@ mod tests {
+                 )
+                 .unwrap();
+             backend.set_rdtsc_interception(true).unwrap();
+-            assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
++            assert!(matches!(
++                backend
++                    .vcpu
++                    .run()
++                    .unwrap()
++                    .expect("test entry admission was unexpectedly closed"),
++                VcpuExit::Hlt
++            ));
+             let fault = backend.static_elf_exception().unwrap().unwrap();
+             assert_eq!(fault.instruction_pointer, BOUNDARY - 2);
+             assert_eq!(fault.vector, if rdtscp { 14 } else { 13 });
+@@ -6778,7 +7165,12 @@ mod tests {
+         // before its manual first guest entry, just as the production runner does.
+         backend.vcpu.track_clock().unwrap();
+         let mut executor = ElfExecutor::new(backend.static_elf.take().unwrap(), false);
+-        let frame_address = match backend.vcpu.run().unwrap() {
++        let frame_address = match backend
++            .vcpu
++            .run()
++            .unwrap()
++            .expect("test entry admission was unexpectedly closed")
++        {
+             VcpuExit::Hypercall(exit) => {
+                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+                 *exit.ret = 0;

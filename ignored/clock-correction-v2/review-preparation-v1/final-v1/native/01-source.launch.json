@@ -1,0 +1,30 @@
+{
+  "started_at_utc": "2026-09-18T21:40:49.454199+00:00",
+  "argv": [
+    "/usr/local/bin/codex",
+    "-a",
+    "never",
+    "-s",
+    "read-only",
+    "-C",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native",
+    "exec",
+    "resume",
+    "-c",
+    "approval_policy=\"never\"",
+    "--json",
+    "--output-last-message",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final.txt",
+    "01a0b38e-9e3c-7883-9816-65199c048935",
+    "-"
+  ],
+  "model_override": null,
+  "prompt_sha256": "28d30d6cb464e766a9698e1be2d51c93e072cc6ff8814b0cf503e921c089aa76",
+  "wall_limit_seconds": 1800,
+  "output_limit_bytes": 67108864,
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native",
+  "session_resume": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "launcher_pid": 409820,
+  "launcher_pgid": 409820,
+  "launcher_start_ticks": "192657821"
+}

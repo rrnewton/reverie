@@ -1,0 +1,15 @@
+Running as unit: kvm-entry-owner-test-owner-2-2850267.service
+
+thread 'entry::owner::tests::capture_defers_last_owner_drop_after_retirement_and_rejection' (2850805) panicked at reverie-kvm/src/entry/owner.rs:638:17:
+assertion `left == right` failed
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'entry::owner::tests::unwind_abandons_registration_but_preserves_pending_and_destruction' (2850845) panicked at reverie-kvm/src/entry/owner.rs:870:13:
+controlled callback owner unwind
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 7ms
+             CPU time consumed: 7ms
+                   Memory peak: 2.9M (swap: 0B)

@@ -1,0 +1,15 @@
+
+running 4 tests
+test vm::tests::entry_action_tests::prepared_exec_parking_stops_before_image_replacement ... ok
+test vm::tests::entry_action_tests::prepared_fork_parking_retains_setup_and_stops_before_snapshot ... ok
+test vm::tests::entry_action_tests::prepared_host_thread_parking_stops_before_child_effects ... FAILED
+test vm::tests::entry_action_tests::prepared_tool_thread_parking_stops_before_child_state_and_start ... FAILED
+
+failures:
+
+failures:
+    vm::tests::entry_action_tests::prepared_host_thread_parking_stops_before_child_effects
+    vm::tests::entry_action_tests::prepared_tool_thread_parking_stops_before_child_state_and_start
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 719 filtered out; finished in 0.61s
+

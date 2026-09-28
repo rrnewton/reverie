@@ -1,0 +1,160 @@
+### kernel--events--core.c:4667-4680
+Full source: /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/kernel--events--core.c
+SHA256: 219be1efff8dd8f860d4ade221f2cbd61b541d921ea4bcb6796511ae023b72d2
+Upstream Linux: 199c9959d3a9b53f346c221757fc7ac507fbac50; vendor kernel identity is not inferred.
+
+4667: static int event_enable_on_exec(struct perf_event *event,
+4668: 				struct perf_event_context *ctx)
+4669: {
+4670: 	if (!event->attr.enable_on_exec)
+4671: 		return 0;
+4672: 
+4673: 	event->attr.enable_on_exec = 0;
+4674: 	if (event->state >= PERF_EVENT_STATE_INACTIVE)
+4675: 		return 0;
+4676: 
+4677: 	perf_event_set_state(event, PERF_EVENT_STATE_INACTIVE);
+4678: 
+4679: 	return 1;
+4680: }
+
+### kernel--events--core.c:4686-4725
+Full source: /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/kernel--events--core.c
+SHA256: 219be1efff8dd8f860d4ade221f2cbd61b541d921ea4bcb6796511ae023b72d2
+Upstream Linux: 199c9959d3a9b53f346c221757fc7ac507fbac50; vendor kernel identity is not inferred.
+
+4686: static void perf_event_enable_on_exec(struct perf_event_context *ctx)
+4687: {
+4688: 	struct perf_event_context *clone_ctx = NULL;
+4689: 	enum event_type_t event_type = 0;
+4690: 	struct perf_cpu_context *cpuctx;
+4691: 	struct perf_event *event;
+4692: 	unsigned long flags;
+4693: 	int enabled = 0;
+4694: 
+4695: 	local_irq_save(flags);
+4696: 	if (WARN_ON_ONCE(current->perf_event_ctxp != ctx))
+4697: 		goto out;
+4698: 
+4699: 	if (!ctx->nr_events)
+4700: 		goto out;
+4701: 
+4702: 	cpuctx = this_cpu_ptr(&perf_cpu_context);
+4703: 	perf_ctx_lock(cpuctx, ctx);
+4704: 	ctx_time_freeze(cpuctx, ctx);
+4705: 
+4706: 	list_for_each_entry(event, &ctx->event_list, event_entry) {
+4707: 		enabled |= event_enable_on_exec(event, ctx);
+4708: 		event_type |= get_event_type(event);
+4709: 	}
+4710: 
+4711: 	/*
+4712: 	 * Unclone and reschedule this context if we enabled any event.
+4713: 	 */
+4714: 	if (enabled) {
+4715: 		clone_ctx = unclone_ctx(ctx);
+4716: 		ctx_resched(cpuctx, ctx, NULL, event_type);
+4717: 	}
+4718: 	perf_ctx_unlock(cpuctx, ctx);
+4719: 
+4720: out:
+4721: 	local_irq_restore(flags);
+4722: 
+4723: 	if (clone_ctx)
+4724: 		put_ctx(clone_ctx);
+4725: }
+
+### kernel--events--core.c:9033-9048
+Full source: /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/kernel--events--core.c
+SHA256: 219be1efff8dd8f860d4ade221f2cbd61b541d921ea4bcb6796511ae023b72d2
+Upstream Linux: 199c9959d3a9b53f346c221757fc7ac507fbac50; vendor kernel identity is not inferred.
+
+9033: void perf_event_exec(void)
+9034: {
+9035: 	struct perf_event_context *ctx;
+9036: 
+9037: 	ctx = perf_pin_task_context(current);
+9038: 	if (!ctx)
+9039: 		return;
+9040: 
+9041: 	perf_event_enable_on_exec(ctx);
+9042: 	perf_event_remove_on_exec(ctx);
+9043: 	scoped_guard(rcu)
+9044: 		perf_iterate_ctx(ctx, perf_event_addr_filters_exec, NULL, true);
+9045: 
+9046: 	perf_unpin_context(ctx);
+9047: 	put_ctx(ctx);
+9048: }
+
+### fs--exec.c:1091-1290
+Full source: /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/fs--exec.c
+SHA256: 5719b011ce9fdb29ae18247e11633ce5545c138ed21168c73c1cdcebe4fe5889
+Upstream Linux: 199c9959d3a9b53f346c221757fc7ac507fbac50; vendor kernel identity is not inferred.
+
+1091: int begin_new_exec(struct linux_binprm * bprm)
+1092: {
+1093: 	struct task_struct *me = current;
+1094: 	int retval;
+1095: 
+1096: 	/* Once we are committed compute the creds */
+1097: 	retval = bprm_creds_from_file(bprm);
+1098: 	if (retval)
+1099: 		return retval;
+1100: 
+1101: 	/*
+1102: 	 * This tracepoint marks the point before flushing the old exec where
+1103: 	 * the current task is still unchanged, but errors are fatal (point of
+1104: 	 * no return). The later "sched_process_exec" tracepoint is called after
+1105: 	 * the current task has successfully switched to the new exec.
+1106: 	 */
+1107: 	trace_sched_prepare_exec(current, bprm);
+1108: 
+1109: 	/*
+1110: 	 * Ensure all future errors are fatal.
+1111: 	 */
+1112: 	bprm->point_of_no_return = true;
+1113: 
+1114: 	/* Make this the only thread in the thread group */
+1115: 	retval = de_thread(me);
+1116: 	if (retval)
+1117: 		goto out;
+1118: 	/* see the comment in check_unsafe_exec() */
+1119: 	current->fs->in_exec = 0;
+1120: 	/*
+1121: 	 * Cancel any io_uring activity across execve
+1122: 	 */
+1123: 	io_uring_task_cancel();
+1124: 
+1125: 	/* Ensure the files table is not shared. */
+1126: 	retval = unshare_files();
+1127: 	if (retval)
+1128: 		goto out;
+1129: 
+1130: 	/*
+1131: 	 * Must be called _before_ exec_mmap() as bprm->mm is
+1132: 	 * not visible until then. Doing it here also ensures
+1133: 	 * we don't race against replace_mm_exe_file().
+1134: 	 */
+1135: 	retval = set_mm_exe_file(bprm->mm, bprm->file);
+1136: 	if (retval)
+1137: 		goto out;
+1138: 
+1139: 	/* If the binary is not readable then enforce mm->dumpable=0 */
+1140: 	would_dump(bprm, bprm->file);
+1141: 	if (bprm->have_execfd)
+1142: 		would_dump(bprm, bprm->executable);
+1143: 
+1144: 	/*
+1145: 	 * Release all of the old mmap stuff
+1146: 	 */
+1147: 	acct_arg_size(bprm, 0);
+1148: 	retval = exec_mmap(bprm->mm);
+1149: 	if (retval)
+1150: 		goto out;
+1151: 
+1152: 	bprm->mm = NULL;
+1153: 
+1154: 	retval = exec_task_namespaces();
+1155: 	if (retval)
+1156: 		goto out_unlock;
+1157: 

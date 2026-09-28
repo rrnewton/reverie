@@ -1,0 +1,150 @@
+                let syscall = request.into_syscall()?;
+                // TODO-HUMAN-REVIEW(PR-156): Review root process-syscall Tool dispatch.
+                // CLONE_THREAD is deliberately NOT backend-owned: the parent's
+                // clone is delivered to the Tool (Detcore) so the worker inherits
+                // process-shared Tool state (fd table, memory identity) and joins
+                // Detcore's scheduler. `run_process_action_with_tool` then spawns
+                // the worker on the Tool loop, which issues the matching
+                // `handle_thread_start` the parent's clone handler waits for.
+                let backend_owned = is_backend_owned_syscall(request.number(), thread_ownership)
+                    && !executor.is_random_device_read(&request)
+                    && !executor.is_tool_visible_read(&request);
+                let subscribed = !backend_owned
+                    && subscriptions
+                        .iter_syscalls()
+                        .any(|number| number == syscall.number());
+                let (
+                    mut result,
+                    handler_replaced_image,
+                    _handler_process_completed,
+                    restart_requested,
+                ) = if subscribed {
+                    let mut handler_process_completed = false;
+                    // With no eligible virtual signal, ERESTARTSYS immediately
+                    // re-enters the callback as before. With one, leave the loop so
+                    // the structured signal hook and disposition decide whether
+                    // the saved context reports EINTR or rewinds the syscall under
+                    // SA_RESTART. The private errno itself never reaches userspace.
+                    loop {
+                        let handler_signal = Arc::new(Mutex::new(None));
+                        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                        expose_tool_scratch(&memory, tool_stack_top)?;
+                        let boundary =
+                            CompletedSyscallBoundary::capture(self, frame_address, None)?;
+                        let outcome = {
+                            let mut guest_executor = StaticElfSyscallExecutor {
+                                backend: self,
+                                executor,
+                                memory: memory.clone(),
+                                process_context: ProcessExecutionContext::SyscallBoundary(boundary),
+                                callback_site: None,
+                                original_syscall: Some(request),
+                                signal_guard: SignalGuard::Ordinary,
+                                last_result: None,
+                                process_completed: &mut handler_process_completed,
+                            };
+                            let mut guest = KvmGuest::<T>::new(
+                                pid,
+                                tid,
+                                tool.clone(),
+                                memory.clone(),
+                                &auxv,
+                                kvm_registers(registers, request.number()),
+                                &mut thread_state,
+                                &mut guest_executor,
+                                global_state.as_ref(),
+                                Some(global_state.clone()),
+                                config,
+                                subscriptions,
+                                handler_signal.clone(),
+                                pending_child_starts.clone(),
+                                tool_stack_top,
+                                stack_checked_out.clone(),
+                            );
+                            drive_handler(
+                                tool.handle_syscall_event(&mut guest, syscall),
+                                handler_signal,
+                                pending_child_starts.clone(),
+                                wait_for_failure(
+                                    global_state.as_ref(),
+                                    failure_subscription.clone(),
+                                ),
+                            )
+                            .await
+                        };
+                        hide_tool_scratch(&memory, tool_stack_top)?;
+                        let classified = match outcome {
+                            HandlerOutcome::Returned(result) => {
+                                let classified = match classify_handler_result(result) {
+                                    Ok(classified) => classified,
+                                    Err(error) => {
+                                        return Err(self
+                                            .cleanup_unstarted_tool_children_after_error(
+                                                executor,
+                                                &pending_child_starts,
+                                                error,
+                                            ));
+                                    }
+                                };
+                                match classified {
+                                    Some(raw) => (raw, false, handler_process_completed, false),
+                                    None if !handler_process_completed
+                                        && (executor.has_prepared_signal()
+                                            || executor.has_eligible_pending_signal()) =>
+                                    {
+                                        // A prepared signal was already removed from
+                                        // pending. Deliver its frame before another
+                                        // callback invalidates the selection's nonce;
+                                        // the frame's SA_RESTART policy decides whether
+                                        // the syscall runs again after the handler.
+                                        (-(libc::EINTR as i64), false, false, true)
+                                    }
+                                    // A restart is only meaningful while the process
+                                    // is still live to re-run the syscall.
+                                    None if !handler_process_completed => {
+                                        self.start_pending_tool_children(
+                                            executor,
+                                            &pending_child_starts,
+                                        )?;
+                                        continue;
+                                    }
+                                    None => (
+                                        -(i64::from(Errno::ERESTARTSYS.into_raw())),
+                                        false,
+                                        handler_process_completed,
+                                        false,
+                                    ),
+                                }
+                            }
+                            HandlerOutcome::TailInjected {
+                                result,
+                                image_replaced,
+                                ..
+                            } => (
+                                result_to_raw(result),
+                                image_replaced,
+                                handler_process_completed,
+                                false,
+                            ),
+                            HandlerOutcome::ThreadCancelled => {
+                                self.start_pending_tool_children(executor, &pending_child_starts)?;
+                                return Ok(self.cancelled_tool_thread_status(executor));
+                            }
+                            HandlerOutcome::RunFailed => return Err(Error::RunAborted),
+                            HandlerOutcome::ParkedFatal(selection) => {
+                                if !executor.prepared_signal_is_fatal(selection) {
+                                    return Err(Error::UnexpectedVcpuExit(
+                                        "fatal selection identity changed".to_owned(),
+                                    ));
+                                }
+                                let pending = executor
+                                    .take_prepared_signal()
+                                    .map_err(|errno| Error::Reverie(errno.into()))?
+                                    .expect("validated fatal selection");
+                                self.deliver_selected_signal_from_registers(
+                                    executor,
+                                    frame_address,
+                                    registers,
+                                    pending,
+                                )?;
+                                let exit = executor.take_exit().ok_or_else(|| {

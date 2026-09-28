@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "/usr/bin/systemctl",
+    "--user",
+    "show",
+    "kvm-cancel-wake-late-start-469885.service",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec,MemoryPeak"
+  ],
+  "raw_status": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nMemoryPeak=[not set]\nCPUUsageNSec=[not set]\n",
+  "stderr": "",
+  "properties": {
+    "LoadState": "not-found",
+    "ActiveState": "inactive",
+    "SubState": "dead",
+    "MainPID": "0",
+    "Result": "success",
+    "ExecMainCode": "0",
+    "ExecMainStatus": "0",
+    "ControlGroup": "",
+    "MemoryPeak": "[not set]",
+    "CPUUsageNSec": "[not set]"
+  },
+  "observed_cgroups": [],
+  "settled": true
+}

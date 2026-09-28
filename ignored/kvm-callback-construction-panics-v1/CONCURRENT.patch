@@ -1,0 +1,101 @@
+--- author-only/runtime.rs
++++ observed/runtime.rs
+@@ -2060,8 +2060,8 @@
+                 tool_stack_top,
+                 stack_checked_out.clone(),
+             );
+-            drive_handler_completion(
+-                tool.handle_post_exec(&mut guest),
++            drive_handler_completion_from(
++                || tool.handle_post_exec(&mut guest),
+                 handler_signal,
+                 pending_child_starts.clone(),
+                 wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+@@ -2208,8 +2208,8 @@
+             tool_stack_top,
+             stack_checked_out.clone(),
+         );
+-        drive_handler_completion(
+-            tool.handle_syscall_event(&mut guest, syscall),
++        drive_handler_completion_from(
++            || tool.handle_syscall_event(&mut guest, syscall),
+             handler_signal,
+             pending_child_starts.clone(),
+             wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+@@ -3314,8 +3314,8 @@
+                     tool_stack_top,
+                     stack_checked_out.clone(),
+                 );
+-                drive_handler_completion(
+-                    tool.handle_thread_start(&mut guest),
++                drive_handler_completion_from(
++                    || tool.handle_thread_start(&mut guest),
+                     handler_signal,
+                     pending_child_starts,
+                     wait_for_failure(&global_state, None),
+@@ -3410,8 +3410,8 @@
+                                         tool_stack_top,
+                                         stack_checked_out.clone(),
+                                     );
+-                                    drive_handler_completion(
+-                                        tool.handle_syscall_event(&mut guest, syscall),
++                                    drive_handler_completion_from(
++                                        || tool.handle_syscall_event(&mut guest, syscall),
+                                         handler_signal,
+                                         pending_child_starts,
+                                         wait_for_failure(&global_state, None),
+@@ -3852,8 +3852,8 @@
+                 tool_stack_top,
+                 stack_checked_out.clone(),
+             );
+-            drive_handler_completion(
+-                tool.handle_structured_signal_event(&mut guest, pending.event),
++            drive_handler_completion_from(
++                || tool.handle_structured_signal_event(&mut guest, pending.event),
+                 handler_signal,
+                 pending_child_starts.clone(),
+                 wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+@@ -4027,8 +4027,8 @@
+                     tool_stack_top,
+                     stack_checked_out.clone(),
+                 );
+-                drive_handler_completion(
+-                    tool.handle_thread_start(&mut guest),
++                drive_handler_completion_from(
++                    || tool.handle_thread_start(&mut guest),
+                     handler_signal,
+                     pending_child_starts.clone(),
+                     wait_for_failure(global_state.as_ref(), failure_subscription.clone()),
+@@ -4309,8 +4309,8 @@
+                                 );
+                                 match &boundary {
+                                     crate::vm::ToolInstructionBoundary::Timestamp(boundary) => {
+-                                        let completion = drive_handler_completion(
+-                                            tool.handle_rdtsc_event(
++                                        let completion = drive_handler_completion_from(
++                                            || tool.handle_rdtsc_event(
+                                                 &mut guest,
+                                                 boundary.instruction.request,
+                                             ),
+@@ -4327,8 +4327,8 @@
+                                         })
+                                     }
+                                     crate::vm::ToolInstructionBoundary::Cpuid(boundary) => {
+-                                        let completion = drive_handler_completion(
+-                                            tool.handle_cpuid_event(
++                                        let completion = drive_handler_completion_from(
++                                            || tool.handle_cpuid_event(
+                                                 &mut guest,
+                                                 boundary.registers.rax as u32,
+                                                 boundary.registers.rcx as u32,
+@@ -4660,8 +4660,8 @@
+                                 tool_stack_top,
+                                 stack_checked_out.clone(),
+                             );
+-                            drive_handler_completion(
+-                                tool.handle_syscall_event(&mut guest, syscall),
++                            drive_handler_completion_from(
++                                || tool.handle_syscall_event(&mut guest, syscall),
+                                 handler_signal,
+                                 pending_child_starts.clone(),
+                                 wait_for_failure(

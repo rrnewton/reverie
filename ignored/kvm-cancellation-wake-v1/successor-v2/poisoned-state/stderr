@@ -1,0 +1,10 @@
+Running as unit: kvm-cancel-wake-poisoned-state-469672.service
+
+thread '<unnamed>' (469792) panicked at reverie-kvm/src/vm.rs:8347:17:
+controlled worker failure-state poison
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 4ms
+             CPU time consumed: 4ms
+                   Memory peak: 1.6M (swap: 0B)

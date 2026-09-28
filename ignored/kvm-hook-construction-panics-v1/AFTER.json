@@ -1,0 +1,27 @@
+[
+  {
+    "path": "reverie-kvm/src/runtime.rs",
+    "sha256": "ad1f211f438adc77e6acde84fadd1deb05b6385368d99abbc94096652593400e",
+    "bytes": 249539
+  },
+  {
+    "path": "reverie-kvm/src/runtime/consuming_panic_tests.rs",
+    "sha256": "50b8a5aa2cd41413f0aa77ddd582b62a6af5e60a6ac7831c549ec4d76344932d",
+    "bytes": 21301
+  },
+  {
+    "path": "reverie-kvm/src/failure/owned_future.rs",
+    "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d",
+    "bytes": 11676
+  },
+  {
+    "path": "reverie-kvm/src/failure/tool_panics.rs",
+    "sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c",
+    "bytes": 2098
+  },
+  {
+    "path": "reverie-kvm/src/failure.rs",
+    "sha256": "e42a533fe539963128f23cf9655baace4d342ca0afe0e55a2ec622ce7968167e",
+    "bytes": 43973
+  }
+]

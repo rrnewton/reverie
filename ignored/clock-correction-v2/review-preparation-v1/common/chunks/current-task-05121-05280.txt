@@ -1,0 +1,160 @@
+            return Err(failure);
+        }
+        let exit_status = exit_status.expect("a task without a failure has an exit status");
+        let root_session_failure = self.liteinst_root_config().and_then(|_| {
+            self.global_state.liteinst_runtime.as_ref().map(|runtime| {
+                (
+                    Arc::clone(&runtime.session_failure),
+                    Arc::clone(&runtime.session_failure_changed),
+                )
+            })
+        });
+
+        // A fail-closed refusal raised by a non-root task cannot reach the
+        // root's cleanup guard, and that task's tracee was released so the rest
+        // of the guest could finish. Refuse to report success over it.
+        if let Some(message) = root_session_failure
+            .as_ref()
+            .and_then(|(slot, _)| slot.lock().unwrap().clone())
+        {
+            return Err(anyhow::anyhow!(
+                "LiteInst session failed closed in a non-root task: {message}"
+            )
+            .into());
+        }
+
+        if let Some(stats) = &self.global_state.backend_stats {
+            stats.record_tracee_exit();
+        }
+        log_guest_exit(self.tid(), self.pid(), exit_status);
+
+        let tool_exit = self.tool_exit(exit_status).fuse();
+        if let Some((failure, changed)) = root_session_failure.as_ref() {
+            let session_failure = async {
+                loop {
+                    let notified = changed.notified();
+                    if let Some(message) = failure.lock().unwrap().clone() {
+                        return message;
+                    }
+                    notified.await;
+                }
+            }
+            .fuse();
+            futures::pin_mut!(tool_exit, session_failure);
+            futures::select_biased! {
+                message = session_failure => return Err(anyhow::anyhow!(
+                    "LiteInst session failed closed in a non-root task: {message}"
+                ).into()),
+                result = tool_exit => result?,
+            }
+        } else {
+            tool_exit.await?;
+        }
+
+        // A child can fail while the root is joining it in `tool_exit`, after
+        // the fast-path check above.  The join is the final ordering boundary:
+        // re-read the shared slot before allowing the root's success to escape.
+        if let Some(message) = root_session_failure
+            .as_ref()
+            .and_then(|(slot, _)| slot.lock().unwrap().clone())
+        {
+            return Err(anyhow::anyhow!(
+                "LiteInst session failed closed in a non-root task: {message}"
+            )
+            .into());
+        }
+
+        Ok(exit_status)
+    }
+
+    /// Skip the syscall which is about to happen in the tracee, switching the tracee
+    /// from Seccomp() state to Stopped(SIGTRAP) state.
+    ///
+    /// This uses the convention that setting the syscall number to -1 causes the
+    /// kernel to skip it. This function takes as argument the current register state
+    /// and restores it after stepping over the skipped syscall instruction.
+    ///
+    /// Preconditions:
+    ///  Ptrace tracee is in a (seccomp) stopped state.
+    ///  The tracee was stopped with the RIP pointing just after a syscall instruction (+2).
+    ///
+    /// Postconditions:
+    ///  Set tracee state to Stopped/SIGTRP.
+    ///  Restore the registers to the state specified by the regs arg.
+    async fn skip_seccomp_syscall(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        // So here we are, at ptrace seccomp stop, if we simply resume, the kernel
+        // would do the syscall, without our patch. we change to syscall number to
+        // -1, so that kernel would simply skip the syscall, so that we can jump to
+        // our patched syscall on the first run. Please note after calling this
+        // function, the task state will no longer be in ptrace event seccomp.
+        let regs = task.getregs()?;
+        let pre_rip = regs.ip();
+
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut new_regs = regs;
+            *new_regs.orig_syscall_mut() = -1i64 as u64;
+            task.setregs(&new_regs)?;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        task.set_syscall(-1)?;
+
+        let mut running = self.step_stopped(task, None)?;
+
+        // After the step, wait for the next transition. Note that this can return
+        // an exited state if there is a group exit while some thread is blocked on
+        // a syscall.
+        loop {
+            let wait = running.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            match wait {
+                Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) => {
+                    #[cfg(test)]
+                    let forced_external_sigtrap = self.liteinst_runtime.lock().unwrap().phase
+                        == LiteinstRuntimePhase::Waiting
+                        && self
+                            .global_state
+                            .liteinst_runtime
+                            .as_ref()
+                            .and_then(|runtime| runtime.force_skip_signal_once.as_ref())
+                            .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst));
+                    #[cfg(not(test))]
+                    let forced_external_sigtrap = false;
+                    self.validate_nested_liteinst_activation_signal(
+                        &task,
+                        Signal::SIGTRAP,
+                        LiteinstActivationOperation::SkipInterceptedSyscall,
+                        NestedTrapExpectation::SyscallSkip { pre_rip },
+                        forced_external_sigtrap,
+                    )?;
+                    #[cfg(target_arch = "x86_64")]
+                    task.setregs(&regs)?;
+                    break Ok(task);
+                }
+                Wait::Stopped(task, Event::Signal(sig)) => {
+                    self.validate_nested_liteinst_activation_signal(
+                        &task,
+                        sig,
+                        LiteinstActivationOperation::SkipInterceptedSyscall,
+                        NestedTrapExpectation::SyscallSkip { pre_rip },
+                        false,
+                    )?;
+                    // We can get a spurious signal here, such as SIGWINCH. Skip
+                    // past them until the tracee eventually arrives at SIGTRAP.
+                    running = self.step_stopped(task, sig)?;
+                }
+                Wait::Stopped(task, event) => {
+                    panic!(
+                        "skip_seccomp_syscall: PID {} got unexpected event: {:?}",
+                        task.pid(),
+                        event
+                    );
+                }
+                Wait::Exited(_pid, exit_status) => {
+                    #[allow(unreachable_code)]
+                    break self.exit(exit_status).await;
+                }
+            }
+        }
+    }

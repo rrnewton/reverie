@@ -1,0 +1,11 @@
+    Checking reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-memory)
+    Checking reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-process)
+   Compiling cfg-if v1.0.5
+   Compiling test-case-core v3.3.1
+    Checking reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-syscalls)
+   Compiling test-case-macros v3.3.1
+    Checking safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/safeptrace)
+    Checking test-case v3.3.1
+    Checking reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie)
+    Checking reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.25s

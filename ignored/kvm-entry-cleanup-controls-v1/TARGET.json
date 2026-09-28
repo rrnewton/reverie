@@ -1,0 +1,49 @@
+{
+  "records": [
+    {
+      "path": "AUTHOR.patch",
+      "sha256": "5f9b774725cac8455362d4b5a0f1e2196f8b6f18a2e3d51b709d360f000ecf47",
+      "bytes": 33657
+    },
+    {
+      "path": "PRESERVATION.json",
+      "sha256": "98253968f71716514b6520263f174f06c6518345c9f6a1fa96712011490d93e8",
+      "bytes": 201
+    },
+    {
+      "path": "REPORT.md",
+      "sha256": "5f8f51813c2dcc3802861101fa511076556d4abb4155bf1a288a02f14a31e721",
+      "bytes": 10712
+    },
+    {
+      "path": "SOURCE.json",
+      "sha256": "2fc46ec4a6cbe7d7d8534e8633425521624170c773a41d485d751d2a623c36b2",
+      "bytes": 821
+    },
+    {
+      "path": "source-after/reverie-kvm/src/entry/cleanup_tests.rs",
+      "sha256": "80e4b52f6e08ef8dae26c2690cd01d4dfb9d94ecdfbbbbeca1d9acde9680b055",
+      "bytes": 23166
+    },
+    {
+      "path": "source-after/reverie-kvm/src/entry/signal.rs",
+      "sha256": "332e842f21dc93876b02a8f23a2be88e498c4fe04d5cadd3f600609fca33ce74",
+      "bytes": 17480
+    },
+    {
+      "path": "source-after/reverie-kvm/src/entry.rs",
+      "sha256": "de0192158316fa4f586d7e1f1b71ee497b06f5e8aeed08c27ce2c6c940b365d4",
+      "bytes": 54985
+    },
+    {
+      "path": "source-before/entry.rs",
+      "sha256": "eec29b2888a9243fa9d58be91088b2986363147f2f67b3a455cf0bdc0b255bb4",
+      "bytes": 52000
+    },
+    {
+      "path": "source-before/signal.rs",
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037",
+      "bytes": 13944
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "path": "reverie-kvm/src/memory.rs",
+    "sha256": "6f054f26edac817a4ae9db2c28d6c34b00e8a192e42e1c50528584a8024fa88d",
+    "bytes": 133314
+  },
+  {
+    "path": "reverie-kvm/src/executor.rs",
+    "sha256": "bf20f163c44a9bf36fc4b4eeafec18207e2b179e1eff02af8e7a7e6d671bf7df",
+    "bytes": 1529595
+  },
+  {
+    "path": "reverie-kvm/src/vm/entry_public_tests.rs",
+    "sha256": "7dddec614a97af84945e482549c020bcb5b244f8c85a87b4115889456f01d86e",
+    "bytes": 19833
+  }
+]

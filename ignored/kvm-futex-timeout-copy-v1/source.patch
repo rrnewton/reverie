@@ -1,0 +1,237 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 1ac18cba..85d13d1a 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -1023,30 +1023,42 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+     const FUTEX_CMP_REQUEUE_PI: libc::c_int = 12;
+     const FUTEX_LOCK_PI2: libc::c_int = 13;
+ 
+-    let Ok(uaddr) = guest_host_address(memory, args[0], std::mem::size_of::<u32>()) else {
+-        return negative_errno(libc::EFAULT);
+-    };
+     let operation = args[1] as libc::c_int;
+     let command = operation & FUTEX_CMD_MASK;
+-    let mut timeout_operand = None;
+-    let mut second_operand = None;
+-    let fourth = if args[3] == 0 {
+-        0
+-    } else if matches!(
+-        command,
+-        FUTEX_WAIT | FUTEX_LOCK_PI | FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2
+-    ) {
+-        match guest_host_address(memory, args[3], std::mem::size_of::<libc::timespec>()) {
+-            Ok(operand) => {
+-                let address = operand.address();
+-                timeout_operand = Some(operand);
+-                address
+-            }
++    // sys_futex imports and validates timeout-bearing commands before
++    // do_futex observes either futex word. Own that copied value instead of
++    // retaining a guest mapping for the duration of a blocking host wait.
++    let timeout = if args[3] != 0
++        && matches!(
++            command,
++            FUTEX_WAIT | FUTEX_LOCK_PI | FUTEX_WAIT_BITSET | FUTEX_WAIT_REQUEUE_PI | FUTEX_LOCK_PI2
++        ) {
++        let timeout = match read_guest_struct::<libc::timespec>(memory, args[3]) {
++            Ok(timeout) => timeout,
+             Err(error) => return error,
++        };
++        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
++            return negative_errno(libc::EINVAL);
+         }
++        Some(timeout)
+     } else {
+-        args[3] as usize
++        None
++    };
++
++    // get_futex_key rejects natural-alignment violations before inspecting
++    // the pointed-to mapping. Check the guest address: host placement is an
++    // implementation detail and must not decide this precedence.
++    if args[0] % std::mem::size_of::<u32>() as u64 != 0 {
++        return negative_errno(libc::EINVAL);
++    }
++    let Ok(uaddr) = guest_host_address(memory, args[0], std::mem::size_of::<u32>()) else {
++        return negative_errno(libc::EFAULT);
+     };
++
++    let mut second_operand = None;
++    let fourth = timeout
++        .as_ref()
++        .map_or(args[3] as usize, |value| std::ptr::from_ref(value) as usize);
+     let uaddr2 = if matches!(
+         command,
+         FUTEX_REQUEUE
+@@ -1055,6 +1067,9 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+             | FUTEX_WAIT_REQUEUE_PI
+             | FUTEX_CMP_REQUEUE_PI
+     ) {
++        if args[4] % std::mem::size_of::<u32>() as u64 != 0 {
++            return negative_errno(libc::EINVAL);
++        }
+         match guest_host_address(memory, args[4], std::mem::size_of::<u32>()) {
+             Ok(operand) => {
+                 let address = operand.address();
+@@ -1086,7 +1101,7 @@ fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+     } else {
+         result as i64
+     };
+-    drop((uaddr, timeout_operand, second_operand));
++    drop((uaddr, second_operand));
+     result
+ }
+ 
+diff --git a/reverie-kvm/src/executor/entry_host_wait_tests.rs b/reverie-kvm/src/executor/entry_host_wait_tests.rs
+index c96a4ac1..ffc721b1 100644
+--- a/reverie-kvm/src/executor/entry_host_wait_tests.rs
++++ b/reverie-kvm/src/executor/entry_host_wait_tests.rs
+@@ -138,10 +138,12 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes()
+     }
+     assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+     assert!(!waiter.handle.as_ref().unwrap().is_finished());
+-    // Controller view + waiter view + actual retained word and timeout. The
+-    // operand admission tokens have retired; their Mapping owners have not.
+-    assert_eq!(owners(), 4);
++    // Controller view + waiter view + the retained word. The timeout was
++    // copied into host-owned storage before the wait and retains no Mapping.
++    // The operand admission tokens have retired; the word remains retained.
++    assert_eq!(owners(), 3);
+     assert_eq!(gate.test_state().copies, 0);
++    assert_eq!(gate.test_state().retained_operands, 1);
+     let closed = gate
+         .try_close()
+         .unwrap()
+@@ -152,7 +154,8 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes()
+         .unwrap();
+     assert!(gate.test_state().closed);
+     assert_eq!(gate.test_state().copies, 0);
+-    assert_eq!(owners(), 4);
++    assert_eq!(gate.test_state().retained_operands, 1);
++    assert_eq!(owners(), 3);
+     assert_eq!(completion.try_recv(), Err(mpsc::TryRecvError::Empty));
+     assert!(!waiter.handle.as_ref().unwrap().is_finished());
+     drop(closed);
+@@ -172,6 +175,122 @@ fn queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes()
+     assert_eq!(owners(), 0);
+ }
+ 
++#[test]
++fn futex_timeout_import_and_word_alignment_follow_linux_fault_order() {
++    const BASE: u64 = 0x1_0000;
++    const WORD: u64 = BASE;
++    const TIMEOUT_PAGE: u64 = BASE + PAGE_SIZE;
++    const MAPPED_WORD: u64 = BASE + 2 * PAGE_SIZE;
++    const TIMEOUT: u64 = TIMEOUT_PAGE + 64;
++    let memory = GuestMemory::new(BASE, 3 * PAGE_SIZE as usize).unwrap();
++    memory
++        .map_user_range(TIMEOUT_PAGE, PAGE_SIZE, false)
++        .unwrap();
++    memory
++        .map_user_range(MAPPED_WORD, PAGE_SIZE, false)
++        .unwrap();
++    memory.enable_user_access();
++
++    let malformed = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 1_000_000_000,
++    };
++    let malformed_bytes = unsafe {
++        std::slice::from_raw_parts(
++            std::ptr::from_ref(&malformed).cast::<u8>(),
++            std::mem::size_of::<libc::timespec>(),
++        )
++    };
++    memory.write_raw(TIMEOUT, malformed_bytes).unwrap();
++
++    // sys_futex validates a readable timeout before do_futex reaches the
++    // aligned but unmapped primary word.
++    assert_eq!(
++        futex(&memory, &[WORD, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0]),
++        negative_errno(libc::EINVAL)
++    );
++
++    let valid = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 0,
++    };
++    let valid_bytes = unsafe {
++        std::slice::from_raw_parts(
++            std::ptr::from_ref(&valid).cast::<u8>(),
++            std::mem::size_of::<libc::timespec>(),
++        )
++    };
++    memory.write_raw(TIMEOUT, valid_bytes).unwrap();
++
++    // Natural alignment is rejected before mapping accessibility, for both
++    // the primary word and an operation's second word.
++    assert_eq!(
++        futex(
++            &memory,
++            &[WORD + 1, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0]
++        ),
++        negative_errno(libc::EINVAL)
++    );
++    assert_eq!(
++        futex(
++            &memory,
++            &[
++                MAPPED_WORD,
++                libc::FUTEX_CMP_REQUEUE as u64,
++                0,
++                1,
++                WORD + 1,
++                0,
++            ]
++        ),
++        negative_errno(libc::EINVAL)
++    );
++}
++
++#[test]
++fn futex_timeout_copy_accepts_unaligned_readonly_cross_page_input() {
++    const BASE: u64 = 0x1_0000;
++    const WORD: u64 = BASE;
++    const TIMEOUT_PAGE: u64 = BASE + PAGE_SIZE;
++    const TIMEOUT: u64 = TIMEOUT_PAGE + PAGE_SIZE - 7;
++    let memory = GuestMemory::new(BASE, 3 * PAGE_SIZE as usize).unwrap();
++    memory.map_user_range(BASE, PAGE_SIZE, false).unwrap();
++    memory
++        .map_user_range(TIMEOUT_PAGE, 2 * PAGE_SIZE, false)
++        .unwrap();
++    memory.write_raw(WORD, &1_u32.to_ne_bytes()).unwrap();
++    let timeout = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 0,
++    };
++    let timeout_bytes = unsafe {
++        std::slice::from_raw_parts(
++            std::ptr::from_ref(&timeout).cast::<u8>(),
++            std::mem::size_of::<libc::timespec>(),
++        )
++    };
++    memory.write_raw(TIMEOUT, timeout_bytes).unwrap();
++    memory
++        .map_user_permissions(TIMEOUT_PAGE, 2 * PAGE_SIZE, true, false)
++        .unwrap();
++    memory.enable_user_access();
++
++    // Linux copies a timespec bytewise: it need not be naturally aligned or
++    // writable. The mismatched word makes the actual host wait return EAGAIN.
++    assert_eq!(
++        futex(&memory, &[WORD, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0]),
++        negative_errno(libc::EAGAIN)
++    );
++
++    memory
++        .unmap_user_range(TIMEOUT_PAGE + PAGE_SIZE, PAGE_SIZE)
++        .unwrap();
++    assert_eq!(
++        futex(&memory, &[WORD, libc::FUTEX_WAIT as u64, 0, TIMEOUT, 0, 0]),
++        negative_errno(libc::EFAULT)
++    );
++}
++
+ struct MmapReader {
+     release: Option<mpsc::Sender<()>>,
+     handle: Option<JoinHandle<i64>>,

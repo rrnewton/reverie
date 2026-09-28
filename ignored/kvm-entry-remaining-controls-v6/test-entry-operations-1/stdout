@@ -1,0 +1,17 @@
+
+running 12 tests
+test runtime::entry_operation_tests::caught_memory_failure_refuses_injection_before_executor_mutation ... ok
+test runtime::entry_operation_tests::caught_memory_failure_refuses_ready_rpc_before_construction ... ok
+test runtime::entry_operation_tests::caught_memory_failure_refuses_signal_queue_and_stack_admission ... ok
+test runtime::entry_operation_tests::healthy_rpc_injection_and_parked_observation_still_complete ... ok
+test runtime::entry_operation_tests::owner_failure_from_other_mapping_refuses_rpc_and_injection ... ok
+test runtime::entry_operation_tests::pending_rpc_checks_private_failure_before_polling_again ... ok
+test runtime::entry_operation_tests::private_admission_preserves_already_selected_nonlocal_disposition ... ok
+test runtime::entry_operation_tests::private_admission_retains_previous_signal_effects_error ... ok
+test runtime::entry_operation_tests::private_failure_does_not_cancel_owned_dequeue_rpc_or_consuming_hooks ... ok
+test runtime::entry_operation_tests::ready_nested_signal_hook_cannot_reserve_after_caught_memory_failure ... ok
+test runtime::entry_operation_tests::ready_rpc_cannot_return_response_after_capturing_private_failure ... ok
+test runtime::entry_operation_tests::stack_commit_refuses_another_mapping_failure_without_writing ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 725 filtered out; finished in 0.00s
+

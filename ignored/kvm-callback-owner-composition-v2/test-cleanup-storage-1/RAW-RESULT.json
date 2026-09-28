@@ -1,0 +1,34 @@
+{
+  "raw_status": 0,
+  "elapsed_seconds": 0.04498923383653164,
+  "stream_bytes": {
+    "stdout": 211,
+    "stderr": 297
+  },
+  "refusals": [],
+  "control_commands": [],
+  "observed_service": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-callback-owner-test-cleanup-storage-1-1100700",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainCode=1\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=4568000\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "loaded",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "1",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "CPUUsageNSec": "4568000"
+    }
+  },
+  "accepted": false
+}

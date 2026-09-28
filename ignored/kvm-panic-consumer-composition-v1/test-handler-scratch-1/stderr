@@ -1,0 +1,6 @@
+Running as unit: kvm-panic-consumer-test-handler-scratch-1-3921752.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 5ms
+             CPU time consumed: 5ms
+                   Memory peak: 1.6M (swap: 0B)

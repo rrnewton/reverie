@@ -1,0 +1,10 @@
+
+running 5 tests
+test runtime::consuming_panic_tests::pending_thread_error_and_destructor_panic_preserve_process_error_and_panic ... ok
+test runtime::consuming_panic_tests::process_constructor_panic_retains_prior_thread_error_and_drop_payload ... ok
+test runtime::consuming_panic_tests::successful_consuming_hooks_keep_normal_order_without_failure_publication ... ok
+test runtime::consuming_panic_tests::thread_constructor_panic_is_published_before_process_hook_runs ... ok
+test runtime::consuming_panic_tests::thread_poll_and_drop_panics_do_not_skip_process_poll_and_drop_panics ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 629 filtered out; finished in 0.00s
+

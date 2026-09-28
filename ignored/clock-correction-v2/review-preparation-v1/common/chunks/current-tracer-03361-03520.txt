@@ -1,0 +1,160 @@
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                LiteinstActivationOperation::FinishReinjectedSyscall,
+            ),
+        );
+        assert_reaped("context-none activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_context_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn injected-step activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("injected-step activation tracee hung")
+            .expect_err("external pre-Ready SIGTRAP impersonated injected-step completion");
+
+        assert!(!force_once.load(Ordering::SeqCst), "{error}");
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                LiteinstActivationOperation::FinishInjectedSyscall,
+            ),
+        );
+        assert_reaped("injected-step activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion() {
+        let mutate_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_private_stub_mutation_once_for_test(Arc::clone(&mutate_once))
+            .spawn()
+            .await
+            .expect("spawn private-stub-mutation activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("private-stub-mutation activation tracee hung")
+            .expect_err("mutated private stub impersonated injected-syscall completion");
+
+        assert!(!mutate_once.load(Ordering::SeqCst), "{error}");
+        let ptrace_write_rejected = matches!(
+            &error,
+            Error::Tool(error)
+                if matches!(
+                    error.downcast_ref::<crate::error::Error>(),
+                    Some(crate::error::Error::Internal(TraceError::Errno(Errno::EFAULT)))
+                )
+        );
+        // Some kernels reject the forced ptrace write before the mutated stub
+        // executes. Otherwise, the exact-stub provenance check must reject it.
+        assert!(
+            ptrace_write_rejected
+                || liteinst_activation_failure_reason(&error)
+                    == Some(
+                        LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                            LiteinstActivationOperation::FinishInjectedSyscall,
+                        ),
+                    ),
+            "{error}"
+        );
+        assert_reaped("private-stub-mutation activation", root_pid);
+    }
+
+    #[derive(Default)]
+    struct ReplaceMmapTool;
+
+    #[reverie::tool]
+    impl Tool for ReplaceMmapTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::mmap].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::mmap);
+            Ok(guest.inject(reverie::syscalls::Getpid::new()).await?)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_skip_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn skip-seccomp activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("skip-seccomp activation tracee hung")
+            .expect_err("nested pre-Ready skip signal was delivered by single-step");
+
+        assert!(!force_once.load(Ordering::SeqCst));
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                LiteinstActivationOperation::SkipInterceptedSyscall,
+            ),
+        );
+        assert_reaped("skip-seccomp activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_nested_signal_is_rejected_during_tracee_preinit() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_preinit_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn preinit-signal activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("preinit-signal activation tracee hung")
+            .expect_err("nested pre-Ready preinit signal unexpectedly resumed the tracee");
+
+        assert!(!force_once.load(Ordering::SeqCst));
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedPreinitSignal,
+        );
+        assert_reaped("preinit-signal activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_external_sigtrap_is_rejected_after_exec_event() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_post_exec_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn post-exec-signal activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("post-exec-signal activation tracee hung")
+            .expect_err("external SIGTRAP impersonated the required post-exec trap");
+
+        assert!(!force_once.load(Ordering::SeqCst));
+        assert_liteinst_activation_failure(

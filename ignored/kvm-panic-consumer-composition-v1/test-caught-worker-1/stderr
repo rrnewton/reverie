@@ -1,0 +1,6 @@
+Running as unit: kvm-panic-consumer-test-caught-worker-1-3933640.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 8ms
+             CPU time consumed: 7ms
+                   Memory peak: 2.3M (swap: 0B)

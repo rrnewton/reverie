@@ -1,0 +1,5 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/reverie-4d148342b6af1802)
+     Running tests/signal_bridge.rs (target/debug/deps/signal_bridge-dd256ce600e076b1)
+     Running tests/validate_script_source.rs (target/debug/deps/validate_script_source-70097dcd6eff80a4)
+   Doc-tests reverie

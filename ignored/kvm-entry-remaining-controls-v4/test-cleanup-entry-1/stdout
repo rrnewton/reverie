@@ -1,0 +1,9 @@
+
+running 4 tests
+test entry::cleanup_tests::late_kick_after_successful_exit_is_drained_before_acknowledgement ... ok
+test entry::cleanup_tests::mask_operation_errors_poison_after_safe_real_cleanup_and_preserve_causes ... ok
+test entry::cleanup_tests::real_withdrawal_waits_for_serialized_sender_and_drains_its_kick ... ok
+test entry::cleanup_tests::withdrawn_real_entry_has_no_sender_until_final_cleanup_acknowledges ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 719 filtered out; finished in 1.68s
+

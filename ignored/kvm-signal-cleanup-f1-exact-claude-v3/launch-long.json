@@ -1,0 +1,40 @@
+{
+  "command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "2400s",
+    "with-proxy",
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "plan",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "Read,Grep,Glob"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-signal-cleanup-f1-exact-claude-v3",
+  "started_at": "2026-09-20T06:30:11.151055+00:00",
+  "wall_seconds": 2400,
+  "kill_after_seconds": 10,
+  "per_output_file_bytes": 67108864,
+  "inputs": {
+    "prompt.txt": {
+      "bytes": 6289,
+      "sha256": "8fd2a51caa984a58dead7c97cb77cfb16eedc7917b758442d5f4aaeb4124eaa7"
+    },
+    "BASE-TO-HEAD.patch": {
+      "bytes": 40904,
+      "sha256": "4a3943c37c3375ed5863d716b1faaa98a43ab73cfb88d8ad77e42794c52356d2"
+    },
+    "QUALIFICATION.md": {
+      "bytes": 2594,
+      "sha256": "3efd2bfe23bd8db7a0ebebbe945708c1ba60b0158cb77b5ebf73ef8537aa8cf4"
+    }
+  }
+}

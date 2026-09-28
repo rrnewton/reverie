@@ -1,0 +1,49 @@
+{
+  "started_at_utc": "2026-09-18T21:40:49.454199+00:00",
+  "argv": [
+    "/usr/local/bin/codex",
+    "-a",
+    "never",
+    "-s",
+    "read-only",
+    "-C",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native",
+    "exec",
+    "resume",
+    "-c",
+    "approval_policy=\"never\"",
+    "--json",
+    "--output-last-message",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final.txt",
+    "01a0b38e-9e3c-7883-9816-65199c048935",
+    "-"
+  ],
+  "model_override": null,
+  "prompt_sha256": "28d30d6cb464e766a9698e1be2d51c93e072cc6ff8814b0cf503e921c089aa76",
+  "wall_limit_seconds": 1800,
+  "output_limit_bytes": 67108864,
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native",
+  "session_resume": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "launcher_pid": 409820,
+  "launcher_pgid": 409820,
+  "launcher_start_ticks": "192657821",
+  "finished_at_utc": "2026-09-18T21:55:01.474674+00:00",
+  "elapsed_seconds": 852.0204121859279,
+  "raw_exit_code": 0,
+  "bound_failure": null,
+  "jsonl": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.jsonl",
+    "bytes": 2206618,
+    "sha256": "4458975bd66dbd6331fb54fc0a6de35aba70f3a160b1c61fc2835fe6c67cef46"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.stderr",
+    "bytes": 149,
+    "sha256": "43df7f007afa289695cb9fd1c0f306d391d12176406046f9c5223046f30cae75"
+  },
+  "final.txt": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final.txt",
+    "bytes": 8951,
+    "sha256": "74d01b6ba2dda80fd4ae6d286ac4c0eac7f93d34a14fa1b13fce6b85de9828f7"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.006215007
+    }
+  ]
+}

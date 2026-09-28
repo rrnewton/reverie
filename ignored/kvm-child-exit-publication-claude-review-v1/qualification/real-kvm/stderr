@@ -1,0 +1,2 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)

@@ -1,0 +1,155 @@
+                if exit.group {
+                    self.request_guest_thread_group_exit(exit.status);
+                }
+                return Ok(exit.into());
+            }
+
+            // Read once so the per-syscall classifier can borrow it while `self` is
+            // borrowed elsewhere in the loop body.
+            let thread_ownership = self.thread_ownership;
+            loop {
+                if wait_for_failure(global_state.as_ref(), failure_subscription.clone())
+                    .now_or_never()
+                    .is_some()
+                {
+                    return Err(Error::RunAborted);
+                }
+                if let Some(status) = self.guest_thread_group_exit_status() {
+                    return Ok(ProcessExit {
+                        status,
+                        group: true,
+                    }
+                    .into());
+                }
+                if self.guest_thread_is_cancelled() {
+                    return Ok(self.cancelled_tool_thread_status(executor));
+                }
+                let vcpu_exit = match self.vcpu.run() {
+                    Ok(exit) => exit,
+                    Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                    Err(error) => return Err(error),
+                };
+                Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+                let (frame_address, return_slot) = match vcpu_exit {
+                    VcpuExit::Hypercall(exit) => {
+                        if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                            return Err(Error::UnexpectedHypercall(exit.nr));
+                        }
+                        (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
+                    }
+                    VcpuExit::Hlt => {
+                        if let Some(boundary) = self.tool_instruction_exception()? {
+                            executor.set_current_user_stack_pointer(boundary.user_registers().rsp);
+                            let handler_signal = Arc::new(Mutex::new(None));
+                            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                            let mut process_completed = false;
+                            expose_tool_scratch(&memory, tool_stack_top)?;
+                            let result = {
+                                let mut guest_executor = StaticElfSyscallExecutor {
+                                    backend: self,
+                                    executor,
+                                    memory: memory.clone(),
+                                    process_context: ProcessExecutionContext::Instruction,
+                                    callback_site: None,
+                                    original_syscall: None,
+                                    signal_guard: SignalGuard::Ordinary,
+                                    last_result: None,
+                                    process_completed: &mut process_completed,
+                                };
+                                let mut guest = KvmGuest::<T>::new(
+                                    pid,
+                                    tid,
+                                    tool.clone(),
+                                    memory.clone(),
+                                    &auxv,
+                                    boundary.user_registers(),
+                                    &mut thread_state,
+                                    &mut guest_executor,
+                                    global_state.as_ref(),
+                                    Some(global_state.clone()),
+                                    config,
+                                    subscriptions,
+                                    handler_signal.clone(),
+                                    pending_child_starts.clone(),
+                                    tool_stack_top,
+                                    stack_checked_out.clone(),
+                                );
+                                drive_handler(
+                                    async {
+                                        match &boundary {
+                                            crate::vm::ToolInstructionBoundary::Timestamp(
+                                                boundary,
+                                            ) => tool
+                                                .handle_rdtsc_event(
+                                                    &mut guest,
+                                                    boundary.instruction.request,
+                                                )
+                                                .await
+                                                .map(crate::vm::ToolInstructionResult::Timestamp),
+                                            crate::vm::ToolInstructionBoundary::Cpuid(boundary) => {
+                                                tool.handle_cpuid_event(
+                                                    &mut guest,
+                                                    boundary.registers.rax as u32,
+                                                    boundary.registers.rcx as u32,
+                                                )
+                                                .await
+                                                .map(crate::vm::ToolInstructionResult::Cpuid)
+                                            }
+                                        }
+                                    },
+                                    handler_signal,
+                                    pending_child_starts,
+                                    wait_for_failure(
+                                        global_state.as_ref(),
+                                        failure_subscription.clone(),
+                                    ),
+                                )
+                                .await
+                            };
+                            // Hide scratch even on callback failure. The outer
+                            // process supervisor retains any committed effects.
+                            let hidden = hide_tool_scratch(&memory, tool_stack_top);
+                            let value = match result {
+                                HandlerOutcome::Returned(Ok(value)) => value,
+                                HandlerOutcome::Returned(Err(error)) => {
+                                    return Err(Error::Reverie(error.into())
+                                        .with_cleanup(hidden.err().into_iter().collect()));
+                                }
+                                HandlerOutcome::ThreadCancelled => {
+                                    hidden?;
+                                    return Ok(self.cancelled_tool_thread_status(executor));
+                                }
+                                HandlerOutcome::RunFailed => {
+                                    return Err(Error::RunAborted
+                                        .with_cleanup(hidden.err().into_iter().collect()));
+                                }
+                                HandlerOutcome::RuntimeError(error) => {
+                                    return Err(
+                                        error.with_cleanup(hidden.err().into_iter().collect())
+                                    );
+                                }
+                                HandlerOutcome::TailInjected {
+                                    result: Ok(_),
+                                    image_replaced: false,
+                                    process_exited: true,
+                                } => {
+                                    hidden?;
+                                    let exit = executor.take_exit().ok_or_else(|| {
+                                        Error::UnexpectedVcpuExit(
+                                            "terminal instruction injection lost its exit"
+                                                .to_owned(),
+                                        )
+                                    })?;
+                                    if exit.group {
+                                        self.request_guest_thread_group_exit(exit.status);
+                                    }
+                                    // The original instruction never resumes. Normal
+                                    // retirement and consuming hooks own cleanup.
+                                    return Ok(exit.into());
+                                }
+                                HandlerOutcome::TailInjected { .. }
+                                | HandlerOutcome::ParkedFatal(_)
+                                | HandlerOutcome::ParkedCancelled(_) => {
+                                    return Err(Error::UnexpectedVcpuExit(
+                                        "nonreturning instruction callback outcome".to_owned(),
+                                    )

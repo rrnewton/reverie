@@ -1,0 +1,8 @@
+
+running 3 tests
+test runtime::unstarted_cleanup_panic_tests::only_bare_abort_is_ignored_and_empty_drain_has_an_output ... ok
+test runtime::unstarted_cleanup_panic_tests::poll_and_drop_panics_preserve_pending_and_later_consumers ... ok
+test runtime::unstarted_cleanup_panic_tests::returned_error_and_drop_panic_preserve_later_real_errors ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 674 filtered out; finished in 0.00s
+

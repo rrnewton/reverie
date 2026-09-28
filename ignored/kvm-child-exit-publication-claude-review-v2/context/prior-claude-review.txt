@@ -1,0 +1,183 @@
+Write is disabled too — this session is genuinely read-only, so the report is the deliverable. All primary and packet files were present and complete (paper.txt 1736 lines, scheduler.rs 8426 lines, both vision documents, both skills, the full diff, all eight `before/` files, all eight qualification phases).
+
+---
+
+# Adversarial review — Reverie PR 603
+
+**Review target:** https://github.com/rrnewton/reverie/pull/603
+base `f7bd85e11dd258112148ed2cba6531501a1a00d9` .. exact head `0598b5ffbeb737866372f89224d915efaeb29943`, tree `dab8c59a89f490c6143c197afc70ab6e6a3c8ff7`. `BASE-TO-HEAD.patch` SHA-256 matches `INPUTS.json` (`b973675d…`, 52 124 bytes).
+
+---
+
+## Findings
+
+### 1. Medium — a *successfully committed* child publication has no backend-side at-most-once guard; a repeat can duplicate the child SIGCHLD
+
+`candidate/reverie-kvm/src/process_signal_publication.rs:295-463`
+
+The failed-after-commit case is protected: `set_signalfd_ready` failure stores the receipt in `registry.failure` (line 458), and every later `publish` returns `Rejected(Terminal)` at lines 373-376, mapped to `EIO` at line 633. That is tested (`process_signal_publication.rs:2292-2296`).
+
+The **committed** case is not protected, and the latch is set *only* in the error arm. After `ProcessPublication::Committed`, a second `publish_child_exit` with the byte-identical `ChildExitCompletion` passes every gate again:
+
+- `registry.lookup(completion.child)` (line 358) still resolves — in the intended consumer flow the child's `Arc<ProcessBinding>` is held by `child.executor` for the whole callback frame (`vm.rs:2875-3014`);
+- `lifecycle.process_exit_status(child.tgid, child.generation)` (lines 362-365) still returns the same `Some(status)`. It is only cleared by `forget_process_exit` (`candidate/reverie-kvm/src/elf.rs:300-308`), reached solely from executor drop (`candidate/reverie-kvm/src/executor.rs:4646-4648`);
+- the `auto_reap`/`waitable` agreement check (lines 391-396) is unchanged;
+- `enqueue` (lines 435-442) returns `Ok(true)` — `Queued`, not `Coalesced` — if the parent has already dequeued the first SIGCHLD.
+
+**Impact:** one child exit produces two SIGCHLD generations at the guest. The trait doc does place the duty on the caller (`candidate/reverie/src/process_signal_control.rs:196-198`), but the stated requirement for this patch is "must not duplicate the child signal", and the Hermit consumer that would honour the duty does not exist yet. No test covers committed-then-retry; the test whose message reads *"a committed child effect must never be retried"* (line 2295) actually asserts the failed-after-commit case.
+
+**Required correction:** add a run-scoped committed-completion ledger keyed on `(child.tgid, child.generation)` that refuses a second publication, **or** add an explicit test for the retry and state the caller obligation where the consumer will read it.
+
+### 2. Medium — the terminal latch does not cover the pre-existing `Guest::queue_child_exit_signal`, so "never retry a committed effect" is not run-wide
+
+`candidate/reverie-kvm/src/executor.rs:3355-3446`, `candidate/reverie/src/guest.rs:278-286`, `candidate/reverie/src/signal.rs:21-80`
+
+A second, older public surface publishes child-exit SIGCHLD into the **same** `shared_pending` and the **same** `signalfd_carriers`: `Guest::queue_child_exit_signal(SignalEvent) -> ChildExitSignalOutcome`, with its own `Accepted`/`RejectedBeforeCommit`/`FailedAfterCommit` vocabulary and KVM implementation. It never reads `registry.failure`.
+
+Consequence: after a child post-commit readiness failure sets the latch, the run-scoped API is correctly wedged at `Terminal`, but the Guest-borrowing API can still commit further pending state and readiness on the same process.
+
+The two surfaces also differ in strength in ways the patch does not reconcile: the old one accepts only `CLD_EXITED` (`executor.rs:3327`), requires a sole-leader caller (`executor.rs:3397-3405`), and validates nothing about parentage, child generation, committed terminal status, or waitability. The new one validates all of those. That makes the new API a strict improvement — but two live, overlapping, non-cross-referenced public paths for one operation is exactly the ambiguity a prerequisite should remove.
+
+Positively: `executor.rs:3417-3418` documents the same `do_notify_parent` rule the new path implements, which independently corroborates the SIG_IGN/SA_NOCLDWAIT semantics below.
+
+**Required correction:** make `queue_child_exit_signal` consult the same latch (or refuse while `ToolControlled` run-scoped publication is installed), and state in the trait docs which surface the Hermit consumer must use.
+
+### 3. Low/Medium — the real-KVM callback test cannot distinguish `generation` from `tgid`, and never exercises the lifetime claim
+
+`candidate/reverie-kvm/tests/static_elf.rs:7797-7932`
+
+The assertion block at lines 7884-7931 checks four identities: `{tgid: 1, generation: 1}`, `{2, 2}`, `{3, 3}`, `{4, 4}`. **Every asserted generation is numerically equal to its tgid.** The test therefore passes unchanged under an implementation that computed `generation = tgid.as_raw() as u64`, which is precisely the property the change exists to rule out. The guest program (lines 7812-7854) forks three children with distinct virtual PIDs and never reuses one, so numeric PID reuse is not exercised on the real backend at all.
+
+The callback body (lines 7770-7779) only pushes the event; it never calls `publish_child_exit` and never touches the registry. So the claim *"Both binding guards must survive through the awaited callback acknowledgement"* has **no real-backend evidence**. `QUALIFICATION.md:20` concedes this ("no real Tool callback in this patch calls the new child-publication method").
+
+What the real-KVM test does prove, and does prove well: the three Linux waitability outcomes are correct end-to-end under real KVM — handler installed → `waitable: true` and `waitpid` returns 7; `SIG_IGN` → `waitable: false` and `waitpid` → `ECHILD`; `SA_NOCLDWAIT` → `waitable: false` and `waitpid` → `ECHILD`. The retained `qualification/real-kvm/stderr` contains no "skipping KVM child-lifecycle test" line, so the `/dev/kvm` early return at lines 7799-7806 did not fire and the test genuinely ran.
+
+The genuine PID-reuse discriminator exists only at the unit layer (`process_signal_publication.rs:1973-1981`), and there it is real: with a pid-only registry key the replacement binding would be returned, `process_exits[(2, old_gen)]` would still hold `Exited(23)`, and the stale publication **would wrongly commit**. The generation-qualified key `BTreeMap<(i32, u64), _>` (line 84) is what refuses it.
+
+**Required correction:** extend the real-KVM guest until a virtual PID is reused, or at minimum assert a generation that differs from its tgid; and add a real-KVM case that calls `publish_child_exit` from inside `on_backend_child_wait_event`.
+
+### 4. Low — `vm.rs` overstates what `ProcessSignalBindingGuard` delivers
+
+`candidate/reverie-kvm/src/vm.rs:2884-2886`, `candidate/reverie-kvm/src/executor.rs:4190-4197`
+
+The comment reads *"this explicit parent guard keeps both registry entries alive"*. It keeps the **parent** entry alive; the child entry is kept alive by `child.executor` in the same frame, as the preceding clause says.
+
+More substantively, the guard retains only `Arc<ProcessBinding>`, whose `transaction`, `lifecycle`, and `signals` are all `Weak` (`process_signal_publication.rs:63-69`). If the parent's `LoadedStaticElf` is gone, `publish` still fails at lines 315-321 with `StaleProcess`/`ESRCH` — the same outcome as without the guard. And because the registry key already carries the generation, a reused numeric PID registers under a different key whether or not the guard exists. The guard's actual contribution is narrower than "numeric PID reuse cannot change meaning": it keeps a findable entry for a parent whose `ElfExecutor` object dropped while the process's signal Arcs remain live via a sibling thread.
+
+The doc comment on `retain_signal_process_binding` (`executor.rs:4190-4192`) states this accurately — *"this guard only prevents the weak run registry binding from disappearing early"* — and the test at `process_signal_publication.rs:2322-2334` asserts exactly that and no more. The vm.rs comment is the one that overreaches.
+
+### 5. Low — a default-ignored SIGCHLD is enqueued and makes signalfds ready where Linux discards it
+
+`candidate/reverie-kvm/src/process_signal_publication.rs:406-408`
+
+The short-circuit is `if signal == libc::SIGCHLD && action.is_ignored()`, and `is_ignored()` is exactly `handler == SIG_IGN` (`candidate/reverie-kvm/src/signal.rs:188-190`). Every other disposition, including `SIG_DFL`, proceeds to `enqueue` and the carrier-readiness loop.
+
+Linux `do_notify_parent` sets `sig = 0` only for explicit `SIG_IGN`; for `SIG_DFL` it sends SIGCHLD, and `__group_send_sig_info` → `sig_ignored()` then discards it *unless the signal is blocked*. So with SIGCHLD blocked (the signalfd case) Linux and this code agree. With SIGCHLD unblocked and `SIG_DFL`, the guest can observe a transient `sigpending()` bit and a spurious signalfd readiness that Linux would not produce. The pending entry is discarded later at the delivery boundary (`vm.rs:3877-3879` and `vm.rs:3957`), so the net delivery is right.
+
+This is inherited from the shared `publish` used by the alarm path (the short-circuit is an unchanged context line in the diff at `BASE-TO-HEAD.patch:197`), but activating the child path makes it newly reachable for SIGCHLD.
+
+### 6. Low — the `signal_recipients`/`alarm_recipients` default pairing is a latent mutual-recursion trap
+
+`candidate/reverie/src/process_signal_control.rs:206-220`
+
+The trait defaults `signal_recipients` to call `alarm_recipients`; the only in-tree implementor inverts it, making `alarm_recipients` delegate to `signal_recipients` (`process_signal_publication.rs:689-694`). Both are overridden there, so nothing recurses today. A future backend that copies the KVM shape for `alarm_recipients` without also overriding `signal_recipients` gets unbounded recursion.
+
+**Required correction:** make `signal_recipients` the required method and `alarm_recipients` the provided delegation, or warn explicitly in the doc.
+
+### 7. Low — partial signalfd readiness on post-commit failure, untested for the child path with multiple carriers
+
+`candidate/reverie-kvm/src/process_signal_publication.rs:447-461`
+
+The readiness loop returns on the first `set_signalfd_ready` error, so later matching descriptors are left un-ready while the pending entry is committed. That is inherent to a failed-after-commit outcome and the receipt records it; the alarm path has multi-alias coverage (`inactive_publication_aliases_all_consumers_and_ignore_update_readiness`, line 1647), but the only child-path failure test (line 2252) uses a single carrier.
+
+### 8. Low — verification gaps (not defects)
+
+- **No workspace-wide compile is retained** for the intentional `BackendChildWaitEvent` source break (`candidate/reverie/src/tool.rs:243-252`). The retained commands compile `reverie-core` and `reverie-kvm` (lib plus the `static_elf` test target) only. Risk is bounded by the `on_backend_child_wait_event` default no-op at `tool.rs:206-211`: only crates that *override* the hook break. Within the packet all three consumers — `vm.rs:2954`, `static_elf.rs:7770`, `tests/support/terminal_fork.rs:102` — were updated, and the only `ProcessSignalControl` implementor is the KVM one. So the incompatibility is coherent for everything I can see; other crates in `rrnewton/reverie` are outside the snapshot.
+- `tests/support/terminal_fork.rs` is `#[path]`-included by `static_elf.rs:14032-14033`, so its changed assertions **compiled** during the real-KVM run, but the run filtered out 333 tests and executed exactly one — none of the `terminal_fork::*` cases ran.
+- The `clippy` phase is fully cached: `qualification/clippy/stderr` is only `Finished \`dev\` profile … in 0.10s` with a 0-byte stdout. It re-reports rather than re-derives.
+- The three new trait default bodies (`publish_child_exit` → `ENOSYS`, non-SIGALRM `signal_recipients` → `ENOSYS`, `finish_child_exit_publication_failure` → `ENOSYS`) have no test.
+- Missing negative cases: `Signaled` with a waitability mismatch; the upper bound (65) of the `signal_recipients` range check; committed-then-retry (finding 1).
+
+---
+
+## Goalpost-moving assessment
+
+**Assertions weakened: no.** Before: 16 `#[test]`s in `process_signal_publication.rs`. After: 23. All 15 non-child tests are present verbatim, same names, same order. The one replaced test (`inactive_publication_child_requires_committed_generation_and_parent` → `child_publication_requires_exact_generation_parent_status_and_waitability`) is strictly stronger: it keeps the live-child refusal, the `Queued` effect, the child-generation refusal, the wrong-parent refusal, the `SIG_IGN` suppression with an empty pending set, and the `assert!(parent.state.children.is_empty())` "publication must not manufacture waitability" control. It adds five refusals (parent generation, wrong status, wrong waitability, `Exited(256)`, negative ticks each way) and a numeric-PID-reuse refusal. Two siginfo checks it drops — `si_code == CLD_EXITED` and `si_status == 23` — both reappear with wider coverage in `child_publication_encodes_exited_killed_and_core_statuses` (lines 1985-2026, three status classes) and `child_publication_coalesces_and_retains_first_complete_siginfo` (line 2126). The fixture `uid` moved from `0` to `65_534` and is now asserted, which *removes* an indistinguishable-from-zero-fill hole.
+
+**Tolerance widened, exemption added, case skipped, or comparator relaxed: no.** The comparators were tightened. `publish` line 362-365 changed from `!= Some(ExitStatus::Exited(i32::from(completion.status)))` to `!= Some(completion.status)` — that is a whole-`ExitStatus` comparison including the core-dump flag, replacing a u8-only exit-code comparison. The `waitable`/`auto_reap` agreement check (lines 391-396) and the `(0..=255)` exit-code range check (line 261) are new constraints, not relaxations. `recipients.sort_by_key` (line 685) is an added determinism guard. `finish_publication_failure` gained `|| failure.receipt.child_completion.is_some()` (line 758) and both its accepting and refusing cases are tested (line 1251 and line 2298).
+
+The one thing worth naming explicitly: the child path switched from `independent_carriers: false` to `true` (patch line 157), which drops the file-table preflight for that path. This is **not** a deleted control. It is the correct mechanism for an active path — the module doc at lines 14-17 and the comment at lines 322-325 explain that acquiring the ordinary file table could close an unrelated blocking socket while the Tool holds its scheduler mutex, which is why `publish_active_alarm` already used independent carriers. The file-table negative controls remain exercised via the retained inactive alarm endpoint (`inactive_publication_refuses_poisoned_file_table_without_effects`, `inactive_publication_preflight_and_postcommit_failure_are_distinct`), and the child path got the equivalent control for its own mechanism: `child_publication_uses_independent_carriers_and_refuses_a_missing_one` (line 2189) proves both that publication succeeds while the file-table lock is held and that a missing carrier yields `EBADF` with an empty `shared_pending`.
+
+**Failure renamed or relabelled as a pass: no.** The removed doc line *"Normal exits only; killed/core exits require their own provenance support"* was satisfied, not deleted: `lifecycle.exit()` stores the full `ExitStatus` including the core flag (`elf.rs:254-278`), the guard compares the whole value, and `child_publication_encodes_exited_killed_and_core_statuses` covers `CLD_KILLED` and `CLD_DUMPED` with real `retire_current_thread(Signaled(…, true))` provenance.
+
+**Check deleted instead of satisfied: no.** The only deletion is the private `CommittedChildExit` struct and its `expect(dead_code)` attribute — the activation itself. Every validation it carried survives in `ChildExitCompletion` with more fields.
+
+---
+
+## Conclusion — determinism guarantee
+
+**Not established by this patch, and correctly not claimed.**
+
+`publish_child_exit` is a pure function of deterministic backend state — registry contents, the shared `TaskLifecycleTable` (a `BTreeMap`, `elf.rs:141`), `dispositions`, `shared_pending`, `signalfd_masks`/`carriers` (both `BTreeMap`, `signal.rs:431-432`) — with two host-timed inputs left open:
+
+1. **`set_signalfd_ready`** does real host I/O (`executor.rs:7988`). Its failure makes the run terminal, so it cannot diverge silently.
+2. **Binding and Weak liveness.** Whether the call returns `Committed` or `ESRCH` depends on when other executors drop, which is host-thread timing. The parent guard narrows this; it does not close it (finding 4). The trait states the obligation plainly at `process_signal_control.rs:184-186`: *"The caller supplies the causal scheduler fence; a snapshot by itself is not deterministic admission."* That fence does not exist yet.
+
+There is also **no production caller**: grep over the whole candidate snapshot finds `publish_child_exit` only in tests, and `on_backend_child_wait_event` defaults to a no-op. The only production behaviour this patch changes is (a) the `BackendChildWaitEvent` field types, (b) an earlier identity capture in the fork path that can now fail the fork with `Error::UnexpectedVcpuExit` if `signal_task_identity()` returns `None` (`vm.rs:2820-2838` — fail-closed, and effectively unreachable since both executors have just registered), (c) the parent binding's extended lifetime, and (d) the redundant recipient sort.
+
+Against the deterministic-scheduling-review checklist: this patch must **not** be credited with KVM determinism, backend parity, guest record/replay, or a complete child-exit repair. Hermit's synthetic plus-one-nanosecond child timer (`primary/scheduler.rs:4202-4216`) and the numeric host-signal fallback (`should_synthesize_child_exit_signal`, `primary/scheduler.rs:1806-1808`; `signal_guest`, lines 3023-3089) are untouched, as they should be at this stage.
+
+## Conclusion — Linux and POSIX semantics
+
+**Faithful on the encodings it covers; one narrow divergence and one structural gap.**
+
+Correct:
+- `si_signo`/`si_code`/`si_pid`/`si_uid`/`si_status`/`si_utime`/`si_stime` land at offsets 0, 8, 16, 20, 24, 32, 40 — exactly the x86-64 `siginfo_t` SIGCHLD layout, with `si_utime`/`si_stime` as 8-byte signed `clock_t`. `SIGNAL_INFO_SIZE` is 128 (`reverie/src/signal.rs:19`).
+- `CLD_EXITED`/`CLD_KILLED`/`CLD_DUMPED` selection from `ExitStatus::Exited` / `Signaled(_, false)` / `Signaled(_, true)`. `reverie::Signal` is `nix::sys::signal::Signal` (`reverie/src/lib.rs:117`), whose discriminants are the libc numbers, so `signal as c_int` is the right `si_status`.
+- Explicit `SIG_IGN` suppresses generation entirely and auto-reaps; `SA_NOCLDWAIT` auto-reaps but still generates SIGCHLD. This matches `do_notify_parent`, where `SIG_IGN` sets `sig = 0` while `SA_NOCLDWAIT` leaves `sig = SIGCHLD`. Both are tested with the correct pending-set outcome (`process_signal_publication.rs:2028-2083`), and the `auto_reap` predicate is byte-identical to the backend's own waitability policy `sigchld_auto_reaps` (`executor.rs:15039-15043`), which is kept in sync on `rt_sigaction` and exec (`executor.rs:3155-3156`, `4708-4714`).
+- Standard-signal coalescing retains the first complete siginfo (`signal.rs:246-263`), with a discriminating test: the second child's pid, status, uid, and ticks all differ and none of them appear (`process_signal_publication.rs:2085-2130`). Waitability is genuinely untouched by publication — `state.children` is only written by `record_child_completion` (`executor.rs:2665-2675`) — so "every completed child status remains independently waitable where policy requires" holds by construction.
+- Ticks: signed, negatives refused each way, no upper bound needed since Linux `clock_t` is `long`.
+- Recipient selection uses the exact process generation (`elf.rs:363-379`), includes only live tasks with an upgradeable signal endpoint, and excludes tasks blocking the signal. `tasks` is a `BTreeMap<i32, _>`, so ascending TID order already held; the added sort is a redundant guard. Liveness and mask are both covered with refusing cases (`process_signal_publication.rs:2132-2187`).
+
+Divergent or absent:
+- Finding 5 (`SIG_DFL` SIGCHLD becomes transiently pending / signalfd-ready when unblocked).
+- `BackendChildWaitState::Stopped(i32)` and `Continued` exist (`reverie/src/tool.rs:228-241`) but have no publication API — there is no way to encode `CLD_STOPPED`, `CLD_CONTINUED`, or `CLD_TRAPPED`. The KVM backend emits only `Exited`, so nothing is broken today, but the Hermit consumer will have no route for job-control notifications.
+
+Lock ordering is clean. `publish` takes registry → image → [file table] → transaction → image → lifecycle → registry (child lookup) → failure → signals, and `registry.processes` is a leaf: `lookup` acquires nothing beneath it, and `register` is called only after the lifecycle guards are dropped (`executor.rs:2484-2503`, `2049-2076`). `report_publication_failure` (`process_signal_publication.rs:562-586`) holds no registry, scheduler, image, or signal guard across `context.publish`, which is the one call that may reach GlobalTool — the guards are statement temporaries. I found no cycle and no deadlock.
+
+---
+
+## Verification actually inspected, with limitations
+
+All eight retained phases carry exit code `0`, and I read the raw outputs rather than the summary:
+
+| Phase | Evidence I read |
+|---|---|
+| `git diff --check f7bd85e1…0598b5ff` | 0-byte stdout and stderr |
+| `cargo fmt --all -- --check` | 0-byte stdout and stderr |
+| `cargo test -p reverie-kvm --lib process_signal_publication` | 23 named tests listed, 0 failed, 730 filtered, 0.05 s |
+| `cargo check -p reverie-kvm --lib --features native-test-support` | cached `Finished` |
+| `cargo clippy … -- -D warnings` | cached `Finished`, 0-byte stdout |
+| real-KVM `child_waitability_callback_and_auto_reap_are_observed_on_real_kvm` | 1 passed, 333 filtered; **no `/dev/kvm` skip message in stderr under `--nocapture`**, so it really ran |
+| `cargo test -p reverie-core` | 14 + 4 + 1 + 3 doctests, 1 pre-existing ignored |
+| `cargo test -p reverie-kvm --lib -- --test-threads=1` | 753 passed, 0 failed, 0 ignored, 28.68 s |
+
+Limitations: no workspace-wide build; `terminal_fork.rs` compiled but its cases were filtered out; clippy and the native-support check were fully cached (`QUALIFICATION.md:18` says so); no Hermit consumer, guest workload, ptrace/KVM parity run, or record/replay run — correctly out of scope for a prerequisite. I traced the production paths by reading source rather than inferring from these results.
+
+## Residual risks
+
+- Finding 1's duplicate-commit exposure becomes guest-visible the moment the Hermit consumer lands, unless the consumer enforces exactly-once itself.
+- Finding 2's two-surface split is the kind of thing that decays: the older `ChildExitSignalOutcome` family is fully public and still wired to `Guest`.
+- The disposition can change between the backend's waitability decision (`vm.rs:2942`, reading `sigchld_auto_reap`) and the publication's `auto_reap` read (line 392). The scheduler fence is supposed to prevent that; if it does not, the result is a pre-commit `EINVAL` and a *lost* SIGCHLD for a real zombie. No test covers that window.
+- `finish_child_exit_publication_failure` does not clear `registry.failure`, so a double call re-invokes `context.publish`. `reported_failure.get_or_insert` keeps the first, and no child signal is republished, so the blast radius is a duplicate failure publication. This mirrors the pre-existing alarm finisher.
+- `ChildExitCompletion` derives `Serialize`/`Deserialize` and is `Copy`, so a receipt can be cloned freely; the only thing binding a failure acknowledgement to one operation is the exact-equality check at `process_signal_publication.rs:783-787`. That is tested, including the near-miss (`pending_generation + 1`).
+
+---
+
+## Verdict
+
+**CHANGES REQUESTED** at exact head `0598b5ffbeb737866372f89224d915efaeb29943`.
+
+The mechanism is well-built and the unit-layer validation is unusually disciplined — every new guard has a paired accepting and refusing case, and the eight pre-commit refusals are deliberately sequenced *before* the accepting publication so any partial effect would surface as `Coalesced` instead of `Queued`. No goalposts were moved in any of the four categories; where a control changed shape it was replaced by a stronger one for the new mechanism.
+
+Three things block approval: the absent at-most-once guard for a committed publication (finding 1), the terminal latch that a second live public path bypasses (finding 2), and the real-KVM test that cannot distinguish `generation` from `tgid` and never exercises the binding-lifetime claim the patch is named for (finding 3). Findings 4-8 should be addressed but would not on their own block.

@@ -1,0 +1,157 @@
+--- before/reverie-kvm/src/entry.rs
++++ after/reverie-kvm/src/entry.rs
+@@ -54,6 +54,9 @@
+     pub(crate) participant: u64,
+     pub(crate) run: u64,
+ }
++
++#[cfg(test)]
++type CleanupHook = Box<dyn FnOnce(CleanupIdentity) + Send>;
+ 
+ /// Observations of actual admission, mask installation and receiver polling.
+ /// Test controllers arm this only after ordinary driver setup has completed.
+@@ -68,7 +71,7 @@
+     subscription_notice: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+     wait_notice: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+     before_activate: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+-    cleanup: Mutex<[Option<Box<dyn FnOnce(CleanupIdentity) + Send>>; 3]>,
++    cleanup: Mutex<[Option<CleanupHook>; 3]>,
+     withdraw_contended: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+ }
+ 
+@@ -258,6 +261,7 @@
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
++#[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+ enum Admission {
+     Open,
+     Closing(u64),
+@@ -281,6 +285,7 @@
+ struct State {
+     admission: Admission,
+     next_member: u64,
++    #[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+     next_close: u64,
+     members: BTreeMap<u64, Member>,
+     copies: usize,
+@@ -364,6 +369,7 @@
+         }
+     }
+ 
++    #[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+     fn stopped(&self) -> bool {
+         self.copies == 0
+             && self
+@@ -468,6 +474,7 @@
+         self.state.lock().unwrap().check()
+     }
+ 
++    #[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+     pub(crate) fn poison(
+         &self,
+         origin: impl Into<EntryOrigin>,
+@@ -569,6 +576,7 @@
+         })
+     }
+ 
++    #[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+     pub(crate) fn try_close(self: &Arc<Self>) -> GateResult<Option<Closing>> {
+         self.try_close_with(|thread| {
+             // SAFETY: the registry mutex remains held through pthread_kill.
+@@ -583,6 +591,7 @@
+         })
+     }
+ 
++    #[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+     fn try_close_with(
+         self: &Arc<Self>,
+         mut send: impl FnMut(libc::pthread_t) -> std::io::Result<()>,
+@@ -963,6 +972,7 @@
+     }
+ }
+ 
++#[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+ pub(crate) struct Closing {
+     gate: Arc<EntryGate>,
+     id: u64,
+@@ -970,6 +980,7 @@
+ }
+ 
+ impl Closing {
++    #[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+     pub(crate) async fn finish(mut self) -> GateResult<Closed> {
+         loop {
+             let changed = {
+@@ -1002,6 +1013,7 @@
+ 
+ /// Only an unchanged-mapping fence. Dropping a successfully acquired token
+ /// reopens admission; it does not perform or authorize a mapping update.
++#[cfg_attr(not(test), expect(dead_code, reason = "The private unchanged-mapping close protocol has no production closer yet"))]
+ pub(crate) struct Closed {
+     gate: Arc<EntryGate>,
+     id: u64,
+--- before/reverie-kvm/src/entry/owner.rs
++++ after/reverie-kvm/src/entry/owner.rs
+@@ -233,6 +233,7 @@
+     }
+ 
+     /// Transfer obligations to this driver's outer error path, not a peer.
++    #[cfg(test)]
+     pub(crate) fn take_pending(&self) -> Vec<Arc<PendingFailure>> {
+         std::mem::take(&mut self.state.data.lock().unwrap().pending)
+     }
+@@ -372,7 +373,9 @@
+ #[derive(Debug)]
+ pub(crate) struct CaptureRejected {
+     pub(crate) failure: Arc<PendingFailure>,
++    #[cfg(test)]
+     pub(crate) lifecycle: DriverLifecycle,
++    #[cfg(test)]
+     pub(crate) owner_available: bool,
+     /// Defer this even when rejecting capture: it may retain the last owner.
+     pub(crate) notification: OwnerNotification,
+@@ -399,6 +402,7 @@
+     }
+ 
+     /// An identity is meaningful only together with this driver's identity.
++    #[cfg(test)]
+     pub(crate) fn callback_id(&self) -> Option<u64> {
+         self.callback.as_ref().map(|callback| callback.id)
+     }
+@@ -408,6 +412,7 @@
+     }
+ 
+     /// Origins without callback receipts do not identify a callback.
++    #[cfg(test)]
+     pub(crate) fn same_callback(&self, other: &Self) -> bool {
+         self.same_driver(other)
+             && match (&self.callback, &other.callback) {
+@@ -418,6 +423,7 @@
+ 
+     /// No callback means there is no callback destruction to await. Driver
+     /// retirement and executor settlement must still be checked independently.
++    #[cfg(test)]
+     pub(crate) fn callback_dropped(&self) -> bool {
+         let mut callback = self.callback.as_deref();
+         while let Some(generation) = callback {
+@@ -468,7 +474,9 @@
+         let Some(owner) = self.owner.upgrade() else {
+             return Err(CaptureRejected {
+                 failure,
++                #[cfg(test)]
+                 lifecycle: self.lifecycle(),
++                #[cfg(test)]
+                 owner_available: false,
+                 notification: OwnerNotification {
+                     previous: None,
+@@ -484,7 +492,9 @@
+             after_unlock();
+             return Err(CaptureRejected {
+                 failure,
++                #[cfg(test)]
+                 lifecycle,
++                #[cfg(test)]
+                 owner_available: true,
+                 notification: OwnerNotification {
+                     previous: None,

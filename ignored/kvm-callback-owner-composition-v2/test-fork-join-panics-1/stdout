@@ -1,0 +1,6 @@
+
+running 1 test
+test executor::child_panic_owner_tests::fork_join_routes_retain_exact_payload_and_typed_owner ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 633 filtered out; finished in 0.00s
+

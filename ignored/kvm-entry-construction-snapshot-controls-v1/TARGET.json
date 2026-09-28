@@ -1,0 +1,55 @@
+{
+  "kind": "unexecuted D/E source release",
+  "head": "4ea79f6da7100709fea0e0a5591b0945d438e34f",
+  "branch": "codex/kvm-entry-ownership-20260919",
+  "files": {
+    "AUTHOR-PATCH.patch": {
+      "sha256": "6152c5010265e6b9ab20f4415640e7741761d0823c2da7653ad078423585e7bb",
+      "size": 29577
+    },
+    "BEFORE.json": {
+      "sha256": "7ae06268ba8bd0a07557e5962dc930935c5dd674b7af10b1ac010a176fc05624",
+      "size": 559
+    },
+    "REPORT.md": {
+      "sha256": "4b004b27af033c88422eece66e9e3f013cd822fea8795d64ef007b28b6916d1d",
+      "size": 10040
+    },
+    "SOURCE.json": {
+      "sha256": "5c1f20c85429112cf14b0e5f1e06a27e85d51877d6853dcf2af669b2cb0ffc0e",
+      "size": 2442
+    },
+    "after/reverie-kvm/src/entry.rs": {
+      "sha256": "753bf90a774afc3c72e3b2b1b0ac61faba8b899b63674fe170f89984ed76090b",
+      "size": 59493
+    },
+    "after/reverie-kvm/src/memory/entry_snapshot_tests.rs": {
+      "sha256": "7c7608142e3c1ded04e29c68db5339aea7f8fef95a0fafd335dd2182a8551ad9",
+      "size": 10549
+    },
+    "after/reverie-kvm/src/memory.rs": {
+      "sha256": "e5674f5bfc18a4c7c89aefe982943c6e89e5d784f4aeabda762f646b136046a6",
+      "size": 134566
+    },
+    "after/reverie-kvm/src/vm/entry_construction_tests.rs": {
+      "sha256": "be990a0d1fac50aaf93b34815a90df7ea278654110a35919a916e5c990a739d8",
+      "size": 13251
+    },
+    "after/reverie-kvm/src/vm.rs": {
+      "sha256": "44498a541b782d67ecf850be2fc4d66a603980236068781eb3dd51be51a18bcc",
+      "size": 415138
+    },
+    "before/reverie-kvm/src/entry.rs": {
+      "sha256": "fb8e7fec7aa2ac2e29d9b9ee4abb2f7f136ee033f894ee28e93f6ecd68633e42",
+      "size": 57974
+    },
+    "before/reverie-kvm/src/memory.rs": {
+      "sha256": "1b75821581649d5bec534fa1ccafbe4c38230ac6574762e15dad833739a8cddf",
+      "size": 133546
+    },
+    "before/reverie-kvm/src/vm.rs": {
+      "sha256": "02103b40eaf4bb18c028fecab60836f159b1560d0e2d183ef9cabd0115c846ed",
+      "size": 414483
+    }
+  }
+}

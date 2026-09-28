@@ -1,0 +1,126 @@
+--- author-only/reverie-kvm/src/runtime.rs
++++ observed/reverie-kvm/src/runtime.rs
+@@ -953,7 +953,7 @@
+                         let continuation =
+                             ProcessActionContinuation::from_captured(&action, boundary);
+                         self.backend
+-                            .run_process_action_with_tool_at_boundary(
++                            .run_injected_process_action_with_tool_at_boundary(
+                                 self.executor,
+                                 action,
+                                 context,
+@@ -1645,6 +1645,93 @@
+         process_exited: bool,
+     },
+     RuntimeError(Error),
++}
++
++/// Scratch teardown follows destruction of the callback. An injected action
++/// error has not yet been published, so keep it ahead of any teardown error.
++fn finish_handler_scratch<T>(
++    outcome: HandlerOutcome<T>,
++    hidden: Result<()>,
++) -> Result<HandlerOutcome<T>> {
++    match outcome {
++        HandlerOutcome::RuntimeError(error) => Ok(HandlerOutcome::RuntimeError(
++            error.with_cleanup(hidden.err().into_iter().collect()),
++        )),
++        outcome => hidden.map(|()| outcome),
++    }
++}
++
++#[cfg(test)]
++mod handler_scratch_tests {
++    use super::*;
++
++    #[test]
++    fn injected_error_survives_scratch_failure_after_callback_destruction() {
++        struct CallbackGuard(Arc<AtomicBool>);
++        impl Drop for CallbackGuard {
++            fn drop(&mut self) {
++                assert!(!self.0.swap(true, Ordering::SeqCst));
++            }
++        }
++
++        for hide_fails in [false, true] {
++            let destroyed = Arc::new(AtomicBool::new(false));
++            let guard = CallbackGuard(destroyed.clone());
++            let primary = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(
++                libc::EAGAIN,
++            )));
++            let scratch = Arc::new(Error::GuestClock("scratch cleanup".to_owned()));
++            let signal = Arc::new(Mutex::new(None));
++            let callback_signal = signal.clone();
++            let callback_error = primary.clone();
++            let outcome = futures::executor::block_on(drive_handler(
++                async move {
++                    let _guard = guard;
++                    *callback_signal.lock().unwrap() =
++                        Some(HandlerSignal::RuntimeError(Error::SharedFailure(callback_error)));
++                    std::future::pending::<()>().await
++                },
++                signal,
++                Arc::new(Mutex::new(Vec::new())),
++                std::future::pending(),
++            ));
++            assert!(destroyed.load(Ordering::SeqCst));
++            let hidden = if hide_fails {
++                Err(Error::SharedFailure(scratch.clone()))
++            } else {
++                Ok(())
++            };
++            let HandlerOutcome::RuntimeError(error) =
++                finish_handler_scratch(outcome, hidden).unwrap()
++            else {
++                panic!("injected failure was replaced");
++            };
++            assert!(error.retains_primary(&primary));
++            if hide_fails {
++                let Error::WithCleanup { cleanup, .. } = error else {
++                    panic!("scratch failure was discarded");
++                };
++                assert_eq!(cleanup.len(), 1);
++                assert!(cleanup[0].retains_primary(&scratch));
++            } else {
++                assert!(matches!(error, Error::SharedFailure(ref error) if Arc::ptr_eq(error, &primary)));
++            }
++        }
++    }
++
++    #[test]
++    fn ordinary_callback_value_requires_successful_scratch_cleanup() {
++        assert!(matches!(
++            finish_handler_scratch(HandlerOutcome::Returned(29), Ok(())),
++            Ok(HandlerOutcome::Returned(29))
++        ));
++        let error = Arc::new(Error::GuestClock("scratch cleanup".to_owned()));
++        let failed = finish_handler_scratch(
++            HandlerOutcome::Returned(29),
++            Err(Error::SharedFailure(error.clone())),
++        );
++        assert!(matches!(failed, Err(ref returned) if returned.retains_primary(&error)));
++    }
+ }
+ 
+ /// A callback can terminate the thread without selecting a guest continuation.
+@@ -3456,7 +3543,7 @@
+             )
+             .await
+         };
+-        hide_tool_scratch(memory, tool_stack_top)?;
++        let outcome = finish_handler_scratch(outcome, hide_tool_scratch(memory, tool_stack_top))?;
+         let replacement = match outcome {
+             HandlerOutcome::Returned(Ok(replacement)) => replacement,
+             HandlerOutcome::Returned(Err(errno)) => {
+@@ -4246,7 +4333,10 @@
+                             )
+                             .await
+                         };
+-                        hide_tool_scratch(&memory, tool_stack_top)?;
++                        let outcome = finish_handler_scratch(
++                            outcome,
++                            hide_tool_scratch(&memory, tool_stack_top),
++                        )?;
+                         let classified = match outcome {
+                             HandlerOutcome::Returned(result) => {
+                                 let classified = match classify_handler_result(result) {

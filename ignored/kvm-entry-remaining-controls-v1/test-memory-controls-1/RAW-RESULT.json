@@ -1,0 +1,34 @@
+{
+  "raw_status": 0,
+  "elapsed_seconds": 0.03862949716858566,
+  "stream_bytes": {
+    "stdout": 3520,
+    "stderr": 1116
+  },
+  "refusals": [],
+  "control_commands": [],
+  "observed_service": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-entry-owner-test-memory-controls-1-2809301",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=2809415\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-entry-owner-test-memory-controls-1-2809301.service\nCPUUsageNSec=1919000\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "loaded",
+      "ActiveState": "active",
+      "SubState": "running",
+      "MainPID": "2809415",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-entry-owner-test-memory-controls-1-2809301.service",
+      "CPUUsageNSec": "1919000"
+    }
+  },
+  "accepted": false
+}

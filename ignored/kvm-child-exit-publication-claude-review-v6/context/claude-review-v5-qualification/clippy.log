@@ -1,0 +1,36 @@
+[evidence begin]
+command cargo clippy --workspace --all-targets -- -D warnings 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head 6152ee999a41324be36456bb0a9b94a703711068
+expected_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+pre_head 6152ee999a41324be36456bb0a9b94a703711068
+pre_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_before_bytes 448348119040
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:05:49Z
+
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+warning: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+warning: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: SaBRe source build completed in 1.31s (jobs=16)
+warning: reverie-e9patch@0.2.0: e9patch source build completed in 3.99s (jobs=16)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache HIT key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1789910282 install=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+
+[evidence end]
+exit_code 0
+post_head 6152ee999a41324be36456bb0a9b94a703711068
+post_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_after_bytes 448348119040
+completed_at 2026-09-20T15:05:50Z

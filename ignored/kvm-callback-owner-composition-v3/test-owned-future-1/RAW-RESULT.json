@@ -1,0 +1,34 @@
+{
+  "raw_status": 0,
+  "elapsed_seconds": 0.018466461915522814,
+  "stream_bytes": {
+    "stdout": 494,
+    "stderr": 294
+  },
+  "refusals": [],
+  "control_commands": [],
+  "observed_service": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-callback-owner-test-owned-future-1-1279410",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=1279927\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-callback-owner-test-owned-future-1-1279410.service\nCPUUsageNSec=2278000\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "loaded",
+      "ActiveState": "active",
+      "SubState": "running",
+      "MainPID": "1279927",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-callback-owner-test-owned-future-1-1279410.service",
+      "CPUUsageNSec": "2278000"
+    }
+  },
+  "accepted": false
+}

@@ -1,0 +1,34 @@
+{
+  "source_context": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/source-1/context.json",
+  "source_context_sha256": "339c9321520b0f52301029393a4f6c3f420397205d0213c98ec5f763675a1fff",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/source-1/reverie-kvm/src/clock.rs",
+      "bytes": 34623,
+      "sha256": "f99f439f38ba554965dc06484b0a4c01923c3c720fa960b5dd6895d16f46415d",
+      "live_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/source-1/reverie-kvm/src/entry.rs",
+      "bytes": 39527,
+      "sha256": "6073f6133d97cf80bdcc2dadd6a25904e72d889e69cc1501740796d32523b345",
+      "live_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/source-1/reverie-kvm/src/entry/signal.rs",
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037",
+      "live_bytes_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/source-1/reverie-kvm/src/memory.rs",
+      "bytes": 118772,
+      "sha256": "ab7537c4e07b2466b036066b1b92d9060d6e248f7c17775c2dd1e34a6f16f606",
+      "live_bytes_equal": true
+    }
+  ],
+  "clock_finish_run_equal_base": true,
+  "clock_complete_test_suffix_equal_base": true,
+  "product_execution_by_this_worker": false,
+  "independent_memory_approval": false
+}

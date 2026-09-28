@@ -1,0 +1,9 @@
+Running as unit: kvm-panic-consumer-compile-1-3856327.service
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.47s
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 12.487s
+             CPU time consumed: 18.532s
+                   Memory peak: 1.1G (swap: 0B)
+                      IO Bytes: written 278.4M

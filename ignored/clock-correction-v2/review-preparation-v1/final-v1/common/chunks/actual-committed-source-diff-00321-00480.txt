@@ -1,0 +1,160 @@
++    );
++    assert_eq!(
++        boundary,
++        if config.post_exec_request {
++            vec![65, 129]
++        } else {
++            vec![1, 65]
++        }
++    );
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn initial_command_clock_counts_first_branch_and_guest_loop() {
++    for injected_exec in [false, true] {
++        run(
++            Config {
++                injected_exec,
++                ..Config::default()
++            },
++            0,
++        )
++        .await;
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn initial_exec_retires_thread_start_and_intercepted_exec_timers() {
++    for injected_exec in [false, true] {
++        for startup_request in [1, 2, 3] {
++            run(
++                Config {
++                    injected_exec,
++                    startup_request,
++                    ..Config::default()
++                },
++                0,
++            )
++            .await;
++        }
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn initial_post_exec_injection_and_new_timer_remain_live() {
++    for injected_exec in [false, true] {
++        run(
++            Config {
++                injected_exec,
++                startup_request: 1,
++                post_exec_request: true,
++                ..Config::default()
++            },
++            0,
++        )
++        .await;
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn initial_command_clock_excludes_added_post_stop_launcher_branches() {
++    for injected_exec in [false, true] {
++        run(
++            Config {
++                injected_exec,
++                ..Config::default()
++            },
++            257,
++        )
++        .await;
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn failed_initial_exec_keeps_clock_and_notifications_inactive() {
++    run(
++        Config {
++            injected_exec: true,
++            startup_request: 1,
++            initial_failure: true,
++            ..Config::default()
++        },
++        257,
++    )
++    .await;
++}
+diff --git a/reverie-ptrace/src/injection_stop_tests.rs b/reverie-ptrace/src/injection_stop_tests.rs
+new file mode 100644
+index 00000000..60c4cf20
+--- /dev/null
++++ b/reverie-ptrace/src/injection_stop_tests.rs
+@@ -0,0 +1,466 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++use std::os::unix::ffi::OsStrExt;
++use std::os::unix::fs::PermissionsExt;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
++
++use reverie::Guest;
++use reverie::Rdtsc;
++use reverie::RdtscResult;
++use reverie::process::Stdio;
++use reverie::syscalls::Addr;
++use reverie::syscalls::Close;
++use reverie::syscalls::Exit;
++use reverie::syscalls::Getpid;
++use reverie::syscalls::Getppid;
++use reverie::syscalls::MapFlags;
++use reverie::syscalls::MemoryAccess;
++use reverie::syscalls::Mmap;
++use reverie::syscalls::OFlag;
++use reverie::syscalls::Openat;
++use reverie::syscalls::PathPtr;
++use reverie::syscalls::ProtFlags;
++use reverie::syscalls::Syscall;
++use reverie::syscalls::Write as WriteCall;
++use serde::Deserialize;
++use serde::Serialize;
++
++use super::*;
++
++const ENTRY: u64 = 0x401000;
++const WORD: usize = 0x402000;
++const ORIGINAL: usize = WORD + 8;
++const REPLACEMENT: usize = WORD + 9;
++const EMULATED_RESULT: usize = WORD + 16;
++const SHARED_PATH: usize = WORD + 64;
++
++#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
++enum Mode {
++    #[default]
++    PostExec,
++    Replace,
++    SameThenPrivate,
++    TailSame,
++    TailOther,
++    PostExecTail,
++    Emulate,
++    EmulateErrno,
++}
++
++impl Mode {
++    fn emulates(self) -> bool {
++        matches!(self, Self::Emulate | Self::EmulateErrno)
++    }
++}
++
++#[derive(Clone, Debug, Default, Deserialize, Serialize)]
++struct Config {
++    mode: Mode,
++    timestamp_rip: u64,
++}
++
++#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
++enum Observation {

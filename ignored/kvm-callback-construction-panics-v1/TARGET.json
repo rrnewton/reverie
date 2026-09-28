@@ -1,0 +1,83 @@
+{
+  "scope": "source-only callback construction panic retention",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "tests_executed": 0,
+  "records": [
+    {
+      "path": "AFTER.json",
+      "sha256": "3899e45bdb6f5e3ad7b69950c5a900ea49b8c2bc516d1ed25903a3d8f26da535",
+      "bytes": 499
+    },
+    {
+      "path": "AUTHOR.patch",
+      "sha256": "d9e02a2f3e06c1b1422760920831aac6dbcc66b1c2c88158105717efde199dfa",
+      "bytes": 9957
+    },
+    {
+      "path": "BEFORE.json",
+      "sha256": "e5464b80c048729afba3df8b59430c58b94bd484cc1f3e61141fb6fb0181eadc",
+      "bytes": 499
+    },
+    {
+      "path": "CONCURRENT.patch",
+      "sha256": "50472f7dd76276231e27551cf7b674edc5ea7450f37320a61fd40f2966a25b5e",
+      "bytes": 5264
+    },
+    {
+      "path": "PRESERVATION.json",
+      "sha256": "d9544ed4f40f15c5ca46f078ccb1ee181ad456592e0439f631df7f0656711c04",
+      "bytes": 1083
+    },
+    {
+      "path": "REPORT.md",
+      "sha256": "c227e02d64a0ee495c2e9cf081ea142ccc44e5494d26f75913b579385b03fdbd",
+      "bytes": 4159
+    },
+    {
+      "path": "after/ADDED-TEST.rs",
+      "sha256": "511a464266435ff9c76e624c3adf324886aff3d6aac49cb994d3bed4a5ca09dd",
+      "bytes": 5423
+    },
+    {
+      "path": "after/DRIVER-REGION.rs",
+      "sha256": "bb9cec008eaf1a265044131a025fb0e047929eef586153bd858acdde1e3ada0f",
+      "bytes": 6560
+    },
+    {
+      "path": "after/reverie-kvm/src/failure/owned_future.rs",
+      "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d",
+      "bytes": 11676
+    },
+    {
+      "path": "after/reverie-kvm/src/runtime/callback_completion_tests.rs",
+      "sha256": "e7f46b741e79c606d39b3cff244575519620e2d51270cf482b280e9006203b0f",
+      "bytes": 18437
+    },
+    {
+      "path": "after/reverie-kvm/src/runtime.rs",
+      "sha256": "c67e6c3ced594ba41d1e88d40c13992c2c5d08b4bd44cb5be1d5de89cdf0e167",
+      "bytes": 252194
+    },
+    {
+      "path": "before/DRIVER-REGION.rs",
+      "sha256": "751ab57e964355dd1f9a52eac89563070401a2c7541f2b9b87ca19ecdcc92d83",
+      "bytes": 4941
+    },
+    {
+      "path": "before/reverie-kvm/src/failure/owned_future.rs",
+      "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d",
+      "bytes": 11676
+    },
+    {
+      "path": "before/reverie-kvm/src/runtime/callback_completion_tests.rs",
+      "sha256": "3797a8ac6596d3caea732fa2cba7975d8edbb0d40368ff61bfd584b773ff8604",
+      "bytes": 13014
+    },
+    {
+      "path": "before/reverie-kvm/src/runtime.rs",
+      "sha256": "1c0c552c2dc856fd60d9847838fa3f908d7a207471e2e6a5c6dd670e2c8e9ad9",
+      "bytes": 250503
+    }
+  ]
+}

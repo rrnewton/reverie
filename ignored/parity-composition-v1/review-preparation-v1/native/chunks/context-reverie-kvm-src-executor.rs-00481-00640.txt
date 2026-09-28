@@ -1,0 +1,160 @@
+        i64::from(previous)
+    } else if number == libc::SYS_fchmod as u64 {
+        fchmod(state, args)
+    } else if number == libc::SYS_chmod as u64 {
+        fchmodat(memory, state, libc::AT_FDCWD, args[0], args[1], 0)
+    } else if number == libc::SYS_fchmodat as u64 {
+        // SYS_fchmodat has three arguments; r10 is unspecified guest state.
+        fchmodat(memory, state, args[0] as libc::c_int, args[1], args[2], 0)
+    } else if number == libc::SYS_fchmodat2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        fchmodat(
+            memory,
+            state,
+            args[0] as libc::c_int,
+            args[1],
+            args[2],
+            args[3],
+        )
+    } else if number == libc::SYS_mknod as u64 {
+        mknod_at(memory, state, libc::AT_FDCWD, args[0], args[1], args[2])
+    } else if number == libc::SYS_mknodat as u64 {
+        mknod_at(
+            memory,
+            state,
+            args[0] as libc::c_int,
+            args[1],
+            args[2],
+            args[3],
+        )
+    } else if number == libc::SYS_utimensat as u64 {
+        utimensat(memory, state, args)
+    } else if number == libc::SYS_arch_prctl as u64 {
+        return arch_prctl(memory, state, args);
+    } else if number == libc::SYS_prctl as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        prctl(memory, state, args)
+    } else if number == libc::SYS_getxattr as u64
+        || number == libc::SYS_lgetxattr as u64
+        || number == libc::SYS_fgetxattr as u64
+    {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        getxattr(memory, state, number, args)
+    } else if number == libc::SYS_setxattr as u64
+        || number == libc::SYS_lsetxattr as u64
+        || number == libc::SYS_fsetxattr as u64
+    {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-227): Review deterministic xattr mutation refusal.
+        setxattr(memory, state, number, args)
+    } else if number == libc::SYS_removexattr as u64
+        || number == libc::SYS_lremovexattr as u64
+        || number == libc::SYS_fremovexattr as u64
+    {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-227): Review deterministic xattr removal result.
+        removexattr(memory, state, number, args)
+    } else if number == libc::SYS_brk as u64 {
+        brk(memory, state, args[0])
+    } else if number == libc::SYS_mmap as u64 {
+        mmap(memory, state, args)
+    } else if number == libc::SYS_munmap as u64 {
+        munmap(memory, args[0], args[1])
+    } else if number == libc::SYS_msync as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-227): Review in-memory mapping synchronization semantics.
+        msync(memory, args)
+    } else if number == libc::SYS_mremap as u64 {
+        mremap(memory, state, args)
+    } else if number == libc::SYS_mprotect as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        mprotect(memory, args)
+    } else if number == libc::SYS_madvise as u64 {
+        validate_range(memory, args[0], args[1])
+    } else if number == libc::SYS_munlock as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        munlock_guest_range(memory, args[0], args[1])
+    } else if number == libc::SYS_munlockall as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-145): Review the deterministic no-op unlock-all model.
+        0
+    } else if number == libc::SYS_mincore as u64 {
+        mincore(memory, args)
+    } else if number == libc::SYS_getcpu as u64 {
+        getcpu(memory, args)
+    } else if number == libc::SYS_sched_getaffinity as u64 {
+        sched_getaffinity(memory, state, args)
+    } else if number == libc::SYS_sched_getscheduler as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sched_getscheduler(state, args)
+    } else if number == libc::SYS_sched_setscheduler as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sched_setscheduler(memory, state, args)
+    } else if number == libc::SYS_sched_getparam as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sched_getparam(memory, state, args)
+    } else if number == libc::SYS_sched_setparam as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sched_setparam(memory, state, args)
+    } else if number == libc::SYS_sched_getattr as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sched_getattr(memory, state, args)
+    } else if number == libc::SYS_sched_get_priority_min as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sched_priority_bound(args[0], false)
+    } else if number == libc::SYS_sched_get_priority_max as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sched_priority_bound(args[0], true)
+    } else if number == libc::SYS_getpriority as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        getpriority(state, args)
+    } else if number == libc::SYS_setpriority as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        setpriority(state, args)
+    } else if number == libc::SYS_ioprio_get as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        ioprio_get(state, args)
+    } else if number == libc::SYS_ioprio_set as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        ioprio_set(state, args)
+    } else if number == libc::SYS_membarrier as u64 {
+        match (args[0] as libc::c_int, args[1] as libc::c_uint) {
+            (0, 0) => i64::from(MEMBARRIER_SUPPORTED),
+            (1, 0) => 0,
+            _ => negative_errno(libc::EINVAL),
+        }
+    } else if number == libc::SYS_getrandom as u64 {
+        getrandom(memory, state.tid, args[0], args[1])
+    } else if number == libc::SYS_clock_gettime as u64 {
+        clock_gettime(memory, state, args)
+    } else if number == libc::SYS_nanosleep as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        nanosleep(memory, args)
+    } else if number == libc::SYS_clock_nanosleep as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        clock_nanosleep(memory, args)
+    } else if number == libc::SYS_gettimeofday as u64 {
+        gettimeofday(memory, args)
+    } else if number == libc::SYS_readlink as u64 {
+        readlink(memory, state, args, capture_metadata)
+    } else if number == libc::SYS_readlinkat as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        readlinkat(memory, state, args, capture_metadata)
+    } else if number == libc::SYS_uname as u64 {
+        uname(memory, args[0])
+    } else if number == libc::SYS_prlimit64 as u64 {
+        prlimit64(memory, args)
+    } else if number == libc::SYS_rt_sigaction as u64 {
+        rt_sigaction(memory, state, args)
+    } else if number == libc::SYS_rt_sigprocmask as u64 {
+        rt_sigprocmask(memory, state, args)
+    } else if number == libc::SYS_rt_sigpending as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        rt_sigpending(memory, state, args)
+    } else if number == libc::SYS_sigaltstack as u64 {
+        sigaltstack(memory, state, current_user_stack_pointer, args)
+    } else if number == libc::SYS_rt_sigtimedwait as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        rt_sigtimedwait(memory, state, args)
+    } else if number == libc::SYS_kill as u64
+        || number == libc::SYS_tkill as u64

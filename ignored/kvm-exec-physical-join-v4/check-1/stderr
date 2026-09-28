@@ -1,0 +1,7 @@
+Running as unit: kvm-entry-owner-check-1-679604.service
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 82ms
+             CPU time consumed: 82ms
+                   Memory peak: 29.6M (swap: 0B)

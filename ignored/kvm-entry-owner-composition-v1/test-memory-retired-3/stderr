@@ -1,0 +1,10 @@
+Running as unit: kvm-entry-owner-test-memory-retired-3-2917451.service
+
+thread 'memory::tests::entry_copy_tests::retired_memory_origin_retains_cause_without_expired_publisher' (2917597) panicked at reverie-kvm/src/memory.rs:2312:21:
+copy after owner retirement
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 4ms
+             CPU time consumed: 3ms
+                   Memory peak: 1.4M (swap: 0B)

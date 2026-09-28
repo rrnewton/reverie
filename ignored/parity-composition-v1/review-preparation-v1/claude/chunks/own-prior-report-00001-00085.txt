@@ -1,0 +1,85 @@
+I read `READ-INDEX.txt` and then every one of the 59 listed chunks completely (27 documents, 6,189 lines), plus follow-up into the bound sources where a question required it. Report follows.
+
+---
+
+# Independent adversarial whole-PR verdict — reverie PR 586
+
+**Target:** `https://github.com/rrnewton/reverie/pull/586`, base `44fcb1955f44547f50d724fe8f7d718215fed446` → head `68569ed7fd5c3667456d1d3e0d74ba66264242f4`, tree `8e9a1d6b22b421992508e26855a568314a12bddf`.
+
+`[adversarial-reviewer agent, claude-opus-5]`
+
+## Verdict: **APPROVE** — the complete base-to-head source
+
+This is a whole-PR verdict on all 2,440 diff lines, not a re-approval of the test delta. It supersedes the scope limit in my V7 report and closes my V6 **CHANGES REQUESTED**. Findings below are LOW or are named evidence limits; none is a defect in this finite patch. Two corrections to my own prior work are in §7.
+
+---
+
+## 1. Grounding and coverage, stated exactly
+
+Canonical grounding (paper, complete H39ac scheduler, vision, roadmap) is reused, not re-read; its identity is unchanged and separately authenticated (`detcore/src/scheduler.rs` sha `a5da44ec70…`, 354,822 B).
+
+Coverage of this index: **complete.** Order: strictly increasing by index item **across** batches, with concurrent reads **inside** each batch of adjacent items (e.g. items 21–24 issued together). No item was first read before a lower-numbered item outside its own batch. This is not the lookahead/backfill pattern my preserved audit found for V6; I am not claiming a strictly serial one-at-a-time traversal either.
+
+What I have read in full, versus as excerpts:
+
+| region | status |
+|---|---|
+| `reverie-kvm/src/timestamp.rs` (new, 279 lines) | complete |
+| complete base→head diff, all 2,440 lines | complete |
+| `reverie-kvm/src/runtime.rs` (4,692 lines) | complete at V6; changed hunks re-read now |
+| `reverie-kvm/src/vm.rs` | changed hunks + bound excerpts only |
+| `elf.rs`, `executor.rs` | bound excerpts only |
+| `run.rs`, `verify.rs`, `logdiff.rs` | the bound functions only |
+
+Per the instruction, I treat no excerpt as proof of an omitted caller. Where that matters (§5) I built the argument out of a function's own semantics, which hold for every caller, rather than out of an enumeration of callers.
+
+---
+
+## 2. What the whole PR actually is
+
+Production, all under `reverie-kvm/**` — **no `detcore/**` file is touched**:
+
+| file | change |
+|---|---|
+| `bootstrap.rs` | `CR4_TSD` + `set_userspace_rdtsc_interception(vcpu, enabled)`, in-place CR4 update |
+| `lib.rs` | `mod timestamp;` |
+| `timestamp.rs` | **new**: `decode`, `result_registers`, `fetch_user_byte`, + 4 unit tests |
+| `vm.rs` | `TimestampBoundary`, `intercept_rdtsc` field, `set_rdtsc_interception`, `timestamp_counter_exception`, `resume_timestamp_counter`, two disarms |
+| `runtime.rs` | `ProcessExecutionContext::Timestamp`, the two admission branches, `injection_is_explicit_exit`, the `&SyscallRequest` trait-signature change, the preflight extension, the ~110-line `VcpuExit::Hlt` arm |
+
+Tests: ~860 new lines in `tests/static_elf.rs`, new `tests/support/timestamp_terminal.rs` (447 lines), `unwrap_shared_guest_exception`, one `cpuid.rs` assertion, the V7 additions.
+
+---
+
+## 3. Production source review — what I checked myself
+
+**Exception-to-callback gate** (`vm.rs::timestamp_counter_exception`). The guard chain is fail-closed and ordered so cheap software state precedes any frame read: `!self.intercept_rdtsc` → None; vector ∉ {6,13} → None; then **hardware** re-checks — `CR0.PG` set, `EFER.LMA|LME` both set, `CR4.LA57` clear, and `CR4.TSD` **set**. The software flag and the hardware bit must agree, so a stale flag causes a refusal, never a spurious dispatch.
+
+The IRET frame decode is correct x86-64: `first = (vector == 13)` skips the error code, then `word(first+1) = CS`, `word(first+4) = SS`. `vector == 13 && word(0) != 0` rejects any `#GP` carrying a selector error code, which is exactly what distinguishes a TSD `#GP` (error code 0) from a segment fault. `CS` must equal `USER_CODE_SELECTOR`, pinning CPL 3.
+
+The `vector == 6 && request != Tscp → None` asymmetry is right, not an oversight: `#UD` is only legitimate for RDTSCP under a policy that clears CPUID bit 27, while `#GP` is legitimate for both — and under `CpuidPolicy::host_supported()` RDTSCP *is* available and TSD makes it `#GP`. That case is executed by `timestamp_tool_preserves_results_with_host_supported_cpuid`.
+
+**Ordering against the vmware backdoor probe.** The timestamp arm runs *before* `try_resume_vmware_backdoor_probe`. Safe by construction: `0xed` (`IN`) exits `decode`'s prefix loop into `_ => return None`. And it is covered, not merely argued — `subscribed_timestamp_dispatch_refuses_unrelated_exceptions` runs `[0x0f,0x0b]` and `[0xed]` with the tool **subscribed** and requires the original `#UD` and `#GP`.
+
+**Decoder.** Accepts exactly the legacy prefix set **minus LOCK**, plus REX `0x40..=0x4f`, any order, any repetition, hard 15-byte cap. `0xf0` therefore falls through to `None` and the `#UD` stands. `0x0f 0x01` requires a literal third byte `0xf9`, so no other `0f 01 /r` form can be mistaken for RDTSCP. `two_byte_rdtsc_decode_does_not_read_a_third_byte` asserts `fetched == [0, 1]` — the decoder provably does not touch a byte it does not need, which is what makes the page-boundary case safe.
+
+**Page walk** (`fetch_user_byte`). Manual 4-level walk requiring `P|U/S` and `!NX` at every level, refusing 512 GiB pages, refusing reserved low bits in a large-page frame (with bit 12 correctly excluded as PAT), refusing `address >= 1<<47`. It deliberately does not use `KVM_TRANSLATE`, because that reports data translation and not instruction-fetch NX. Each byte gets its own full walk, which is what `timestamp_boundary_respects_hardware_instruction_fetch_fault_priority` pins against a genuinely NX next page in the real guest tables: 2-byte RDTSC dispatches, 3-byte RDTSCP does not.
+
+**Writeback** (`result_registers`). `rax = tsc as u32` zero-extended, `rdx = tsc >> 32`, `rcx` written **only** for RDTSCP — correct x86-64. `rip += length` via `checked_add`. `rflags &= !(1<<16)` clears RF, which is right: the fault set RF for a restart that never happens, and carrying it forward would suppress the *next* instruction's breakpoint. The guest-side oracle is a full 64-bit `cmp rcx, r8` against a preserved sentinel, plus `cmp rsp, r12` and a flags compare — so "didn't touch RCX" and "zero-extended correctly" are both pinned.
+
+**Resume** (`resume_timestamp_counter`). Reads sregs *after* the callback, reconfigures user segments, then restores `ds/es/fs/gs` from that post-callback snapshot and `cs/ss` selectors from the saved frame — so an injected `arch_prctl` FS/GS base survives, and the caller's `take_segment()` is applied *before* this runs, which is the ordering that makes it work. TF set → typed `GuestException{vector:1}` at the retired RIP, before another instruction runs. That is a pre-existing backend limitation being *respected*: the alternative (resume with TF) would report the #DB at the wrong instruction.
+
+**Terminal arm.** The only admitted tail shape is `{ result: Ok(_), image_replaced: false, process_exited: true }`; every other `TailInjected`, `ParkedFatal`, `ParkedCancelled` is a typed error. `hidden` (tool-scratch concealment) is accounted for on **all seven** exit paths — I checked each. `process_completed` is a hard error. Nothing here can produce a wrong guest-visible value; every unhandled condition is a refusal.
+
+**Determinism.** `timestamp.rs` contains no clock source — the module imports only `kvm_regs`, `Rdtsc`, `RdtscResult`, `GuestMemory`. The guest-visible TSC and AUX come entirely from the Tool's `RdtscResult`, with `aux.unwrap_or(0)`. Nothing in this PR coarsens, freezes, rounds, or resets virtual time; it adds a Tool-supplied source and leaves the clock model alone. `CountedVcpu::run` brackets the PMU interval around `KVM_RUN`, pinned by `timestamp_callbacks_observe_retired_branches_without_counting_rpc_work` (`read_clock()` unchanged across an RPC plus a returning injection plus two refusals, with `before > previous` across reads).
+
+---
+
+## 4. Resolution of my §13 open conditions and E1
+
+### §13.3 — "KVM is output/status-only": **the protocol sentence does not describe this executable.**
+
+I read the built source, not the claim. `run.rs:2894-2949`, `verification_strictness()` is a function of the request alone; its doc records that `let kvm_output_only = self.selected_backend() == Backend::Kvm` was **deleted**, not narrowed, and `compare_logs: true` is unconditional. Both properties are pinned across every `Backend` variant including `Kvm` by `comparator_choice_does_not_depend_on_the_backend` and `verification_always_compares_retained_logs`.
+
+I then checked the three ways this could still be hollow:
+

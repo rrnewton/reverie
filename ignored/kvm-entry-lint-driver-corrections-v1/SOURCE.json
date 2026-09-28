@@ -1,0 +1,17 @@
+{
+  "qualified_before_source_sha256": "69cce12356eb02bd7f7b0de7c529347ab3cf5cd6b1340a42551d227effe72ebf",
+  "source": {
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 414481,
+      "sha256": "f0e44fc611ad60222a56d4ed66514b5c2d9896b946a408d84fa78ede2e33840f"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 275587,
+      "sha256": "4b246b517414b335a25410bc5b1ce5c2bf208034b68ff600c549da0f53e5a4e8"
+    },
+    "reverie-kvm/src/entry/driver.rs": {
+      "bytes": 19513,
+      "sha256": "3167f23ddb450661710f910d67cbf7138f740f8611ce534816d102e148517718"
+    }
+  }
+}

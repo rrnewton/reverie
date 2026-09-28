@@ -1,0 +1,30 @@
+You are the independent actual Claude-family adversarial reviewer of Reverie pull request https://github.com/rrnewton/reverie/pull/603. You have read-only tools only. Do not edit files, execute commands, delegate, or publish comments. Return a complete review report in your final response.
+
+Review target: base f7bd85e11dd258112148ed2cba6531501a1a00d9, exact head d794a5e32c096d942e965bad399e7928683b8c43, tree f2cf92f97e4539e127639a4dc4a3e1c140589e19. The complete binary diff is BASE-TO-HEAD.patch, SHA-256 109d749cb60a603418be8d9f1ac31b7577e11e7497c8d8734f75946b3f0d79f0. INPUTS.json binds the immutable packet. Candidate contains complete exact-head snapshots of reverie-kvm/src, reverie-kvm/tests, and reverie/src. Before contains base versions of every changed path. QUALIFICATION.md and qualification/ contain retained raw exact-head results. context/prior-claude-review.txt is the actual earlier CHANGES REQUESTED review at 0598b5ff; reconcile every finding rather than assuming it was fixed.
+
+Apply both code-review and deterministic-scheduling-review. Before reading the proposal, diff, qualification, or candidate code, read these primary files completely in this exact order: primary/paper.txt including its artifact appendix; primary/scheduler.rs including every test; primary/PROJECT_VISION.md; primary/hermit-v2-roadmap.md. The roadmap's dated measurements are history. Then read both context skill files completely. If anything is missing or truncated, state the limitation.
+
+Intended behavior and boundary:
+
+- Freeze an exact-generation process-family result at logical process exit. Parent disposition, waitability, pending generation, full ExitStatus, uid and CPU ticks must not be resampled from host join timing. Exact failure must remain terminal across later peer retirement.
+- Track live and waitable-zombie descendants. Refuse late child registration after a terminal/failing parent. Reaped or auto-reaped descendants may allow parent completion; live or waitable descendants fail closed with a typed unsupported-reparenting error. This patch does not claim Linux reparenting parity.
+- Make child publication at-most-once by exact child generation. An identical repeat must replay the retained committed/failed receipt; a mismatched repeat must refuse before mutation. The legacy generation-free Guest::queue_child_exit_signal surface must refuse while run-scoped ToolControlled signal control is installed.
+- Capture exact parent and child SignalProcessId values while live. The KVM child-wait callback must be polled through its synchronous admission prefix before waitability is exposed, then the same pinned future may await parent progress. Direct and Tool paths must enforce the same frozen family result.
+- Preserve Linux CLD_EXITED/CLD_KILLED/CLD_DUMPED encodings, explicit SIG_IGN suppression/auto-reap, SA_NOCLDWAIT notification/auto-reap, ordinary waitability, first-siginfo standard-signal coalescing, independent signalfd carriers, exact receipt failure, and sorted live unmasked recipients.
+- The later Hermit consumer still must reserve the deterministic Exit transaction and use a two-stage barrier: the terminal boundary proves family commit; a non-root final process with a live parent remains barred until on_backend_child_wait_event's synchronous publish/suppress admission. Root, non-final-thread, and teardown exits clear earlier. FailedAfterCommit must be forwarded outside the scheduler mutex. This patch supplies the API and backend order only. Do not credit it with complete KVM determinism, parity, record/replay, or the Hermit consumer; do reject it if the API cannot support that protocol.
+
+The earlier actual Claude review had three blockers: no backend at-most-once ledger, a controlled run could still use the legacy generation-free public path, and real-KVM evidence neither discriminated generations from numeric PIDs nor called publication. It also reported five lower-severity issues. Trace all eight against the current code and say exactly which remain. In particular scrutinize concurrent duplicate publication, lock ordering, parent/child retirement, failure monotonicity, disposition-generation changes, explicit-ignore versus default-ignore semantics, multi-carrier postcommit failure, direct wrapper behavior, callback first-poll timing, root PID reuse, and every failure/cancellation path.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation meets the original requirement or changed it to admit the implementation. State all four categories explicitly.
+
+Report findings first with severity, exact file/line evidence, impact and required correction. Then give goalpost assessment, separate conclusions for the determinism guarantee and Linux/POSIX semantics, verification actually inspected with limitations, residual risks, and an exact-head APPROVE or CHANGES REQUESTED verdict. Distinguish a blocker to this Reverie prerequisite from the still-required external Hermit consumer.

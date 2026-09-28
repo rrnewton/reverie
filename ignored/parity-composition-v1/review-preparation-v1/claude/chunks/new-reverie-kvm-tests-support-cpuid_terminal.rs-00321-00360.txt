@@ -1,0 +1,40 @@
+    }
+    let args_address = LOAD_ADDRESS + code.len() as u64;
+    code[args_operand..args_operand + 8].copy_from_slice(&args_address.to_le_bytes());
+    let mut args = [0_u8; 88];
+    args[0..8].copy_from_slice(&flags.to_le_bytes());
+    args[40..48].copy_from_slice(&STACK.to_le_bytes());
+    args[48..56].copy_from_slice(&0x600_u64.to_le_bytes());
+    code.extend_from_slice(&args);
+    let (completion, _) = run_terminal(7, &code);
+    let (status, stdout, stderr) = completion.result.unwrap();
+    assert_eq!(status, 17);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    let events = completion.global_state.events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, _, _)| *kind == 1)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(1, 2, ExitStatus::SUCCESS)]
+    );
+    assert_eq!(events.iter().filter(|(kind, _, _)| *kind == 0).count(), 2);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, _, _)| *kind == 2)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(2, 2, ExitStatus::SUCCESS), (2, 1, ExitStatus::Exited(17))]
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, _, _)| *kind == 3)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(3, 1, ExitStatus::Exited(17))]
+    );
+}

@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-hypercall-entry-1-1400422.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 203ms
+             CPU time consumed: 14ms
+                   Memory peak: 4.5M (swap: 0B)

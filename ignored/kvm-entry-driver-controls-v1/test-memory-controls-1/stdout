@@ -1,0 +1,44 @@
+
+running 39 tests
+test memory::tests::backing_slices_validate_alignment_bounds_and_overflow ... ok
+test memory::tests::cloned_handles_share_memory ... ok
+test memory::tests::counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy ... ok
+test memory::tests::discard_pages_rejects_unaligned_ranges ... ok
+test memory::tests::discarded_pages_are_lazy_zeroes_in_every_cloned_handle ... ok
+test memory::tests::entry_copy_tests::admitted_nested_copies_finish_while_close_waits_and_operands_hold_no_lease ... ok
+test memory::tests::entry_copy_tests::both_vectored_adapters_return_eio_before_between_and_after_actual_portions ... ok
+test memory::tests::entry_copy_tests::clones_share_gate_but_new_views_and_snapshots_do_not ... ok
+test memory::tests::entry_copy_tests::copy_unwind_captures_handle_origin_without_publishing_tool_failure ... ok
+test memory::tests::entry_copy_tests::healthy_adapters_keep_accessible_writes_faults_and_partial_counts ... ok
+test memory::tests::entry_copy_tests::read_preparation_runs_once_with_one_token_and_preserves_poison ... ok
+test memory::tests::entry_copy_tests::retained_memory_copy_keeps_its_issuing_callback_generation ... ok
+test memory::tests::entry_copy_tests::retired_memory_origin_retains_cause_without_expired_publisher ... ok
+test memory::tests::entry_copy_tests::snapshot_fallback_refuses_a_retained_failure_before_copying ... ok
+test memory::tests::entry_copy_tests::try_raw_write_defers_closed_copy_and_retains_poison_and_bounds ... ok
+test memory::tests::entry_copy_tests::typed_access_poison_preserves_cause_bytes_and_empty_distinctions ... ok
+test memory::tests::finds_first_unmapped_user_range ... ok
+test memory::tests::identity_reservations_validate_transactionally_and_keep_coverage_distinct ... ok
+test memory::tests::identity_view_preserves_tool_writes_copyout_faults_and_partial_reads ... ok
+test memory::tests::independent_view_permissions_do_not_alias_clone_permissions ... ok
+test memory::tests::independent_views_retain_shared_backing_after_drop ... ok
+test memory::tests::permits_access_to_last_byte ... ok
+test memory::tests::prctl_copyout_keeps_privileged_write_and_scalar_contracts ... ok
+test memory::tests::prctl_copyout_permissions_follow_remap_unmap_and_reset ... ok
+test memory::tests::prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone ... ok
+test memory::tests::private_snapshot_copies_one_allocation_owner_and_keeps_policy_independent ... ok
+test memory::tests::reads_and_writes_guest_memory ... ok
+test memory::tests::rejects_access_past_mapping ... ok
+test memory::tests::rejects_address_below_mapping ... ok
+test memory::tests::retained_host_operand_keeps_view_alive_without_a_sleeping_layout_lock ... ok
+test memory::tests::snapshot_copies_without_sharing_memory ... ok
+test memory::tests::snapshot_of_nonzero_slice_copies_view_and_stays_private ... ok
+test memory::tests::snapshot_preserves_user_access_map ... ok
+test memory::tests::sparse_snapshot_copies_distant_extents_and_page_boundaries ... ok
+test memory::tests::sparse_snapshot_copies_file_data_after_dontneed ... ok
+test memory::tests::sparse_snapshot_failure_falls_back_after_a_partial_copy ... ok
+test memory::tests::tracked_read_only_pages_reject_backend_copyout_but_remain_readable ... ok
+test memory::tests::tracked_user_access_faults_and_returns_partial_copies ... ok
+test memory::tests::untouched_snapshot_is_zero_filled_and_independent ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.01s
+

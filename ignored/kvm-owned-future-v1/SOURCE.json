@@ -1,0 +1,21 @@
+{
+  "kind": "uncompiled private source preparation",
+  "dispatch_base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "dispatch_branch": "codex/kvm-parity-land-20260918",
+  "source_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/failure/owned_future.rs",
+  "source_sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d",
+  "source_bytes": 10917,
+  "test_declarations": [
+    "pending_then_ready_keeps_allocation_and_drops_once",
+    "poll_panic_is_not_repolled_and_drop_panic_is_retained_separately",
+    "returned_typed_error_survives_a_destructor_panic",
+    "send_non_sync_state_can_cross_a_pending_await"
+  ],
+  "tests_executed": 0,
+  "compiler_invocations": 0,
+  "formatter_invocations": 0,
+  "module_declaration_added": false,
+  "source_edits": [
+    "reverie-kvm/src/failure/owned_future.rs"
+  ]
+}

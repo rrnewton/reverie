@@ -1,0 +1,137 @@
+diff --git a/reverie-kvm/src/runtime.rs b/reverie-kvm/src/runtime.rs
+index b26531c0..7040efd6 100644
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -227,6 +227,7 @@ where
+ }
+ 
+ enum InjectionCompletion {
++    ThreadCancelled,
+     Returns {
+         syscall_result: Option<i64>,
+     },
+@@ -998,6 +999,9 @@ where
+             let expose_result = expose_tool_scratch(&self.memory, self.backend.tool_stack_top());
+             let outcome = action_result?;
+             expose_result?;
++            if outcome.cancelled {
++                return Ok(InjectionCompletion::ThreadCancelled);
++            }
+             *self.process_completed = true;
+             if outcome.image_replaced || self.executor.has_pending_exit() {
+                 Ok(InjectionCompletion::DoesNotReturn {
+@@ -1349,6 +1353,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
+                 pending_child_starts: self.pending_child_starts.clone(),
+             };
+             match self.executor.complete_injection(context).await {
++                Ok(InjectionCompletion::ThreadCancelled) => {
++                    self.signal_handler(HandlerSignal::ThreadCancelled);
++                    return std::future::pending().await;
++                }
+                 Ok(InjectionCompletion::DoesNotReturn {
+                     image_replaced,
+                     process_exited,
+@@ -2654,7 +2662,22 @@ impl KvmBackend {
+             }
+ 
+             loop {
+-                let vcpu_exit = self.vcpu.run()?;
++                let changed = memory.entry_gate().subscribe();
++                memory
++                    .entry_gate()
++                    .admit_operation()
++                    .map_err(|failure| failure.error())?;
++                if wait_for_failure(&global_state, None)
++                    .now_or_never()
++                    .is_some()
++                {
++                    return Err(Error::RunAborted);
++                }
++                let Some(vcpu_exit) = self.vcpu.run()? else {
++                    let failure = pin!(wait_for_failure(&global_state, None));
++                    let _ = futures::future::select(changed, failure).await;
++                    continue;
++                };
+                 Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+                 match vcpu_exit {
+                     VcpuExit::Hypercall(exit) => {
+@@ -2860,7 +2883,7 @@ impl KvmBackend {
+         let pid = Pid::from_raw(self.root_pid);
+         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
+         let failure = RunFailure::new(&global_state);
+-        self.tool_failure = Some(FailureContext::new(failure.clone(), pid, pid));
++        self.set_tool_failure(Some(FailureContext::new(failure.clone(), pid, pid)));
+         let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+         // Atomic run-level installation precedes Tool/thread construction and
+         // the first handle_thread_start. No capability is inferred from a PID.
+@@ -2872,7 +2895,7 @@ impl KvmBackend {
+                 let context = FailureContext::new(failure.clone(), pid, pid);
+                 let error =
+                     context.publish("process signal control installation", Error::Reverie(error));
+-                self.tool_failure = None;
++                self.set_tool_failure(None);
+                 let global_state = Arc::try_unwrap(global_state).map_err(|_| {
+                     Error::UnexpectedVcpuExit("signal setup retained GlobalState".to_owned())
+                 })?;
+@@ -2907,7 +2930,7 @@ impl KvmBackend {
+         };
+         // All owned children have returned. Do not leave the backend holding
+         // a reporter whose Weak owner is about to be consumed or released.
+-        self.tool_failure = None;
++        self.set_tool_failure(None);
+         let global_state = match Arc::try_unwrap(global_state) {
+             Ok(global) => global,
+             Err(_) => {
+@@ -3232,7 +3255,7 @@ impl KvmBackend {
+         <T::GlobalState as GlobalTool>::Config: 'static,
+     {
+         if let Some(failure) = &self.tool_failure {
+-            self.tool_failure = Some(failure.for_thread(tid));
++            self.set_tool_failure(Some(failure.for_thread(tid)));
+         }
+         executor.observe_ignored_signals_with_tool();
+         if T::observe_signal_dequeues(config) {
+@@ -3482,6 +3505,12 @@ impl KvmBackend {
+             // borrowed elsewhere in the loop body.
+             let thread_ownership = self.thread_ownership;
+             loop {
++                let changed = memory.entry_gate().subscribe();
++                let cancelled = self.entry_cancellation();
++                memory
++                    .entry_gate()
++                    .admit_operation()
++                    .map_err(|failure| failure.error())?;
+                 if wait_for_failure(global_state.as_ref(), failure_subscription.clone())
+                     .now_or_never()
+                     .is_some()
+@@ -3499,7 +3528,19 @@ impl KvmBackend {
+                     return Ok(self.cancelled_tool_thread_status(executor));
+                 }
+                 let vcpu_exit = match self.vcpu.run() {
+-                    Ok(exit) => exit,
++                    Ok(Some(exit)) => exit,
++                    Ok(None) => {
++                        let stop = pin!(wait_for_failure(
++                            global_state.as_ref(),
++                            failure_subscription.clone()
++                        ));
++                        let _ = futures::future::select(
++                            futures::future::select(changed, cancelled),
++                            stop,
++                        )
++                        .await;
++                        continue;
++                    }
+                     Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                     Err(error) => return Err(error),
+                 };
+@@ -4079,6 +4120,9 @@ impl KvmBackend {
+                         )
+                         .await;
+                     let outcome = outcome?;
++                    if outcome.cancelled {
++                        return Ok(self.cancelled_tool_thread_status(executor));
++                    }
+                     if !outcome.image_replaced {
+                         result = outcome.syscall_result;
+                         returned_registers = process_syscall_return_registers(

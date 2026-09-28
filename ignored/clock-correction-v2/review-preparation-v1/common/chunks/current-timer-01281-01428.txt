@@ -1,0 +1,148 @@
+        assert_eq!(config.max_single_step_count(), 505);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn zero_skid_margin_forces_interrupt_at_target() {
+        // The force-skid witness sets REVERIE_SKID_MARGIN_OVERRIDE=0. That path
+        // runs through `with_skid_margin_override(0)`; assert the invariant it
+        // relies on: a zero margin schedules the overflow interrupt *at* the
+        // target RCB (request_event uses `ticks - skid_margin()`), so any
+        // natural positive skid overshoots and trips the marker. Kept
+        // env-free because process env is not thread-safe under the parallel
+        // test runner.
+        let config = PmuConfig::from_family_model(0x1A, 0x11).with_skid_margin_override(0);
+        assert_eq!(config.skid_margin(), 0);
+        // max_single_step_count() == skid_margin() + SINGLESTEP_TIMEOUT_RCBS (5).
+        assert_eq!(config.max_single_step_count(), 5);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn skid_overshoot_marker_has_canonical_shape() {
+        use super::SKID_OVERSHOOT_MARKER;
+        // EPYC 9D85: skid margin 1000. Overshoot of 33_500 (the measured
+        // baseline outlier) landing 500 RCB past a target of 33_000.
+        let config = PmuConfig::from_family_model(0x1A, 0x11);
+        let line = config.format_skid_overshoot_marker(33_500, 33_000);
+        assert_eq!(
+            line,
+            format!(
+                "{} rcb_actual=33500 rcb_target=33000 skid_margin=1000 overshoot=500",
+                SKID_OVERSHOOT_MARKER
+            )
+        );
+        // The token is what a retry harness greps for; keep it stable.
+        assert!(line.starts_with(SKID_OVERSHOOT_MARKER));
+        assert_eq!(SKID_OVERSHOOT_MARKER, "HERMIT_SKID_OVERSHOOT");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn skid_overshoot_marker_overshoot_is_saturating() {
+        // A non-overshoot call (actual <= target) must never underflow.
+        let config = PmuConfig::from_family_model(0x1A, 0x11);
+        let line = config.format_skid_overshoot_marker(100, 200);
+        assert!(line.contains("overshoot=0"));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn overshoot_decision_records_witness_counts_and_attributes_per_run() {
+        // Drives real (rcb_actual, rcb_target) pairs through the *same*
+        // decision-and-record method the supervisor calls in
+        // `attempt_single_step`, and observes the process-global witness
+        // counter — proving the behaviour (a genuine overshoot is recorded),
+        // not merely the marker arithmetic. This test is the only writer of the
+        // witness counter in this test binary, so draining residue first makes
+        // it order-independent; env is untouched, so it is parallel-safe.
+        let _ = reverie::take_skid_overshoot_count();
+
+        // The exact CPU is irrelevant to the decision, which keys only on
+        // `actual > target`; use EPYC 9D85 (default margin 1000).
+        let config = PmuConfig::from_family_model(0x1A, 0x11);
+
+        // --- Negative bracket: a non-overshoot must record nothing. ---
+        // Interrupt delivered *at* the target, and *before* it.
+        assert!(!config.record_overshoot_if_past_target(33_000, 33_000));
+        assert!(!config.record_overshoot_if_past_target(32_500, 33_000));
+        assert_eq!(
+            reverie::take_skid_overshoot_count(),
+            0,
+            "no overshoot occurred, so the witness must be empty"
+        );
+
+        // --- Positive bracket: a genuine overshoot records exactly once. ---
+        // 500 RCB past target: a real skid past the margin.
+        assert!(config.record_overshoot_if_past_target(33_500, 33_000));
+        assert_eq!(
+            reverie::take_skid_overshoot_count(),
+            1,
+            "one real overshoot must record exactly one witness event"
+        );
+
+        // --- Counting: N genuine overshoots in one run count to N, and only
+        // genuine ones are counted. Models the heavy-tailed skid (p99 < 1000
+        // RCB, rare outliers into the tens of thousands). ---
+        let overshoots = [1u64, 500, 10_000, 47_311];
+        for &past in &overshoots {
+            assert!(config.record_overshoot_if_past_target(33_000 + past, 33_000));
+        }
+        // Interleave a non-overshoot to prove it is not counted.
+        assert!(!config.record_overshoot_if_past_target(33_000, 33_000));
+        assert_eq!(
+            reverie::take_skid_overshoot_count(),
+            overshoots.len() as u64,
+            "every genuine overshoot in run A must be counted, and only those"
+        );
+
+        // --- Per-run attribution: `take` reset makes runs disjoint, so a
+        // second verify run sees only its own overshoots and run A's count does
+        // not leak in. ---
+        assert!(config.record_overshoot_if_past_target(33_001, 33_000));
+        assert!(config.record_overshoot_if_past_target(90_000, 33_000));
+        assert_eq!(
+            reverie::take_skid_overshoot_count(),
+            2,
+            "run B is attributed only its own two overshoots"
+        );
+        // A run with zero overshoots (the common case) is attributed zero.
+        assert_eq!(reverie::take_skid_overshoot_count(), 0);
+    }
+
+    #[test_case(ClockCounter::new(0, 0, 10), 0, 1, Some(true))]
+    #[test_case(ClockCounter::new(2, 100, 200), 3, 0, Some(true))]
+    #[test_case(ClockCounter::new(1, 10, 200), 1, 11, Some(true))]
+    #[test_case(ClockCounter::new(2, 100, 2), 3, 0, None)]
+    #[test_case(ClockCounter::new(4, 4, 4), 4, 5, Some(true))]
+    #[test_case(ClockCounter::new(4, 4, 4), 4, 3, Some(false))]
+    #[test_case(ClockCounter::new(4, 4, 4), 4, 4, Some(false))]
+    fn test_clock_counter_is_behind(
+        counter: ClockCounter,
+        target_rcb: u64,
+        target_instr: u64,
+        expected: Option<bool>,
+    ) {
+        assert_eq!(counter.is_behind(target_rcb, target_instr), expected);
+    }
+
+    #[test_case(ClockCounter::new(0, 0, 0), 0, (0, 1))]
+    #[test_case(ClockCounter::new(0, 1, 0), 1, (0, 2))]
+    #[test_case(ClockCounter::new(0, 1, 0), 2, (0, 2))]
+    #[test_case(ClockCounter::new(0, 1, 1), 0, (0, 2))]
+    #[test_case(ClockCounter::new(0, 1, 1), 1, (1, 0))]
+    #[test_case(ClockCounter::new(0, 1, 1), 2, (2, 0))]
+    #[test_case(ClockCounter::new(0, 1, 1), 3, (3, 0))]
+    #[test_case(ClockCounter::new(10, 0, 11), 10, (10, 1))]
+    #[test_case(ClockCounter::new(10, 1, 11), 10, (10, 2))]
+    #[test_case(ClockCounter::new(10, 1, 11), 11, (11, 0))]
+    #[test_case(ClockCounter::new(10, 1, 11), 12, (12, 0))]
+    fn test_increment_counter_with_clock(
+        mut counter: ClockCounter,
+        new_clock: u64,
+        expected: (u64, u64),
+    ) {
+        counter.single_step_with_clock(new_clock);
+        assert_eq!((counter.rcbs, counter.instr), expected);
+    }
+}

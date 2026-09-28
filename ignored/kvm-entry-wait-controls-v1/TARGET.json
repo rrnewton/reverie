@@ -1,0 +1,29 @@
+{
+  "scope": "Unformatted author source only, no compilation/execution/approval",
+  "records": {
+    "BASELINE.json": {
+      "bytes": 489,
+      "sha256": "9c9259f8aaea89c9aa8378961f0d2bba9974fc49f23f65178df30747cc9d9330"
+    },
+    "SOURCE.json": {
+      "bytes": 828,
+      "sha256": "aaf7f1763288199de5aeafa6fa042c81628c1139833c8e8867abe057b9519065"
+    },
+    "AUTHOR.patch": {
+      "bytes": 30769,
+      "sha256": "b5691ad24f4f6a3cc81c0bff1c4eded4bab57c4e22d792770b3901e4b18a8932"
+    },
+    "VM-HOOKS.patch": {
+      "bytes": 1516,
+      "sha256": "46e49457a872826a57e7e586edab088476db5bc062517f872fd57ac02605dc2e"
+    },
+    "DESIGN.md": {
+      "bytes": 3943,
+      "sha256": "9fed43da2f652dcc88101208d3bf4eb195cf36bc0bdef0b68f4673776d3a58be"
+    },
+    "REPORT.md": {
+      "bytes": 8068,
+      "sha256": "e753eebc1aa9a162e2f0845677f9d039a7134c53e20eb89c14cef709a353fb4b"
+    }
+  }
+}

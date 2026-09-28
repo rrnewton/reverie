@@ -1,0 +1,9 @@
+
+running 4 tests
+test vm::tests::entry_public_tests::public_direct_memory_failure_refuses_injection ... ok
+test vm::tests::entry_public_tests::public_direct_memory_failure_refuses_ready_rpc ... ok
+test vm::tests::entry_public_tests::public_elf_memory_failure_refuses_injection ... ok
+test vm::tests::entry_public_tests::public_elf_memory_failure_refuses_ready_rpc ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 719 filtered out; finished in 0.84s
+

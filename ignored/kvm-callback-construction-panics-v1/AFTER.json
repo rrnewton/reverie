@@ -1,0 +1,17 @@
+[
+  {
+    "path": "reverie-kvm/src/runtime.rs",
+    "sha256": "c67e6c3ced594ba41d1e88d40c13992c2c5d08b4bd44cb5be1d5de89cdf0e167",
+    "bytes": 252194
+  },
+  {
+    "path": "reverie-kvm/src/runtime/callback_completion_tests.rs",
+    "sha256": "e7f46b741e79c606d39b3cff244575519620e2d51270cf482b280e9006203b0f",
+    "bytes": 18437
+  },
+  {
+    "path": "reverie-kvm/src/failure/owned_future.rs",
+    "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d",
+    "bytes": 11676
+  }
+]

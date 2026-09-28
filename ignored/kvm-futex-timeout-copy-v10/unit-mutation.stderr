@@ -1,0 +1,8 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.82s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+thread 'executor::entry_host_wait_tests::matching_futex_wait_observes_copied_finite_timeout' (1072087) panicked at reverie-kvm/src/executor/entry_host_wait_tests.rs:279:10:
+matching FUTEX_WAIT did not complete within its finite timeout: Timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p reverie-kvm --lib`

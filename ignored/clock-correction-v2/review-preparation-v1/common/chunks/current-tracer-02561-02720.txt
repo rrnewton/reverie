@@ -1,0 +1,160 @@
+        // handling where we need full control over the lifetime of the child
+        // process.
+        core::mem::forget(child);
+
+        Ok(Tracer {
+            guest_pid,
+            tracer,
+            gref,
+            stdin,
+            stdout,
+            stderr,
+            liteinst_cleanup,
+            liteinst_instrumentation_stats,
+            backend_stats,
+        })
+    }
+}
+
+fn resolve_program(command: &mut Command) -> Result<(), Error> {
+    let arg0 = command.get_arg0().to_owned();
+    let program = command
+        .find_program()
+        .with_context(|| format!("Could not execute {:?}", command.get_program()))?;
+    command.program(program).arg0(arg0);
+    Ok(())
+}
+
+/// Spawn a *function* to be executed under instrumentation instrumentation
+/// (rather than a subprocess indicated with a Command).
+///
+/// This still creates a fresh child process and runs it under ptrace. However,
+/// the child process is a fork of the current process, and is used to run the
+/// indicated function.
+pub async fn spawn_fn<L, F>(fun: F) -> Result<Tracer<L::GlobalState>, Error>
+where
+    L: Tool + 'static,
+    F: FnOnce(),
+{
+    spawn_fn_with_config::<L, F>(fun, Default::default(), true).await
+}
+
+/// Spawn a function with instrumentation rather than a subprocess indicated with
+/// a Command. This still creates a fresh child process and runs it under ptrace.
+/// However, the child process is a fork of the current process, and is used to
+/// run the indicated function.
+///
+/// The main use case for this entrypoint into the library is testing.
+pub async fn spawn_fn_with_config<L, F>(
+    fun: F,
+    config: <L::GlobalState as GlobalTool>::Config,
+    capture_output: bool,
+) -> Result<Tracer<L::GlobalState>, Error>
+where
+    L: Tool + 'static,
+    F: FnOnce(),
+{
+    // Because this ptrace backend is CENTRALIZED, it can keep all the
+    // tool's state here in a single address space.
+    let global_state = <L::GlobalState as GlobalTool>::init_global_state(&config).await;
+    let events = L::subscriptions(&config);
+    let gref = Arc::new(global_state);
+
+    let seccomp_filter = seccomp_filter(&events);
+
+    let (read1, write1) = unistd::pipe().map_err(from_nix_error)?;
+    let (read2, write2) = unistd::pipe().map_err(from_nix_error)?;
+
+    // Disable io redirection just before forking. We want the child process to
+    // be able to call `println!()` and have that output go to stdout.
+    //
+    // See: https://github.com/rust-lang/rust/issues/35136
+    let output_capture = std::io::set_output_capture(None);
+
+    // Warning: fork is wildely unsafe in Rust because of runtime issues (printing,
+    // panicking, etc).  We make a best-effort attempt to solve some of these issues.
+    match unsafe { unistd::fork() }.expect("unistd::fork failed") {
+        ForkResult::Child => {
+            read1.close()?;
+            read2.close()?;
+            if capture_output {
+                unistd::dup2_stdout(&write1).map_err(from_nix_error)?;
+                unistd::dup2_stderr(&write2).map_err(from_nix_error)?;
+                write1.close()?;
+                write2.close()?;
+            }
+
+            init_tracee(events.has_rdtsc()).expect("init_tracee failed");
+
+            seccomp_filter.load().expect("Failed to set seccomp filter");
+
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(fun)) {
+                Ok(()) => {
+                    std::io::stdout().flush()?;
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    std::io::stdout().flush()?;
+                    let _ = nix::unistd::write(
+                        unsafe { BorrowedFd::borrow_raw(2) },
+                        format!("Forked Rust process panicked, cause: {:?}", e).as_ref(),
+                    );
+                    std::process::exit(1);
+                }
+            };
+        }
+        ForkResult::Parent { child } => {
+            std::io::set_output_capture(output_capture);
+
+            let guest_pid = Pid::from(child);
+            let child = Running::new(guest_pid);
+            write1.close()?;
+            write2.close()?;
+
+            let stdout = read1.into();
+            let stderr = read2.into();
+            let tracer = match postspawn::<L>(
+                child,
+                gref.clone(),
+                config,
+                TracedTaskOptions {
+                    command_bootstrap: false,
+                    events: &events,
+                    injected_syscall_trap: None,
+                    liteinst_runtime: None,
+                    backend_stats: None,
+                },
+                None,
+            )
+            .await
+            {
+                Ok(tracer) => tracer,
+                Err(err) => return Err(initialization_error(guest_pid, err).await),
+            };
+
+            Ok(Tracer {
+                guest_pid,
+                tracer,
+                gref,
+                stdin: None,
+                stdout: Some(stdout),
+                stderr: Some(stderr),
+                liteinst_cleanup: None,
+                liteinst_instrumentation_stats: None,
+                backend_stats: None,
+            })
+        }
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "clock_origin_tests.rs"]
+mod clock_origin_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "injection_stop_tests.rs"]
+mod injection_stop_tests;
+
+#[cfg(test)]
+mod tests {
+    #[derive(Default)]

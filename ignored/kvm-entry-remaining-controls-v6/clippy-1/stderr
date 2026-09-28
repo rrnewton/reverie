@@ -1,0 +1,9 @@
+Running as unit: kvm-entry-owner-clippy-1-1375400.service
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.49s
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 3.528s
+             CPU time consumed: 5.653s
+                   Memory peak: 734.6M (swap: 0B)
+                      IO Bytes: written 212.7M

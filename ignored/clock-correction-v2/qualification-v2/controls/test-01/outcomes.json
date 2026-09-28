@@ -1,0 +1,24 @@
+{
+  "started": [
+    "timer::tests::initial_command_requests_retire_without_physical_notification"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "timer::tests::initial_command_requests_retire_without_physical_notification",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.000535375
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "at_utc": "2026-09-18T20:50:30.113195+00:00",
+  "pr": "https://github.com/rrnewton/reverie/pull/587",
+  "base": "6e3915b70a71657a08f0028b3f70d6074116206a",
+  "head": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "reviews": [
+    {
+      "reviewer": "native",
+      "verdict": "APPROVE whole exact PR source",
+      "session": "01a0b38e-9e3c-7883-9816-65199c048935",
+      "model": "gpt-5.6-sol",
+      "raw_exit_code": 0,
+      "elapsed_seconds": 874.5437058529351,
+      "unchanged_files": 5974,
+      "unchanged_aliases": 7,
+      "complete_mandatory_chunks": 162,
+      "first_complete_index_order": false,
+      "report": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final.txt",
+        "bytes": 6265,
+        "sha256": "4f7c7df40b33a49829148682d4e4269eb1d168ec745f9283660c023fad43d44d"
+      },
+      "custody": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/FINAL-READBACK.json",
+        "bytes": 12246,
+        "sha256": "62ebac5c179207713299a222ea1fdc47298d2e13d14a8a1bf3f50ca181a50f2f"
+      },
+      "actual_read_order": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/READ-ORDER.json",
+        "bytes": 56947,
+        "sha256": "96dba83577c6f20f72d4c6ea9fa41313496c5b4baaeaa148597bd33025c93ae9"
+      }
+    },
+    {
+      "reviewer": "claude",
+      "verdict": "APPROVE whole exact PR source",
+      "session": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+      "model": "claude-opus-5[1m]",
+      "raw_exit_code": 0,
+      "elapsed_seconds": 1241.6931944179814,
+      "unchanged_files": 5974,
+      "unchanged_aliases": 7,
+      "complete_mandatory_chunks": 164,
+      "first_complete_index_order": false,
+      "report": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/CLAUDE-REPORT.md",
+        "bytes": 30361,
+        "sha256": "750e109d502e802ae3640bfa37628825e5aa8069d8b9b5a22b7d5e64e7b44861"
+      },
+      "custody": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/FINAL-READBACK.json",
+        "bytes": 19079,
+        "sha256": "6fdf5d8cf7977450e4116cbdac1572e1992fa5fb14d44e36f3f82fe83f7b1dd7"
+      },
+      "actual_read_order": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/READ-ORDER.json",
+        "bytes": 67592,
+        "sha256": "27a5867eca32038335fe333d0e54ad601c07c708d7d5ce0c0e496fe6c324deb4"
+      }
+    }
+  ],
+  "audit_corrections": [
+    "Native complete content is proved, but its report index-order claim overstates the actual first-complete order; READ-ORDER.json preserves the seven displaced positions and repaired truncations. The unchanged helper stage_order=true is not index-order proof.",
+    "Native exploratory rg returned matching source lines as well as paths, not filenames alone. No reviewer report or peer verdict was among the inspected results. Five actual nonzero exploratory commands and broad optional manifest truncation remain preserved.",
+    "Claude explicitly disclosed reading-order deviations. Actual tools were Read only: 166 calls, zero errors or unindexed reads. All 164 chunks plus complete index and supplemental raw-result readback were visible.",
+    "Claude names three unread surrounding bodies and six nonblocking findings. Its exact report remains unedited; no consumer/parity conclusion is inferred."
+  ],
+  "scope": "Independent source verdicts only. Existing 92-phase / 83-declaration qualification remains finite; original raw-137 refusal is preserved. No product/SCM/network publication was performed by this worker. Both owned review handles were collected to actual termination; no peer findings were shared.",
+  "later_author_only_provenance_addendum": {
+    "record": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/COMMITTED-SOURCE-PROOF-v3.json",
+      "bytes": 1177,
+      "sha256": "34eb361e01b3293ea8db9fd4a00dbbb0986b01c35e18a13e5aa7144844c412f6"
+    },
+    "reviewer_credit": false,
+    "explanation": "Root appended this outside frozen running inputs. It is not credited as read by either reviewer."
+  }
+}

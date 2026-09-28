@@ -1,0 +1,160 @@
+     if number == libc::SYS_exit as u64 || number == libc::SYS_exit_group as u64 {
+         return SyscallAction::Exit(ExitStatus::Exited((args[0] as i32) & 0xff));
+@@ -532,21 +561,21 @@
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         memfd_create(memory, state, args)
+     } else if number == libc::SYS_fstat as u64 {
+-        fstat(memory, state, args, capture_output)
++        fstat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_stat as u64 {
+-        path_stat(memory, state, args, 0, capture_output)
++        path_stat(memory, state, args, 0, capture_metadata)
+     } else if number == libc::SYS_lstat as u64 {
+         path_stat(
+             memory,
+             state,
+             args,
+             libc::AT_SYMLINK_NOFOLLOW,
+-            capture_output,
++            capture_metadata,
+         )
+     } else if number == libc::SYS_newfstatat as u64 {
+-        newfstatat(memory, state, args, capture_output)
++        newfstatat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_statx as u64 {
+-        statx(memory, state, args, capture_output)
++        statx(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_statfs as u64 {
+         statfs(memory, state, args)
+     } else if number == libc::SYS_fstatfs as u64 {
+@@ -873,10 +902,10 @@
+     } else if number == libc::SYS_gettimeofday as u64 {
+         gettimeofday(memory, args)
+     } else if number == libc::SYS_readlink as u64 {
+-        readlink(memory, state, args, capture_output)
++        readlink(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_readlinkat as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        readlinkat(memory, state, args, capture_output)
++        readlinkat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_uname as u64 {
+         uname(memory, args[0])
+     } else if number == libc::SYS_prlimit64 as u64 {
+@@ -1837,7 +1866,13 @@
+         (self.state.heap_base, self.state.program_break)
+     }
+ 
+-    pub(crate) fn new(mut state: LoadedStaticElf, capture_output: bool) -> Self {
++    #[cfg(test)]
++    pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
++        let output = capture_output.then(CapturedOutput::default);
++        Self::with_output(state, output)
++    }
++
++    pub(crate) fn with_output(mut state: LoadedStaticElf, output: Option<CapturedOutput>) -> Self {
+         let file_table;
+         let _retirement = state.file_retirement.hold();
+         let transaction = state.signal_transaction.clone();
+@@ -1883,7 +1918,7 @@
+             signal_effect_raw_result: None,
+             address_space,
+             file_table,
+-            output: capture_output.then(CapturedOutput::default),
++            output,
+             owns_output: true,
+             next_pid: Arc::new(AtomicI32::new(next_pid)),
+             sigchld_auto_reap,
+@@ -6462,14 +6497,10 @@
+ fn guest_fd_link_target(
+     state: &LoadedStaticElf,
+     guest_fd: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> Result<Vec<u8>, i64> {
+-    if capture_output && output_alias(state, guest_fd).is_some() {
+-        return Ok(format!(
+-            "pipe:[{}]",
+-            synthetic_captured_output_stat(state, guest_fd).st_ino
+-        )
+-        .into_bytes());
++    if let (Some(capture), Some(alias)) = (capture, output_alias(state, guest_fd)) {
++        return Ok(format!("pipe:[{}]", capture.identity(alias).inode).into_bytes());
+     }
+     let Some(host_fd) = host_fd(state, guest_fd) else {
+         return Err(negative_errno(libc::ENOENT));
+@@ -6500,7 +6531,7 @@
+         if target.starts_with(prefix.as_bytes()) && target.ends_with(b"]") {
+             return Ok(format!(
+                 "{kind}:[{}]",
+-                guest_object_stat(state, guest_fd, capture_output)?.st_ino
++                guest_object_stat(state, guest_fd, capture)?.st_ino
+             )
+             .into_bytes());
+         }
+@@ -10306,12 +10337,12 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let Ok(fd) = i32::try_from(args[0]) else {
+         return negative_errno(libc::EBADF);
+     };
+-    match guest_object_stat(state, fd, capture_output) {
++    match guest_object_stat(state, fd, capture) {
+         Ok(stat) => write_struct(memory, args[1], &stat),
+         Err(error) => error,
+     }
+@@ -10320,10 +10351,10 @@
+ fn guest_object_stat(
+     state: &LoadedStaticElf,
+     fd: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> Result<libc::stat, i64> {
+-    if capture_output && output_alias(state, fd).is_some() {
+-        return Ok(synthetic_captured_output_stat(state, fd));
++    if let (Some(capture), Some(alias)) = (capture, output_alias(state, fd)) {
++        return Ok(synthetic_captured_output_stat(capture.identity(alias)));
+     }
+     let Some(host_fd) = host_fd(state, fd) else {
+         return Err(negative_errno(libc::EBADF));
+@@ -10340,14 +10371,14 @@
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-205): Review synthetic metadata for in-memory captured output.
+-fn synthetic_captured_output_stat(state: &LoadedStaticElf, fd: libc::c_int) -> libc::stat {
++fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat {
+     // Captured writes never reach the host descriptor, so exposing that
+     // descriptor's type, size, or inode leaks the invoking shell into the
+     // guest. Model the capture sink as the pipe used by process-based backends.
+     // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
+     let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+-    stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
+-    stat.st_ino = synthetic_guest_fd_object_inode(state, fd);
++    stat.st_dev = identity.device;
++    stat.st_ino = identity.inode;
+     stat.st_mode = libc::S_IFIFO | 0o600;
+     stat.st_nlink = 1;
+     stat.st_uid = 0;
+@@ -10357,8 +10388,8 @@
+     stat
+ }
+ 
+-fn synthetic_captured_output_statx(state: &LoadedStaticElf, fd: libc::c_int) -> libc::statx {
+-    let stat = synthetic_captured_output_stat(state, fd);
++fn synthetic_captured_output_statx(identity: CaptureObjectIdentity) -> libc::statx {
++    let stat = synthetic_captured_output_stat(identity);
+     // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+     let mut extended = unsafe { std::mem::zeroed::<libc::statx>() };
+     extended.stx_mask = libc::STATX_BASIC_STATS;
+@@ -10381,7 +10412,7 @@
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+     flags: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     fstatat_impl(
+         memory,

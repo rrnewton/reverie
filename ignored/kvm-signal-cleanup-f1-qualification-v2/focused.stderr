@@ -1,0 +1,6 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+thread 'runtime::signal_cleanup_completion_tests::pending_cleanup_cancellation_catches_destruction_and_rejects_children' (3362362) panicked at reverie-kvm/src/parked_signal_runtime.rs:267:5:
+signal dequeue notification created a child start despite its injection guard
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

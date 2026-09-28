@@ -1,0 +1,24 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "records": [
+    {
+      "path": "reverie-kvm/src/entry.rs",
+      "bytes": 54985,
+      "sha256": "de0192158316fa4f586d7e1f1b71ee497b06f5e8aeed08c27ce2c6c940b365d4",
+      "snapshot": "source-after/reverie-kvm/src/entry.rs"
+    },
+    {
+      "path": "reverie-kvm/src/entry/signal.rs",
+      "bytes": 17480,
+      "sha256": "332e842f21dc93876b02a8f23a2be88e498c4fe04d5cadd3f600609fca33ce74",
+      "snapshot": "source-after/reverie-kvm/src/entry/signal.rs"
+    },
+    {
+      "path": "reverie-kvm/src/entry/cleanup_tests.rs",
+      "bytes": 23166,
+      "sha256": "80e4b52f6e08ef8dae26c2690cd01d4dfb9d94ecdfbbbbeca1d9acde9680b055",
+      "snapshot": "source-after/reverie-kvm/src/entry/cleanup_tests.rs"
+    }
+  ]
+}

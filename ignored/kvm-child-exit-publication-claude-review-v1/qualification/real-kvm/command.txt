@@ -1,0 +1,1 @@
+cargo test -p reverie-kvm --test static_elf child_waitability_callback_and_auto_reap_are_observed_on_real_kvm -- --exact --nocapture 

@@ -1,0 +1,42 @@
+{
+  "status": "Private component correction; no production driver, memory, clock or Tool publication integration",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "source": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 38135,
+      "sha256": "3eb4ef4f86872afa4682904795238d3a194d6c7d74f5e9b3d8fcd45df0cf233b"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    }
+  },
+  "component_tests": {
+    "raw_status": 0,
+    "elapsed_seconds": 0.0944697898812592,
+    "stream_bytes": {
+      "stdout": 1055,
+      "stderr": 270
+    },
+    "refusal": null
+  },
+  "scope": "12 component tests passed after correction; same test body fails against the previous implementation with two SIGABRT child outcomes. One top-level test covers two injected unwinds; one covers five signal cases; one executes a real raw KVM_RUN. Not Hermit/Detcore/parity or complete entry-control qualification.",
+  "opposing_control": {
+    "raw_status": 101,
+    "elapsed_seconds": 0.8966673000250012,
+    "stream_bytes": {
+      "stdout": 1161,
+      "stderr": 61084
+    },
+    "refusal": null
+  }
+}

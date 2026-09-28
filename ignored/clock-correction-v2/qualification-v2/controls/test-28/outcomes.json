@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::tests::child_death_before_initialization_error_does_not_hang"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::tests::child_death_before_initialization_error_does_not_hang",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.001271119
+    }
+  ]
+}

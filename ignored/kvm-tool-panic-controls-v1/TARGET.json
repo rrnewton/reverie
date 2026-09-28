@@ -1,0 +1,45 @@
+{
+  "scope": "Four additive ToolPanics source controls; uncompiled/unrun/unformatted by author",
+  "product": {
+    "reverie-kvm/src/failure/tool_panics.rs": {
+      "bytes": 2098,
+      "sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c"
+    },
+    "reverie-kvm/src/failure/tool_panics_tests.rs": {
+      "bytes": 14383,
+      "sha256": "39c895588333a34dbff3809b18d57d10e287513dafd5a1d8799c8917baa6565d"
+    }
+  },
+  "test_names": [
+    "failure::tool_panics::tests::real_error_effects_and_two_exact_payloads_keep_their_original_ownership",
+    "failure::tool_panics::tests::panic_promotes_wrapped_abort_and_publishes_its_complete_effects_subtree",
+    "failure::tool_panics::tests::no_panic_preserves_success_and_typed_errors_without_new_wrappers",
+    "failure::tool_panics::tests::take_transfers_only_pending_payloads_once_and_accepts_a_later_batch"
+  ],
+  "records": {
+    "BASE-tool_panics.rs": {
+      "bytes": 2040,
+      "sha256": "29b500243a675441a631379e359a15a0ad03119580df029aee8350eec6fcf656"
+    },
+    "PROPOSED-tool_panics.rs": {
+      "bytes": 2098,
+      "sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c"
+    },
+    "PROPOSED-tool_panics_tests.rs": {
+      "bytes": 14383,
+      "sha256": "39c895588333a34dbff3809b18d57d10e287513dafd5a1d8799c8917baa6565d"
+    },
+    "SOURCE.patch": {
+      "bytes": 15041,
+      "sha256": "85b1a8ecddd6ee92d75c073edd02870bf870983af90027a3b0c748626cfe6e8c"
+    },
+    "INPUTS.json": {
+      "bytes": 1082,
+      "sha256": "482e5ee45fee60cb88eecc63f4c113763f2d05f0949c33459fb03f0d87ae0944"
+    },
+    "REPORT.md": {
+      "bytes": 3229,
+      "sha256": "ea8c65a3fbd6225727c264353218c18d8fa0adcdb71df241da8011ddca76ee42"
+    }
+  }
+}

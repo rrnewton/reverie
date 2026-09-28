@@ -1,0 +1,512 @@
+--- before/reverie-kvm/src/vm.rs
++++ after/reverie-kvm/src/vm.rs
+@@ -868,6 +868,20 @@
+ /// that can be restored after a returning injected process action.
+ fn normalize_completed_syscall_boundary_registers(
+     memory: &GuestMemory,
++    registers: kvm_regs,
++    hypercall_instruction: [u8; 3],
++    hypercall_address: u64,
++) -> Result<kvm_regs> {
++    normalize_completed_syscall_boundary_registers_with_read(
++        |address, bytes| memory.read_raw(address, bytes),
++        registers,
++        hypercall_instruction,
++        hypercall_address,
++    )
++}
++
++fn normalize_completed_syscall_boundary_registers_with_read(
++    mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
+     mut registers: kvm_regs,
+     hypercall_instruction: [u8; 3],
+     hypercall_address: u64,
+@@ -882,7 +896,7 @@
+         )));
+     }
+     let mut observed = [0; 3];
+-    memory.read_raw(hypercall_address, &mut observed)?;
++    read(hypercall_address, &mut observed)?;
+     if observed != hypercall_instruction {
+         return Err(Error::UnexpectedVcpuExit(format!(
+             "syscall boundary at {hypercall_address:#x} does not contain the configured hypercall"
+@@ -933,6 +947,61 @@
+             action_return_registers,
+             stage_action_outcome: false,
+         })
++    }
++
++    fn capture_with_read(
++        backend: &KvmBackend,
++        frame_address: u64,
++        action_return_registers: Option<kvm_regs>,
++        mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
++    ) -> Result<Self> {
++        let mut frame = [0; FRAME_SIZE];
++        read(frame_address, &mut frame)?;
++        let (registers, special_registers) =
++            backend.completed_syscall_boundary_registers_with_read(&mut read)?;
++        Ok(Self {
++            frame_address,
++            frame,
++            registers,
++            special_registers,
++            action_return_registers,
++            stage_action_outcome: false,
++        })
++    }
++
++    pub(crate) async fn capture_admitted(
++        backend: &mut KvmBackend,
++        frame_address: u64,
++        action_return_registers: Option<kvm_regs>,
++        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++    ) -> Result<Option<Self>> {
++        backend
++            .prepare_action_read(stop, |backend, access| {
++                Self::capture_with_read(
++                    backend,
++                    frame_address,
++                    action_return_registers,
++                    |address, bytes| access.read_raw(address, bytes),
++                )
++            })
++            .await
++    }
++
++    pub(crate) async fn capture_for_action_admitted(
++        backend: &mut KvmBackend,
++        frame_address: u64,
++        action_return_registers: Option<kvm_regs>,
++        action: &ProcessAction,
++        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++    ) -> Result<Option<ProcessActionContinuation>> {
++        Ok(
++            Self::capture_admitted(backend, frame_address, action_return_registers, stop)
++                .await?
++                .map(|mut boundary| {
++                    boundary.stage_action_outcome = true;
++                    ProcessActionContinuation::from_captured(action, boundary)
++                }),
++        )
+     }
+ 
+     pub(crate) fn capture_for_action(
+@@ -1555,6 +1624,24 @@
+         Ok((registers, self.vcpu.get_sregs()?))
+     }
+ 
++    fn completed_syscall_boundary_registers_with_read(
++        &self,
++        read: impl FnMut(u64, &mut [u8]) -> Result<()>,
++    ) -> Result<(kvm_regs, kvm_bindings::kvm_sregs)> {
++        let hypercall_address = syscall_hypercall_address(
++            self.hypercall_instruction,
++            self.syscall_trampoline_address,
++            self.syscall_frame_address,
++        );
++        let registers = normalize_completed_syscall_boundary_registers_with_read(
++            read,
++            self.vcpu.get_regs()?,
++            self.hypercall_instruction,
++            hypercall_address,
++        )?;
++        Ok((registers, self.vcpu.get_sregs()?))
++    }
++
+     fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
+         let memory = self.memory.snapshot()?;
+         hide_tool_scratch_pages(&memory)?;
+@@ -1670,6 +1757,54 @@
+         Ok(())
+     }
+ 
++    /// Capture one complete parent read state only after admission. The owned
++    /// action stays with the caller across waits; no copy token or partial
++    /// capture survives this synchronous closure. None is terminal cancellation.
++    async fn prepare_action_read<T>(
++        &mut self,
++        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++        capture: impl Fn(&Self, &crate::memory::RawMemoryRead<'_>) -> Result<T>,
++    ) -> Result<Option<T>> {
++        let gate = self.memory.entry_gate();
++        loop {
++            let changed = gate.subscribe();
++            let cancelled = self.entry_cancellation();
++            gate.admit_operation().map_err(|failure| failure.error())?;
++            if stop.as_mut().now_or_never().is_some() {
++                return Err(Error::RunAborted);
++            }
++            if self.guest_thread_group_exit_status().is_some() || self.guest_thread_is_cancelled() {
++                return Ok(None);
++            }
++            if let Some(value) = self.memory.try_read_with(|access| capture(self, access))? {
++                return Ok(Some(value));
++            }
++            match futures::future::select(
++                futures::future::select(changed, cancelled),
++                stop.as_mut(),
++            )
++            .await
++            {
++                futures::future::Either::Left(_) => {}
++                futures::future::Either::Right(_) => return Err(Error::RunAborted),
++            }
++        }
++    }
++
++    async fn capture_thread_parent(
++        &mut self,
++        stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++    ) -> Result<Option<(kvm_regs, kvm_xsave, Vec<u8>)>> {
++        self.prepare_action_read(stop, |backend, access| {
++            let registers = backend.vcpu.get_regs()?;
++            let xsave = backend.vcpu.get_xsave()?;
++            let mut frame = vec![0; FRAME_SIZE];
++            access.read_raw(backend.syscall_frame_address, &mut frame)?;
++            Ok((registers, xsave, frame))
++        })
++        .await
++    }
++
+     // The prepared action owns its frame and any earlier child state while
+     // admission is closed. Only this one entry is retried; the action is not.
+     async fn park_process_action(
+@@ -1931,12 +2066,12 @@
+                 clear_child_tid,
+                 tls,
+             } => {
+-                let parent_registers = self.vcpu.get_regs()?;
+-                let parent_xsave = self.vcpu.get_xsave()?;
++                let Some((parent_registers, parent_xsave, parent_syscall_frame)) =
++                    self.capture_thread_parent(stop.as_mut()).await?
++                else {
++                    return Ok(ProcessActionOutcome::cancelled());
++                };
+                 let (parent_fs, parent_gs) = executor.segment_bases();
+-                let mut parent_syscall_frame = vec![0; FRAME_SIZE];
+-                self.memory
+-                    .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
+ 
+                 if park_syscall_return
+                     && !self
+@@ -2532,12 +2667,12 @@
+                 clear_child_tid,
+                 tls,
+             } => {
+-                let parent_registers = self.vcpu.get_regs()?;
+-                let parent_xsave = self.vcpu.get_xsave()?;
++                let Some((parent_registers, parent_xsave, parent_syscall_frame)) =
++                    self.capture_thread_parent(stop.as_mut()).await?
++                else {
++                    return Ok(ProcessActionOutcome::cancelled());
++                };
+                 let (parent_fs, parent_gs) = executor.segment_bases();
+-                let mut parent_syscall_frame = vec![0; FRAME_SIZE];
+-                self.memory
+-                    .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
+ 
+                 if park_syscall_return
+                     && !self
+@@ -4051,6 +4186,146 @@
+     use super::*;
+ 
+     include!("cpuid_runtime_tests.rs");
++
++    #[test]
++    fn action_parent_captures_yield_for_close_and_keep_stop_and_validation() {
++        use std::task::Context;
++        use std::task::Poll;
++
++        for boundary_capture in [false, true] {
++            for event in ["failure", "cancellation", "poison", "reopen"] {
++                let mut backend = KvmBackend::new(0x10000).expect("this control requires /dev/kvm");
++                let frame_address = backend.syscall_frame_address;
++                let frame = [0xa5; FRAME_SIZE];
++                backend.memory.write_raw(frame_address, &frame).unwrap();
++                let hypercall_address = syscall_hypercall_address(
++                    backend.hypercall_instruction,
++                    backend.syscall_trampoline_address,
++                    frame_address,
++                );
++                backend
++                    .memory
++                    .write_raw(hypercall_address, &backend.hypercall_instruction)
++                    .unwrap();
++                let mut registers = backend.vcpu.get_regs().unwrap();
++                registers.rip = hypercall_address;
++                registers.rax = 0x1234;
++                backend.vcpu.set_regs(&registers).unwrap();
++                let expected = if boundary_capture {
++                    CompletedSyscallBoundary::capture(&backend, frame_address, None)
++                        .unwrap()
++                        .registers
++                } else {
++                    registers
++                };
++                let gate = backend.memory.entry_gate();
++                let group = backend.thread_group.clone();
++                let mut closed = Some(
++                    gate.try_close()
++                        .unwrap()
++                        .unwrap()
++                        .finish()
++                        .now_or_never()
++                        .unwrap()
++                        .unwrap(),
++                );
++                let original = Arc::new(Error::UnexpectedVcpuExit(
++                    "controlled capture poison".to_owned(),
++                ));
++                let (sender, receiver) = oneshot::channel();
++                let mut stop = Box::pin(async move {
++                    receiver.await.unwrap();
++                });
++                // These are the actual two production capture paths. Both
++                // own their buffers and drop admission before returning.
++                let mut capture: Pin<
++                    Box<dyn Future<Output = Result<Option<(kvm_regs, Vec<u8>)>>> + '_>,
++                > = if boundary_capture {
++                    Box::pin(async {
++                        CompletedSyscallBoundary::capture_admitted(
++                            &mut backend,
++                            frame_address,
++                            None,
++                            stop.as_mut(),
++                        )
++                        .await
++                        .map(|result| result.map(|value| (value.registers, value.frame.to_vec())))
++                    })
++                } else {
++                    Box::pin(async {
++                        backend
++                            .capture_thread_parent(stop.as_mut())
++                            .await
++                            .map(|result| result.map(|(registers, _, frame)| (registers, frame)))
++                    })
++                };
++                let waker = futures::task::noop_waker();
++                let mut context = Context::from_waker(&waker);
++                assert!(capture.as_mut().poll(&mut context).is_pending());
++                assert!(capture.as_mut().poll(&mut context).is_pending());
++                match event {
++                    "failure" => sender.send(()).unwrap(),
++                    "cancellation" => group.request_exit_group(ExitStatus::Exited(7)),
++                    "poison" => {
++                        gate.poison(None, Error::SharedFailure(original.clone()));
++                    }
++                    "reopen" => drop(closed.take()),
++                    _ => unreachable!(),
++                }
++                match (event, capture.as_mut().poll(&mut context)) {
++                    ("failure", Poll::Ready(Err(Error::RunAborted))) => {}
++                    ("cancellation", Poll::Ready(Ok(None))) => {}
++                    ("poison", Poll::Ready(Err(error))) => {
++                        assert!(error.retains_primary(&original))
++                    }
++                    ("reopen", Poll::Ready(Ok(Some((actual_registers, actual_frame))))) => {
++                        assert_eq!(actual_registers, expected);
++                        assert_eq!(actual_frame, frame);
++                    }
++                    _ => panic!("capture did not preserve {event} disposition"),
++                }
++                drop(capture);
++                assert_eq!(
++                    backend.vcpu.get_regs().unwrap(),
++                    registers,
++                    "capture ran or changed the vCPU"
++                );
++                if event == "cancellation" {
++                    assert_eq!(group.exit_status(), Some(ExitStatus::Exited(7)));
++                }
++                drop(closed);
++                if event == "reopen" && boundary_capture {
++                    let mut pending = std::pin::pin!(std::future::pending());
++                    let mut invalid = registers;
++                    invalid.rip = hypercall_address + 1;
++                    backend.vcpu.set_regs(&invalid).unwrap();
++                    assert!(matches!(
++                        futures::executor::block_on(CompletedSyscallBoundary::capture_admitted(
++                            &mut backend,
++                            frame_address,
++                            None,
++                            pending.as_mut()
++                        )),
++                        Err(Error::UnexpectedVcpuExit(_))
++                    ));
++                    backend.vcpu.set_regs(&registers).unwrap();
++                    backend
++                        .memory
++                        .write_raw(hypercall_address, &[0x90; 3])
++                        .unwrap();
++                    assert!(matches!(
++                        futures::executor::block_on(CompletedSyscallBoundary::capture_admitted(
++                            &mut backend,
++                            frame_address,
++                            None,
++                            pending.as_mut()
++                        )),
++                        Err(Error::UnexpectedVcpuExit(_))
++                    ));
++                }
++            }
++        }
++    }
+ 
+     #[test]
+     fn parking_wait_preserves_failure_cancellation_and_reopen() {
+--- before/reverie-kvm/src/memory.rs
++++ after/reverie-kvm/src/memory.rs
+@@ -41,6 +41,21 @@
+         f.debug_struct("GuestMemory")
+             .field("mapping", &self.mapping)
+             .finish_non_exhaustive()
++    }
++}
++
++/// A read accessor for one already admitted synchronous preparation. Its
++/// private fields bind the memory and token; callers cannot substitute another
++/// Mapping or retain the token beyond try_read_with's closure.
++pub(crate) struct RawMemoryRead<'a> {
++    memory: &'a GuestMemory,
++    copy: &'a CopyAccess,
++}
++
++impl RawMemoryRead<'_> {
++    pub(crate) fn read_raw(&self, address: u64, destination: &mut [u8]) -> Result<()> {
++        self.memory
++            .read_raw_admitted(address, destination, self.copy)
+     }
+ }
+ 
+@@ -368,6 +383,29 @@
+         // but do not turn an observed backend failure into ordinary success.
+         self.check_copy_failure()?;
+         result
++    }
++
++    /// Attempts a whole synchronous read preparation under one short token.
++    /// The closure must not wait for admission or acquire allocation. It runs
++    /// only after open admission, and neither accessor nor token can escape.
++    pub(crate) fn try_read_with<T>(
++        &self,
++        operation: impl FnOnce(&RawMemoryRead<'_>) -> Result<T>,
++    ) -> Result<Option<T>> {
++        let Some(copy) = self
++            .mapping
++            .entry_gate
++            .try_copy(self.failure_context.clone())
++            .map_err(|failure| failure.error())?
++        else {
++            return Ok(None);
++        };
++        let result = operation(&RawMemoryRead {
++            memory: self,
++            copy: &copy,
++        });
++        self.check_copy_failure()?;
++        result.map(Some)
+     }
+ 
+     #[cfg(test)]
+@@ -2262,6 +2300,71 @@
+             observer.read_raw(BASE, &mut bytes).unwrap();
+             assert_eq!(&bytes, b"next");
+         }
++
++        #[test]
++        fn read_preparation_runs_once_with_one_token_and_preserves_poison() {
++            let memory = GuestMemory::new(BASE, PAGE_SIZE).unwrap();
++            memory.write_raw(BASE, b"data").unwrap();
++            let gate = memory.entry_gate();
++            let closed = gate
++                .try_close()
++                .unwrap()
++                .unwrap()
++                .finish()
++                .now_or_never()
++                .unwrap()
++                .unwrap();
++            let calls = std::cell::Cell::new(0);
++            assert_eq!(
++                memory
++                    .try_read_with(|_| {
++                        calls.set(calls.get() + 1);
++                        Ok(())
++                    })
++                    .unwrap(),
++                None
++            );
++            assert_eq!(calls.get(), 0);
++            drop(closed);
++            let mut closing = None;
++            let result = memory
++                .try_read_with(|access| {
++                    calls.set(calls.get() + 1);
++                    // A nested read must use this token even after close starts.
++                    closing = Some(gate.try_close().unwrap().unwrap());
++                    let mut bytes = [0; 4];
++                    access.read_raw(BASE, &mut bytes)?;
++                    access.read_raw(BASE, &mut bytes)?;
++                    Ok(bytes)
++                })
++                .unwrap();
++            assert_eq!(result, Some(*b"data"));
++            assert_eq!(calls.get(), 1);
++            let closed = closing
++                .unwrap()
++                .finish()
++                .now_or_never()
++                .expect("read token escaped")
++                .unwrap();
++            drop(closed);
++            let original = cause();
++            assert_cause(
++                memory.try_read_with(|access| {
++                    let mut bytes = [0; 4];
++                    access.read_raw(BASE, &mut bytes)?;
++                    assert_eq!(&bytes, b"data");
++                    gate.poison(None, Error::SharedFailure(original.clone()));
++                    Ok(bytes)
++                }),
++                &original,
++            );
++            assert_cause(
++                memory.try_read_with(|_| -> Result<()> {
++                    panic!("poison ran the preparation closure")
++                }),
++                &original,
++            );
++        }
+     }
+ 
+     #[test]
+--- before/reverie-kvm/src/bootstrap.rs
++++ after/reverie-kvm/src/bootstrap.rs
+@@ -444,25 +444,9 @@
+         .expect("syscall hypercall address must not overflow")
+ }
+ 
+-// TODO-HUMAN-REVIEW(PR-172): Review per-thread trampoline park/unpark updates.
+-pub(crate) fn set_syscall_return_park(
+-    memory: &mut GuestMemory,
+-    hypercall_instruction: [u8; 3],
+-    syscall_trampoline_address: u64,
+-    syscall_frame_address: u64,
+-    park: bool,
+-) -> Result<()> {
+-    let (address, byte) = syscall_return_park_byte(
+-        hypercall_instruction,
+-        syscall_trampoline_address,
+-        syscall_frame_address,
+-        park,
+-    );
+-    memory.write_raw(address, &[byte])
+-}
+-
+ /// The async owner retains its parking stage when admission is closed. This
+ /// helper neither waits for reopening nor executes a guest instruction.
++// TODO-HUMAN-REVIEW(PR-172): Review per-thread trampoline park/unpark updates.
+ pub(crate) fn try_set_syscall_return_park(
+     memory: &mut GuestMemory,
+     hypercall_instruction: [u8; 3],

@@ -1,0 +1,6 @@
+Running as unit: kvm-callback-owner-format-1-1017453.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 526ms
+             CPU time consumed: 518ms
+                   Memory peak: 40.4M (swap: 0B)

@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-cancellation-subscription-2-1382076.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 7ms
+             CPU time consumed: 5ms
+                   Memory peak: 1.9M (swap: 0B)

@@ -1,0 +1,9 @@
+Running as unit: kvm-entry-owner-compile-1-1325311.service
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.26s
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 27.276s
+             CPU time consumed: 39.420s
+                   Memory peak: 2G (swap: 0B)
+                      IO Bytes: written 258.6M

@@ -1,0 +1,18 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "baseline": "kvm-entry-driver-controls-v1/source-1.json sha256 f74effb8842eaa3d9a8178c96fdde293cf210bfc36fe824a1f38f8c3f096dd55",
+  "records": [
+    {
+      "path": "reverie-kvm/src/clock.rs",
+      "sha256": "144ffb96a48d91c2130810d032dbabbabee41a79119205df2ed660116e56edf9",
+      "bytes": 41273,
+      "snapshot": "source-after/reverie-kvm/src/clock.rs"
+    },
+    {
+      "path": "reverie-kvm/src/vm/entry_hypercall_tests.rs",
+      "sha256": "bf20d951afd1fb4b1c78785a07f7e39b778254890e251c3b93a50c71969d845d",
+      "bytes": 26004,
+      "snapshot": "source-after/reverie-kvm/src/vm/entry_hypercall_tests.rs"
+    }
+  ]
+}

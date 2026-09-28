@@ -1,0 +1,18 @@
+2209141 1789937732.066791 execve("ignored/kvm-pselect6-consumer-1ea1/hermit-consumer-5ae605a1115f", ["ignored/kvm-pselect6-consumer-1ea1/hermit-consumer-5ae605a1115f", "--log", "info", "run", "--backend", "kvm", "--strict", "--", "/bin/true"], 0x7fff17078b90 /* 163 vars */) = 0
+2209141 1789937732.068713 rt_sigaction(SIGPIPE, {sa_handler=SIG_IGN, sa_mask=[PIPE], sa_flags=SA_RESTORER|SA_RESTART, sa_restorer=0x7f50f7e3fb30}, {sa_handler=SIG_IGN, sa_mask=[], sa_flags=0}, 8) = 0
+2209141 1789937732.068964 rt_sigaction(SIGSEGV, NULL, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+2209141 1789937732.069033 rt_sigaction(SIGSEGV, {sa_handler=0x560eb94510d0, sa_mask=[], sa_flags=SA_RESTORER|SA_ONSTACK|SA_SIGINFO, sa_restorer=0x7f50f7e3fb30}, NULL, 8) = 0
+2209141 1789937732.069051 rt_sigaction(SIGBUS, NULL, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+2209141 1789937732.069065 rt_sigaction(SIGBUS, {sa_handler=0x560eb94510d0, sa_mask=[], sa_flags=SA_RESTORER|SA_ONSTACK|SA_SIGINFO, sa_restorer=0x7f50f7e3fb30}, NULL, 8) = 0
+2209141 1789937732.070728 clone(child_stack=0x7f50f7dff000, flags=CLONE_NEWNS|CLONE_NEWUTS|CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNET|SIGCHLD) = 2209148
+2209148 1789937732.072052 rt_sigaction(SIGPIPE, {sa_handler=SIG_DFL, sa_mask=[PIPE], sa_flags=SA_RESTORER|SA_RESTART, sa_restorer=0x7f50f7e3fb30}, {sa_handler=SIG_IGN, sa_mask=[PIPE], sa_flags=SA_RESTORER|SA_RESTART, sa_restorer=0x7f50f7e3fb30}, 8) = 0
+2209148 1789937732.072820 rt_sigaction(SIGTERM, {sa_handler=0x560eb83c8130, sa_mask=[], sa_flags=SA_RESTORER, sa_restorer=0x7f50f7e3fb30}, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+2209148 1789937732.072899 rt_sigaction(SIGINT, {sa_handler=0x560eb83c8130, sa_mask=[], sa_flags=SA_RESTORER, sa_restorer=0x7f50f7e3fb30}, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+2209148 1789937732.072922 rt_sigaction(SIGHUP, {sa_handler=0x560eb83c8130, sa_mask=[], sa_flags=SA_RESTORER, sa_restorer=0x7f50f7e3fb30}, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+2209148 1789937732.075542 rt_sigaction(SIGURG, {sa_handler=0x560eb8e8f500, sa_mask=[], sa_flags=SA_RESTORER, sa_restorer=0x7f50f7e3fb30}, NULL, 8) = 0
+2209148 1789937732.089362 rt_sigaction(SIGRT_32, NULL, {sa_handler=SIG_DFL, sa_mask=[], sa_flags=0}, 8) = 0
+2209148 1789937732.089394 rt_sigaction(SIGRT_32, {sa_handler=0x560eb8e8f500, sa_mask=[], sa_flags=SA_RESTORER, sa_restorer=0x7f50f7e3fb30}, NULL, 8) = 0
+2209148 1789937732.089417 rt_sigaction(SIGRT_32, NULL, {sa_handler=0x560eb8e8f500, sa_mask=[], sa_flags=SA_RESTORER, sa_restorer=0x7f50f7e3fb30}, 8) = 0
+2209148 1789937732.121126 +++ exited with 0 +++
+2209141 1789937732.121148 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=2209148, si_uid=212630, si_status=0, si_utime=0, si_stime=0} ---
+2209141 1789937732.122212 +++ exited with 125 +++

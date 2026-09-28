@@ -1,0 +1,15 @@
+        fn complete_injection<'a>(
+            &'a mut self,
+            _context: ToolContext<'a, crate::StraceTool>,
+        ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+        where
+            crate::StraceTool: 'a,
+        {
+            self.state.completion_callbacks += 1;
+            Box::pin(async {
+                Ok(InjectionCompletion::Returns {
+                    syscall_result: None,
+                })
+            })
+        }
+

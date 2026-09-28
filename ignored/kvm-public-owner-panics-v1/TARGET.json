@@ -1,0 +1,30 @@
+{
+  "scope": "One additive serial actual-public-API source control; unformatted/uncompiled/unrun by author",
+  "test_name": "vm::tests::public_tool_panic_tests::public_direct_and_elf_owners_finish_pending_consumers_before_resuming_panic",
+  "product_test": {
+    "bytes": 12704,
+    "sha256": "52d4b2bb43f3850d9aedd669823e8ded8414078d86af5352594054e6f4c6e476"
+  },
+  "observed_vm_with_root_concurrent_changes": {
+    "bytes": 389641,
+    "sha256": "632c1f2c69f92a9f42a99766d53f275ee1e1b88e036e0682aa69a27b83a5a6b2"
+  },
+  "records": {
+    "PROPOSED-public_tool_panic_tests.rs": {
+      "bytes": 12704,
+      "sha256": "52d4b2bb43f3850d9aedd669823e8ded8414078d86af5352594054e6f4c6e476"
+    },
+    "INCLUDE.patch": {
+      "bytes": 296,
+      "sha256": "0c14b2fbaf5200d6b092d95d6e81cc0b2d311a1a24cba92d7e2cffe61df8e067"
+    },
+    "INPUTS.json": {
+      "bytes": 1263,
+      "sha256": "bb74b360555e66f66ab8a0ecf51650162824d8ec6a15757e095fcdb3a3effead"
+    },
+    "REPORT.md": {
+      "bytes": 3414,
+      "sha256": "6fe8d9f9ee747c9af589e33d5a89b30f90f002b91b7e38740051af1423498176"
+    }
+  }
+}

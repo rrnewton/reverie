@@ -1,0 +1,160 @@
+
+    #[derive(Default)]
+    struct AllSyscallsTool;
+
+    #[reverie::tool]
+    impl Tool for AllSyscallsTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::all_syscalls()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            Ok(guest.inject(syscall).await?)
+        }
+    }
+
+    #[derive(Default)]
+    struct SubscribedRestartSyscallTool;
+
+    #[reverie::tool]
+    impl Tool for SubscribedRestartSyscallTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::restart_syscall].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            _guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::restart_syscall);
+            Ok(0x5a)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn subscribed_restart_syscall_reaches_the_tool() {
+        let tracer = spawn_fn::<SubscribedRestartSyscallTool, _>(|| {
+            let result = unsafe { libc::syscall(libc::SYS_restart_syscall) };
+            assert_eq!(result, 0x5a, "subscribed restart_syscall bypassed the Tool");
+        })
+        .await
+        .expect("spawn subscribed restart_syscall guest");
+
+        let (status, _) = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("subscribed restart_syscall guest hung")
+            .expect("subscribed restart_syscall guest failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsubscribed_restart_syscall_retains_the_linux_result() {
+        let tracer = spawn_fn::<InitFailureTool, _>(|| {
+            let result = unsafe { libc::syscall(libc::SYS_restart_syscall) };
+            assert_eq!(result, -1, "unsubscribed restart_syscall was intercepted");
+            assert_eq!(Errno::last(), Errno::EINTR);
+        })
+        .await
+        .expect("spawn unsubscribed restart_syscall guest");
+
+        let (status, _) = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("unsubscribed restart_syscall guest hung")
+            .expect("unsubscribed restart_syscall guest failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    #[derive(Default)]
+    struct TimedExecTransitionTool;
+
+    #[reverie::tool]
+    impl Tool for TimedExecTransitionTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::all()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            guest.set_timer_precise(reverie::TimerSchedule::Rcbs(20_000_000))?;
+            Ok(guest.inject(syscall).await?)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition() {
+        let tracer = TracerBuilder::<TimedExecTransitionTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .spawn()
+            .await
+            .expect("spawn timed exec-transition activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("timed exec-transition activation tracee hung")
+            .expect_err("missing LiteInst runtime unexpectedly activated");
+
+        // The exact fail-closed reason depends on which activation signal wins
+        // after the valid syscall-skip transition. What matters here is that
+        // the skip itself did not fail and activation remained pre-Ready.
+        assert_general_pre_ready_liteinst_activation_failure(&error);
+        assert_reaped("timed exec-transition activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_pending_signal_is_rejected_before_seccomp_resume() {
+        let queue_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .queue_liteinst_pending_signal_once_for_test(Arc::clone(&queue_once))
+            .spawn()
+            .await
+            .expect("spawn pending-signal activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("pending-signal activation tracee hung")
+            .expect_err("queued pre-Ready signal unexpectedly resumed the tracee");
+
+        assert!(!queue_once.load(Ordering::SeqCst));
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::SignalBeforeHandshake(
+                LiteinstActivationOperation::ResumeAfterSeccompStop,
+            ),
+        );
+        assert_reaped("pending-signal activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_nested_signal_is_rejected_during_context_none_reinjection() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_context_none_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn context-none activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("context-none activation tracee hung")
+            .expect_err("nested pre-Ready reinjection signal was silently dropped");
+
+        assert!(!force_once.load(Ordering::SeqCst), "{error}");

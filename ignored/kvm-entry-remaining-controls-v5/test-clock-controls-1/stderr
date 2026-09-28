@@ -1,0 +1,15 @@
+Running as unit: kvm-entry-owner-test-clock-controls-1-1241144.service
+
+thread 'clock::entry_interrupt_tests::running_reserved_kick_retains_exact_finite_program_branch_total' (1241652) panicked at reverie-kvm/src/clock/entry_interrupt_tests.rs:163:5:
+assertion `left == right` failed
+  left: 0
+ right: 268435456
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'clock::tests::unwind_closes_counter_and_poison_prevents_future_success' (1241770) panicked at reverie-kvm/src/clock.rs:1027:13:
+simulated vCPU unwinding
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 252ms
+             CPU time consumed: 128ms
+                   Memory peak: 4.4M (swap: 0B)

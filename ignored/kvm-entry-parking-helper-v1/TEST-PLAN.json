@@ -1,0 +1,18 @@
+{
+  "status": "unrun; root-owned composed compile and execution",
+  "new_exact_test": "memory::tests::entry_copy_tests::try_raw_write_defers_closed_copy_and_retains_poison_and_bounds",
+  "argv": [
+    "<fresh-bound-composed-library-ELF>",
+    "--exact",
+    "memory::tests::entry_copy_tests::try_raw_write_defers_closed_copy_and_retains_poison_and_bounds",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "expected_declarations": 1,
+  "expected_success": 1,
+  "expected_failed": 0,
+  "expected_ignored": 0,
+  "bounds": "Reuse current root composed finite runner guards; no independent compile or runner launch. Preserve actual refusal, exact names/streams and terminal/input authentication.",
+  "other_coverage": "Root owns its real parking wait/failure/cancellation/reopen control. Prior 35 memory tests were executed on the preceding source only; all bodies unchanged here.",
+  "product_execution": false
+}

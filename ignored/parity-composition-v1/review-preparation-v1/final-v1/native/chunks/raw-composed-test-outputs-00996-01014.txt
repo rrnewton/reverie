@@ -1,0 +1,19 @@
+{ "type": "test", "name": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.000242114 }
+END STREAM
+
+PHASE control-82 SELECTOR runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-82/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-83 SELECTOR timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-83/stdout SHA256 473b8dfe021a1bf62431357d51c7bd9b5ab7179f21e72c428db123dcddbd8165
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once" }
+{ "type": "test", "name": "timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.0766556 }
+END STREAM
+
+PHASE control-83 SELECTOR timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-83/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+

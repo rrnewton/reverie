@@ -1,0 +1,227 @@
+{
+  "status": "proposed; worker selection unresolved; no execution authorized by this file",
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "dispatch_base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "source_paths": [
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/entry/owner.rs",
+    "reverie-kvm/src/entry/signal.rs",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/clock.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/memory.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs",
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/bootstrap.rs",
+    "reverie-kvm/src/executor.rs",
+    "Cargo.lock",
+    "reverie-kvm/src/failure/owned_future.rs",
+    "reverie-kvm/src/vm/worker_panic_tests.rs",
+    "reverie-kvm/src/runtime/failure_tests.rs"
+  ],
+  "format_paths": [
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/failure/owned_future.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/vm/worker_panic_tests.rs"
+  ],
+  "tests": [
+    {
+      "phase": "test-owned-future-1",
+      "selector": "failure::owned_future::tests::",
+      "exact": false,
+      "expected_passed": 4,
+      "expected_names": [
+        "failure::owned_future::tests::pending_then_ready_keeps_allocation_and_drops_once",
+        "failure::owned_future::tests::poll_panic_is_not_repolled_and_drop_panic_is_retained_separately",
+        "failure::owned_future::tests::returned_typed_error_survives_a_destructor_panic",
+        "failure::owned_future::tests::send_non_sync_state_can_cross_a_pending_await"
+      ]
+    },
+    {
+      "phase": "test-panic-drain-1",
+      "selector": "runtime::unstarted_cleanup_panic_tests::",
+      "exact": false,
+      "expected_passed": 3,
+      "expected_names": [
+        "runtime::unstarted_cleanup_panic_tests::poll_and_drop_panics_preserve_pending_and_later_consumers",
+        "runtime::unstarted_cleanup_panic_tests::returned_error_and_drop_panic_preserve_later_real_errors",
+        "runtime::unstarted_cleanup_panic_tests::only_bare_abort_is_ignored_and_empty_drain_has_an_output"
+      ]
+    },
+    {
+      "phase": "test-handler-scratch-1",
+      "selector": "runtime::handler_scratch_tests::",
+      "exact": false,
+      "expected_passed": 2,
+      "expected_names": [
+        "runtime::handler_scratch_tests::injected_error_survives_scratch_failure_after_callback_destruction",
+        "runtime::handler_scratch_tests::ordinary_callback_value_requires_successful_scratch_cleanup"
+      ]
+    },
+    {
+      "phase": "test-injected-boundary-1",
+      "selector": "vm::tests::injected_boundary_error_defers_each_child_until_callback_destruction",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::injected_boundary_error_defers_each_child_until_callback_destruction"
+      ]
+    },
+    {
+      "phase": "test-worker-panic-1",
+      "selector": null,
+      "exact": false,
+      "expected_passed": null,
+      "expected_names": null,
+      "pending_reason": "root is still implementing vm/worker_panic_tests.rs; no count inferred"
+    },
+    {
+      "phase": "test-normal-cleanup-1",
+      "selector": "runtime::tests::unstarted_cleanup_retains_pending_future_and_real_errors",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::tests::unstarted_cleanup_retains_pending_future_and_real_errors"
+      ]
+    },
+    {
+      "phase": "test-handler-destruction-1",
+      "selector": "runtime::tests::handler_failure_destroys_owned_callback_before_scope_acknowledgement",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::tests::handler_failure_destroys_owned_callback_before_scope_acknowledgement"
+      ]
+    },
+    {
+      "phase": "test-caught-worker-1",
+      "selector": "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join"
+      ]
+    },
+    {
+      "phase": "test-action-preparation-1",
+      "selector": "vm::tests::action_parent_captures_yield_for_close_and_keep_stop_and_validation",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::action_parent_captures_yield_for_close_and_keep_stop_and_validation"
+      ]
+    },
+    {
+      "phase": "test-boundary-1",
+      "selector": "vm::tests::completed_syscall_boundary_accepts_only_the_two_transport_rip_forms",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::completed_syscall_boundary_accepts_only_the_two_transport_rip_forms"
+      ]
+    },
+    {
+      "phase": "test-boundary-cleanup-1",
+      "selector": "vm::tests::failed_boundary_finalization_cancels_and_joins_each_typed_child",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::failed_boundary_finalization_cancels_and_joins_each_typed_child"
+      ]
+    },
+    {
+      "phase": "test-fork-cleanup-1",
+      "selector": "vm::tests::production_wrapper_cleans_fork_after_boundary_restore_failure",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::production_wrapper_cleans_fork_after_boundary_restore_failure"
+      ]
+    },
+    {
+      "phase": "test-thread-cleanup-1",
+      "selector": "vm::tests::production_wrapper_cleans_tool_thread_after_boundary_restore_failure",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::production_wrapper_cleans_tool_thread_after_boundary_restore_failure"
+      ]
+    },
+    {
+      "phase": "test-partial-start-1",
+      "selector": "vm::tests::partial_start_failure_keeps_later_child_reachable_for_cleanup",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::partial_start_failure_keeps_later_child_reachable_for_cleanup"
+      ]
+    },
+    {
+      "phase": "test-cancelled-cleanup-1",
+      "selector": "vm::tests::cancelled_child_cleanup_retains_real_errors_and_ordinary_cancellation",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::cancelled_child_cleanup_retains_real_errors_and_ordinary_cancellation"
+      ]
+    },
+    {
+      "phase": "test-exec-cleanup-1",
+      "selector": "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup"
+      ]
+    },
+    {
+      "phase": "test-cleanup-storage-1",
+      "selector": "executor::tests::unstarted_tool_cleanup_retains_children_unpolled_and_transfers_once",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "executor::tests::unstarted_tool_cleanup_retains_children_unpolled_and_transfers_once"
+      ]
+    }
+  ],
+  "known_selected_test_count": 22,
+  "unknown_selected_test_count": "worker controls only",
+  "phases": [
+    "format-1",
+    "compile-1",
+    "check-1",
+    "inventory-1",
+    "test-owned-future-1",
+    "test-panic-drain-1",
+    "test-handler-scratch-1",
+    "test-injected-boundary-1",
+    "test-worker-panic-1",
+    "test-normal-cleanup-1",
+    "test-handler-destruction-1",
+    "test-caught-worker-1",
+    "test-action-preparation-1",
+    "test-boundary-1",
+    "test-boundary-cleanup-1",
+    "test-fork-cleanup-1",
+    "test-thread-cleanup-1",
+    "test-partial-start-1",
+    "test-cancelled-cleanup-1",
+    "test-exec-cleanup-1",
+    "test-cleanup-storage-1"
+  ],
+  "limits": {
+    "cpu_quota": "200%",
+    "memory_max": "12G",
+    "memory_swap_max": "0",
+    "core_limit": "0",
+    "compile_wall_seconds": 600,
+    "check_wall_seconds": 600,
+    "test_wall_seconds": 60,
+    "format_inventory_wall_seconds": 30,
+    "stream_cap_bytes": 16777216
+  }
+}

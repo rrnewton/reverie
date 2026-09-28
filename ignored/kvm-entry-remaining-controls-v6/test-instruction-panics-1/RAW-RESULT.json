@@ -1,0 +1,34 @@
+{
+  "raw_status": 0,
+  "elapsed_seconds": 0.13790803216397762,
+  "stream_bytes": {
+    "stdout": 253,
+    "stderr": 299
+  },
+  "refusals": [],
+  "control_commands": [],
+  "observed_service": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-entry-owner-test-instruction-panics-1-1422918",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=[not set]\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "loaded",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "CPUUsageNSec": "[not set]"
+    }
+  },
+  "accepted": false
+}

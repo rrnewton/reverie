@@ -1,0 +1,27 @@
+[
+  {
+    "path": "reverie-kvm/src/runtime.rs",
+    "sha256": "a8c61e14efcaf2e83472e96cc2bd02adf48d0b8049ac585a07d483091e4ed98c",
+    "bytes": 273272
+  },
+  {
+    "path": "reverie-kvm/src/entry/driver.rs",
+    "sha256": "a7d92d121904c35b469dbef649479ecff66a10b0b20c4c7769db496a978ac040",
+    "bytes": 16439
+  },
+  {
+    "path": "reverie-kvm/src/entry/owner.rs",
+    "sha256": "6b7be2e38a350c1dfc8d471a750f5eb79fe44dad4e06943da3496de03e637fc0",
+    "bytes": 35506
+  },
+  {
+    "path": "reverie-kvm/src/parked_signal_runtime.rs",
+    "sha256": "951d64e9a35f993f675104d33b9f9d7219e262c12c0ddbd8914172f78f6f87fa",
+    "bytes": 28392
+  },
+  {
+    "path": "reverie-kvm/src/runtime/entry_operation_tests.rs",
+    "sha256": "9102ca7e713cce284f480875e4dc404f5e5191a02e116bf0eff13eb34286cb13",
+    "bytes": 27435
+  }
+]

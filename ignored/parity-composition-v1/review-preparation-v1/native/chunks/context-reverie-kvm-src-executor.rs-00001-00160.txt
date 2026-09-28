@@ -1,0 +1,160 @@
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 46..75; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+use crate::signal::ProcessSignalState;
+use crate::signal::SS_AUTODISARM;
+#[cfg(any(test, feature = "native-test-support"))]
+use crate::signal::SharedThreadSignalState;
+use crate::signal::event_for_process;
+use crate::signal::event_for_thread;
+#[cfg(test)]
+use crate::signal::signal_info_user;
+
+#[path = "process_signal_publication.rs"]
+mod process_signal_publication;
+
+#[path = "capture_identity.rs"]
+mod capture_identity;
+
+use capture_identity::CaptureMetadata;
+use capture_identity::CaptureObjectIdentity;
+use capture_identity::CapturedPipeIdentities;
+use process_signal_publication::ProcessBinding;
+use process_signal_publication::ProcessSignalRegistry;
+
+const MAX_HOST_IO: usize = 16 * 1024 * 1024;
+const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
+const PAGE_SIZE: u64 = 4096;
+const MAX_RW_COUNT: usize = (i32::MAX as usize) & !(PAGE_SIZE as usize - 1);
+const X86_64_GUEST_USER_LIMIT: u64 = (1_u64 << 47) - PAGE_SIZE;
+const GUEST_NOFILE_LIMIT: libc::c_int = 1 << 20;
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-235): Review the single virtual network namespace identity.
+const GUEST_NETNS_COOKIE: u64 = 1;
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 183..235; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+        result: i64,
+        segment: Option<(SegmentBase, u64)>,
+    },
+    Exit(ExitStatus),
+}
+
+#[derive(Default)]
+struct CapturedOutputInner {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+#[derive(Clone)]
+// TODO-HUMAN-REVIEW(PR-172): Review cross-thread captured-output ownership.
+pub(crate) struct CapturedOutput {
+    inner: Arc<Mutex<CapturedOutputInner>>,
+    identities: Arc<CapturedPipeIdentities>,
+}
+
+#[cfg(test)]
+impl Default for CapturedOutput {
+    fn default() -> Self {
+        Self::try_new().expect("prepare test capture identities")
+    }
+}
+
+impl CapturedOutput {
+    pub(crate) fn try_new() -> std::io::Result<Self> {
+        // Root setup calls this before consuming the image or initializing the
+        // Tool. Failure never publishes partial output or a fallback identity.
+        let identities = Arc::new(CapturedPipeIdentities::try_new()?);
+        Ok(Self {
+            inner: Arc::new(Mutex::new(CapturedOutputInner::default())),
+            identities,
+        })
+    }
+
+    fn metadata(&self) -> CaptureMetadata {
+        self.identities.metadata()
+    }
+
+    pub(crate) fn take(&mut self) -> (Vec<u8>, Vec<u8>) {
+        let mut inner = self.inner.lock().expect("captured output lock poisoned");
+        (
+            std::mem::take(&mut inner.stdout),
+            std::mem::take(&mut inner.stderr),
+        )
+    }
+
+    fn append(&self, stderr: bool, bytes: &[u8]) -> bool {
+        let mut inner = self.inner.lock().expect("captured output lock poisoned");
+        let destination = if stderr {
+            &mut inner.stderr
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 375..960; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+fn execute_basic_syscall_with_output(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    request: &SyscallRequest,
+    current_user_stack_pointer: Option<u64>,
+    output: Option<&mut CapturedOutput>,
+) -> SyscallAction {
+    let args = request.args();
+    let number = request.number();
+    let capture_output = output.is_some();
+    let capture_metadata = output.as_ref().map(|output| output.metadata());
+
+    if number == libc::SYS_exit as u64 || number == libc::SYS_exit_group as u64 {
+        return SyscallAction::Exit(ExitStatus::Exited((args[0] as i32) & 0xff));
+    }
+    if let Some(error) = fdinfo_private_carrier_error(state, number, args) {
+        return continue_with(error);
+    }
+    if let Some(error) = virtual_signalfd_write_error(state, number, args) {
+        return continue_with(error);
+    }
+
+    let result = if number == libc::SYS_write as u64 {
+        write(memory, state, args, output)
+    } else if number == libc::SYS_read as u64 {
+        read(memory, state, args)
+    } else if number == libc::SYS_writev as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        vectored_io(memory, state, args, libc::SYS_writev, output)
+    } else if number == libc::SYS_readv as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        vectored_io(memory, state, args, libc::SYS_readv, output)
+    } else if number == libc::SYS_preadv as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        vectored_io(memory, state, args, libc::SYS_preadv, output)
+    } else if number == libc::SYS_preadv2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        vectored_io(memory, state, args, libc::SYS_preadv2, output)
+    } else if number == libc::SYS_pwritev as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        vectored_io(memory, state, args, libc::SYS_pwritev, output)
+    } else if number == libc::SYS_pwritev2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        vectored_io(memory, state, args, libc::SYS_pwritev2, output)
+    } else if number == libc::SYS_pread64 as u64 {
+        pread64(memory, state, args)
+    } else if number == libc::SYS_pwrite64 as u64 {
+        pwrite64(memory, state, args)
+    } else if number == libc::SYS_sendfile as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sendfile(memory, state, args, output)
+    } else if number == libc::SYS_lseek as u64 {
+        lseek(state, args, capture_output)
+    } else if number == libc::SYS_ftruncate as u64 {
+        ftruncate(state, args)
+    } else if number == libc::SYS_truncate as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        truncate(memory, state, args)
+    } else if number == libc::SYS_fallocate as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        fallocate(state, args)
+    } else if number == libc::SYS_fsync as u64 {
+        sync_file(state, args[0], false)
+    } else if number == libc::SYS_fdatasync as u64 {
+        sync_file(state, args[0], true)
+    } else if number == libc::SYS_readahead as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
+        readahead(state, args)
+    } else if number == libc::SYS_sync_file_range as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-227): Review translated host range-sync semantics.

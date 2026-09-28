@@ -1,0 +1,2 @@
+        print('before-exec refusal: ' + type(error).__name__ + ': ' + str(error), file=sys.stderr, flush=True)
+        sys.exit(126)

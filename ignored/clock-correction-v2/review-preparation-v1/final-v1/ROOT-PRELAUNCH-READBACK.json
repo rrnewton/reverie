@@ -1,0 +1,24 @@
+{
+  "setup_sha256": "11acef6571519f16bdc90d7dae5ae087d191c957f092d14fd902ffd43a6a3502",
+  "lanes": {
+    "claude": {
+      "files": 3550,
+      "aliases": 7
+    },
+    "native": {
+      "files": 3552,
+      "aliases": 7
+    }
+  },
+  "unchanged_helpers": {
+    "claude/launch-review.py": "2fae51dc92750af09f914b673a2767071c01c0c2058c60b6c1ef1795a8e04245",
+    "claude/audit-final.py": "64f999d4d2d767eb5c86c2997806c6edb4efea2cbc36c55fb1fc69615145890c",
+    "native/launch-guard.py": "5cf9be275300e7ed9d9bff82f3066e050c4953df94e1499a03117343e635da36",
+    "native/run_stage.py": "4e096886254d294f6fbc9835bea819fed61bd9bb7909af06cf451e4793c42cfc",
+    "native/audit_source.py": "f6e2ba27bb7e6a4a680999bd7f80252ad3c82f3d20df54ee0a28f0599216f139",
+    "native/audit_split_reads.py": "f6236d2b64c8bf05bcb6f595d8d71423c1653e7acf9bb78db5e8cb7dc8f78459"
+  },
+  "semantic_inspection": "Root read complete both final prompts, SETUP, READBACK, REPORT, PLAN; mandatory goalpost block and exact source/evidence scopes checked. Prior launcher method reused for byte-identical helpers. Whole committed-source equality independently reconstructed; actual outcome artifacts separately authenticated.",
+  "authorization": "Two independent own-session continuations only; fresh all-UID cap15 admission immediately before each, inspect first actual model/policy/session before second census; preserve1,800s/64MiB bounds, no model override. No product runs/writes.",
+  "scope": "Author dispatch inspection is not reviewer approval."
+}

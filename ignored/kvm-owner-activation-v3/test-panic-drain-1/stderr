@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-panic-drain-1-3069688.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 7ms
+             CPU time consumed: 7ms
+                   Memory peak: 2M (swap: 0B)

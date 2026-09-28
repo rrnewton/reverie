@@ -1,0 +1,160 @@
+    } else {
+        sanitize_statx_timestamps(&mut stat);
+    }
+    write_struct(memory, args[4], &stat)
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 12189..12192; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+#[cfg(test)]
+fn synthetic_guest_fd_object_inode(state: &LoadedStaticElf, guest_fd: libc::c_int) -> u64 {
+    guest_fd_object_identity(state, guest_fd).inode
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 12304..12472; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
+    state
+        .files
+        .get(&guest_fd)
+        .map(AsRawFd::as_raw_fd)
+        .or_else(|| {
+            if !is_open_standard(state, guest_fd) {
+                None
+            } else if guest_fd == libc::STDIN_FILENO {
+                state.stdin.as_ref().map(AsRawFd::as_raw_fd)
+            } else {
+                Some(guest_fd)
+            }
+        })
+}
+
+// TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
+fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let guest_fd = args[0] as libc::c_int;
+    let source_alias = output_alias(state, guest_fd);
+    let source_proc_inode = state.proc_files.get(&guest_fd).copied();
+    let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
+    let source_is_random = state.random_device_fds.contains(&guest_fd);
+    let source_signalfd_mask = signalfd_mask(state, guest_fd);
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let source_object_inode = guest_fd_object_identity(state, guest_fd);
+    match args[1] as libc::c_int {
+        libc::F_DUPFD => duplicate_fd_at_or_above(
+            state,
+            host_fd,
+            args[2],
+            false,
+            DuplicateFdSource {
+                output_alias: source_alias,
+                proc_inode: source_proc_inode,
+                fdinfo: source_fdinfo,
+                object_inode: source_object_inode,
+                is_random: source_is_random,
+                signalfd_mask: source_signalfd_mask,
+            },
+        ),
+        libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(
+            state,
+            host_fd,
+            args[2],
+            true,
+            DuplicateFdSource {
+                output_alias: source_alias,
+                proc_inode: source_proc_inode,
+                fdinfo: source_fdinfo,
+                object_inode: source_object_inode,
+                is_random: source_is_random,
+                signalfd_mask: source_signalfd_mask,
+            },
+        ),
+        libc::F_GETFL => match fd_status_flags(host_fd) {
+            Ok(flags) => i64::from(
+                flags
+                    | if source_fdinfo
+                        .as_ref()
+                        .is_some_and(|info| info.nofollow_status)
+                    {
+                        libc::O_NOFOLLOW
+                    } else {
+                        0
+                    },
+            ),
+            Err(error) => error,
+        },
+        libc::F_GETFD => {
+            if state.cloexec_fds.contains(&guest_fd) {
+                i64::from(libc::FD_CLOEXEC)
+            } else {
+                0
+            }
+        }
+        libc::F_SETFD => {
+            if args[2] & libc::FD_CLOEXEC as u64 != 0 {
+                state.cloexec_fds.insert(guest_fd);
+            } else {
+                state.cloexec_fds.remove(&guest_fd);
+            }
+            0
+        }
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120): guest F_SETFL applies the
+        // kernel-settable file status flags (O_APPEND/O_ASYNC/O_DIRECT/
+        // O_NOATIME/O_NONBLOCK) to the backing host descriptor. Access mode and
+        // creation flags are silently ignored, matching fcntl(2). Without this,
+        // programs that set O_NONBLOCK on a freshly created pipe (e.g. xz)
+        // observe ENOSYS and abort.
+        libc::F_SETFL => {
+            let settable = libc::O_APPEND
+                | libc::O_ASYNC
+                | libc::O_DIRECT
+                | libc::O_NOATIME
+                | libc::O_NONBLOCK;
+            let flags = args[2] as libc::c_int & settable;
+            if source_fdinfo.is_some() && flags & libc::O_DIRECT != 0 {
+                // proc fdinfo lacks FMODE_CAN_ODIRECT, unlike its private
+                // memfd carrier. Reject before applying any requested status
+                // changes, including changes shared by descriptor aliases.
+                return negative_errno(libc::EINVAL);
+            }
+            if source_signalfd_mask.is_some() && flags & libc::O_NONBLOCK == 0 {
+                // Blocking virtual signalfd waits require scheduler ownership;
+                // reject before changing the shared open-file description.
+                return negative_errno(libc::ENOSYS);
+            }
+            // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
+            zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+        }
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-211): Review KVM advisory-lock forwarding.
+        command @ (libc::F_SETLK | libc::F_SETLKW | libc::F_OFD_SETLK | libc::F_OFD_SETLKW) => {
+            let mut lock = match read_guest_struct::<libc::flock>(memory, args[2]) {
+                Ok(lock) => lock,
+                Err(error) => return error,
+            };
+            // FileTableState synchronizes descriptors with dup(2). Closing any
+            // duplicate releases process-associated POSIX locks, whereas OFD
+            // locks correctly remain attached to the shared open description.
+            let host_command = match command {
+                libc::F_SETLK => {
+                    lock.l_pid = 0;
+                    libc::F_OFD_SETLK
+                }
+                libc::F_SETLKW => {
+                    lock.l_pid = 0;
+                    libc::F_OFD_SETLKW
+                }
+                command => command,
+            };
+            // SAFETY: host_fd is live and lock is a fully initialized flock value.
+            zero_or_errno(unsafe { libc::fcntl(host_fd, host_command, &lock) })
+        }
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(rrnewton/reverie#318): Review KVM guest pipe-capacity
+        // fcntl forwarding. F_GETPIPE_SZ/F_SETPIPE_SZ read and set the capacity
+        // of the real host pipe that backs the guest pipe, matching the golden
+        // ptrace backend's syscall behavior. Initial capacity and permission to
+        // grow are host-global properties affected by per-user pipe quotas, so
+        // deterministic tools must establish their own capacity before exposing
+        // it. Without this route the executor fell through to ENOSYS, so a guest
+        // querying or setting pipe capacity could not implement that policy.

@@ -1,0 +1,19 @@
+{
+  "driver_sha256": "929b3f409b33ce2f6e576056b3dd42eae4c6b7f4c88eaf3d09cf161625227769",
+  "driver_bytes": 5650,
+  "test_sha256": "9a007125e7ab351d04a74de6f6c6e91fc77f1bedac9268a42d9d3f8d499777f4",
+  "test_bytes": 12797,
+  "runtime_observed_sha256": "ba6d7c0246f2e64c920bcbef7b83fcf7f0c3cde3c489f077b23f7b63824d25e9",
+  "runtime_observed_bytes": 243035,
+  "new_test_declarations": [
+    "owned_runtime_error_survives_actual_callback_destructor_panic",
+    "owned_runtime_error_survives_normal_callback_destruction",
+    "polling_panic_recovers_owned_error_before_callback_destructor_panic",
+    "owned_runtime_error_survives_failure_future_destructor_panic",
+    "selected_runtime_error_survives_discarded_ready_value_panic"
+  ],
+  "concurrent_outside_region_changes": true,
+  "module_declaration_added": false,
+  "compiler_formatter_or_test_invocations": 0,
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe"
+}

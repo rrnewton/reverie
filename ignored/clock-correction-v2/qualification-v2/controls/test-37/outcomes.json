@@ -1,0 +1,24 @@
+{
+  "started": [
+    "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "task::tests::cancellable_observes_cancellation_in_the_same_poll",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.000368514
+    }
+  ]
+}

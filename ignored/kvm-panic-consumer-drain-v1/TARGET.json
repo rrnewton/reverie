@@ -1,0 +1,61 @@
+{
+  "scope": "separate private panic consumer drain and three unexecuted host test declarations",
+  "added_region_sha256": "36563bf4ecdf7cc2a9bb720de8fb11a1d882d927d557c8b176ade5195ac0dce7",
+  "records": [
+    {
+      "path": "BEFORE.json",
+      "sha256": "07f8d6de7e27deaf5e40e0f933556e8c24669b4e560d77ec3bedb28026b5250f",
+      "bytes": 495
+    },
+    {
+      "path": "runtime-before.rs",
+      "sha256": "dafcdbde310260492fd0bc9637e863df736fd51e79586560cab19ccf7ef55a5c",
+      "bytes": 224080
+    },
+    {
+      "path": "normal-drain-before.rs",
+      "sha256": "be5ab82c250743f2f5e8aa6867e50013e62bb7c2685ebed265bfc91c1c5809e6",
+      "bytes": 575
+    },
+    {
+      "path": "runtime-after.rs",
+      "sha256": "c4e1f7774569ac58e12e9e33a00882c68f83baf4b2cdc4fbecad84ea1ab236b1",
+      "bytes": 238425
+    },
+    {
+      "path": "ADDED-REGION.rs",
+      "sha256": "36563bf4ecdf7cc2a9bb720de8fb11a1d882d927d557c8b176ade5195ac0dce7",
+      "bytes": 10775
+    },
+    {
+      "path": "runtime-author-only-after.rs",
+      "sha256": "3a768c316dc511a744a0dba7b4ba73599790d0382bfb11551e484c329de548b0",
+      "bytes": 234856
+    },
+    {
+      "path": "AUTHOR.patch",
+      "sha256": "5b997740c5a31bf21067c96ebd3b845783fe6b4d95571278a7f9f0bb73853cb6",
+      "bytes": 11200
+    },
+    {
+      "path": "CONCURRENT.patch",
+      "sha256": "a0bef1d34760a08e84a70b49222861f8c6b30fc774f46f679652f1d16f0e7db1",
+      "bytes": 5200
+    },
+    {
+      "path": "owned_future-dependency.rs",
+      "sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d",
+      "bytes": 10917
+    },
+    {
+      "path": "SOURCE.json",
+      "sha256": "4651c40025ad82d12ac1ad6013b53b41d85e4163138513f934bdd37ee02bd547",
+      "bytes": 1012
+    },
+    {
+      "path": "REPORT.md",
+      "sha256": "ea79b89e682f9326aa70df70295846b601804cee406a9622538efb29d42773e2",
+      "bytes": 5323
+    }
+  ]
+}

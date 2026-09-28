@@ -1,0 +1,81 @@
+{
+  "records": [
+    {
+      "path": "PLAN.md",
+      "sha256": "9adb543c8b5a5ef2e0b632bf373997ac2c509e0c2ea63a2b66d30df81f01af32",
+      "bytes": 2184
+    },
+    {
+      "path": "REPORT.md",
+      "sha256": "57bb183d263c8a1a2a5efd5f482ad9e0050fba1ab405cf781d402525b5224851",
+      "bytes": 7650
+    },
+    {
+      "path": "SOURCE.patch",
+      "sha256": "09b27819e8b7a95b538bea01c3d6ab99f890c51e579b266f48560d4112428639",
+      "bytes": 24820
+    },
+    {
+      "path": "TESTS.json",
+      "sha256": "dc736f0ad4f79fa6b162d71505fe564fac49f7f9b199d4601cadbca82b486f2e",
+      "bytes": 329
+    },
+    {
+      "path": "UNCHANGED-TESTS.json",
+      "sha256": "cd16a9d9ce01672db97920a345d2d6637aacc06f7a73c9d8b4189f35454ed150",
+      "bytes": 350
+    },
+    {
+      "path": "baseline/reverie-kvm/src/executor.rs",
+      "sha256": "39e4035e32740ce2c1444714225083506d268748eb77232ddb00fffc5359fe48",
+      "bytes": 1529519
+    },
+    {
+      "path": "baseline/reverie-kvm/src/memory.rs",
+      "sha256": "b2608e7c76baab2a7b00b61acf44d5080dd2829bc7d6bc26c65d7f62b542bec5",
+      "bytes": 131425
+    },
+    {
+      "path": "draft/INPUT.json",
+      "sha256": "3fcd131908d136dcc123f83f2e0193cb7c2ac764b8149715ccc73d258952e6fc",
+      "bytes": 203
+    },
+    {
+      "path": "draft/entry_public_tests.rs",
+      "sha256": "7dddec614a97af84945e482549c020bcb5b244f8c85a87b4115889456f01d86e",
+      "bytes": 19833
+    },
+    {
+      "path": "draft/executor.rs",
+      "sha256": "bf20f163c44a9bf36fc4b4eeafec18207e2b179e1eff02af8e7a7e6d671bf7df",
+      "bytes": 1529595
+    },
+    {
+      "path": "draft/memory.rs",
+      "sha256": "6f054f26edac817a4ae9db2c28d6c34b00e8a192e42e1c50528584a8024fa88d",
+      "bytes": 133314
+    },
+    {
+      "path": "source-1/SOURCE.json",
+      "sha256": "1464543077ea4f6ed5e651c78141802ff617b73bce3a3e0623406441028ec38a",
+      "bytes": 476
+    },
+    {
+      "path": "source-1/reverie-kvm/src/executor.rs",
+      "sha256": "bf20f163c44a9bf36fc4b4eeafec18207e2b179e1eff02af8e7a7e6d671bf7df",
+      "bytes": 1529595
+    },
+    {
+      "path": "source-1/reverie-kvm/src/memory.rs",
+      "sha256": "6f054f26edac817a4ae9db2c28d6c34b00e8a192e42e1c50528584a8024fa88d",
+      "bytes": 133314
+    },
+    {
+      "path": "source-1/reverie-kvm/src/vm/entry_public_tests.rs",
+      "sha256": "7dddec614a97af84945e482549c020bcb5b244f8c85a87b4115889456f01d86e",
+      "bytes": 19833
+    }
+  ],
+  "execution": "none",
+  "source_released": true
+}

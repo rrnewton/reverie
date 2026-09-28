@@ -1,0 +1,21 @@
+{
+  "records_authenticated": 178,
+  "phases": 29,
+  "raw_statuses": [
+    0
+  ],
+  "passed": 50,
+  "test_launches": 25,
+  "test_wall_seconds": 2.239019975764677,
+  "phase_wall_seconds": 26.961947568692267,
+  "summed_reported_cpu_seconds": 32.853,
+  "cpu_reports": 29,
+  "observed_cgroups": 25,
+  "observed_cgroups_absent": 25,
+  "inventory_declarations": 634,
+  "executable": {
+    "bytes": 165779640,
+    "sha256": "4be7d3acd909edf89c9d366712e87c25eb3d822c6569e050d1b6e84b3d5e4157"
+  },
+  "source_manifest_sha256": "c0e6e34bcb02d37c3a988a1bbbd2d37999f353dd0411b2a7860eb32997cd81e9"
+}

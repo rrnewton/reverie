@@ -1,0 +1,1892 @@
+﻿2026-08-30T03:31:02.1260288Z Current runner version: '2.336.0'
+2026-08-30T03:31:02.1264412Z Runner name: 'reverie-ci-newton-2'
+2026-08-30T03:31:02.1264999Z Runner group name: 'Default'
+2026-08-30T03:31:02.1265564Z Machine name: 'newton-fedora-MZ01GC9H'
+2026-08-30T03:31:02.1267423Z ##[group]GITHUB_TOKEN Permissions
+2026-08-30T03:31:02.1268860Z Contents: read
+2026-08-30T03:31:02.1269263Z Metadata: read
+2026-08-30T03:31:02.1269626Z Packages: read
+2026-08-30T03:31:02.1270047Z ##[endgroup]
+2026-08-30T03:31:02.1271280Z Secret source: Actions
+2026-08-30T03:31:02.1272033Z Prepare workflow directory
+2026-08-30T03:31:02.1557315Z Prepare all required actions
+2026-08-30T03:31:02.1585782Z Getting action download info
+2026-08-30T03:31:02.6367624Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-08-30T03:31:03.4312591Z Download action repository 'dtolnay/rust-toolchain@nightly' (SHA:7c8d7d138f5c09cef361f8214cf96882cd029cdb)
+2026-08-30T03:31:04.0619776Z Complete job name: Host-dependent tests (self-hosted)
+2026-08-30T03:31:04.0989185Z ##[group]Run set -euo pipefail
+2026-08-30T03:31:04.0990010Z [36;1mset -euo pipefail[0m
+2026-08-30T03:31:04.0990751Z [36;1mif [ "${SKIP_LOAD_PRECONDITION:-}" = "true" ]; then[0m
+2026-08-30T03:31:04.0991995Z [36;1m  echo "REVERIE_SKIP_LOAD_PRECONDITION=true -> skipping host-load precondition."[0m
+2026-08-30T03:31:04.0993120Z [36;1m  exit 0[0m
+2026-08-30T03:31:04.0993660Z [36;1mfi[0m
+2026-08-30T03:31:04.0994250Z [36;1mread -r load1 _ < /proc/loadavg[0m
+2026-08-30T03:31:04.0994943Z [36;1mcores="$(nproc)"[0m
+2026-08-30T03:31:04.0995854Z [36;1mlimit="$(awk -v c="$cores" -v m="$MAX_LOAD_PER_CORE" 'BEGIN { printf "%.2f", c * m }')"[0m
+2026-08-30T03:31:04.0997176Z [36;1mecho "host 1m-load=$load1 cores=$cores max-per-core=$MAX_LOAD_PER_CORE limit=$limit"[0m
+2026-08-30T03:31:04.0998439Z [36;1mover="$(awk -v l="$load1" -v lim="$limit" 'BEGIN { print (l > lim) ? 1 : 0 }')"[0m
+2026-08-30T03:31:04.0999386Z [36;1mif [ "$over" = "1" ]; then[0m
+2026-08-30T03:31:04.1003365Z [36;1m  echo "::error title=Host too loaded to measure (not a product failure)::1-minute load average ${load1} exceeds ${limit} (${cores} cores x ${MAX_LOAD_PER_CORE}). PMU/perf-counter determinism tests cannot be measured validly on a contended host, so this run is refused rather than reporting an invalid measurement. This is NOT a Reverie regression. Remedies: re-run on a quiesced host, add a second 'reverie' self-hosted runner (removes the SPOF), raise vars.REVERIE_MAX_LOAD_PER_CORE, or set vars.REVERIE_SKIP_LOAD_PRECONDITION=true to opt out."[0m
+2026-08-30T03:31:04.1007225Z [36;1m  exit 1[0m
+2026-08-30T03:31:04.1007749Z [36;1mfi[0m
+2026-08-30T03:31:04.1008533Z [36;1mecho "Host load within budget; proceeding with host-dependent tests."[0m
+2026-08-30T03:31:04.1019863Z shell: /usr/bin/bash -e {0}
+2026-08-30T03:31:04.1020630Z env:
+2026-08-30T03:31:04.1021153Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:04.1021769Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:04.1022395Z   MAX_LOAD_PER_CORE: 1.5
+2026-08-30T03:31:04.1023064Z   SKIP_LOAD_PRECONDITION: 
+2026-08-30T03:31:04.1023679Z ##[endgroup]
+2026-08-30T03:31:04.1137085Z host 1m-load=1.31 cores=64 max-per-core=1.5 limit=96.00
+2026-08-30T03:31:04.1138085Z Host load within budget; proceeding with host-dependent tests.
+2026-08-30T03:31:04.1324781Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-08-30T03:31:04.1331061Z ##[group]Run actions/checkout@v4
+2026-08-30T03:31:04.1331755Z with:
+2026-08-30T03:31:04.1332265Z   submodules: false
+2026-08-30T03:31:04.1332837Z   repository: rrnewton/reverie
+2026-08-30T03:31:04.1337964Z   token: ***
+2026-08-30T03:31:04.1338517Z   ssh-strict: true
+2026-08-30T03:31:04.1339130Z   ssh-user: git
+2026-08-30T03:31:04.1339679Z   persist-credentials: true
+2026-08-30T03:31:04.1340457Z   clean: true
+2026-08-30T03:31:04.1341020Z   sparse-checkout-cone-mode: true
+2026-08-30T03:31:04.1341664Z   fetch-depth: 1
+2026-08-30T03:31:04.1342203Z   fetch-tags: false
+2026-08-30T03:31:04.1342747Z   show-progress: true
+2026-08-30T03:31:04.1343405Z   lfs: false
+2026-08-30T03:31:04.1343928Z   set-safe-directory: true
+2026-08-30T03:31:04.1344545Z   allow-unsafe-pr-checkout: false
+2026-08-30T03:31:04.1345175Z env:
+2026-08-30T03:31:04.1345681Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:04.1346304Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:04.1346908Z ##[endgroup]
+2026-08-30T03:31:04.2072401Z Syncing repository: rrnewton/reverie
+2026-08-30T03:31:04.2074215Z ##[group]Getting Git version info
+2026-08-30T03:31:04.2075015Z Working directory is '/runner-state/_work/reverie/reverie'
+2026-08-30T03:31:04.2076158Z [command]/usr/bin/git version
+2026-08-30T03:31:04.2080175Z git version 2.43.0
+2026-08-30T03:31:04.2095847Z ##[endgroup]
+2026-08-30T03:31:04.2106882Z Temporarily overriding HOME='/runner-state/_work/_temp/cbf5cb41-48de-49e1-935b-69f9bce9d641' before making global git config changes
+2026-08-30T03:31:04.2108673Z Adding repository directory to the temporary git global config as a safe directory
+2026-08-30T03:31:04.2110069Z [command]/usr/bin/git config --global --add safe.directory /runner-state/_work/reverie/reverie
+2026-08-30T03:31:04.2142124Z [command]/usr/bin/git config --local --get remote.origin.url
+2026-08-30T03:31:04.2158307Z https://github.com/rrnewton/reverie
+2026-08-30T03:31:04.2166746Z ##[group]Removing previously created refs, to avoid conflicts
+2026-08-30T03:31:04.2168118Z [command]/usr/bin/git rev-parse --symbolic-full-name --verify --quiet HEAD
+2026-08-30T03:31:04.2186785Z refs/heads/type-audit/exhaustive-local-enum-defaults-current-main
+2026-08-30T03:31:04.2191228Z [command]/usr/bin/git checkout --detach
+2026-08-30T03:31:04.3949656Z HEAD is now at 5b8fd3f Make local enum defaults exhaustive
+2026-08-30T03:31:04.3996076Z [command]/usr/bin/git branch --delete --force type-audit/exhaustive-local-enum-defaults-current-main
+2026-08-30T03:31:04.4027297Z Deleted branch type-audit/exhaustive-local-enum-defaults-current-main (was 5b8fd3f).
+2026-08-30T03:31:04.4118350Z ##[endgroup]
+2026-08-30T03:31:04.4121069Z [command]/usr/bin/git submodule status
+2026-08-30T03:31:04.4435201Z  929840ad9190e5086775e8debc0f0b79b4208d59 third-party/dynamorio (929840a)
+2026-08-30T03:31:04.4435606Z -6c2c03c1da74b14daf1788a9f8dccfa354ce04a6 third-party/e9patch
+2026-08-30T03:31:04.4435956Z -41113f849f8799932ed8c7883f5a4de616b9e9fa third-party/sabre
+2026-08-30T03:31:04.4443502Z ##[group]Cleaning the repository
+2026-08-30T03:31:04.4445928Z [command]/usr/bin/git clean -ffdx
+2026-08-30T03:31:05.9198981Z Removing Cargo.lock
+2026-08-30T03:31:05.9199577Z Removing target/
+2026-08-30T03:31:05.9206625Z [command]/usr/bin/git reset --hard HEAD
+2026-08-30T03:31:05.9434247Z HEAD is now at 5b8fd3f Make local enum defaults exhaustive
+2026-08-30T03:31:05.9439698Z ##[endgroup]
+2026-08-30T03:31:05.9442593Z ##[group]Disabling automatic garbage collection
+2026-08-30T03:31:05.9445726Z [command]/usr/bin/git config --local gc.auto 0
+2026-08-30T03:31:05.9475970Z ##[endgroup]
+2026-08-30T03:31:05.9476627Z ##[group]Setting up auth
+2026-08-30T03:31:05.9479849Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-08-30T03:31:05.9506881Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-08-30T03:31:05.9724700Z Entering 'third-party/dynamorio'
+2026-08-30T03:31:05.9767950Z Entering 'third-party/dynamorio/third_party/elfutils'
+2026-08-30T03:31:05.9803405Z Entering 'third-party/dynamorio/third_party/libipt'
+2026-08-30T03:31:05.9837914Z Entering 'third-party/dynamorio/third_party/zlib'
+2026-08-30T03:31:05.9884854Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-08-30T03:31:05.9908868Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-08-30T03:31:06.0111474Z Entering 'third-party/dynamorio'
+2026-08-30T03:31:06.0151686Z Entering 'third-party/dynamorio/third_party/elfutils'
+2026-08-30T03:31:06.0195059Z Entering 'third-party/dynamorio/third_party/libipt'
+2026-08-30T03:31:06.0231760Z Entering 'third-party/dynamorio/third_party/zlib'
+2026-08-30T03:31:06.0282158Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:31:06.0305597Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-08-30T03:31:06.0532410Z Entering 'third-party/dynamorio'
+2026-08-30T03:31:06.0546608Z file:/runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/config	remote.origin.url
+2026-08-30T03:31:06.0570093Z Entering 'third-party/dynamorio/third_party/elfutils'
+2026-08-30T03:31:06.0584866Z file:/runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/elfutils/config	remote.origin.url
+2026-08-30T03:31:06.0600748Z Entering 'third-party/dynamorio/third_party/libipt'
+2026-08-30T03:31:06.0616809Z file:/runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/libipt/config	remote.origin.url
+2026-08-30T03:31:06.0631031Z Entering 'third-party/dynamorio/third_party/zlib'
+2026-08-30T03:31:06.0646464Z file:/runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/zlib/config	remote.origin.url
+2026-08-30T03:31:06.0676164Z [command]/usr/bin/git config --file /runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:31:06.0698243Z [command]/usr/bin/git config --file /runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/elfutils/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:31:06.0725148Z [command]/usr/bin/git config --file /runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/libipt/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:31:06.0747056Z [command]/usr/bin/git config --file /runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/zlib/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:31:06.0770788Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-08-30T03:31:06.0797286Z ##[endgroup]
+2026-08-30T03:31:06.0797935Z ##[group]Fetching the repository
+2026-08-30T03:31:06.0801767Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +bc106a195dfe7ba8e00c358a7bab11256202a1e6:refs/remotes/origin/main
+2026-08-30T03:31:06.8470723Z From https://github.com/rrnewton/reverie
+2026-08-30T03:31:06.8471463Z  + f2e9839...bc106a1 bc106a195dfe7ba8e00c358a7bab11256202a1e6 -> origin/main  (forced update)
+2026-08-30T03:31:06.8494273Z ##[endgroup]
+2026-08-30T03:31:06.8494530Z ##[group]Determining the checkout info
+2026-08-30T03:31:06.8496026Z ##[endgroup]
+2026-08-30T03:31:06.8499489Z [command]/usr/bin/git sparse-checkout disable
+2026-08-30T03:31:06.8567942Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-08-30T03:31:06.8593482Z ##[group]Checking out the ref
+2026-08-30T03:31:06.8598352Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-08-30T03:31:06.8712182Z Previous HEAD position was 5b8fd3f Make local enum defaults exhaustive
+2026-08-30T03:31:06.9081991Z Switched to a new branch 'main'
+2026-08-30T03:31:06.9082450Z branch 'main' set up to track 'origin/main'.
+2026-08-30T03:31:06.9086838Z ##[endgroup]
+2026-08-30T03:31:06.9121521Z [command]/usr/bin/git log -1 --format=%H
+2026-08-30T03:31:06.9146636Z bc106a195dfe7ba8e00c358a7bab11256202a1e6
+2026-08-30T03:31:06.9276790Z ##[group]Run # Detect the native package manager dnf-FIRST: the Fedora self-hosted
+2026-08-30T03:31:06.9277300Z [36;1m# Detect the native package manager dnf-FIRST: the Fedora self-hosted[0m
+2026-08-30T03:31:06.9277617Z [36;1m# runners also have apt-get on PATH, but its repos lack cmake/zlib1g-dev,[0m
+2026-08-30T03:31:06.9277936Z [36;1m# so keying on `command -v apt-get` took the apt branch and failed with[0m
+2026-08-30T03:31:06.9278240Z [36;1m# "Unable to locate package cmake" (exit 100). dnf-first routes each[0m
+2026-08-30T03:31:06.9278479Z [36;1m# distro to its own manager.[0m
+2026-08-30T03:31:06.9278673Z [36;1mif command -v dnf >/dev/null; then[0m
+2026-08-30T03:31:06.9278911Z [36;1m  sudo dnf install -y libunwind-devel xz-devel cmake zlib-devel[0m
+2026-08-30T03:31:06.9279155Z [36;1melif command -v apt-get >/dev/null; then[0m
+2026-08-30T03:31:06.9279407Z [36;1m  sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev[0m
+2026-08-30T03:31:06.9279699Z [36;1mfi[0m
+2026-08-30T03:31:06.9287526Z shell: /usr/bin/bash -e {0}
+2026-08-30T03:31:06.9287693Z env:
+2026-08-30T03:31:06.9341954Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:06.9342163Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:06.9342333Z ##[endgroup]
+2026-08-30T03:31:07.0899640Z sudo: unable to resolve host newton-fedora-MZ01GC9H: Name or service not known
+2026-08-30T03:31:07.5771760Z Reading package lists...
+2026-08-30T03:31:07.6877894Z Building dependency tree...
+2026-08-30T03:31:07.6880455Z Reading state information...
+2026-08-30T03:31:07.7964036Z libunwind-dev is already the newest version (1.6.2-3build1.1).
+2026-08-30T03:31:07.7964731Z liblzma-dev is already the newest version (5.6.1+really5.4.5-1ubuntu0.3).
+2026-08-30T03:31:07.7965308Z cmake is already the newest version (3.28.3-1build7).
+2026-08-30T03:31:07.7965848Z zlib1g-dev is already the newest version (1:1.3.dfsg-3.1ubuntu2.1).
+2026-08-30T03:31:07.7966434Z 0 upgraded, 0 newly installed, 0 to remove and 22 not upgraded.
+2026-08-30T03:31:07.8105379Z ##[group]Run dtolnay/rust-toolchain@nightly
+2026-08-30T03:31:07.8105591Z with:
+2026-08-30T03:31:07.8105721Z   toolchain: nightly
+2026-08-30T03:31:07.8105859Z env:
+2026-08-30T03:31:07.8105983Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:07.8106144Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:07.8106312Z ##[endgroup]
+2026-08-30T03:31:07.8144920Z ##[start-action display=Parse toolchain version;id=__dtolnay_rust-toolchain.parse]
+2026-08-30T03:31:07.8173316Z ##[group]Run if [[ -z $toolchain ]]; then
+2026-08-30T03:31:07.8173535Z [36;1mif [[ -z $toolchain ]]; then[0m
+2026-08-30T03:31:07.8173857Z [36;1m  # GitHub does not enforce `required: true` inputs itself. https://github.com/actions/runner/issues/1070[0m
+2026-08-30T03:31:07.8174202Z [36;1m  echo "'toolchain' is a required input" >&2[0m
+2026-08-30T03:31:07.8174422Z [36;1m  exit 1[0m
+2026-08-30T03:31:07.8174650Z [36;1melif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then[0m
+2026-08-30T03:31:07.8174940Z [36;1m  if [[ Linux == macOS ]]; then[0m
+2026-08-30T03:31:07.8175277Z [36;1m    echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:07.8175612Z [36;1m  else[0m
+2026-08-30T03:31:07.8175868Z [36;1m    echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:07.8176144Z [36;1m  fi[0m
+2026-08-30T03:31:07.8176340Z [36;1melif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then[0m
+2026-08-30T03:31:07.8176668Z [36;1m  echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:07.8176949Z [36;1melif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then[0m
+2026-08-30T03:31:07.8177269Z [36;1m  echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:07.8177562Z [36;1melse[0m
+2026-08-30T03:31:07.8177725Z [36;1m  echo "toolchain=$toolchain" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:07.8178053Z [36;1mfi[0m
+2026-08-30T03:31:07.8186407Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:07.8186626Z env:
+2026-08-30T03:31:07.8186761Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:07.8186925Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:07.8187085Z   toolchain: nightly
+2026-08-30T03:31:07.8187226Z ##[endgroup]
+2026-08-30T03:31:07.8234580Z ##[end-action id=__dtolnay_rust-toolchain.parse;outcome=success;conclusion=success;duration_ms=8]
+2026-08-30T03:31:07.8239325Z ##[start-action display=Construct rustup command line;id=__dtolnay_rust-toolchain.flags]
+2026-08-30T03:31:07.8260971Z ##[group]Run echo "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT
+2026-08-30T03:31:07.8261355Z [36;1mecho "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:07.8261743Z [36;1mecho "components=$(for c in ${components//,/ }; do echo -n ' --component' $c; done)" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:07.8262049Z [36;1mecho "downgrade=" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:07.8270306Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:07.8270524Z env:
+2026-08-30T03:31:07.8270663Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:07.8270821Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:07.8270979Z   targets: 
+2026-08-30T03:31:07.8271106Z   components: 
+2026-08-30T03:31:07.8271238Z ##[endgroup]
+2026-08-30T03:31:07.8312179Z ##[end-action id=__dtolnay_rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=7]
+2026-08-30T03:31:07.8313750Z ##[start-action display=Set $CARGO_HOME;id=__dtolnay_rust-toolchain.__run]
+2026-08-30T03:31:07.8327997Z ##[group]Run echo CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV
+2026-08-30T03:31:07.8328338Z [36;1mecho CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV[0m
+2026-08-30T03:31:07.8334483Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:07.8334706Z env:
+2026-08-30T03:31:07.8334836Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:07.8334998Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:07.8335154Z ##[endgroup]
+2026-08-30T03:31:07.8362258Z ##[end-action id=__dtolnay_rust-toolchain.__run;outcome=success;conclusion=success;duration_ms=4]
+2026-08-30T03:31:07.8363693Z ##[start-action display=Install rustup if needed;id=__dtolnay_rust-toolchain.__run_2]
+2026-08-30T03:31:07.8380185Z ##[group]Run if ! command -v rustup &>/dev/null; then
+2026-08-30T03:31:07.8380417Z [36;1mif ! command -v rustup &>/dev/null; then[0m
+2026-08-30T03:31:07.8380889Z [36;1m  curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y[0m
+2026-08-30T03:31:07.8381373Z [36;1m  echo "$CARGO_HOME/bin" >> $GITHUB_PATH[0m
+2026-08-30T03:31:07.8381554Z [36;1mfi[0m
+2026-08-30T03:31:07.8387192Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:07.8387401Z env:
+2026-08-30T03:31:07.8387546Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:07.8387707Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:07.8387867Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:07.8388008Z ##[endgroup]
+2026-08-30T03:31:07.8419836Z ##[end-action id=__dtolnay_rust-toolchain.__run_2;outcome=success;conclusion=success;duration_ms=5]
+2026-08-30T03:31:07.8421213Z ##[start-action display=Install rustup if needed on windows;id=__dtolnay_rust-toolchain.__run_3]
+2026-08-30T03:31:07.8425249Z ##[end-action id=__dtolnay_rust-toolchain.__run_3;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-08-30T03:31:07.8431486Z ##[start-action display=rustup toolchain install nightly;id=__dtolnay_rust-toolchain.__run_4]
+2026-08-30T03:31:07.8444878Z ##[group]Run rustup toolchain install nightly --profile minimal --no-self-update
+2026-08-30T03:31:07.8445212Z [36;1mrustup toolchain install nightly --profile minimal --no-self-update[0m
+2026-08-30T03:31:07.8450822Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:07.8451157Z env:
+2026-08-30T03:31:07.8451289Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:07.8451448Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:07.8451612Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:07.8451765Z   RUSTUP_PERMIT_COPY_RENAME: 1
+2026-08-30T03:31:07.8451919Z ##[endgroup]
+2026-08-30T03:31:07.8935686Z info: syncing channel updates for nightly-x86_64-unknown-linux-gnu
+2026-08-30T03:31:08.1612056Z 
+2026-08-30T03:31:08.1696164Z   nightly-x86_64-unknown-linux-gnu unchanged - rustc 1.100.0-nightly (fd7ed57df 2026-08-29)
+2026-08-30T03:31:08.1696415Z 
+2026-08-30T03:31:08.1737135Z ##[end-action id=__dtolnay_rust-toolchain.__run_4;outcome=success;conclusion=success;duration_ms=330]
+2026-08-30T03:31:08.1741336Z ##[start-action display=rustup default nightly;id=__dtolnay_rust-toolchain.__run_5]
+2026-08-30T03:31:08.1757448Z ##[group]Run rustup default nightly
+2026-08-30T03:31:08.1757654Z [36;1mrustup default nightly[0m
+2026-08-30T03:31:08.1765194Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:08.1765423Z env:
+2026-08-30T03:31:08.1765558Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:08.1765723Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:08.1765885Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:08.1766031Z ##[endgroup]
+2026-08-30T03:31:08.1829682Z info: using existing install for nightly-x86_64-unknown-linux-gnu
+2026-08-30T03:31:08.1881862Z info: default toolchain set to nightly-x86_64-unknown-linux-gnu
+2026-08-30T03:31:08.1882020Z 
+2026-08-30T03:31:08.1962558Z   nightly-x86_64-unknown-linux-gnu unchanged - rustc 1.100.0-nightly (fd7ed57df 2026-08-29)
+2026-08-30T03:31:08.1963450Z info: note that the toolchain 'nightly-2026-07-29-x86_64-unknown-linux-gnu' is currently in use (overridden by '/runner-state/_work/reverie/reverie/rust-toolchain.toml')
+2026-08-30T03:31:08.1964024Z 
+2026-08-30T03:31:08.1974947Z ##[end-action id=__dtolnay_rust-toolchain.__run_5;outcome=success;conclusion=success;duration_ms=23]
+2026-08-30T03:31:08.1976370Z ##[start-action display=Create cachekey;id=__dtolnay_rust-toolchain.rustc-version]
+2026-08-30T03:31:08.1990342Z ##[group]Run DATE=$(rustc +nightly --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')
+2026-08-30T03:31:08.1990824Z [36;1mDATE=$(rustc +nightly --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')[0m
+2026-08-30T03:31:08.1991233Z [36;1mHASH=$(rustc +nightly --version --verbose | sed -ne 's/^commit-hash: //p')[0m
+2026-08-30T03:31:08.1991539Z [36;1mecho "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT[0m
+2026-08-30T03:31:08.1998026Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:08.2013584Z env:
+2026-08-30T03:31:08.2013736Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:08.2013907Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:08.2014073Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:08.2014222Z ##[endgroup]
+2026-08-30T03:31:08.2324624Z ##[end-action id=__dtolnay_rust-toolchain.rustc-version;outcome=success;conclusion=success;duration_ms=34]
+2026-08-30T03:31:08.2327387Z ##[start-action display=Disable incremental compilation;id=__dtolnay_rust-toolchain.__run_6]
+2026-08-30T03:31:08.2342592Z ##[group]Run if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+2026-08-30T03:31:08.2342847Z [36;1mif [ -z "${CARGO_INCREMENTAL+set}" ]; then[0m
+2026-08-30T03:31:08.2343173Z [36;1m  echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV[0m
+2026-08-30T03:31:08.2343484Z [36;1mfi[0m
+2026-08-30T03:31:08.2351476Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:08.2351723Z env:
+2026-08-30T03:31:08.2351866Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:08.2352059Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:08.2352223Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:08.2352383Z ##[endgroup]
+2026-08-30T03:31:08.2379234Z ##[end-action id=__dtolnay_rust-toolchain.__run_6;outcome=success;conclusion=success;duration_ms=5]
+2026-08-30T03:31:08.2380674Z ##[start-action display=Enable colors in Cargo output;id=__dtolnay_rust-toolchain.__run_7]
+2026-08-30T03:31:08.2394061Z ##[group]Run if [ -z "${CARGO_TERM_COLOR+set}" ]; then
+2026-08-30T03:31:08.2394297Z [36;1mif [ -z "${CARGO_TERM_COLOR+set}" ]; then[0m
+2026-08-30T03:31:08.2394510Z [36;1m  echo CARGO_TERM_COLOR=always >> $GITHUB_ENV[0m
+2026-08-30T03:31:08.2394701Z [36;1mfi[0m
+2026-08-30T03:31:08.2400995Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:08.2401208Z env:
+2026-08-30T03:31:08.2401347Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:08.2401508Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:08.2401669Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:08.2401815Z   CARGO_INCREMENTAL: 0
+2026-08-30T03:31:08.2401955Z ##[endgroup]
+2026-08-30T03:31:08.2427162Z ##[end-action id=__dtolnay_rust-toolchain.__run_7;outcome=success;conclusion=success;duration_ms=4]
+2026-08-30T03:31:08.2428472Z ##[start-action display=Enable Cargo sparse registry;id=__dtolnay_rust-toolchain.__run_8]
+2026-08-30T03:31:08.2441953Z ##[group]Run # implemented in 1.66, stabilized in 1.68, made default in 1.70
+2026-08-30T03:31:08.2442267Z [36;1m# implemented in 1.66, stabilized in 1.68, made default in 1.70[0m
+2026-08-30T03:31:08.2442700Z [36;1mif [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/runner-state/_work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then[0m
+2026-08-30T03:31:08.2443197Z [36;1m  if rustc +nightly --version --verbose | grep -q '^release: 1\.6[89]\.'; then[0m
+2026-08-30T03:31:08.2443559Z [36;1m    touch "/runner-state/_work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+2026-08-30T03:31:08.2443921Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV[0m
+2026-08-30T03:31:08.2444232Z [36;1m  elif rustc +nightly --version --verbose | grep -q '^release: 1\.6[67]\.'; then[0m
+2026-08-30T03:31:08.2444581Z [36;1m    touch "/runner-state/_work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+2026-08-30T03:31:08.2445009Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV[0m
+2026-08-30T03:31:08.2445236Z [36;1m  fi[0m
+2026-08-30T03:31:08.2445369Z [36;1mfi[0m
+2026-08-30T03:31:08.2450880Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:08.2451091Z env:
+2026-08-30T03:31:08.2451230Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:08.2451391Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:08.2451551Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:08.2451702Z   CARGO_INCREMENTAL: 0
+2026-08-30T03:31:08.2451850Z ##[endgroup]
+2026-08-30T03:31:08.2732025Z ##[end-action id=__dtolnay_rust-toolchain.__run_8;outcome=success;conclusion=success;duration_ms=30]
+2026-08-30T03:31:08.2733623Z ##[start-action display=Work around spurious network errors in curl 8.0;id=__dtolnay_rust-toolchain.__run_9]
+2026-08-30T03:31:08.2748860Z ##[group]Run # https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation
+2026-08-30T03:31:08.2749328Z [36;1m# https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation[0m
+2026-08-30T03:31:08.2749705Z [36;1mif rustc +nightly --version --verbose | grep -q '^release: 1\.7[01]\.'; then[0m
+2026-08-30T03:31:08.2749991Z [36;1m  echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV[0m
+2026-08-30T03:31:08.2750191Z [36;1mfi[0m
+2026-08-30T03:31:08.2756530Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:08.2756744Z env:
+2026-08-30T03:31:08.2756877Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:08.2757038Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:08.2757198Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:08.2757341Z   CARGO_INCREMENTAL: 0
+2026-08-30T03:31:08.2757486Z ##[endgroup]
+2026-08-30T03:31:08.2917362Z ##[end-action id=__dtolnay_rust-toolchain.__run_9;outcome=success;conclusion=success;duration_ms=18]
+2026-08-30T03:31:08.2919464Z ##[start-action display=rustc +nightly --version --verbose;id=__dtolnay_rust-toolchain.__run_10]
+2026-08-30T03:31:08.2932134Z ##[group]Run rustc +nightly --version --verbose
+2026-08-30T03:31:08.2932477Z [36;1mrustc +nightly --version --verbose[0m
+2026-08-30T03:31:08.2938235Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-30T03:31:08.2938448Z env:
+2026-08-30T03:31:08.2938582Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:08.2938745Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:08.2938907Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:08.2939054Z   CARGO_INCREMENTAL: 0
+2026-08-30T03:31:08.2939196Z ##[endgroup]
+2026-08-30T03:31:08.3061982Z rustc 1.100.0-nightly (fd7ed57df 2026-08-29)
+2026-08-30T03:31:08.3062181Z binary: rustc
+2026-08-30T03:31:08.3062355Z commit-hash: fd7ed57dfd3bdebb745a1d8158638727b0e7047a
+2026-08-30T03:31:08.3062556Z commit-date: 2026-08-29
+2026-08-30T03:31:08.3062715Z host: x86_64-unknown-linux-gnu
+2026-08-30T03:31:08.3062875Z release: 1.100.0-nightly
+2026-08-30T03:31:08.3063113Z LLVM version: 23.1.0
+2026-08-30T03:31:08.3085968Z ##[end-action id=__dtolnay_rust-toolchain.__run_10;outcome=success;conclusion=success;duration_ms=16]
+2026-08-30T03:31:08.3124598Z ##[group]Run # Informative timeout: this step is the known wedge site (the 2h44m hang
+2026-08-30T03:31:08.3124978Z [36;1m# Informative timeout: this step is the known wedge site (the 2h44m hang[0m
+2026-08-30T03:31:08.3125285Z [36;1m# lived here). The job is hard-boxed at timeout-minutes:10, but a bare[0m
+2026-08-30T03:31:08.3125581Z [36;1m# GitHub job timeout says only "job cancelled" -- not which step, for how[0m
+2026-08-30T03:31:08.3125892Z [36;1m# long, or whether it was a genuine hang vs host-load starvation. Launch a[0m
+2026-08-30T03:31:08.3126196Z [36;1m# background watchdog that, ~1-2 min before the hard box, prints this step[0m
+2026-08-30T03:31:08.3126495Z [36;1m# + elapsed + two live thread/wchan snapshots of the test tree. It never[0m
+2026-08-30T03:31:08.3126798Z [36;1m# fails the build (timeout-minutes stays the enforcement); on the green[0m
+2026-08-30T03:31:08.3127113Z [36;1m# path the test finishes first and the watchdog is killed mid-sleep,[0m
+2026-08-30T03:31:08.3127372Z [36;1m# costing nothing.[0m
+2026-08-30T03:31:08.3127548Z [36;1mscripts/ci-timeout-watchdog.sh \[0m
+2026-08-30T03:31:08.3127758Z [36;1m  --step "Host-dependent workspace tests" \[0m
+2026-08-30T03:31:08.3127973Z [36;1m  --soft-deadline 300 --hard-box 540 &[0m
+2026-08-30T03:31:08.3128155Z [36;1mwatchdog=$![0m
+2026-08-30T03:31:08.3128292Z [36;1mset +e[0m
+2026-08-30T03:31:08.3128476Z [36;1mcargo test --workspace --all-features -- --test-threads=1[0m
+2026-08-30T03:31:08.3128703Z [36;1mstatus=$?[0m
+2026-08-30T03:31:08.3128859Z [36;1mkill "$watchdog" 2>/dev/null || true[0m
+2026-08-30T03:31:08.3129047Z [36;1mwait "$watchdog" 2>/dev/null || true[0m
+2026-08-30T03:31:08.3129219Z [36;1mexit "$status"[0m
+2026-08-30T03:31:08.3135331Z shell: /usr/bin/bash -e {0}
+2026-08-30T03:31:08.3135493Z env:
+2026-08-30T03:31:08.3135634Z   CARGO_TERM_COLOR: always
+2026-08-30T03:31:08.3135798Z   RUSTFLAGS: -C link-arg=-llzma
+2026-08-30T03:31:08.3136019Z   CARGO_HOME: /root/.cargo
+2026-08-30T03:31:08.3136170Z   CARGO_INCREMENTAL: 0
+2026-08-30T03:31:08.3136319Z   REVERIE_REQUIRE_KVM: 1
+2026-08-30T03:31:08.3136474Z ##[endgroup]
+2026-08-30T03:31:08.3748488Z [1m[92m    Updating[0m crates.io index
+2026-08-30T03:31:08.3877807Z [1m[92m    Updating[0m git repository `https://github.com/rrnewton/liteinst2`
+2026-08-30T03:31:09.3664759Z [1m[92m     Locking[0m 263 packages to latest compatible versions
+2026-08-30T03:31:09.3675135Z [1m[92m      Adding[0m addr2line v0.26.1 [1m[33m(available: v0.27.1)[0m
+2026-08-30T03:31:09.3703727Z [1m[92m      Adding[0m atomic v0.5.3 [1m[33m(available: v0.6.1)[0m
+2026-08-30T03:31:09.3707703Z [1m[92m      Adding[0m bincode v1.3.3 [1m[33m(available: v3.0.0)[0m
+2026-08-30T03:31:09.3708347Z [1m[92m      Adding[0m bincode v2.0.1 [1m[33m(available: v3.0.0)[0m
+2026-08-30T03:31:09.3803412Z [1m[92m      Adding[0m clap v3.2.25 [1m[33m(available: v4.6.6)[0m
+2026-08-30T03:31:09.3833777Z [1m[92m      Adding[0m colored v2.2.0 [1m[33m(available: v3.1.1)[0m
+2026-08-30T03:31:09.3845818Z [1m[92m      Adding[0m darling v0.14.4 [1m[33m(available: v0.24.1)[0m
+2026-08-30T03:31:09.3859768Z [1m[92m      Adding[0m derive_more v1.0.0 [1m[33m(available: v2.1.1)[0m
+2026-08-30T03:31:09.3866704Z [1m[92m      Adding[0m dirs v2.0.2 [1m[33m(available: v6.0.0)[0m
+2026-08-30T03:31:09.3901954Z [1m[92m      Adding[0m generic-array v0.14.7 [1m[33m(available: v0.14.9)[0m
+2026-08-30T03:31:09.3929172Z [1m[92m      Adding[0m heapless v0.8.0 [1m[33m(available: v0.9.3)[0m
+2026-08-30T03:31:09.3929931Z [1m[92m      Adding[0m heck v0.3.3 [1m[33m(available: v0.5.0)[0m
+2026-08-30T03:31:09.3979529Z [1m[92m      Adding[0m nix v0.30.1 [1m[33m(available: v0.31.3)[0m
+2026-08-30T03:31:09.3994023Z [1m[92m      Adding[0m object v0.36.7 [1m[33m(available: v0.40.0)[0m
+2026-08-30T03:31:09.4011464Z [1m[92m      Adding[0m perf-event-open-sys v5.0.0 [1m[33m(available: v6.0.0)[0m
+2026-08-30T03:31:09.4042393Z [1m[92m      Adding[0m raw-cpuid v10.7.0 [1m[33m(available: v11.6.0)[0m
+2026-08-30T03:31:09.4186332Z [1m[92m      Adding[0m sha2 v0.10.9 [1m[33m(available: v0.11.0)[0m
+2026-08-30T03:31:09.4205251Z [1m[92m      Adding[0m syn v1.0.109 [1m[33m(available: v3.0.4)[0m
+2026-08-30T03:31:09.4216808Z [1m[92m      Adding[0m syscalls v0.6.18 [1m[33m(available: v0.8.1)[0m
+2026-08-30T03:31:09.6154539Z [1m[92m   Compiling[0m proc-macro2 v1.0.107
+2026-08-30T03:31:09.6154815Z [1m[92m   Compiling[0m quote v1.0.47
+2026-08-30T03:31:09.6155052Z [1m[92m   Compiling[0m unicode-ident v1.0.24
+2026-08-30T03:31:09.6155327Z [1m[92m   Compiling[0m serde_core v1.0.229
+2026-08-30T03:31:09.6155534Z [1m[92m   Compiling[0m libc v0.2.189
+2026-08-30T03:31:09.6155888Z [1m[92m   Compiling[0m cfg-if v1.0.4
+2026-08-30T03:31:09.6156225Z [1m[92m   Compiling[0m serde v1.0.229
+2026-08-30T03:31:09.6194936Z [1m[92m   Compiling[0m autocfg v1.5.1
+2026-08-30T03:31:09.6496354Z [1m[92m   Compiling[0m memchr v2.8.3
+2026-08-30T03:31:09.6639841Z [1m[92m   Compiling[0m syscalls v0.6.18
+2026-08-30T03:31:09.7240626Z [1m[92m   Compiling[0m cfg_aliases v0.2.2
+2026-08-30T03:31:09.7416987Z [1m[92m   Compiling[0m unicode-segmentation v1.13.3
+2026-08-30T03:31:09.7478772Z [1m[92m   Compiling[0m pin-project-lite v0.2.17
+2026-08-30T03:31:09.7526629Z [1m[92m   Compiling[0m parking_lot_core v0.9.12
+2026-08-30T03:31:09.7831288Z [1m[92m   Compiling[0m smallvec v1.15.2
+2026-08-30T03:31:09.8023909Z [1m[92m   Compiling[0m scopeguard v1.2.0
+2026-08-30T03:31:09.8312771Z [1m[92m   Compiling[0m lock_api v0.4.14
+2026-08-30T03:31:09.8435370Z [1m[92m   Compiling[0m memoffset v0.9.1
+2026-08-30T03:31:09.8675408Z [1m[92m   Compiling[0m futures-sink v0.3.34
+2026-08-30T03:31:09.8989156Z [1m[92m   Compiling[0m futures-core v0.3.34
+2026-08-30T03:31:09.9100417Z [1m[92m   Compiling[0m lazy_static v1.5.0
+2026-08-30T03:31:09.9410005Z [1m[92m   Compiling[0m nix v0.30.1
+2026-08-30T03:31:09.9492570Z [1m[92m   Compiling[0m futures-channel v0.3.34
+2026-08-30T03:31:09.9597766Z [1m[92m   Compiling[0m thiserror v2.0.20
+2026-08-30T03:31:09.9886603Z [1m[92m   Compiling[0m futures v0.1.31
+2026-08-30T03:31:10.0451375Z [1m[92m   Compiling[0m futures-io v0.3.34
+2026-08-30T03:31:10.0753113Z [1m[92m   Compiling[0m syn v3.0.4
+2026-08-30T03:31:10.0819420Z [1m[92m   Compiling[0m syn v2.0.119
+2026-08-30T03:31:10.1032249Z [1m[92m   Compiling[0m rustix v1.1.4
+2026-08-30T03:31:10.1136883Z [1m[92m   Compiling[0m futures-task v0.3.34
+2026-08-30T03:31:10.1199387Z [1m[92m   Compiling[0m slab v0.4.12
+2026-08-30T03:31:10.1848102Z [1m[92m   Compiling[0m linux-raw-sys v0.12.1
+2026-08-30T03:31:10.2051111Z [1m[92m   Compiling[0m virtue v0.0.18
+2026-08-30T03:31:10.2871607Z [1m[92m   Compiling[0m unty v0.0.4
+2026-08-30T03:31:10.3149427Z [1m[92m   Compiling[0m colored v2.2.0
+2026-08-30T03:31:10.3653036Z [1m[92m   Compiling[0m bitflags v1.3.2
+2026-08-30T03:31:10.3890791Z [1m[92m   Compiling[0m num-traits v0.2.19
+2026-08-30T03:31:10.4495802Z [1m[92m   Compiling[0m crc32fast v1.5.1
+2026-08-30T03:31:10.4842125Z [1m[92m   Compiling[0m errno v0.3.14
+2026-08-30T03:31:10.5050958Z [1m[92m   Compiling[0m socket2 v0.6.5
+2026-08-30T03:31:10.5400718Z [1m[92m   Compiling[0m signal-hook-registry v1.4.8
+2026-08-30T03:31:10.5447233Z [1m[92m   Compiling[0m mio v1.2.2
+2026-08-30T03:31:10.5512882Z [1m[92m   Compiling[0m bincode_derive v2.0.1
+2026-08-30T03:31:10.5979145Z [1m[92m   Compiling[0m parking_lot v0.12.5
+2026-08-30T03:31:10.7298498Z [1m[92m   Compiling[0m anyhow v1.0.104
+2026-08-30T03:31:10.7453666Z [1m[92m   Compiling[0m simd-adler32 v0.3.10
+2026-08-30T03:31:10.7828379Z [1m[92m   Compiling[0m bitflags v2.13.1
+2026-08-30T03:31:10.7829027Z [1m[92m   Compiling[0m adler2 v2.0.1
+2026-08-30T03:31:10.8232717Z [1m[92m   Compiling[0m miniz_oxide v0.9.1
+2026-08-30T03:31:10.8327500Z [1m[92m   Compiling[0m convert_case v0.6.0
+2026-08-30T03:31:10.9289750Z [1m[92m   Compiling[0m paste v1.0.15
+2026-08-30T03:31:10.9631940Z [1m[92m   Compiling[0m iana-time-zone v0.1.65
+2026-08-30T03:31:11.0127021Z [1m[92m   Compiling[0m unicode-xid v0.2.6
+2026-08-30T03:31:11.0510225Z [1m[92m   Compiling[0m flate2 v1.1.10
+2026-08-30T03:31:11.1653653Z [1m[92m   Compiling[0m twox-hash v2.1.4
+2026-08-30T03:31:11.2090880Z [1m[92m   Compiling[0m object v0.39.1
+2026-08-30T03:31:11.2548889Z [1m[92m   Compiling[0m cpp_demangle v0.5.1
+2026-08-30T03:31:11.2549220Z [1m[92m   Compiling[0m static_assertions v1.1.0
+2026-08-30T03:31:11.2666109Z [1m[92m   Compiling[0m ruzstd v0.8.3
+2026-08-30T03:31:11.2902091Z [1m[92m   Compiling[0m twox-hash v1.6.3
+2026-08-30T03:31:11.3171064Z [1m[92m   Compiling[0m memmap2 v0.9.11
+2026-08-30T03:31:11.4126914Z [1m[92m   Compiling[0m raw-cpuid v10.7.0
+2026-08-30T03:31:11.4202398Z [1m[92m   Compiling[0m equivalent v1.0.2
+2026-08-30T03:31:11.4262741Z [1m[92m   Compiling[0m byteorder v1.5.0
+2026-08-30T03:31:11.4443500Z [1m[92m   Compiling[0m procfs v0.18.0
+2026-08-30T03:31:11.5207430Z [1m[92m   Compiling[0m hashbrown v0.17.1
+2026-08-30T03:31:11.5263487Z [1m[92m   Compiling[0m foldhash v0.1.5
+2026-08-30T03:31:11.5837529Z [1m[92m   Compiling[0m hex v0.4.3
+2026-08-30T03:31:11.6849487Z [1m[92m   Compiling[0m object v0.36.7
+2026-08-30T03:31:11.7909515Z [1m[92m   Compiling[0m indexmap v2.14.1
+2026-08-30T03:31:11.8175982Z [1m[92m   Compiling[0m serde_derive v1.0.229
+2026-08-30T03:31:11.8945454Z [1m[92m   Compiling[0m serde_repr v0.1.21
+2026-08-30T03:31:11.9597054Z [1m[92m   Compiling[0m futures-macro v0.3.34
+2026-08-30T03:31:12.0516926Z [1m[92m   Compiling[0m tokio-macros v2.7.2
+2026-08-30T03:31:12.1042708Z [1m[92m   Compiling[0m thiserror-impl v2.0.20
+2026-08-30T03:31:12.2603297Z [1m[92m   Compiling[0m futures-util v0.3.34
+2026-08-30T03:31:12.3103128Z [1m[92m   Compiling[0m async-trait v0.1.92
+2026-08-30T03:31:12.3574565Z [1m[92m   Compiling[0m derive_more-impl v1.0.0
+2026-08-30T03:31:12.6572902Z [1m[92m   Compiling[0m hashbrown v0.15.5
+2026-08-30T03:31:12.8801096Z [1m[92m   Compiling[0m ruzstd v0.7.3
+2026-08-30T03:31:12.9258912Z [1m[92m   Compiling[0m fallible-iterator v0.3.0
+2026-08-30T03:31:13.0673248Z [1m[92m   Compiling[0m rustc-demangle v0.1.28
+2026-08-30T03:31:13.2903964Z [1m[92m   Compiling[0m typed-arena v2.0.2
+2026-08-30T03:31:13.3214954Z [1m[92m   Compiling[0m gimli v0.33.0
+2026-08-30T03:31:13.4096709Z [1m[92m   Compiling[0m bytes v1.12.1
+2026-08-30T03:31:13.5710774Z [1m[92m   Compiling[0m futures-executor v0.3.34
+2026-08-30T03:31:13.6250525Z [1m[92m   Compiling[0m bincode v2.0.1
+2026-08-30T03:31:13.6482461Z [1m[92m   Compiling[0m tokio v1.53.1
+2026-08-30T03:31:13.6762725Z [1m[92m   Compiling[0m futures v0.3.34
+2026-08-30T03:31:13.6954298Z [1m[92m   Compiling[0m reverie-memory v0.2.0 (/runner-state/_work/reverie/reverie/reverie-memory)
+2026-08-30T03:31:13.7033474Z [1m[92m   Compiling[0m chrono v0.4.45
+2026-08-30T03:31:13.7177119Z [1m[92m   Compiling[0m linked-hash-map v0.5.6
+2026-08-30T03:31:13.7714847Z [1m[92m   Compiling[0m never-say-never v6.6.666
+2026-08-30T03:31:13.7933549Z [1m[92m   Compiling[0m once_cell v1.21.4
+2026-08-30T03:31:13.7933831Z [1m[92m   Compiling[0m zmij v1.0.23
+2026-08-30T03:31:13.8752217Z [1m[92m   Compiling[0m tracing-core v0.1.36
+2026-08-30T03:31:13.8847447Z [1m[92m   Compiling[0m getrandom v0.4.3
+2026-08-30T03:31:13.9856140Z [1m[92m   Compiling[0m rand_core v0.10.1
+2026-08-30T03:31:14.0387362Z [1m[92m   Compiling[0m serde_json v1.0.151
+2026-08-30T03:31:14.1218209Z [1m[92m   Compiling[0m tracing-attributes v0.1.31
+2026-08-30T03:31:14.1511315Z [1m[92m   Compiling[0m itoa v1.0.18
+2026-08-30T03:31:14.2287293Z [1m[92m   Compiling[0m procfs-core v0.18.0
+2026-08-30T03:31:14.2479825Z [1m[92m   Compiling[0m derive_more v1.0.0
+2026-08-30T03:31:14.3332341Z [1m[92m   Compiling[0m reverie-syscalls v0.2.0 (/runner-state/_work/reverie/reverie/reverie-syscalls)
+2026-08-30T03:31:14.5144285Z [1m[92m   Compiling[0m addr2line v0.26.1
+2026-08-30T03:31:14.5861854Z [1m[92m   Compiling[0m log v0.4.34
+2026-08-30T03:31:14.6667171Z [1m[92m   Compiling[0m fastrand v2.5.0
+2026-08-30T03:31:14.6668554Z [1m[92m   Compiling[0m tracing v0.1.44
+2026-08-30T03:31:14.7647116Z [1m[92m   Compiling[0m tempfile v3.27.0
+2026-08-30T03:31:14.7784402Z [1m[92m   Compiling[0m aho-corasick v1.1.5
+2026-08-30T03:31:14.9616088Z [1m[92m   Compiling[0m regex-syntax v0.8.11
+2026-08-30T03:31:15.1188952Z [1m[92m   Compiling[0m scroll_derive v0.13.1
+2026-08-30T03:31:15.4055070Z [1m[92m   Compiling[0m scroll v0.13.0
+2026-08-30T03:31:15.7179591Z [1m[92m   Compiling[0m plain v0.2.3
+2026-08-30T03:31:15.7497892Z [1m[92m   Compiling[0m regex-automata v0.4.18
+2026-08-30T03:31:15.8482062Z [1m[92m   Compiling[0m goblin v0.10.7
+2026-08-30T03:31:15.8742437Z [1m[92m   Compiling[0m powerfmt v0.2.0
+2026-08-30T03:31:15.9538928Z [1m[92m   Compiling[0m num-conv v0.2.2
+2026-08-30T03:31:16.0105713Z [1m[92m   Compiling[0m reverie-process v0.2.0 (/runner-state/_work/reverie/reverie/reverie-process)
+2026-08-30T03:31:16.0877479Z [1m[92m   Compiling[0m deranged v0.5.8
+2026-08-30T03:31:16.3856217Z [1m[92m   Compiling[0m time-core v0.1.9
+2026-08-30T03:31:16.4632559Z [1m[92m   Compiling[0m reverie-core v0.2.0 (/runner-state/_work/reverie/reverie/reverie)
+2026-08-30T03:31:16.5707432Z [1m[92m   Compiling[0m num_threads v0.1.7
+2026-08-30T03:31:16.6310850Z [1m[92m   Compiling[0m time v0.3.55
+2026-08-30T03:31:16.6733753Z [1m[92m   Compiling[0m tracing-log v0.2.0
+2026-08-30T03:31:16.7692018Z [1m[92m   Compiling[0m tracing-serde v0.2.0
+2026-08-30T03:31:16.8001466Z [1m[92m   Compiling[0m sharded-slab v0.1.7
+2026-08-30T03:31:16.8257478Z [1m[92m   Compiling[0m thread_local v1.1.10
+2026-08-30T03:31:16.8523325Z [1m[92m   Compiling[0m pkg-config v0.3.34
+2026-08-30T03:31:16.9260418Z [1m[92m   Compiling[0m nu-ansi-term v0.50.3
+2026-08-30T03:31:17.0440425Z [1m[92m   Compiling[0m reverie-rpc-transport v0.2.0 (/runner-state/_work/reverie/reverie/reverie-rpc-transport)
+2026-08-30T03:31:17.0627413Z [1m[92m   Compiling[0m matchers v0.2.0
+2026-08-30T03:31:17.0683385Z [1m[92m   Compiling[0m unwind-sys v0.1.4
+2026-08-30T03:31:17.1097082Z [1m[92m   Compiling[0m version_check v0.9.5
+2026-08-30T03:31:17.1570484Z [1m[92m   Compiling[0m foreign-types-macros v0.2.4
+2026-08-30T03:31:17.2086456Z [1m[92m   Compiling[0m unwind v0.4.2
+2026-08-30T03:31:17.2232081Z [1m[92m   Compiling[0m foreign-types-shared v0.3.1
+2026-08-30T03:31:17.2903233Z [1m[92m   Compiling[0m safeptrace v0.2.0 (/runner-state/_work/reverie/reverie/safeptrace)
+2026-08-30T03:31:17.2980757Z [1m[92m   Compiling[0m tokio-util v0.7.19
+2026-08-30T03:31:17.3597031Z [1m[92m   Compiling[0m foreign-types v0.5.0
+2026-08-30T03:31:17.3682454Z [1m[92m   Compiling[0m iced-x86 v1.21.0
+2026-08-30T03:31:17.4564261Z [1m[92m   Compiling[0m tokio-stream v0.1.19
+2026-08-30T03:31:17.4641658Z [1m[92m   Compiling[0m perf-event-open-sys v5.0.0
+2026-08-30T03:31:17.6096672Z [1m[92m   Compiling[0m tracing-subscriber v0.3.23
+2026-08-30T03:31:17.7034412Z [1m[92m   Compiling[0m close-err v1.0.2
+2026-08-30T03:31:17.7406679Z [1m[92m   Compiling[0m generic-array v0.14.7
+2026-08-30T03:31:17.7636872Z [1m[92m   Compiling[0m typenum v1.20.1
+2026-08-30T03:31:17.7855061Z [1m[92m   Compiling[0m reverie-preload v0.2.0 (/runner-state/_work/reverie/reverie/reverie-preload)
+2026-08-30T03:31:17.8149110Z [1m[92m   Compiling[0m nix v0.31.3
+2026-08-30T03:31:17.8634452Z [1m[92m   Compiling[0m cpufeatures v0.2.17
+2026-08-30T03:31:17.8865893Z [1m[92m   Compiling[0m vmm-sys-util v0.15.0
+2026-08-30T03:31:18.1883606Z [1m[92m   Compiling[0m kvm-ioctls v0.25.0
+2026-08-30T03:31:18.1888054Z [1m[92m   Compiling[0m kvm-bindings v0.14.1
+2026-08-30T03:31:18.2651883Z [1m[92m   Compiling[0m unicode-width v0.2.2
+2026-08-30T03:31:18.3686493Z [1m[92m   Compiling[0m block-buffer v0.10.4
+2026-08-30T03:31:18.3748382Z [1m[92m   Compiling[0m crypto-common v0.1.7
+2026-08-30T03:31:18.4113867Z [1m[92m   Compiling[0m digest v0.10.7
+2026-08-30T03:31:18.4165788Z [1m[92m   Compiling[0m utf8parse v0.2.2
+2026-08-30T03:31:18.4476590Z [1m[92m   Compiling[0m unicase v2.9.0
+2026-08-30T03:31:18.4630818Z [1m[92m   Compiling[0m crossbeam-utils v0.8.22
+2026-08-30T03:31:18.4884789Z [1m[92m   Compiling[0m sha2 v0.10.9
+2026-08-30T03:31:18.5393093Z [1m[92m   Compiling[0m anstyle-parse v1.0.0
+2026-08-30T03:31:18.5628238Z [1m[92m   Compiling[0m anstyle-query v1.1.5
+2026-08-30T03:31:18.5699666Z [1m[92m   Compiling[0m is_terminal_polyfill v1.70.2
+2026-08-30T03:31:18.5973607Z [1m[92m   Compiling[0m colorchoice v1.0.5
+2026-08-30T03:31:18.6018015Z [1m[92m   Compiling[0m anstyle v1.0.14
+2026-08-30T03:31:18.6302536Z [1m[92m   Compiling[0m terminal_size v0.4.4
+2026-08-30T03:31:18.6647084Z [1m[92m   Compiling[0m strsim v0.11.1
+2026-08-30T03:31:18.6786658Z [1m[92m   Compiling[0m anstream v1.0.0
+2026-08-30T03:31:18.6787046Z [1m[92m   Compiling[0m clap_lex v1.1.0
+2026-08-30T03:31:18.6897620Z [1m[92m   Compiling[0m reverie-kvm v0.2.0 (/runner-state/_work/reverie/reverie/reverie-kvm)
+2026-08-30T03:31:18.7729082Z [1m[92m   Compiling[0m heck v0.5.0
+2026-08-30T03:31:18.7844188Z [1m[92m   Compiling[0m clap_builder v4.6.6
+2026-08-30T03:31:18.8183348Z [1m[92m   Compiling[0m crossbeam-channel v0.5.16
+2026-08-30T03:31:18.8384192Z [1m[92m   Compiling[0m symlink v0.1.0
+2026-08-30T03:31:18.8543708Z [1m[92m   Compiling[0m clap_derive v4.6.4
+2026-08-30T03:31:18.8677464Z [1m[92m   Compiling[0m syn v1.0.109
+2026-08-30T03:31:19.0186902Z [1m[92m   Compiling[0m tracing-appender v0.2.5
+2026-08-30T03:31:19.0626806Z [1m[92m   Compiling[0m strsim v0.10.0
+2026-08-30T03:31:19.2176880Z [1m[92m   Compiling[0m ident_case v1.0.1
+2026-08-30T03:31:19.2578457Z [1m[92m   Compiling[0m fnv v1.0.7
+2026-08-30T03:31:19.2884909Z [1m[92m   Compiling[0m heck v0.3.3
+2026-08-30T03:31:19.3607360Z [1m[92m   Compiling[0m bincode v1.3.3
+2026-08-30T03:31:19.5483352Z [1m[92m   Compiling[0m reverie-dbt v0.2.0 (/runner-state/_work/reverie/reverie/reverie-dbt)
+2026-08-30T03:31:19.6177787Z [1m[92m   Compiling[0m find-msvc-tools v0.1.11
+2026-08-30T03:31:19.6492696Z [1m[92m   Compiling[0m shlex v2.0.1
+2026-08-30T03:31:19.7364669Z [1m[92m   Compiling[0m cc v1.4.4
+2026-08-30T03:31:19.7572146Z [1m[92m   Compiling[0m clap v4.6.6
+2026-08-30T03:31:19.7926417Z [1m[92m   Compiling[0m reverie-util v0.2.0 (/runner-state/_work/reverie/reverie/reverie-util)
+2026-08-30T03:31:20.2606195Z [1m[92m   Compiling[0m heapless v0.8.0
+2026-08-30T03:31:20.3812191Z [1m[92m   Compiling[0m reverie-sabre-stats v0.2.0 (/runner-state/_work/reverie/reverie/experimental/reverie-sabre-stats)
+2026-08-30T03:31:20.5949144Z [1m[92m   Compiling[0m nostd-print v0.2.0 (/runner-state/_work/reverie/reverie/experimental/nostd-print)
+2026-08-30T03:31:20.6221313Z [1m[92m   Compiling[0m darling_core v0.14.4
+2026-08-30T03:31:20.6413767Z [1m[92m   Compiling[0m libmimalloc-sys v0.1.49
+2026-08-30T03:31:20.8280020Z [1m[92m   Compiling[0m reverie-sabre v0.2.0 (/runner-state/_work/reverie/reverie/experimental/reverie-sabre)
+2026-08-30T03:31:20.9759734Z [1m[92m   Compiling[0m hash32 v0.3.1
+2026-08-30T03:31:21.0357431Z [1m[92m   Compiling[0m stable_deref_trait v1.2.1
+2026-08-30T03:31:21.3684654Z [1m[92m   Compiling[0m atomic v0.5.3
+2026-08-30T03:31:21.4081501Z [1m[92m   Compiling[0m mimalloc v0.1.52
+2026-08-30T03:31:21.4319937Z [1m[92m   Compiling[0m dirs-sys v0.3.7
+2026-08-30T03:31:21.4360394Z [1m[92m   Compiling[0m cfg-if v0.1.10
+2026-08-30T03:31:21.4567214Z [1m[92m   Compiling[0m regex v1.13.1
+2026-08-30T03:31:21.4608178Z [1m[92m   Compiling[0m proc-macro-error-attr v1.0.4
+2026-08-30T03:31:21.5228567Z [1m[92m   Compiling[0m dirs v2.0.2
+2026-08-30T03:31:21.5425998Z [1m[92m   Compiling[0m darling_macro v0.14.4
+2026-08-30T03:31:21.5648124Z [1m[92m   Compiling[0m test-case-core v3.3.1
+2026-08-30T03:31:21.5842406Z [1m[92m   Compiling[0m proc-macro-error v1.0.4
+2026-08-30T03:31:21.6641083Z [1m[92m   Compiling[0m darling v0.14.4
+2026-08-30T03:31:21.6896301Z [1m[92m   Compiling[0m env_filter v2.0.0
+2026-08-30T03:31:21.7004409Z [1m[92m   Compiling[0m reverie-rpc-macros v0.2.0 (/runner-state/_work/reverie/reverie/experimental/reverie-rpc-macros)
+2026-08-30T03:31:21.7881373Z [1m[92m   Compiling[0m reverie-e9patch v0.2.0 (/runner-state/_work/reverie/reverie/reverie-e9patch)
+2026-08-30T03:31:21.8186844Z [1m[92m   Compiling[0m reverie-sabre-macros v0.2.0 (/runner-state/_work/reverie/reverie/experimental/reverie-sabre-macros)
+2026-08-30T03:31:21.8495291Z [1m[92m   Compiling[0m indexmap v1.9.3
+2026-08-30T03:31:21.9284743Z [1m[92m   Compiling[0m reverie-rpc v0.2.0 (/runner-state/_work/reverie/reverie/experimental/reverie-rpc)
+2026-08-30T03:31:21.9460832Z [1m[92m   Compiling[0m test-case-macros v3.3.1
+2026-08-30T03:31:21.9962467Z [1m[92m   Compiling[0m reverie-host v0.2.0 (/runner-state/_work/reverie/reverie/experimental/reverie-host)
+2026-08-30T03:31:22.0208167Z [1m[92m   Compiling[0m riptrace-rpc v0.2.0 (/runner-state/_work/reverie/reverie/experimental/riptrace/rpc)
+2026-08-30T03:31:22.0435304Z [1m[92m   Compiling[0m env_logger v0.11.11
+2026-08-30T03:31:22.1162404Z [1m[92m   Compiling[0m rand v0.10.2
+2026-08-30T03:31:22.1204559Z [1m[92m   Compiling[0m test-case v3.3.1
+2026-08-30T03:31:22.1357145Z [1m[92m   Compiling[0m heck v0.4.1
+2026-08-30T03:31:22.1452860Z [1m[92m   Compiling[0m os_str_bytes v6.6.1
+2026-08-30T03:31:22.2070009Z [1m[92m   Compiling[0m hashbrown v0.12.3
+2026-08-30T03:31:22.2140133Z [1m[92m   Compiling[0m clap_derive v3.2.25
+2026-08-30T03:31:22.3006776Z [1m[92m   Compiling[0m clap_lex v0.2.4
+2026-08-30T03:31:22.4047072Z [1m[92m   Compiling[0m quickcheck v1.1.0
+2026-08-30T03:31:22.5086202Z [1m[92m   Compiling[0m textwrap v0.16.2
+2026-08-30T03:31:22.8980804Z [1m[92m   Compiling[0m quickcheck_macros v1.2.0
+2026-08-30T03:31:22.9234104Z [1m[92m   Compiling[0m num_cpus v1.17.0
+2026-08-30T03:31:23.1216364Z [1m[92m   Compiling[0m atty v0.2.14
+2026-08-30T03:31:23.2064900Z [1m[92m   Compiling[0m termcolor v1.4.1
+2026-08-30T03:31:23.7341194Z [1m[92m   Compiling[0m clap v3.2.25
+2026-08-30T03:31:27.4030161Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /runner-state/_work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+2026-08-30T03:31:27.4031631Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /runner-state/_work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+2026-08-30T03:31:27.4032802Z [1m[33mwarning[0m: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+2026-08-30T03:31:27.4033492Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |          ^
+2026-08-30T03:31:27.4034297Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /runner-state/_work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+2026-08-30T03:31:27.4035065Z [1m[33mwarning[0m: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+2026-08-30T03:31:27.4035535Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |     ^~~~
+2026-08-30T03:31:27.4036585Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /runner-state/_work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+2026-08-30T03:31:27.4037909Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /runner-state/_work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+2026-08-30T03:31:27.4039002Z [1m[33mwarning[0m: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+2026-08-30T03:31:27.4039593Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |          ^
+2026-08-30T03:31:27.4040374Z [1m[33mwarning[0m: reverie-sabre@0.2.0: /runner-state/_work/reverie/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+2026-08-30T03:31:27.4041320Z [1m[33mwarning[0m: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+2026-08-30T03:31:27.4041773Z [1m[33mwarning[0m: reverie-sabre@0.2.0:       |     ^~~~
+2026-08-30T03:31:27.4042302Z [1m[33mwarning[0m: reverie-sabre@0.2.0: SaBRe source build completed in 2.60s (jobs=8)
+2026-08-30T03:31:28.3251363Z [1m[92m   Compiling[0m reverie-ptrace v0.2.0 (/runner-state/_work/reverie/reverie/reverie-ptrace)
+2026-08-30T03:31:28.7140490Z [1m[92m   Compiling[0m liteinst2 v0.1.0 (https://github.com/rrnewton/liteinst2?rev=95ee5e6917fa33191eb41c3f1606ea8b03c1b78c#95ee5e69)
+2026-08-30T03:31:28.8900225Z [1m[92m   Compiling[0m riptrace-tool v0.2.0 (/runner-state/_work/reverie/reverie/experimental/riptrace/tool)
+2026-08-30T03:31:29.7128987Z [1m[33mwarning[0m: reverie-e9patch@0.2.0: e9patch source build completed in 7.71s (jobs=8)
+2026-08-30T03:31:30.0022093Z [1m[92m   Compiling[0m riptrace v0.2.0 (/runner-state/_work/reverie/reverie/experimental/riptrace)
+2026-08-30T03:31:34.2022740Z [1m[92m   Compiling[0m reverie-liteinst v0.2.0 (/runner-state/_work/reverie/reverie/reverie-liteinst)
+2026-08-30T03:31:34.5974525Z [1m[92m   Compiling[0m reverie-sabre-strace v0.2.0 (/runner-state/_work/reverie/reverie/experimental/reverie-sabre-strace)
+2026-08-30T03:31:37.7190807Z [1m[92m   Compiling[0m reverie-examples v0.2.0 (/runner-state/_work/reverie/reverie/reverie-examples)
+2026-08-30T03:31:56.4248844Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO build cache MISS key=sha256:c9c1ee55257cbb0635b56f494a75ee1dc6af839ca8e289231f533b0208340463 observed_unix_seconds=1788060680
+2026-08-30T03:31:56.4250165Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO source build completed in 27.84s (jobs=8)
+2026-08-30T03:31:56.4252343Z [1m[33mwarning[0m: reverie-dbt@0.2.0: DynamoRIO build cache PUBLISHED key=sha256:c9c1ee55257cbb0635b56f494a75ee1dc6af839ca8e289231f533b0208340463 install=/runner-state/_work/reverie/reverie/target/debug/reverie-dbt-native-cache/dynamorio-install-c9c1ee55257cbb0635b56f494a75ee1dc6af839ca8e289231f533b0208340463
+2026-08-30T03:32:03.7629983Z [1m[92m    Finished[0m `test` profile [unoptimized + debuginfo] target(s) in 55.41s
+2026-08-30T03:32:03.8348101Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nostd_print-78e0359d8abf6588)
+2026-08-30T03:32:03.8364677Z 
+2026-08-30T03:32:03.8364865Z running 0 tests
+2026-08-30T03:32:03.8364965Z 
+2026-08-30T03:32:03.8365143Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:03.8365353Z 
+2026-08-30T03:32:03.8365886Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie-32c265beee09e0e4)
+2026-08-30T03:32:03.8384199Z 
+2026-08-30T03:32:03.8384320Z running 12 tests
+2026-08-30T03:32:03.8392478Z test auxv::tests::builds_from_backend_entries ... ok
+2026-08-30T03:32:03.8393128Z test auxv::tests::smoke ... ok
+2026-08-30T03:32:03.8393706Z test backend_stats::tests::counter_snapshot_sorts_and_combines_typed_keys ... ok
+2026-08-30T03:32:03.8394436Z test backend_stats::tests::disabled_request_does_not_call_snapshot_source ... ok
+2026-08-30T03:32:03.8395242Z test backend_stats::tests::patch_shape_collector_deduplicates_rips_and_uses_exact_buckets ... ok
+2026-08-30T03:32:03.8396511Z test backend_stats::tests::patch_shape_collector_keeps_equal_rips_distinct_across_processes_and_execs ... ok
+2026-08-30T03:32:03.8397163Z test backend_stats::tests::patch_shape_rejects_boundary_at_instruction_end - should panic ... ok
+2026-08-30T03:32:03.8397477Z test regs::tests::test_multi_line_x86 ... ok
+2026-08-30T03:32:03.8397677Z test regs::tests::test_single_line_x86 ... ok
+2026-08-30T03:32:03.8398091Z [1m[92m     Running[0m tests/validate_script_source.rs (target/debug/deps/validate_script_source-c6a504288d7ebbdd)
+2026-08-30T03:32:03.8398411Z test subscription::tests::compose ... ok
+2026-08-30T03:32:03.8398620Z test subscription::tests::smoke ... ok
+2026-08-30T03:32:03.8398831Z test timer::tests::record_then_take_counts_and_resets ... ok
+2026-08-30T03:32:03.8398976Z 
+2026-08-30T03:32:03.8399250Z test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:03.8399459Z 
+2026-08-30T03:32:03.8408416Z 
+2026-08-30T03:32:03.8408561Z running 1 test
+2026-08-30T03:32:03.8410392Z test validation_ledger_writer_follows_the_discovered_parent ... ok
+2026-08-30T03:32:03.8410593Z 
+2026-08-30T03:32:03.8410756Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:03.8410966Z 
+2026-08-30T03:32:03.8411556Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_dbt-58255fa1fd3f1f6a)
+2026-08-30T03:32:03.8420778Z 
+2026-08-30T03:32:03.8420899Z running 91 tests
+2026-08-30T03:32:03.8423477Z test backend_stats::tests::absorb_wire_stream_rejects_trailing_partial_record ... ok
+2026-08-30T03:32:03.8424453Z test backend_stats::tests::aggregation_is_order_independent ... ok
+2026-08-30T03:32:03.8425248Z test backend_stats::tests::aggregation_sums_additive_and_maxes_peaks ... ok
+2026-08-30T03:32:03.8426157Z test backend_stats::tests::decode_rejects_bad_magic_version_and_truncation ... ok
+2026-08-30T03:32:03.8426525Z test backend_stats::tests::disabled_request_does_not_collect_snapshot ... ok
+2026-08-30T03:32:03.8427138Z test backend_stats::tests::display_is_deterministic_and_contains_no_raw_identity ... ok
+2026-08-30T03:32:03.8427632Z test backend_stats::tests::dr_stats_absent_is_counted_and_excluded_from_translation_totals ... ok
+2026-08-30T03:32:03.8428202Z test backend_stats::tests::runtime_kind_counts_are_deterministic ... ok
+2026-08-30T03:32:03.8428653Z test backend_stats::tests::unknown_runtime_code_decodes_to_unknown_not_error ... ok
+2026-08-30T03:32:03.8429163Z test backend_stats::tests::wire_record_round_trips_exactly ... ok
+2026-08-30T03:32:03.8430024Z test evidence::tests::collector_accepts_a_child_announced_after_its_final_frame ... ok
+2026-08-30T03:32:03.8430594Z test evidence::tests::collector_accepts_root_final_before_descendant_final ... ok
+2026-08-30T03:32:03.8431056Z test evidence::tests::collector_acknowledges_only_an_exact_transport_retry ... ok
+2026-08-30T03:32:07.7236624Z test evidence::tests::collector_process_state_is_bounded ... ok
+2026-08-30T03:32:07.7241024Z test evidence::tests::collector_refuses_a_changed_same_sequence_retry ... ok
+2026-08-30T03:32:07.7241837Z test evidence::tests::collector_refuses_an_announced_child_without_final_evidence ... ok
+2026-08-30T03:32:07.7242570Z test evidence::tests::collector_rejects_duplicate_final ... ok
+2026-08-30T03:32:07.7243456Z test evidence::tests::collector_requires_exec_before_cancel_and_accepts_valid_cancel ... ok
+2026-08-30T03:32:07.7244250Z test evidence::tests::collector_requires_exec_for_restart_and_terminalizes_process ... ok
+2026-08-30T03:32:07.7244974Z test evidence::tests::decoder_rejects_truncation_and_digest_changes ... ok
+2026-08-30T03:32:07.7247266Z test evidence::tests::denied_publication_truncates_the_output ... ok
+2026-08-30T03:32:07.7253975Z test evidence::tests::evidence_session_can_be_claimed_only_before_one_run ... ok
+2026-08-30T03:32:07.7255075Z test evidence::tests::framed_evidence_round_trips_and_rejects_injected_lines ... ok
+2026-08-30T03:32:07.7260320Z test evidence::tests::native_processes_finalize_after_their_runtime_output ... ok
+2026-08-30T03:32:07.7263058Z test evidence::tests::native_runtime_abi_is_checked_before_runtime_callbacks ... ok
+2026-08-30T03:32:07.7268695Z test evidence::tests::native_runtime_callbacks_are_page_isolated_and_sealed_before_use ... ok
+2026-08-30T03:32:07.7272424Z test evidence::tests::native_shutdown_precedes_evidence_background_quiescence ... ok
+2026-08-30T03:32:07.7279349Z test evidence::tests::native_syscall_exit_defers_final_to_thread_and_process_exit ... ok
+2026-08-30T03:32:07.7289106Z test evidence::tests::process_clone_result_callback_runs_after_the_kernel_result ... ok
+2026-08-30T03:32:07.8322773Z test evidence::tests::reparented_group_member_can_send_its_first_start_and_data ... ok
+2026-08-30T03:32:07.8323756Z test launcher::tests::a_post_launch_evidence_failure_never_reports_a_spawn_kind ... ok
+2026-08-30T03:32:07.8324779Z test launcher::tests::an_error_without_exit_status_keeps_its_own_kind ... ok
+2026-08-30T03:32:07.8379575Z test launcher::tests::cancellable_output_reader_stops_with_a_live_writer ... ok
+2026-08-30T03:32:07.8381052Z test launcher::tests::client_arguments_and_isolation_flag_precede_guest_separator ... ok
+2026-08-30T03:32:07.8381810Z test launcher::tests::exact_environment_replaces_launcher_environment ... ok
+2026-08-30T03:32:07.8382557Z test launcher::tests::failed_guest_status_is_preserved_before_coordinator_connection ... ok
+2026-08-30T03:32:07.8439441Z test launcher::tests::keeps_diagnostics_out_of_guest_stderr_redirections ... ok
+2026-08-30T03:32:07.8439963Z test launcher::tests::native_runtime_abi_mismatch_fails_before_guest_execution ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-08-30T03:32:07.8445176Z test launcher::tests::preserves_bare_non_script_program_token ... ok
+2026-08-30T03:32:07.8477546Z test launcher::tests::process_group_cleanup_terminates_descendants_after_root_exit ... ok
+2026-08-30T03:32:07.8478420Z test launcher::tests::process_group_modes_are_opt_in ... ok
+2026-08-30T03:32:07.8480042Z test launcher::tests::process_group_wait_times_out_while_a_live_member_remains ... ok
+2026-08-30T03:32:07.8481303Z test launcher::tests::protected_evidence_refuses_a_valid_frame_from_outside_the_guest_tree ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-08-30T03:32:07.8482864Z test launcher::tests::protected_evidence_refuses_an_announced_child_killed_before_start ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-08-30T03:32:07.8484394Z test launcher::tests::protected_evidence_rejects_direct_emitter_entry ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-08-30T03:32:07.8485825Z test launcher::tests::protected_evidence_rejects_disclosed_credentials_and_config_mutation ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-08-30T03:32:07.8487430Z test launcher::tests::protected_evidence_retries_after_a_dropped_acknowledgement ... ignored, requires built DynamoRIO and native client; run explicitly with --ignored
+2026-08-30T03:32:07.8487912Z test launcher::tests::resolves_bare_shebang_program_from_command_path ... ok
+2026-08-30T03:32:07.8489206Z test launcher::tests::resolves_bare_shebang_program_from_exact_environment_path ... ok
+2026-08-30T03:32:07.8493499Z test launcher::tests::resolves_relative_path_from_guest_directory ... ok
+2026-08-30T03:32:07.8508753Z test launcher::tests::resolves_source_root_and_cmake_directory_layouts ... ok
+2026-08-30T03:32:07.8514109Z test launcher::tests::resolves_symlinked_shebang_program_without_canonicalizing ... ok
+2026-08-30T03:32:07.8538584Z test launcher::tests::returns_when_child_exits_while_input_source_is_blocked ... ok
+2026-08-30T03:32:07.8542289Z test launcher::tests::stats_sink_drain_of_a_truncated_stream_is_an_error ... ok
+2026-08-30T03:32:07.8544909Z test launcher::tests::stats_sink_drain_of_missing_file_yields_an_empty_snapshot ... ok
+2026-08-30T03:32:07.8548639Z test launcher::tests::stats_sink_drains_and_aggregates_appended_records ... ok
+2026-08-30T03:32:07.8550546Z test launcher::tests::stats_sink_passes_the_records_path_to_the_client ... ok
+2026-08-30T03:32:07.8635753Z test launcher::tests::supplies_captured_standard_input ... ok
+2026-08-30T03:32:07.8637053Z test launcher::tests::wraps_guest_program_arguments_directory_and_environment ... ok
+2026-08-30T03:32:07.8640540Z test launcher::tests::wraps_shebang_program_with_its_interpreter ... ok
+2026-08-30T03:32:07.8641099Z test tests::align_up_rounds_to_power_of_two ... ok
+2026-08-30T03:32:07.8642034Z test tests::backtrace_returns_none_when_registers_are_unavailable ... ok
+2026-08-30T03:32:07.8642698Z test tests::backtrace_walks_the_guest_frame_pointer_chain ... ok
+2026-08-30T03:32:07.8645684Z test tests::copied_vfork_first_syscall_uses_the_copied_child_path ... ok
+2026-08-30T03:32:07.8647210Z test tests::copied_vfork_is_classified_before_the_shared_memory_return ... ok
+2026-08-30T03:32:07.8647962Z test tests::core_file_io_syscalls_dispatch_through_guest ... ok
+2026-08-30T03:32:07.8648534Z test tests::dbt_stack_allocations_are_valid_in_process_and_aligned ... ok
+2026-08-30T03:32:07.8649040Z test tests::deterministic_ports_advance_past_explicit_bindings ... ok
+2026-08-30T03:32:07.8649571Z test tests::deterministic_random_stream_positions_do_not_collide ... ok
+2026-08-30T03:32:07.8650087Z test tests::deterministic_random_streams_are_reproducible_and_distinct ... ok
+2026-08-30T03:32:07.8650663Z test tests::duplicated_descriptors_inherit_random_tracking ... ok
+2026-08-30T03:32:07.8652049Z test tests::explicit_port_collision_is_still_refused ... ok
+2026-08-30T03:32:07.8883396Z test tests::independent_runtimes_keep_deterministic_ports_without_host_collision ... ok
+2026-08-30T03:32:07.8884075Z test tests::port_zero_runtime_child ... ok
+2026-08-30T03:32:07.8884705Z test tests::ppid_reflects_constructed_parent_and_root_status ... ok
+2026-08-30T03:32:07.8885317Z test tests::procfs_snapshots_cover_volatile_files ... ok
+2026-08-30T03:32:07.8885872Z test tests::prototype_tool_uses_shared_guest_contract ... ok
+2026-08-30T03:32:07.8886726Z test tests::prototype_tool_virtualizes_uname_release ... ok
+2026-08-30T03:32:07.8887363Z test tests::rewrite_filter_covers_deterministic_policies ... ok
+2026-08-30T03:32:07.9139462Z test tests::run_ready_resumes_a_cross_thread_woken_future ... ok
+2026-08-30T03:32:07.9140126Z test tests::set_regs_forwards_exact_register_file_to_native_writer ... ok
+2026-08-30T03:32:07.9140737Z test tests::set_regs_surfaces_writer_failure_as_errno ... ok
+2026-08-30T03:32:07.9149650Z test tests::signal_wait_translation_requires_a_tail_injected_wait_record ... ok
+2026-08-30T03:32:07.9150724Z test tests::tail_inject_defers_exact_syscall_and_suspends ... ok
+2026-08-30T03:32:07.9151340Z test tests::thread_init_records_process_ppid_for_current_ppid ... ok
+2026-08-30T03:32:07.9151743Z test tools::tests::chaos_default_config_truncates_without_interrupting ... ok
+2026-08-30T03:32:07.9152239Z test tools::tests::chaos_read_alternates_interrupt_and_truncation ... ok
+2026-08-30T03:32:07.9152851Z test tools::tests::chaos_read_respects_no_read_and_disabled_interrupt ... ok
+2026-08-30T03:32:07.9154393Z test tools::tests::chrome_trace_settles_pending_and_computes_durations ... ok
+2026-08-30T03:32:07.9155157Z test tools::tests::chrome_trace_tracks_multiple_threads_independently ... ok
+2026-08-30T03:32:07.9156149Z test tools::tests::counter2_host_persists_thread_state_and_runs_exit_lifecycle ... ok
+2026-08-30T03:32:07.9156591Z 
+2026-08-30T03:32:07.9156946Z test result: ok. 85 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 4.07s
+2026-08-30T03:32:07.9157396Z 
+2026-08-30T03:32:07.9163249Z [1m[92m     Running[0m unittests src/bin/reverie-dbt-counter2.rs (target/debug/deps/reverie_dbt_counter2-c37affeec2ccfa9d)
+2026-08-30T03:32:07.9176854Z 
+2026-08-30T03:32:07.9176947Z running 0 tests
+2026-08-30T03:32:07.9177060Z 
+2026-08-30T03:32:07.9177257Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:07.9177718Z 
+2026-08-30T03:32:07.9178563Z [1m[92m     Running[0m unittests src/bin/reverie-dbt-counter2-exact.rs (target/debug/deps/reverie_dbt_counter2_exact-db3a7cf0b45cc489)
+2026-08-30T03:32:07.9188840Z 
+2026-08-30T03:32:07.9189003Z running 0 tests
+2026-08-30T03:32:07.9189105Z 
+2026-08-30T03:32:07.9189268Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:07.9189483Z 
+2026-08-30T03:32:07.9190080Z [1m[92m     Running[0m unittests src/bin/reverie-dbt-dynamorio-path.rs (target/debug/deps/reverie_dbt_dynamorio_path-6eab35c547c84c0b)
+2026-08-30T03:32:07.9199964Z 
+2026-08-30T03:32:07.9200158Z running 0 tests
+2026-08-30T03:32:07.9200261Z 
+2026-08-30T03:32:07.9200424Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:07.9200633Z 
+2026-08-30T03:32:07.9201558Z [1m[92m     Running[0m tests/build_script_source.rs (target/debug/deps/build_script_source-b87e25132780ca34)
+2026-08-30T03:32:07.9211481Z 
+2026-08-30T03:32:07.9213393Z running 18 tests
+2026-08-30T03:32:07.9213567Z test build_cache_is_content_addressed_and_visible ... ok
+2026-08-30T03:32:07.9312836Z test build_script::tests::atomic_publish_never_overwrites_a_complete_winner ... ok
+2026-08-30T03:32:07.9365789Z test build_script::tests::attestation_is_bound_to_the_expected_source_recipe ... ok
+2026-08-30T03:32:07.9463022Z test build_script::tests::concurrent_publishers_produce_one_complete_winner ... ok
+2026-08-30T03:32:07.9561846Z test build_script::tests::deleted_runtime_library_is_quarantined_and_rebuilt ... ok
+2026-08-30T03:32:07.9619148Z test build_script::tests::incomplete_cache_entry_fails_closed - should panic ... ok
+2026-08-30T03:32:07.9619941Z test build_script::tests::measured_clean_builds_satisfy_the_ci_ratchet ... ok
+2026-08-30T03:32:07.9738706Z test build_script::tests::publisher_losing_after_precheck_reuses_winner_without_panicking ... ok
+2026-08-30T03:32:07.9806516Z test build_script::tests::self_consistent_wrong_elf_does_not_match_publisher_provenance ... ok
+2026-08-30T03:32:07.9820307Z test build_script::tests::source_recipe_key_changes_with_source_or_recipe ... ok
+2026-08-30T03:32:07.9820883Z test build_script::tests::throughput_regression_fails_the_ci_ratchet - should panic ... ok
+2026-08-30T03:32:07.9823400Z test build_script::tests::unrecognized_out_dir_uses_an_isolated_cache ... ok
+2026-08-30T03:32:07.9825963Z test build_script::tests::workspace_and_consumer_fingerprints_share_one_profile_cache ... ok
+2026-08-30T03:32:07.9828361Z test build_script_never_populates_source_over_the_network ... ok
+2026-08-30T03:32:07.9829322Z test ci_uses_the_vendored_content_addressed_cache ... ok
+2026-08-30T03:32:08.0027830Z test vendored_dynamorio_source_contains_no_binary_files ... ok
+2026-08-30T03:32:08.0068386Z test vendored_dynamorio_source_has_no_oversized_text_files ... ok
+2026-08-30T03:32:08.0070825Z test vendored_dynamorio_source_is_complete ... ok
+2026-08-30T03:32:08.0071297Z 
+2026-08-30T03:32:08.0071798Z test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+2026-08-30T03:32:08.0072491Z 
+2026-08-30T03:32:08.0078098Z [1m[92m     Running[0m tests/cross_process_counter.rs (target/debug/deps/cross_process_counter-13086e7036ad6132)
+2026-08-30T03:32:08.0089215Z 
+2026-08-30T03:32:08.0089341Z running 1 test
+2026-08-30T03:32:08.0164177Z test syscall_counter_global_aggregates_across_fork_tree ... ok
+2026-08-30T03:32:08.0164532Z 
+2026-08-30T03:32:08.0164870Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+2026-08-30T03:32:08.0165315Z 
+2026-08-30T03:32:08.0169244Z [1m[92m     Running[0m tests/evidence_fork_live.rs (target/debug/deps/evidence_fork_live-d0759f46ffa0945d)
+2026-08-30T03:32:08.0178894Z 
+2026-08-30T03:32:08.0178970Z running 3 tests
+2026-08-30T03:32:08.0179342Z test protected_evidence_covers_vfork_open_and_exec ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run with --ignored
+2026-08-30T03:32:08.0180100Z test protected_evidence_follows_last_thread_explicit_exit ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run with --ignored
+2026-08-30T03:32:08.0180906Z test protected_evidence_survives_fork_pthread_lifecycle ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run with --ignored
+2026-08-30T03:32:08.0181386Z 
+2026-08-30T03:32:08.0181612Z test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.0181824Z 
+2026-08-30T03:32:08.0182104Z [1m[92m     Running[0m tests/process_clone_latch_live.rs (target/debug/deps/process_clone_latch_live-2a432d5161c93af0)
+2026-08-30T03:32:08.0196841Z 
+2026-08-30T03:32:08.0196920Z running 4 tests
+2026-08-30T03:32:08.0197478Z test injected_invalid_clone_does_not_arm_an_original_syscall_result_latch ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored
+2026-08-30T03:32:08.0198362Z test stale_clone_result_is_refused_before_clone3_decode_or_external_callback ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored
+2026-08-30T03:32:08.0199292Z test stale_clone_result_is_refused_before_deferred_path ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored
+2026-08-30T03:32:08.0199884Z test stale_clone_result_is_refused_before_suppressed_path ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored
+2026-08-30T03:32:08.0200211Z 
+2026-08-30T03:32:08.0200419Z test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.0200678Z 
+2026-08-30T03:32:08.0200959Z [1m[92m     Running[0m tests/process_clone_result_live.rs (target/debug/deps/process_clone_result_live-898f41131d985564)
+2026-08-30T03:32:08.0206994Z 
+2026-08-30T03:32:08.0207124Z running 2 tests
+2026-08-30T03:32:08.0210089Z test malformed_callback_rows_fail_closed - should panic ... ok
+2026-08-30T03:32:08.0210544Z test process_clone_result_delivery_matches_the_public_contract ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run explicitly with --ignored
+2026-08-30T03:32:08.0210885Z 
+2026-08-30T03:32:08.0211022Z test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.0211216Z 
+2026-08-30T03:32:08.0212190Z [1m[92m     Running[0m tests/stack_scrub_preserves_guest_data.rs (target/debug/deps/stack_scrub_preserves_guest_data-dda47158ed91a7e1)
+2026-08-30T03:32:08.0219824Z 
+2026-08-30T03:32:08.0219907Z running 2 tests
+2026-08-30T03:32:08.0220295Z test clone_rearmed_scrub_preserves_guest_written_dead_stack ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run with --ignored
+2026-08-30T03:32:08.0220991Z test initial_scrub_preserves_guest_data_written_before_the_first_syscall ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run with --ignored
+2026-08-30T03:32:08.0221587Z 
+2026-08-30T03:32:08.0221816Z test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.0222131Z 
+2026-08-30T03:32:08.0222414Z [1m[92m     Running[0m tests/stats_provider_live.rs (target/debug/deps/stats_provider_live-893ae41691e39f5f)
+2026-08-30T03:32:08.0236799Z 
+2026-08-30T03:32:08.0236972Z running 1 test
+2026-08-30T03:32:08.0237384Z test dbt_backend_stats_provider_reports_live_translation_metrics ... ignored, requires a built DynamoRIO and the reverie-dbt native client; run with --ignored
+2026-08-30T03:32:08.0237726Z 
+2026-08-30T03:32:08.0237881Z test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.0238089Z 
+2026-08-30T03:32:08.0238654Z [1m[92m     Running[0m tests/virtual_identity_translation.rs (target/debug/deps/virtual_identity_translation-9a6920a8d5730545)
+2026-08-30T03:32:08.0246560Z 
+2026-08-30T03:32:08.0246644Z running 1 test
+2026-08-30T03:32:08.0616148Z test virtual_identity_is_preferred_over_host_identity ... ok
+2026-08-30T03:32:08.0616546Z 
+2026-08-30T03:32:08.0616880Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+2026-08-30T03:32:08.0617335Z 
+2026-08-30T03:32:08.0617874Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_e9patch-98d7dd22e41c1e9d)
+2026-08-30T03:32:08.0626830Z 
+2026-08-30T03:32:08.0626993Z running 66 tests
+2026-08-30T03:32:08.0628344Z test aot::tests::callback_fails_closed_without_a_registered_dispatcher ... ok
+2026-08-30T03:32:08.0628833Z test aot::tests::dispatch_page_abi_matches_the_payload ... ok
+2026-08-30T03:32:08.0629759Z test aot::tests::prepared_handoff_publishes_the_exact_callback_and_unmaps_on_drop ... ok
+2026-08-30T03:32:08.0630198Z test aot::tests::rt_sigreturn_requests_direct_tail_execution_without_mutation ... ok
+2026-08-30T03:32:08.0637409Z test backend::tests::bootstrap_is_bounded_consumed_and_duplicate_safe ... ok
+2026-08-30T03:32:08.0655252Z test backend::tests::bootstrap_promotes_closed_standard_descriptors ... ok
+2026-08-30T03:32:08.0672160Z test backend::tests::direct_preload_respects_captured_environment_boundaries ... ok
+2026-08-30T03:32:08.0684829Z test backend::tests::inherited_stdio_replaces_caller_pipes ... ok
+2026-08-30T03:32:08.0709766Z test backend::tests::status_wait_drains_piped_output_without_deadlock ... ok
+2026-08-30T03:32:08.0713715Z test backend::tests::tool_preload_path_requires_a_file ... ok
+2026-08-30T03:32:08.0714358Z test dispatch::tests::dispatcher_is_a_syscall_dispatcher ... ok
+2026-08-30T03:32:08.0715149Z test dispatch::tests::dispatcher_is_constructible_in_const_context ... ok
+2026-08-30T03:32:08.0716237Z test dispatch::tests::distinct_sites_are_counted_independently ... ok
+2026-08-30T03:32:08.0717096Z test dispatch::tests::fork_reset_dispatcher_is_a_syscall_dispatcher ... ok
+2026-08-30T03:32:08.0717860Z test dispatch::tests::full_table_overflows_without_dropping_known_sites ... ok
+2026-08-30T03:32:08.0718611Z test dispatch::tests::global_site_recording_bumps_the_matching_site ... ok
+2026-08-30T03:32:08.0719284Z test dispatch::tests::out_of_range_syscall_numbers_count_in_the_total_only ... ok
+2026-08-30T03:32:08.0720009Z test dispatch::tests::recording_a_fallback_bumps_total_and_the_matching_syscall ... ok
+2026-08-30T03:32:08.0720667Z test dispatch::tests::recording_a_fallback_site_bumps_only_that_sites_count ... ok
+2026-08-30T03:32:08.0720999Z test dispatch::tests::resetting_observability_zeroes_the_process_global_counters ... ok
+2026-08-30T03:32:08.0721317Z test dispatch::tests::site_table_reset_clears_slots_and_overflow ... ok
+2026-08-30T03:32:08.0721605Z test dispatch::tests::zero_address_is_routed_to_overflow_not_the_table ... ok
+2026-08-30T03:32:08.0789431Z test rewrite::tests::absent_b0_metric_is_valid_when_tactic_is_disabled ... ok
+2026-08-30T03:32:08.0790617Z test rewrite::tests::diagnostic_is_bounded_per_stream ... ok
+2026-08-30T03:32:08.0797465Z test rewrite::tests::disassembly_binds_syscall_bytes_to_exact_virtual_addresses ... ok
+2026-08-30T03:32:08.0865152Z test rewrite::tests::duplicated_artifact_outlives_token ... ok
+2026-08-30T03:32:08.0868912Z test rewrite::tests::embedded_payload_preserves_the_ptrace_fallback_and_exports_direct_dispatch ... ok
+2026-08-30T03:32:08.0873985Z test rewrite::tests::missing_external_tool_is_actionable ... ok
+2026-08-30T03:32:08.0875464Z test rewrite::tests::parses_metrics_after_bounded_diagnostic_prefix ... ok
+2026-08-30T03:32:08.0876115Z test rewrite::tests::parses_patch_and_b0_metrics_exactly ... ok
+2026-08-30T03:32:08.0921917Z test rewrite::tests::partial_patch_coverage_fails_closed ... ok
+2026-08-30T03:32:08.1005653Z test rewrite::tests::prepares_exact_sealed_executable_bytes ... ok
+2026-08-30T03:32:08.1009106Z test rewrite::tests::privilege_bearing_input_fails_before_tool_execution ... ok
+2026-08-30T03:32:08.1010112Z test rewrite::tests::real_toolchain_rewrites_direct_syscall_guest ... ignored, requires a built e9tool/e9patch pair and direct-syscall guest
+2026-08-30T03:32:08.1011205Z test rewrite::tests::rejects_non_elf_tool_output ... ok
+2026-08-30T03:32:08.1015795Z test rewrite::tests::rejects_relocatable_elf_input ... ok
+2026-08-30T03:32:08.1050026Z test rewrite::tests::signal_fallback_sites_fail_closed_when_reported ... ok
+2026-08-30T03:32:08.1109402Z test rewrite::tests::successive_artifacts_have_independent_zeroed_cursors ... ok
+2026-08-30T03:32:08.1109931Z test runtime::tests::alt_stack_defaults_to_the_shared_default_when_unset ... ok
+2026-08-30T03:32:08.1111136Z test runtime::tests::alt_stack_env_is_distinct_from_the_other_selectors ... ok
+2026-08-30T03:32:08.1111755Z test runtime::tests::alt_stack_parses_truthy_and_falsy_spellings ... ok
+2026-08-30T03:32:08.1112189Z test runtime::tests::alt_stack_rejects_unknown_values ... ok
+2026-08-30T03:32:08.1112733Z test runtime::tests::builtin_tool_env_values_map_to_the_shared_enum ... ok
+2026-08-30T03:32:08.1113429Z test runtime::tests::controller_names_match_the_shared_crate ... ok
+2026-08-30T03:32:08.1114011Z test runtime::tests::inert_without_env ... ok
+2026-08-30T03:32:08.1114640Z test runtime::tests::mode_env_values_round_trip ... ok
+2026-08-30T03:32:08.1115160Z test runtime::tests::rejects_unknown_env_value ... ok
+2026-08-30T03:32:08.1115694Z test runtime::tests::tool_env_is_distinct_from_controller_env ... ok
+2026-08-30T03:32:08.1116256Z test stats::tests::measured_zero_remains_distinct_from_unsupported ... ok
+2026-08-30T03:32:08.1116771Z test stats::tests::unsupported_rewrite_does_not_print_zero_counts ... ok
+2026-08-30T03:32:08.1117537Z test tests::alt_stack_setter_round_trips_through_the_parser ... ok
+2026-08-30T03:32:08.1118159Z test tests::builtin_tool_env_value_round_trips_through_the_parser ... ok
+2026-08-30T03:32:08.1120034Z test tests::bundled_tools_match_the_pinned_source ... ok
+2026-08-30T03:32:08.1120531Z test tests::ld_preload_puts_our_library_first ... ok
+2026-08-30T03:32:08.1121075Z test tests::ld_preload_without_inherited_is_just_our_library ... ok
+2026-08-30T03:32:08.1121438Z test tests::pinned_revision_is_a_full_git_object_id ... ok
+2026-08-30T03:32:08.1121998Z test tool_host::tests::close_range_rejects_unknown_flags_before_touching_any_descriptor ... ok
+2026-08-30T03:32:08.1122453Z test tool_host::tests::coordinator_channel_classifier_checks_both_dup_targets ... ok
+2026-08-30T03:32:08.1123006Z test tool_host::tests::coordinator_channel_classifier_checks_transfer_endpoints ... ok
+2026-08-30T03:32:08.1123547Z test tool_host::tests::coordinator_channel_classifier_guards_sendfile_source ... ok
+2026-08-30T03:32:08.1124149Z test tool_host::tests::coordinator_channel_classifier_ignores_unrelated_and_channel_syscalls ... ok
+2026-08-30T03:32:08.1124709Z test tool_host::tests::coordinator_channel_classifier_matches_single_fd_operations ... ok
+2026-08-30T03:32:08.1125191Z test tool_host::tests::direct_host_rejects_process_tree_injection ... ok
+2026-08-30T03:32:08.1125696Z test tool_host::tests::direct_host_stack_commits_allocations ... ok
+2026-08-30T03:32:08.1126241Z test tool_host::tests::residual_subscription_exempts_only_pre_activation_runtime_code ... ok
+2026-08-30T03:32:08.1126789Z test tool_host::tests::startup_runtime_provenance_is_bounded_to_injected_code ... ok
+2026-08-30T03:32:08.1126988Z 
+2026-08-30T03:32:08.1127143Z test result: ok. 65 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s
+2026-08-30T03:32:08.1127339Z 
+2026-08-30T03:32:08.1133076Z [1m[92m     Running[0m tests/backend.rs (target/debug/deps/backend-89d201170c5fc31b)
+2026-08-30T03:32:08.1156300Z 
+2026-08-30T03:32:08.1156375Z running 14 tests
+2026-08-30T03:32:08.1156695Z test direct_builtin_passthrough_handles_far_rt_sigreturn_site ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1157179Z test direct_builtin_spoof_mutates_rewritten_getpid_result ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1157693Z test elf_stats_report_measured_coverage_even_when_counts_are_zero ... ignored, requires a built e9tool/e9patch pair and a ptrace-capable host
+2026-08-30T03:32:08.1158354Z test exact_trap_with_patched_site_documents_collision_filter_limit ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1158833Z test exact_trap_with_unpatched_site_is_not_a_syscall_event ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1159287Z test marker_collision_at_another_rip_is_not_a_syscall_event ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1159680Z test non_elf_script_uses_ptrace_fallback ... ignored, requires a ptrace-capable host
+2026-08-30T03:32:08.1160078Z test pie_rewritten_site_validates_with_runtime_load_bias ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1160558Z [1m[92m     Running[0m tests/vendor_source.rs (target/debug/deps/vendor_source-9e7e8394256f1972)
+2026-08-30T03:32:08.1161051Z test rewritten_clone_restores_parent_and_child_contexts ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1161519Z test rewritten_rt_sigreturn_uses_the_original_signal_frame ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1161979Z test rewritten_syscall_is_delivered_and_emulated ... ignored, requires a built e9tool/e9patch pair and direct-syscall guest
+2026-08-30T03:32:08.1162444Z test rewritten_syscall_supports_guest_injection ... ignored, requires a built e9tool/e9patch pair and direct-syscall guest
+2026-08-30T03:32:08.1162919Z test standalone_configuration_selects_direct_passthrough ... ignored, requires a built e9tool/e9patch pair and a C compiler
+2026-08-30T03:32:08.1163494Z test unsubscribed_rewritten_syscall_is_not_delivered_to_the_tool ... ignored, requires a built e9tool/e9patch pair and direct-syscall guest
+2026-08-30T03:32:08.1163779Z 
+2026-08-30T03:32:08.1163933Z test result: ok. 0 passed; 0 failed; 14 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.1164128Z 
+2026-08-30T03:32:08.1172660Z 
+2026-08-30T03:32:08.2652391Z running 5 tests
+2026-08-30T03:32:08.2652920Z test contrib_archives_are_ordered_before_the_e9tool_link ... ok
+2026-08-30T03:32:08.2680999Z test oversized_text_files_stay_on_the_allowlist ... ok
+2026-08-30T03:32:08.3246342Z test the_system_library_goals_do_not_build_the_contrib_archives ... ok
+2026-08-30T03:32:08.3800723Z test the_vendored_source_contains_no_binary_files ... ok
+2026-08-30T03:32:08.3801254Z test the_zydis_encoder_is_disabled_and_its_sources_are_absent ... ok
+2026-08-30T03:32:08.3801432Z 
+2026-08-30T03:32:08.3801594Z test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+2026-08-30T03:32:08.3801799Z 
+2026-08-30T03:32:08.3806352Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_examples-b54f1245a23d8e9c)
+2026-08-30T03:32:08.3821358Z 
+2026-08-30T03:32:08.3821475Z running 5 tests
+2026-08-30T03:32:08.4067409Z test noop::kvm_tests::exact_noop_tool_runs_kvm_guest_syscall_without_interception ... ok
+2026-08-30T03:32:08.4308604Z test noop::kvm_tests::exact_noop_tool_runs_static_kvm_syscall ... ok
+2026-08-30T03:32:08.4309218Z test strace::filter::tests::parse_filter ... ok
+2026-08-30T03:32:08.4475185Z test strace::kvm_tests::exact_strace_tool_forwards_kvm_guest_syscall ... ok
+2026-08-30T03:32:08.4707485Z test strace::kvm_tests::exact_strace_tool_runs_static_kvm_syscall ... ok
+2026-08-30T03:32:08.4707716Z 
+2026-08-30T03:32:08.4707876Z test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+2026-08-30T03:32:08.4708089Z 
+2026-08-30T03:32:08.4711799Z [1m[92m     Running[0m unittests chaos.rs (target/debug/deps/chaos-03e79cf4af57e197)
+2026-08-30T03:32:08.4724010Z 
+2026-08-30T03:32:08.4724215Z running 0 tests
+2026-08-30T03:32:08.4724313Z 
+2026-08-30T03:32:08.4724487Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.4724707Z 
+2026-08-30T03:32:08.4725285Z [1m[92m     Running[0m unittests chrome-trace/main.rs (target/debug/deps/chrome_trace-f6528cd50105f956)
+2026-08-30T03:32:08.4738692Z 
+2026-08-30T03:32:08.4738791Z running 0 tests
+2026-08-30T03:32:08.4738879Z 
+2026-08-30T03:32:08.4739042Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.4739242Z 
+2026-08-30T03:32:08.4741171Z [1m[92m     Running[0m unittests chunky_print.rs (target/debug/deps/chunky_print-a89204827bdfc035)
+2026-08-30T03:32:08.4750707Z 
+2026-08-30T03:32:08.4750831Z running 0 tests
+2026-08-30T03:32:08.4750927Z 
+2026-08-30T03:32:08.4751084Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.4751298Z 
+2026-08-30T03:32:08.4752357Z [1m[92m     Running[0m unittests counter1.rs (target/debug/deps/counter1-241acd400c588c57)
+2026-08-30T03:32:08.4770481Z 
+2026-08-30T03:32:08.4770590Z running 1 test
+2026-08-30T03:32:08.4946326Z test kvm_tests::exact_counter1_tool_counts_kvm_guest_syscall ... ok
+2026-08-30T03:32:08.4946582Z 
+2026-08-30T03:32:08.4946927Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+2026-08-30T03:32:08.4947152Z 
+2026-08-30T03:32:08.4949899Z [1m[92m     Running[0m unittests counter2.rs (target/debug/deps/counter2-dc59ce646bc21933)
+2026-08-30T03:32:08.4959365Z 
+2026-08-30T03:32:08.4959455Z running 0 tests
+2026-08-30T03:32:08.4959582Z 
+2026-08-30T03:32:08.4959737Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.4959945Z 
+2026-08-30T03:32:08.4960613Z [1m[92m     Running[0m unittests debug.rs (target/debug/deps/debug-948b52d10196edec)
+2026-08-30T03:32:08.4969956Z 
+2026-08-30T03:32:08.4970070Z running 0 tests
+2026-08-30T03:32:08.4970188Z 
+2026-08-30T03:32:08.4970360Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.4970559Z 
+2026-08-30T03:32:08.4971030Z [1m[92m     Running[0m unittests noop.rs (target/debug/deps/noop-3b2ac571a98ccb4f)
+2026-08-30T03:32:08.4988892Z 
+2026-08-30T03:32:08.4989025Z running 2 tests
+2026-08-30T03:32:08.5186104Z test kvm_tests::exact_noop_tool_runs_kvm_guest_syscall_without_interception ... ok
+2026-08-30T03:32:08.5399176Z test kvm_tests::exact_noop_tool_runs_static_kvm_syscall ... ok
+2026-08-30T03:32:08.5399387Z 
+2026-08-30T03:32:08.5399549Z test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+2026-08-30T03:32:08.5399758Z 
+2026-08-30T03:32:08.5402784Z [1m[92m     Running[0m unittests ../tests/standalone/parallel_tasks.rs (target/debug/deps/parallel_tasks-6c2730bd41315b2a)
+2026-08-30T03:32:08.5414845Z 
+2026-08-30T03:32:08.5415069Z running 0 tests
+2026-08-30T03:32:08.5415167Z 
+2026-08-30T03:32:08.5415338Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.5415562Z 
+2026-08-30T03:32:08.5417107Z [1m[92m     Running[0m unittests e9patch_counter2.rs (target/debug/deps/reverie_e9patch_counter2-c427e1051df9b3ee)
+2026-08-30T03:32:08.5434230Z 
+2026-08-30T03:32:08.5434338Z running 0 tests
+2026-08-30T03:32:08.5434426Z 
+2026-08-30T03:32:08.5434584Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.5434782Z 
+2026-08-30T03:32:08.5436062Z [1m[92m     Running[0m unittests kvm_counter1.rs (target/debug/deps/reverie_kvm_counter1-1095bcbcaba8a5d4)
+2026-08-30T03:32:08.5449494Z 
+2026-08-30T03:32:08.5449577Z running 0 tests
+2026-08-30T03:32:08.5449663Z 
+2026-08-30T03:32:08.5449830Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.5450037Z 
+2026-08-30T03:32:08.5450786Z [1m[92m     Running[0m unittests kvm_counter2.rs (target/debug/deps/reverie_kvm_counter2-ab06e9aec09e265b)
+2026-08-30T03:32:08.5459433Z 
+2026-08-30T03:32:08.5459539Z running 0 tests
+2026-08-30T03:32:08.5459617Z 
+2026-08-30T03:32:08.5459770Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.5459970Z 
+2026-08-30T03:32:08.5460860Z [1m[92m     Running[0m unittests liteinst_env_guest.rs (target/debug/deps/reverie_liteinst_env_guest-d87b4187e45a08a9)
+2026-08-30T03:32:08.5468694Z 
+2026-08-30T03:32:08.5468783Z running 0 tests
+2026-08-30T03:32:08.5468874Z 
+2026-08-30T03:32:08.5469021Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.5469217Z 
+2026-08-30T03:32:08.5470012Z [1m[92m     Running[0m unittests liteinst.rs (target/debug/deps/reverie_liteinst_examples-82336e1cc1084936)
+2026-08-30T03:32:08.5482314Z 
+2026-08-30T03:32:08.5482394Z running 5 tests
+2026-08-30T03:32:08.5727900Z test example_tools::noop::kvm_tests::exact_noop_tool_runs_kvm_guest_syscall_without_interception ... ok
+2026-08-30T03:32:08.5969588Z test example_tools::noop::kvm_tests::exact_noop_tool_runs_static_kvm_syscall ... ok
+2026-08-30T03:32:08.5970549Z test example_tools::strace::filter::tests::parse_filter ... ok
+2026-08-30T03:32:08.6206920Z test example_tools::strace::kvm_tests::exact_strace_tool_forwards_kvm_guest_syscall ... ok
+2026-08-30T03:32:08.6466645Z test example_tools::strace::kvm_tests::exact_strace_tool_runs_static_kvm_syscall ... ok
+2026-08-30T03:32:08.6466968Z 
+2026-08-30T03:32:08.6467203Z test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+2026-08-30T03:32:08.6467522Z 
+2026-08-30T03:32:08.6472873Z [1m[92m     Running[0m unittests strace/main.rs (target/debug/deps/strace-1375fda1634cf094)
+2026-08-30T03:32:08.6488703Z 
+2026-08-30T03:32:08.6488783Z running 3 tests
+2026-08-30T03:32:08.6490599Z test filter::tests::parse_filter ... ok
+2026-08-30T03:32:08.6725914Z test kvm_tests::exact_strace_tool_forwards_kvm_guest_syscall ... ok
+2026-08-30T03:32:08.6970260Z test kvm_tests::exact_strace_tool_runs_static_kvm_syscall ... ok
+2026-08-30T03:32:08.6970629Z 
+2026-08-30T03:32:08.6970784Z test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+2026-08-30T03:32:08.6970995Z 
+2026-08-30T03:32:08.6974403Z [1m[92m     Running[0m unittests strace_minimal.rs (target/debug/deps/strace_minimal-04aede645f67d89a)
+2026-08-30T03:32:08.6984646Z 
+2026-08-30T03:32:08.6984782Z running 0 tests
+2026-08-30T03:32:08.6984893Z 
+2026-08-30T03:32:08.6985057Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.6985270Z 
+2026-08-30T03:32:08.6985759Z [1m[92m     Running[0m tests/e9patch_direct.rs (target/debug/deps/e9patch_direct-9775dcbe18dff457)
+2026-08-30T03:32:08.7000826Z 
+2026-08-30T03:32:08.7001054Z running 13 tests
+2026-08-30T03:32:08.7001679Z test environment_selected_preload_runs_status_only_tool ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7002639Z test guest_process_creation_fails_closed_under_direct_host ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7003711Z test inherited_stdio_uses_sealed_bootstrap_and_returns_empty_buffers ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7004841Z test legacy_environment_bootstrap_remains_compatible ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7005776Z test production_counter1_reports_rewritten_syscall_total ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7006696Z test production_counter2_reports_exit_lifecycle_totals ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7007598Z test production_noop_preserves_native_rewritten_syscall ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7008513Z test production_strace_observes_filtered_rewritten_write ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7009420Z test sealed_bootstrap_rejects_unknown_tool_selector ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7010220Z test sealed_bootstrap_selects_matching_tool_without_environment_mutation ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7010679Z test status_only_launch_returns_exit_status_and_global_state ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7011296Z test subscribed_application_residual_fails_closed_before_direct_start ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7011751Z test subscribed_residual_write_still_fails_closed_after_direct_start ... ignored, requires a built e9tool/e9patch pair
+2026-08-30T03:32:08.7012009Z 
+2026-08-30T03:32:08.7012158Z test result: ok. 0 passed; 0 failed; 13 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:08.7012364Z 
+2026-08-30T03:32:08.7012552Z [1m[92m     Running[0m tests/kvm_cli.rs (target/debug/deps/kvm_cli-08f19d6237e5e3c9)
+2026-08-30T03:32:08.7012740Z 
+2026-08-30T03:32:08.7012802Z running 7 tests
+2026-08-30T03:32:08.7673432Z test counter2_matches_ptrace_echo_syscall_count ... ok
+2026-08-30T03:32:12.2218311Z test counter2_matches_ptrace_fork_process_and_thread_counts ... ok
+2026-08-30T03:32:13.1891861Z test cross_backend_tool_startup_microbenchmark ... ok
+2026-08-30T03:32:13.2306562Z test kvm_runner_preserves_process_boundary_errors ... ok
+2026-08-30T03:32:13.6192352Z test production_example_clis_run_real_program_with_kvm_guest ... ok
+2026-08-30T03:32:14.0718124Z test strace_observes_root_process_syscalls_with_kvm_guest ... ok
+2026-08-30T03:32:14.9490314Z test strace_observes_syscalls_from_forked_kvm_processes ... ok
+2026-08-30T03:32:14.9490512Z 
+2026-08-30T03:32:14.9490666Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.25s
+2026-08-30T03:32:14.9490878Z 
+2026-08-30T03:32:14.9494121Z [1m[92m     Running[0m tests/liteinst.rs (target/debug/deps/liteinst-6ec2471903c3a661)
+2026-08-30T03:32:14.9508511Z 
+2026-08-30T03:32:14.9508595Z running 21 tests
+2026-08-30T03:32:14.9728619Z test chaos_options_require_the_chaos_tool ... ok
+2026-08-30T03:32:14.9839422Z test chrome_trace_output_requires_the_chrome_trace_tool ... ok
+2026-08-30T03:32:14.9946391Z test debug_port_requires_debug_selector ... ok
+2026-08-30T03:32:15.0358709Z test exact_chaos_skip_suppresses_intervention_before_boundary ... ok
+2026-08-30T03:32:15.0570170Z test exact_chaos_tool_interrupts_then_limits_retry ... ok
+2026-08-30T03:32:15.0780477Z test exact_chaos_tool_limits_reads_after_skip ... ok
+2026-08-30T03:32:15.0993026Z test exact_chrome_trace_tool_writes_process_and_syscall_events ... ok
+2026-08-30T03:32:15.1200702Z test exact_chunky_print_delays_buffered_write_behind_later_alias_write ... ok
+2026-08-30T03:32:15.1509957Z test exact_counter1_tool_does_not_reenter_the_guest_allocator ... ok
+2026-08-30T03:32:15.1719338Z test exact_counter1_tool_reports_a_nonzero_total ... ok
+2026-08-30T03:32:15.1929550Z test exact_counter2_tool_reports_process_and_thread_totals ... ok
+2026-08-30T03:32:15.2140128Z test exact_noop_tool_preserves_output_and_hides_control_environment ... ok
+2026-08-30T03:32:15.2347622Z test exact_noop_tool_preserves_raw_environment_entries ... ok
+2026-08-30T03:32:15.2556222Z test exact_noop_tool_preserves_unrelated_inherited_descriptor ... ok
+2026-08-30T03:32:15.2764634Z test exact_noop_tool_preserves_user_coordinator_environment ... ok
+2026-08-30T03:32:16.3161557Z test exact_noop_tool_repeatedly_runs_fast_guest ... ok
+2026-08-30T03:32:16.3369413Z test exact_strace_minimal_tool_observes_write ... ok
+2026-08-30T03:32:16.3579258Z test exact_strace_tool_observes_filtered_write ... ok
+2026-08-30T03:32:16.3790847Z test exact_strace_tool_observes_thread_and_process_exit ... ok
+2026-08-30T03:32:16.3899734Z test launcher_does_not_activate_the_guest_constructor ... ok
+2026-08-30T03:32:16.4008642Z test launcher_exposes_the_complete_ptrace_example_surface ... ok
+2026-08-30T03:32:16.4008841Z 
+2026-08-30T03:32:16.4009007Z test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.45s
+2026-08-30T03:32:16.4009215Z 
+2026-08-30T03:32:16.4014699Z [1m[92m     Running[0m tests/parallel_tasks.rs (target/debug/deps/parallel_tasks-054428ac1c88aa8c)
+2026-08-30T03:32:16.4023376Z 
+2026-08-30T03:32:16.4023455Z running 1 test
+2026-08-30T03:32:16.5006246Z test parallel_tasks_reports_switch_points ... ok
+2026-08-30T03:32:16.5006594Z 
+2026-08-30T03:32:16.5006749Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+2026-08-30T03:32:16.5006954Z 
+2026-08-30T03:32:16.5009544Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_host-f8f2e22af0f101fe)
+2026-08-30T03:32:16.5017834Z 
+2026-08-30T03:32:16.5017917Z running 0 tests
+2026-08-30T03:32:16.5018001Z 
+2026-08-30T03:32:16.5018157Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:16.5018350Z 
+2026-08-30T03:32:16.5019137Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_kvm-7822ebce010c0ffe)
+2026-08-30T03:32:16.5028480Z 
+2026-08-30T03:32:16.5028575Z running 198 tests
+2026-08-30T03:32:16.5030264Z test bootstrap::initial_register_tests::initial_registers_match_the_linux_process_entry_abi ... ok
+2026-08-30T03:32:16.5032043Z test bootstrap::tests::descriptor_tables_install_exception_gates_and_kernel_stack ... ok
+2026-08-30T03:32:16.5032531Z test bootstrap::tests::exception_halt_identifies_fault_vector_without_clobbering_registers ... ok
+2026-08-30T03:32:16.5034407Z test bootstrap::tests::page_tables_identity_map_three_gibibytes ... ok
+2026-08-30T03:32:16.5034945Z test bootstrap::tests::trampoline_preserves_syscall_return_state ... ok
+2026-08-30T03:32:16.5035706Z test bootstrap::tests::worker_task_state_is_private_within_each_transport ... ok
+2026-08-30T03:32:16.5036484Z test cpuid::tests::deterministic_policy_rejects_missing_required_features ... ok
+2026-08-30T03:32:16.5037166Z test cpuid::tests::deterministic_policy_replaces_host_identity_and_features ... ok
+2026-08-30T03:32:16.5037639Z test cpuid::tests::host_supported_policy_preserves_entries ... ok
+2026-08-30T03:32:16.5038136Z test elf::tests::interpreter_base_overflow_is_reported ... ok
+2026-08-30T03:32:16.5038641Z test elf::tests::large_pie_relocates_interpreter_above_main_image ... ok
+2026-08-30T03:32:16.5039231Z test elf::tests::parses_script_interpreters_and_optional_arguments ... ok
+2026-08-30T03:32:16.5043772Z test elf::tests::resolves_bare_program_name_via_path ... ok
+2026-08-30T03:32:16.5044225Z test elf::tests::small_pie_keeps_fixed_interpreter_base ... ok
+2026-08-30T03:32:16.5052154Z test executor::tests::any_wait_skips_auto_reaped_child_for_waitable_sibling ... ok
+2026-08-30T03:32:16.5057513Z test executor::tests::blocking_any_wait_reaps_the_first_completed_child_not_the_lowest_pid ... ok
+2026-08-30T03:32:16.5057989Z test executor::tests::canonicalize_statfs_zeroes_host_varying_fields ... ok
+2026-08-30T03:32:16.5061020Z test executor::tests::capability_syscalls_round_trip_and_bound_the_exec_persona ... ok
+2026-08-30T03:32:16.5063543Z test executor::tests::captured_output_fstat_is_synthetic_and_stable ... ok
+2026-08-30T03:32:16.5067763Z test executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias ... ok
+2026-08-30T03:32:16.5071959Z test executor::tests::chdir_and_fchdir_update_working_directory ... ok
+2026-08-30T03:32:16.5075763Z test executor::tests::chdir_rejects_missing_and_nondirectory_targets ... ok
+2026-08-30T03:32:16.5080992Z test executor::tests::chdir_updates_cwd_and_resolves_relative_paths ... ok
+2026-08-30T03:32:16.5083809Z test executor::tests::child_completion_keeps_the_exit_time_auto_reap_decision ... ok
+2026-08-30T03:32:16.5086203Z test executor::tests::child_sleep_syscalls_validate_requests_without_host_waiting ... ok
+2026-08-30T03:32:16.5088557Z test executor::tests::clock_gettime_advances_private_logical_clock_after_successful_write ... ok
+2026-08-30T03:32:16.5090974Z test executor::tests::clone3_accepts_glibc_pthread_profile_with_tls_and_tid_addresses ... ok
+2026-08-30T03:32:16.5093708Z test executor::tests::clone3_posix_spawn_vfork_with_clear_sighand_is_accepted ... ok
+2026-08-30T03:32:16.5096130Z test executor::tests::clone3_tid_flags_remain_explicitly_unsupported ... ok
+2026-08-30T03:32:16.5098584Z test executor::tests::clone3_validates_nonzero_extensions_and_paired_stack_fields ... ok
+2026-08-30T03:32:16.5102472Z test executor::tests::close_range_closes_the_inclusive_descriptor_span ... ok
+2026-08-30T03:32:16.5106122Z test executor::tests::close_range_validates_bounds_and_flags ... ok
+2026-08-30T03:32:16.5110081Z test executor::tests::connect_rejects_unsupported_address_family ... ok
+2026-08-30T03:32:16.5112424Z test executor::tests::cpu_frequency_surface_is_fixed_for_absolute_and_relative_paths ... ok
+2026-08-30T03:32:16.5117469Z test executor::tests::creat_creates_and_truncates_like_open_o_creat ... ok
+2026-08-30T03:32:16.5119437Z test executor::tests::credential_setting_family_is_deterministic_noop_success ... ok
+2026-08-30T03:32:16.5138036Z test executor::tests::descriptor_duplication_and_fchmod_preserve_guest_fd_semantics ... ok
+2026-08-30T03:32:16.5138458Z test executor::tests::descriptor_lifecycle_and_error_precedence_match_linux ... ok
+2026-08-30T03:32:16.5139204Z test executor::tests::deterministic_getrandom_repeats_per_thread_and_separates_threads ... ok
+2026-08-30T03:32:16.5140060Z test executor::tests::deterministic_random_device_repeats_and_changes_with_seed ... ok
+2026-08-30T03:32:16.5144590Z test executor::tests::elf_executor_accepts_unix_listener_connection ... ok
+2026-08-30T03:32:16.5148375Z test executor::tests::epoll_waits_are_nonblocking_and_pwait_validates_sigmask ... ok
+2026-08-30T03:32:16.5152134Z test executor::tests::exec_closes_cloexec_descriptors_and_resets_caught_signals ... ok
+2026-08-30T03:32:16.5154178Z test executor::tests::exit_syscalls_keep_only_the_low_eight_status_bits ... ok
+2026-08-30T03:32:16.5157590Z test executor::tests::faccessat_variants_check_permissions ... ok
+2026-08-30T03:32:16.5159999Z test executor::tests::failed_sibling_sigaction_cannot_overwrite_shared_child_exit_policy ... ok
+2026-08-30T03:32:16.5166262Z test executor::tests::fchdir_follows_open_directory_descriptor ... ok
+2026-08-30T03:32:16.5171562Z test executor::tests::fcntl_advisory_locks_apply_to_host_descriptors ... ok
+2026-08-30T03:32:16.5176352Z test executor::tests::fcntl_getfl_translates_guest_descriptors ... ok
+2026-08-30T03:32:16.5179626Z test executor::tests::fcntl_pipe_capacity_get_and_set_forward_to_host ... ok
+2026-08-30T03:32:16.5182422Z test executor::tests::fcntl_setfl_applies_status_flags ... ok
+2026-08-30T03:32:16.5188967Z test executor::tests::filesystem_round_trip_and_metadata_syscalls ... ok
+2026-08-30T03:32:16.5193626Z test executor::tests::flock_and_chown_are_deterministic_for_owned_files ... ok
+2026-08-30T03:32:16.5196039Z test executor::tests::foreign_thread_id_reports_esrch_not_enosys ... ok
+2026-08-30T03:32:16.5198815Z test executor::tests::forked_executors_share_captured_output_order ... ok
+2026-08-30T03:32:16.5205640Z test executor::tests::forked_process_waits_for_parent_registration_gate ... ok
+2026-08-30T03:32:16.5213410Z test executor::tests::forked_states_share_file_object_identity_namespace ... ok
+2026-08-30T03:32:16.5216516Z test executor::tests::get_robust_list_checks_access_before_linux_ordered_copyout ... ok
+2026-08-30T03:32:16.5219762Z test executor::tests::getdents64_does_not_advance_directory_on_guest_fault ... ok
+2026-08-30T03:32:16.5224680Z test executor::tests::getdents64_returns_host_directory_entries ... ok
+2026-08-30T03:32:16.5227160Z test executor::tests::getgroups_uses_fixed_guest_credentials_and_validates_output ... ok
+2026-08-30T03:32:16.5230078Z test executor::tests::getsockopt_so_cookie_uses_open_file_identity ... ok
+2026-08-30T03:32:16.5233370Z test executor::tests::getsockopt_so_incoming_cpu_is_canonical_zero ... ok
+2026-08-30T03:32:16.5236371Z test executor::tests::getsockopt_so_netns_cookie_is_shared_by_sockets ... ok
+2026-08-30T03:32:16.5239250Z test executor::tests::getsockopt_so_type_supports_bounded_and_zero_length_results ... ok
+2026-08-30T03:32:16.5244574Z test executor::tests::getsockopt_tcp_info_is_canonicalized ... ok
+2026-08-30T03:32:16.5247038Z test executor::tests::gettimeofday_is_deterministic_and_validates_outputs ... ok
+2026-08-30T03:32:16.5250977Z test executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor ... ok
+2026-08-30T03:32:16.5254284Z test executor::tests::guest_fd_paths_reopen_mapped_descriptors ... ok
+2026-08-30T03:32:16.5258971Z test executor::tests::guest_fd_reopen_uses_fresh_description_and_native_flags ... ok
+2026-08-30T03:32:16.5266406Z test executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned ... ok
+2026-08-30T03:32:16.5469268Z test executor::tests::host_read_forwards_input_without_consuming_on_guest_fault ... ok
+2026-08-30T03:32:16.5471961Z test executor::tests::ignored_and_probe_signals_do_not_terminate ... ok
+2026-08-30T03:32:16.5477342Z test executor::tests::inet6_loopback_connect_completes_handshake ... ok
+2026-08-30T03:32:16.5480205Z test executor::tests::inet_listener_translates_guest_socket_arguments ... ok
+2026-08-30T03:32:16.5484891Z test executor::tests::inet_loopback_connect_completes_handshake ... ok
+2026-08-30T03:32:16.5487721Z test executor::tests::inherited_special_stdin_matches_linux_read_precedence ... ok
+2026-08-30T03:32:16.5490735Z test executor::tests::installed_handler_and_blocked_signal_are_not_terminating ... ok
+2026-08-30T03:32:16.5493780Z test executor::tests::ioctl_cloexec_commands_update_guest_descriptor_flags ... ok
+2026-08-30T03:32:16.5497707Z test executor::tests::ioctl_terminal_queries_report_real_tty_ness ... ok
+2026-08-30T03:32:16.5500135Z test executor::tests::ioprio_syscalls_validate_and_round_trip_virtual_state ... ok
+2026-08-30T03:32:16.5502288Z test executor::tests::kill_and_tkill_self_fatal_signals_terminate ... ok
+2026-08-30T03:32:16.5504746Z test executor::tests::leader_targeted_signal_does_not_mutate_worker_signal_state ... ok
+2026-08-30T03:32:16.5507571Z test executor::tests::memfd_create_registers_writable_anonymous_file ... ok
+2026-08-30T03:32:16.5510643Z test executor::tests::memfd_shared_mmap_copies_file_backed_pages ... ok
+2026-08-30T03:32:16.5513233Z test executor::tests::memory_residency_and_cpu_topology_are_deterministic ... ok
+2026-08-30T03:32:16.5515816Z test executor::tests::mmap_reuses_unmapped_holes_after_cursor_exhaustion ... ok
+2026-08-30T03:32:16.5518263Z test executor::tests::mmap_reuses_unmapped_holes_before_cursor_exhaustion ... ok
+2026-08-30T03:32:16.5520734Z test executor::tests::mprotect_and_munmap_bound_tool_user_copies ... ok
+2026-08-30T03:32:16.5523408Z test executor::tests::mremap_grows_a_reused_hole_into_adjacent_space ... ok
+2026-08-30T03:32:16.5526011Z test executor::tests::mremap_grows_moves_and_shrinks_guest_ranges ... ok
+2026-08-30T03:32:16.5528416Z test executor::tests::msync_validates_mapped_ranges_and_flags ... ok
+2026-08-30T03:32:16.5532148Z test executor::tests::netlink_bind_round_trips_deterministic_port_identity ... ok
+2026-08-30T03:32:16.5534739Z test executor::tests::nondumpable_fatal_signal_omits_core_status_in_both_wait_apis ... ok
+2026-08-30T03:32:16.5537059Z test executor::tests::nonpositive_thread_signal_ids_report_einval ... ok
+2026-08-30T03:32:16.5557477Z test executor::tests::path_mutation_metadata_and_timestamp_syscalls_round_trip ... ok
+2026-08-30T03:32:16.5560575Z test executor::tests::pidfd_open_self_is_cloexec_and_not_ready ... ok
+2026-08-30T03:32:16.5564347Z test executor::tests::pipe_syscalls_create_owned_guest_descriptors ... ok
+2026-08-30T03:32:16.5618442Z test executor::tests::positioned_write_seek_truncate_and_sync_round_trip ... ok
+2026-08-30T03:32:16.5632556Z test executor::tests::ppoll_masked_ready_returns_count_and_blocking_fails_closed ... ok
+2026-08-30T03:32:16.5634850Z test executor::tests::prctl_capbset_read_reports_full_bounding_set ... ok
+2026-08-30T03:32:16.5637555Z test executor::tests::prctl_dumpable_round_trips_inherits_on_fork_and_resets_on_exec ... ok
+2026-08-30T03:32:16.5640208Z test executor::tests::prctl_keepcaps_round_trips_inherits_on_fork_and_resets_on_exec ... ok
+2026-08-30T03:32:16.5642635Z test executor::tests::priority_and_scheduler_queries_round_trip_guest_persona ... ok
+2026-08-30T03:32:16.5645773Z test executor::tests::process_clone_accepts_legacy_tid_flags_without_prevalidating_pointers ... ok
+2026-08-30T03:32:16.5660788Z test executor::tests::random_device_reads_remain_tool_routed_after_duplication ... ok
+2026-08-30T03:32:16.5665498Z test executor::tests::read_limits_host_consumption_to_the_accessible_guest_prefix ... ok
+2026-08-30T03:32:16.5669929Z test executor::tests::received_rights_reservation_and_rewrite_failures_are_transactional ... ok
+2026-08-30T03:32:16.5673394Z test executor::tests::recvmmsg_translates_guest_headers_and_receives_multiple_datagrams ... ok
+2026-08-30T03:32:16.5676747Z test executor::tests::recvmsg_preserves_timestamps_but_strips_host_credentials ... ok
+2026-08-30T03:32:16.5679619Z test executor::tests::recvmsg_rights_truncation_installs_only_reported_descriptors ... ok
+2026-08-30T03:32:16.5689214Z test executor::tests::rejects_supervisor_procfs_and_reports_long_paths ... ok
+2026-08-30T03:32:16.5695533Z test executor::tests::relative_open_keeps_cwd_directory_identity ... ok
+2026-08-30T03:32:16.5812555Z test executor::tests::removed_link_identities_are_reclaimed ... ok
+2026-08-30T03:32:16.5817790Z test executor::tests::renumbered_root_guest_has_no_traced_parent_but_keeps_getppid ... ok
+2026-08-30T03:32:16.5821065Z test executor::tests::resolve_exec_shebang_plain_elf_is_unchanged ... ok
+2026-08-30T03:32:16.5825151Z test executor::tests::resolve_exec_shebang_rejects_infinite_recursion ... ok
+2026-08-30T03:32:16.5827747Z test executor::tests::resolve_exec_shebang_single_level_kernel_order ... ok
+2026-08-30T03:32:16.5833534Z test executor::tests::rmdir_removes_empty_directories_like_unlinkat_removedir ... ok
+2026-08-30T03:32:16.5836172Z test executor::tests::robust_list_lifecycle_resets_on_exec_removes_on_exit_and_reuses_tid ... ok
+2026-08-30T03:32:16.5838287Z test executor::tests::robust_list_peer_lookup_distinguishes_live_tasks_and_uses_exact_tid ... ok
+2026-08-30T03:32:16.5840333Z test executor::tests::rt_sigtimedwait_polls_pending_and_reports_eagain_when_empty ... ok
+2026-08-30T03:32:16.5842359Z test executor::tests::saved_ids_are_fixed_root_and_validate_every_output ... ok
+2026-08-30T03:32:16.5842826Z test executor::tests::sched_priority_bounds_match_policy_class ... ok
+2026-08-30T03:32:16.5850765Z test executor::tests::scheduler_and_ioprio_state_follow_fork_and_exec_rules ... ok
+2026-08-30T03:32:16.5853651Z test executor::tests::scheduler_syscalls_validate_and_round_trip_virtual_state ... ok
+2026-08-30T03:32:16.5855467Z test executor::tests::seccomp_reports_unsupported_matching_detcore ... ok
+2026-08-30T03:32:16.5858510Z test executor::tests::select_socketpair_and_shutdown_cover_ready_and_half_close_paths ... ok
+2026-08-30T03:32:16.5860330Z test executor::tests::self_directed_fatal_signal_terminates_with_conventional_status ... ok
+2026-08-30T03:32:16.5865715Z test executor::tests::sendfile_copies_regular_files_with_and_without_offset ... ok
+2026-08-30T03:32:16.5868799Z test executor::tests::sendfile_rejects_socket_input_with_enosys_and_unknown_fd_with_ebadf ... ok
+2026-08-30T03:32:16.5872275Z test executor::tests::sendmsg_recvmsg_translates_multiple_rights_and_cloexec_lifecycle ... ok
+2026-08-30T03:32:16.5874876Z test executor::tests::sendmsg_rejects_invalid_malformed_and_unvirtualized_control_without_sending ... ok
+2026-08-30T03:32:16.5876998Z test executor::tests::set_tid_address_tracks_current_pid_and_clear_pointer ... ok
+2026-08-30T03:32:16.5878974Z test executor::tests::sibling_signal_termination_uses_process_wide_dumpability ... ok
+2026-08-30T03:32:16.5880997Z test executor::tests::sigchld_handler_registration_is_accepted_and_suppresses_auto_reap ... ok
+2026-08-30T03:32:16.5883427Z test executor::tests::sigchld_policy_tracks_installed_action_when_oldact_copyout_faults ... ok
+2026-08-30T03:32:16.5885923Z test executor::tests::signal_disposition_honors_handlers_over_defaults ... ok
+2026-08-30T03:32:16.5888141Z test executor::tests::signal_state_round_trips_and_filters_unmaskable_signals ... ok
+2026-08-30T03:32:16.5890471Z test executor::tests::signalfd_queues_blocked_self_signal_and_reports_readiness ... ok
+2026-08-30T03:32:16.5892268Z test executor::tests::signals_to_other_processes_report_esrch ... ok
+2026-08-30T03:32:16.5895367Z test executor::tests::so_incoming_cpu_udp4_loopback_flow_is_canonical_zero ... ok
+2026-08-30T03:32:16.5899270Z test executor::tests::standard_input_access_checks_precede_memory_validation ... ok
+2026-08-30T03:32:16.5902285Z test executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files ... ok
+2026-08-30T03:32:16.5906163Z test executor::tests::synthetic_proc_files_serve_deterministic_content ... ok
+2026-08-30T03:32:16.5908597Z test executor::tests::synthetic_proc_metadata_is_synthetic_and_stable ... ok
+2026-08-30T03:32:16.5910963Z test executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths ... ok
+2026-08-30T03:32:16.5913367Z test executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable ... ok
+2026-08-30T03:32:16.5916849Z test executor::tests::synthetic_proc_self_reflects_guest_identity ... ok
+2026-08-30T03:32:16.5918918Z test executor::tests::synthetic_proc_vmstat_and_osrelease_are_served_deterministically ... ok
+2026-08-30T03:32:16.5921089Z test executor::tests::thread_child_worker_has_pid_distinct_from_tid ... ok
+2026-08-30T03:32:16.5925412Z test executor::tests::thread_executors_share_descriptor_replacement ... ok
+2026-08-30T03:32:16.5927795Z test executor::tests::thread_executors_share_mmap_allocation_cursor ... ok
+2026-08-30T03:32:16.5930331Z test executor::tests::timerfd_round_trips_flags_and_expiration ... ok
+2026-08-30T03:32:16.5935664Z test executor::tests::unix_listener_bind_and_connect_use_guest_paths ... ok
+2026-08-30T03:32:16.5939263Z test executor::tests::unix_seqpacket_socket_autobinds_like_stream_and_dgram ... ok
+2026-08-30T03:32:16.5941439Z test executor::tests::unsupported_handler_and_stop_fail_visibly_while_ignore_succeeds ... ok
+2026-08-30T03:32:16.5943245Z test executor::tests::unsupported_realtime_signal_refuses_instead_of_panicking ... ok
+2026-08-30T03:32:16.5963608Z test executor::tests::virtual_identity_and_random_files_are_read_only ... ok
+2026-08-30T03:32:16.5969723Z test executor::tests::wait4_decodes_zero_extended_negative_one_and_reports_exit_status ... ok
+2026-08-30T03:32:16.5971654Z test executor::tests::wait4_preserves_core_dumping_signal_identity ... ok
+2026-08-30T03:32:16.5974539Z test executor::tests::wait4_sign_extends_negative_pid_and_reaps_child ... ok
+2026-08-30T03:32:16.5976604Z test executor::tests::waitid_reports_core_dumping_signal_identity ... ok
+2026-08-30T03:32:16.5980104Z test executor::tests::waitid_reports_status_supports_wnowait_and_reaps ... ok
+2026-08-30T03:32:16.5984851Z test executor::tests::waitid_synchronizes_pending_child_and_polls_before_reap ... ok
+2026-08-30T03:32:16.5988813Z test executor::tests::wnohang_observes_published_status_without_waiting_for_callback_return ... ok
+2026-08-30T03:32:16.5990838Z test executor::tests::worker_self_directed_probe_signals_succeed ... ok
+2026-08-30T03:32:16.6006970Z test executor::tests::write_without_sigpipe_contains_default_signal ... ok
+2026-08-30T03:32:16.6009567Z test executor::tests::writev_and_readv_gather_scatter_round_trip ... ok
+2026-08-30T03:32:16.6015434Z test executor::tests::xattr_model_preserves_target_and_name_errors ... ok
+2026-08-30T03:32:16.6016100Z test memory::tests::cloned_handles_share_memory ... ok
+2026-08-30T03:32:16.6016634Z test memory::tests::finds_first_unmapped_user_range ... ok
+2026-08-30T03:32:16.6017177Z test memory::tests::permits_access_to_last_byte ... ok
+2026-08-30T03:32:16.6017827Z test memory::tests::reads_and_writes_guest_memory ... ok
+2026-08-30T03:32:16.6018363Z test memory::tests::rejects_access_past_mapping ... ok
+2026-08-30T03:32:16.6019061Z test memory::tests::rejects_address_below_mapping ... ok
+2026-08-30T03:32:16.6019871Z test memory::tests::snapshot_copies_without_sharing_memory ... ok
+2026-08-30T03:32:16.6020737Z test memory::tests::snapshot_preserves_user_access_map ... ok
+2026-08-30T03:32:16.6021473Z test memory::tests::tracked_user_access_faults_and_returns_partial_copies ... ok
+2026-08-30T03:32:16.6021945Z test runtime::tests::converts_linux_error_results ... ok
+2026-08-30T03:32:16.6022580Z test runtime::tests::erestartsys_requests_a_restart_and_every_other_result_is_returned ... ok
+2026-08-30T03:32:16.6023247Z test runtime::tests::futex_ownership_follows_thread_ownership ... ok
+2026-08-30T03:32:16.6023831Z test runtime::tests::handler_suspension_releases_registered_child_start ... ok
+2026-08-30T03:32:16.6024850Z test runtime::tests::stack_commits_to_shared_guest_memory ... ok
+2026-08-30T03:32:16.6025384Z test runtime::tests::worker_shared_syscall_ownership_follows_thread_ownership ... ok
+2026-08-30T03:32:16.6025991Z test stats::tests::collector_counts_and_orders_exit_reasons ... ok
+2026-08-30T03:32:16.6026495Z test stats::tests::empty_snapshot_has_kvm_identity ... ok
+2026-08-30T03:32:16.6027927Z test syscall::tests::decodes_every_x86_64_syscall_number ... ok
+2026-08-30T03:32:16.6028509Z test syscall::tests::decodes_required_syscall_variants ... ok
+2026-08-30T03:32:16.6029007Z test syscall::tests::rejects_unknown_syscall_number ... ok
+2026-08-30T03:32:16.6029820Z test syscall::tests::syscall_frame_round_trips_through_guest_memory ... ok
+2026-08-30T03:32:16.6030600Z test syscall::tests::typed_syscall_round_trips_through_transport ... ok
+2026-08-30T03:32:16.6031117Z test vm::tests::clone_tid_stores_and_clear_are_best_effort ... ok
+2026-08-30T03:32:16.6032334Z test vm::tests::exec_cancellation_joins_and_rearms_the_thread_group ... ok
+2026-08-30T03:32:16.6034086Z test vm::tests::guest_thread_group_joins_registered_workers ... ok
+2026-08-30T03:32:16.6035364Z test vm::tests::guest_thread_transport_slots_are_bounded_and_reusable ... ok
+2026-08-30T03:32:16.6035832Z test vm::tests::root_guest_pid_must_be_positive ... ok
+2026-08-30T03:32:16.6036346Z test vm::tests::root_parent_pid_matches_ptrace_namespace_convention ... ok
+2026-08-30T03:32:16.6036527Z 
+2026-08-30T03:32:16.6036681Z test result: ok. 198 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+2026-08-30T03:32:16.6036885Z 
+2026-08-30T03:32:16.6041679Z [1m[92m     Running[0m tests/counter.rs (target/debug/deps/counter-a936a5c9590af729)
+2026-08-30T03:32:16.6053772Z 
+2026-08-30T03:32:16.6053865Z running 3 tests
+2026-08-30T03:32:16.6305479Z test counter_tool_counts_single_syscall ... ok
+2026-08-30T03:32:16.6546532Z test counter_tool_counts_syscall_sequence ... ok
+2026-08-30T03:32:16.6785481Z test hierarchical_counter_aggregates_per_process ... ok
+2026-08-30T03:32:16.6785851Z 
+2026-08-30T03:32:16.6786211Z test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+2026-08-30T03:32:16.6786672Z 
+2026-08-30T03:32:16.6790052Z [1m[92m     Running[0m tests/erestartsys.rs (target/debug/deps/erestartsys-d36986f1bd9a00b1)
+2026-08-30T03:32:16.6799618Z 
+2026-08-30T03:32:16.6799773Z running 2 tests
+2026-08-30T03:32:16.7045162Z test erestartsys_reinvokes_the_tool_handler ... ok
+2026-08-30T03:32:16.7285923Z test erestartsys_restarts_repeatedly_until_the_tool_settles ... ok
+2026-08-30T03:32:16.7286377Z 
+2026-08-30T03:32:16.7286719Z test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+2026-08-30T03:32:16.7287199Z 
+2026-08-30T03:32:16.7288190Z [1m[92m     Running[0m tests/static_elf.rs (target/debug/deps/static_elf-72e099a14ebef2b6)
+2026-08-30T03:32:16.7304087Z 
+2026-08-30T03:32:16.7304166Z running 39 tests
+2026-08-30T03:32:17.4594406Z test child_waitability_callback_and_auto_reap_are_observed_on_real_kvm ... ok
+2026-08-30T03:32:17.5068665Z test counter_tools_aggregate_intercepted_static_elf_syscalls ... ok
+2026-08-30T03:32:17.6125943Z test host_owned_worker_descriptors_keep_read_and_readv_backend_owned ... ok
+2026-08-30T03:32:17.6317656Z test kvm_initial_rbp_and_rflags_match_native_linux_process_entry ... ok
+2026-08-30T03:32:17.6706001Z test kvm_static_elf_getppid_follows_pid_namespace_contract ... ok
+2026-08-30T03:32:17.7528460Z test kvm_stats_clone_thread_process_tree_is_exact_and_repeatable ... ok
+2026-08-30T03:32:17.7687824Z test kvm_stats_disabled_run_records_no_exits ... ok
+2026-08-30T03:32:17.8970541Z test kvm_stats_fork_process_tree_is_exact_and_repeatable ... ok
+2026-08-30T03:32:17.9366455Z test kvm_stats_root_production_loop_is_exact_and_repeatable ... ok
+2026-08-30T03:32:17.9756948Z test malformed_exec_returns_enoexec_without_replacing_image ... ok
+2026-08-30T03:32:17.9885750Z test post_exec_failure_runs_tool_exit_lifecycle ... ok
+2026-08-30T03:32:18.0133308Z test real_bash_redirects_builtin_output_through_f_dupfd ... ok
+2026-08-30T03:32:18.6083239Z test real_bash_small_pipeline_uses_legacy_process_clone_tid_flags ... ok
+2026-08-30T03:32:18.9015473Z test real_coreutils_complete_file_mutation_workflow ... ok
+2026-08-30T03:32:19.5979903Z test real_gcc_compiles_an_object_through_child_processes ... ok
+2026-08-30T03:32:20.0577986Z test real_glibc_get_robust_list_tracks_fork_and_thread_lifecycles ... ok
+2026-08-30T03:32:20.5313611Z test real_glibc_scm_rights_translate_across_thread_and_fork_tables ... ok
+2026-08-30T03:32:20.5573302Z test real_grep_uses_synthetic_process_maps_for_stack_discovery ... ok
+2026-08-30T03:32:20.9533047Z test real_make_runs_a_shell_recipe_through_clone3_vfork ... ok
+2026-08-30T03:32:20.9778423Z test real_patch_applies_exact_hunk_with_absent_xattrs ... ok
+2026-08-30T03:32:21.0771994Z test real_pthread_worker_signals_itself_by_tid_and_is_refused_for_the_leader ... ok
+2026-08-30T03:32:21.1636993Z test regular_injected_forks_complete_before_return ... ok
+2026-08-30T03:32:21.2007494Z test static_elf_cannot_copy_supervisor_bootstrap_memory ... ok
+2026-08-30T03:32:21.2698714Z test static_elf_clone_tid_side_effects_reach_guest_memory ... ok
+2026-08-30T03:32:21.2916351Z test static_elf_executes_avx_instruction ... ok
+2026-08-30T03:32:21.3166788Z test static_elf_executes_syscall_and_exits ... ok
+2026-08-30T03:32:21.3926999Z test static_elf_faults_are_reported_by_direct_and_tool_runtimes ... ok
+2026-08-30T03:32:21.5327293Z test static_elf_forks_execs_and_waits_for_child ... ok
+2026-08-30T03:32:21.5345308Z test static_elf_receives_argv_and_envp ... hello from kvm m1
+2026-08-30T03:32:21.5546551Z ok
+2026-08-30T03:32:21.7168267Z test static_elf_runs_glibc_clone3_thread_and_restores_parent_state ... ok
+2026-08-30T03:32:21.7406607Z test static_elf_self_abort_terminates_instead_of_faulting ... ok
+2026-08-30T03:32:21.7880965Z test static_elf_tool_capture_preserves_configured_stdin ... ok
+2026-08-30T03:32:21.8198714Z test static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes ... ok
+2026-08-30T03:32:21.8396688Z test strace_tool_logs_syscalls_from_static_elf ... ok
+2026-08-30T03:32:21.8737103Z test tool_executes_from_thread_start_before_initial_entry ... ok
+2026-08-30T03:32:21.8954686Z test tool_receives_post_exec_after_root_execve ... ok
+2026-08-30T03:32:21.9126359Z test tool_receives_post_exec_with_guest_auxv ... ok
+2026-08-30T03:32:21.9326485Z test tool_rpc_response_reaches_intercepted_static_elf_syscall ... ok
+2026-08-30T03:32:22.0066227Z test worker_exit_group_terminates_the_root_with_its_status ... ok
+2026-08-30T03:32:22.0066526Z 
+2026-08-30T03:32:22.0066773Z test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.28s
+2026-08-30T03:32:22.0067127Z 
+2026-08-30T03:32:22.0077621Z [1m[92m     Running[0m tests/strace.rs (target/debug/deps/strace-e9de186aa5c02acd)
+2026-08-30T03:32:22.0088312Z 
+2026-08-30T03:32:22.0088422Z running 3 tests
+2026-08-30T03:32:22.0295404Z test strace_tool_records_multiple_syscall_names_in_order ... ok
+2026-08-30T03:32:22.0516634Z test strace_tool_records_real_decoded_arguments ... hellook
+2026-08-30T03:32:22.0756568Z test strace_tool_records_write_syscall_name ... hellook
+2026-08-30T03:32:22.0756928Z 
+2026-08-30T03:32:22.0757285Z test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+2026-08-30T03:32:22.0757754Z 
+2026-08-30T03:32:22.0760643Z [1m[92m     Running[0m tests/vmcall.rs (target/debug/deps/vmcall-c258099de2053836)
+2026-08-30T03:32:22.0771023Z 
+2026-08-30T03:32:22.0771115Z running 6 tests
+2026-08-30T03:32:22.0936099Z test default_tool_handler_tail_injects_through_executor ... ok
+2026-08-30T03:32:22.1176622Z test deterministic_cpuid_policy_is_visible_inside_vm ... ok
+2026-08-30T03:32:22.1426059Z test guest_program_routes_required_syscalls_via_vmcall ... ok
+2026-08-30T03:32:22.1665781Z test guest_write_syscall_is_intercepted_via_vmcall ... ok
+2026-08-30T03:32:22.1905340Z test guest_write_syscall_runs_shared_reverie_tool ... ok
+2026-08-30T03:32:22.1905871Z test identifies_unavailable_kvm_errors ... ok
+2026-08-30T03:32:22.1906146Z 
+2026-08-30T03:32:22.1906475Z test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+2026-08-30T03:32:22.1906906Z 
+2026-08-30T03:32:22.1910841Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_liteinst-6f70732d9da45512)
+2026-08-30T03:32:22.1929656Z 
+2026-08-30T03:32:22.1929809Z running 40 tests
+2026-08-30T03:32:22.2201143Z test backend::tests::coordinator_connection_drain_is_bounded ... ok
+2026-08-30T03:32:22.2471426Z test backend::tests::coordinator_drain_timeout_preserves_completion_error ... ok
+2026-08-30T03:32:22.2475651Z test backend::tests::coordinator_global_waits_for_cancelled_connection_owners ... ok
+2026-08-30T03:32:22.2599188Z test backend::tests::coordinator_serves_multiple_local_rpc_connections ... ok
+2026-08-30T03:32:22.2607560Z test backend::tests::coordinator_surfaces_server_failure_during_connection_drain ... ok
+2026-08-30T03:32:22.2614042Z test backend::tests::coordinator_two_monitor_drain_is_level_triggered ... ok
+2026-08-30T03:32:22.2615495Z test backend::tests::effective_command_environment_honors_override_remove_and_clear ... ok
+2026-08-30T03:32:22.2637325Z test backend::tests::in_guest_preload_override_remove_and_clear_win_over_ambient ... ok
+2026-08-30T03:32:22.2647995Z test backend::tests::inherited_stdio_replaces_caller_pipes ... ok
+2026-08-30T03:32:22.2653082Z test backend::tests::production_coordinator_drain_timeout_is_thirty_seconds ... ok
+2026-08-30T03:32:22.2655434Z test backend::tests::rejects_and_closes_multiple_matching_bootstraps ... ok
+2026-08-30T03:32:22.2655788Z test patch_alloc::tests::dispatch_heap_honors_large_alignment ... ok
+2026-08-30T03:32:22.2656421Z test patch_alloc::tests::dispatch_heap_realloc_preserves_bytes_when_growing_and_shrinking ... ok
+2026-08-30T03:32:22.2656885Z test patch_alloc::tests::dispatch_heap_reuses_freed_blocks ... ok
+2026-08-30T03:32:22.2677166Z test patch_alloc::tests::dispatch_heap_supports_concurrent_allocate_free ... ok
+2026-08-30T03:32:22.2677648Z test patch_alloc::tests::failed_dispatch_realloc_keeps_the_source_live ... ok
+2026-08-30T03:32:22.2678271Z test patch_alloc::tests::system_realloc_migrates_into_the_dispatch_heap ... ok
+2026-08-30T03:32:22.2678778Z test runtime::tests::alt_stack_defaults_to_the_shared_default_when_unset ... ok
+2026-08-30T03:32:22.2679291Z test runtime::tests::alt_stack_env_is_distinct_from_the_other_selectors ... ok
+2026-08-30T03:32:22.2679881Z test runtime::tests::alt_stack_parses_truthy_and_falsy_spellings ... ok
+2026-08-30T03:32:22.2680453Z test runtime::tests::alt_stack_rejects_unknown_values ... ok
+2026-08-30T03:32:22.2681012Z test runtime::tests::builtin_tool_selector_maps_shared_values_only ... ok
+2026-08-30T03:32:22.2681529Z test runtime::tests::clone_accepts_only_fork_like_flags ... ok
+2026-08-30T03:32:22.2682074Z test runtime::tests::disabled_dispatch_does_not_classify_fallback_sites ... ok
+2026-08-30T03:32:22.2682705Z test runtime::tests::every_optional_rcb_setup_error_takes_the_real_unavailable_path ... ok
+2026-08-30T03:32:22.2683302Z test runtime::tests::fallback_counter_reset_zeroes_total_and_per_number_counts ... ok
+2026-08-30T03:32:22.2683849Z test runtime::tests::fork_child_reset_zeroes_per_site_counts_but_preserves_patch_state ... ok
+2026-08-30T03:32:22.2686810Z test runtime::tests::fork_hook_runs_the_observability_reset ... ok
+2026-08-30T03:32:22.2687253Z test runtime::tests::out_of_range_syscall_numbers_count_in_the_total_only ... ok
+2026-08-30T03:32:22.2687819Z test runtime::tests::recording_a_fallback_bumps_total_and_the_matching_syscall ... ok
+2026-08-30T03:32:22.2688541Z test runtime::tests::reused_address_claims_a_new_site_generation ... ok
+2026-08-30T03:32:22.2689533Z test runtime::tests::stack_line_formats_signed_and_hex_values ... ok
+2026-08-30T03:32:22.2690852Z test stats::tests::aggregates_equal_rips_from_distinct_fork_processes_and_exact_hits ... ok
+2026-08-30T03:32:22.2691402Z test stats::tests::disabled_hooks_do_not_enter_enabled_stats_code ... ok
+2026-08-30T03:32:22.2692101Z test stats::tests::display_is_deterministic_and_contains_no_raw_identity ... ok
+2026-08-30T03:32:22.2692788Z test straddler::tests::calibrated_staleness_enables_every_split_offset ... ok
+2026-08-30T03:32:22.2693436Z test straddler::tests::single_line_publication_does_not_need_a_staleness_delay ... ok
+2026-08-30T03:32:22.2694172Z test straddler::tests::staleness_parser_accepts_only_nonzero_decimal_ticks ... ok
+2026-08-30T03:32:22.2694740Z test straddler::tests::unset_staleness_disables_guarded_publication ... ok
+2026-08-30T03:32:22.2695315Z test tests::alt_stack_setter_round_trips_through_the_parser ... ok
+2026-08-30T03:32:22.2695473Z 
+2026-08-30T03:32:22.2695750Z test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+2026-08-30T03:32:22.2695965Z 
+2026-08-30T03:32:22.2699743Z [1m[92m     Running[0m unittests src/bin/exec_guest.rs (target/debug/deps/reverie_liteinst_exec_guest-c2d9ffa1cef19186)
+2026-08-30T03:32:22.2707903Z 
+2026-08-30T03:32:22.2708014Z running 0 tests
+2026-08-30T03:32:22.2708110Z 
+2026-08-30T03:32:22.2708270Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:22.2708468Z 
+2026-08-30T03:32:22.2709250Z [1m[92m     Running[0m unittests src/bin/fork_guest.rs (target/debug/deps/reverie_liteinst_fork_guest-ea7e7e3755c8ff40)
+2026-08-30T03:32:22.2716476Z 
+2026-08-30T03:32:22.2716549Z running 0 tests
+2026-08-30T03:32:22.2716631Z 
+2026-08-30T03:32:22.2716769Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:22.2716961Z 
+2026-08-30T03:32:22.2717998Z [1m[92m     Running[0m unittests src/bin/lifecycle_guest.rs (target/debug/deps/reverie_liteinst_lifecycle_guest-db058bbf9b4b1cd5)
+2026-08-30T03:32:22.2727522Z 
+2026-08-30T03:32:22.2727625Z running 0 tests
+2026-08-30T03:32:22.2727709Z 
+2026-08-30T03:32:22.2727841Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:22.2728031Z 
+2026-08-30T03:32:22.2729340Z [1m[92m     Running[0m unittests src/bin/rpc_tool_guest.rs (target/debug/deps/reverie_liteinst_rpc_tool_guest-56fa5cd61ead99d1)
+2026-08-30T03:32:22.2738830Z 
+2026-08-30T03:32:22.2738901Z running 0 tests
+2026-08-30T03:32:22.2738978Z 
+2026-08-30T03:32:22.2739126Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:22.2739320Z 
+2026-08-30T03:32:22.2740552Z [1m[92m     Running[0m unittests src/bin/spoof_guest.rs (target/debug/deps/reverie_liteinst_spoof_guest-2138ce48f4ff6ebc)
+2026-08-30T03:32:22.2750466Z 
+2026-08-30T03:32:22.2750555Z running 0 tests
+2026-08-30T03:32:22.2750642Z 
+2026-08-30T03:32:22.2750783Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:22.2750985Z 
+2026-08-30T03:32:22.2753443Z [1m[92m     Running[0m unittests src/bin/strace.rs (target/debug/deps/reverie_liteinst_strace-5257aa783bd6b61d)
+2026-08-30T03:32:22.2763894Z 
+2026-08-30T03:32:22.2764002Z running 0 tests
+2026-08-30T03:32:22.2764081Z 
+2026-08-30T03:32:22.2764223Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:22.2764416Z 
+2026-08-30T03:32:22.2768025Z [1m[92m     Running[0m unittests src/bin/trap_count_guest.rs (target/debug/deps/reverie_liteinst_trap_count_guest-5426a4062e706676)
+2026-08-30T03:32:22.2779342Z 
+2026-08-30T03:32:22.2779441Z running 0 tests
+2026-08-30T03:32:22.2779517Z 
+2026-08-30T03:32:22.2779657Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:22.2779845Z 
+2026-08-30T03:32:22.2782047Z [1m[92m     Running[0m tests/concurrent_patching.rs (target/debug/deps/concurrent_patching-9da4111818636389)
+2026-08-30T03:32:22.2794453Z 
+2026-08-30T03:32:22.2794656Z running 1 test
+2026-08-30T03:32:22.3842192Z test threaded_clients_keep_guarded_wordpatch_publication ... ok
+2026-08-30T03:32:22.3842377Z 
+2026-08-30T03:32:22.3842542Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+2026-08-30T03:32:22.3842755Z 
+2026-08-30T03:32:22.3847939Z [1m[92m     Running[0m tests/hybrid.rs (target/debug/deps/hybrid-fd1e59075a77edb7)
+2026-08-30T03:32:22.3863065Z 
+2026-08-30T03:32:22.3863206Z running 30 tests
+2026-08-30T03:32:22.4643383Z test a_child_that_execs_fails_the_session_instead_of_reporting_success ... ok
+2026-08-30T03:32:23.1185896Z test active_hook_mapping_footprints_reject_mprotect_before_mutation ... ok
+2026-08-30T03:32:23.2373332Z test active_hook_noop_mprotect_preserves_the_hook ... ok
+2026-08-30T03:32:23.2859720Z test cacheline_straddler_uses_quiescent_patch_and_is_counted ... ok
+2026-08-30T03:32:23.3435946Z test cancelling_wait_reaps_and_unregisters_liteinst_root ... ok
+2026-08-30T03:32:23.4046572Z test cancelling_wait_with_output_reaps_and_unregisters_liteinst_root ... ok
+2026-08-30T03:32:23.4685760Z test first_discovery_event_can_inject_more_than_once ... ok
+2026-08-30T03:32:23.5531204Z test first_discovery_event_can_replace_the_syscall ... ok
+2026-08-30T03:32:23.6714695Z test first_site_is_installed_once_and_hot_calls_use_liteinst ... ok
+2026-08-30T03:32:23.7253157Z test hybrid_follows_a_created_thread ... ok
+2026-08-30T03:32:23.7842062Z test hybrid_follows_a_forked_child ... ok
+2026-08-30T03:32:23.7842902Z test hybrid_follows_a_grandchild ... ignored, known gap: second-generation fork does not reliably complete in this harness
+2026-08-30T03:32:23.8345558Z test initial_dynamic_preload_handshake_activates_host_lifecycle ... ok
+2026-08-30T03:32:23.8583686Z test initial_static_image_without_the_runtime_fails_closed ... ok
+2026-08-30T03:32:23.9461860Z test loader_cpu_events_are_determinized_before_ready_and_entry_is_restored ... ok
+2026-08-30T03:32:23.9965479Z test moving_a_patched_mapping_rejects_stale_hot_provenance ... ok
+2026-08-30T03:32:24.0511195Z test patch_helper_restores_disabled_cpuid_after_fallback ... ok
+2026-08-30T03:32:24.1172241Z test patch_helper_restores_disabled_cpuid_after_installing_a_site ... ok
+2026-08-30T03:32:24.1752372Z test patch_helper_restores_faulting_tsc_after_fallback ... ok
+2026-08-30T03:32:24.2389992Z test patch_helper_restores_faulting_tsc_after_installing_a_site ... ok
+2026-08-30T03:32:24.3741871Z test pkey_mprotect_is_controller_owned_unless_subscribed ... ok
+2026-08-30T03:32:24.4270971Z test post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending ... ok
+2026-08-30T03:32:24.4795848Z test post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending ... ok
+2026-08-30T03:32:24.5229742Z test post_start_exec_that_drops_the_preload_fails_closed ... ok
+2026-08-30T03:32:24.5749502Z test quiescent_helper_patches_every_cache_line_split_without_calibration ... ok
+2026-08-30T03:32:24.6451084Z test reused_mapping_invalidates_and_rediscovers_the_syscall_site ... ok
+2026-08-30T03:32:24.6451566Z test session_refusal_assertion_rejects_terminal_cleanup_wrapper ... ok
+2026-08-30T03:32:24.7084116Z test task_subscriber_does_not_report_task_creation_without_one ... ok
+2026-08-30T03:32:24.7511285Z test valid_dynamic_run_observes_restored_executable_entry ... ok
+2026-08-30T03:32:25.0592748Z test vfork_in_a_forked_child_fails_the_session_after_root_exit ... ok
+2026-08-30T03:32:25.0593462Z 
+2026-08-30T03:32:25.0594007Z test result: ok. 29 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.67s
+2026-08-30T03:32:25.0594654Z 
+2026-08-30T03:32:25.0602866Z [1m[92m     Running[0m tests/lifecycle.rs (target/debug/deps/lifecycle-830a87694abf9752)
+2026-08-30T03:32:25.0620816Z 
+2026-08-30T03:32:25.0620926Z running 6 tests
+2026-08-30T03:32:25.0943731Z test in_guest_run_reports_typed_instrumentation_stats ... ok
+2026-08-30T03:32:25.1271627Z test supervisor_keeps_patchable_syscalls_in_guest ... ok
+2026-08-30T03:32:25.3097819Z test supervisor_observes_and_reaps_signaled_descendant ... ok
+2026-08-30T03:32:25.4898067Z test supervisor_preserves_root_status_and_drains_outliving_child ... ok
+2026-08-30T03:32:25.5212810Z test supervisor_restarts_read_without_leaking_private_errno ... ok
+2026-08-30T03:32:25.5502209Z test supervisor_restarts_wait4_without_leaking_private_errno ... ok
+2026-08-30T03:32:25.5502630Z 
+2026-08-30T03:32:25.5503104Z test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+2026-08-30T03:32:25.5503588Z 
+2026-08-30T03:32:25.5506835Z [1m[92m     Running[0m tests/rpc_tool.rs (target/debug/deps/rpc_tool-b431bbe78e7b938a)
+2026-08-30T03:32:25.5517979Z 
+2026-08-30T03:32:25.7468226Z running 1 test
+2026-08-30T03:32:25.7468504Z test installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc ... ok
+2026-08-30T03:32:25.7468713Z 
+2026-08-30T03:32:25.7468869Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+2026-08-30T03:32:25.7469272Z 
+2026-08-30T03:32:25.7471900Z [1m[92m     Running[0m tests/strace.rs (target/debug/deps/strace-524e7e15e3ec3ce3)
+2026-08-30T03:32:25.7488636Z 
+2026-08-30T03:32:25.7488757Z running 17 tests
+2026-08-30T03:32:27.7676507Z test compatibility_event_fd_backpressure_fails_without_hanging ... ok
+2026-08-30T03:32:28.0652401Z test compatibility_event_fd_recovers_when_delayed_reader_drains ... ok
+2026-08-30T03:32:28.0759701Z test compatibility_event_fd_rejects_guest_spoof_write ... ok
+2026-08-30T03:32:28.0777088Z test compatibility_event_fd_rejects_read_only_descriptor ... ok
+2026-08-30T03:32:28.0865589Z test compatibility_event_fd_separates_guest_stderr ... ok
+2026-08-30T03:32:28.0956859Z test compatibility_event_fd_survives_guest_close ... ok
+2026-08-30T03:32:28.1080691Z test compatibility_fork_reports_clone_only_from_parent ... ok
+2026-08-30T03:32:28.1193600Z test compatibility_raw_fork_reports_once_before_child ... ok
+2026-08-30T03:32:28.1352500Z test compatibility_tool_emits_stable_events ... ok
+2026-08-30T03:32:28.1718258Z test compatibility_tool_rejects_process_group_escape ... ok
+2026-08-30T03:32:28.1835448Z test exec_fails_closed_before_runtime_is_replaced ... ok
+2026-08-30T03:32:28.1947521Z test first_sigsys_installs_a_hook_for_later_calls ... ok
+2026-08-30T03:32:28.2074253Z test fork_child_inherits_preload_instrumentation ... ok
+2026-08-30T03:32:28.2089671Z test passthrough_builtin_preserves_getpid_result ... ok
+2026-08-30T03:32:28.2106414Z test spoof_getpid_builtin_mutates_getpid_result ... ok
+2026-08-30T03:32:28.2195446Z test strace_tool_observes_echo_syscalls ... ok
+2026-08-30T03:32:28.2398107Z test unsafe_clone_is_rejected_in_compatibility_and_strace_modes ... ok
+2026-08-30T03:32:28.2398659Z 
+2026-08-30T03:32:28.2399005Z test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.49s
+2026-08-30T03:32:28.2399485Z 
+2026-08-30T03:32:28.2402558Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_memory-d9851bf6c3a14b0a)
+2026-08-30T03:32:28.2413570Z 
+2026-08-30T03:32:28.2413715Z running 7 tests
+2026-08-30T03:32:28.2414616Z test addr::test::test_addr ... ok
+2026-08-30T03:32:28.2415154Z test addr::test::test_addr_slice_size ... ok
+2026-08-30T03:32:28.2415589Z test addr::test::test_next_page ... ok
+2026-08-30T03:32:28.2416476Z test local::tests::invalid_read_returns_efault ... ok
+2026-08-30T03:32:28.2417050Z test local::tests::read ... ok
+2026-08-30T03:32:28.2417763Z test local::tests::read_cstring ... ok
+2026-08-30T03:32:28.2418472Z test local::tests::read_value ... ok
+2026-08-30T03:32:28.2418612Z 
+2026-08-30T03:32:28.2418831Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:28.2419080Z 
+2026-08-30T03:32:28.2420227Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_preload-0bc56a01e8b60f08)
+2026-08-30T03:32:28.2431221Z 
+2026-08-30T03:32:28.2431327Z running 37 tests
+2026-08-30T03:32:28.2432152Z test dispatch::tests::alternate_stack_mutation_is_guarded_but_query_is_not ... ok
+2026-08-30T03:32:28.2432634Z test dispatch::tests::clone_with_stack_is_guarded_but_plain_clone_is_not ... ok
+2026-08-30T03:32:28.2433405Z test dispatch::tests::deferred_dispatch_preserves_result_and_records_resume_address ... ok
+2026-08-30T03:32:28.2433888Z test dispatch::tests::direct_events_are_distinct_from_signal_traps ... ok
+2026-08-30T03:32:28.2434337Z test dispatch::tests::exec_is_guarded_enotsup ... ok
+2026-08-30T03:32:28.2434852Z test dispatch::tests::fork_like_classification ... ok
+2026-08-30T03:32:28.2435336Z test dispatch::tests::ordinary_syscall_is_not_guarded ... ok
+2026-08-30T03:32:28.2435869Z test dispatch::tests::signal_mask_mutation_is_guarded_but_unblock_and_query_are_not ... ok
+2026-08-30T03:32:28.2436310Z test dispatch::tests::sigsys_reservation_is_guarded_eperm ... ok
+2026-08-30T03:32:28.2436811Z test fmt::tests::formats_signed_and_hex_values ... ok
+2026-08-30T03:32:28.2437336Z test fmt::tests::truncates_at_capacity_without_panicking ... ok
+2026-08-30T03:32:28.2437994Z test fork::tests::hook_runs_its_callback ... ok
+2026-08-30T03:32:28.2438753Z test lifecycle::tests::controllers_report_distinct_names ... ok
+2026-08-30T03:32:28.2439214Z test lifecycle::tests::default_config_uses_alt_stack ... ok
+2026-08-30T03:32:28.2439806Z test lifecycle::tests::hybrid_guest_half_builds_the_shared_in_process_trap_filter ... ok
+2026-08-30T03:32:28.2440338Z test rpc::tests::encode_decode_are_inverse ... ok
+2026-08-30T03:32:28.2598701Z test rpc::tests::end_to_end_against_a_wire_server ... ok
+2026-08-30T03:32:28.2599130Z test rpc::tests::frame_round_trips_through_a_pipe ... ok
+2026-08-30T03:32:28.2599784Z test rpc::tests::oversized_frame_is_rejected ... ok
+2026-08-30T03:32:28.2600310Z test seccomp::tests::builds_fixed_length_program_for_valid_gate ... ok
+2026-08-30T03:32:28.2600853Z test seccomp::tests::program_traps_untrusted_and_allows_gate ... ok
+2026-08-30T03:32:28.2601355Z test seccomp::tests::rejects_gate_across_4gib_boundary ... ok
+2026-08-30T03:32:28.2601846Z test signal::tests::sigsys_is_reserved_but_others_are_not ... ok
+2026-08-30T03:32:28.2602327Z test tests::builtin_tool_names_round_trip ... ok
+2026-08-30T03:32:28.2602867Z test tests::spoof_dispatcher_keeps_shared_fail_closed_guards ... ok
+2026-08-30T03:32:28.2603525Z test tool_host::tests::classify_outcome_passes_through_a_fork_child ... ok
+2026-08-30T03:32:28.2603931Z test tool_host::tests::classify_outcome_passes_through_an_exit ... ok
+2026-08-30T03:32:28.2604434Z test tool_host::tests::classify_outcome_restarts_on_erestartsys ... ok
+2026-08-30T03:32:28.2604923Z test tool_host::tests::classify_outcome_returns_a_ready_result ... ok
+2026-08-30T03:32:28.2605426Z test tool_host::tests::classify_outcome_surfaces_an_errno ... ok
+2026-08-30T03:32:28.2605987Z test tool_host::tests::drive_ready_polls_to_completion ... ok
+2026-08-30T03:32:28.2606473Z test tool_host::tests::drive_syscall_reads_a_parked_exit ... ok
+2026-08-30T03:32:28.2606988Z test tool_host::tests::drive_syscall_reads_a_parked_tail_result ... ok
+2026-08-30T03:32:28.2607585Z test tool_host::tests::drive_syscall_returns_a_ready_result ... ok
+2026-08-30T03:32:28.2608080Z test tool_host::tests::tail_result_round_trips_a_fork_child ... ok
+2026-08-30T03:32:28.2608578Z test trap::tests::no_dispatcher_registered_by_default ... ok
+2026-08-30T03:32:28.2609082Z test trap::tests::trusted_gate_addresses_are_populated_and_ordered ... ok
+2026-08-30T03:32:28.2609270Z 
+2026-08-30T03:32:28.2609468Z test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+2026-08-30T03:32:28.2609736Z 
+2026-08-30T03:32:28.2611126Z [1m[92m     Running[0m unittests src/bin/preload_probe.rs (target/debug/deps/reverie_preload_probe-50275aa7ed495bf0)
+2026-08-30T03:32:28.2621519Z 
+2026-08-30T03:32:28.2621634Z running 0 tests
+2026-08-30T03:32:28.2621738Z 
+2026-08-30T03:32:28.2621935Z test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-08-30T03:32:28.2622130Z 
+2026-08-30T03:32:28.2622852Z [1m[92m     Running[0m tests/smoke.rs (target/debug/deps/smoke-5eaedbdd710c0901)
+2026-08-30T03:32:28.2630947Z 
+2026-08-30T03:32:28.2631016Z running 4 tests
+2026-08-30T03:32:28.2646855Z test fork_child_inherits_the_filter ... ok
+2026-08-30T03:32:28.2662742Z test passthrough_probe_reports_real_pid ... ok
+2026-08-30T03:32:28.2674345Z test passthrough_traps_and_forwards_echo ... ok
+2026-08-30T03:32:28.2690333Z test spoof_getpid_proves_result_mutation ... ok
+2026-08-30T03:32:28.2690503Z 
+2026-08-30T03:32:28.2690689Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+2026-08-30T03:32:28.2690893Z 
+2026-08-30T03:32:28.2692508Z [1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/reverie_process-2a4821e8ccf1e179)
+2026-08-30T03:32:28.2702296Z 
+2026-08-30T03:32:28.2702463Z running 66 tests
+2026-08-30T03:32:28.2704410Z test builder::tests::find_program ... ok
+2026-08-30T03:32:28.2704908Z test builder::tests::get_arg0 ... ok
+2026-08-30T03:32:28.2705491Z test builder::tests::get_args ... ok
+2026-08-30T03:32:28.2706132Z test builder::tests::get_program ... ok
+2026-08-30T03:32:28.2706536Z test builder::tests::prepend_args ... ok
+2026-08-30T03:32:28.2718882Z test container::tests::a_readonly_bind_survives_a_nosuid_nodev_source ... ok
+2026-08-30T03:32:28.2734794Z test container::tests::bind_to_low_port ... ok
+2026-08-30T03:32:28.2744706Z 
+2026-08-30T03:32:28.2744909Z thread 'container::tests::can_panic' (2199445) panicked at reverie-process/src/container.rs:1004:55:
+2026-08-30T03:32:28.2745191Z explicit panic
+2026-08-30T03:32:28.2745429Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-08-30T03:32:28.2745619Z 
+2026-08-30T03:32:28.2745888Z thread 'container::tests::can_panic' (2199445) panicked at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:225:5:
+2026-08-30T03:32:28.2746260Z panic in a function that cannot unwind
+2026-08-30T03:32:28.2746430Z stack backtrace:
+2026-08-30T03:32:28.2837613Z    0:     0x562960f72761 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::libunwind::trace
+2026-08-30T03:32:28.2838618Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/libunwind.rs:117:9
+2026-08-30T03:32:28.2839853Z    1:     0x562960f72761 - std[74eb2aff46e51e81]::backtrace_rs::backtrace::trace_unsynchronized::<std[74eb2aff46e51e81]::sys::backtrace::_print_fmt::{closure#1}>
+2026-08-30T03:32:28.2841039Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/../../backtrace/src/backtrace/mod.rs:66:14
+2026-08-30T03:32:28.2841887Z    2:     0x562960f72761 - std[74eb2aff46e51e81]::sys::backtrace::_print_fmt
+2026-08-30T03:32:28.2842728Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:74:9
+2026-08-30T03:32:28.2843916Z    3:     0x562960f72761 - <<std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[7aff35c028b048a4]::fmt::Display>::fmt
+2026-08-30T03:32:28.2845138Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:44:26
+2026-08-30T03:32:28.2849316Z    4:     0x562960f89b0a - <core[7aff35c028b048a4]::fmt::rt::Argument>::fmt
+2026-08-30T03:32:28.2849654Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/fmt/rt.rs:152:76
+2026-08-30T03:32:28.2849962Z    5:     0x562960f89b0a - core[7aff35c028b048a4]::fmt::write
+2026-08-30T03:32:28.2850310Z    6:     0x562960f7976c - core[7aff35c028b048a4]::io::write::default_write_fmt::<std[74eb2aff46e51e81]::sys::stdio::unix::Stderr>
+2026-08-30T03:32:28.2850735Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:402:11
+2026-08-30T03:32:28.2851225Z    7:     0x562960f7976c - <std[74eb2aff46e51e81]::sys::stdio::unix::Stderr as core[7aff35c028b048a4]::io::write::Write>::write_fmt
+2026-08-30T03:32:28.2851647Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/io/write.rs:335:13
+2026-08-30T03:32:28.2852132Z    8:     0x562960f4ac06 - <std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print
+2026-08-30T03:32:28.2852488Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:47:9
+2026-08-30T03:32:28.2852842Z    9:     0x562960f4ac06 - std[74eb2aff46e51e81]::panicking::default_hook::{closure#0}
+2026-08-30T03:32:28.2853256Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:292:27
+2026-08-30T03:32:28.2853583Z   10:     0x562960f68d91 - std[74eb2aff46e51e81]::panicking::default_hook
+2026-08-30T03:32:28.2853910Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:319:9
+2026-08-30T03:32:28.2871988Z   11:     0x562960e63c10 - <alloc[d942cadc3c119bf]::boxed::Box<dyn for<'a, 'b> core[7aff35c028b048a4]::ops::function::Fn<(&'a std[74eb2aff46e51e81]::panic::PanicHookInfo<'b>,), Output = ()> + core[7aff35c028b048a4]::marker::Send + core[7aff35c028b048a4]::marker::Sync> as core[7aff35c028b048a4]::ops::function::Fn<(&std[74eb2aff46e51e81]::panic::PanicHookInfo,)>>::call
+2026-08-30T03:32:28.2872822Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/alloc/src/boxed.rs:2340:9
+2026-08-30T03:32:28.2873302Z   12:     0x562960e63c10 - test[7d46d2f4bcd6c159]::test_main_inner::<test[7d46d2f4bcd6c159]::test_main_static::{closure#0}>::{closure#0}
+2026-08-30T03:32:28.2873718Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:155:21
+2026-08-30T03:32:28.2874528Z   13:     0x562960f690f2 - <alloc[d942cadc3c119bf]::boxed::Box<dyn for<'a, 'b> core[7aff35c028b048a4]::ops::function::Fn<(&'a std[74eb2aff46e51e81]::panic::PanicHookInfo<'b>,), Output = ()> + core[7aff35c028b048a4]::marker::Send + core[7aff35c028b048a4]::marker::Sync> as core[7aff35c028b048a4]::ops::function::Fn<(&std[74eb2aff46e51e81]::panic::PanicHookInfo,)>>::call
+2026-08-30T03:32:28.2875325Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/alloc/src/boxed.rs:2340:9
+2026-08-30T03:32:28.2875648Z   14:     0x562960f690f2 - std[74eb2aff46e51e81]::panicking::panic_with_hook
+2026-08-30T03:32:28.2875977Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:823:13
+2026-08-30T03:32:28.2876328Z   15:     0x562960f4ace4 - std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}
+2026-08-30T03:32:28.2876686Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:681:13
+2026-08-30T03:32:28.2877162Z   16:     0x562960f42d19 - std[74eb2aff46e51e81]::sys::backtrace::__rust_end_short_backtrace::<std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}, !>
+2026-08-30T03:32:28.2877657Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:182:18
+2026-08-30T03:32:28.2877996Z   17:     0x562960f4ba8d - __rustc[49844a0cf2bb6b0d]::rust_begin_unwind
+2026-08-30T03:32:28.2878319Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:679:5
+2026-08-30T03:32:28.2878672Z   18:     0x562960f8a12d - core[7aff35c028b048a4]::panicking::panic_nounwind_fmt::runtime
+2026-08-30T03:32:28.2879028Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:122:22
+2026-08-30T03:32:28.2879386Z   19:     0x562960f8a12d - core[7aff35c028b048a4]::panicking::panic_nounwind_fmt
+2026-08-30T03:32:28.2879754Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/intrinsics/mod.rs:2618:9
+2026-08-30T03:32:28.2880100Z   20:     0x562960f8a0ab - core[7aff35c028b048a4]::panicking::panic_nounwind
+2026-08-30T03:32:28.2880426Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:225:5
+2026-08-30T03:32:28.2880767Z   21:     0x562960f8a237 - core[7aff35c028b048a4]::panicking::panic_cannot_unwind
+2026-08-30T03:32:28.2881184Z                                at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:350:5
+2026-08-30T03:32:28.2881561Z   22:     0x562960dd11cd - reverie_process[f0a8af1089fb2ca1]::clone::clone_with_stack::callback
+2026-08-30T03:32:28.2881898Z                                at /runner-state/_work/reverie/reverie/reverie-process/src/clone.rs:27:5
+2026-08-30T03:32:28.2882150Z   23:     0x7f12ecd33a64 - clone
+2026-08-30T03:32:28.2882313Z   24:                0x0 - <unknown>
+2026-08-30T03:32:28.2882497Z thread caused non-unwinding panic. aborting.
+2026-08-30T03:32:28.3909111Z test container::tests::can_panic ... ok
+2026-08-30T03:32:29.2593647Z test container::tests::huge_return_value ... ok
+2026-08-30T03:32:29.2613442Z test container::tests::is_new_process ... ok
+2026-08-30T03:32:29.2642799Z test container::tests::mount_error_from_child_is_returned ... ok
+2026-08-30T03:32:29.2655086Z test container::tests::pid_namespace ... ok
+2026-08-30T03:32:29.2757282Z test container::tests::pin_affinity_to_all_cores ... ok
+2026-08-30T03:32:29.2781144Z test container::tests::return_value ... ok
+2026-08-30T03:32:29.2798389Z test container::tests::test_directory_is_available_after_mount ... FAILED
+2026-08-30T03:32:29.2798893Z test error::tests::to_bytes ... ok
+2026-08-30T03:32:29.2799356Z test exit_status::tests::exit_code_into_raw ... ok
+2026-08-30T03:32:29.2799914Z test exit_status::tests::exit_status_from_raw ... ok
+2026-08-30T03:32:29.3850398Z test exit_status::tests_non_sanitized::exit_by_signal ... ok
+2026-08-30T03:32:29.3871147Z test exit_status::tests_non_sanitized::normal_exit ... ok
+2026-08-30T03:32:29.3885859Z test exit_status::tests_non_sanitized::propagate_exit ... ok
+2026-08-30T03:32:29.4913893Z test exit_status::tests_non_sanitized::propagate_signal ... ok
+2026-08-30T03:32:29.4914532Z test fd::tests::test_copy_cstr_to_slice ... ok
+2026-08-30T03:32:29.4922796Z test fd::tests::test_create_dir_all ... ok
+2026-08-30T03:32:29.4924025Z test fd::tests::test_file_type ... ok
+2026-08-30T03:32:29.4924339Z test fd::tests::test_is_dir ... ok
+2026-08-30T03:32:29.4925014Z test fd::tests::test_nonblocking ... ok
+2026-08-30T03:32:29.4933747Z test fd::tests::test_touch_path ... ok
+2026-08-30T03:32:29.4934179Z test mount::tests::getters_and_setters ... ok
+2026-08-30T03:32:29.4935934Z test mount::tests::parse_bind ... ok
+2026-08-30T03:32:29.4938641Z test mount::tests::parse_mount ... ok
+2026-08-30T03:32:29.4939919Z test mount::unrepresentable_paths_are_refused_not_panics::a_bind_from_a_str_with_an_interior_nul_refuses ... ok
+2026-08-30T03:32:29.4940933Z test mount::unrepresentable_paths_are_refused_not_panics::a_representable_path_is_not_refused_by_this_check ... ok
+2026-08-30T03:32:29.4941843Z test mount::unrepresentable_paths_are_refused_not_panics::a_target_with_an_interior_nul_refuses_instead_of_panicking ... ok
+2026-08-30T03:32:29.4942977Z test mount::unrepresentable_paths_are_refused_not_panics::an_unrepresentable_source_fstype_or_data_also_refuses ... ok
+2026-08-30T03:32:29.4944195Z test net::tests::ifname ... ok
+2026-08-30T03:32:29.4945813Z test net::tests::smoke_tests ... ok
+2026-08-30T03:32:29.4951011Z test pty::tests::test_open ... ok
+2026-08-30T03:32:29.4951605Z test seccomp::bpf::tests::smoke ... ok
+2026-08-30T03:32:29.4952311Z test seccomp::tests::smoke ... ok
+2026-08-30T03:32:29.4973192Z test tests::domainname ... ok
+2026-08-30T03:32:29.4987698Z test tests::double_wait ... ok
+2026-08-30T03:32:29.4988503Z test tests::from_std_lossy ... ok
+2026-08-30T03:32:29.5005112Z test tests::hostname ... ok
+2026-08-30T03:32:29.5006198Z test tests::into_std_lossy_compatibility ... ok
+2026-08-30T03:32:29.5031426Z test tests::local_networking_loopback_flags ... ok
+2026-08-30T03:32:29.5099061Z test tests::local_networking_ping ... ok
+2026-08-30T03:32:29.5122291Z test tests::local_networking_there_can_be_only_one ... ok
+2026-08-30T03:32:29.5153044Z test tests::mount_and_move_tmpfs ... ok
+2026-08-30T03:32:29.5180083Z test tests::mount_bind ... ok
+2026-08-30T03:32:29.5201806Z test tests::mount_bind_readonly_rejects_writes ... ok
+2026-08-30T03:32:29.5223422Z test tests::mount_devpts_basic ... ok
+2026-08-30T03:32:29.5244680Z test tests::mount_devpts_isolated ... ok
+2026-08-30T03:32:29.5263906Z test tests::mount_proc ... ok
+2026-08-30T03:32:29.5285705Z test tests::mount_tmpfs ... ok
+2026-08-30T03:32:29.5297243Z test tests::output ... ok
+2026-08-30T03:32:29.5314640Z test tests::pid_namespace ... ok
+2026-08-30T03:32:29.5327221Z test tests::port_isolation ... ok
+2026-08-30T03:32:29.5345985Z test tests::pty ... ok
+2026-08-30T03:32:29.6433210Z test tests::seccomp ... ok
+2026-08-30T03:32:29.6457720Z test tests::seccomp_notify ... ok
+2026-08-30T03:32:29.6484517Z test tests::spawn ... ok
+2026-08-30T03:32:29.6490572Z test tests::spawn_fail ... ok
+2026-08-30T03:32:29.6491762Z test tests::try_into_std_refuses_container_configuration ... ok
+2026-08-30T03:32:29.6510166Z test tests::uid_namespace ... ok
+2026-08-30T03:32:29.6535192Z test tests::wait_blocking ... ok
+2026-08-30T03:32:29.6535314Z 
+2026-08-30T03:32:29.6535374Z failures:
+2026-08-30T03:32:29.6535443Z 
+2026-08-30T03:32:29.6535572Z ---- container::tests::test_directory_is_available_after_mount stdout ----
+2026-08-30T03:32:29.6535746Z 
+2026-08-30T03:32:29.6535984Z thread 'container::tests::test_directory_is_available_after_mount' (2199467) panicked at reverie-process/src/container.rs:1080:9:
+2026-08-30T03:32:29.6536319Z assertion `left == right` failed
+2026-08-30T03:32:29.6536519Z   left: Err(Spawn(Error { errno: ENOENT, context: Mount }))
+2026-08-30T03:32:29.6536719Z  right: Ok(true)
+2026-08-30T03:32:29.6536921Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-08-30T03:32:29.6537102Z 
+2026-08-30T03:32:29.6537104Z 
+2026-08-30T03:32:29.6537162Z failures:
+2026-08-30T03:32:29.6537330Z     container::tests::test_directory_is_available_after_mount
+2026-08-30T03:32:29.6537474Z 
+2026-08-30T03:32:29.6537642Z test result: FAILED. 65 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.38s
+2026-08-30T03:32:29.6537846Z 
+2026-08-30T03:32:29.6546439Z [1m[91merror[0m: test failed, to rerun pass `-p reverie-process --lib`
+2026-08-30T03:32:33.3404840Z ##[error]Process completed with exit code 101.
+2026-08-30T03:32:33.3500004Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-08-30T03:32:33.3500838Z Post job cleanup.
+2026-08-30T03:32:33.4095093Z [command]/usr/bin/git version
+2026-08-30T03:32:33.4131295Z git version 2.43.0
+2026-08-30T03:32:33.4158018Z Temporarily overriding HOME='/runner-state/_work/_temp/7adbb5c8-ad10-439a-a340-ad011fe5c785' before making global git config changes
+2026-08-30T03:32:33.4158504Z Adding repository directory to the temporary git global config as a safe directory
+2026-08-30T03:32:33.4161137Z [command]/usr/bin/git config --global --add safe.directory /runner-state/_work/reverie/reverie
+2026-08-30T03:32:33.4193405Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-08-30T03:32:33.4221403Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-08-30T03:32:33.4466492Z Entering 'third-party/dynamorio'
+2026-08-30T03:32:33.4505071Z Entering 'third-party/dynamorio/third_party/elfutils'
+2026-08-30T03:32:33.4547793Z Entering 'third-party/dynamorio/third_party/libipt'
+2026-08-30T03:32:33.4590755Z Entering 'third-party/dynamorio/third_party/zlib'
+2026-08-30T03:32:33.4639412Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-08-30T03:32:33.4658895Z http.https://github.com/.extraheader
+2026-08-30T03:32:33.4664232Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-08-30T03:32:33.4689963Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-08-30T03:32:33.4905969Z Entering 'third-party/dynamorio'
+2026-08-30T03:32:33.4946023Z Entering 'third-party/dynamorio/third_party/elfutils'
+2026-08-30T03:32:33.4981613Z Entering 'third-party/dynamorio/third_party/libipt'
+2026-08-30T03:32:33.5019373Z Entering 'third-party/dynamorio/third_party/zlib'
+2026-08-30T03:32:33.5070512Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:32:33.5093776Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-08-30T03:32:33.5300413Z Entering 'third-party/dynamorio'
+2026-08-30T03:32:33.5316376Z file:/runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/config	remote.origin.url
+2026-08-30T03:32:33.5332168Z Entering 'third-party/dynamorio/third_party/elfutils'
+2026-08-30T03:32:33.5347167Z file:/runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/elfutils/config	remote.origin.url
+2026-08-30T03:32:33.5363082Z Entering 'third-party/dynamorio/third_party/libipt'
+2026-08-30T03:32:33.5378091Z file:/runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/libipt/config	remote.origin.url
+2026-08-30T03:32:33.5392617Z Entering 'third-party/dynamorio/third_party/zlib'
+2026-08-30T03:32:33.5407401Z file:/runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/zlib/config	remote.origin.url
+2026-08-30T03:32:33.5433724Z [command]/usr/bin/git config --file /runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:32:33.5457489Z [command]/usr/bin/git config --file /runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/elfutils/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:32:33.5479945Z [command]/usr/bin/git config --file /runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/libipt/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:32:33.5505717Z [command]/usr/bin/git config --file /runner-state/_work/reverie/reverie/.git/modules/third-party/dynamorio/modules/third_party/zlib/config --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-30T03:32:33.5648910Z Cleaning up orphan processes
+2026-08-30T03:32:33.5684925Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

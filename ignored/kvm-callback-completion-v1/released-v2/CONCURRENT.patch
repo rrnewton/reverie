@@ -1,0 +1,203 @@
+--- author-only/reverie-kvm/src/runtime.rs
++++ observed/reverie-kvm/src/runtime.rs
+@@ -1983,7 +1983,7 @@
+                 tool_stack_top,
+                 stack_checked_out.clone(),
+             );
+-            drive_handler(
++            drive_handler_completion(
+                 tool.handle_post_exec(&mut guest),
+                 handler_signal,
+                 pending_child_starts.clone(),
+@@ -1991,7 +1991,9 @@
+             )
+             .await
+         };
+-        hide_tool_scratch(memory, tool_stack_top)?;
++        let outcome = backend.finish_handler_completion(
++            outcome, hide_tool_scratch(memory, tool_stack_top), Error::PostExec,
++        )?;
+         match outcome {
+             HandlerOutcome::Returned(Ok(())) => return Ok(CallbackOutcome::Completed(())),
+             HandlerOutcome::Returned(Err(error)) => return Err(Error::PostExec(error)),
+@@ -2127,7 +2129,7 @@
+             tool_stack_top,
+             stack_checked_out.clone(),
+         );
+-        drive_handler(
++        drive_handler_completion(
+             tool.handle_syscall_event(&mut guest, syscall),
+             handler_signal,
+             pending_child_starts.clone(),
+@@ -2135,7 +2137,9 @@
+         )
+         .await
+     };
+-    hide_tool_scratch(memory, tool_stack_top)?;
++    let outcome = backend.finish_handler_completion(
++        outcome, hide_tool_scratch(memory, tool_stack_top), Error::Reverie,
++    )?;
+ 
+     match outcome {
+         HandlerOutcome::Returned(result) => result
+@@ -2740,6 +2744,40 @@
+ }
+ 
+ impl KvmBackend {
++    /// The callback borrow scope has ended. Keep its selected error and panic
++    /// until this concrete owner's outer cleanup and publication have finished.
++    fn finish_handler_completion<T, E>(
++        &self,
++        completion: crate::failure::owned_future::CaughtFuture<HandlerOutcome<std::result::Result<T, E>>>,
++        hidden: Result<()>,
++        map_error: impl FnOnce(E) -> Error,
++    ) -> Result<HandlerOutcome<std::result::Result<T, E>>> {
++        use crate::failure::owned_future::CaughtFuture;
++
++        if completion.panics.is_empty() {
++            let outcome = completion.output.expect("Tool callback lost its outcome");
++            return match (outcome, hidden) {
++                (HandlerOutcome::Returned(Err(error)), Err(hidden)) => Ok(
++                    HandlerOutcome::RuntimeError(map_error(error).with_cleanup(vec![hidden]))
++                ),
++                (outcome, hidden) => finish_handler_scratch(outcome, hidden),
++            };
++        }
++        let original = match completion.output {
++            Some(HandlerOutcome::RuntimeError(error)) => Some(Err(error)),
++            Some(HandlerOutcome::Returned(Err(error))) => Some(Err(map_error(error))),
++            Some(HandlerOutcome::RunFailed) => Some(Err(Error::RunAborted)),
++            _ => None,
++        };
++        let error = self.tool_panic_owner().finish::<()>(CaughtFuture {
++            output: original,
++            panics: completion.panics,
++        }, "Tool callback").expect_err("callback panic must remain fatal");
++        Ok(HandlerOutcome::RuntimeError(
++            error.with_cleanup(hidden.err().into_iter().collect()),
++        ))
++    }
++
+     async fn finish_signal_boundary<G: GlobalTool>(
+         &mut self,
+         executor: &mut ElfExecutor,
+@@ -3058,7 +3096,7 @@
+                     tool_stack_top,
+                     stack_checked_out.clone(),
+                 );
+-                drive_handler(
++                drive_handler_completion(
+                     tool.handle_thread_start(&mut guest),
+                     handler_signal,
+                     pending_child_starts,
+@@ -3066,7 +3104,9 @@
+                 )
+                 .await
+             };
+-            hide_tool_scratch(&memory, tool_stack_top)?;
++            let start_outcome = self.finish_handler_completion(
++                start_outcome, hide_tool_scratch(&memory, tool_stack_top), Error::Reverie,
++            )?;
+             match start_outcome {
+                 HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                 HandlerOutcome::ThreadCancelled => {
+@@ -3150,7 +3190,7 @@
+                                         tool_stack_top,
+                                         stack_checked_out.clone(),
+                                     );
+-                                    drive_handler(
++                                    drive_handler_completion(
+                                         tool.handle_syscall_event(&mut guest, syscall),
+                                         handler_signal,
+                                         pending_child_starts,
+@@ -3158,7 +3198,9 @@
+                                     )
+                                     .await
+                                 };
+-                                hide_tool_scratch(&memory, tool_stack_top)?;
++                                let outcome = self.finish_handler_completion(
++                                    outcome, hide_tool_scratch(&memory, tool_stack_top), Error::Reverie,
++                                )?;
+                                 break match outcome {
+                                     HandlerOutcome::Returned(result) => {
+                                         match classify_handler_result(result)? {
+@@ -3581,7 +3623,7 @@
+                 tool_stack_top,
+                 stack_checked_out.clone(),
+             );
+-            drive_handler(
++            drive_handler_completion(
+                 tool.handle_structured_signal_event(&mut guest, pending.event),
+                 handler_signal,
+                 pending_child_starts.clone(),
+@@ -3589,7 +3631,9 @@
+             )
+             .await
+         };
+-        let outcome = finish_handler_scratch(outcome, hide_tool_scratch(memory, tool_stack_top))?;
++        let outcome = self.finish_handler_completion(
++            outcome, hide_tool_scratch(memory, tool_stack_top), |error| Error::Reverie(error.into()),
++        )?;
+         let replacement = match outcome {
+             HandlerOutcome::Returned(Ok(replacement)) => replacement,
+             HandlerOutcome::Returned(Err(errno)) => {
+@@ -3751,7 +3795,7 @@
+                     tool_stack_top,
+                     stack_checked_out.clone(),
+                 );
+-                drive_handler(
++                drive_handler_completion(
+                     tool.handle_thread_start(&mut guest),
+                     handler_signal,
+                     pending_child_starts.clone(),
+@@ -3759,7 +3803,9 @@
+                 )
+                 .await
+             };
+-            hide_tool_scratch(&memory, tool_stack_top)?;
++            let start_outcome = self.finish_handler_completion(
++                start_outcome, hide_tool_scratch(&memory, tool_stack_top), Error::Reverie,
++            )?;
+             match start_outcome {
+                 HandlerOutcome::ThreadCancelled => {
+                     self.start_pending_tool_children(executor, &pending_child_starts)?;
+@@ -4027,7 +4073,7 @@
+                                     tool_stack_top,
+                                     stack_checked_out.clone(),
+                                 );
+-                                drive_handler(
++                                drive_handler_completion(
+                                     async {
+                                         match &boundary {
+                                             crate::vm::ToolInstructionBoundary::Timestamp(
+@@ -4062,6 +4108,9 @@
+                             // Hide scratch even on callback failure. The outer
+                             // process supervisor retains any committed effects.
+                             let hidden = hide_tool_scratch(&memory, tool_stack_top);
++                            let result = self.finish_handler_completion(
++                                result, Ok(()), |error| Error::Reverie(error.into()),
++                            )?;
+                             let value = match result {
+                                 HandlerOutcome::Returned(Ok(value)) => value,
+                                 HandlerOutcome::Returned(Err(error)) => {
+@@ -4368,7 +4417,7 @@
+                                 tool_stack_top,
+                                 stack_checked_out.clone(),
+                             );
+-                            drive_handler(
++                            drive_handler_completion(
+                                 tool.handle_syscall_event(&mut guest, syscall),
+                                 handler_signal,
+                                 pending_child_starts.clone(),
+@@ -4379,9 +4428,10 @@
+                             )
+                             .await
+                         };
+-                        let outcome = finish_handler_scratch(
++                        let outcome = self.finish_handler_completion(
+                             outcome,
+                             hide_tool_scratch(&memory, tool_stack_top),
++                            Error::Reverie,
+                         )?;
+                         let classified = match outcome {
+                             HandlerOutcome::Returned(result) => {

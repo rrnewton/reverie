@@ -1,0 +1,160 @@
+                return negative_errno(libc::EBADF);
+            }
+            if new_fd == old_fd {
+                return if is_dup3 {
+                    negative_errno(libc::EINVAL)
+                } else {
+                    i64::from(new_fd)
+                };
+            }
+            Some(new_fd)
+        }
+        None => None,
+    };
+
+    // SAFETY: old_host_fd names a live descriptor. F_DUPFD_CLOEXEC returns a
+    // new owned descriptor and prevents it leaking through a supervisor exec.
+    let duplicated = unsafe { libc::fcntl(old_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: fcntl returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    if let Some(new_fd) = new_fd {
+        let retired = state.insert_file(new_fd, file);
+        state.fd_object_inodes.insert(new_fd, source_object_inode);
+        if source_is_random {
+            state.random_device_fds.insert(new_fd);
+        } else {
+            state.random_device_fds.remove(&new_fd);
+        }
+        replace_signalfd_mask(state, new_fd, source_signalfd_mask);
+        cleanup_fd_object_inodes(state);
+        if close_on_exec {
+            state.cloexec_fds.insert(new_fd);
+        } else {
+            state.cloexec_fds.remove(&new_fd);
+        }
+        if (0..=2).contains(&new_fd) {
+            state.closed_standard_fds.insert(new_fd);
+        } else {
+            state.closed_standard_fds.remove(&new_fd);
+        }
+        if let Some(description) = source_fdinfo {
+            state.fdinfo_files.insert(new_fd, description);
+        } else {
+            state.fdinfo_files.remove(&new_fd);
+        }
+        set_output_alias(state, new_fd, source_alias);
+        if let Some(inode) = source_proc_inode {
+            state.proc_files.insert(new_fd, inode);
+        } else {
+            state.proc_files.remove(&new_fd);
+        }
+        drop(_transaction);
+        state.file_retirement.retire(retired);
+        i64::from(new_fd)
+    } else {
+        let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
+        if new_fd >= 0 {
+            state
+                .fd_object_inodes
+                .insert(new_fd as libc::c_int, source_object_inode);
+            if source_is_random {
+                state.random_device_fds.insert(new_fd as libc::c_int);
+            }
+            replace_signalfd_mask(state, new_fd as libc::c_int, source_signalfd_mask);
+            if let Some(description) = source_fdinfo {
+                state.fdinfo_files.insert(new_fd as i32, description);
+            }
+        }
+        if new_fd >= 0
+            && let Some(inode) = source_proc_inode
+        {
+            state.proc_files.insert(new_fd as libc::c_int, inode);
+        }
+        new_fd
+    }
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 10336..10740; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+fn fstat(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture: Option<CaptureMetadata>,
+) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    match guest_object_stat(state, fd, capture) {
+        Ok(stat) => write_struct(memory, args[1], &stat),
+        Err(error) => error,
+    }
+}
+
+fn guest_object_stat(
+    state: &LoadedStaticElf,
+    fd: libc::c_int,
+    capture: Option<CaptureMetadata>,
+) -> Result<libc::stat, i64> {
+    if let (Some(capture), Some(alias)) = (capture, output_alias(state, fd)) {
+        return Ok(synthetic_captured_output_stat(capture.identity(alias)));
+    }
+    let Some(host_fd) = host_fd(state, fd) else {
+        return Err(negative_errno(libc::EBADF));
+    };
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: stat is writable and host_fd is a standard or owned descriptor.
+    if unsafe { libc::fstat(host_fd, stat.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstat initialized stat on success.
+    let mut stat = unsafe { stat.assume_init() };
+    sanitize_guest_fd_stat(state, fd, &mut stat);
+    Ok(stat)
+}
+
+// TODO-HUMAN-REVIEW(PR-205): Review synthetic metadata for in-memory captured output.
+fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat {
+    // Captured writes never reach the host descriptor, so exposing that
+    // descriptor's type, size, or inode leaks the invoking shell into the
+    // guest. Model the capture sink as the pipe used by process-based backends.
+    // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    stat.st_dev = identity.device;
+    stat.st_ino = identity.inode;
+    stat.st_mode = libc::S_IFIFO | 0o600;
+    stat.st_nlink = 1;
+    stat.st_uid = 0;
+    stat.st_gid = 0;
+    stat.st_blksize = PAGE_SIZE as libc::blksize_t;
+    sanitize_stat_timestamps(&mut stat);
+    stat
+}
+
+fn synthetic_captured_output_statx(identity: CaptureObjectIdentity) -> libc::statx {
+    let stat = synthetic_captured_output_stat(identity);
+    // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+    let mut extended = unsafe { std::mem::zeroed::<libc::statx>() };
+    extended.stx_mask = libc::STATX_BASIC_STATS;
+    extended.stx_blksize = stat.st_blksize as u32;
+    extended.stx_nlink = stat.st_nlink as u32;
+    extended.stx_uid = stat.st_uid;
+    extended.stx_gid = stat.st_gid;
+    extended.stx_mode = stat.st_mode as u16;
+    extended.stx_ino = stat.st_ino;
+    extended.stx_dev_major = libc::major(stat.st_dev);
+    extended.stx_dev_minor = libc::minor(stat.st_dev);
+    extended.stx_atime.tv_sec = stat.st_atime;
+    extended.stx_mtime.tv_sec = stat.st_mtime;
+    extended.stx_ctime.tv_sec = stat.st_ctime;
+    extended
+}
+
+fn path_stat(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    flags: libc::c_int,
+    capture: Option<CaptureMetadata>,

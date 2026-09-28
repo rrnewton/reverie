@@ -1,0 +1,160 @@
+                ));
+            }
+            hide_tool_scratch(&self.memory, self.backend.tool_stack_top())?;
+            let action_result: Result<ProcessActionOutcome> = async {
+                match self.process_context.clone() {
+                    ProcessExecutionContext::FaultBoundary(fault) => {
+                        self.backend
+                            .run_process_action_with_tool_from_fault(
+                                self.executor,
+                                action,
+                                context,
+                                &fault,
+                            )
+                            .await
+                    }
+                    ProcessExecutionContext::SignalBoundary(boundary)
+                    | ProcessExecutionContext::SyscallBoundary(boundary) => {
+                        let result = self
+                            .last_result
+                            .expect("process action must have an injected syscall result");
+                        boundary.stage_action_result(self.backend, result)?;
+                        let continuation =
+                            ProcessActionContinuation::from_captured(&action, boundary);
+                        self.backend
+                            .run_process_action_with_tool_at_boundary(
+                                self.executor,
+                                action,
+                                context,
+                                continuation,
+                            )
+                            .await
+                    }
+                    ProcessExecutionContext::InitialExec(_)
+                    | ProcessExecutionContext::Lifecycle => match action {
+                        ProcessAction::Exec {
+                            executable_path,
+                            executable_file,
+                            image,
+                            argv,
+                            envp,
+                        } => {
+                            self.backend.exec_process(
+                                self.executor,
+                                (&executable_path, executable_file),
+                                &image,
+                                &argv,
+                                &envp,
+                            )?;
+                            Ok(ProcessActionOutcome::replaced())
+                        }
+                        _ => Err(Error::UnexpectedVcpuExit(
+                            "fork/clone injection requires a guest syscall boundary".to_owned(),
+                        )),
+                    },
+                    ProcessExecutionContext::InitialExecCompleted => unreachable!(
+                        "synthetic initial exec completes before process actions are inspected"
+                    ),
+                    ProcessExecutionContext::Instruction => Err(Error::UnexpectedVcpuExit(
+                        "process injection from an instruction callback is unsupported".to_owned(),
+                    )),
+                    ProcessExecutionContext::ThreadEntrySignal => Err(Error::UnexpectedVcpuExit(
+                        "process injection from a thread-entry signal hook is unsupported"
+                            .to_owned(),
+                    )),
+                }
+            }
+            .await;
+            let expose_result = expose_tool_scratch(&self.memory, self.backend.tool_stack_top());
+            let outcome = action_result?;
+            expose_result?;
+            *self.process_completed = true;
+            if outcome.image_replaced || self.executor.has_pending_exit() {
+                Ok(InjectionCompletion::DoesNotReturn {
+                    image_replaced: outcome.image_replaced,
+                    process_exited: self.executor.has_pending_exit(),
+                })
+            } else {
+                Ok(InjectionCompletion::Returns {
+                    syscall_result: Some(outcome.syscall_result),
+                })
+            }
+        })
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 1091..1115; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    }
+
+    fn config(&self) -> &<T::GlobalState as GlobalTool>::Config {
+        self.config
+    }
+}
+
+#[reverie::tool]
+impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
+    fn has_cpuid_interception(&self) -> bool {
+        self.executor.has_cpuid_interception()
+    }
+
+    type Memory = GuestMemory;
+    type Stack = KvmStack;
+
+    fn tid(&self) -> Pid {
+        self.tid
+    }
+
+    fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    fn ppid(&self) -> Option<Pid> {
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 1348..1352; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    fn read_clock(&mut self) -> std::result::Result<u64, reverie::Error> {
+        self.executor
+            .read_clock()
+            .map_err(|error| reverie::Error::Io(std::io::Error::other(error)))
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 2344..2551; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    /// Runs the installed guest program through a shared Reverie `Tool`.
+    ///
+    /// The executor supplies Linux syscall semantics that a future guest kernel
+    /// will provide. Tool lifecycle, typed syscall dispatch, thread state,
+    /// global RPC, memory, stack, injection, and tail injection use the same
+    /// Reverie contracts as the ptrace backend.
+    pub async fn run_with_tool<T, E>(
+        &mut self,
+        config: <T::GlobalState as GlobalTool>::Config,
+        mut executor: E,
+    ) -> Result<T::GlobalState>
+    where
+        T: Tool,
+        E: SyscallExecutor,
+    {
+        // This public non-ELF loop has no instruction consumer. Establish its
+        // ownership locally even if the vCPU previously ran a subscribed Tool.
+        self.set_rdtsc_interception(false)?;
+        self.set_cpuid_interception(false)?;
+        self.vcpu.track_clock()?;
+        let tool_stack_top = self.tool_stack_top();
+        let pid = Pid::from_raw(self.root_pid);
+        let global_state = T::GlobalState::init_global_state(&config).await;
+        let tool = Arc::new(T::new(pid, &config));
+        let subscriptions = T::subscriptions(&config);
+        let mut thread_state = tool.init_thread_state(pid, None);
+        let memory = self.memory.clone();
+        let auxv = Vec::new();
+        let stack_checked_out = Arc::new(AtomicBool::new(false));
+
+        let outcome: Result<ExitStatus> = async {
+            let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+            let handler_signal = Arc::new(Mutex::new(None));
+            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+            expose_tool_scratch(&memory, tool_stack_top)?;
+            let start_outcome = {
+                let mut guest_executor = DirectSyscallExecutor {
+                    executor: &mut executor,
+                    vcpu: &self.vcpu,
+                };
+                let mut guest = KvmGuest::<T>::new(

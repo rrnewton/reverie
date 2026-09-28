@@ -1,0 +1,9 @@
+Running as unit: kvm-panic-consumer-check-1-3880331.service
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.55s
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 1.566s
+             CPU time consumed: 1.556s
+                   Memory peak: 292.8M (swap: 0B)
+                      IO Bytes: written 48.1M

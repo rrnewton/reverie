@@ -1,0 +1,19 @@
+{
+  "original_consuming_tests_exact_prefix": true,
+  "owned_future_original_source_exact_after_removing_added_helper": true,
+  "runtime_author_change_only_free_consuming_core": true,
+  "no_execution_or_formatting": true,
+  "concurrent_runtime_delta_present": false,
+  "existing_consuming_tests": [
+    "pending_thread_error_and_destructor_panic_preserve_process_error_and_panic",
+    "thread_poll_and_drop_panics_do_not_skip_process_poll_and_drop_panics",
+    "successful_consuming_hooks_keep_normal_order_without_failure_publication"
+  ],
+  "all_consuming_tests": [
+    "pending_thread_error_and_destructor_panic_preserve_process_error_and_panic",
+    "thread_poll_and_drop_panics_do_not_skip_process_poll_and_drop_panics",
+    "successful_consuming_hooks_keep_normal_order_without_failure_publication",
+    "thread_constructor_panic_is_published_before_process_hook_runs",
+    "process_constructor_panic_retains_prior_thread_error_and_drop_payload"
+  ]
+}

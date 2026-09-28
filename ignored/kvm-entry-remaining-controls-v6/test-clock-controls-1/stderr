@@ -1,0 +1,10 @@
+Running as unit: kvm-entry-owner-test-clock-controls-1-1378468.service
+
+thread 'clock::tests::unwind_closes_counter_and_poison_prevents_future_success' (1378917) panicked at reverie-kvm/src/clock.rs:1027:13:
+simulated vCPU unwinding
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 518ms
+             CPU time consumed: 222ms
+                   Memory peak: 14.8M (swap: 0B)

@@ -1,0 +1,160 @@
+            event: ActiveEvent::Precise {
+                clock_target: 0,
+                offset: 0,
+            },
+            timer_status: EventStatus::Cancelled,
+            send_artificial_signal: false,
+            initial_command: if initial_command {
+                InitialCommand::WaitingForExec
+            } else {
+                InitialCommand::Ordinary
+            },
+            held_initial_event: None,
+            #[cfg(test)]
+            fail_next_notification: None,
+            guest_pid,
+            guest_tid,
+        })
+    }
+
+    pub fn request_event(&mut self, evt: TimerEventRequest) -> Result<(), Errno> {
+        let (delivery, notification) = match evt {
+            TimerEventRequest::Precise(ticks) | TimerEventRequest::PreciseInstruction(ticks, _) => {
+                (ticks, ticks.saturating_sub(get_pmu_config().skid_margin()))
+            }
+            TimerEventRequest::Imprecise(ticks) => (ticks, ticks),
+        };
+        if delivery == 0 {
+            return Err(Errno::EINVAL); // bail before setting timer
+        }
+        if self.initial_command != InitialCommand::Ordinary {
+            self.event = Self::event_at(evt, self.read_clock() + delivery);
+            self.held_initial_event = Some(self.event);
+            self.timer_status = EventStatus::Scheduled;
+            debug_assert!(!self.send_artificial_signal);
+            return Ok(());
+        }
+        self.prepare_notification(notification)?;
+        self.event = Self::event_at(evt, self.read_clock() + delivery);
+        self.timer_status = EventStatus::Scheduled;
+        Ok(())
+    }
+
+    fn prepare_notification(&mut self, notification: u64) -> Result<(), Errno> {
+        #[cfg(test)]
+        if let Some(error) = self.fail_next_notification.take() {
+            return Err(error);
+        }
+        self.send_artificial_signal = if notification <= SINGLESTEP_TIMEOUT_RCBS {
+            // If there's an existing event making use of the timer counter,
+            // we need to "overwrite" it the same way setting an actual RCB
+            // notification does.
+            self.timer.disable()?;
+            true
+        } else {
+            self.timer.reset()?;
+            self.timer.set_period(notification)?;
+            self.timer.enable()?;
+            false
+        };
+        Ok(())
+    }
+
+    fn event_at(evt: TimerEventRequest, clock: u64) -> ActiveEvent {
+        match evt {
+            TimerEventRequest::Precise(_) => ActiveEvent::Precise {
+                clock_target: clock,
+                offset: 0,
+            },
+            TimerEventRequest::PreciseInstruction(_, instr_offset) => ActiveEvent::Precise {
+                clock_target: clock,
+                offset: instr_offset,
+            },
+            TimerEventRequest::Imprecise(_) => ActiveEvent::Imprecise { clock_min: clock },
+        }
+    }
+
+    fn retire_initial_event(&mut self) {
+        let _ = self.held_initial_event.take();
+        self.timer_status = EventStatus::Cancelled;
+        self.send_artificial_signal = false;
+    }
+
+    fn begin_initial_exec(&mut self) {
+        if self.initial_command == InitialCommand::WaitingForExec {
+            self.retire_initial_event();
+            self.initial_command = InitialCommand::InitializingExec;
+        }
+    }
+
+    fn finish_initial_exec(&mut self) {
+        if self.initial_command == InitialCommand::InitializingExec {
+            // Current setup makes no Tool callback in this interval. Retire
+            // any new internal request as well, without revisiting a taken one.
+            self.retire_initial_event();
+            self.initial_command = InitialCommand::Ordinary;
+        }
+    }
+
+    pub fn observe_event(&mut self) {
+        self.timer_status.tick()
+    }
+
+    pub fn schedule_cancellation(&mut self) {
+        self.timer_status = EventStatus::Cancelled;
+    }
+
+    pub fn cancel(&self) -> Result<(), Errno> {
+        if self.initial_command == InitialCommand::Ordinary {
+            self.timer.disable()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn is_timer_generated_signal(signal: &libc::siginfo_t) -> bool {
+        // The signal that gets sent is SIGPOLL. We reconfigured the signal
+        // number, but the struct info is the same. Per the perf manpage, signal
+        // notifications will come indicating either POLL_IN or POLL_HUP.
+        signal.si_signo == MARKER_SIGNAL as i32
+            && (signal.si_code == i32::from(libc::POLLIN)
+                || signal.si_code == i32::from(libc::POLLHUP))
+    }
+
+    fn generated_signal(&self, signal: &libc::siginfo_t) -> bool {
+        self.initial_command == InitialCommand::Ordinary
+            && signal.si_signo == MARKER_SIGNAL as i32
+            // If we sent an artificial signal, it doesn't have any siginfo
+            && (self.send_artificial_signal
+            // If not, the fd should match. This could possibly lead to a
+            // collision, because an fd comparing-equal to this one in another
+            // process could also send a signal. However, that it would also do so
+            // as SIGSTKFLT is effectively not going to happen.
+                || (Self::is_timer_generated_signal(signal)
+                    && get_si_fd(signal) == self.timer.raw_fd()))
+    }
+
+    pub fn read_clock(&self) -> u64 {
+        self.clock.ctr_value_fast().expect("Failed to read clock")
+    }
+
+    pub fn finalize_requests(&self) {
+        if self.initial_command != InitialCommand::Ordinary {
+            debug_assert!(!self.send_artificial_signal);
+            return;
+        }
+        if self.send_artificial_signal {
+            debug!("Sending artificial timer signal");
+
+            // Give the guest a kick via an "artificial signal".  This gives us something
+            // to handle in `handle_signal` and thus drives single-stepping.
+            Errno::result(unsafe {
+                libc::syscall(
+                    libc::SYS_tgkill,
+                    self.guest_pid.as_raw(),
+                    self.guest_tid.as_raw(),
+                    MARKER_SIGNAL as i32,
+                )
+            })
+            .expect("Timer tgkill error indicates a bug");
+        }

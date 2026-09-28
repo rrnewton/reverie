@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.011103151
+    }
+  ]
+}

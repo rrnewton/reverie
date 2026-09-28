@@ -1,0 +1,34 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "baseline_manifest_sha256": "f74effb8842eaa3d9a8178c96fdde293cf210bfc36fe824a1f38f8c3f096dd55",
+  "source": {
+    "reverie-kvm/src/vm/entry_multi_owner_tests.rs": {
+      "before_sha256": null,
+      "sha256": "ca9499acf767b9b20fb662bab06a3ac2c7986b9cfe259755793376a8d30b04b8",
+      "bytes": 37258
+    },
+    "reverie-kvm/src/entry/driver.rs": {
+      "before_sha256": "6c998b3d57e888b280aff4a07f155d45dae22940c8052e144d09556b7eb0834a",
+      "sha256": "2a13533ae61eeceb29cdbae3df99e0c392697604f30ea9db712e492a7878a9ca",
+      "bytes": 19100
+    },
+    "reverie-kvm/src/vm/worker_join.rs": {
+      "before_sha256": "eeeb36521f0ab630ed21f95ac96462608ead0961e23b8da4046fb26be671b9da",
+      "sha256": "8a6d9f3b225dab78b43f2371abf4c4c145b1cc19debf32934d279903fe05a255",
+      "bytes": 20792
+    },
+    "reverie-kvm/src/executor.rs": {
+      "before_sha256": "bf20f163c44a9bf36fc4b4eeafec18207e2b179e1eff02af8e7a7e6d671bf7df",
+      "sha256": "4609d36452b011e7f1c4b787cae669ee6e6f97f8e85eb4223af319f044626ff7",
+      "bytes": 1529884
+    },
+    "reverie-kvm/src/memory.rs": {
+      "before_sha256": "6f054f26edac817a4ae9db2c28d6c34b00e8a192e42e1c50528584a8024fa88d",
+      "sha256": "f8e7cd859712c8130099b8bd9f517767a09e1fcd0a24303d20ce2153983b6b91",
+      "bytes": 133538
+    }
+  },
+  "executed": false,
+  "formatted": false
+}

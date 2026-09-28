@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.002085492
+    }
+  ]
+}

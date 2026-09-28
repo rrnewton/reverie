@@ -1,0 +1,68 @@
+You are the independent actual Claude-family adversarial reviewer of Reverie
+pull request https://github.com/rrnewton/reverie/pull/606. Read-only tools only.
+Do not edit files, execute commands, delegate work, publish comments, or infer
+test execution from source. Return a complete review report in your final
+response.
+
+Review target: base be09e5100bca6dad77aede0349de9a5c92990854,
+exact head 1fdadb7940dc232d07c1e36494f0f102b74f3140, tree
+f676d5d8dcfb266e92e2e656661ff5e08f73f787. SOURCE.md defines the packet.
+BASE-TO-HEAD.patch is the complete diff, not a handpicked excerpt. Candidate
+and base files are copied and hashed. QUALIFICATION.md names actual completed
+checks and explicit limits; anything else is pending or unexecuted.
+
+Apply both code-review and deterministic-scheduling-review. Before reading the
+proposal or diff, read these primary files completely, in this exact order:
+primary/paper.txt (the entire Reproducible Containers paper including artifact
+appendix), primary/scheduler.rs (the complete unchanged Hermit scheduler), then
+primary/PROJECT_VISION.md and primary/hermit-v2-roadmap.md. Use multiple bounded
+reads to cover every line; do not substitute summaries. The roadmap's dated
+measurements are history. If a primary file is unavailable, stop and state the
+actual limitation. Then read both skill files under context/ completely before
+reviewing the diff.
+
+Only after grounding, read the complete diff and changed files, before/ versions,
+and relevant context. Trace both mechanisms through the real execution path.
+
+The first mechanism routes KVM SYS_pselect6 through a bounded read-only
+validation preflight. Required Linux order is: outer 16-byte sigmask wrapper;
+timeout access and value; non-null inner mask size and access; signed low-32-bit
+nfds; then exact one-word read/write/except fdset accesses for nfds 1..=64.
+nfds 0 ignores fdset pointers. nfds >64 must return ENOSYS before fdset access
+because live fd-table capacity is not modeled. Every otherwise valid call must
+still return ENOSYS, with no host wait/poll, readiness claim, output mutation,
+temporary mask, signal dequeue, descriptor mutation, scheduler event, or support
+manifest widening.
+
+The second mechanism repairs a release-only KVM host signal ownership failure.
+Two production empty C handlers may be folded to one address at installation
+while another materialization names the other symbol. The old exact release
+binary installed the folded vm::interrupt_guest_worker address for SIG64 and
+immediately compared the kernel query against a distinct
+entry::signal::interrupt address, falsely reporting foreign replacement. The
+repair caches the exact usize actually passed to sigaction in OnceLock and later
+compares against that cached value. It must still refuse a genuinely replaced
+handler and must not weaken the lifetime-exclusive reservation. Check the
+optimized non-cfg(test) test hook itself for production fidelity and API risk.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification,
+and gate with the base. Determine whether implementation meets the original
+requirement or the requirement moved. Call out the result explicitly even when
+no lowering is present.
+
+Report findings first with exact file/line evidence, impact, and required
+correction. State each of the four goalpost assessments explicitly. Give
+separate conclusions for determinism, Linux/POSIX semantics, evidence, and
+residual risk. Bind the verdict to the exact full head. Do not claim general
+pselect6 support or full KVM parity. End with an unambiguous APPROVE or CHANGES
+REQUESTED verdict for this exact head.

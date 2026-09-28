@@ -1,0 +1,31 @@
+{
+  "base": "6e3915b70a71657a08f0028b3f70d6074116206a",
+  "head": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "manifest_entries": 2631,
+  "git_entries": 2630,
+  "all_tracked_source_matches": true,
+  "gitlinks": [
+    {
+      "path": "third-party/dynamorio",
+      "oid": "929840ad9190e5086775e8debc0f0b79b4208d59"
+    },
+    {
+      "path": "third-party/e9patch",
+      "oid": "6c2c03c1da74b14daf1788a9f8dccfa354ce04a6"
+    },
+    {
+      "path": "third-party/sabre",
+      "oid": "41113f849f8799932ed8c7883f5a4de616b9e9fa"
+    }
+  ],
+  "additional_ignored_lock_sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+  "lock_bytes": 67056,
+  "assertions_used": false,
+  "python_optimization": 0,
+  "pythonoptimize_environment": "0",
+  "script_sha256": "0563c1de026bdd38a13dad81d82e96f5623675d7c30324eea60b69e0024af710",
+  "qualification_results_sha256": "a98dab4c5a5e86b45730de06b328a8cc97da5766d949dc103dc6aaca2ecba66f",
+  "previous_proof_preserved": "COMMITTED-SOURCE-PROOF-v2.json",
+  "reason": "Record interpreter state and use explicit checks; earlier root proof omitted optimization state."
+}

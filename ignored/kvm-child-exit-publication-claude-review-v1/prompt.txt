@@ -1,0 +1,35 @@
+You are the independent actual Claude-family adversarial reviewer of a focused public Reverie KVM API prerequisite. You have read-only tools only. Do not edit files, execute commands, delegate work, publish comments, or infer test execution from source. Return a complete review report in your final response.
+
+Review target: https://github.com/rrnewton/reverie/pull/603, base f7bd85e11dd258112148ed2cba6531501a1a00d9, exact head 0598b5ffbeb737866372f89224d915efaeb29943, tree dab8c59a89f490c6143c197afc70ab6e6a3c8ff7. The complete base-to-head binary diff is BASE-TO-HEAD.patch, SHA-256 b973675db1aa7125c3fcb62a06026494d7cc9d69955727baeca8f9fb0aad8f53. INPUTS.json hashes the immutable packet. Candidate contains complete snapshots of reverie-kvm/src, reverie-kvm/tests, and reverie/src at the exact head. Before contains all eight changed files at the base. SOURCE.json describes the scope. QUALIFICATION.md and qualification/ contain actual exact-head commands and retained raw results.
+
+Apply both code-review and deterministic-scheduling-review. Before reading the proposal, diff, qualification, or candidate code, read these primary files completely in this exact order: primary/paper.txt, including the artifact appendix; primary/scheduler.rs, including every test; primary/PROJECT_VISION.md; primary/hermit-v2-roadmap.md. Use multiple bounded reads so every line is covered; do not substitute summaries. The roadmap's dated measurements are history. Then read both context skill files completely. If any primary or required packet file is missing or truncated, stop and state the actual limitation.
+
+Only after that grounding, inspect the complete diff, every changed production and test file, relevant unchanged context, and the retained qualification. Trace real execution rather than inferring correctness from type names or test names. Existing measurements establish only their documented scope. Do not require the Hermit consumer to exist in this prerequisite, but reject an API that cannot be consumed synchronously and deterministically as claimed.
+
+Intended behavior and scope:
+
+- Expose a public, generation-bound child-exit publication operation through ProcessSignalControl for a later Hermit GlobalTool consumer. The caller must supply and hold its causal scheduler fence; this patch must not invent host-timed admission or automatically publish from Reverie.
+- BackendChildWaitEvent must carry exact parent and child SignalProcessId values captured while the corresponding generations are live. Both binding guards must survive through the awaited callback acknowledgement so numeric PID reuse cannot change meaning.
+- Publication must validate exact parentage, committed terminal status, full ExitStatus, waitability, SIGCHLD action, virtual UID, and child user/system ticks before mutation. Refusal must have no guest-visible partial effect.
+- Encode Linux CLD_EXITED, CLD_KILLED, and CLD_DUMPED with full si_status and signed clock ticks. Explicit SIG_IGN suppresses SIGCHLD and auto-reaps; SA_NOCLDWAIT auto-reaps but still generates SIGCHLD; ordinary disposition remains waitable.
+- Standard-signal coalescing must retain the first complete siginfo while every completed child status remains independently waitable where policy requires. Signal pending state and signalfd readiness are related but distinct: independent signalfd carriers and aliases must update without borrowing a different carrier or losing a committed signal.
+- Process-directed recipient selection must use the current generation, include only eligible live unmasked tasks, and be deterministic rather than host iteration order. A committed publication returns one child-specific receipt; a failure after commit must retain that exact receipt, must not become retryable, and must not duplicate the child signal.
+- The public API must preserve object safety/default compatibility where intended, and its intentional BackendChildWaitEvent source incompatibility must be coherent at every real producer and test consumer.
+
+Try to refute the implementation on identity reuse, parent/child retirement races, callback guard lifetime, waitability/action disagreement, stopped or nonterminal status, tick overflow or signedness, SIG_IGN versus default-ignore semantics, SA_NOCLDWAIT, coalescing, signalfd aliasing and carrier failure, recipient mask/order races, lock ordering/deadlock, precommit versus postcommit error classification, receipt identity, retry behavior, and partial mutation. Check that tests contain both accepting and refusing cases for new guards and that the real KVM callback test proves the identity/lifetime claim it actually makes.
+
+The Hermit follow-up will synchronously call this operation inside on_backend_child_wait_event while retaining the scheduler reservation, handle committed/refused/failed-after-commit exactly once, forward retained postcommit failure outside scheduler locks, and only then remove Hermit's synthetic plus-one-nanosecond child timer and numeric host-signal fallback. This patch does none of that and must not be credited with KVM determinism, backend parity, guest record/replay, or a complete child-exit repair.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation now meets the original requirement or whether the requirement was changed to admit the implementation. State the result for all four categories even if no lowering is present.
+
+Report findings first with severity, exact file and line evidence, impact, and required correction. Then give explicit goalpost-moving assessment, separate conclusions for the determinism guarantee and Linux/POSIX semantics, verification actually inspected with limitations, residual risks, and an exact-head APPROVE or CHANGES REQUESTED verdict. Passing tests are evidence, not a substitute for tracing the production paths. Use plain project vocabulary and full GitHub URLs.

@@ -1,0 +1,10 @@
+Running as unit: kvm-entry-owner-test-exec-tls-negative-1-3495945.service
+
+thread 'vm::exec_wait_tests::exec_wait_private_failure_interrupts_worker_tls_destructor' (3496560) panicked at reverie-kvm/src/vm/exec_wait_tests.rs:285:5:
+Exec must remain interruptible while the worker TLS destructor is blocked
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 5.021s
+             CPU time consumed: 7ms
+                   Memory peak: 1.6M (swap: 0B)

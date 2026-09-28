@@ -1,0 +1,13 @@
+
+running 8 tests
+test entry::owner::tests::capture_defers_last_owner_drop_after_retirement_and_rejection ... ok
+test entry::owner::tests::capture_records_before_deferred_notification_and_retains_arcs ... ok
+test entry::owner::tests::live_callback_retirement_is_abandonment_not_destruction ... ok
+test entry::owner::tests::nested_destruction_keeps_generation_and_parent_dependency ... ok
+test entry::owner::tests::origins_are_weak_and_misuse_returns_typed_protocol_errors ... ok
+test entry::owner::tests::retirement_preserves_both_sides_of_capture_race ... ok
+test entry::owner::tests::scope_acknowledgement_follows_owned_future_destruction ... ok
+test entry::owner::tests::unwind_abandons_registration_but_preserves_pending_and_destruction ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 729 filtered out; finished in 0.00s
+

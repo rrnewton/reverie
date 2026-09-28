@@ -1,0 +1,5 @@
+actual fault and exit-hook failure: WithCleanup { primary: SharedFailure(GuestException { vector: 6, instruction_pointer: 2097152, fault_address: 0 }), cleanup: [SharedFailure(Reverie(Errno(EIO)))] }
+
+thread 'fault_only_assertion_rejects_actual_tool_exit_cleanup_failure' (3544580) panicked at reverie-kvm/tests/static_elf.rs:3698:18:
+expected invalid-opcode exception, got guest exception vector 6 at 0x200000 (CR2=0x0); Reverie tool failed: -5 EIO (I/O error)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

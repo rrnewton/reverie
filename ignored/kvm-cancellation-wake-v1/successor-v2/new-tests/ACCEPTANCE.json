@@ -1,0 +1,18 @@
+{
+  "expected": [
+    "vm::tests::cancellation_wake_tests::subscriptions_cover_registration_before_and_after_publication",
+    "vm::tests::cancellation_wake_tests::root_can_resubscribe_after_worker_only_cancellation",
+    "vm::tests::cancellation_wake_tests::subscriptions_survive_exec_rearm_and_wake_on_later_cancellation",
+    "vm::tests::cancellation_wake_tests::wake_callbacks_observe_published_state_outside_group_locks"
+  ],
+  "succeeded": [
+    "vm::tests::cancellation_wake_tests::root_can_resubscribe_after_worker_only_cancellation",
+    "vm::tests::cancellation_wake_tests::subscriptions_cover_registration_before_and_after_publication",
+    "vm::tests::cancellation_wake_tests::subscriptions_survive_exec_rearm_and_wake_on_later_cancellation",
+    "vm::tests::cancellation_wake_tests::wake_callbacks_observe_published_state_outside_group_locks"
+  ],
+  "raw_status": 0,
+  "ignored": 0,
+  "failed": 0,
+  "source_unchanged": true
+}

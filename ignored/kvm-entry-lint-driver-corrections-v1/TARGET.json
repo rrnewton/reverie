@@ -1,0 +1,87 @@
+{
+  "records": [
+    {
+      "path": "BEFORE.json",
+      "bytes": 907,
+      "sha256": "f8e0845bd80b0e54bb7de070fbb220b615b3370d4697888e1c3efae74c2d79c7"
+    },
+    {
+      "path": "CHECKS.json",
+      "bytes": 1085,
+      "sha256": "8a2dfc4ec92cdb1f947e74ab52ae060d92b94d1394742fa8dae83f3b7790e696"
+    },
+    {
+      "path": "INPUTS.json",
+      "bytes": 503,
+      "sha256": "30a5f193c4eae4dd49ca8cc30c43c577e85a9a3ae775fa4da823fc90d7329950"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 6189,
+      "sha256": "259a02ad68732a105849e83bc79ae51b6164b5673fd055ec3f720e26e011c28d"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 571,
+      "sha256": "76a935e29150cb5b1c367dbd25d424c4ddf51d71d7621240880fa176c46a1b59"
+    },
+    {
+      "path": "after/reverie-kvm/src/entry/driver.rs",
+      "bytes": 19513,
+      "sha256": "3167f23ddb450661710f910d67cbf7138f740f8611ce534816d102e148517718"
+    },
+    {
+      "path": "after/reverie-kvm/src/runtime.rs",
+      "bytes": 275587,
+      "sha256": "4b246b517414b335a25410bc5b1ce5c2bf208034b68ff600c549da0f53e5a4e8"
+    },
+    {
+      "path": "after/reverie-kvm/src/vm.rs",
+      "bytes": 414481,
+      "sha256": "f0e44fc611ad60222a56d4ed66514b5c2d9896b946a408d84fa78ede2e33840f"
+    },
+    {
+      "path": "before/reverie-kvm/src/entry/driver.rs",
+      "bytes": 19549,
+      "sha256": "88d3317f108632f8b7145fa600579e31a9af9ffb3401566c6c7e94da498353b7"
+    },
+    {
+      "path": "before/reverie-kvm/src/runtime.rs",
+      "bytes": 275611,
+      "sha256": "b79a5cc0839215e4fcc87df89b096768d2c759aee9e9cab9c5ab3d5b7f716629"
+    },
+    {
+      "path": "before/reverie-kvm/src/vm.rs",
+      "bytes": 414310,
+      "sha256": "32dd03d5b6a5248c47a625639b8638b242bab6a7635939770c0a1915c6bf51e7"
+    },
+    {
+      "path": "changes.patch",
+      "bytes": 13090,
+      "sha256": "7cc4a2241f4a6750a8d8e7c4b589d7a85c41f1548fe2a9780905d05801be526e"
+    },
+    {
+      "path": "lint-v2-stderr",
+      "bytes": 31560,
+      "sha256": "41e9884b5aeaa874e60ab4a5945b5e77762eba098c09ceb67dcc549e38b51caa"
+    },
+    {
+      "path": "patch-reverse-check.json",
+      "bytes": 234,
+      "sha256": "f29abf8fa985abfbdfa3f204b6da431998930e69cd5186e35e9fcb0d131a4f63"
+    },
+    {
+      "path": "patch-reverse-check.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "patch-reverse-check.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "scope": "three assigned source files only",
+  "compiled_or_executed": false,
+  "source_released": true
+}

@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-exec-private-wait-1-1299455.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 177ms
+             CPU time consumed: 19ms
+                   Memory peak: 5.5M (swap: 0B)

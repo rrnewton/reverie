@@ -1,0 +1,40 @@
+Continue your own existing independent review session 5d98403d-b8e9-42bf-8e2f-da7e7b70809c for https://github.com/rrnewton/reverie/pull/588. This invocation asks only for the missing supplemental report, approximately 1,000 words if sufficient. No source changed. Do not repeat complete source or raw-chunk reading merely to restate it.
+
+Whole target: b5e2ab49cd99e5d456fa0238b8cebd75958c529f..a9449f8ee22a17ba87a106c2af957a938fa57c45, tree da3e0a5c13bbd1b95adca1bc3ac0037b89494544.
+
+Your first report (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude/assistant-event-562-block-0.txt, SHA256 5888d24a142e316518fe16cc07ba2e33b8f76f2aab8e30ca3b94f309aed7ce7b) gave a whole-source APPROVE but simultaneously disclosed only 8/24 raw trace chunks read. The original mandatory audit failed: 224/240 chunks. Its opening mandatory-reading completion claim was inaccurate. The report and failed audit remain unchanged.
+
+Your immediately preceding 600-second continuation read all sixteen missing raw chunks and the exact trigger-rule excerpt completely, with 19 actual Read calls and no tool error. It emitted seven compacting statuses then a null status, resumed reading and reached the final required excerpt. All seventeen new reads are proven by exact model-visible line matching, but the guard expired at 600.055 seconds (raw 124) before a supplemental verdict. The failed terminal audit and timeout remain failures. No source or input changed.
+
+The reading union is now complete across distinct invocations: original 224 + supplemental 16 = all original 240 mandatory chunks, including every changed source file. The extra rule excerpt was also read. This is evidence of reading, not a substitute for YOUR source verdict. Exact union/custody are /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/TIMEOUT-COVERAGE.json (SHA256 ad48ff80606bc02019a0cce2c766f53c63883e7f59b827e84297594253135a0b) and /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/TIMEOUT-READBACK.json (SHA256 32a71b7e10979f2b1b42db88c53cc6351f0be1caa81fed267f38d4d7eb28e22e). Reuse your own authenticated canonical paper/full scheduler/vision/roadmap grounding and your own completed source/evidence reading. There are no mandatory re-reads in this report-only invocation. If you need a directly relevant clarification, only read bound sources. Do not execute anything, mutate files, use network tools, delegate or consult another reviewer's material.
+
+Please now issue a concise self-contained supplemental report:
+1. Correct the first report's completion claim explicitly. State distinct original 224/240 plus supplemental 16/16, preserve the first failure and subsequent timeout, and do not claim initial strict read order or a successful second invocation.
+2. State whether the newly read raw records change any source finding, arithmetic or evidence conclusion. Give concrete source/event pointers for any change. Reassess your own A1–A5 as needed; do not reproduce the entire previous report.
+3. Independently reassess trigger 2 against the actual rule below. Your prior public-shape-only reasoning omitted its syscall-interception-model clause. State your conclusion on the actual pending-original ownership/injection changes and trigger 3, with a short reason. No other reviewer's conclusion is supplied.
+4. Give an unambiguous whole-exact-head APPROVE / CHANGES REQUESTED / UNABLE TO COMPLETE verdict and material limits. This must be your judgment; neither a desired answer nor new product evidence is being supplied.
+
+Exact existing Hermit AGENTS.md lines 452–460, already read:
+Apply `post-facto-human-review` exactly for: (1) new syscall support, with both
+audit tags above; (2) a Reverie API/core-abstraction change to `Tool`, `Guest`,
+`Backend`, or the syscall-interception model; (3) a new determinization
+strategy; or (4) a core DetCore scheduling change affecting how programs are
+scheduled, especially race search. Trigger 4 is always labeled. Hermit
+[PR #1151](https://github.com/rrnewton/hermit/pull/1151), which moved slowdown
+into virtual-time/epoch scheduling, is the canonical good example. Routine
+backend-parity work toward the golden ptrace reference does not trigger review
+unless it also meets one of these four criteria.
+
+Preserve actual qualification: 45 phases attempted, 44 accepted, 37 declarations qualified. Legacy payload raw 0 and actual assertions do not replace its accepted=false structured-reader receipt. Preserve earlier compile 101, unchanged [1,65] baseline failure with actual [3,67], diagnostic raw 125, precise-timer child-record limits and all unmeasured states. No new Hermit run, parity, scheduler or activation approval follows.
+
+Only your own original findings and readings are supplied. The source, tests, assertions, caller, bounds and prior records remain unchanged. If unable to finish under this separate 600-second bound, say so; do not infer a verdict from completed reading.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it

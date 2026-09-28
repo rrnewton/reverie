@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-existing-parking-wait-1-3475960.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 105ms
+             CPU time consumed: 9ms
+                   Memory peak: 1.8M (swap: 0B)

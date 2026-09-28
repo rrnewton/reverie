@@ -1,0 +1,160 @@
+        Ok((conventional_exit_code(status), stdout, stderr))
+    }
+
+    pub(crate) fn prepare_captured_output(
+        &self,
+        capture_output: bool,
+    ) -> Result<Option<CapturedOutput>> {
+        self.static_elf
+            .as_ref()
+            .ok_or(Error::StaticElfNotInstalled)?;
+        capture_output
+            .then(CapturedOutput::try_new)
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    fn run_static_elf_process(
+        &mut self,
+        executor: &mut ElfExecutor,
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+        // This loop never dispatches Tool events, including Host-owned workers.
+        self.set_rdtsc_interception(false)?;
+        self.set_cpuid_interception(false)?;
+        let _registration = self.register_guest_thread()?;
+        if self.is_guest_thread {
+            let entry_registers = self.vcpu.get_regs()?;
+            while let Some(pending) = executor
+                .take_pending_signal_for_delivery()
+                .map_err(|errno| Error::Reverie(errno.into()))?
+            {
+                if self.deliver_selected_signal_before_thread_entry(
+                    executor,
+                    entry_registers,
+                    pending,
+                )? || executor.has_pending_exit()
+                {
+                    break;
+                }
+            }
+            if let Some(exit) = executor.take_exit() {
+                return self.finish_static_elf_thread(executor, exit);
+            }
+        }
+        loop {
+            if let Some(status) = self.guest_thread_group_exit_status() {
+                return self.finish_static_elf_thread(
+                    executor,
+                    ProcessExit {
+                        status,
+                        group: true,
+                    },
+                );
+            }
+            if self.is_guest_thread && self.thread_group.cancelled.load(Ordering::Acquire) {
+                return self.finish_static_elf_thread(
+                    executor,
+                    ProcessExit {
+                        status: ExitStatus::SUCCESS,
+                        group: false,
+                    },
+                );
+            }
+            let vcpu_exit = match self.vcpu.run() {
+                Ok(exit) => exit,
+                Err(Error::Kvm(error)) if error.errno() == libc::EINTR => continue,
+                Err(error) => return Err(error),
+            };
+            Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+            let (segment_update, process_action, mut signal_boundary) = match vcpu_exit {
+                VcpuExit::Hypercall(exit) => {
+                    if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                        return Err(Error::UnexpectedHypercall(exit.nr));
+                    }
+                    let frame_address = exit.args[0];
+                    if frame_address != self.syscall_frame_address {
+                        return Err(Error::UnexpectedVcpuExit(format!(
+                            "syscall frame is at unexpected address {frame_address:#x}",
+                        )));
+                    }
+                    let return_slot = std::ptr::from_mut(exit.ret) as usize;
+                    let request = SyscallRequest::read_from(&self.memory, frame_address)?;
+                    // SAFETY: return_slot points into this stopped vCPU's stable KVM_RUN mapping.
+                    unsafe {
+                        (return_slot as *mut u64).write(0);
+                    }
+                    if request.number() == libc::SYS_rt_sigreturn as u64 {
+                        if let Some(restored) =
+                            self.restore_rt_sigreturn(executor, frame_address)?
+                        {
+                            let delivered = self.deliver_pending_signal_from_registers(
+                                executor,
+                                frame_address,
+                                restored,
+                            )?;
+                            if !delivered {
+                                stage_process_syscall_return(
+                                    &mut self.memory,
+                                    &self.vcpu,
+                                    frame_address,
+                                    restored,
+                                )?;
+                            }
+                        }
+                        if executor.has_pending_exit() {
+                            self.discard_process_clear_tid_at_signal_return(executor);
+                            self.clear_registered_worker_tid_before_exit(executor);
+                        }
+                        (None, None, None)
+                    } else {
+                        let userspace = process_syscall_return_registers(
+                            &self.memory,
+                            self.vcpu.get_regs()?,
+                            frame_address,
+                            0,
+                            None,
+                        )?;
+                        executor.set_current_user_stack_pointer(userspace.rsp);
+                        let result = executor.execute(&request, &self.memory);
+                        SyscallRequest::write_result(&mut self.memory, frame_address, result)?;
+                        (
+                            executor.take_segment(),
+                            executor.take_process_action(),
+                            Some((frame_address, result)),
+                        )
+                    }
+                }
+                VcpuExit::Hlt => {
+                    if self.try_resume_vmware_backdoor_probe()? {
+                        continue;
+                    }
+                    let Some(fault) = self.capture_page_zero_fault(executor)? else {
+                        return Err(self.static_elf_halt_error()?);
+                    };
+                    executor.prepare_captured_page_zero_fault();
+                    self.deliver_page_zero_fault(executor, &fault, fault.pending())?;
+                    if executor.has_pending_exit() {
+                        self.discard_process_clear_tid_at_signal_return(executor);
+                        self.clear_registered_worker_tid_before_exit(executor);
+                    }
+                    (None, None, None)
+                }
+                exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+            };
+
+            if let Some((segment, address)) = segment_update {
+                set_user_segment_base(&self.vcpu, segment, address)?;
+            }
+
+            let mut returns_to_original_image = process_action
+                .as_ref()
+                .is_none_or(ProcessAction::returns_to_original_image);
+            if !returns_to_original_image && executor.has_eligible_pending_signal() {
+                return Err(Error::UnexpectedVcpuExit(
+                    "KVM exec with an eligible deferred signal is unsupported; \
+                     delivery requires a syscall return frame"
+                        .to_owned(),
+                ));
+            }
+            let continuation = process_action
+                .as_ref()

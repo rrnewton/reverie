@@ -1,0 +1,102 @@
+{
+  "status": "ready for root-authorized execution",
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "dispatch_base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "source_paths": [
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/entry/owner.rs",
+    "reverie-kvm/src/entry/signal.rs",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/clock.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/memory.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs",
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/bootstrap.rs",
+    "reverie-kvm/src/executor.rs",
+    "Cargo.lock",
+    "reverie-kvm/src/failure/owned_future.rs",
+    "reverie-kvm/src/vm/worker_panic_tests.rs",
+    "reverie-kvm/src/runtime/failure_tests.rs",
+    "reverie-kvm/src/failure/tool_panics.rs",
+    "reverie-kvm/src/failure/tool_panics_tests.rs",
+    "reverie-kvm/src/runtime/callback_completion_tests.rs",
+    "reverie-kvm/src/runtime/consuming_panic_tests.rs",
+    "reverie-kvm/src/vm/public_tool_panic_tests.rs",
+    "reverie-kvm/src/vm/instruction_callback_panic_tests.rs",
+    "reverie-kvm/src/entry/driver.rs",
+    "reverie-kvm/src/entry/driver/tests.rs",
+    "reverie-kvm/src/runtime/entry_owner_tests.rs",
+    "reverie-kvm/src/vm/entry_owner_tests.rs",
+    "reverie-kvm/src/vm/exec_wait_tests.rs",
+    "reverie-kvm/README.md",
+    "reverie-kvm/src/vm/worker_join.rs",
+    "reverie-kvm/src/parked_signal_runtime.rs",
+    "reverie-kvm/src/runtime/entry_operation_tests.rs",
+    "reverie-kvm/src/vm/entry_public_tests.rs",
+    "reverie-kvm/src/vm/entry_main_tests.rs",
+    "reverie-kvm/src/vm/entry_spawn_tests.rs",
+    "reverie-kvm/src/vm/entry_hypercall_tests.rs",
+    "reverie-kvm/src/vm/entry_race_tests.rs",
+    "reverie-kvm/src/vm/entry_multi_owner_tests.rs",
+    "reverie-kvm/src/vm/entry_action_tests.rs",
+    "reverie-kvm/src/entry/cleanup_tests.rs",
+    "reverie-kvm/src/vm/entry_wait_tests.rs",
+    "reverie-kvm/src/vm/entry_eintr_tests.rs"
+  ],
+  "format_paths": [],
+  "tests": [
+    {
+      "phase": "test-cancellation-generation-1",
+      "selector": "vm::tests::cancellation_wake_tests::subscriptions_cover_registration_before_and_after_publication",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::cancellation_wake_tests::subscriptions_cover_registration_before_and_after_publication"
+      ]
+    },
+    {
+      "phase": "test-cancellation-generation-2",
+      "selector": "vm::tests::cancellation_wake_tests::root_can_resubscribe_after_worker_only_cancellation",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::cancellation_wake_tests::root_can_resubscribe_after_worker_only_cancellation"
+      ]
+    },
+    {
+      "phase": "test-cancellation-generation-3",
+      "selector": "vm::tests::cancellation_wake_tests::subscriptions_survive_exec_rearm_and_wake_on_later_cancellation",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::cancellation_wake_tests::subscriptions_survive_exec_rearm_and_wake_on_later_cancellation"
+      ]
+    }
+  ],
+  "known_selected_test_count": 3,
+  "phases": [
+    "inventory-1",
+    "test-cancellation-generation-1",
+    "test-cancellation-generation-2",
+    "test-cancellation-generation-3"
+  ],
+  "limits": {
+    "cpu_quota": "200%",
+    "memory_max": "12G",
+    "memory_swap_max": "0",
+    "core_limit": "0",
+    "compile_wall_seconds": 600,
+    "check_wall_seconds": 600,
+    "test_wall_seconds": 60,
+    "format_inventory_wall_seconds": 30,
+    "stream_cap_bytes": 16777216
+  },
+  "execution_authorization": "Root authorizes three existing unchanged cancellation-generation tests on the already compiled retained v4 ELF; no compile, source edit, tolerance change or repeat of 231 other controls.",
+  "explicit_unresolved_path": "Driver timing/ownership controls do not establish full Hermit/Detcore parity. Entire entry increment still requires independent full source reviews, consumer qualification and landing.",
+  "new_phases_first": [],
+  "predecessor_failed_target": "5525c4137a07d144b0234ff8af48bc3d4abb1649049f2edbe83b5583420f4a82",
+  "predecessor_passed_target": "e92ae0227bd2f60f3faabe2b4bd2104d6f2afba78f1824de8fab0900d8c8a1a8"
+}

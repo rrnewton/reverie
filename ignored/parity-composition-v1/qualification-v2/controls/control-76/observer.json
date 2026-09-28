@@ -1,0 +1,38 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/observer.py",
+    "--out",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-76",
+    "--cpu-usec",
+    "30000000",
+    "--wall-seconds",
+    "60",
+    "--log-bytes",
+    "16777216",
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/phase.py",
+    "payload",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/control-76-plan.json",
+    "086708ecf04eaca0d90127c68138653082ce90c83912b18705474e5f49ea0c35"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source",
+  "wall_limit_seconds": 110,
+  "forced": false,
+  "returncode": 0,
+  "elapsed_seconds": 3.1597586539573967,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/controls/control-76/observer.stdout",
+    "bytes": 159,
+    "mode": 420,
+    "sha256": "5576db93ac0e0f938e748e63f6a3b69ced368e51974a6b0a5033ce3b4a727e74"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/controls/control-76/observer.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

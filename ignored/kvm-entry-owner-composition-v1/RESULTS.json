@@ -1,0 +1,206 @@
+{
+  "phases": [
+    {
+      "phase": "compile-1",
+      "raw_status": 0,
+      "wall_seconds": 17.614443802041933,
+      "selection": null,
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "format-1",
+      "raw_status": 0,
+      "wall_seconds": 0.5617051830049604,
+      "selection": null,
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "inventory-1",
+      "raw_status": 0,
+      "wall_seconds": 0.1833018760662526,
+      "selection": null,
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-action-preparation",
+      "raw_status": 0,
+      "wall_seconds": 0.3289800330530852,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-boundary",
+      "raw_status": 0,
+      "wall_seconds": 0.04335006093606353,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-cleanup-drain",
+      "raw_status": 0,
+      "wall_seconds": 0.04053612588904798,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-cleanup-storage",
+      "raw_status": 0,
+      "wall_seconds": 0.04260761686600745,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-entry-owner",
+      "raw_status": 0,
+      "wall_seconds": 0.039566590916365385,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-handler-destruction",
+      "raw_status": 0,
+      "wall_seconds": 0.041430889861658216,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-memory-generation",
+      "raw_status": 0,
+      "wall_seconds": 0.033754413947463036,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-memory-retired",
+      "raw_status": 0,
+      "wall_seconds": 0.2000866448506713,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-owner",
+      "raw_status": 0,
+      "wall_seconds": 0.05119650298729539,
+      "selection": {
+        "summaries": [
+          [
+            "7",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 7
+      },
+      "source_stable": true,
+      "executable_stable": true
+    },
+    {
+      "phase": "test-read-preparation",
+      "raw_status": 0,
+      "wall_seconds": 0.046490577049553394,
+      "selection": {
+        "summaries": [
+          [
+            "1",
+            "0",
+            "0"
+          ]
+        ],
+        "expected_passed": 1
+      },
+      "source_stable": true,
+      "executable_stable": true
+    }
+  ],
+  "test_declarations": 16,
+  "new_declarations": 15,
+  "old_neighbor_declarations": 1,
+  "kvm_run": 0,
+  "hermit_guests": 0,
+  "parity_comparisons": 0,
+  "selection_refusals_before_tests": 1,
+  "tests_wall_seconds": 0.8679994563572109
+}

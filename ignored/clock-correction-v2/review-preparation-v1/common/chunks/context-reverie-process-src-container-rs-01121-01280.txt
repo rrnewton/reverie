@@ -1,0 +1,160 @@
+        self.value.as_ref().expect("provisional value is present")
+    }
+
+    /// Waits for cleanup and returns the value only after a successful exit.
+    pub fn finalize(mut self) -> Result<T, RunError> {
+        let status = self.child.wait()?;
+        if !status.success() {
+            return Err(RunError::ExitStatus(status));
+        }
+        Ok(self.value.take().expect("provisional value is present"))
+    }
+}
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            let _ = self.wait_inner();
+        }
+    }
+}
+
+#[cfg(test)]
+static WAITPID_TEST_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+#[cfg(test)]
+static WAITPID_ENTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(test)]
+static WAITPID_INTERRUPTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use nix::sys::signal::SaFlags;
+    use nix::sys::signal::SigAction;
+    use nix::sys::signal::SigHandler;
+    use nix::sys::signal::SigSet;
+    use nix::sys::signal::Signal;
+    use nix::sys::signal::sigaction;
+
+    use super::*;
+
+    #[test]
+    fn can_panic() {
+        let result = Container::new().run::<_, ()>(|| panic!());
+        assert!(
+            matches!(
+                result,
+                Err(RunError::ExitStatus(ExitStatus::Signaled(
+                    Signal::SIGABRT,
+                    _
+                )))
+            ),
+            "Expected Err(ExitStatus(Signaled(SIGABRT, _))), got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn is_new_process() {
+        let my_pid = unsafe { libc::getpid() };
+
+        assert_eq!(
+            Container::new().run(|| {
+                assert_ne!(unsafe { libc::getpid() }, 1);
+                assert_ne!(unsafe { libc::getpid() }, my_pid);
+                assert_eq!(unsafe { libc::getppid() }, my_pid);
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn pid_namespace() {
+        assert_eq!(
+            Container::new()
+                .unshare(Namespace::USER | Namespace::PID)
+                .run(|| {
+                    // New PID namespace, so this should be the init process.
+                    assert_eq!(unsafe { libc::getpid() }, 1);
+                }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn return_value() {
+        assert_eq!(Container::new().run(|| 42), Ok(42));
+
+        assert_eq!(
+            Container::new().run(|| String::from("foobar")),
+            Ok("foobar".into())
+        );
+    }
+
+    struct BlockingDrop {
+        shared: *mut SharedDropState,
+    }
+
+    impl Drop for BlockingDrop {
+        fn drop(&mut self) {
+            let shared = unsafe { &*self.shared };
+            shared.started.store(true, Ordering::Release);
+            while !shared.release.load(Ordering::Acquire) {
+                unsafe { libc::sched_yield() };
+            }
+            shared.finished.store(true, Ordering::Release);
+        }
+    }
+
+    struct SharedDropState {
+        started: AtomicBool,
+        release: AtomicBool,
+        finished: AtomicBool,
+    }
+
+    fn new_shared_drop_state() -> (*mut libc::c_void, *mut SharedDropState) {
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                std::mem::size_of::<SharedDropState>(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let shared = mapping.cast::<SharedDropState>();
+        unsafe {
+            shared.write(SharedDropState {
+                started: AtomicBool::new(false),
+                release: AtomicBool::new(false),
+                finished: AtomicBool::new(false),
+            });
+        }
+        (mapping, shared)
+    }
+
+    unsafe fn unmap_shared_drop_state(mapping: *mut libc::c_void, shared: *mut SharedDropState) {
+        unsafe {
+            std::ptr::drop_in_place(shared);
+            assert_eq!(
+                libc::munmap(mapping, std::mem::size_of::<SharedDropState>()),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_drop_publishes_result_before_cleanup_completes() {
+        let (mapping, shared) = new_shared_drop_state();
+
+        let run = Container::new()
+            .run_with_deferred_drop(|| (42, BlockingDrop { shared }))
+            .unwrap();
+        assert_eq!(run.provisional(), &42);

@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-partial-start-1-3484090.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 36ms
+             CPU time consumed: 7ms
+                   Memory peak: 2.8M (swap: 0B)

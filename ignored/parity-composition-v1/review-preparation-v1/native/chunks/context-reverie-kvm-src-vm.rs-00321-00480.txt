@@ -1,0 +1,160 @@
+                parent_tid,
+                child_tid,
+                clear_child_tid,
+                clear_sighand,
+                share_address_space,
+            } => {
+                let child = self.prepare_forked_process(
+                    executor,
+                    child_pid,
+                    child_stack,
+                    parent_tid,
+                    child_tid,
+                    clear_child_tid,
+                    clear_sighand,
+                    share_address_space,
+                    park_syscall_return,
+                    fault,
+                )?;
+
+                let child_pid = Pid::from_raw(child.pid);
+                let global_state = context.global_state.ok_or_else(|| {
+                    Error::UnexpectedVcpuExit(
+                        "forked KVM Tool process requires shared global state".to_owned(),
+                    )
+                })?;
+                let child_tool = Arc::new(T::new(child_pid, &context.config));
+                let child_thread_state = child_tool
+                    .init_thread_state(child_pid, Some((context.tid, context.thread_state)));
+                let config = context.config;
+                let subscriptions = context.subscriptions;
+                let pending_child_starts = context.pending_child_starts;
+                let raw_child_pid = child.pid;
+                let parent_pid = context.pid;
+                let lifecycle_state = global_state.clone();
+                let auto_reap = executor.child_exit_policy();
+                let completion_notifier = executor.child_completion_notifier();
+                let completion = Arc::new(Mutex::new(None));
+                let child_completion = completion.clone();
+                let (start_sender, start_receiver) = std::sync::mpsc::channel();
+                let start_gate = ChildStartGate::new(start_sender);
+                let handle = crate::failure::spawn_owned(
+                    std::thread::Builder::new()
+                        .name(format!("reverie-kvm-process-{raw_child_pid}")),
+                    (
+                        child,
+                        child_tool,
+                        child_thread_state,
+                        global_state,
+                        config,
+                        subscriptions,
+                    ),
+                    move |(
+                        mut child,
+                        child_tool,
+                        child_thread_state,
+                        global_state,
+                        config,
+                        subscriptions,
+                    )| {
+                        let start = start_receiver.recv();
+                        let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+                        let failure = match start {
+                            Ok(command) => command.failure(),
+                            Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+                                "KVM child process {raw_child_pid} lost its parent start gate"
+                            ))),
+                        };
+                        let result = if cancel {
+                            futures::executor::block_on(child.backend.finish_unstarted_tool(
+                                &mut child.executor,
+                                child_tool,
+                                (child_pid, child_pid),
+                                global_state.as_ref(),
+                                &config,
+                                child_thread_state,
+                                failure,
+                            ))
+                        } else {
+                            futures::executor::block_on(
+                                child.backend.run_static_elf_process_with_tool(
+                                    &mut child.executor,
+                                    child_pid,
+                                    // A forked process child is its own leader (tid == pid).
+                                    child_pid,
+                                    child_tool,
+                                    child_thread_state,
+                                    global_state,
+                                    &config,
+                                    &subscriptions,
+                                    false,
+                                ),
+                            )
+                        };
+                        match result {
+                            Ok((status, _, _)) => {
+                                write_tid_best_effort(
+                                    &mut child.backend.memory,
+                                    child.executor.take_clear_child_tid(),
+                                    0,
+                                );
+                                let waitable = !auto_reap.load(Ordering::SeqCst);
+                                let completion =
+                                    ChildCompletion::from_waitability(status, waitable);
+                                *child_completion
+                                    .lock()
+                                    .expect("KVM child completion lock poisoned") =
+                                    Some(completion);
+                                let _ = completion_notifier.send(raw_child_pid);
+                                futures::executor::block_on(
+                                    lifecycle_state.on_backend_child_wait_event(
+                                        BackendChildWaitEvent {
+                                            parent: parent_pid,
+                                            child: child_pid,
+                                            state: BackendChildWaitState::Exited {
+                                                status,
+                                                waitable,
+                                            },
+                                        },
+                                    ),
+                                )
+                                .map_err(|error| {
+                                    child.backend.report_tool_failure(
+                                        "child wait hook",
+                                        Error::Reverie(error),
+                                    )
+                                })?;
+                                Ok(())
+                            }
+                            Err(error) => {
+                                *child_completion
+                                    .lock()
+                                    .expect("KVM child completion lock poisoned") =
+                                    Some(ChildCompletion::Failed);
+                                let _ = completion_notifier.send(raw_child_pid);
+                                Err(error)
+                            }
+                        }
+                    },
+                );
+                let handle = match handle {
+                    Ok(handle) => handle,
+                    Err((
+                        error,
+                        (mut child, child_tool, child_thread_state, global_state, config, _),
+                    )) => {
+                        return child
+                            .backend
+                            .finish_unstarted_tool(
+                                &mut child.executor,
+                                child_tool,
+                                (child_pid, child_pid),
+                                global_state.as_ref(),
+                                &config,
+                                child_thread_state,
+                                Some(Error::HostIo(error)),
+                            )
+                            .await
+                            .map(|_| unreachable!("failed spawn completed successfully"));
+                    }
+                };

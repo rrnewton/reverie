@@ -1,0 +1,11 @@
+
+running 1 test
+test vm::exec_wait_tests::exec_wait_private_failure_interrupts_worker_tls_destructor ... FAILED
+
+failures:
+
+failures:
+    vm::exec_wait_tests::exec_wait_private_failure_interrupts_worker_tls_destructor
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 656 filtered out; finished in 5.02s
+

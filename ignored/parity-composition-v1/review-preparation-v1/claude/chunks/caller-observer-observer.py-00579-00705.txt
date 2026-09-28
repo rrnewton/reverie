@@ -1,0 +1,127 @@
+            require(launch['observer_sources'] == {name: digest(HERE / name) for name in launch['observer_sources']}, 'observer source changed before authorization')
+            check_inputs()
+            evidence_guard(out)
+            response = dict(request, phase='exec')
+            before_exec.send(connection, response, release_deadline)
+            result['payload_authorization'] = {'request': request, 'response': response,
+                                               'monotonic_ns': time.monotonic_ns(), 'first_cpu_sample': sample,
+                                               'meaning': 'Authorization sent; payload start requires actual execution evidence.'}
+            connection.close(); connection = None
+            listener.close(); listener = None
+            os.close(directory_fd); directory_fd = None
+            # The cumulative counter includes startup before the first sample.
+            deadline = launch['monotonic_ns'] / 1e9 + STARTUP_SECONDS + wall_seconds + FINAL_SECONDS
+            while process.poll() is None:
+                require(time.monotonic() < deadline, 'wrapper/service completion deadline expired')
+                evidence_guard(out)
+                if time.monotonic() >= service_wall_deadline:
+                    result['stop_reason'] = 'independent_wall_limit'
+                    kill_owned_unit(unit, result['kill_commands'])
+                    break
+                try:
+                    require((group.stat().st_dev, group.stat().st_ino) == (result['authenticated_service']['cgroup_device'], result['authenticated_service']['cgroup_inode']), 'authenticated cgroup was replaced')
+                    sample = read_usage(group, maximum_usage)
+                    require(sample['monotonic_ns'] > previous_stamp, 'CPU observation timestamps regressed')
+                    previous_stamp = sample['monotonic_ns']
+                    maximum_usage = sample['usage_usec']
+                    sample_count += 1
+                    samples.write(json.dumps(sample, sort_keys=True) + '\n'); samples.flush()
+                    if maximum_usage >= cpu_usec:
+                        result['stop_reason'] = 'aggregate_cpu_limit'
+                        result['cpu_limit_observation'] = sample
+                        kill_owned_unit(unit, result['kill_commands'])
+                        break
+                except FileNotFoundError:
+                    require(not group.exists(), 'CPU accounting disappeared while service cgroup remains')
+                    # A held systemd reference supplies final accounting after removal.
+                except OSError as error:
+                    result.setdefault('retired_cgroup_reads', []).append(retired_cgroup_accounting(
+                        error, group, reference, initial, unit, maximum_usage, deadline))
+                time.sleep(POLL_SECONDS)
+            result['wrapper_exit_code'] = process.wait(timeout=FINAL_SECONDS)
+            result['final_report'] = report_fields(report)
+            require(authenticate_report(result['final_report'], launch) == unit, 'final wrapper report identity changed')
+            final_values = unit_properties(reference, time.monotonic() + FINAL_SECONDS, final=True)
+            result['final_accounting'] = final_accounting(final_values, initial, unit, group, maximum_usage)
+            require(sample_count > 0, 'no live service CPU sample before completion')
+            if result['final_accounting']['cpu_usage_nsec'] >= cpu_usec * 1000 and result['stop_reason'] is None:
+                result['stop_reason'] = 'aggregate_cpu_limit_observed_at_completion'
+            validate_terminal_report(result['final_report'], result['wrapper_exit_code'], result['final_accounting'], result['stop_reason'])
+            require(digest(binary) == payload['binary_sha256'], 'selected payload changed during observation')
+            require(digest(helper) == launch['binary_sha256'], 'selected helper interpreter changed during observation')
+            check_inputs()
+            require(launch['observer_sources'] == {name: digest(HERE / name) for name in launch['observer_sources']}, 'observer source changed during capture')
+            require(int(result['final_report']['bytes_written']) <= log_bytes, 'stderr byte count exceeds applied limit')
+            meta_path = Path(result['final_report']['log_file'] + '.meta')
+            meta = dict(line.split('=', 1) for line in meta_path.read_text().splitlines())
+            require(meta.get('cap') == str(log_bytes) and meta.get('truncated') == result['final_report']['truncated']
+                    and meta.get('bytes_written') == result['final_report']['bytes_written'], 'retained stderr receipt disagrees with report')
+            result['stderr_receipt_sha256'] = digest(meta_path)
+            result['loaded_systemd_library_after'] = loaded_systemd_library(reference)
+            require(result['loaded_systemd_library_after'] == result['loaded_systemd_library_before'], 'loaded systemd library identity changed during observation')
+            result['accounting_complete'] = True
+            result['comparison_eligible'] = (result['wrapper_exit_code'] == 0 and result['stop_reason'] is None
+                                             and result['final_report']['truncated'] == 'false'
+                                             and result['final_report']['unit_result'] == 'success')
+    except BaseException as error:
+        result['observer_error'] = type(error).__name__ + ': ' + str(error)
+    finally:
+        # Closing the private protocol refuses any waiting helper even when the
+        # wrapper reported no unit. No authorization was sent on those paths.
+        for channel in [connection, listener]:
+            if channel is not None:
+                channel.close()
+        if directory_fd is not None:
+            os.close(directory_fd)
+        if process is not None and process.poll() is None:
+            if unit is None:
+                # Stop only our fresh wrapper session before it can submit a late
+                # service. The bound wrapper emits its complete report before
+                # systemd-run; a submitted service therefore already has a report.
+                try:
+                    os.killpg(process.pid, signal.SIGSTOP)
+                    fields = report_fields(report)
+                    if 'env.forwarded' in fields:
+                        unit = authenticate_report(fields, launch)
+                except Exception as error:
+                    result['cleanup_identity_error'] = repr(error)
+                finally:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    result['wrapper_forced_cleanup'] = True
+            if unit is not None:
+                try:
+                    kill_owned_unit(unit, result['kill_commands'])
+                except Exception as error:
+                    result['cleanup_error'] = repr(error)
+            try:
+                result['wrapper_exit_code'] = process.wait(timeout=FINAL_SECONDS)
+            except subprocess.TimeoutExpired:
+                # The direct wrapper's fresh session is ours; never target another shell/service.
+                os.killpg(process.pid, signal.SIGKILL)
+                result['wrapper_exit_code'] = process.wait(timeout=2)
+                result['wrapper_forced_cleanup'] = True
+        if process is not None and result['wrapper_exit_code'] is None:
+            result['wrapper_exit_code'] = process.poll()
+        if reference is not None and reference.held and initial is not None and group is not None and result['final_accounting'] is None:
+            try:
+                values = unit_properties(reference, time.monotonic() + FINAL_SECONDS, final=True)
+                result['refusal_final_accounting'] = final_accounting(values, initial, unit, group, maximum_usage)
+            except Exception as error:
+                result['refusal_final_accounting_error'] = repr(error)
+        if reference is not None:
+            try:
+                result['loaded_systemd_library_final_readback'] = loaded_systemd_library(reference)
+                require(result['loaded_systemd_library_final_readback'] == result.get('loaded_systemd_library_before'), 'loaded systemd library changed at cleanup')
+            except Exception as error:
+                result['library_readback_error'] = repr(error)
+                result['comparison_eligible'] = False
+            try:
+                reference.close()
+            except Exception as error:
+                result['reference_cleanup_error'] = repr(error)
+                result['comparison_eligible'] = False
+            result['systemd_calls'] = reference.calls
+        result['sample_count'] = sample_count
+        result['maximum_sampled_usage_usec'] = maximum_usage if sample_count else None
+        result['completed_monotonic_ns'] = time.monotonic_ns()
+        result['elapsed_seconds'] = (result['completed_monotonic_ns'] - launch['monotonic_ns']) / 1e9

@@ -1,0 +1,160 @@
+    // signal types as of right now. We could submit a PR for SIGPOLL/SIGIO, but
+    // until then, this is copies the currently used accessor idea.
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct sifields_sigpoll {
+        si_band: libc::c_long,
+        si_fd: libc::c_int,
+    }
+    #[repr(C)]
+    union sifields {
+        _align_pointer: *mut libc::c_void,
+        sigpoll: sifields_sigpoll,
+    }
+    #[repr(C)]
+    struct siginfo_f {
+        _siginfo_base: [libc::c_int; 3],
+        sifields: sifields,
+        padding: [libc::c_int; 24],
+    }
+
+    // These compile to no-op or unconditional runtime panic, which is good,
+    // because code not using timers continues to work.
+    assert_eq!(
+        core::mem::size_of::<siginfo_f>(),
+        core::mem::size_of_val(signal),
+    );
+    assert_eq!(
+        core::mem::align_of::<siginfo_f>(),
+        core::mem::align_of_val(signal),
+    );
+
+    unsafe {
+        (*(signal as *const _ as *const siginfo_f))
+            .sifields
+            .sigpoll
+            .si_fd
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::ClockCounter;
+    #[cfg(target_arch = "x86_64")]
+    use super::PmuConfig;
+
+    #[test]
+    fn initial_command_requests_retire_without_physical_notification() {
+        use reverie::Errno;
+        use reverie::Pid;
+
+        use super::ActiveEvent;
+        use super::EventStatus;
+        use super::InitialCommand;
+        use super::TimerEventRequest;
+        use super::TimerImpl;
+
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, true).expect("control requires a working PMU");
+        timer.fail_next_notification = Some(Errno::EIO);
+        for (request, expected) in [
+            (
+                TimerEventRequest::Precise(1),
+                ActiveEvent::Precise {
+                    clock_target: 1,
+                    offset: 0,
+                },
+            ),
+            (
+                TimerEventRequest::PreciseInstruction(4, 7),
+                ActiveEvent::Precise {
+                    clock_target: 4,
+                    offset: 7,
+                },
+            ),
+            (
+                TimerEventRequest::Imprecise(1_000_000),
+                ActiveEvent::Imprecise {
+                    clock_min: 1_000_000,
+                },
+            ),
+        ] {
+            timer.request_event(request).unwrap();
+            assert_eq!(timer.held_initial_event, Some(expected));
+            assert_eq!(timer.event, expected);
+            assert_eq!(timer.timer_status, EventStatus::Scheduled);
+            timer.finalize_requests();
+            assert!(!timer.send_artificial_signal);
+            assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
+        }
+        let retained = timer.held_initial_event;
+        assert_eq!(
+            timer.request_event(TimerEventRequest::Precise(0)),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(timer.held_initial_event, retained);
+        assert_eq!(timer.timer_status, EventStatus::Scheduled);
+        timer.observe_event();
+        assert_eq!(timer.timer_status, EventStatus::Armed);
+        timer.begin_initial_exec();
+        assert_eq!(timer.initial_command, InitialCommand::InitializingExec);
+        assert_eq!(timer.held_initial_event, None);
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        timer.begin_initial_exec();
+        assert_eq!(timer.held_initial_event, None);
+        // An internal request in backend initialization is a new held record,
+        // not permission to reactivate the request just retired at exec.
+        timer
+            .request_event(TimerEventRequest::Imprecise(9))
+            .unwrap();
+        timer.finalize_requests();
+        timer.finish_initial_exec();
+        assert_eq!(timer.initial_command, InitialCommand::Ordinary);
+        assert_eq!(timer.held_initial_event, None);
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+        assert!(!timer.send_artificial_signal);
+        assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
+        assert_eq!(
+            timer.request_event(TimerEventRequest::Precise(1)),
+            Err(Errno::EIO)
+        );
+        assert_eq!(timer.fail_next_notification, None);
+        assert_eq!(timer.timer_status, EventStatus::Cancelled);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn amd_epyc_9d85_uses_reduced_skid_margin() {
+        let config = PmuConfig::from_family_model(0x1A, 0x11);
+        assert_eq!(config.raw_rcb_event(), 0x5100d1);
+        assert_eq!(config.skid_margin(), 1_000);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn unknown_cpu_is_unavailable_to_fallible_in_guest_clock() {
+        assert_eq!(PmuConfig::try_from_family_model(0x06, 0xCF), None);
+        assert_eq!(PmuConfig::try_from_family_model(0xFF, 0x01), None);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn other_amd_cpus_keep_default_skid_margin() {
+        for (family, model) in [(0x17, 0x71), (0x19, 0x61), (0x1A, 0x20)] {
+            let config = PmuConfig::from_family_model(family, model);
+            assert_eq!(config.raw_rcb_event(), 0x5100d1);
+            assert_eq!(config.skid_margin(), 10_000);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn explicit_skid_margin_overrides_processor_default() {
+        let config = PmuConfig::from_family_model(0x1A, 0x11).with_skid_margin_override(500);
+
+        assert_eq!(config.raw_rcb_event(), 0x5100d1);
+        assert_eq!(config.skid_margin(), 500);

@@ -1,0 +1,56 @@
+{
+  "raw_status": 0,
+  "elapsed_seconds": 0.12892876099795103,
+  "stream_bytes": {
+    "stdout": 3093,
+    "stderr": 726
+  },
+  "refusal": null,
+  "terminal_service": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=[not set]\n",
+  "source_after": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 39527,
+      "sha256": "6073f6133d97cf80bdcc2dadd6a25904e72d889e69cc1501740796d32523b345"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    },
+    "reverie-kvm/src/clock.rs": {
+      "bytes": 34623,
+      "sha256": "f99f439f38ba554965dc06484b0a4c01923c3c720fa960b5dd6895d16f46415d"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 355161,
+      "sha256": "b1e1a6e24ed77129a39b68ef897818ae550c27f238dcb9c08282c1f8d9abc65e"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 213900,
+      "sha256": "3deaeabdecb157d1f5a4358eb8820bc6c0d41ebb9a8a2655146e270f54f102ed"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "bytes": 118772,
+      "sha256": "ab7537c4e07b2466b036066b1b92d9060d6e248f7c17775c2dd1e34a6f16f606"
+    },
+    "reverie-kvm/src/cpuid_runtime_tests.rs": {
+      "bytes": 5963,
+      "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 28158,
+      "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"
+    },
+    "Cargo.lock": {
+      "bytes": 67056,
+      "sha256": "0a5ecdf9fc94cf7eddad15c0ced7c61ed9f4db08a47f5e1a668d5a7f663c8419"
+    }
+  }
+}

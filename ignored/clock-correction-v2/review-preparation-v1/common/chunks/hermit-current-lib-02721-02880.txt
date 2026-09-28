@@ -1,0 +1,160 @@
+                    Syscall::SetTidAddress(s) => self.handle_set_tid_address(guest, s).await,
+                    _ => unreachable!("set_tid_address unexpectedly lost its typed variant"),
+                }
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-2223): Review observing
+            // the robust-list registration without changing its pass-through
+            // classification. This is still a pass-through — Linux owns the
+            // registration and supplies its result — but Detcore remembers the
+            // head address so thread exit can replay `exit_robust_list()`
+            // against its own futex waiter pool.
+            SyscallClassification::PassThrough if call.number() == Sysno::set_robust_list => {
+                match call {
+                    Syscall::SetRobustList(s) => self.handle_set_robust_list(guest, s).await,
+                    _ => self.passthrough(guest, call).await,
+                }
+            }
+            // faccessat2 and fchmodat2 are untyped in the pinned Reverie revision; the
+            // reviewed classification table routes them, and every other reviewed
+            // PassThrough syscall, through the blanket arm below.
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-644): Keep dispatch aligned with the reviewed classification.
+            SyscallClassification::PassThrough => self.passthrough(guest, call).await,
+            SyscallClassification::Unsupported => {
+                self.handle_unsupported_syscall(guest, call, dettid, panic_on_unsupported_syscalls)
+                    .await
+            }
+        };
+
+        detlog!(
+            event = crate::detlog::DetLogEvent::SyscallResult {
+                finished_syscall_number: new_count,
+            };
+            "[syscall][detcore, dtid {}] finish syscall #{}: {} = {:?}",
+            dettid,
+            new_count,
+            Self::display_syscall_finished(&call, &guest.memory()),
+            res
+        );
+
+        // Same guest-logical-control point that already anchors the stack/heap hashes: the
+        // syscall is complete and its result written back, so the guest logically has control.
+        // Reading registers is itself backend work, so keep the disabled path inert.  In
+        // particular, a run that does not request register evidence must not be perturbed by
+        // collecting data that will immediately be discarded.
+        if self.cfg.detlog_regs {
+            let control_point_regs = guest.regs().await;
+            let regs_seq = guest.thread_state().stats.syscall_count;
+            self.detlog_registers(guest, &control_point_regs, regs_seq);
+        }
+
+        // brk is PassThrough, so nothing else records where the guest's heap is.
+        // Both brk(NULL) and brk(addr) return the break in effect afterwards.
+        if let Syscall::Brk(_) = &call
+            && let Ok(brk) = res
+            && brk > 0
+        {
+            guest
+                .thread_state()
+                .memory_metadata
+                .lock()
+                .expect("memory metadata mutex poisoned")
+                .observe_brk(brk as u64);
+        }
+
+        self.detlog_memory_maps(guest)?;
+        // Same control point again, for the bytes this syscall moved through a guest buffer.
+        // Unlike the two mapping hashes above, the extent comes from the syscall's OWN
+        // arguments, so it does not matter whether the buffer lives on the stack, in the brk
+        // heap, in BSS or in an anonymous mmap -- the last two of which neither mapping hash
+        // can see. Only successful calls moved anything.
+        if let Ok(ret) = &res
+            && self.cfg.detlog_io_buffers
+        {
+            io_buffers::detlog_io_buffers(guest, &call, *ret, dettid)?;
+        }
+
+        if sequentialize_threads && self.cfg.should_trace_schedevent() {
+            trace_schedevent(
+                guest,
+                with_guest_time(
+                    guest,
+                    SchedEvent::syscall(dettid, call.number(), SyscallPhase::Posthook),
+                ),
+                true,
+            )
+            .await;
+        }
+
+        self.post_handler_hook(guest).await;
+
+        // Defense-in-depth: unless the backend already owns this guarantee,
+        // force the syscall-clobbered registers (%rcx/%r11 on x86-64) to
+        // deterministic values before returning to the guest.
+        if !self.cfg.syscall_clobbers_virtualized_by_backend {
+            self.canonicalize_syscall_clobbers(guest).await;
+        }
+
+        res
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        tid: Tid,
+        global_state: &G,
+        mut thread_state: Self::ThreadState,
+        exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        let dettid = thread_state.dettid;
+        debug!(
+            "[detcore, dtid {}] thread exit hook, deregistering from scheduler.",
+            dettid
+        );
+        // Close the final in-progress timeslice so this thread contributes its
+        // last (partial) slice to the run report, even if it never exhausted a
+        // full slice.
+        let now = thread_state.thread_logical_time.as_nanos();
+        thread_state.stats.close_final_timeslice(now);
+        // Reverie invokes this callback while the backend still owns the exit
+        // event, before the guest parent can consume it with wait. Ptrace also
+        // guarantees that the process leader exits after the other threads, so
+        // the final published aggregate is complete when wait returns.
+        // DETERMINISTIC RECOVERY (TODO-HUMAN-REVIEW(PR-1147)). `ThreadState::detpid`
+        // is `Option` and starts as `None` ("Initialized later" at the clone site),
+        // so a thread that reaches the exit hook before its per-thread identity is
+        // populated used to `.expect()` here. That panic fires inside a Reverie
+        // teardown callback, while the backend still owns the exit event, which is
+        // the worst place to abort: it can wedge the supervisor rather than fail one
+        // thread. Fall back to the PROCESS-level `self.detpid`, which is
+        // non-optional and preserves the identity source selected for this
+        // backend: virtual for the current DBT ABI, physical for ABI v1. Warn so
+        // the exceptional window is observable instead of silently papered over.
+        //
+        // CORRECTED BY #2348, and stated rather than quietly dropped: the normal
+        // current-ABI DBT path pre-populates `thread_state.detpid` with the
+        // client-published virtual process identity, so thread start and exit
+        // agree on that value. This recovery is only for a thread that exits
+        // before that initialization. In that exceptional window thread start
+        // would fall back to `guest.pid()` (the physical host pid for `DbtGuest`),
+        // while this exit path uses `self.detpid`. ABI v1 also intentionally keeps
+        // physical callback identities. The warning makes either compatibility
+        // or recovery path observable; this comment does not claim those fallback
+        // identities are virtual or independently deterministic.
+        let (detpid, used_process_detpid) =
+            select_thread_exit_detpid(thread_state.detpid, self.detpid);
+        if used_process_detpid {
+            tracing::warn!(
+                "[detcore, dtid {}] thread exited before its per-thread detpid was \
+                 initialized; falling back to the process detpid {}",
+                dettid,
+                self.detpid
+            );
+        }
+        if dettid == detpid {
+            thread_state.record_exited_child_process_cpu_time(detpid);
+        } else {
+            thread_state.account_process_cpu_time();
+        }
+        let mm_id = thread_state.mm_id;
+        let exit_signal = match &exit_status {

@@ -1,0 +1,12 @@
+{
+  "expected": [
+    "vm::tests::worker_failure_publication_recovers_poisoned_state"
+  ],
+  "succeeded": [
+    "vm::tests::worker_failure_publication_recovers_poisoned_state"
+  ],
+  "raw_status": 0,
+  "ignored": 0,
+  "failed": 0,
+  "source_unchanged": true
+}

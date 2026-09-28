@@ -1,0 +1,197 @@
+
+target/release/deps/native_entry_signal-3994b80d7653b62e:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000006a870 <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_>:
+   6a870:	55                   	push   %rbp
+   6a871:	41 56                	push   %r14
+   6a873:	53                   	push   %rbx
+   6a874:	48 81 ec 40 01 00 00 	sub    $0x140,%rsp
+   6a87b:	48 8b 07             	mov    (%rdi),%rax
+   6a87e:	48 8b 18             	mov    (%rax),%rbx
+   6a881:	48 c7 00 00 00 00 00 	movq   $0x0,(%rax)
+   6a888:	48 85 db             	test   %rbx,%rbx
+   6a88b:	0f 84 6a 01 00 00    	je     6a9fb <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0x18b>
+   6a891:	0f 57 c0             	xorps  %xmm0,%xmm0
+   6a894:	0f 29 84 24 20 01 00 	movaps %xmm0,0x120(%rsp)
+   6a89b:	00 
+   6a89c:	0f 29 84 24 10 01 00 	movaps %xmm0,0x110(%rsp)
+   6a8a3:	00 
+   6a8a4:	0f 29 84 24 00 01 00 	movaps %xmm0,0x100(%rsp)
+   6a8ab:	00 
+   6a8ac:	0f 29 84 24 f0 00 00 	movaps %xmm0,0xf0(%rsp)
+   6a8b3:	00 
+   6a8b4:	0f 29 84 24 e0 00 00 	movaps %xmm0,0xe0(%rsp)
+   6a8bb:	00 
+   6a8bc:	0f 29 84 24 d0 00 00 	movaps %xmm0,0xd0(%rsp)
+   6a8c3:	00 
+   6a8c4:	0f 29 84 24 c0 00 00 	movaps %xmm0,0xc0(%rsp)
+   6a8cb:	00 
+   6a8cc:	0f 29 84 24 b0 00 00 	movaps %xmm0,0xb0(%rsp)
+   6a8d3:	00 
+   6a8d4:	0f 29 84 24 a0 00 00 	movaps %xmm0,0xa0(%rsp)
+   6a8db:	00 
+   6a8dc:	48 c7 84 24 30 01 00 	movq   $0x0,0x130(%rsp)
+   6a8e3:	00 00 00 00 00 
+   6a8e8:	48 8d 94 24 a0 00 00 	lea    0xa0(%rsp),%rdx
+   6a8ef:	00 
+   6a8f0:	bf 40 00 00 00       	mov    $0x40,%edi
+   6a8f5:	31 f6                	xor    %esi,%esi
+   6a8f7:	ff 15 db 45 0a 00    	call   *0xa45db(%rip)        # 10eed8 <sigaction@GLIBC_2.2.5>
+   6a8fd:	85 c0                	test   %eax,%eax
+   6a8ff:	74 3a                	je     6a93b <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0xcb>
+   6a901:	ff 15 69 44 0a 00    	call   *0xa4469(%rip)        # 10ed70 <__errno_location@GLIBC_2.2.5>
+   6a907:	44 8b 30             	mov    (%rax),%r14d
+   6a90a:	48 8b 05 67 44 0a 00 	mov    0xa4467(%rip),%rax        # 10ed78 <_DYNAMIC+0x530>
+   6a911:	48 8b 00             	mov    (%rax),%rax
+   6a914:	bd 01 00 00 00       	mov    $0x1,%ebp
+   6a919:	48 8d 0d 50 c2 09 00 	lea    0x9c250(%rip),%rcx        # 106b70 <anon.343efffef3388927db01e80b3080d928.28.llvm.16446653963734720516>
+   6a920:	48 39 c8             	cmp    %rcx,%rax
+   6a923:	0f 84 b3 00 00 00    	je     6a9dc <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0x16c>
+   6a929:	48 8d 3d 40 c2 09 00 	lea    0x9c240(%rip),%rdi        # 106b70 <anon.343efffef3388927db01e80b3080d928.28.llvm.16446653963734720516>
+   6a930:	ff 15 4a 44 0a 00    	call   *0xa444a(%rip)        # 10ed80 <_DYNAMIC+0x538>
+   6a936:	e9 a1 00 00 00       	jmp    6a9dc <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0x16c>
+   6a93b:	bd 01 00 00 00       	mov    $0x1,%ebp
+   6a940:	48 83 bc 24 a0 00 00 	cmpq   $0x0,0xa0(%rsp)
+   6a947:	00 00 
+   6a949:	74 0b                	je     6a956 <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0xe6>
+   6a94b:	41 be 10 00 00 00    	mov    $0x10,%r14d
+   6a951:	e9 86 00 00 00       	jmp    6a9dc <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0x16c>
+   6a956:	48 8d 7c 24 10       	lea    0x10(%rsp),%rdi
+   6a95b:	0f 57 c0             	xorps  %xmm0,%xmm0
+   6a95e:	0f 11 84 24 90 00 00 	movups %xmm0,0x90(%rsp)
+   6a965:	00 
+   6a966:	0f 11 84 24 80 00 00 	movups %xmm0,0x80(%rsp)
+   6a96d:	00 
+   6a96e:	0f 11 44 24 70       	movups %xmm0,0x70(%rsp)
+   6a973:	0f 11 44 24 60       	movups %xmm0,0x60(%rsp)
+   6a978:	0f 11 44 24 50       	movups %xmm0,0x50(%rsp)
+   6a97d:	0f 11 44 24 40       	movups %xmm0,0x40(%rsp)
+   6a982:	0f 11 44 24 30       	movups %xmm0,0x30(%rsp)
+   6a987:	0f 11 44 24 20       	movups %xmm0,0x20(%rsp)
+   6a98c:	0f 11 44 24 10       	movups %xmm0,0x10(%rsp)
+   6a991:	48 8d 05 98 0d 00 00 	lea    0xd98(%rip),%rax        # 6b730 <_RNvNtCsbMeUNinq1xo_11reverie_kvm2vm22interrupt_guest_worker>
+   6a998:	48 89 44 24 08       	mov    %rax,0x8(%rsp)
+   6a99d:	ff 15 85 44 0a 00    	call   *0xa4485(%rip)        # 10ee28 <sigemptyset@GLIBC_2.2.5>
+   6a9a3:	48 8d 74 24 08       	lea    0x8(%rsp),%rsi
+   6a9a8:	bf 40 00 00 00       	mov    $0x40,%edi
+   6a9ad:	31 d2                	xor    %edx,%edx
+   6a9af:	ff 15 23 45 0a 00    	call   *0xa4523(%rip)        # 10eed8 <sigaction@GLIBC_2.2.5>
+   6a9b5:	85 c0                	test   %eax,%eax
+   6a9b7:	74 39                	je     6a9f2 <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0x182>
+   6a9b9:	ff 15 b1 43 0a 00    	call   *0xa43b1(%rip)        # 10ed70 <__errno_location@GLIBC_2.2.5>
+   6a9bf:	44 8b 30             	mov    (%rax),%r14d
+   6a9c2:	48 8b 05 af 43 0a 00 	mov    0xa43af(%rip),%rax        # 10ed78 <_DYNAMIC+0x530>
+   6a9c9:	48 8b 00             	mov    (%rax),%rax
+   6a9cc:	48 8d 0d 9d c1 09 00 	lea    0x9c19d(%rip),%rcx        # 106b70 <anon.343efffef3388927db01e80b3080d928.28.llvm.16446653963734720516>
+   6a9d3:	48 39 c8             	cmp    %rcx,%rax
+   6a9d6:	0f 85 4d ff ff ff    	jne    6a929 <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0xb9>
+   6a9dc:	89 2b                	mov    %ebp,(%rbx)
+   6a9de:	44 89 73 04          	mov    %r14d,0x4(%rbx)
+   6a9e2:	48 89 43 08          	mov    %rax,0x8(%rbx)
+   6a9e6:	48 81 c4 40 01 00 00 	add    $0x140,%rsp
+   6a9ed:	5b                   	pop    %rbx
+   6a9ee:	41 5e                	pop    %r14
+   6a9f0:	5d                   	pop    %rbp
+   6a9f1:	c3                   	ret    
+   6a9f2:	48 8b 44 24 08       	mov    0x8(%rsp),%rax
+   6a9f7:	31 ed                	xor    %ebp,%ebp
+   6a9f9:	eb e1                	jmp    6a9dc <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_+0x16c>
+   6a9fb:	48 8d 3d 56 c1 09 00 	lea    0x9c156(%rip),%rdi        # 106b58 <anon.343efffef3388927db01e80b3080d928.6.llvm.16446653963734720516+0x18>
+   6aa02:	ff 15 f0 41 0a 00    	call   *0xa41f0(%rip)        # 10ebf8 <_DYNAMIC+0x3b0>
+   6aa08:	cc                   	int3   
+   6aa09:	cc                   	int3   
+   6aa0a:	cc                   	int3   
+   6aa0b:	cc                   	int3   
+   6aa0c:	cc                   	int3   
+   6aa0d:	cc                   	int3   
+   6aa0e:	cc                   	int3   
+   6aa0f:	cc                   	int3   
+
+000000000006aa10 <_RNSNvYNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtBd_4Once15call_once_forceNCINvMNtBf_9once_lockINtB1g_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1f_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0INtNtNtB1Q_3ops8function6FnOnceTRNtBd_9OnceStateEE9call_once6vtableB37_>:
+   6aa10:	50                   	push   %rax
+   6aa11:	48 8b 07             	mov    (%rdi),%rax
+   6aa14:	48 89 04 24          	mov    %rax,(%rsp)
+   6aa18:	48 89 e7             	mov    %rsp,%rdi
+   6aa1b:	e8 50 fe ff ff       	call   6a870 <_RNCINvMs0_NtNtCsa2m0ZrbF74z_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB1a_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zE0E0B32_>
+   6aa20:	58                   	pop    %rax
+   6aa21:	c3                   	ret    
+   6aa22:	cc                   	int3   
+   6aa23:	cc                   	int3   
+   6aa24:	cc                   	int3   
+   6aa25:	cc                   	int3   
+   6aa26:	cc                   	int3   
+   6aa27:	cc                   	int3   
+   6aa28:	cc                   	int3   
+   6aa29:	cc                   	int3   
+   6aa2a:	cc                   	int3   
+   6aa2b:	cc                   	int3   
+   6aa2c:	cc                   	int3   
+   6aa2d:	cc                   	int3   
+   6aa2e:	cc                   	int3   
+   6aa2f:	cc                   	int3   
+
+000000000006aa30 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block>:
+   6aa30:	41 57                	push   %r15
+   6aa32:	41 56                	push   %r14
+   6aa34:	41 55                	push   %r13
+   6aa36:	41 54                	push   %r12
+   6aa38:	53                   	push   %rbx
+   6aa39:	48 81 ec 60 03 00 00 	sub    $0x360,%rsp
+   6aa40:	48 89 fb             	mov    %rdi,%rbx
+   6aa43:	8b 05 d7 61 0a 00    	mov    0xa61d7(%rip),%eax        # 110c20 <_RNvNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler7INSTALL+0x10>
+   6aa49:	85 c0                	test   %eax,%eax
+   6aa4b:	75 44                	jne    6aa91 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x61>
+   6aa4d:	83 3d bc 61 0a 00 01 	cmpl   $0x1,0xa61bc(%rip)        # 110c10 <_RNvNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler7INSTALL>
+   6aa54:	75 49                	jne    6aa9f <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x6f>
+   6aa56:	48 63 05 b7 61 0a 00 	movslq 0xa61b7(%rip),%rax        # 110c14 <_RNvNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler7INSTALL+0x4>
+   6aa5d:	48 8b 0d 14 43 0a 00 	mov    0xa4314(%rip),%rcx        # 10ed78 <_DYNAMIC+0x530>
+   6aa64:	48 8b 09             	mov    (%rcx),%rcx
+   6aa67:	48 8d 15 02 c1 09 00 	lea    0x9c102(%rip),%rdx        # 106b70 <anon.343efffef3388927db01e80b3080d928.28.llvm.16446653963734720516>
+   6aa6e:	48 39 d1             	cmp    %rdx,%rcx
+   6aa71:	0f 85 12 06 00 00    	jne    6b089 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x659>
+   6aa77:	48 c1 e0 20          	shl    $0x20,%rax
+   6aa7b:	48 83 c8 02          	or     $0x2,%rax
+   6aa7f:	4c 8d 35 5f f4 fd ff 	lea    -0x20ba1(%rip),%r14        # 49ee5 <anon.343efffef3388927db01e80b3080d928.56.llvm.16446653963734720516+0x5a>
+   6aa86:	41 bf 16 00 00 00    	mov    $0x16,%r15d
+   6aa8c:	e9 16 02 00 00       	jmp    6aca7 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x277>
+   6aa91:	e8 63 f8 ff ff       	call   6a2f9 <_RINvMNtNtCsa2m0ZrbF74z_3std4sync9once_lockINtB3_8OnceLockINtNtCsayI02cGi06u_4core6result6ResultjlEE10initializeNCINvB2_11get_or_initNCNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler0E0zEB2e_>
+   6aa96:	83 3d 73 61 0a 00 01 	cmpl   $0x1,0xa6173(%rip)        # 110c10 <_RNvNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler7INSTALL>
+   6aa9d:	74 b7                	je     6aa56 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x26>
+   6aa9f:	4c 8b 35 72 61 0a 00 	mov    0xa6172(%rip),%r14        # 110c18 <_RNvNvNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signal15install_handler7INSTALL+0x8>
+   6aaa6:	0f 57 c0             	xorps  %xmm0,%xmm0
+   6aaa9:	0f 29 84 24 80 00 00 	movaps %xmm0,0x80(%rsp)
+   6aab0:	00 
+   6aab1:	0f 29 44 24 70       	movaps %xmm0,0x70(%rsp)
+   6aab6:	0f 29 44 24 60       	movaps %xmm0,0x60(%rsp)
+   6aabb:	0f 29 44 24 50       	movaps %xmm0,0x50(%rsp)
+   6aac0:	0f 29 44 24 40       	movaps %xmm0,0x40(%rsp)
+   6aac5:	0f 29 44 24 30       	movaps %xmm0,0x30(%rsp)
+   6aaca:	0f 29 44 24 20       	movaps %xmm0,0x20(%rsp)
+   6aacf:	0f 29 44 24 10       	movaps %xmm0,0x10(%rsp)
+   6aad4:	0f 29 04 24          	movaps %xmm0,(%rsp)
+   6aad8:	48 c7 84 24 90 00 00 	movq   $0x0,0x90(%rsp)
+   6aadf:	00 00 00 00 00 
+   6aae4:	48 89 e2             	mov    %rsp,%rdx
+   6aae7:	bf 40 00 00 00       	mov    $0x40,%edi
+   6aaec:	31 f6                	xor    %esi,%esi
+   6aaee:	ff 15 e4 43 0a 00    	call   *0xa43e4(%rip)        # 10eed8 <sigaction@GLIBC_2.2.5>
+   6aaf4:	85 c0                	test   %eax,%eax
+   6aaf6:	74 3d                	je     6ab35 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x105>
+   6aaf8:	ff 15 72 42 0a 00    	call   *0xa4272(%rip)        # 10ed70 <__errno_location@GLIBC_2.2.5>
+   6aafe:	48 63 00             	movslq (%rax),%rax
+   6ab01:	48 8b 0d 70 42 0a 00 	mov    0xa4270(%rip),%rcx        # 10ed78 <_DYNAMIC+0x530>
+   6ab08:	48 8b 09             	mov    (%rcx),%rcx
+   6ab0b:	48 8d 15 5e c0 09 00 	lea    0x9c05e(%rip),%rdx        # 106b70 <anon.343efffef3388927db01e80b3080d928.28.llvm.16446653963734720516>
+   6ab12:	48 39 d1             	cmp    %rdx,%rcx
+   6ab15:	0f 85 86 05 00 00    	jne    6b0a1 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x671>
+   6ab1b:	48 c1 e0 20          	shl    $0x20,%rax
+   6ab1f:	48 83 c8 02          	or     $0x2,%rax
+   6ab23:	4c 8d 35 a1 f3 fd ff 	lea    -0x20c5f(%rip),%r14        # 49ecb <anon.343efffef3388927db01e80b3080d928.56.llvm.16446653963734720516+0x40>
+   6ab2a:	41 bf 1a 00 00 00    	mov    $0x1a,%r15d
+   6ab30:	e9 72 01 00 00       	jmp    6aca7 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x277>
+   6ab35:	4c 39 34 24          	cmp    %r14,(%rsp)
+   6ab39:	0f 85 48 01 00 00    	jne    6ac87 <_RNvMNtNtCsbMeUNinq1xo_11reverie_kvm5entry6signalNtB2_4Mask5block+0x257>
+   6ab3f:	0f                   	.byte 0xf

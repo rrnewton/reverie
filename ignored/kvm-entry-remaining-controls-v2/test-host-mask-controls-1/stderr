@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-host-mask-controls-1-3405532.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 14ms
+             CPU time consumed: 12ms
+                   Memory peak: 5.1M (swap: 0B)

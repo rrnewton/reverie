@@ -1,0 +1,6 @@
+Running as unit: kvm-panic-consumer-test-partial-start-1-3949782.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 210ms
+             CPU time consumed: 9ms
+                   Memory peak: 2.3M (swap: 0B)

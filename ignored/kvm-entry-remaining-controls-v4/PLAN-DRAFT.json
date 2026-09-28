@@ -1,0 +1,964 @@
+{
+  "status": "draft only: lint source authors active",
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "dispatch_base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "source_paths": [
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/entry/owner.rs",
+    "reverie-kvm/src/entry/signal.rs",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/clock.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/memory.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs",
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/bootstrap.rs",
+    "reverie-kvm/src/executor.rs",
+    "Cargo.lock",
+    "reverie-kvm/src/failure/owned_future.rs",
+    "reverie-kvm/src/vm/worker_panic_tests.rs",
+    "reverie-kvm/src/runtime/failure_tests.rs",
+    "reverie-kvm/src/failure/tool_panics.rs",
+    "reverie-kvm/src/failure/tool_panics_tests.rs",
+    "reverie-kvm/src/runtime/callback_completion_tests.rs",
+    "reverie-kvm/src/runtime/consuming_panic_tests.rs",
+    "reverie-kvm/src/vm/public_tool_panic_tests.rs",
+    "reverie-kvm/src/vm/instruction_callback_panic_tests.rs",
+    "reverie-kvm/src/entry/driver.rs",
+    "reverie-kvm/src/entry/driver/tests.rs",
+    "reverie-kvm/src/runtime/entry_owner_tests.rs",
+    "reverie-kvm/src/vm/entry_owner_tests.rs",
+    "reverie-kvm/src/vm/exec_wait_tests.rs",
+    "reverie-kvm/README.md",
+    "reverie-kvm/src/vm/worker_join.rs",
+    "reverie-kvm/src/parked_signal_runtime.rs",
+    "reverie-kvm/src/runtime/entry_operation_tests.rs",
+    "reverie-kvm/src/vm/entry_public_tests.rs",
+    "reverie-kvm/src/vm/entry_main_tests.rs",
+    "reverie-kvm/src/vm/entry_spawn_tests.rs",
+    "reverie-kvm/src/vm/entry_hypercall_tests.rs",
+    "reverie-kvm/src/vm/entry_race_tests.rs",
+    "reverie-kvm/src/vm/entry_multi_owner_tests.rs",
+    "reverie-kvm/src/vm/entry_action_tests.rs",
+    "reverie-kvm/src/entry/cleanup_tests.rs",
+    "reverie-kvm/src/vm/entry_wait_tests.rs",
+    "reverie-kvm/src/vm/entry_eintr_tests.rs"
+  ],
+  "format_paths": [
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/failure/owned_future.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/vm/worker_panic_tests.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/failure/tool_panics.rs",
+    "reverie-kvm/src/failure/tool_panics_tests.rs",
+    "reverie-kvm/src/runtime/callback_completion_tests.rs",
+    "reverie-kvm/src/runtime/consuming_panic_tests.rs",
+    "reverie-kvm/src/vm/public_tool_panic_tests.rs",
+    "reverie-kvm/src/vm/instruction_callback_panic_tests.rs",
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/entry/owner.rs",
+    "reverie-kvm/src/entry/driver.rs",
+    "reverie-kvm/src/entry/driver/tests.rs",
+    "reverie-kvm/src/runtime/entry_owner_tests.rs",
+    "reverie-kvm/src/vm/entry_owner_tests.rs",
+    "reverie-kvm/src/vm/exec_wait_tests.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/vm/worker_join.rs",
+    "reverie-kvm/src/parked_signal_runtime.rs",
+    "reverie-kvm/src/runtime/entry_operation_tests.rs",
+    "reverie-kvm/src/vm/entry_public_tests.rs",
+    "reverie-kvm/src/vm/entry_main_tests.rs",
+    "reverie-kvm/src/vm/entry_spawn_tests.rs",
+    "reverie-kvm/src/vm/entry_hypercall_tests.rs",
+    "reverie-kvm/src/vm/entry_race_tests.rs",
+    "reverie-kvm/src/vm/entry_multi_owner_tests.rs",
+    "reverie-kvm/src/vm/entry_action_tests.rs",
+    "reverie-kvm/src/entry/cleanup_tests.rs",
+    "reverie-kvm/src/vm/entry_wait_tests.rs",
+    "reverie-kvm/src/vm/entry_eintr_tests.rs",
+    "reverie-kvm/src/clock.rs",
+    "reverie-kvm/src/entry/signal.rs",
+    "reverie-kvm/src/memory.rs"
+  ],
+  "tests": [
+    {
+      "phase": "test-multi-owner-entry-1",
+      "selector": "vm::tests::entry_multi_owner_tests::public_elf_owner_a_publishes_after_real_peer_observation",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::entry_multi_owner_tests::public_elf_owner_a_publishes_after_real_peer_observation"
+      ]
+    },
+    {
+      "phase": "test-multi-owner-entry-2",
+      "selector": "vm::tests::entry_multi_owner_tests::public_elf_independent_c_publication_releases_peer_before_owner_a",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::entry_multi_owner_tests::public_elf_independent_c_publication_releases_peer_before_owner_a"
+      ]
+    },
+    {
+      "phase": "test-multi-owner-entry-3",
+      "selector": "vm::tests::entry_multi_owner_tests::public_elf_peer_b_keeps_own_error_before_owner_a_publication",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::entry_multi_owner_tests::public_elf_peer_b_keeps_own_error_before_owner_a_publication"
+      ]
+    },
+    {
+      "phase": "test-multi-owner-entry-4",
+      "selector": "vm::tests::entry_multi_owner_tests::public_elf_multi_owner_healthy_callbacks_complete_once",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::entry_multi_owner_tests::public_elf_multi_owner_healthy_callbacks_complete_once"
+      ]
+    },
+    {
+      "phase": "test-owned-future-1",
+      "selector": "failure::owned_future::tests::",
+      "exact": false,
+      "expected_passed": 4,
+      "expected_names": [
+        "failure::owned_future::tests::pending_then_ready_keeps_allocation_and_drops_once",
+        "failure::owned_future::tests::poll_panic_is_not_repolled_and_drop_panic_is_retained_separately",
+        "failure::owned_future::tests::returned_typed_error_survives_a_destructor_panic",
+        "failure::owned_future::tests::send_non_sync_state_can_cross_a_pending_await"
+      ]
+    },
+    {
+      "phase": "test-panic-drain-1",
+      "selector": "runtime::unstarted_cleanup_panic_tests::",
+      "exact": false,
+      "expected_passed": 3,
+      "expected_names": [
+        "runtime::unstarted_cleanup_panic_tests::poll_and_drop_panics_preserve_pending_and_later_consumers",
+        "runtime::unstarted_cleanup_panic_tests::returned_error_and_drop_panic_preserve_later_real_errors",
+        "runtime::unstarted_cleanup_panic_tests::only_bare_abort_is_ignored_and_empty_drain_has_an_output"
+      ]
+    },
+    {
+      "phase": "test-handler-scratch-1",
+      "selector": "runtime::handler_scratch_tests::",
+      "exact": false,
+      "expected_passed": 2,
+      "expected_names": [
+        "runtime::handler_scratch_tests::injected_error_survives_scratch_failure_after_callback_destruction",
+        "runtime::handler_scratch_tests::ordinary_callback_value_requires_successful_scratch_cleanup"
+      ]
+    },
+    {
+      "phase": "test-injected-boundary-1",
+      "selector": "vm::tests::injected_boundary_error_defers_each_child_until_callback_destruction",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::injected_boundary_error_defers_each_child_until_callback_destruction"
+      ]
+    },
+    {
+      "phase": "test-worker-panic-1",
+      "selector": "vm::worker_panic_tests::",
+      "exact": false,
+      "expected_passed": 5,
+      "expected_names": [
+        "vm::worker_panic_tests::caught_callback_drop_panic_drains_pending_tool_hook_before_worker_retirement",
+        "vm::worker_panic_tests::joined_worker_retains_cleanup_poll_and_drop_panics_and_later_typed_errors",
+        "vm::worker_panic_tests::discard_cancelled_worker_preserves_reported_cause_and_all_panic_payloads",
+        "vm::worker_panic_tests::unexpected_worker_preserves_prior_and_cross_consumer_payload_order",
+        "vm::worker_panic_tests::failed_spawn_transfer_guard_preserves_pending_payloads_on_future_drop"
+      ]
+    },
+    {
+      "phase": "test-normal-cleanup-1",
+      "selector": "runtime::tests::unstarted_cleanup_retains_pending_future_and_real_errors",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::tests::unstarted_cleanup_retains_pending_future_and_real_errors"
+      ]
+    },
+    {
+      "phase": "test-handler-destruction-1",
+      "selector": "runtime::tests::handler_failure_destroys_owned_callback_before_scope_acknowledgement",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::tests::handler_failure_destroys_owned_callback_before_scope_acknowledgement"
+      ]
+    },
+    {
+      "phase": "test-caught-worker-1",
+      "selector": "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join"
+      ]
+    },
+    {
+      "phase": "test-action-preparation-1",
+      "selector": "vm::tests::action_parent_captures_yield_for_close_and_keep_stop_and_validation",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::action_parent_captures_yield_for_close_and_keep_stop_and_validation"
+      ]
+    },
+    {
+      "phase": "test-boundary-1",
+      "selector": "vm::tests::completed_syscall_boundary_accepts_only_the_two_transport_rip_forms",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::completed_syscall_boundary_accepts_only_the_two_transport_rip_forms"
+      ]
+    },
+    {
+      "phase": "test-boundary-cleanup-1",
+      "selector": "vm::tests::failed_boundary_finalization_cancels_and_joins_each_typed_child",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::failed_boundary_finalization_cancels_and_joins_each_typed_child"
+      ]
+    },
+    {
+      "phase": "test-fork-cleanup-1",
+      "selector": "vm::tests::production_wrapper_cleans_fork_after_boundary_restore_failure",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::production_wrapper_cleans_fork_after_boundary_restore_failure"
+      ]
+    },
+    {
+      "phase": "test-thread-cleanup-1",
+      "selector": "vm::tests::production_wrapper_cleans_tool_thread_after_boundary_restore_failure",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::production_wrapper_cleans_tool_thread_after_boundary_restore_failure"
+      ]
+    },
+    {
+      "phase": "test-partial-start-1",
+      "selector": "vm::tests::partial_start_failure_keeps_later_child_reachable_for_cleanup",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::partial_start_failure_keeps_later_child_reachable_for_cleanup"
+      ]
+    },
+    {
+      "phase": "test-cancelled-cleanup-1",
+      "selector": "vm::tests::cancelled_child_cleanup_retains_real_errors_and_ordinary_cancellation",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::cancelled_child_cleanup_retains_real_errors_and_ordinary_cancellation"
+      ]
+    },
+    {
+      "phase": "test-exec-cleanup-1",
+      "selector": "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup"
+      ]
+    },
+    {
+      "phase": "test-cleanup-storage-1",
+      "selector": "executor::tests::unstarted_tool_cleanup_retains_children_unpolled_and_transfers_once",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "executor::tests::unstarted_tool_cleanup_retains_children_unpolled_and_transfers_once"
+      ]
+    },
+    {
+      "phase": "test-cancellation-locks-1",
+      "selector": "vm::tests::cancellation_wake_tests::wake_callbacks_observe_published_state_outside_group_locks",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::cancellation_wake_tests::wake_callbacks_observe_published_state_outside_group_locks"
+      ]
+    },
+    {
+      "phase": "test-callback-completion-1",
+      "selector": "runtime::callback_completion_tests::",
+      "exact": false,
+      "expected_passed": 6,
+      "expected_names": [
+        "runtime::callback_completion_tests::owned_runtime_error_survives_actual_callback_destructor_panic",
+        "runtime::callback_completion_tests::owned_runtime_error_survives_normal_callback_destruction",
+        "runtime::callback_completion_tests::polling_panic_recovers_owned_error_before_callback_destructor_panic",
+        "runtime::callback_completion_tests::owned_runtime_error_survives_failure_future_destructor_panic",
+        "runtime::callback_completion_tests::selected_runtime_error_survives_discarded_ready_value_panic",
+        "runtime::callback_completion_tests::constructor_panic_recovers_owned_signal_before_failure_future_destruction"
+      ]
+    },
+    {
+      "phase": "test-consuming-panics-1",
+      "selector": "runtime::consuming_panic_tests::",
+      "exact": false,
+      "expected_passed": 5,
+      "expected_names": [
+        "runtime::consuming_panic_tests::pending_thread_error_and_destructor_panic_preserve_process_error_and_panic",
+        "runtime::consuming_panic_tests::thread_poll_and_drop_panics_do_not_skip_process_poll_and_drop_panics",
+        "runtime::consuming_panic_tests::successful_consuming_hooks_keep_normal_order_without_failure_publication",
+        "runtime::consuming_panic_tests::thread_constructor_panic_is_published_before_process_hook_runs",
+        "runtime::consuming_panic_tests::process_constructor_panic_retains_prior_thread_error_and_drop_payload"
+      ]
+    },
+    {
+      "phase": "test-tool-panics-1",
+      "selector": "failure::tool_panics::tests::",
+      "exact": false,
+      "expected_passed": 4,
+      "expected_names": [
+        "failure::tool_panics::tests::real_error_effects_and_two_exact_payloads_keep_their_original_ownership",
+        "failure::tool_panics::tests::panic_promotes_wrapped_abort_and_publishes_its_complete_effects_subtree",
+        "failure::tool_panics::tests::no_panic_preserves_success_and_typed_errors_without_new_wrappers",
+        "failure::tool_panics::tests::take_transfers_only_pending_payloads_once_and_accepts_a_later_batch"
+      ]
+    },
+    {
+      "phase": "test-retained-panics-1",
+      "selector": "failure::panic_cleanup_tests::",
+      "exact": false,
+      "expected_passed": 5,
+      "expected_names": [
+        "failure::panic_cleanup_tests::no_retained_panic_cleanup_preserves_existing_completion",
+        "failure::panic_cleanup_tests::retained_panic_cleanup_keeps_first_cause_wrappers_and_signal_effect_identity",
+        "failure::panic_cleanup_tests::retained_panic_cleanup_folds_two_distinct_records_once",
+        "failure::panic_cleanup_tests::retained_panic_cleanup_skips_only_exact_already_returned_arcs",
+        "failure::panic_cleanup_tests::retained_send_only_payload_outlives_publication_and_completion"
+      ]
+    },
+    {
+      "phase": "test-public-panics-1",
+      "selector": "vm::tests::public_tool_panic_tests::",
+      "exact": false,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::public_tool_panic_tests::public_direct_and_elf_owners_finish_pending_consumers_before_resuming_panic"
+      ]
+    },
+    {
+      "phase": "test-fork-join-panics-1",
+      "selector": "executor::child_panic_owner_tests::",
+      "exact": false,
+      "expected_passed": 1,
+      "expected_names": [
+        "executor::child_panic_owner_tests::fork_join_routes_retain_exact_payload_and_typed_owner"
+      ]
+    },
+    {
+      "phase": "test-instruction-panics-1",
+      "selector": "vm::tests::instruction_callback_panic_tests::actual_timestamp_and_cpuid_callbacks_retain_returned_errno_after_destructor_panic",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::instruction_callback_panic_tests::actual_timestamp_and_cpuid_callbacks_retain_returned_errno_after_destructor_panic"
+      ]
+    },
+    {
+      "phase": "test-instruction-constructor-1",
+      "selector": "vm::tests::instruction_callback_panic_tests::actual_instruction_constructor_panic_retains_the_injected_runtime_error",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::instruction_callback_panic_tests::actual_instruction_constructor_panic_retains_the_injected_runtime_error"
+      ]
+    },
+    {
+      "phase": "test-entry-gate-1",
+      "selector": "entry::tests::",
+      "exact": false,
+      "expected_passed": 11,
+      "expected_names": [
+        "entry::tests::closed_registration_does_not_admit_an_entry_or_copy",
+        "entry::tests::blocking_copies_wake_on_reopen_and_retained_poison",
+        "entry::tests::close_waits_for_setup_and_copies_and_retirement",
+        "entry::tests::withdrawal_prevents_a_later_send_but_does_not_acknowledge",
+        "entry::tests::failed_send_preserves_running_accounting_and_typed_cause",
+        "entry::tests::abandoned_close_poison_is_sticky_and_wakes_existing_waiters",
+        "entry::tests::abandoned_entry_withdraws_without_claiming_cleanup",
+        "entry::tests::primary_failure_is_not_replaced_by_cleanup",
+        "entry::tests::identities_never_wrap_and_a_poison_cannot_look_open",
+        "entry::tests::unwinding_control_operations_preserve_cleanup_and_failure",
+        "entry::tests::running_vcpu_is_interrupted_and_retires_before_close_completes"
+      ]
+    },
+    {
+      "phase": "test-entry-owner-1",
+      "selector": "entry::owner::tests::",
+      "exact": false,
+      "expected_passed": 8,
+      "expected_names": [
+        "entry::owner::tests::capture_defers_last_owner_drop_after_retirement_and_rejection",
+        "entry::owner::tests::capture_records_before_deferred_notification_and_retains_arcs",
+        "entry::owner::tests::nested_destruction_keeps_generation_and_parent_dependency",
+        "entry::owner::tests::scope_acknowledgement_follows_owned_future_destruction",
+        "entry::owner::tests::retirement_preserves_both_sides_of_capture_race",
+        "entry::owner::tests::live_callback_retirement_is_abandonment_not_destruction",
+        "entry::owner::tests::unwind_abandons_registration_but_preserves_pending_and_destruction",
+        "entry::owner::tests::origins_are_weak_and_misuse_returns_typed_protocol_errors"
+      ]
+    },
+    {
+      "phase": "test-entry-routing-1",
+      "selector": "entry::driver::tests::",
+      "exact": false,
+      "expected_passed": 13,
+      "expected_names": [
+        "entry::driver::tests::private_watch_ignores_callback_drop_and_rechecks_rotating_notifications",
+        "entry::driver::tests::peer_waits_for_publication_after_origin_callback_destruction",
+        "entry::driver::tests::competing_publication_releases_peer_but_keeps_origin_obligation",
+        "entry::driver::tests::independent_peer_error_does_not_wait_or_lose_its_signal_effects",
+        "entry::driver::tests::retired_or_abandoned_origin_does_not_imply_publication",
+        "entry::driver::tests::retained_old_generation_captures_without_acknowledging_current_callback",
+        "entry::driver::tests::repeated_completion_keeps_late_causes_without_duplicate_shared_references",
+        "entry::driver::tests::retained_entry_failure_does_not_keep_its_run_alive",
+        "entry::driver::tests::peer_promotion_preserves_nonempty_ledger_and_worker_context_exactly_once",
+        "entry::driver::tests::rejected_old_view_survives_prior_publication_and_independent_peer_error",
+        "entry::driver::tests::already_retained_secondary_owner_cause_is_promoted_once",
+        "entry::driver::tests::last_failure_context_disconnects_only_after_gate_unlock",
+        "entry::driver::tests::suspended_peer_rechecks_abandonment_when_terminal_notification_wins"
+      ]
+    },
+    {
+      "phase": "test-failure-completion-1",
+      "selector": "failure::tests::",
+      "exact": false,
+      "expected_passed": 8,
+      "expected_names": [
+        "failure::tests::repeated_secondary_entry_snapshots_report_once_without_losing_late_cleanup",
+        "failure::tests::completion_promotes_joined_worker_cause_without_duplicate_diagnostic",
+        "failure::tests::completion_keeps_distinct_shared_cleanup_causes_and_first_worker_identity",
+        "failure::tests::independent_failure_subscribers_wake_before_and_after_publication",
+        "failure::tests::process_failure_subscriptions_preserve_fork_and_thread_ownership",
+        "failure::tests::local_failure_wake_waits_for_synchronous_tool_terminal_transition",
+        "failure::tests::concurrent_publishers_pair_first_typed_cause_with_first_terminal_event",
+        "failure::tests::refused_host_spawn_returns_exact_initialized_owner"
+      ]
+    },
+    {
+      "phase": "test-runtime-entry-1",
+      "selector": "runtime::entry_owner_tests::",
+      "exact": false,
+      "expected_passed": 3,
+      "expected_names": [
+        "runtime::entry_owner_tests::private_entry_failure_wakes_pending_callback_before_scope_acknowledgement",
+        "runtime::entry_owner_tests::existing_entry_failure_skips_factory_and_retains_both_destructor_payloads",
+        "runtime::entry_owner_tests::ready_typed_error_survives_entry_failure_and_outer_mapping"
+      ]
+    },
+    {
+      "phase": "test-vm-entry-1",
+      "selector": "vm::entry_owner_tests::",
+      "exact": false,
+      "expected_passed": 2,
+      "expected_names": [
+        "vm::entry_owner_tests::child_driver_rebinds_inherited_callback_view_and_preserves_generation",
+        "vm::entry_owner_tests::caught_worker_driver_retires_after_pending_consumer_and_before_payload_resume"
+      ]
+    },
+    {
+      "phase": "test-exec-private-wait-1",
+      "selector": "vm::exec_wait_tests::",
+      "exact": false,
+      "expected_passed": 10,
+      "expected_names": [
+        "vm::exec_wait_tests::exec_wait_private_failure_leaves_worker_owned_until_callback_destruction",
+        "vm::exec_wait_tests::exec_wait_private_failure_interrupts_worker_tls_destructor",
+        "vm::exec_wait_tests::exec_wait_success_requires_worker_tls_physical_completion",
+        "vm::exec_wait_tests::refused_exec_join_helper_preserves_original_worker_and_gate",
+        "vm::exec_wait_tests::exec_join_helper_retains_exact_worker_panic_through_repeated_teardown",
+        "vm::exec_wait_tests::exec_join_helper_does_not_capture_nested_discard_behind_another_worker",
+        "vm::exec_wait_tests::exec_join_helper_parent_spawn_hook_panic_restores_original_ownership",
+        "vm::exec_wait_tests::exec_join_helper_child_spawn_hook_panic_retains_handle_payload_and_originals",
+        "vm::exec_wait_tests::exec_join_helper_reuses_thread_and_defers_inherited_tls_to_outer_drain",
+        "vm::exec_wait_tests::leader_backend_drop_physically_reaps_idle_exec_join_helper"
+      ]
+    },
+    {
+      "phase": "test-entry-capture-wake-1",
+      "selector": "entry::captured_owner_is_visible_before_wake_outside_registry_lock",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "entry::captured_owner_is_visible_before_wake_outside_registry_lock"
+      ]
+    },
+    {
+      "phase": "test-existing-join-1",
+      "selector": "vm::tests::guest_thread_group_joins_registered_workers",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::guest_thread_group_joins_registered_workers"
+      ]
+    },
+    {
+      "phase": "test-existing-join-2",
+      "selector": "vm::tests::exec_cancellation_joins_and_rearms_the_thread_group",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::exec_cancellation_joins_and_rearms_the_thread_group"
+      ]
+    },
+    {
+      "phase": "test-existing-join-3",
+      "selector": "vm::tests::cancelling_named_tool_thread_joins_only_that_unstarted_worker",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::cancelling_named_tool_thread_joins_only_that_unstarted_worker"
+      ]
+    },
+    {
+      "phase": "test-existing-join-4",
+      "selector": "vm::tests::completed_failure_interrupts_a_later_natural_join",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::completed_failure_interrupts_a_later_natural_join"
+      ]
+    },
+    {
+      "phase": "test-existing-join-5",
+      "selector": "vm::tests::later_failure_interrupts_an_existing_natural_join",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::later_failure_interrupts_an_existing_natural_join"
+      ]
+    },
+    {
+      "phase": "test-existing-join-6",
+      "selector": "vm::tests::failure_cancels_pending_start_in_batch_being_joined",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::failure_cancels_pending_start_in_batch_being_joined"
+      ]
+    },
+    {
+      "phase": "test-existing-join-7",
+      "selector": "vm::tests::callback_error_preserves_registered_child_taken_by_join",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::callback_error_preserves_registered_child_taken_by_join"
+      ]
+    },
+    {
+      "phase": "test-existing-join-8",
+      "selector": "vm::tests::natural_join_preserves_a_registered_pending_start",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::natural_join_preserves_a_registered_pending_start"
+      ]
+    },
+    {
+      "phase": "test-existing-join-9",
+      "selector": "vm::tests::pending_gated_worker_is_cancelled_before_teardown_join",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::pending_gated_worker_is_cancelled_before_teardown_join"
+      ]
+    },
+    {
+      "phase": "test-existing-join-10",
+      "selector": "vm::tests::nested_pending_worker_is_cancelled_in_the_next_join_batch",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::nested_pending_worker_is_cancelled_in_the_next_join_batch"
+      ]
+    },
+    {
+      "phase": "test-clock-controls-1",
+      "selector": "clock::",
+      "exact": false,
+      "expected_passed": 9,
+      "expected_names": [
+        "clock::tests::counted_intervals_respect_the_permitted_cpu_allocation",
+        "clock::tests::counted_vcpu_closed_admission_and_clock_failure_preserve_state",
+        "clock::tests::eintr_finishes_count_and_restores_affinity_before_return",
+        "clock::tests::enable_failure_closes_the_event_and_restores_affinity",
+        "clock::tests::failed_affinity_restoration_cannot_publish_a_partial_clock",
+        "clock::tests::full_width_deltas_zero_work_and_overflow_are_checked",
+        "clock::tests::incomplete_reads_and_residency_gaps_are_not_zero_clocks",
+        "clock::tests::read_and_disable_errors_poison_even_when_kvm_returns_eintr",
+        "clock::tests::unwind_closes_counter_and_poison_prevents_future_success"
+      ],
+      "expected_summaries": [
+        [
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "9",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "phase": "test-memory-controls-1",
+      "selector": "memory::",
+      "exact": false,
+      "expected_passed": 39,
+      "expected_names": [
+        "memory::tests::backing_slices_validate_alignment_bounds_and_overflow",
+        "memory::tests::cloned_handles_share_memory",
+        "memory::tests::counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy",
+        "memory::tests::discard_pages_rejects_unaligned_ranges",
+        "memory::tests::discarded_pages_are_lazy_zeroes_in_every_cloned_handle",
+        "memory::tests::entry_copy_tests::admitted_nested_copies_finish_while_close_waits_and_operands_hold_no_lease",
+        "memory::tests::entry_copy_tests::both_vectored_adapters_return_eio_before_between_and_after_actual_portions",
+        "memory::tests::entry_copy_tests::clones_share_gate_but_new_views_and_snapshots_do_not",
+        "memory::tests::entry_copy_tests::copy_unwind_captures_handle_origin_without_publishing_tool_failure",
+        "memory::tests::entry_copy_tests::healthy_adapters_keep_accessible_writes_faults_and_partial_counts",
+        "memory::tests::entry_copy_tests::read_preparation_runs_once_with_one_token_and_preserves_poison",
+        "memory::tests::entry_copy_tests::retained_memory_copy_keeps_its_issuing_callback_generation",
+        "memory::tests::entry_copy_tests::retired_memory_origin_retains_cause_without_expired_publisher",
+        "memory::tests::entry_copy_tests::snapshot_fallback_refuses_a_retained_failure_before_copying",
+        "memory::tests::entry_copy_tests::try_raw_write_defers_closed_copy_and_retains_poison_and_bounds",
+        "memory::tests::entry_copy_tests::typed_access_poison_preserves_cause_bytes_and_empty_distinctions",
+        "memory::tests::finds_first_unmapped_user_range",
+        "memory::tests::identity_reservations_validate_transactionally_and_keep_coverage_distinct",
+        "memory::tests::identity_view_preserves_tool_writes_copyout_faults_and_partial_reads",
+        "memory::tests::independent_view_permissions_do_not_alias_clone_permissions",
+        "memory::tests::independent_views_retain_shared_backing_after_drop",
+        "memory::tests::permits_access_to_last_byte",
+        "memory::tests::prctl_copyout_keeps_privileged_write_and_scalar_contracts",
+        "memory::tests::prctl_copyout_permissions_follow_remap_unmap_and_reset",
+        "memory::tests::prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone",
+        "memory::tests::private_snapshot_copies_one_allocation_owner_and_keeps_policy_independent",
+        "memory::tests::reads_and_writes_guest_memory",
+        "memory::tests::rejects_access_past_mapping",
+        "memory::tests::rejects_address_below_mapping",
+        "memory::tests::retained_host_operand_keeps_view_alive_without_a_sleeping_layout_lock",
+        "memory::tests::snapshot_copies_without_sharing_memory",
+        "memory::tests::snapshot_of_nonzero_slice_copies_view_and_stays_private",
+        "memory::tests::snapshot_preserves_user_access_map",
+        "memory::tests::sparse_snapshot_copies_distant_extents_and_page_boundaries",
+        "memory::tests::sparse_snapshot_copies_file_data_after_dontneed",
+        "memory::tests::sparse_snapshot_failure_falls_back_after_a_partial_copy",
+        "memory::tests::tracked_read_only_pages_reject_backend_copyout_but_remain_readable",
+        "memory::tests::tracked_user_access_faults_and_returns_partial_copies",
+        "memory::tests::untouched_snapshot_is_zero_filled_and_independent"
+      ]
+    },
+    {
+      "phase": "test-host-mask-controls-1",
+      "selector": "entry::signal::",
+      "exact": false,
+      "expected_passed": 2,
+      "expected_names": [
+        "entry::signal::tests::kernel_mask_uses_the_flexible_array_offset",
+        "entry::signal::tests::reserved_signal_protocol"
+      ]
+    },
+    {
+      "phase": "test-entry-operations-1",
+      "selector": "runtime::entry_operation_tests::",
+      "exact": false,
+      "expected_passed": 12,
+      "expected_names": [
+        "runtime::entry_operation_tests::caught_memory_failure_refuses_ready_rpc_before_construction",
+        "runtime::entry_operation_tests::caught_memory_failure_refuses_injection_before_executor_mutation",
+        "runtime::entry_operation_tests::owner_failure_from_other_mapping_refuses_rpc_and_injection",
+        "runtime::entry_operation_tests::caught_memory_failure_refuses_signal_queue_and_stack_admission",
+        "runtime::entry_operation_tests::private_admission_retains_previous_signal_effects_error",
+        "runtime::entry_operation_tests::ready_nested_signal_hook_cannot_reserve_after_caught_memory_failure",
+        "runtime::entry_operation_tests::healthy_rpc_injection_and_parked_observation_still_complete",
+        "runtime::entry_operation_tests::private_failure_does_not_cancel_owned_dequeue_rpc_or_consuming_hooks",
+        "runtime::entry_operation_tests::pending_rpc_checks_private_failure_before_polling_again",
+        "runtime::entry_operation_tests::ready_rpc_cannot_return_response_after_capturing_private_failure",
+        "runtime::entry_operation_tests::stack_commit_refuses_another_mapping_failure_without_writing",
+        "runtime::entry_operation_tests::private_admission_preserves_already_selected_nonlocal_disposition"
+      ]
+    },
+    {
+      "phase": "test-rpc-join-observation-1",
+      "selector": "runtime::failure_tests::fatal_notification_releases_pending_tool_rpc_before_owned_join",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::failure_tests::fatal_notification_releases_pending_tool_rpc_before_owned_join"
+      ]
+    },
+    {
+      "phase": "test-rpc-join-observation-2",
+      "selector": "runtime::failure_tests::fatal_worker_primary_survives_separate_consuming_hook_error",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::failure_tests::fatal_worker_primary_survives_separate_consuming_hook_error"
+      ]
+    },
+    {
+      "phase": "test-rpc-join-observation-3",
+      "selector": "runtime::failure_tests::normal_rpc_keeps_status_and_worker_before_leader_hooks",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::failure_tests::normal_rpc_keeps_status_and_worker_before_leader_hooks"
+      ]
+    },
+    {
+      "phase": "test-public-entry-1",
+      "selector": "vm::tests::entry_public_tests::",
+      "exact": false,
+      "expected_passed": 4,
+      "expected_names": [
+        "vm::tests::entry_public_tests::public_direct_memory_failure_refuses_ready_rpc",
+        "vm::tests::entry_public_tests::public_direct_memory_failure_refuses_injection",
+        "vm::tests::entry_public_tests::public_elf_memory_failure_refuses_ready_rpc",
+        "vm::tests::entry_public_tests::public_elf_memory_failure_refuses_injection"
+      ]
+    },
+    {
+      "phase": "test-main-entry-1",
+      "selector": "vm::tests::entry_main_tests::",
+      "exact": false,
+      "expected_passed": 8,
+      "expected_names": [
+        "vm::tests::entry_main_tests::host_raw_main_closed_wait_poison_stops_without_ioctl",
+        "vm::tests::entry_main_tests::host_elf_main_closed_wait_group_exit_stops_without_ioctl",
+        "vm::tests::entry_main_tests::host_main_fresh_reopen_executes_finite_raw_and_elf_once",
+        "vm::tests::entry_main_tests::tool_direct_main_closed_wait_global_failure_stops_without_ioctl",
+        "vm::tests::entry_main_tests::tool_elf_main_closed_wait_group_exit_stops_without_ioctl",
+        "vm::tests::entry_main_tests::tool_elf_main_closed_wait_global_failure_stops_without_ioctl",
+        "vm::tests::entry_main_tests::tool_main_fresh_reopen_executes_finite_direct_and_elf_once",
+        "vm::tests::entry_main_tests::closed_tool_main_wait_uses_its_independent_global_scope"
+      ]
+    },
+    {
+      "phase": "test-spawn-entry-1",
+      "selector": "vm::tests::entry_spawn_tests::",
+      "exact": false,
+      "expected_passed": 3,
+      "expected_names": [
+        "vm::tests::entry_spawn_tests::public_elf_refused_fork_retains_child_until_published_cleanup",
+        "vm::tests::entry_spawn_tests::public_elf_refused_tool_thread_retains_child_until_published_cleanup",
+        "vm::tests::entry_spawn_tests::unarmed_spawn_owned_starts_exact_initialized_state"
+      ]
+    },
+    {
+      "phase": "test-hypercall-entry-1",
+      "selector": "vm::tests::entry_hypercall_tests::",
+      "exact": false,
+      "expected_passed": 6,
+      "expected_names": [
+        "vm::tests::entry_hypercall_tests::direct_tool_pending_response_reopens_without_replaying_write",
+        "vm::tests::entry_hypercall_tests::direct_tool_pending_response_failure_avoids_completion_entry",
+        "vm::tests::entry_hypercall_tests::direct_tool_written_response_reopens_and_reaches_hlt_once",
+        "vm::tests::entry_hypercall_tests::direct_tool_written_response_failure_avoids_completion_entry",
+        "vm::tests::entry_hypercall_tests::host_written_response_reopens_and_reaches_hlt_once",
+        "vm::tests::entry_hypercall_tests::host_written_response_poison_avoids_completion_entry"
+      ]
+    },
+    {
+      "phase": "test-race-entry-1",
+      "selector": "vm::tests::entry_race_tests::",
+      "exact": false,
+      "expected_passed": 2,
+      "expected_names": [
+        "vm::tests::entry_race_tests::untracked_final_activation_close_restores_mask_and_rechecks_next_close",
+        "vm::tests::entry_race_tests::tracked_final_activation_close_restores_mask_and_rechecks_next_close"
+      ]
+    },
+    {
+      "phase": "test-action-entry-1",
+      "selector": "vm::tests::entry_action_tests::",
+      "exact": false,
+      "expected_passed": 4,
+      "expected_names": [
+        "vm::tests::entry_action_tests::prepared_fork_parking_retains_setup_and_stops_before_snapshot",
+        "vm::tests::entry_action_tests::prepared_host_thread_parking_stops_before_child_effects",
+        "vm::tests::entry_action_tests::prepared_exec_parking_stops_before_image_replacement",
+        "vm::tests::entry_action_tests::prepared_tool_thread_parking_stops_before_child_state_and_start"
+      ]
+    },
+    {
+      "phase": "test-wait-entry-1",
+      "selector": "vm::tests::entry_wait_tests::",
+      "exact": false,
+      "expected_passed": 10,
+      "expected_names": [
+        "vm::tests::entry_wait_tests::host_elf_stop_before_retry_subscription_does_no_entry_work",
+        "vm::tests::entry_wait_tests::host_elf_stop_after_retry_subscription_does_no_entry_work",
+        "vm::tests::entry_wait_tests::host_elf_same_run_second_close_waits_before_fresh_reopen",
+        "vm::tests::entry_wait_tests::tool_elf_group_stop_before_retry_subscription_does_no_entry_work",
+        "vm::tests::entry_wait_tests::tool_elf_group_stop_after_retry_subscription_does_no_entry_work",
+        "vm::tests::entry_wait_tests::tool_elf_global_stop_before_retry_subscription_does_no_entry_work",
+        "vm::tests::entry_wait_tests::tool_elf_global_stop_after_retry_subscription_does_no_entry_work",
+        "vm::tests::entry_wait_tests::tool_elf_same_run_second_close_waits_before_fresh_reopen",
+        "vm::tests::entry_wait_tests::parking_stop_before_retry_subscription_preserves_disposition",
+        "vm::tests::entry_wait_tests::parking_stop_after_retry_subscription_preserves_disposition"
+      ]
+    },
+    {
+      "phase": "test-eintr-entry-1",
+      "selector": "vm::tests::entry_eintr_tests::",
+      "exact": false,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::entry_eintr_tests::raw_public_foreign_sigurg_preserves_eintr_and_allows_fresh_entry"
+      ]
+    },
+    {
+      "phase": "test-cleanup-entry-1",
+      "selector": "entry::cleanup_tests::",
+      "exact": false,
+      "expected_passed": 4,
+      "expected_names": [
+        "entry::cleanup_tests::late_kick_after_successful_exit_is_drained_before_acknowledgement",
+        "entry::cleanup_tests::withdrawn_real_entry_has_no_sender_until_final_cleanup_acknowledges",
+        "entry::cleanup_tests::real_withdrawal_waits_for_serialized_sender_and_drains_its_kick",
+        "entry::cleanup_tests::mask_operation_errors_poison_after_safe_real_cleanup_and_preserve_causes"
+      ]
+    },
+    {
+      "phase": "test-existing-parking-wait-1",
+      "selector": "vm::tests::parking_wait_preserves_failure_cancellation_and_reopen",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::parking_wait_preserves_failure_cancellation_and_reopen"
+      ]
+    },
+    {
+      "phase": "test-existing-peer-cancellation-1",
+      "selector": "runtime::failure_tests::peer_failure_cancellation_preserves_thread_status_and_primary_cause",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "runtime::failure_tests::peer_failure_cancellation_preserves_thread_status_and_primary_cause"
+      ]
+    }
+  ],
+  "known_selected_test_count": 231,
+  "phases": [
+    "format-1",
+    "compile-1",
+    "check-1",
+    "format-check-1",
+    "clippy-1",
+    "inventory-1",
+    "test-multi-owner-entry-1",
+    "test-multi-owner-entry-2",
+    "test-multi-owner-entry-3",
+    "test-multi-owner-entry-4",
+    "test-owned-future-1",
+    "test-panic-drain-1",
+    "test-handler-scratch-1",
+    "test-injected-boundary-1",
+    "test-worker-panic-1",
+    "test-normal-cleanup-1",
+    "test-handler-destruction-1",
+    "test-caught-worker-1",
+    "test-action-preparation-1",
+    "test-boundary-1",
+    "test-boundary-cleanup-1",
+    "test-fork-cleanup-1",
+    "test-thread-cleanup-1",
+    "test-partial-start-1",
+    "test-cancelled-cleanup-1",
+    "test-exec-cleanup-1",
+    "test-cleanup-storage-1",
+    "test-cancellation-locks-1",
+    "test-callback-completion-1",
+    "test-consuming-panics-1",
+    "test-tool-panics-1",
+    "test-retained-panics-1",
+    "test-public-panics-1",
+    "test-fork-join-panics-1",
+    "test-instruction-panics-1",
+    "test-instruction-constructor-1",
+    "test-entry-gate-1",
+    "test-entry-owner-1",
+    "test-entry-routing-1",
+    "test-failure-completion-1",
+    "test-runtime-entry-1",
+    "test-vm-entry-1",
+    "test-exec-private-wait-1",
+    "test-entry-capture-wake-1",
+    "test-existing-join-1",
+    "test-existing-join-2",
+    "test-existing-join-3",
+    "test-existing-join-4",
+    "test-existing-join-5",
+    "test-existing-join-6",
+    "test-existing-join-7",
+    "test-existing-join-8",
+    "test-existing-join-9",
+    "test-existing-join-10",
+    "test-clock-controls-1",
+    "test-memory-controls-1",
+    "test-host-mask-controls-1",
+    "test-entry-operations-1",
+    "test-rpc-join-observation-1",
+    "test-rpc-join-observation-2",
+    "test-rpc-join-observation-3",
+    "test-public-entry-1",
+    "test-main-entry-1",
+    "test-spawn-entry-1",
+    "test-hypercall-entry-1",
+    "test-race-entry-1",
+    "test-action-entry-1",
+    "test-wait-entry-1",
+    "test-eintr-entry-1",
+    "test-cleanup-entry-1",
+    "test-existing-parking-wait-1",
+    "test-existing-peer-cancellation-1"
+  ],
+  "limits": {
+    "cpu_quota": "200%",
+    "memory_max": "12G",
+    "memory_swap_max": "0",
+    "core_limit": "0",
+    "compile_wall_seconds": 600,
+    "check_wall_seconds": 600,
+    "test_wall_seconds": 60,
+    "format_inventory_wall_seconds": 30,
+    "stream_cap_bytes": 16777216
+  },
+  "execution_authorization": "Pending all source releases and root freeze.",
+  "explicit_unresolved_path": "Driver timing/ownership controls do not establish full Hermit/Detcore parity. Entire entry increment still requires independent full source reviews, consumer qualification and landing.",
+  "new_phases_first": [
+    "test-existing-peer-cancellation-1",
+    "test-multi-owner-entry-1",
+    "test-multi-owner-entry-2",
+    "test-multi-owner-entry-3",
+    "test-multi-owner-entry-4",
+    "test-action-entry-1",
+    "test-wait-entry-1",
+    "test-hypercall-entry-1",
+    "test-race-entry-1",
+    "test-eintr-entry-1",
+    "test-cleanup-entry-1",
+    "test-existing-parking-wait-1"
+  ],
+  "predecessor_failed_target": "5525c4137a07d144b0234ff8af48bc3d4abb1649049f2edbe83b5583420f4a82",
+  "predecessor_passed_target": "e92ae0227bd2f60f3faabe2b4bd2104d6f2afba78f1824de8fab0900d8c8a1a8"
+}

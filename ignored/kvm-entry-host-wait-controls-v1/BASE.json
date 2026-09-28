@@ -1,0 +1,9 @@
+{
+  "declared_head": "4ea79f6da7100709fea0e0a5591b0945d438e34f",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/executor.rs",
+    "bytes": 1529884,
+    "sha256": "4609d36452b011e7f1c4b787cae669ee6e6f97f8e85eb4223af319f044626ff7"
+  },
+  "authorization": "executor.rs cfg(test) include/seam and new executor/entry_host_wait_tests.rs only; no execution"
+}

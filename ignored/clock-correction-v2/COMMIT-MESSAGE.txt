@@ -1,0 +1,17 @@
+Keep ptrace setup and syscall injection out of guest execution
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Start initial-command branch accounting at successful exec and retire
+startup notification requests at that boundary. Distinguish a pending
+syscall from other stops before injection so setup cannot execute and
+rewind a guest instruction. Clear consumed syscall state before callbacks.
+
+Preserve exact guest branch trajectories and cover entry memory, syscall
+replacement, tail injection, and emulated returns at real ptrace stops.
+
+Validation: fresh component compile, formatting, core/ptrace check, and
+strict Clippy passed; 37 exact test declarations qualified. The legacy
+vsyscall payload returned zero and reported success, but its mixed tracing
+stdout was refused by the JSON reader; that refusal remains recorded.
+Full Hermit backend parity and independent source reviews remain pending.

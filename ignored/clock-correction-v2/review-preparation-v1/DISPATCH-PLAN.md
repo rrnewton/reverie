@@ -1,0 +1,22 @@
+# Prepared independent clock source reviews — not authorized to launch
+
+Both lanes resume their own actual grounded session. No model override is supplied. Current exact corrected source is c01fe71e / full patch 50580ff2, against landed Reverie b5e2ab49cd99e5d456fa0238b8cebd75958c529f. Final head, tree and qualification outcomes are absent intentionally; neither lane has TARGET.json, inputs.json, executable prompt or COMPLETE_READS.json. The prepared scripts therefore cannot dispatch this draft. Finalize in a distinct final-v1 subdirectory after root provides those bindings; preserve these draft files.
+
+Grounding has been independently reconstructed from each session's own 39 complete model-visible primary chunks in canonical order. Scheduler source at H 97c39 is byte-identical to those readings, as are current vision/roadmap sources. Historical native on-request/read-only policy and Claude's later 155/163 source-read failure plus separate eight-chunk repair remain disclosed. Later source-index ordering is not the canonical grounding order.
+
+After finalization and explicit root inspection, the concrete prospective invocations are:
+
+    with-proxy env PYTHONOPTIMIZE=0 /usr/bin/python3 -B <final-v1>/claude/launch-review.py
+    with-proxy env PYTHONOPTIMIZE=0 /usr/bin/python3 -B <final-v1>/native/launch-guard.py
+
+The entire command is under with-proxy; native's child inherits that route. Admit sequentially: fresh all-UID census before the first launch, inspect its actual effective session/model/policy initialization, then a fresh census before the second launch. Each census refuses at 15 top-level CLI agents and rejects a live resume of that exact session. Do not infer capacity from this preparation or from a stale count. Root's approval of preparation is not execution authority.
+
+Claude remains plan mode, with requested Read/Grep/Glob tools, same session 5d98403d-b8e9-42bf-8e2f-da7e7b70809c and expected actual claude-opus-5[1m]. The unchanged launcher has 1,800 seconds wall, TERM then 10-second KILL, and 64 MiB per raw output file. Its actual init may advertise extra MCP availability; distinguish that from actual use, which must remain within the three allowed read tools. The actual init/session/model/permission evidence must be inspected promptly.
+
+Native remains approval never / sandbox read-only, same session 01a0b38e-9e3c-7883-9816-65199c048935, expected actual gpt-5.6-sol. Unchanged run_stage gives 1,800 seconds wall and 64 MiB combined raw stdout/stderr, TERM then three-second KILL. The actual persisted turn_context must prove model, session, cwd and never/read-only; command flags alone are not effective-policy evidence. Outer PYTHONOPTIMIZE=0 protects assert-using retained code. No model override, writes, extra reviewer, build/test/guest or lease is permitted.
+
+Before/after input bytes, modes and symlink identities remain checked. Collect both owned exec handles through terminal status; retain all raw streams, failures, capacity records and actual process identity. Run the existing terminal audits under optimization zero. Claude audit changes only its descriptive scope string; native helpers are byte-identical. Hashes/delta are in HELPER-CONTINUITY.json. No acceptance predicate is relaxed.
+
+Literal complete chunk coverage is required, with failed/truncated reads preserved. Native coarse stage-order output does not establish full listed-source order; report actual first-read order separately. Claude assistant prose and terminal result are retained separately, with explicit event-based report extraction. A missing read may require a separately authorized focused continuation, not a claimed complete audit. No peer findings/verdicts cross lanes. Raw zero, full coverage and unchanged inputs are custody facts, not approval.
+
+Final binding checklist: actual Git base/head/tree and full six-path equality; corrected source manifest including ignored lock distinction; exact completed 45-phase evidence and attempted/passed/ignored populations; retained fresh lib/integration ELF and local library records; all raw selected outputs; unchanged caller/limits; preserved original compile101/no-tests packet and earlier baseline/debugger failures; current helper/prompt hashes; fresh prelaunch all-input authentication. If source changes, replace the target with a separately frozen successor rather than editing a running review packet. No broad additional qualification is requested by this preparation.

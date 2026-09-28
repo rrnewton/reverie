@@ -1,0 +1,23 @@
+{
+  "status": "proposed; no compiler or test execution in this increment",
+  "compile": "one composed offline locked no-run library build, owned by coordinator after interfaces settle",
+  "new_exact_names": [
+    "memory::tests::entry_copy_tests::read_preparation_runs_once_with_one_token_and_preserves_poison",
+    "vm::tests::action_parent_captures_yield_for_close_and_keep_stop_and_validation"
+  ],
+  "focused_existing_neighbor": "vm::tests::completed_syscall_boundary_accepts_only_the_two_transport_rip_forms",
+  "old_controls": "preserved byte-for-byte; no repeat requested for already passed controls without a new concern",
+  "expected": {
+    "new_declarations": 2,
+    "new_vm_modes": 8,
+    "ignored": 0,
+    "new_controls_kvm_run": 0
+  },
+  "prerequisite": "VM control requires /dev/kvm and actual vCPU register ioctls; it must not skip on unavailable KVM",
+  "bounds": "coordinator must bind exact composed source, retained executable, original finite per-phase runner limits, input/terminal checks before execution; this is not execution admission",
+  "format": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-preparation-v1/FORMAT.json",
+    "bytes": 690,
+    "sha256": "1f2c1c79e0d7b53292f846844e237edde065076b8f0d154ecf2151f677979f91"
+  }
+}

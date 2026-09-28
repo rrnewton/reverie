@@ -1,0 +1,9 @@
+Running as unit: kvm-entry-owner-compile-1-175317.service
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+error: could not compile `reverie-kvm` (lib test) due to 11 previous errors
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 8.874s
+             CPU time consumed: 8.750s
+                   Memory peak: 997.9M (swap: 0B)
+                      IO Bytes: read 33M, written 59.8M

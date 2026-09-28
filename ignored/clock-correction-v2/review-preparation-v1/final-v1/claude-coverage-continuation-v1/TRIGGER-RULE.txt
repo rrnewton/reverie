@@ -1,0 +1,9 @@
+Apply `post-facto-human-review` exactly for: (1) new syscall support, with both
+audit tags above; (2) a Reverie API/core-abstraction change to `Tool`, `Guest`,
+`Backend`, or the syscall-interception model; (3) a new determinization
+strategy; or (4) a core DetCore scheduling change affecting how programs are
+scheduled, especially race search. Trigger 4 is always labeled. Hermit
+[PR #1151](https://github.com/rrnewton/hermit/pull/1151), which moved slowdown
+into virtual-time/epoch scheduling, is the canonical good example. Routine
+backend-parity work toward the golden ptrace reference does not trigger review
+unless it also meets one of these four criteria.

@@ -1,0 +1,7 @@
+{
+  "old_vm_test_suffix_byte_identical": true,
+  "original_source_exact_after_removing_only_cfg_test_observers_and_two_behavior_identical_arm_blocks": true,
+  "normal_statements_or_checks_changed": false,
+  "module_include_owned_by_root": true,
+  "compiler_formatter_tests_run": false
+}

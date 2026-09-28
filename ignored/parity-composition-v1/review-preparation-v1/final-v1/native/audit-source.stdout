@@ -1,0 +1,25 @@
+{
+  "proof": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-COVERAGE.json",
+    "bytes": 219816,
+    "sha256": "4251b93b95e487c699e98c5c88d32e9c6c545254492db64356e27f1c9516de43",
+    "mode": 420
+  },
+  "model_tools": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+    "bytes": 1463250,
+    "sha256": "488d4bc8242819a07e1627a88e550bf76772bb8d221b6ca1d8065ebcbb2daee0",
+    "mode": 420
+  },
+  "commands": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-COMMANDS.json",
+    "bytes": 2238473,
+    "sha256": "47903eef6e2581521532578a9ae004ef940a1a321877f2d196d98e17a46a7903",
+    "mode": 420
+  },
+  "covered": 162,
+  "complete": true,
+  "order": true,
+  "errors": 15,
+  "truncation_candidates": 4
+}

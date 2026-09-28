@@ -1,0 +1,24 @@
+{
+  "status": "PREPARATION ONLY; NOT A LAUNCH TARGET",
+  "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+  "stage": "linear-parity-composition",
+  "expected_actual_model": "claude-opus-5[1m]",
+  "grounding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-v2-20260918",
+  "base": "6e3915b70a71657a08f0028b3f70d6074116206a",
+  "base_tree": "8e9a1d6b22b421992508e26855a568314a12bddf",
+  "head": "@@HEAD@@",
+  "tree": "@@TREE@@",
+  "frozen_source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source",
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/SOURCE-MANIFEST.json",
+    "bytes": 472053,
+    "sha256": "dfd21968df3b73ba28a7388f3504b8891e3f13035dab6f364e69fbe2947d1211",
+    "mode": 420
+  },
+  "scope": "Independent whole linear CPUID plus captured-pipe identity source review; no activation, clock-policy repair or whole-backend parity claim",
+  "qualification": "@@FINAL_EVIDENCE@@",
+  "hermit_context": "39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435",
+  "mandatory_documents": 45,
+  "mandatory_chunks": 140,
+  "mandatory_lines": 17518
+}

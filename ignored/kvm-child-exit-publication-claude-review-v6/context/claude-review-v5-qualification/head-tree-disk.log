@@ -1,0 +1,39 @@
+[evidence begin]
+command git show -s --format=fuller 6152ee999a41324be36456bb0a9b94a703711068 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head 6152ee999a41324be36456bb0a9b94a703711068
+expected_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+pre_head 6152ee999a41324be36456bb0a9b94a703711068
+pre_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_before_bytes 448348119040
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:05:52Z
+
+commit 6152ee999a41324be36456bb0a9b94a703711068
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Sep 20 07:52:12 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Sep 20 07:52:12 2026 -0700
+
+    Fence KVM child wait publication
+    
+    [hermit2, degraded-unresolved, gpt-5.6-sol, devbig014, role=impl]
+    
+    Fence concurrent parent waits across the Tool callback prefix and logical
+    waitability commit. Plain running children keep WNOHANG behavior, while an
+    announced terminal transition cannot leak a host-preemption-dependent zero.
+    
+    Classify descendant teardown from the exact direct parent's logical terminal
+    state. A terminal transitive root no longer auto-reaps a grandchild away from
+    its still-live parent, and direct-parent teardown retires its exact family
+    edges.
+    
+    Add forced wait4/waitid fence coverage, failed-publication wake coverage, and
+    real-KVM root-terminal matrices for waitable, SIG_IGN, and SA_NOCLDWAIT paths.
+
+[evidence end]
+exit_code 0
+post_head 6152ee999a41324be36456bb0a9b94a703711068
+post_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_after_bytes 448348119040
+completed_at 2026-09-20T15:05:52Z

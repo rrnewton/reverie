@@ -1,0 +1,160 @@
+        let child_request_tx = child_task.gdb_request_tx.clone();
+        let suspended = child_task.suspended.clone();
+
+        // TODO-HUMAN-REVIEW(PR-103): Review rewritten clone parent/child restoration.
+        if let Some(context) = context {
+            restore_context(
+                &parent,
+                context,
+                Some(child.pid().as_raw() as u64),
+                child_context.is_some(),
+            )?;
+        }
+        let child_restore_context = child_context.or(context);
+
+        let id = child.pid();
+        // Under the LiteInst runtime the cleanup guard registers every newborn
+        // with the notifier the moment its parent reports `Event::NewChild`, so
+        // the "notifier is not yet aware of this PID" precondition for the raw
+        // `wait` below no longer holds: the notifier worker would consume the
+        // initial stop and the raw `wait` would block forever. Take the initial
+        // stop from the notifier instead, which is the same state by a
+        // registered route.
+        let notifier_owns_initial_stop = self.global_state.liteinst_runtime.is_some();
+
+        // A panic anywhere in this body would otherwise be caught by tokio's
+        // task harness and silently wedge the whole run; see
+        // `guest_task_panic_is_fatal`. The body is built as its own future so
+        // the catch sits at the task boundary and covers all of it.
+        let panic_tid = id;
+        let body = async move {
+            // The child could potentially exit here. In most cases the first
+            // event we get here should be `Event::Signal(Signal::SIGSTOP)`, but
+            // we can also receive `Event::Exit` if a thread is created via
+            // `clone`, but immediately killed via an `exit_group`. We have to
+            // handle that rare case here.
+            //
+            // NOTE: It is okay to call `wait` instead of the async `next_state`
+            // here because the notifier is not yet aware of the new process.
+            let initial_stop = if notifier_owns_initial_stop {
+                child.next_state().await
+            } else {
+                child.wait()
+            };
+            let (child, event) = match initial_stop {
+                Ok(wait) => wait.assume_stopped(),
+                Err(TraceError::Died(zombie)) => {
+                    let exit_status = match zombie.reap().await {
+                        Ok(exit_status) => exit_status,
+                        Err(error) => {
+                            tracing::error!(
+                                target: "reverie_ptrace::lifecycle",
+                                tid = %id,
+                                %error,
+                                "failed to reap new tracee after its initial-stop race"
+                            );
+                            return ExitStatus::Exited(1);
+                        }
+                    };
+                    tracing::error!(
+                        target: "reverie_ptrace::lifecycle",
+                        tid = %id,
+                        ?exit_status,
+                        "new tracee exited before its initial stop"
+                    );
+                    return exit_status;
+                }
+                Err(TraceError::Errno(errno)) => {
+                    tracing::error!(
+                        target: "reverie_ptrace::lifecycle",
+                        tid = %id,
+                        %errno,
+                        "failed waiting for new tracee initial stop"
+                    );
+                    return ExitStatus::Exited(1);
+                }
+            };
+
+            assert!(
+                event == Event::Signal(Signal::SIGSTOP) || event == Event::Exit,
+                "Got unexpected event {:?}",
+                event
+            );
+
+            if let Some(context) = child_restore_context {
+                // Restore context, but only if the child hasn't arrived at
+                // `Event::Exit`.
+                if event == Event::Signal(Signal::SIGSTOP)
+                    && let Err(err) = restore_context(&child, context, None, false)
+                {
+                    tracing::error!(
+                        tid = %child.pid(),
+                        error = %err,
+                        "failed to restore new tracee register context"
+                    );
+                    return ExitStatus::Exited(1);
+                }
+            }
+
+            if child_task.is_a_daemon {
+                child_task.ndaemons.fetch_add(1, Ordering::SeqCst);
+            }
+
+            let tid = child.pid();
+            let detach_held_root_stop = child_task
+                .liteinst_root_config()
+                .map(|runtime| Arc::clone(&runtime.held_root_stop));
+            match child_task.run(child).await {
+                Err(err) => {
+                    tracing::error!("Error in tracee tid {}: {}", tid, err);
+
+                    if liteinst_activation_failure_reason(&err).is_some() {
+                        // Every typed LiteInst activation failure has already
+                        // notified the session root. Its cleanup guard owns the
+                        // exact pidfds and notifier handles for this tree.
+                        // Detaching here lets a guest parent consume the child
+                        // before that notifier acknowledges terminal status.
+                        // This includes failed reactivation after exec, as well
+                        // as a refused exec or a kernel-frozen vfork parent.
+                        return ExitStatus::Exited(1);
+                    }
+
+                    // We assume the tracee is stopped since this error likely
+                    // originated from the tool itself when the tracee is
+                    // already stopped. If the tracee is not in a stopped state,
+                    // that's fine too and ignore the detach error.
+                    let detach_span = tracing::debug_span!(
+                        target: "reverie_ptrace::lifecycle",
+                        "tracee.detach",
+                        %tid,
+                        reason = "handler error"
+                    );
+                    let detach_guard = detach_span.enter();
+                    let running = match RootStopLease::new(
+                        Stopped::new_unchecked(tid),
+                        detach_held_root_stop,
+                    )
+                    .detach(None)
+                    {
+                        Err(err) => {
+                            // If we get an error here, the child process may
+                            // not be in a ptrace stop.
+                            tracing::error!("Failed to detach from {}: {}", tid, err);
+                            return ExitStatus::Exited(1);
+                        }
+                        Ok(running) => running,
+                    };
+                    drop(detach_guard);
+
+                    match running.next_state().await {
+                        Ok(wait) => wait.assume_exited().1,
+                        Err(TraceError::Died(zombie)) => match zombie.reap().await {
+                            Ok(exit_status) => exit_status,
+                            Err(error) => {
+                                tracing::error!(
+                                    %tid,
+                                    %error,
+                                    "failed to reap detached tracee"
+                                );
+                                ExitStatus::Exited(1)
+                            }

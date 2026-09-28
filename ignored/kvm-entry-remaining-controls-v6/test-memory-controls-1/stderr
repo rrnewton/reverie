@@ -1,0 +1,17 @@
+Running as unit: kvm-entry-owner-test-memory-controls-1-1379012.service
+
+thread 'memory::tests::entry_copy_tests::copy_unwind_captures_handle_origin_without_publishing_tool_failure' (1379212) panicked at reverie-kvm/src/memory.rs:2307:21:
+controlled admitted-copy unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'memory::tests::entry_copy_tests::retained_memory_copy_keeps_its_issuing_callback_generation' (1379215) panicked at reverie-kvm/src/memory.rs:2347:21:
+retained callback copy unwind
+
+thread 'memory::tests::entry_copy_tests::retired_memory_origin_retains_cause_without_expired_publisher' (1379216) panicked at reverie-kvm/src/memory.rs:2400:21:
+copy after owner retirement
+untouched snapshot: SEEK_DATA(0)=-1, error=Some(Os { code: 6, kind: Uncategorized, message: "No such device or address" }), initial_enxio=true, sparse_copy=Ok(())
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 71ms
+             CPU time consumed: 72ms
+                   Memory peak: 21.7M (swap: 0B)

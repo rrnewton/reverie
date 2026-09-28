@@ -1,0 +1,616 @@
+Running as unit: kvm-entry-clippy-v2-3613339.service
+    Checking reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-syscalls)
+    Checking reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie)
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+error: variants `Closing` and `Closed` are never constructed
+   --> reverie-kvm/src/entry.rs:263:5
+    |
+261 | enum Admission {
+    |      --------- variants in this enum
+262 |     Open,
+263 |     Closing(u64),
+    |     ^^^^^^^
+264 |     Closed(u64),
+    |     ^^^^^^
+    |
+    = note: `Admission` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: field `next_close` is never read
+   --> reverie-kvm/src/entry.rs:284:5
+    |
+281 | struct State {
+    |        ----- field in this struct
+...
+284 |     next_close: u64,
+    |     ^^^^^^^^^^
+
+error: method `stopped` is never used
+   --> reverie-kvm/src/entry.rs:367:8
+    |
+304 | impl State {
+    | ---------- method in this implementation
+...
+367 |     fn stopped(&self) -> bool {
+    |        ^^^^^^^
+
+error: methods `poison`, `try_close`, and `try_close_with` are never used
+   --> reverie-kvm/src/entry.rs:471:19
+    |
+415 | impl EntryGate {
+    | -------------- methods in this implementation
+...
+471 |     pub(crate) fn poison(
+    |                   ^^^^^^
+...
+572 |     pub(crate) fn try_close(self: &Arc<Self>) -> GateResult<Option<Closing>> {
+    |                   ^^^^^^^^^
+...
+586 |     fn try_close_with(
+    |        ^^^^^^^^^^^^^^
+
+error: struct `Closing` is never constructed
+   --> reverie-kvm/src/entry.rs:966:19
+    |
+966 | pub(crate) struct Closing {
+    |                   ^^^^^^^
+
+error: method `finish` is never used
+   --> reverie-kvm/src/entry.rs:973:25
+    |
+972 | impl Closing {
+    | ------------ method in this implementation
+973 |     pub(crate) async fn finish(mut self) -> GateResult<Closed> {
+    |                         ^^^^^^
+
+error: struct `Closed` is never constructed
+    --> reverie-kvm/src/entry.rs:1005:19
+     |
+1005 | pub(crate) struct Closed {
+     |                   ^^^^^^
+
+error: method `take_pending` is never used
+   --> reverie-kvm/src/entry/owner.rs:236:19
+    |
+220 | impl DriverOwner {
+    | ---------------- method in this implementation
+...
+236 |     pub(crate) fn take_pending(&self) -> Vec<Arc<PendingFailure>> {
+    |                   ^^^^^^^^^^^^
+
+error: fields `lifecycle` and `owner_available` are never read
+   --> reverie-kvm/src/entry/owner.rs:375:16
+    |
+373 | pub(crate) struct CaptureRejected {
+    |                   --------------- fields in this struct
+374 |     pub(crate) failure: Arc<PendingFailure>,
+375 |     pub(crate) lifecycle: DriverLifecycle,
+    |                ^^^^^^^^^
+376 |     pub(crate) owner_available: bool,
+    |                ^^^^^^^^^^^^^^^
+    |
+    = note: `CaptureRejected` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+error: methods `callback_id`, `same_callback`, and `callback_dropped` are never used
+   --> reverie-kvm/src/entry/owner.rs:402:19
+    |
+381 | impl OperationOrigin {
+    | -------------------- methods in this implementation
+...
+402 |     pub(crate) fn callback_id(&self) -> Option<u64> {
+    |                   ^^^^^^^^^^^
+...
+411 |     pub(crate) fn same_callback(&self, other: &Self) -> bool {
+    |                   ^^^^^^^^^^^^^
+...
+421 |     pub(crate) fn callback_dropped(&self) -> bool {
+    |                   ^^^^^^^^^^^^^^^^
+
+error: method `user_accessible_prefix` is never used
+    --> reverie-kvm/src/memory.rs:1203:19
+     |
+ 302 | impl GuestMemory {
+     | ---------------- method in this implementation
+...
+1203 |     pub(crate) fn user_accessible_prefix(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+error: this `if` statement can be collapsed
+   --> reverie-kvm/src/entry/driver.rs:403:9
+    |
+403 | /         if let Some(terminal) = &terminal {
+404 | |             if let Some(receipt) = terminal.clone().now_or_never() {
+405 | |                 return match receipt {
+406 | |                     Ok(()) => Err(Error::SharedFailure(result)),
+...   |
+413 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+403 ~         if let Some(terminal) = &terminal
+404 ~             && let Some(receipt) = terminal.clone().now_or_never() {
+405 |                 return match receipt {
+...
+411 |                 };
+412 ~             }
+    |
+
+error: this `if` statement can be collapsed
+    --> reverie-kvm/src/runtime.rs:2067:13
+     |
+2067 | /             if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+2068 | |                 if completion.output.is_none() {
+2069 | |                     completion.output = Some(HandlerOutcome::RuntimeError(error));
+2070 | |                 }
+2071 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+help: collapse nested if block
+     |
+2067 ~             if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err())
+2068 ~                 && completion.output.is_none() {
+2069 |                     completion.output = Some(HandlerOutcome::RuntimeError(error));
+2070 ~                 }
+     |
+
+error: this `if` statement can be collapsed
+    --> reverie-kvm/src/runtime.rs:2227:5
+     |
+2227 | /     if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+2228 | |         if completion.output.is_none() {
+2229 | |             completion.output = Some(HandlerOutcome::RuntimeError(error));
+2230 | |         }
+2231 | |     }
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+help: collapse nested if block
+     |
+2227 ~     if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err())
+2228 ~         && completion.output.is_none() {
+2229 |             completion.output = Some(HandlerOutcome::RuntimeError(error));
+2230 ~         }
+     |
+
+error: try not to call a closure in the expression where it is declared
+    --> reverie-kvm/src/vm.rs:2397:25
+     |
+2397 | /                         (move || {
+2398 | |                             let driver = child.start_entry_driver();
+2399 | |                             child_executor.bind_address_space(&child.memory);
+2400 | |                             let execution =
+...    |
+2481 | |                         })()
+     | |____________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure_call
+     = note: `-D clippy::redundant-closure-call` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::redundant_closure_call)]`
+help: try doing something like
+     |
+2397 ~                         {
+2398 +                             let driver = child.start_entry_driver();
+2399 +                             child_executor.bind_address_space(&child.memory);
+2400 +                             let execution =
+2401 +                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+2402 +                                     let result = child.run_static_elf_process(&mut child_executor);
+2403 +                                     child.restore_entry_origin();
+2404 +                                     child_executor.bind_address_space(&child.memory);
+2405 +                                     let result = futures::executor::block_on(
+2406 +                                         child.route_entry_outcome(result),
+2407 +                                     );
+2408 +                                     let result = result.map_err(|error| {
+2409 +                                         child.report_tool_failure("host worker outcome", error)
+2410 +                                     });
+2411 +                                     let cleanup = futures::executor::block_on(
+2412 +                                         crate::runtime::finish_unstarted_tool_cleanups_with_panics(
+2413 +                                             &mut child_executor,
+2414 +                                             &child.tool_panics,
+2415 +                                         ),
+2416 +                                     );
+2417 +                                     let result = match (result, cleanup) {
+2418 +                                         (Ok(value), Ok(())) => Ok(value),
+2419 +                                         (Ok(_), Err(error)) => Err(error),
+2420 +                                         (Err(error), Ok(())) => Err(error),
+2421 +                                         (Err(error), Err(cleanup)) => {
+2422 +                                             Err(error.with_cleanup(vec![cleanup]))
+2423 +                                         }
+2424 +                                     };
+2425 +                                     let result = futures::executor::block_on(
+2426 +                                         child.route_entry_outcome(result),
+2427 +                                     );
+2428 +                                     let failure = child.tool_failure.clone();
+2429 +                                     let result = finish_host_worker_outcome(
+2430 +                                         failure.as_ref(),
+2431 +                                         Pid::from_raw(child_tid),
+2432 +                                         result,
+2433 +                                         |failed| {
+2434 +                                             child.release_thread_slot();
+2435 +                                             clear_tid_and_wake(
+2436 +                                                 &mut child.memory,
+2437 +                                                 child_executor.take_clear_child_tid(),
+2438 +                                             );
+2439 +                                             if failed {
+2440 +                                                 child_executor.retire_failed_thread();
+2441 +                                                 child.thread_group.record_worker_failure(child_tid);
+2442 +                                             }
+2443 +                                         },
+2444 +                                     );
+2445 +                                     // Clear-TID is best effort, but a captured
+2446 +                                     // entry failure still belongs to this driver.
+2447 +                                     let result = futures::executor::block_on(
+2448 +                                         child.route_entry_outcome(result),
+2449 +                                     )
+2450 +                                     .map_err(|error| {
+2451 +                                         child.report_tool_failure("host worker retirement", error)
+2452 +                                     });
+2453 +                                     if let Err(error) = &result
+2454 +                                         && child.thread_group.take_worker_error_report(child_tid)
+2455 +                                     {
+2456 +                                         eprintln!(
+2457 +                                             "reverie-kvm guest thread {child_tid} failed: {error}"
+2458 +                                         );
+2459 +                                     }
+2460 +                                     result
+2461 +                                 }));
+2462 +                             match execution {
+2463 +                                 Ok(result) => {
+2464 +                                     let result = child.finish_entry_driver(driver, result).map_err(
+2465 +                                         |error| {
+2466 +                                             child.report_tool_failure(
+2467 +                                                 "host worker completion",
+2468 +                                                 error,
+2469 +                                             )
+2470 +                                         },
+2471 +                                     );
+2472 +                                     child.finish_deferred_worker_panic(child_tid, result)
+2473 +                                 }
+2474 +                                 Err(payload) => child.finish_panicked_guest_worker_with_entry(
+2475 +                                     &mut child_executor,
+2476 +                                     child_tid,
+2477 +                                     payload,
+2478 +                                     Some(driver),
+2479 +                                 ),
+2480 +                             }
+2481 +                         }
+     |
+
+error: returning the result of a `let` binding from a block
+    --> reverie-kvm/src/vm.rs:2928:33
+     |
+2881 | / ...                   let result =
+2882 | | ...                       match result {
+2883 | | ...                           Ok((status, _, _)) => {
+2884 | | ...                               write_tid_best_effort(
+...    |
+2926 | | ...                           Err(error) => Err(error),
+2927 | | ...                       };
+     | |____________________________- unnecessary `let` binding
+2928 |   ...                   result
+     |                         ^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#let_and_return
+     = note: `-D clippy::let-and-return` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::let_and_return)]`
+help: return the expression directly
+     |
+2881 ~                                 
+2882 ~                                 match result {
+2883 +                                         Ok((status, _, _)) => {
+2884 +                                             write_tid_best_effort(
+2885 +                                                 &mut child.backend.memory,
+2886 +                                                 child.executor.take_clear_child_tid(),
+2887 +                                                 0,
+2888 +                                             );
+2889 +                                             // A best-effort clear can have captured a real
+2890 +                                             // gate failure despite its unit return value.
+2891 +                                             futures::executor::block_on(
+2892 +                                                 child.backend.route_entry_outcome(Ok(())),
+2893 +                                             )?;
+2894 +                                             let waitable = !auto_reap.load(Ordering::SeqCst);
+2895 +                                             let completion =
+2896 +                                                 ChildCompletion::from_waitability(status, waitable);
+2897 +                                             *child_completion
+2898 +                                                 .lock()
+2899 +                                                 .expect("KVM child completion lock poisoned") =
+2900 +                                                 Some(completion);
+2901 +                                             let _ = completion_notifier.send(raw_child_pid);
+2902 +                                             let caught = futures::executor::block_on(
+2903 +                                     crate::failure::owned_future::catch_owned_future_from(|| {
+2904 +                                         lifecycle_state.on_backend_child_wait_event(
+2905 +                                             BackendChildWaitEvent {
+2906 +                                                 parent: parent_pid,
+2907 +                                                 child: child_pid,
+2908 +                                                 state: BackendChildWaitState::Exited {
+2909 +                                                     status,
+2910 +                                                     waitable,
+2911 +                                                 },
+2912 +                                             },
+2913 +                                         )
+2914 +                                     }),
+2915 +                                 );
+2916 +                                             child.backend.tool_panic_owner().finish(
+2917 +                                                 crate::failure::owned_future::CaughtFuture {
+2918 +                                                     output: caught.output.map(|result| {
+2919 +                                                         result.map_err(Error::Reverie)
+2920 +                                                     }),
+2921 +                                                     panics: caught.panics,
+2922 +                                                 },
+2923 +                                                 "child wait hook",
+2924 +                                             )
+2925 +                                         }
+2926 +                                         Err(error) => Err(error),
+2927 +                                     }
+     |
+
+error: try not to call a closure in the expression where it is declared
+    --> reverie-kvm/src/vm.rs:3191:25
+     |
+3191 | /                         (move || {
+3192 | |                             let driver = child.start_entry_driver();
+3193 | |                             child_executor.bind_address_space(&child.memory);
+3194 | |                             let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+...    |
+3282 | |                         })()
+     | |____________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure_call
+help: try doing something like
+     |
+3191 ~                         {
+3192 +                             let driver = child.start_entry_driver();
+3193 +                             child_executor.bind_address_space(&child.memory);
+3194 +                             let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+3195 +                                 || {
+3196 +                                     let start = start_receiver.recv();
+3197 +                                     let cancel = !matches!(start, Ok(ChildStartCommand::Start));
+3198 +                                     let failure = match start {
+3199 +                                         Ok(command) => command.failure(),
+3200 +                                         Err(_) => Some(Error::UnexpectedVcpuExit(format!(
+3201 +                                             "KVM guest thread {child_tid} lost its parent start gate"
+3202 +                                         ))),
+3203 +                                     };
+3204 +                                     let result = if cancel {
+3205 +                                         futures::executor::block_on(child.finish_unstarted_tool(
+3206 +                                             &mut child_executor,
+3207 +                                             child_tool,
+3208 +                                             (tgid, child_tid_pid),
+3209 +                                             global_state.as_ref(),
+3210 +                                             &config,
+3211 +                                             child_thread_state,
+3212 +                                             failure,
+3213 +                                         ))
+3214 +                                     } else {
+3215 +                                         futures::executor::block_on(
+3216 +                                             child.run_static_elf_process_with_tool(
+3217 +                                                 &mut child_executor,
+3218 +                                                 tgid,
+3219 +                                                 child_tid_pid,
+3220 +                                                 child_tool,
+3221 +                                                 child_thread_state,
+3222 +                                                 global_state,
+3223 +                                                 &config,
+3224 +                                                 &subscriptions,
+3225 +                                                 false,
+3226 +                                             ),
+3227 +                                         )
+3228 +                                     };
+3229 +                                     child.restore_entry_origin();
+3230 +                                     child_executor.bind_address_space(&child.memory);
+3231 +                                     child.release_thread_slot();
+3232 +                                     clear_tid_and_wake(
+3233 +                                         &mut child.memory,
+3234 +                                         child_executor.take_clear_child_tid(),
+3235 +                                     );
+3236 +                                     let result = futures::executor::block_on(
+3237 +                                         child.route_entry_outcome(result),
+3238 +                                     )
+3239 +                                     .map_err(|error| {
+3240 +                                         child.report_tool_failure("Tool worker retirement", error)
+3241 +                                     });
+3242 +                                     let peer_cancelled =
+3243 +                                         crate::runtime::is_peer_cancelled_tool_worker(
+3244 +                                             (tgid, child_tid_pid),
+3245 +                                             !cancel,
+3246 +                                             &result,
+3247 +                                         );
+3248 +                                     if result.is_err() && !peer_cancelled {
+3249 +                                         child_executor.retire_failed_thread();
+3250 +                                         child.thread_group.record_worker_failure(child_tid);
+3251 +                                     }
+3252 +                                     if let Err(error) = &result
+3253 +                                         && !peer_cancelled
+3254 +                                         && child.thread_group.take_worker_error_report(child_tid)
+3255 +                                     {
+3256 +                                         eprintln!(
+3257 +                                             "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+3258 +                                         );
+3259 +                                     }
+3260 +                                     result
+3261 +                                 },
+3262 +                             ));
+3263 +                             match execution {
+3264 +                                 Ok(result) => {
+3265 +                                     let result = child.finish_entry_driver(driver, result).map_err(
+3266 +                                         |error| {
+3267 +                                             child.report_tool_failure(
+3268 +                                                 "Tool worker completion",
+3269 +                                                 error,
+3270 +                                             )
+3271 +                                         },
+3272 +                                     );
+3273 +                                     child.finish_deferred_worker_panic(child_tid, result)
+3274 +                                 }
+3275 +                                 Err(payload) => child.finish_panicked_guest_worker_with_entry(
+3276 +                                     &mut child_executor,
+3277 +                                     child_tid,
+3278 +                                     payload,
+3279 +                                     Some(driver),
+3280 +                                 ),
+3281 +                             }
+3282 +                         }
+     |
+
+error: called `.err().expect()` on a `Result` value
+    --> reverie-kvm/src/vm.rs:4580:26
+     |
+4580 |                           .err()
+     |  __________________________^
+4581 | |                         .expect("private entry interruption lost its captured cause")));
+     | |_______________________________^ help: try: `expect_err`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#err_expect
+     = note: `-D clippy::err-expect` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::err_expect)]`
+
+error: could not compile `reverie-kvm` (lib) due to 18 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: very complex type used. Consider factoring parts into `type` definitions
+  --> reverie-kvm/src/clock.rs:54:17
+   |
+54 |     before_run: std::sync::Mutex<Option<Box<dyn FnOnce(&RunProbe) + Send>>>,
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+   = note: `-D clippy::type-complexity` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: this `if` statement can be collapsed
+   --> reverie-kvm/src/entry/cleanup_tests.rs:259:9
+    |
+259 | /         if let Some(handle) = handle {
+260 | |             if let Err(payload) = handle.join() {
+261 | |                 if !std::thread::panicking() {
+262 | |                     std::panic::resume_unwind(payload);
+...   |
+265 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+help: collapse nested if block
+    |
+259 ~         if let Some(handle) = handle
+260 ~             && let Err(payload) = handle.join() {
+261 |                 if !std::thread::panicking() {
+262 |                     std::panic::resume_unwind(payload);
+263 |                 }
+264 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> reverie-kvm/src/entry/cleanup_tests.rs:260:13
+    |
+260 | /             if let Err(payload) = handle.join() {
+261 | |                 if !std::thread::panicking() {
+262 | |                     std::panic::resume_unwind(payload);
+263 | |                 }
+264 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_if
+help: collapse nested if block
+    |
+260 ~             if let Err(payload) = handle.join()
+261 ~                 && !std::thread::panicking() {
+262 |                     std::panic::resume_unwind(payload);
+263 ~                 }
+    |
+
+error: very complex type used. Consider factoring parts into `type` definitions
+  --> reverie-kvm/src/entry.rs:71:14
+   |
+71 |     cleanup: Mutex<[Option<Box<dyn FnOnce(CleanupIdentity) + Send>>; 3]>,
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: very complex type used. Consider factoring parts into `type` definitions
+  --> reverie-kvm/src/memory.rs:43:37
+   |
+43 |     test_syscall_dispatch_observer: Option<Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>>,
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: unneeded late initialization
+    --> reverie-kvm/src/memory.rs:2051:13
+     |
+2051 |             let result;
+     |             ^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_late_init
+     = note: `-D clippy::needless-late-init` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_late_init)]`
+help: move the declaration `result` here and remove the assignments from the branches
+     |
+2051 ~             
+2052 |             let mut output = [0xa5; 4];
+2053 ~             let result = if write {
+2054 |                 let source = [io::IoSlice::new(b"AB"), io::IoSlice::new(b"CD")];
+ ...
+2059 |                 };
+2060 ~                 adapter.write_vectored(&source, &mut [unsafe { destination.as_ioslice_mut() }])
+2061 |             } else {
+ ...
+2066 |                 let (left, right) = output.split_at_mut(2);
+2067 ~                 adapter.read_vectored(
+2068 |                     &[unsafe { source.as_ioslice() }],
+2069 |                     &mut [io::IoSliceMut::new(left), io::IoSliceMut::new(right)],
+2070 ~                 )
+2071 ~             };
+     |
+
+error: very complex type used. Consider factoring parts into `type` definitions
+    --> reverie-kvm/src/vm.rs:4982:34
+     |
+4982 |                   let mut capture: Pin<
+     |  __________________________________^
+4983 | |                     Box<dyn Future<Output = Result<Option<(kvm_regs, Vec<u8>)>>> + '_>,
+4984 | |                 > = if boundary_capture {
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#type_complexity
+
+error: try not to call a closure in the expression where it is declared
+   --> reverie-kvm/src/vm/exec_wait_tests.rs:106:9
+    |
+106 | /         (move || -> GuestWorkerResult {
+107 | |             assert_eq!(
+108 | |                 wait_start.recv_timeout(WAIT).unwrap(),
+109 | |                 ChildStartCommand::Cancel
+...   |
+117 | |             Err(Error::RunAborted)
+118 | |         })()
+    | |____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#redundant_closure_call
+help: try doing something like
+    |
+106 ~         {
+107 +             assert_eq!(
+108 +                 wait_start.recv_timeout(WAIT).unwrap(),
+109 +                 ChildStartCommand::Cancel
+110 +             );
+111 +             cancelled.send(()).unwrap();
+112 +             // A regressed blocking join is finite too: this receive times out
+113 +             // and fails the worker rather than stranding the control process.
+114 +             wait_release.recv_timeout(WAIT).unwrap();
+115 +             assert!(worker_destroyed.load(Ordering::Acquire));
+116 +             assert!(worker_run.published_primary().is_some());
+117 +             Err(Error::RunAborted)
+118 +         }
+    |
+
+error: could not compile `reverie-kvm` (lib test) due to 15 previous errors
+          Finished with result: exit-code
+Main processes terminated with: code=exited, status=101/n/a
+               Service runtime: 14.188s
+             CPU time consumed: 17.113s
+                   Memory peak: 873.3M (swap: 0B)
+                      IO Bytes: written 285M

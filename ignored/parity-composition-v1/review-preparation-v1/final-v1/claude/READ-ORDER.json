@@ -1,0 +1,1703 @@
+{
+  "scope": "This continuation only; canonical prior grounding is separate.",
+  "required_chunks": 164,
+  "first_complete_order_matches_index": false,
+  "permutation": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    92,
+    94,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    108,
+    109,
+    110,
+    111,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    93,
+    141,
+    142,
+    143,
+    144,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    160,
+    159,
+    161,
+    162,
+    163,
+    164,
+    145,
+    148,
+    116,
+    117,
+    118,
+    119,
+    134,
+    133,
+    132,
+    139,
+    124,
+    140,
+    137,
+    138,
+    112,
+    113,
+    114,
+    115,
+    120,
+    121,
+    95,
+    96,
+    97,
+    98,
+    99,
+    122,
+    100,
+    101,
+    102,
+    103,
+    104,
+    123,
+    105,
+    106,
+    107,
+    125,
+    135,
+    136,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    146,
+    147
+  ],
+  "deviations": [
+    {
+      "actual_position": 33,
+      "index_position": 92
+    },
+    {
+      "actual_position": 34,
+      "index_position": 94
+    },
+    {
+      "actual_position": 35,
+      "index_position": 33
+    },
+    {
+      "actual_position": 36,
+      "index_position": 34
+    },
+    {
+      "actual_position": 37,
+      "index_position": 35
+    },
+    {
+      "actual_position": 38,
+      "index_position": 36
+    },
+    {
+      "actual_position": 39,
+      "index_position": 37
+    },
+    {
+      "actual_position": 40,
+      "index_position": 38
+    },
+    {
+      "actual_position": 41,
+      "index_position": 39
+    },
+    {
+      "actual_position": 42,
+      "index_position": 40
+    },
+    {
+      "actual_position": 43,
+      "index_position": 41
+    },
+    {
+      "actual_position": 44,
+      "index_position": 42
+    },
+    {
+      "actual_position": 45,
+      "index_position": 43
+    },
+    {
+      "actual_position": 46,
+      "index_position": 44
+    },
+    {
+      "actual_position": 47,
+      "index_position": 45
+    },
+    {
+      "actual_position": 48,
+      "index_position": 46
+    },
+    {
+      "actual_position": 49,
+      "index_position": 47
+    },
+    {
+      "actual_position": 50,
+      "index_position": 48
+    },
+    {
+      "actual_position": 51,
+      "index_position": 49
+    },
+    {
+      "actual_position": 52,
+      "index_position": 50
+    },
+    {
+      "actual_position": 53,
+      "index_position": 51
+    },
+    {
+      "actual_position": 54,
+      "index_position": 52
+    },
+    {
+      "actual_position": 55,
+      "index_position": 53
+    },
+    {
+      "actual_position": 56,
+      "index_position": 54
+    },
+    {
+      "actual_position": 57,
+      "index_position": 55
+    },
+    {
+      "actual_position": 58,
+      "index_position": 56
+    },
+    {
+      "actual_position": 59,
+      "index_position": 57
+    },
+    {
+      "actual_position": 60,
+      "index_position": 58
+    },
+    {
+      "actual_position": 61,
+      "index_position": 59
+    },
+    {
+      "actual_position": 62,
+      "index_position": 60
+    },
+    {
+      "actual_position": 63,
+      "index_position": 61
+    },
+    {
+      "actual_position": 64,
+      "index_position": 62
+    },
+    {
+      "actual_position": 65,
+      "index_position": 63
+    },
+    {
+      "actual_position": 66,
+      "index_position": 64
+    },
+    {
+      "actual_position": 67,
+      "index_position": 65
+    },
+    {
+      "actual_position": 68,
+      "index_position": 66
+    },
+    {
+      "actual_position": 69,
+      "index_position": 67
+    },
+    {
+      "actual_position": 70,
+      "index_position": 68
+    },
+    {
+      "actual_position": 71,
+      "index_position": 69
+    },
+    {
+      "actual_position": 72,
+      "index_position": 108
+    },
+    {
+      "actual_position": 73,
+      "index_position": 109
+    },
+    {
+      "actual_position": 74,
+      "index_position": 110
+    },
+    {
+      "actual_position": 75,
+      "index_position": 111
+    },
+    {
+      "actual_position": 76,
+      "index_position": 70
+    },
+    {
+      "actual_position": 77,
+      "index_position": 71
+    },
+    {
+      "actual_position": 78,
+      "index_position": 72
+    },
+    {
+      "actual_position": 79,
+      "index_position": 73
+    },
+    {
+      "actual_position": 80,
+      "index_position": 74
+    },
+    {
+      "actual_position": 81,
+      "index_position": 75
+    },
+    {
+      "actual_position": 82,
+      "index_position": 76
+    },
+    {
+      "actual_position": 83,
+      "index_position": 77
+    },
+    {
+      "actual_position": 84,
+      "index_position": 78
+    },
+    {
+      "actual_position": 85,
+      "index_position": 79
+    },
+    {
+      "actual_position": 86,
+      "index_position": 80
+    },
+    {
+      "actual_position": 87,
+      "index_position": 81
+    },
+    {
+      "actual_position": 88,
+      "index_position": 82
+    },
+    {
+      "actual_position": 89,
+      "index_position": 83
+    },
+    {
+      "actual_position": 90,
+      "index_position": 84
+    },
+    {
+      "actual_position": 91,
+      "index_position": 85
+    },
+    {
+      "actual_position": 92,
+      "index_position": 86
+    },
+    {
+      "actual_position": 93,
+      "index_position": 87
+    },
+    {
+      "actual_position": 94,
+      "index_position": 88
+    },
+    {
+      "actual_position": 95,
+      "index_position": 89
+    },
+    {
+      "actual_position": 96,
+      "index_position": 90
+    },
+    {
+      "actual_position": 97,
+      "index_position": 91
+    },
+    {
+      "actual_position": 98,
+      "index_position": 93
+    },
+    {
+      "actual_position": 99,
+      "index_position": 141
+    },
+    {
+      "actual_position": 100,
+      "index_position": 142
+    },
+    {
+      "actual_position": 101,
+      "index_position": 143
+    },
+    {
+      "actual_position": 102,
+      "index_position": 144
+    },
+    {
+      "actual_position": 103,
+      "index_position": 149
+    },
+    {
+      "actual_position": 104,
+      "index_position": 150
+    },
+    {
+      "actual_position": 105,
+      "index_position": 151
+    },
+    {
+      "actual_position": 106,
+      "index_position": 152
+    },
+    {
+      "actual_position": 107,
+      "index_position": 153
+    },
+    {
+      "actual_position": 108,
+      "index_position": 154
+    },
+    {
+      "actual_position": 109,
+      "index_position": 155
+    },
+    {
+      "actual_position": 110,
+      "index_position": 156
+    },
+    {
+      "actual_position": 111,
+      "index_position": 157
+    },
+    {
+      "actual_position": 112,
+      "index_position": 158
+    },
+    {
+      "actual_position": 113,
+      "index_position": 160
+    },
+    {
+      "actual_position": 114,
+      "index_position": 159
+    },
+    {
+      "actual_position": 115,
+      "index_position": 161
+    },
+    {
+      "actual_position": 116,
+      "index_position": 162
+    },
+    {
+      "actual_position": 117,
+      "index_position": 163
+    },
+    {
+      "actual_position": 118,
+      "index_position": 164
+    },
+    {
+      "actual_position": 119,
+      "index_position": 145
+    },
+    {
+      "actual_position": 120,
+      "index_position": 148
+    },
+    {
+      "actual_position": 121,
+      "index_position": 116
+    },
+    {
+      "actual_position": 122,
+      "index_position": 117
+    },
+    {
+      "actual_position": 123,
+      "index_position": 118
+    },
+    {
+      "actual_position": 124,
+      "index_position": 119
+    },
+    {
+      "actual_position": 125,
+      "index_position": 134
+    },
+    {
+      "actual_position": 126,
+      "index_position": 133
+    },
+    {
+      "actual_position": 127,
+      "index_position": 132
+    },
+    {
+      "actual_position": 128,
+      "index_position": 139
+    },
+    {
+      "actual_position": 129,
+      "index_position": 124
+    },
+    {
+      "actual_position": 130,
+      "index_position": 140
+    },
+    {
+      "actual_position": 131,
+      "index_position": 137
+    },
+    {
+      "actual_position": 132,
+      "index_position": 138
+    },
+    {
+      "actual_position": 133,
+      "index_position": 112
+    },
+    {
+      "actual_position": 134,
+      "index_position": 113
+    },
+    {
+      "actual_position": 135,
+      "index_position": 114
+    },
+    {
+      "actual_position": 136,
+      "index_position": 115
+    },
+    {
+      "actual_position": 137,
+      "index_position": 120
+    },
+    {
+      "actual_position": 138,
+      "index_position": 121
+    },
+    {
+      "actual_position": 139,
+      "index_position": 95
+    },
+    {
+      "actual_position": 140,
+      "index_position": 96
+    },
+    {
+      "actual_position": 141,
+      "index_position": 97
+    },
+    {
+      "actual_position": 142,
+      "index_position": 98
+    },
+    {
+      "actual_position": 143,
+      "index_position": 99
+    },
+    {
+      "actual_position": 144,
+      "index_position": 122
+    },
+    {
+      "actual_position": 145,
+      "index_position": 100
+    },
+    {
+      "actual_position": 146,
+      "index_position": 101
+    },
+    {
+      "actual_position": 147,
+      "index_position": 102
+    },
+    {
+      "actual_position": 148,
+      "index_position": 103
+    },
+    {
+      "actual_position": 149,
+      "index_position": 104
+    },
+    {
+      "actual_position": 150,
+      "index_position": 123
+    },
+    {
+      "actual_position": 151,
+      "index_position": 105
+    },
+    {
+      "actual_position": 152,
+      "index_position": 106
+    },
+    {
+      "actual_position": 153,
+      "index_position": 107
+    },
+    {
+      "actual_position": 154,
+      "index_position": 125
+    },
+    {
+      "actual_position": 155,
+      "index_position": 135
+    },
+    {
+      "actual_position": 156,
+      "index_position": 136
+    },
+    {
+      "actual_position": 157,
+      "index_position": 126
+    },
+    {
+      "actual_position": 158,
+      "index_position": 127
+    },
+    {
+      "actual_position": 159,
+      "index_position": 128
+    },
+    {
+      "actual_position": 160,
+      "index_position": 129
+    },
+    {
+      "actual_position": 161,
+      "index_position": 130
+    },
+    {
+      "actual_position": 162,
+      "index_position": 131
+    },
+    {
+      "actual_position": 163,
+      "index_position": 146
+    },
+    {
+      "actual_position": 164,
+      "index_position": 147
+    }
+  ],
+  "chunks": [
+    {
+      "index_position": 1,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/source-scope-00001-00005.txt",
+      "first_complete_result_event": 43,
+      "tool_id": "toolu_vrtx_01UA9dxstfgPg4VDHWLew7Uc"
+    },
+    {
+      "index_position": 2,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/source-identity-00001-00063.txt",
+      "first_complete_result_event": 45,
+      "tool_id": "toolu_vrtx_01DaJEJCrfGk3xa3LEyF2M4B"
+    },
+    {
+      "index_position": 3,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-grounding-00001-00160.txt",
+      "first_complete_result_event": 47,
+      "tool_id": "toolu_vrtx_01RCMCobX2U5x8UZjiNx4sZ2"
+    },
+    {
+      "index_position": 4,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-grounding-00161-00320.txt",
+      "first_complete_result_event": 49,
+      "tool_id": "toolu_vrtx_01GynUmUJVX9TUmwbyhViME6"
+    },
+    {
+      "index_position": 5,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-grounding-00321-00480.txt",
+      "first_complete_result_event": 51,
+      "tool_id": "toolu_vrtx_012S3qj1GD3iAnsCY7KKoe2C"
+    },
+    {
+      "index_position": 6,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-grounding-00481-00583.txt",
+      "first_complete_result_event": 52,
+      "tool_id": "toolu_vrtx_01Gv9Cby5UBvJFWYzLcCAbFK"
+    },
+    {
+      "index_position": 7,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-prior-report-00001-00085.txt",
+      "first_complete_result_event": 56,
+      "tool_id": "toolu_vrtx_01CtXBuesE3KWdn7xEWH4C4Z"
+    },
+    {
+      "index_position": 8,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-prior-report-00086-00149.txt",
+      "first_complete_result_event": 58,
+      "tool_id": "toolu_vrtx_01Bvc2wrvASQB3YyM4VHEj8B"
+    },
+    {
+      "index_position": 9,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-prior-report-00150-00215.txt",
+      "first_complete_result_event": 60,
+      "tool_id": "toolu_vrtx_01SLroRu8SSSxKj1iSe626pt"
+    },
+    {
+      "index_position": 10,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-prior-report-00216-00222.txt",
+      "first_complete_result_event": 61,
+      "tool_id": "toolu_vrtx_013TjjJWk5LSWJYk74Ecfese"
+    },
+    {
+      "index_position": 11,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00001-00160.txt",
+      "first_complete_result_event": 65,
+      "tool_id": "toolu_vrtx_01YSKPY6e1XhedzyXjUau8Gt"
+    },
+    {
+      "index_position": 12,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00161-00320.txt",
+      "first_complete_result_event": 67,
+      "tool_id": "toolu_vrtx_01ECFzrGy5Lw4NkYRu4RzQpC"
+    },
+    {
+      "index_position": 13,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00321-00480.txt",
+      "first_complete_result_event": 69,
+      "tool_id": "toolu_vrtx_01Y7sGbmenPFHDAb87GRC8v8"
+    },
+    {
+      "index_position": 14,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00481-00640.txt",
+      "first_complete_result_event": 70,
+      "tool_id": "toolu_vrtx_01NZBdZxAB9gThdsoBVjkukh"
+    },
+    {
+      "index_position": 15,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00641-00800.txt",
+      "first_complete_result_event": 74,
+      "tool_id": "toolu_vrtx_01TBiNKKHE9mc5Y69xCj4Kzv"
+    },
+    {
+      "index_position": 16,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00801-00960.txt",
+      "first_complete_result_event": 76,
+      "tool_id": "toolu_vrtx_01RiTTsoU8tZRqtSxyDYUfNN"
+    },
+    {
+      "index_position": 17,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00961-01120.txt",
+      "first_complete_result_event": 78,
+      "tool_id": "toolu_vrtx_01UwuDeXNcXjuCThWLL1N9yD"
+    },
+    {
+      "index_position": 18,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01121-01280.txt",
+      "first_complete_result_event": 79,
+      "tool_id": "toolu_vrtx_01DR7Ppscfdt9RPxovxaMSac"
+    },
+    {
+      "index_position": 19,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01281-01440.txt",
+      "first_complete_result_event": 83,
+      "tool_id": "toolu_vrtx_01BzTZqJnGg8EgtmF4VkZF1b"
+    },
+    {
+      "index_position": 20,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01441-01600.txt",
+      "first_complete_result_event": 85,
+      "tool_id": "toolu_vrtx_01XHigwRoBWfaG16sjvTxBqv"
+    },
+    {
+      "index_position": 21,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01601-01760.txt",
+      "first_complete_result_event": 87,
+      "tool_id": "toolu_vrtx_01JHAXan6KQQ3rGSjT2qFWYn"
+    },
+    {
+      "index_position": 22,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01761-01920.txt",
+      "first_complete_result_event": 88,
+      "tool_id": "toolu_vrtx_01Lj93VZyyMGJfWaPcUwe76q"
+    },
+    {
+      "index_position": 23,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01921-02075.txt",
+      "first_complete_result_event": 92,
+      "tool_id": "toolu_vrtx_016vwCNij9RxSvQ1gmk5p8qc"
+    },
+    {
+      "index_position": 24,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02076-02235.txt",
+      "first_complete_result_event": 94,
+      "tool_id": "toolu_vrtx_018b5FbEtCe3MJWJLmLjpqpi"
+    },
+    {
+      "index_position": 25,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02236-02395.txt",
+      "first_complete_result_event": 96,
+      "tool_id": "toolu_vrtx_012FYnQ4gCjRJmCfXAQGwdMn"
+    },
+    {
+      "index_position": 26,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02396-02555.txt",
+      "first_complete_result_event": 97,
+      "tool_id": "toolu_vrtx_017wNwPqrXeVog13BU7whZje"
+    },
+    {
+      "index_position": 27,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02556-02715.txt",
+      "first_complete_result_event": 101,
+      "tool_id": "toolu_vrtx_01S83x6DSnpL4YWtfLi2ZhMv"
+    },
+    {
+      "index_position": 28,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02716-02875.txt",
+      "first_complete_result_event": 103,
+      "tool_id": "toolu_vrtx_01BK4eqXhJVnugf8n8PMuyEw"
+    },
+    {
+      "index_position": 29,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02876-03035.txt",
+      "first_complete_result_event": 105,
+      "tool_id": "toolu_vrtx_013UBxydnqa6HhcpNh1Q21xK"
+    },
+    {
+      "index_position": 30,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-03036-03195.txt",
+      "first_complete_result_event": 106,
+      "tool_id": "toolu_vrtx_01WGczBbd6EQz1C31NHmJPGW"
+    },
+    {
+      "index_position": 31,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-03196-03355.txt",
+      "first_complete_result_event": 110,
+      "tool_id": "toolu_vrtx_01PPUFtWa2WbmciFKbZmrhAG"
+    },
+    {
+      "index_position": 32,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-03356-03378.txt",
+      "first_complete_result_event": 112,
+      "tool_id": "toolu_vrtx_01CULdkgwx22wrpeYEhepNkP"
+    },
+    {
+      "index_position": 33,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity.rs-00001-00152.txt",
+      "first_complete_result_event": 119,
+      "tool_id": "toolu_vrtx_01ASdK2HzaYnKxzGJeHzXdY8"
+    },
+    {
+      "index_position": 34,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity_tests.rs-00001-00160.txt",
+      "first_complete_result_event": 121,
+      "tool_id": "toolu_vrtx_01Cp713M6dcqQh1e9Wwn7MEq"
+    },
+    {
+      "index_position": 35,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity_tests.rs-00161-00320.txt",
+      "first_complete_result_event": 122,
+      "tool_id": "toolu_vrtx_01Faja7iWByTWgDLMsTihZJE"
+    },
+    {
+      "index_position": 36,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity_tests.rs-00321-00480.txt",
+      "first_complete_result_event": 125,
+      "tool_id": "toolu_vrtx_01Frt47HnGU3hKRAcDwkHXnN"
+    },
+    {
+      "index_position": 37,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity_tests.rs-00481-00533.txt",
+      "first_complete_result_event": 126,
+      "tool_id": "toolu_vrtx_01SBYUUMfy2yzycXjV8meZkt"
+    },
+    {
+      "index_position": 38,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-cpuid_instruction.rs-00001-00160.txt",
+      "first_complete_result_event": 130,
+      "tool_id": "toolu_vrtx_016qvZtvvdgFZRikKvwqe9xL"
+    },
+    {
+      "index_position": 39,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-cpuid_instruction.rs-00161-00320.txt",
+      "first_complete_result_event": 131,
+      "tool_id": "toolu_vrtx_017VXVPPX8qY4M5E7UGqx1p3"
+    },
+    {
+      "index_position": 40,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-cpuid_instruction.rs-00321-00379.txt",
+      "first_complete_result_event": 134,
+      "tool_id": "toolu_vrtx_01BqsQFen99AscsuzZR3K6GB"
+    },
+    {
+      "index_position": 41,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-cpuid_runtime_tests.rs-00001-00146.txt",
+      "first_complete_result_event": 135,
+      "tool_id": "toolu_vrtx_01RQBMU6tU4TQLo6JGXnCtsj"
+    },
+    {
+      "index_position": 42,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-capture_identity.rs-00001-00100.txt",
+      "first_complete_result_event": 138,
+      "tool_id": "toolu_vrtx_01E2UySFkXJRi2yAyyK2UoyN"
+    },
+    {
+      "index_position": 43,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_dispatch.rs-00001-00160.txt",
+      "first_complete_result_event": 141,
+      "tool_id": "toolu_vrtx_01RSH1h3SDu7gvAuTJqbD9x7"
+    },
+    {
+      "index_position": 44,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_dispatch.rs-00161-00320.txt",
+      "first_complete_result_event": 143,
+      "tool_id": "toolu_vrtx_014Kbe4FXfFVCcyLCeMK5JZZ"
+    },
+    {
+      "index_position": 45,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_dispatch.rs-00321-00480.txt",
+      "first_complete_result_event": 145,
+      "tool_id": "toolu_vrtx_01TE67btwvRwcrNU2bgWUgs9"
+    },
+    {
+      "index_position": 46,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_dispatch.rs-00481-00561.txt",
+      "first_complete_result_event": 146,
+      "tool_id": "toolu_vrtx_01KU9UHdWHxG5n5vH27MCMwx"
+    },
+    {
+      "index_position": 47,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_terminal.rs-00001-00160.txt",
+      "first_complete_result_event": 149,
+      "tool_id": "toolu_vrtx_01TLYsCgHwfqTZqLiwDUe7wv"
+    },
+    {
+      "index_position": 48,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_terminal.rs-00161-00320.txt",
+      "first_complete_result_event": 152,
+      "tool_id": "toolu_vrtx_01GQExbBB2SGhWktj22t4JN5"
+    },
+    {
+      "index_position": 49,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_terminal.rs-00321-00360.txt",
+      "first_complete_result_event": 154,
+      "tool_id": "toolu_vrtx_01Pge8wpj225aTfmStXFucWJ"
+    },
+    {
+      "index_position": 50,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00001-00160.txt",
+      "first_complete_result_event": 156,
+      "tool_id": "toolu_vrtx_01VnrmWjN4c8coVsrvTvG4MG"
+    },
+    {
+      "index_position": 51,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00161-00320.txt",
+      "first_complete_result_event": 157,
+      "tool_id": "toolu_vrtx_01Y6SzYNBPcraJa6dhMtiX5K"
+    },
+    {
+      "index_position": 52,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00321-00480.txt",
+      "first_complete_result_event": 161,
+      "tool_id": "toolu_vrtx_01VY6RvRCQN6m5M1uCKfxHUV"
+    },
+    {
+      "index_position": 53,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00481-00640.txt",
+      "first_complete_result_event": 162,
+      "tool_id": "toolu_vrtx_019HXvzsmR95Rj7fKxGj2pj1"
+    },
+    {
+      "index_position": 54,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00641-00800.txt",
+      "first_complete_result_event": 165,
+      "tool_id": "toolu_vrtx_012SyJCWuWXKZT4dCLQBuG4S"
+    },
+    {
+      "index_position": 55,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00801-00960.txt",
+      "first_complete_result_event": 167,
+      "tool_id": "toolu_vrtx_01ACehWJttQ1RYroDVKuA5Q4"
+    },
+    {
+      "index_position": 56,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00961-01120.txt",
+      "first_complete_result_event": 169,
+      "tool_id": "toolu_vrtx_012nRdirQNzxM2KFHKEAwUiU"
+    },
+    {
+      "index_position": 57,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01121-01280.txt",
+      "first_complete_result_event": 170,
+      "tool_id": "toolu_vrtx_01SnseAHLQfLwn1CrBSDuzh4"
+    },
+    {
+      "index_position": 58,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01281-01440.txt",
+      "first_complete_result_event": 174,
+      "tool_id": "toolu_vrtx_017RNMMy3dJraQ2ecLRb4ZTT"
+    },
+    {
+      "index_position": 59,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01441-01600.txt",
+      "first_complete_result_event": 175,
+      "tool_id": "toolu_vrtx_012n9hkbhUbmVMSdpKBbDyCM"
+    },
+    {
+      "index_position": 60,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01601-01760.txt",
+      "first_complete_result_event": 178,
+      "tool_id": "toolu_vrtx_01FNX4eBwvksioReCarqbsyq"
+    },
+    {
+      "index_position": 61,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01761-01920.txt",
+      "first_complete_result_event": 180,
+      "tool_id": "toolu_vrtx_01QPG239uU8qEpqcdHeN8rC3"
+    },
+    {
+      "index_position": 62,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01921-02080.txt",
+      "first_complete_result_event": 182,
+      "tool_id": "toolu_vrtx_012aucftA6GUyLVWjbSMUuYd"
+    },
+    {
+      "index_position": 63,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02081-02240.txt",
+      "first_complete_result_event": 183,
+      "tool_id": "toolu_vrtx_01EmSo3G4BBABBvUVddG4zUF"
+    },
+    {
+      "index_position": 64,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02241-02400.txt",
+      "first_complete_result_event": 186,
+      "tool_id": "toolu_vrtx_01DsrJ36rZvaYWpLpYjhYp3C"
+    },
+    {
+      "index_position": 65,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02401-02560.txt",
+      "first_complete_result_event": 190,
+      "tool_id": "toolu_vrtx_01A2cX5c7QqPvA52c5xQkoTM"
+    },
+    {
+      "index_position": 66,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02561-02720.txt",
+      "first_complete_result_event": 191,
+      "tool_id": "toolu_vrtx_01SL4ugjpaeKAgTeCKiwVdYs"
+    },
+    {
+      "index_position": 67,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02721-02880.txt",
+      "first_complete_result_event": 193,
+      "tool_id": "toolu_vrtx_011nGR7HtZ3bBtgHdkBdbdGq"
+    },
+    {
+      "index_position": 68,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02881-03022.txt",
+      "first_complete_result_event": 195,
+      "tool_id": "toolu_vrtx_01AMzahb4CEKf2vhbe87ZXrf"
+    },
+    {
+      "index_position": 69,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-lib.rs-00001-00027.txt",
+      "first_complete_result_event": 196,
+      "tool_id": "toolu_vrtx_01Vc3fWFGjEmzcjZshkA2o89"
+    },
+    {
+      "index_position": 70,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00001-00160.txt",
+      "first_complete_result_event": 209,
+      "tool_id": "toolu_vrtx_013ZXjWrZRgHwe7E7N2ba5wB"
+    },
+    {
+      "index_position": 71,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00161-00320.txt",
+      "first_complete_result_event": 211,
+      "tool_id": "toolu_vrtx_014Br2va1pzsVfWPgvBnLCDM"
+    },
+    {
+      "index_position": 72,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00321-00480.txt",
+      "first_complete_result_event": 213,
+      "tool_id": "toolu_vrtx_01AAtfV5aBhykDJSrnza6EQh"
+    },
+    {
+      "index_position": 73,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00481-00640.txt",
+      "first_complete_result_event": 215,
+      "tool_id": "toolu_vrtx_01VPgnuKmcz9siFVwvWZb18V"
+    },
+    {
+      "index_position": 74,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00641-00800.txt",
+      "first_complete_result_event": 217,
+      "tool_id": "toolu_vrtx_01KDE6kvj3yzRFbFA5qYMx3X"
+    },
+    {
+      "index_position": 75,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00801-00960.txt",
+      "first_complete_result_event": 218,
+      "tool_id": "toolu_vrtx_01EuKMoqL93kbk2ne5ioQJpc"
+    },
+    {
+      "index_position": 76,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00961-01115.txt",
+      "first_complete_result_event": 222,
+      "tool_id": "toolu_vrtx_01BZuQc9RtmZtqYTcUHFEUxM"
+    },
+    {
+      "index_position": 77,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01116-01275.txt",
+      "first_complete_result_event": 224,
+      "tool_id": "toolu_vrtx_01RyjwUJLFrxXn8tp8LnSSRp"
+    },
+    {
+      "index_position": 78,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01276-01425.txt",
+      "first_complete_result_event": 226,
+      "tool_id": "toolu_vrtx_01YEsARoBRrndA8J5sJXA96R"
+    },
+    {
+      "index_position": 79,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01426-01585.txt",
+      "first_complete_result_event": 227,
+      "tool_id": "toolu_vrtx_018sFxMduXpXiKrFJqwzBxCg"
+    },
+    {
+      "index_position": 80,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01586-01745.txt",
+      "first_complete_result_event": 230,
+      "tool_id": "toolu_vrtx_013PqcTbAzFQdmHfRZDWXSzN"
+    },
+    {
+      "index_position": 81,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01746-01760.txt",
+      "first_complete_result_event": 231,
+      "tool_id": "toolu_vrtx_01L7xDbjQd3TvkqNEcE38M7a"
+    },
+    {
+      "index_position": 82,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-terminal_runtime_tests.rs-00001-00028.txt",
+      "first_complete_result_event": 234,
+      "tool_id": "toolu_vrtx_012qDjNMhBcSrsKG1aKoSwRe"
+    },
+    {
+      "index_position": 83,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00001-00160.txt",
+      "first_complete_result_event": 237,
+      "tool_id": "toolu_vrtx_01GgUzmDoW3RmxSbeNYHhqMM"
+    },
+    {
+      "index_position": 84,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00161-00320.txt",
+      "first_complete_result_event": 239,
+      "tool_id": "toolu_vrtx_01F56gXvVW9R6xGuesRkfGLy"
+    },
+    {
+      "index_position": 85,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00321-00480.txt",
+      "first_complete_result_event": 241,
+      "tool_id": "toolu_vrtx_019wW5o9yWnH96sey7QNnHJ2"
+    },
+    {
+      "index_position": 86,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00481-00640.txt",
+      "first_complete_result_event": 243,
+      "tool_id": "toolu_vrtx_01U8MWdzYHDWkpYvxiMdB2xD"
+    },
+    {
+      "index_position": 87,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00641-00800.txt",
+      "first_complete_result_event": 244,
+      "tool_id": "toolu_vrtx_01K21AR3EKgd5Qwwg3QJ1ygr"
+    },
+    {
+      "index_position": 88,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00801-00960.txt",
+      "first_complete_result_event": 248,
+      "tool_id": "toolu_vrtx_01Tk4ttMBuKAtJHg19VPtovN"
+    },
+    {
+      "index_position": 89,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00961-01120.txt",
+      "first_complete_result_event": 250,
+      "tool_id": "toolu_vrtx_01WuquxQE4HZjMfoDWXZYfhW"
+    },
+    {
+      "index_position": 90,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-01121-01240.txt",
+      "first_complete_result_event": 252,
+      "tool_id": "toolu_vrtx_01P1rBtX3tUeBR8knZTCdqoZ"
+    },
+    {
+      "index_position": 91,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-tests-static_elf.rs-00001-00102.txt",
+      "first_complete_result_event": 254,
+      "tool_id": "toolu_vrtx_01MGhsAze1RjUc2WM7x11Wvw"
+    },
+    {
+      "index_position": 92,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-src-guest.rs-00001-00017.txt",
+      "first_complete_result_event": 114,
+      "tool_id": "toolu_vrtx_01F3vzxvuswgWSNu1CpovcsH"
+    },
+    {
+      "index_position": 93,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-src-tool.rs-00001-00018.txt",
+      "first_complete_result_event": 256,
+      "tool_id": "toolu_vrtx_01AFq1uTsiE8ohjGEWeV2i8G"
+    },
+    {
+      "index_position": 94,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-src-subscription.rs-00001-00015.txt",
+      "first_complete_result_event": 115,
+      "tool_id": "toolu_vrtx_01HXSERddmHQwyJNZRb4ryWP"
+    },
+    {
+      "index_position": 95,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-timestamp.rs-00001-00160.txt",
+      "first_complete_result_event": 348,
+      "tool_id": "toolu_vrtx_015Xj2r61SQWdXz72nuwsxjy"
+    },
+    {
+      "index_position": 96,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-timestamp.rs-00161-00279.txt",
+      "first_complete_result_event": 350,
+      "tool_id": "toolu_vrtx_014kiJDjd5LHxdwp7EeJuKes"
+    },
+    {
+      "index_position": 97,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-cpuid.rs-00001-00160.txt",
+      "first_complete_result_event": 352,
+      "tool_id": "toolu_vrtx_01JufiLJ9eFLimX56GA5PsaN"
+    },
+    {
+      "index_position": 98,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-cpuid.rs-00161-00320.txt",
+      "first_complete_result_event": 354,
+      "tool_id": "toolu_vrtx_01LCufLC6EM77u4qhwAemLNg"
+    },
+    {
+      "index_position": 99,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-cpuid.rs-00321-00476.txt",
+      "first_complete_result_event": 356,
+      "tool_id": "toolu_vrtx_01Y5YTnxN6xNnS6c7EzxwkkP"
+    },
+    {
+      "index_position": 100,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00001-00160.txt",
+      "first_complete_result_event": 360,
+      "tool_id": "toolu_vrtx_01UDnEsHF96AMpYuvcvgVMU6"
+    },
+    {
+      "index_position": 101,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00161-00320.txt",
+      "first_complete_result_event": 364,
+      "tool_id": "toolu_vrtx_01TEm9YK2tDg92q4GtJbzkqD"
+    },
+    {
+      "index_position": 102,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00321-00480.txt",
+      "first_complete_result_event": 365,
+      "tool_id": "toolu_vrtx_01GtF33poAce3dFGmndWHCBd"
+    },
+    {
+      "index_position": 103,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00481-00640.txt",
+      "first_complete_result_event": 368,
+      "tool_id": "toolu_vrtx_01UQZSZLJzzuDinGre2MQqau"
+    },
+    {
+      "index_position": 104,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00641-00652.txt",
+      "first_complete_result_event": 369,
+      "tool_id": "toolu_vrtx_01JY28txpdKEPorVAobapWES"
+    },
+    {
+      "index_position": 105,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-tests-support-timestamp_terminal.rs-00001-00160.txt",
+      "first_complete_result_event": 374,
+      "tool_id": "toolu_vrtx_019D61TFFyKQ8Mb3FvKT2BqH"
+    },
+    {
+      "index_position": 106,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-tests-support-timestamp_terminal.rs-00161-00320.txt",
+      "first_complete_result_event": 376,
+      "tool_id": "toolu_vrtx_011A7JgKT72WXrV9zaXLZYnD"
+    },
+    {
+      "index_position": 107,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-tests-support-timestamp_terminal.rs-00321-00447.txt",
+      "first_complete_result_event": 379,
+      "tool_id": "toolu_vrtx_01UMypzz7n5Gbeic1HJxt53s"
+    },
+    {
+      "index_position": 108,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/detcore-src-lib.rs-00001-00053.txt",
+      "first_complete_result_event": 200,
+      "tool_id": "toolu_vrtx_01MRAdogSTbB6NCCEr5EXnNW"
+    },
+    {
+      "index_position": 109,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/hermit-stat-complete-00001-00160.txt",
+      "first_complete_result_event": 201,
+      "tool_id": "toolu_vrtx_018EbuLVJEH2p88QVVGQjius"
+    },
+    {
+      "index_position": 110,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/hermit-stat-complete-00161-00280.txt",
+      "first_complete_result_event": 204,
+      "tool_id": "toolu_vrtx_01HksPkAUTBL3vys9os9keNV"
+    },
+    {
+      "index_position": 111,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/detcore-src-syscalls-files.rs-00001-00023.txt",
+      "first_complete_result_event": 205,
+      "tool_id": "toolu_vrtx_01V74o25UqfDBEZw9utuUxWR"
+    },
+    {
+      "index_position": 112,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/selected-declarations-00001-00160.txt",
+      "first_complete_result_event": 335,
+      "tool_id": "toolu_vrtx_01QwM6Dv943Qjqgus3a1de1T"
+    },
+    {
+      "index_position": 113,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/selected-declarations-00161-00320.txt",
+      "first_complete_result_event": 337,
+      "tool_id": "toolu_vrtx_01NuPS2V9w9Zuv7aEETaxV2J"
+    },
+    {
+      "index_position": 114,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/selected-declarations-00321-00480.txt",
+      "first_complete_result_event": 339,
+      "tool_id": "toolu_vrtx_019RP3FtcYpJoE96cuxNQBEA"
+    },
+    {
+      "index_position": 115,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/selected-declarations-00481-00593.txt",
+      "first_complete_result_event": 341,
+      "tool_id": "toolu_vrtx_01Q2c4uteosVBXu4NYkyayXk"
+    },
+    {
+      "index_position": 116,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-prepare.py-00001-00099.txt",
+      "first_complete_result_event": 309,
+      "tool_id": "toolu_vrtx_01Y58X8rG5q7Mm6Q6UGqdm2k"
+    },
+    {
+      "index_position": 117,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-prepare.py-00100-00125.txt",
+      "first_complete_result_event": 311,
+      "tool_id": "toolu_vrtx_01NU1NTvEoY4zDBKD2E4UrU3"
+    },
+    {
+      "index_position": 118,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-phase.py-00001-00152.txt",
+      "first_complete_result_event": 313,
+      "tool_id": "toolu_vrtx_01Yarwcmtyw8q43ZQBcEmkBh"
+    },
+    {
+      "index_position": 119,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-phase.py-00153-00176.txt",
+      "first_complete_result_event": 315,
+      "tool_id": "toolu_vrtx_0136vLXefqCMLCZESKoUWMCh"
+    },
+    {
+      "index_position": 120,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-common.py-00001-00160.txt",
+      "first_complete_result_event": 343,
+      "tool_id": "toolu_vrtx_01416kMSFfgWN5JoUnBXwLMK"
+    },
+    {
+      "index_position": 121,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-common.py-00161-00227.txt",
+      "first_complete_result_event": 344,
+      "tool_id": "toolu_vrtx_014xbdfREHQ5TNTyLEmWP3gu"
+    },
+    {
+      "index_position": 122,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-cache_lease.py-00001-00098.txt",
+      "first_complete_result_event": 357,
+      "tool_id": "toolu_vrtx_01DMMzzvSGMU69rkQoHLDB3j"
+    },
+    {
+      "index_position": 123,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-bind_dependencies.py-00001-00035.txt",
+      "first_complete_result_event": 370,
+      "tool_id": "toolu_vrtx_011CnuTerCdhVyuRve1LYBb9"
+    },
+    {
+      "index_position": 124,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-retain_artifacts.py-00001-00050.txt",
+      "first_complete_result_event": 326,
+      "tool_id": "toolu_vrtx_0135VcrT5DKx6mGHxMtPJztZ"
+    },
+    {
+      "index_position": 125,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-execute_continuation.py-00001-00031.txt",
+      "first_complete_result_event": 381,
+      "tool_id": "toolu_vrtx_015gW711jnaGbDVC9BwjVpbP"
+    },
+    {
+      "index_position": 126,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00001-00160.txt",
+      "first_complete_result_event": 387,
+      "tool_id": "toolu_vrtx_01J3PWt4Bb7FGQQKoBE7r3fF"
+    },
+    {
+      "index_position": 127,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00161-00301.txt",
+      "first_complete_result_event": 388,
+      "tool_id": "toolu_vrtx_01H9UwXr8Yj7nz2k4TNtjZCb"
+    },
+    {
+      "index_position": 128,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00302-00442.txt",
+      "first_complete_result_event": 393,
+      "tool_id": "toolu_vrtx_01QHwW3cMuzYJuRymXWDvdta"
+    },
+    {
+      "index_position": 129,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00443-00578.txt",
+      "first_complete_result_event": 394,
+      "tool_id": "toolu_vrtx_011o6ekiZUJbMBfnWRoy51jS"
+    },
+    {
+      "index_position": 130,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00579-00705.txt",
+      "first_complete_result_event": 395,
+      "tool_id": "toolu_vrtx_01Ty3y2eNXTJBFa6444EBV2T"
+    },
+    {
+      "index_position": 131,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00706-00743.txt",
+      "first_complete_result_event": 396,
+      "tool_id": "toolu_vrtx_01NCEAAxCyG7Fm4GC8oydU5Q"
+    },
+    {
+      "index_position": 132,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-CALLER-DELTA.patch-00001-00018.txt",
+      "first_complete_result_event": 322,
+      "tool_id": "toolu_vrtx_016EoGaVUrd2Y6DRXbPN5g4V"
+    },
+    {
+      "index_position": 133,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-CONTINUATION.json-00001-00120.txt",
+      "first_complete_result_event": 318,
+      "tool_id": "toolu_vrtx_01RxvrYwWTEYyYk5sR3pPrkm"
+    },
+    {
+      "index_position": 134,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-FIRST-REFUSAL.json-00001-00055.txt",
+      "first_complete_result_event": 317,
+      "tool_id": "toolu_vrtx_01XXB52yarAQCgr5h7LKJ9Xk"
+    },
+    {
+      "index_position": 135,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-SETUP.json-00001-00160.txt",
+      "first_complete_result_event": 382,
+      "tool_id": "toolu_vrtx_0158QrFpwcUxYQnVWgM72U34"
+    },
+    {
+      "index_position": 136,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-SETUP.json-00161-00175.txt",
+      "first_complete_result_event": 383,
+      "tool_id": "toolu_vrtx_01Xi7dt1gYbeWQYPemMMAmPY"
+    },
+    {
+      "index_position": 137,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-TARGET-ADMISSION.json-00001-00012.txt",
+      "first_complete_result_event": 330,
+      "tool_id": "toolu_vrtx_01ABxu8qvv873GQntcQ6FMtp"
+    },
+    {
+      "index_position": 138,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-PREDECESSOR-ELFS.json-00001-00011.txt",
+      "first_complete_result_event": 331,
+      "tool_id": "toolu_vrtx_01BB6jKYN5jxscDd4LcX9wSb"
+    },
+    {
+      "index_position": 139,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-original-caller-delta-00001-00057.txt",
+      "first_complete_result_event": 324,
+      "tool_id": "toolu_vrtx_01McWvQ5yPfWbcxyCB5B9i2o"
+    },
+    {
+      "index_position": 140,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-result-finalizer-00001-00071.txt",
+      "first_complete_result_event": 329,
+      "tool_id": "toolu_vrtx_013uC2NxM9tRjREZpAVE1rdM"
+    },
+    {
+      "index_position": 141,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/committed-target-00001-00005.txt",
+      "first_complete_result_event": 257,
+      "tool_id": "toolu_vrtx_013rp1E7bnYUdhrHhzLMYtFL"
+    },
+    {
+      "index_position": 142,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/kernel-cpuid-semantics-00001-00160.txt",
+      "first_complete_result_event": 263,
+      "tool_id": "toolu_vrtx_017hQhuiSZRMu3VBGcdu5dDd"
+    },
+    {
+      "index_position": 143,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/kernel-cpuid-semantics-00161-00233.txt",
+      "first_complete_result_event": 265,
+      "tool_id": "toolu_vrtx_019qwfzB1zhzVzVMp5MCD9y8"
+    },
+    {
+      "index_position": 144,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/unchanged-timestamp-caller-00001-00070.txt",
+      "first_complete_result_event": 266,
+      "tool_id": "toolu_vrtx_015iKfirwqRPSqyxaTSVDLKW"
+    },
+    {
+      "index_position": 145,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/complete-lib-module-registration-00001-00064.txt",
+      "first_complete_result_event": 304,
+      "tool_id": "toolu_vrtx_01BC53sxj8tRPhQeH44RPJWP"
+    },
+    {
+      "index_position": 146,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/complete-terminal-admission-tests-00001-00160.txt",
+      "first_complete_result_event": 401,
+      "tool_id": "toolu_vrtx_01417bj8HrZPnAYpDMeErnre"
+    },
+    {
+      "index_position": 147,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/complete-terminal-admission-tests-00161-00189.txt",
+      "first_complete_result_event": 402,
+      "tool_id": "toolu_vrtx_01HczVUbfKJeP7oJDy1WbKQE"
+    },
+    {
+      "index_position": 148,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/compiled-artifact-binding-00001-00143.txt",
+      "first_complete_result_event": 305,
+      "tool_id": "toolu_vrtx_01ShsubjuChmjkdLWgDTKTYg"
+    },
+    {
+      "index_position": 149,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00001-00079.txt",
+      "first_complete_result_event": 271,
+      "tool_id": "toolu_vrtx_01LNtVVKrRqS7LbeVSewhmEs"
+    },
+    {
+      "index_position": 150,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00080-00161.txt",
+      "first_complete_result_event": 273,
+      "tool_id": "toolu_vrtx_01S4W8stuwKd9sYbdFDF68cQ"
+    },
+    {
+      "index_position": 151,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00162-00247.txt",
+      "first_complete_result_event": 275,
+      "tool_id": "toolu_vrtx_01LbpRLQPRtn4s9bEqhqoJM6"
+    },
+    {
+      "index_position": 152,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00248-00336.txt",
+      "first_complete_result_event": 277,
+      "tool_id": "toolu_vrtx_012szbTBQ2G5eDuYu2eqwfk9"
+    },
+    {
+      "index_position": 153,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00337-00446.txt",
+      "first_complete_result_event": 278,
+      "tool_id": "toolu_vrtx_01LjUonUtgEY5qdXWRsZ9jZV"
+    },
+    {
+      "index_position": 154,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00447-00541.txt",
+      "first_complete_result_event": 279,
+      "tool_id": "toolu_vrtx_01S9wKX2zqHN2ouP1bJJFCbU"
+    },
+    {
+      "index_position": 155,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00542-00625.txt",
+      "first_complete_result_event": 283,
+      "tool_id": "toolu_vrtx_01EuTuV4jHiUaYgPYdib3P3Z"
+    },
+    {
+      "index_position": 156,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00626-00728.txt",
+      "first_complete_result_event": 285,
+      "tool_id": "toolu_vrtx_01Ra1kbJQ6q678JLC7gE3VN3"
+    },
+    {
+      "index_position": 157,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00729-00820.txt",
+      "first_complete_result_event": 287,
+      "tool_id": "toolu_vrtx_01FNTQbuVgD75irsupKaZqAm"
+    },
+    {
+      "index_position": 158,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00821-00904.txt",
+      "first_complete_result_event": 290,
+      "tool_id": "toolu_vrtx_01MxZSxYiZhYddfBNQu8H1TW"
+    },
+    {
+      "index_position": 159,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00905-00995.txt",
+      "first_complete_result_event": 292,
+      "tool_id": "toolu_vrtx_01FQAd215D83UimDdb5wab6Q"
+    },
+    {
+      "index_position": 160,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00996-01014.txt",
+      "first_complete_result_event": 291,
+      "tool_id": "toolu_vrtx_01U33pXtEJxtXyHddy8bz5mL"
+    },
+    {
+      "index_position": 161,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/transport-observations-00001-00160.txt",
+      "first_complete_result_event": 295,
+      "tool_id": "toolu_vrtx_014J69m62S52Aqt47i23YELE"
+    },
+    {
+      "index_position": 162,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/transport-observations-00161-00267.txt",
+      "first_complete_result_event": 299,
+      "tool_id": "toolu_vrtx_015f3QTsh7HvkvcEt23QM5eA"
+    },
+    {
+      "index_position": 163,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/transport-raw-stdout-00001-00004.txt",
+      "first_complete_result_event": 300,
+      "tool_id": "toolu_vrtx_019A3S4fFWSx3h63jEMAiEty"
+    },
+    {
+      "index_position": 164,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/transport-raw-stderr-00001-00018.txt",
+      "first_complete_result_event": 302,
+      "tool_id": "toolu_vrtx_01VTZNRdWA6LgSTitnVsMky2"
+    }
+  ],
+  "extra_reads": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/READ-INDEX.txt",
+      "tool_id": "toolu_vrtx_01TmiozvWszRngbqW2gLxzgc",
+      "result_event": 39,
+      "expected_lines": 275,
+      "literal_complete": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/common/RAW-RESULT-READBACK.json",
+      "tool_id": "toolu_vrtx_011zCVF8bTFg5sL1N5zRsmFM",
+      "result_event": 261,
+      "expected_lines": 1367,
+      "literal_complete": true
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+Running as unit: kvm-panic-consumer-test-injected-boundary-1-3923734.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 424ms
+             CPU time consumed: 10ms
+                   Memory peak: 2.3M (swap: 0B)

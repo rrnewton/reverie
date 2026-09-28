@@ -1,0 +1,47 @@
+{
+  "source": {
+    "path": "reverie-kvm/src/vm/worker_panic_tests.rs",
+    "bytes": 19103,
+    "sha256": "37e76de28daa39a29fe3bb6a4e13d0f448409e404fe68d1d8378633dae84e69f"
+  },
+  "artifacts": [
+    {
+      "path": "PROPOSED-worker_panic_tests.rs",
+      "bytes": 19103,
+      "sha256": "37e76de28daa39a29fe3bb6a4e13d0f448409e404fe68d1d8378633dae84e69f"
+    },
+    {
+      "path": "SOURCE.patch",
+      "bytes": 19686,
+      "sha256": "b4272b69f94992534b14f8f91cf39b9cfc523c3303e98066867ff76691fd2aa4"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 4032,
+      "sha256": "91e66eec45653d3e300ee7937b73f908481e4012fbb22526d45042bf9acfd68c"
+    }
+  ],
+  "observed_api_files": [
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "bytes": 383754,
+      "sha256": "e7bb36ba06b033c6cd87130539573ca351b93f53a0826e80f670e58d6d9ecbd0"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "bytes": 238425,
+      "sha256": "c4e1f7774569ac58e12e9e33a00882c68f83baf4b2cdc4fbecad84ea1ab236b1"
+    },
+    {
+      "path": "reverie-kvm/src/failure/owned_future.rs",
+      "bytes": 10917,
+      "sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d"
+    }
+  ],
+  "selectors": [
+    "vm::worker_panic_tests::caught_callback_drop_panic_drains_pending_tool_hook_before_worker_retirement",
+    "vm::worker_panic_tests::joined_worker_retains_cleanup_poll_and_drop_panics_and_later_typed_errors",
+    "vm::worker_panic_tests::discard_cancelled_worker_preserves_reported_cause_and_all_panic_payloads"
+  ],
+  "execution": "not run"
+}

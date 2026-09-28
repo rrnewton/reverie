@@ -1,0 +1,103 @@
+{"phase": "compile-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 32.58477841503918, "refusals": []}
+{"binding": "EXECUTABLE-1.json", "bytes": 2559, "sha256": "49f46673613d078d1cf43494465767878a3608828039ca9b9871ea893310e4b7"}
+{"phase": "check-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 1.8905005850829184, "refusals": []}
+{"phase": "format-check-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 2.1031028418801725, "refusals": []}
+{"phase": "clippy-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 10.40391276916489, "refusals": []}
+{"phase": "inventory-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04900224995799363, "refusals": []}
+{"phase": "test-clock-controls-1", "raw_status": 101, "accepted": false, "elapsed_seconds": 0.2936071001458913, "refusals": ["selected test count/result mismatch"]}
+{"phase": "test-memory-controls-1", "raw_status": 101, "accepted": false, "elapsed_seconds": 0.1126710930839181, "refusals": ["selected test count/result mismatch"]}
+{"phase": "test-closed-construction-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.2391264180187136, "refusals": []}
+{"phase": "test-closed-construction-2", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.11428263993002474, "refusals": []}
+{"phase": "test-closed-construction-3", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.11847036797553301, "refusals": []}
+{"phase": "test-host-wait-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04216263280250132, "refusals": []}
+{"phase": "test-host-wait-2", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04965957999229431, "refusals": []}
+{"phase": "test-cancellation-subscription-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04118037689477205, "refusals": []}
+{"phase": "test-cancellation-subscription-2", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04314502701163292, "refusals": []}
+{"phase": "test-cancellation-subscription-3", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04540758510120213, "refusals": []}
+{"phase": "test-native-owner-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.07702350011095405, "refusals": []}
+{"phase": "test-native-owner-2", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04140827897936106, "refusals": []}
+{"phase": "test-native-owner-3", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04359168908558786, "refusals": []}
+{"phase": "test-native-owner-4", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04589764098636806, "refusals": []}
+{"phase": "test-native-owner-5", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04881511093117297, "refusals": []}
+{"phase": "test-native-owner-6", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.05107344314455986, "refusals": []}
+{"phase": "test-native-owner-7", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04890246386639774, "refusals": []}
+{"phase": "test-native-owner-8", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.05332105793058872, "refusals": []}
+{"phase": "test-native-owner-9", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.06564316200092435, "refusals": []}
+{"phase": "test-native-owner-10", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.041378244990482926, "refusals": []}
+{"phase": "test-native-owner-11", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.05347624188289046, "refusals": []}
+{"phase": "test-native-owner-12", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.046718573896214366, "refusals": []}
+{"phase": "test-native-owner-13", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04727926594205201, "refusals": []}
+{"phase": "test-existing-peer-cancellation-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.054625126998871565, "refusals": []}
+{"phase": "test-multi-owner-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.15655841189436615, "refusals": []}
+{"phase": "test-multi-owner-entry-2", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.16721986094489694, "refusals": []}
+{"phase": "test-multi-owner-entry-3", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.1924944049678743, "refusals": []}
+{"phase": "test-multi-owner-entry-4", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.15527825988829136, "refusals": []}
+{"phase": "test-action-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.7020474229939282, "refusals": []}
+{"phase": "test-wait-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.46916103502735496, "refusals": []}
+{"phase": "test-hypercall-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.20551816117949784, "refusals": []}
+{"phase": "test-race-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.1781621330883354, "refusals": []}
+{"phase": "test-eintr-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.08146925689652562, "refusals": []}
+{"phase": "test-cleanup-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 1.8723139269277453, "refusals": []}
+{"phase": "test-existing-parking-wait-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.14889340195804834, "refusals": []}
+{"phase": "test-owned-future-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04099635221064091, "refusals": []}
+{"phase": "test-panic-drain-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04206625698134303, "refusals": []}
+{"phase": "test-handler-scratch-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04676467296667397, "refusals": []}
+{"phase": "test-injected-boundary-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.11874477099627256, "refusals": []}
+{"phase": "test-worker-panic-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.3280551170464605, "refusals": []}
+{"phase": "test-normal-cleanup-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.05853963387198746, "refusals": []}
+{"phase": "test-handler-destruction-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.031846161000430584, "refusals": []}
+{"phase": "test-caught-worker-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.05106632295064628, "refusals": []}
+{"phase": "test-action-preparation-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.34201248502358794, "refusals": []}
+{"phase": "test-boundary-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04344138316810131, "refusals": []}
+{"phase": "test-boundary-cleanup-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.07188491383567452, "refusals": []}
+{"phase": "test-fork-cleanup-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.11632107105106115, "refusals": []}
+{"phase": "test-thread-cleanup-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.12918162299320102, "refusals": []}
+{"phase": "test-partial-start-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.07467150897718966, "refusals": []}
+{"phase": "test-cancelled-cleanup-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.40532645978964865, "refusals": []}
+{"phase": "test-exec-cleanup-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.08114988799206913, "refusals": []}
+{"phase": "test-cleanup-storage-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.0535970029886812, "refusals": []}
+{"phase": "test-cancellation-locks-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04793408908881247, "refusals": []}
+{"phase": "test-callback-completion-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04657121188938618, "refusals": []}
+{"phase": "test-consuming-panics-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04249572311528027, "refusals": []}
+{"phase": "test-tool-panics-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.048467200016602874, "refusals": []}
+{"phase": "test-retained-panics-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.03973910305649042, "refusals": []}
+{"phase": "test-public-panics-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.11697813705541193, "refusals": []}
+{"phase": "test-fork-join-panics-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04902994493022561, "refusals": []}
+{"phase": "test-instruction-panics-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.11941568716429174, "refusals": []}
+{"phase": "test-instruction-constructor-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.12668085703626275, "refusals": []}
+{"phase": "test-entry-gate-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.08252814691513777, "refusals": []}
+{"phase": "test-entry-owner-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.055210065096616745, "refusals": []}
+{"phase": "test-entry-routing-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04393203905783594, "refusals": []}
+{"phase": "test-failure-completion-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.14910963689908385, "refusals": []}
+{"phase": "test-runtime-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.1610894671175629, "refusals": []}
+{"phase": "test-vm-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.14346185699105263, "refusals": []}
+{"phase": "test-exec-private-wait-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.21372507605701685, "refusals": []}
+{"phase": "test-entry-capture-wake-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.047230834141373634, "refusals": []}
+{"phase": "test-existing-join-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04797959700226784, "refusals": []}
+{"phase": "test-existing-join-2", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.0442303370218724, "refusals": []}
+{"phase": "test-existing-join-3", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.039229877991601825, "refusals": []}
+{"phase": "test-existing-join-4", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.03617822495289147, "refusals": []}
+{"phase": "test-existing-join-5", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.05091746593825519, "refusals": []}
+{"phase": "test-existing-join-6", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04910828801803291, "refusals": []}
+{"phase": "test-existing-join-7", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.08540856605395675, "refusals": []}
+{"phase": "test-existing-join-8", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.03714390587992966, "refusals": []}
+{"phase": "test-existing-join-9", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.041544144973158836, "refusals": []}
+{"phase": "test-existing-join-10", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.03850429900921881, "refusals": []}
+{"phase": "test-host-mask-controls-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.043097960064187646, "refusals": []}
+{"phase": "test-entry-operations-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.047213932033628225, "refusals": []}
+{"phase": "test-rpc-join-observation-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.056909315986558795, "refusals": []}
+{"phase": "test-rpc-join-observation-2", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.03775100689381361, "refusals": []}
+{"phase": "test-rpc-join-observation-3", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.04754768405109644, "refusals": []}
+{"phase": "test-public-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.9014160530641675, "refusals": []}
+{"phase": "test-main-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.4254018380306661, "refusals": []}
+{"phase": "test-spawn-entry-1", "raw_status": 0, "accepted": true, "elapsed_seconds": 0.1819589699152857, "refusals": []}
+{"failed_phases": ["test-clock-controls-1", "test-memory-controls-1"]}
+{"all_phases_accepted": false, "target": "final-1/TARGET.json", "bytes": 87706, "sha256": "25d4736bf6762ac75e46749f7691ca28bedad9ac75b66d590af35d4aa5c90bed"}
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v5/run-qualified-controls.py", line 21, in <module>
+    run('packet.py','report')
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v5/run-qualified-controls.py", line 7, in run
+    subprocess.run(['python3',str(out/script),action,*args],check=True)
+  File "/usr/local/fbcode/platform010/lib/python3.12/subprocess.py", line 573, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['python3', '/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v5/packet.py', 'report', '--plan', 'PLAN-1.json', '--plan-sha256', '941d284fa6907e99a90943deb41656261c25b43ed0e0806081f826b83aafe0f0', '--source', 'source-1.json', '--source-sha256', '98a223d3e0d5a3569701a817a001723fad7e7cfbbc54e937ed71e423bd14af72']' returned non-zero exit status 1.

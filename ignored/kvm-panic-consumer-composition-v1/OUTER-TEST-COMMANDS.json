@@ -1,0 +1,224 @@
+[
+  {
+    "phase": "test-owned-future-1",
+    "first": {
+      "chunk_id": "11f0e0",
+      "wall_time_seconds": 0.42695356,
+      "exit_code": 0,
+      "original_token_count": 31,
+      "output": "{\"phase\": \"test-owned-future-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.02111525391228497, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-panic-drain-1",
+    "first": {
+      "chunk_id": "067ed6",
+      "wall_time_seconds": 0.691775507,
+      "exit_code": 0,
+      "original_token_count": 31,
+      "output": "{\"phase\": \"test-panic-drain-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.13198900991119444, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-handler-scratch-1",
+    "first": {
+      "chunk_id": "b54e74",
+      "wall_time_seconds": 0.452276404,
+      "exit_code": 0,
+      "original_token_count": 32,
+      "output": "{\"phase\": \"test-handler-scratch-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.016991280019283295, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-injected-boundary-1",
+    "first": {
+      "chunk_id": "7a2a4d",
+      "wall_time_seconds": 1.001314026,
+      "session_id": 40112,
+      "original_token_count": 0,
+      "output": ""
+    },
+    "polls": [
+      {
+        "chunk_id": "a59f37",
+        "wall_time_seconds": 0.485980626,
+        "exit_code": 0,
+        "original_token_count": 32,
+        "output": "{\"phase\": \"test-injected-boundary-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.5338411189150065, \"refusals\": []}\n"
+      }
+    ]
+  },
+  {
+    "phase": "test-worker-panic-1",
+    "first": {
+      "chunk_id": "b49c0c",
+      "wall_time_seconds": 0.703519105,
+      "exit_code": 0,
+      "original_token_count": 31,
+      "output": "{\"phase\": \"test-worker-panic-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.3025328670628369, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-normal-cleanup-1",
+    "first": {
+      "chunk_id": "aaf3f4",
+      "wall_time_seconds": 0.537280785,
+      "exit_code": 0,
+      "original_token_count": 32,
+      "output": "{\"phase\": \"test-normal-cleanup-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.049505064031109214, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-handler-destruction-1",
+    "first": {
+      "chunk_id": "6a16c9",
+      "wall_time_seconds": 0.677967719,
+      "exit_code": 0,
+      "original_token_count": 33,
+      "output": "{\"phase\": \"test-handler-destruction-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.16664901794865727, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-caught-worker-1",
+    "first": {
+      "chunk_id": "d789bf",
+      "wall_time_seconds": 0.692629349,
+      "exit_code": 0,
+      "original_token_count": 32,
+      "output": "{\"phase\": \"test-caught-worker-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.20893496903590858, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-action-preparation-1",
+    "first": {
+      "chunk_id": "f0f8ba",
+      "wall_time_seconds": 1.001856732,
+      "session_id": 59882,
+      "original_token_count": 0,
+      "output": ""
+    },
+    "polls": [
+      {
+        "chunk_id": "510f72",
+        "wall_time_seconds": 0.147652365,
+        "exit_code": 0,
+        "original_token_count": 33,
+        "output": "{\"phase\": \"test-action-preparation-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.7560861380770802, \"refusals\": []}\n"
+      }
+    ]
+  },
+  {
+    "phase": "test-boundary-1",
+    "first": {
+      "chunk_id": "e8d43e",
+      "wall_time_seconds": 0.430331343,
+      "exit_code": 0,
+      "original_token_count": 30,
+      "output": "{\"phase\": \"test-boundary-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.0453535181004554, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-boundary-cleanup-1",
+    "first": {
+      "chunk_id": "c1cd89",
+      "wall_time_seconds": 0.50847472,
+      "exit_code": 0,
+      "original_token_count": 32,
+      "output": "{\"phase\": \"test-boundary-cleanup-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.07825109804980457, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-fork-cleanup-1",
+    "first": {
+      "chunk_id": "27b3c4",
+      "wall_time_seconds": 0.535298178,
+      "exit_code": 0,
+      "original_token_count": 31,
+      "output": "{\"phase\": \"test-fork-cleanup-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.1422670369502157, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-thread-cleanup-1",
+    "first": {
+      "chunk_id": "f17f6f",
+      "wall_time_seconds": 0.482963343,
+      "exit_code": 0,
+      "original_token_count": 32,
+      "output": "{\"phase\": \"test-thread-cleanup-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.09073106409050524, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-partial-start-1",
+    "first": {
+      "chunk_id": "28810c",
+      "wall_time_seconds": 0.71606601,
+      "exit_code": 0,
+      "original_token_count": 32,
+      "output": "{\"phase\": \"test-partial-start-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.22333631804212928, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-cancelled-cleanup-1",
+    "first": {
+      "chunk_id": "719f4c",
+      "wall_time_seconds": 1.00034448,
+      "session_id": 46229,
+      "original_token_count": 0,
+      "output": ""
+    },
+    "polls": [
+      {
+        "chunk_id": "0e1ed9",
+        "wall_time_seconds": 0.823418417,
+        "exit_code": 0,
+        "original_token_count": 32,
+        "output": "{\"phase\": \"test-cancelled-cleanup-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 1.416499510873109, \"refusals\": []}\n"
+      }
+    ]
+  },
+  {
+    "phase": "test-exec-cleanup-1",
+    "first": {
+      "chunk_id": "65f596",
+      "wall_time_seconds": 0.606491205,
+      "exit_code": 0,
+      "original_token_count": 31,
+      "output": "{\"phase\": \"test-exec-cleanup-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.18916269089095294, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-cleanup-storage-1",
+    "first": {
+      "chunk_id": "533090",
+      "wall_time_seconds": 0.619617079,
+      "exit_code": 0,
+      "original_token_count": 32,
+      "output": "{\"phase\": \"test-cleanup-storage-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.04418751783668995, \"refusals\": []}\n"
+    },
+    "polls": []
+  },
+  {
+    "phase": "test-cancellation-locks-1",
+    "first": {
+      "chunk_id": "13d534",
+      "wall_time_seconds": 0.417712429,
+      "exit_code": 0,
+      "original_token_count": 33,
+      "output": "{\"phase\": \"test-cancellation-locks-1\", \"raw_status\": 0, \"accepted\": true, \"elapsed_seconds\": 0.019424634985625744, \"refusals\": []}\n"
+    },
+    "polls": []
+  }
+]

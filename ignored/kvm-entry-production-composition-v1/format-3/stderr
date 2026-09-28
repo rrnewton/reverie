@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-production-format-3-1572209.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 203ms
+             CPU time consumed: 200ms
+                   Memory peak: 14.5M (swap: 0B)

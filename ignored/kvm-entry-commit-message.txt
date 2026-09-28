@@ -1,0 +1,17 @@
+Preserve KVM ownership across entry waits and terminal cleanup
+
+[hermit2, degraded-dev-hermit-14, gpt-6-astra, devbig014, role=impl]
+
+Keep callback, child, and failure ownership through closed entry admission,
+callback destruction, cancellation, and physical worker joins. Capture causes
+before waking peers, publish through the owning Tool failure context, and
+retain typed errors, signal effects, and panic payloads during cleanup.
+
+Add private per-Mapping entry and copy admission with interrupt and cleanup
+accounting. This increment has no production mapping closer and does not
+publish changed mappings, permissions, memory slots, or global fork snapshots.
+
+Validation: 231 selected library controls plus three existing cancellation
+generation controls pass; normal library check, format check, and strict
+all-target Clippy pass. Hermit consumer qualification and external final-delta
+review are separate pending checks; these library results do not claim parity.

@@ -1,0 +1,34 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "source_sha256": "36bcf417a7c53d55a58a6be34ca8fe6ebf04faeb315f4a7b6472c09dd38eb9d4",
+  "predecessor_source_sha256": "40f4bc0a8705589a8b988fd3251ce80cc532ea5dc61045ef40161e3ebb6f3049",
+  "only_v1_change": "remove one new dead-code allowance; source/test behavior unchanged",
+  "all_original_lines_and_test_bodies_unchanged": true,
+  "new_declarations": 4,
+  "added_lines": 217,
+  "root_owned_files_unchanged": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs",
+      "sha256": "3eb4ef4f86872afa4682904795238d3a194d6c7d74f5e9b3d8fcd45df0cf233b",
+      "bytes": 38135
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry/signal.rs",
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037",
+      "bytes": 13944
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/error.rs",
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91",
+      "bytes": 20454
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/lib.rs",
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024",
+      "bytes": 1770
+    }
+  ],
+  "source_formatter": "v1 pinned rustfmt pass; sole successor change deletes an attribute line",
+  "execution_performed": false
+}

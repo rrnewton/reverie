@@ -1,0 +1,26 @@
+{
+  "files": [
+    {
+      "bytes": 413551,
+      "path": "reverie-kvm/src/vm.rs",
+      "sha256": "2906fb825dfeabc6f777cea6d11bf0fe3edc839f18ace861a2920347c6c6e2b1"
+    },
+    {
+      "bytes": 41273,
+      "path": "reverie-kvm/src/clock.rs",
+      "sha256": "144ffb96a48d91c2130810d032dbabbabee41a79119205df2ed660116e56edf9"
+    },
+    {
+      "bytes": 54985,
+      "path": "reverie-kvm/src/entry.rs",
+      "sha256": "de0192158316fa4f586d7e1f1b71ee497b06f5e8aeed08c27ce2c6c940b365d4"
+    },
+    {
+      "bytes": 17480,
+      "path": "reverie-kvm/src/entry/signal.rs",
+      "sha256": "332e842f21dc93876b02a8f23a2be88e498c4fe04d5cadd3f600609fca33ce74"
+    }
+  ],
+  "kind": "read-only-current-context-identities",
+  "limits": "Read-only contextual identities, not a frozen or transitive product-source closure. Other authors/root may advance these files. The new test source alone is frozen in this packet."
+}

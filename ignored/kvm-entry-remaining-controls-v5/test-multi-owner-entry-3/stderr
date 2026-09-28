@@ -1,0 +1,7 @@
+Running as unit: kvm-entry-owner-test-multi-owner-entry-3-1264127.service
+reverie-kvm guest thread 4 tool loop failed: Reverie tool failed: B callback; KVM execution stopped after a fatal run failure; committed signal effects: 1 removals, 0 publication receipts; KVM execution stopped after a fatal run failure
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 151ms
+             CPU time consumed: 24ms
+                   Memory peak: 17.9M (swap: 0B)

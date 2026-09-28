@@ -1,0 +1,9 @@
+branch codex/kvm-signal-cleanup-default-20260919
+head 6152ee999a41324be36456bb0a9b94a703711068
+tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+base f7bd85e11dd258112148ed2cba6531501a1a00d9
+patch_sha256 8eed79a86b435be20433ecf98e2ca4d855cdb2d07b81c98a55dc0e7620b94a57  -
+patch_bytes 257157
+disk_free_bytes 448432697344
+
+[evidence exit_code=0 disk_before=448432697344 disk_after=448432697344]

@@ -1,0 +1,37 @@
+{
+  "source": "reverie-kvm/src/failure.rs",
+  "records": [
+    {
+      "path": "BASE-failure.rs",
+      "bytes": 28216,
+      "sha256": "ea9a46fd17e1517680483375b2320749cd7e924af7981ecf93dae578c73aed1d"
+    },
+    {
+      "path": "PROPOSED-failure.rs",
+      "bytes": 43973,
+      "sha256": "e42a533fe539963128f23cf9655baace4d342ca0afe0e55a2ec622ce7968167e"
+    },
+    {
+      "path": "SOURCE.patch",
+      "bytes": 17644,
+      "sha256": "901ccadaca7d1d177494c08ff94cfc880814cf64f588b9b19ba87e0e3945450d"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 4678,
+      "sha256": "1965ff1cc39a25fa380b1e46c56c8ab54303bf2c9593f52a5b7315b6b072f8b9"
+    }
+  ],
+  "selectors": [
+    "failure::panic_cleanup_tests::no_retained_panic_cleanup_preserves_existing_completion",
+    "failure::panic_cleanup_tests::retained_panic_cleanup_keeps_first_cause_wrappers_and_signal_effect_identity",
+    "failure::panic_cleanup_tests::retained_panic_cleanup_folds_two_distinct_records_once",
+    "failure::panic_cleanup_tests::retained_panic_cleanup_skips_only_exact_already_returned_arcs",
+    "failure::panic_cleanup_tests::retained_send_only_payload_outlives_publication_and_completion"
+  ],
+  "preserved_old_test_module": {
+    "bytes": 19642,
+    "sha256": "3c9a0131395bce39dfc2f5d7c612c07cf8278d9603abbbd047af62bf4bf2eae4"
+  },
+  "execution": "not run"
+}

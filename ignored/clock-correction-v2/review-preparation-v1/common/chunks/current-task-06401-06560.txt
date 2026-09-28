@@ -1,0 +1,160 @@
+
+        assert_eq!(state.attempted_sites, HashSet::from([0x402005]));
+    }
+
+    #[test]
+    fn proc_maps_paths_preserve_literal_whitespace_and_decode_octal_escapes() {
+        let mapping = parse_guest_map(
+            br"00400000-00401000 r-xp 00000000 08:02 123 /tmp/a  double	tab\040space\011escaped\134slash",
+        )
+        .unwrap();
+        assert_eq!(
+            mapping.path.unwrap(),
+            PathBuf::from("/tmp/a  double\ttab space\tescaped\\slash")
+        );
+    }
+
+    #[test]
+    fn cancellable_returns_a_completed_result() {
+        let cancel_handler = Arc::new(AtomicBool::new(false));
+
+        assert_eq!(
+            futures::executor::block_on(cancellable(cancel_handler, async { 42 })),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn cancellable_observes_cancellation_in_the_same_poll() {
+        let cancel_handler = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&cancel_handler);
+        let pending = future::poll_fn(move |_| {
+            signal.store(true, Ordering::SeqCst);
+            Poll::<()>::Pending
+        });
+
+        assert_eq!(
+            futures::executor::block_on(cancellable(Arc::clone(&cancel_handler), pending)),
+            None
+        );
+        assert!(!cancel_handler.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn active_hook_footprint_rejects_destructive_mapping_overlap() {
+        let state = active_state();
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mprotect,
+            SyscallArgs::new(0x401000, 0x1000, libc::PROT_NONE as usize, 0, 0, 0),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mremap,
+            SyscallArgs::new(0x7000_1000, 0x1000, 0x2000, 0, 0, 0),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::munmap,
+            SyscallArgs::new(0x7100_0000, 0x1000, 0, 0, 0, 0),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mmap,
+            SyscallArgs::new(
+                0x7000_0000,
+                0x1000,
+                libc::PROT_READ as usize,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as usize,
+                usize::MAX,
+                0,
+            ),
+            4096,
+        ));
+    }
+
+    #[test]
+    fn short_mapping_lengths_cover_the_whole_active_page() {
+        let state = active_state();
+        for nr in [Sysno::mprotect, Sysno::pkey_mprotect, Sysno::munmap] {
+            assert!(state.mapping_mutates_active_hook(
+                nr,
+                SyscallArgs::new(0x401000, 1, libc::PROT_NONE as usize, 0, 0, 0),
+                4096,
+            ));
+        }
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mmap,
+            SyscallArgs::new(0x401000, 1, 0, libc::MAP_FIXED as usize, 0, 0),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mremap,
+            SyscallArgs::new(0x5000_0000, 1, 1, libc::MREMAP_FIXED as usize, 0x401000, 0,),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mremap,
+            SyscallArgs::new(0x5000_0000, 0, 1, libc::MREMAP_FIXED as usize, 0x401000, 0,),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mprotect,
+            SyscallArgs::new(u64::MAX as usize - 1, 4, libc::PROT_NONE as usize, 0, 0, 0),
+            4096,
+        ));
+    }
+
+    #[test]
+    fn pkey_mprotect_is_a_controller_mapping_syscall() {
+        assert!(is_liteinst_mapping_syscall(Sysno::pkey_mprotect));
+    }
+
+    #[test]
+    fn active_hook_noop_protection_retains_provenance() {
+        let mut state = active_state();
+        assert!(!state.mapping_mutates_active_hook(
+            Sysno::mprotect,
+            SyscallArgs::new(
+                0x401000,
+                0x1000,
+                (libc::PROT_READ | libc::PROT_EXEC) as usize,
+                0,
+                0,
+                0,
+            ),
+            4096,
+        ));
+        state.invalidate_attempted_pages(0x401000, 1, 4096);
+        assert_eq!(state.active_hooks.len(), 1);
+    }
+
+    #[test]
+    fn liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame() {
+        let current = libc::user_regs_struct {
+            rsp: 0x7fff_1000,
+            ..unsafe { core::mem::zeroed() }
+        };
+        let requested = libc::user_regs_struct {
+            rsp: current.rsp + 8,
+            ..current
+        };
+        assert_eq!(
+            validate_liteinst_user_regs_update(&current, &requested),
+            Err(Errno::ENOTSUPP)
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn liteinst_helper_clears_only_abi_sensitive_transient_flags() {
+        let transient = (1 << 8) | (1 << 10) | (1 << 16) | (1 << 18);
+        let preserved = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 9) | (1 << 11);
+        assert_eq!(
+            liteinst_helper_entry_rflags(transient | preserved),
+            preserved
+        );
+    }
+
+    #[test]
+    fn task_panic_marker_has_canonical_shape() {
+        // The token and the field order are what a harness greps for; keep

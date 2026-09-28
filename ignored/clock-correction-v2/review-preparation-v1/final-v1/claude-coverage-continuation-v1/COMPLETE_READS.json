@@ -1,0 +1,160 @@
+[
+  {
+    "name": "missing-entry-replay-raw-events",
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/MISSING-RAW-EVENTS.jsonl",
+      "bytes": 159486,
+      "sha256": "1d99538c749a1860ce8d524f8441c142ecfbc1cb69278ac1bd1742e540052ccb",
+      "mode": 420
+    },
+    "chunks": [
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00002-00046.txt",
+        "bytes": 10859,
+        "sha256": "cfe06ae706ca29fbcf45ed26b43d820b565a335ad0843251e32bedef8095328e",
+        "mode": 420,
+        "first_line": 2,
+        "last_line": 46
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00047-00090.txt",
+        "bytes": 10361,
+        "sha256": "25fb1423170ba38177dc69c16e3d40485b7ffa14e3573c2a6aa13e89b4536350",
+        "mode": 420,
+        "first_line": 47,
+        "last_line": 90
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00091-00108.txt",
+        "bytes": 10113,
+        "sha256": "793157d1be181ff34fba90c0e8d444cd2b6b780ad8f6481745b502bdd56a887c",
+        "mode": 420,
+        "first_line": 91,
+        "last_line": 108
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00167-00182.txt",
+        "bytes": 10876,
+        "sha256": "5d94896234e796526b53dc4784945d4efd6a1ff37f71061ba4cf0bd27304dc89",
+        "mode": 420,
+        "first_line": 167,
+        "last_line": 182
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00183-00196.txt",
+        "bytes": 10196,
+        "sha256": "eb393f31470759c6e058b5a388c57659e10e1168ccfc65e966520c61bc9bc3e4",
+        "mode": 420,
+        "first_line": 183,
+        "last_line": 196
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00217-00232.txt",
+        "bytes": 9313,
+        "sha256": "3c005dcdf6b888a5082cbbda0b0e4eeb9c7fbf705e66bd23d87563d2e981d7c5",
+        "mode": 420,
+        "first_line": 217,
+        "last_line": 232
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00233-00247.txt",
+        "bytes": 10888,
+        "sha256": "668e3086e3a7717a7e4605efc614b47b615e03057ff2a254797bea771da175c6",
+        "mode": 420,
+        "first_line": 233,
+        "last_line": 247
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00281-00296.txt",
+        "bytes": 10212,
+        "sha256": "9124d9dc9d1c177dd5ebcc0a105097474c532d4ac98700b029e4b34771a87ea0",
+        "mode": 420,
+        "first_line": 281,
+        "last_line": 296
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00313-00327.txt",
+        "bytes": 10816,
+        "sha256": "0ecd5115b03af8f8389118a30a3b5af916e81192a7d8fa383a7c23691d4d07a8",
+        "mode": 420,
+        "first_line": 313,
+        "last_line": 327
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00328-00342.txt",
+        "bytes": 9999,
+        "sha256": "c0f8930ce473901d0996b0a3ed952a9d6d080388999dd4a29db71900144f513f",
+        "mode": 420,
+        "first_line": 328,
+        "last_line": 342
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00358-00374.txt",
+        "bytes": 10393,
+        "sha256": "0f86bc60d025e8ccf764a4839d14cf39c3cefa0117a6c73a62c14205a1338461",
+        "mode": 420,
+        "first_line": 358,
+        "last_line": 374
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00375-00392.txt",
+        "bytes": 10826,
+        "sha256": "3767a439dcabdc78a72c09cb2b035570b742ac8e9006fb062faf136e0b42c20f",
+        "mode": 420,
+        "first_line": 375,
+        "last_line": 392
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00393-00407.txt",
+        "bytes": 10843,
+        "sha256": "c75534f5f5d1d3cbf2349be645711227388916bb1073dc154b4387b0a1c434e4",
+        "mode": 420,
+        "first_line": 393,
+        "last_line": 407
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00408-00425.txt",
+        "bytes": 10827,
+        "sha256": "361fb9701f35ba2028fcb1f384792a4204f787a1e9f198191be2a25289dd4a9d",
+        "mode": 420,
+        "first_line": 408,
+        "last_line": 425
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00426-00442.txt",
+        "bytes": 10982,
+        "sha256": "aa5c7fe3069a383e25f4e44c70649b25c5c6bfdcb7e5d4475490cec8d78843fb",
+        "mode": 420,
+        "first_line": 426,
+        "last_line": 442
+      },
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00443-00447.txt",
+        "bytes": 1982,
+        "sha256": "2c4f50212b077ddda0435ecb3df8aa6cff3717853f4781aa84d5effeb46cb610",
+        "mode": 420,
+        "first_line": 443,
+        "last_line": 447
+      }
+    ]
+  },
+  {
+    "name": "exact-existing-trigger-rule",
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/TRIGGER-RULE.txt",
+      "bytes": 662,
+      "sha256": "f2baef495107029071aa6b53cc1c98996638c85276034d436a9d9aeb4cbc527d",
+      "mode": 420
+    },
+    "chunks": [
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/TRIGGER-RULE.txt",
+        "bytes": 662,
+        "sha256": "f2baef495107029071aa6b53cc1c98996638c85276034d436a9d9aeb4cbc527d",
+        "mode": 420,
+        "first_line": 1,
+        "last_line": 9
+      }
+    ]
+  }
+]

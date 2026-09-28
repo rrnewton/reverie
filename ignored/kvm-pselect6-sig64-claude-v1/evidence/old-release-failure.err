@@ -1,0 +1,48 @@
+safehermit: run_id=20260920T205531Z-2208432
+safehermit: binary=/usr/bin/strace
+safehermit: binary_source=argv:positional-path
+safehermit: binary_sha256=2fbb77e8e9948b8697df6f6cc73890279ff762f443f6c8e9d2b3c6d57efe6d5b
+safehermit: log_dir=/home/newton/work/dev-hermit/ignored/safehermit/brs-safehermit-20260920T205531Z-2208432-2208450-1789937731742461854
+safehermit: log_file=/home/newton/work/dev-hermit/ignored/safehermit/brs-safehermit-20260920T205531Z-2208432-2208450-1789937731742461854/hermit.log
+safehermit: unit=safehermit-20260920T205531Z-2208432
+safehermit: bound.wall=APPLIED:3600s
+safehermit: bound.cgroup=APPLIED:MemoryMax=16G MemorySwapMax=0
+safehermit: bound.disk=APPLIED:8G for log_dir only; guest paths and explicit log files elsewhere are outside this bound
+safehermit: bound.bytes=APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)
+safehermit: bound.logfilter=NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires
+safehermit: env.forwarded=APPLIED:158 variables forwarded; 5 SKIPPED (name not a plain shell identifier, e.g. an exported function)
+safehermit: note.run_record=/home/newton/work/dev-hermit/ignored/safehermit/registry/20260920T205531Z-2208432.json (best-effort; nothing depends on it)
+2026-09-20T20:55:32.075439Z  INFO hermit::kvm: launching guest through reverie-kvm program=/bin/true argv=["/bin/true"] cwd=/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918 env_count=165
+2026-09-20T20:55:32.088262Z  INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: seeding scheduler runqueue with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-20T20:55:32.088288Z  INFO detcore::tool_global: [scheduler] daemon task starting up, waiting for guest thread start..
+2026-09-20T20:55:32.088435Z  INFO detcore::tool_local: DETLOG USER RAND: seeding PRNG for root thread with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-20T20:55:32.088445Z  INFO detcore::tool_local: DETLOG CHAOSRAND: seeding chaos scheduler with seed 0 DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-20T20:55:32.088882Z  INFO detcore::scheduler: [scheduler] guest in queue, scheduler proceeding..
+2026-09-20T20:55:32.088939Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 0, dettid 3 using resources {ParentContinue { parent: DetPid(3), child: DetPid(3) }: W}, on previously committed 1_767_225_600.000_000_000s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":0,"virtual_nanoseconds":1767225600000000000,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-20T20:55:32.089035Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 1, dettid 3 using resources {MemAddrSpace(DetPid(3)): RW}, on previously committed 1_767_225_600.000_500_000s DETLOG_RECORD={"schema":1,"event":{"kind":"scheduler_commit","scheduler_turn":1,"virtual_nanoseconds":1767225600000500000,"internal_io_poll":false,"runtime_maps_read":false}}
+2026-09-20T20:55:32.089070Z  INFO detcore::tool_global: [detcore, dtid 3] New thread given go-ahead to proceed via <ivar Go(None)>
+2026-09-20T20:55:32.089313Z  INFO detcore::random: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [162, 205, 24, 211, 0, 83, 122, 92, 176, 131, 220, 72, 219, 250, 14, 242] DETLOG_RECORD={"schema":1,"event":{"kind":"other"}}
+2026-09-20T20:55:32.089470Z ERROR detcore::scheduler: backend failure for process 3, task Some(Pid(3)), phase Tool callback
+2026-09-20T20:55:32.089573Z  INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3 in pid 3..
+2026-09-20T20:55:32.089673Z  INFO detcore::tool_global: detcore shut down, destroying global state
+HERMIT_INTERNAL_FAILURE class=cli-error
+Error: KVM guest execution failed: KVM entry control failed during reserved host signal disposition changed: reserved host signal disposition changed; KVM entry control failed during reserved host signal disposition changed: reserved host signal disposition changed
+     > KVM entry control failed during reserved host signal disposition changed: reserved host signal disposition changed; KVM entry control failed during reserved host signal disposition changed: reserved host signal disposition changed
+     > KVM entry control failed during reserved host signal disposition changed: reserved host signal disposition changed
+     > KVM entry control failed during reserved host signal disposition changed: reserved host signal disposition changed
+     > KVM entry control failed during reserved host signal disposition changed: reserved host signal disposition changed
+     > reserved host signal disposition changed
+safehermit: elapsed_secs=1
+safehermit: bytes_written=3401
+safehermit: truncated=false
+safehermit: runner_exit_code=125
+safehermit: unit_result=exit-code
+safehermit: exec_main_pid=2209092
+safehermit: exec_main_code=1
+safehermit: exec_main_status=125
+safehermit: exec_main_start_monotonic_usec=2096660791225
+safehermit: exit_code=125

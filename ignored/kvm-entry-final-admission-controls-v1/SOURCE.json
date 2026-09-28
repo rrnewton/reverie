@@ -1,0 +1,26 @@
+{
+  "predecessor": "f74effb8842eaa3d9a8178c96fdde293cf210bfc36fe824a1f38f8c3f096dd55",
+  "live_entry_matches_at_capture": false,
+  "records": [
+    {
+      "path": "BASELINE-entry.rs",
+      "bytes": 51252,
+      "sha256": "041d94f875a4e91d8b037fd3eac9826c2d463d594e6876003abcceaedb7efea4"
+    },
+    {
+      "path": "entry.rs",
+      "bytes": 52000,
+      "sha256": "eec29b2888a9243fa9d58be91088b2986363147f2f67b3a455cf0bdc0b255bb4"
+    },
+    {
+      "path": "entry_race_tests.rs",
+      "bytes": 7910,
+      "sha256": "0939a4d858c4e19643f849196ec3f399c9adb06ec462eabeb8253390cdc3e139"
+    },
+    {
+      "path": "AUTHOR.patch",
+      "bytes": 9646,
+      "sha256": "da7bbbeee5917af96bcd5704e94a9afdd968c8fa38df01cf30b763bf6d3d2442"
+    }
+  ]
+}

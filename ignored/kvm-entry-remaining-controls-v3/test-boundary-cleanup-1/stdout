@@ -1,0 +1,6 @@
+
+running 1 test
+test vm::tests::failed_boundary_finalization_cancels_and_joins_each_typed_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 722 filtered out; finished in 0.03s
+

@@ -1,0 +1,160 @@
+### test-01: ['timer::tests::initial_command_requests_retire_without_physical_notification']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-01/stdout
+SHA256 bbbdbd3e15e3c6562a72512931895bae4fd739b5729027cd17c1c066c9e663c8; 441 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timer::tests::initial_command_requests_retire_without_physical_notification" }
+{ "type": "test", "name": "timer::tests::initial_command_requests_retire_without_physical_notification", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.000535375 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-01/stderr
+SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855; 0 bytes
+--- literal stderr begins ---
+
+--- literal stderr ends ---
+### test-02: ['tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-02/stdout
+SHA256 d7973d21992fee74ba2b35b213402a63a92d5c03e90536cb709352ba3136ac88; 459 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop" }
+{ "type": "test", "name": "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.006243329 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-02/stderr
+SHA256 f02857facd807ad7e27c7340fdcea88cc5bab9176ff088c5e2bf7244bf257d32; 267 bytes
+--- literal stderr begins ---
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST intercepted_exec=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+
+--- literal stderr ends ---
+### test-03: ['tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-03/stdout
+SHA256 37cafc9a297d5998db098dbbe6ecc145b3afce789da6ce1512ffd9ba62f5f84d; 469 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers" }
+{ "type": "test", "name": "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.016390052 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-03/stderr
+SHA256 42e31ae087ba4bed386575350687ffc11096773221cfb5354833dc4dc5bdbe9f; 801 bytes
+--- literal stderr begins ---
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST intercepted_exec=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST intercepted_exec=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST intercepted_exec=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+
+--- literal stderr ends ---
+### test-04: ['tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-04/stdout
+SHA256 a3ce20f7a3d7caea4c657723241fba65eedc3699c4d4990ce1134e5b12127534; 453 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live" }
+{ "type": "test", "name": "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.006928238 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-04/stderr
+SHA256 59df2c8e8ae7d078103f533791879820cccb659ff43d757276977b1f338f91bf; 323 bytes
+--- literal stderr begins ---
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST timer=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST boundary=129
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST intercepted_exec=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST timer=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST boundary=129
+
+--- literal stderr ends ---
+### test-05: ['tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-05/stdout
+SHA256 bfd9f2d7869698688d9f65c91f58d461eda9a84c6acec14d66a6c36568d133a9; 475 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches" }
+{ "type": "test", "name": "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.006215007 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-05/stderr
+SHA256 f02857facd807ad7e27c7340fdcea88cc5bab9176ff088c5e2bf7244bf257d32; 267 bytes
+--- literal stderr begins ---
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST intercepted_exec=0
+CLOCK_ORIGIN_TEST post_exec=0
+CLOCK_ORIGIN_TEST boundary=1
+CLOCK_ORIGIN_TEST boundary=65
+
+--- literal stderr ends ---
+### test-06: ['tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-06/stdout
+SHA256 af63574122de7464b3b5bd5001481404fc56cf467aaae775a0a854ad0c65f3d2; 463 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive" }
+{ "type": "test", "name": "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.003427909 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-06/stderr
+SHA256 6e7156fb3f34e233b8290da9417f460f9226b39d2c249e8cdf62bba3f4855747; 95 bytes
+--- literal stderr begins ---
+CLOCK_ORIGIN_TEST start=0
+CLOCK_ORIGIN_TEST intercepted_exec=0
+CLOCK_ORIGIN_TEST failed_exec=0
+
+--- literal stderr ends ---
+### test-07: ['tracer::tests::spawn_fn_never_has_command_bootstrap_provenance']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-07/stdout
+SHA256 c4eeb371daaeee8fcc281dd8264f47d294baba17c1b4792ed247100be6dcde1a; 415 bytes
+--- literal stdout begins ---

@@ -1,0 +1,18 @@
+{
+  "head": "4ea79f6da7100709fea0e0a5591b0945d438e34f",
+  "branch": "codex/kvm-entry-ownership-20260919",
+  "files": {
+    "reverie-kvm/src/memory.rs": {
+      "sha256": "1b75821581649d5bec534fa1ccafbe4c38230ac6574762e15dad833739a8cddf",
+      "size": 133546
+    },
+    "reverie-kvm/src/entry.rs": {
+      "sha256": "fb8e7fec7aa2ac2e29d9b9ee4abb2f7f136ee033f894ee28e93f6ecd68633e42",
+      "size": 57974
+    },
+    "reverie-kvm/src/vm.rs": {
+      "sha256": "02103b40eaf4bb18c028fecab60836f159b1560d0e2d183ef9cabd0115c846ed",
+      "size": 414483
+    }
+  }
+}

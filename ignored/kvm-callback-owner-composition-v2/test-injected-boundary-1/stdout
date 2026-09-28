@@ -1,0 +1,6 @@
+
+running 1 test
+test vm::tests::injected_boundary_error_defers_each_child_until_callback_destruction ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 633 filtered out; finished in 0.06s
+

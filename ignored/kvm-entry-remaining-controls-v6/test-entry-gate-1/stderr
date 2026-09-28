@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-entry-gate-1-1428673.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 35ms
+             CPU time consumed: 15ms
+                   Memory peak: 5.6M (swap: 0B)

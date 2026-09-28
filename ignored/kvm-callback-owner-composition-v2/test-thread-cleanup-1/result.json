@@ -1,0 +1,214 @@
+{
+  "raw_status": 0,
+  "elapsed_seconds": 0.10408496810123324,
+  "stream_bytes": {
+    "stdout": 206,
+    "stderr": 392
+  },
+  "refusals": [],
+  "control_commands": [],
+  "observed_service": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-callback-owner-test-thread-cleanup-1-1096225",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=1096390\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-callback-owner-test-thread-cleanup-1-1096225.service\nCPUUsageNSec=6965000\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "loaded",
+      "ActiveState": "active",
+      "SubState": "running",
+      "MainPID": "1096390",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-callback-owner-test-thread-cleanup-1-1096225.service",
+      "CPUUsageNSec": "6965000"
+    }
+  },
+  "accepted": true,
+  "terminal_service": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-callback-owner-test-thread-cleanup-1-1096225",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=[not set]\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "CPUUsageNSec": "[not set]"
+    }
+  },
+  "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-callback-owner-test-thread-cleanup-1-1096225.service",
+  "observed_cgroup_absent": true,
+  "source_after": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 46214,
+      "sha256": "8248ec4d8363b9796d4bff9fa20f010558480ccb36dc342755eda561a1bd67d5"
+    },
+    "reverie-kvm/src/entry/owner.rs": {
+      "bytes": 34802,
+      "sha256": "3add39ce0f58205e936dd86f6515d8bee23b840be833fa5b40c8a0a28c116de4"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    },
+    "reverie-kvm/src/clock.rs": {
+      "bytes": 37130,
+      "sha256": "f73f389d1ab1fb44f40a21f2e98f233962d9c74771cd0b937389f7385edac28a"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 390011,
+      "sha256": "30e4287a9bd5b9686862f13800a663bbc02852419ce714fe96f8a9ec1f557e47"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 250503,
+      "sha256": "1c0c552c2dc856fd60d9847838fa3f908d7a207471e2e6a5c6dd670e2c8e9ad9"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "bytes": 131425,
+      "sha256": "b2608e7c76baab2a7b00b61acf44d5080dd2829bc7d6bc26c65d7f62b542bec5"
+    },
+    "reverie-kvm/src/cpuid_runtime_tests.rs": {
+      "bytes": 5963,
+      "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 44691,
+      "sha256": "e0ce81d02d06f042d7890927e69130536540e5738423524f2df0266fa7f7ebf9"
+    },
+    "reverie-kvm/src/bootstrap.rs": {
+      "bytes": 43344,
+      "sha256": "46e856d87ac8fce52722af3655c4b5dfdb5e4b5ee09e32c0bb3597a010b4a0cc"
+    },
+    "reverie-kvm/src/executor.rs": {
+      "bytes": 1529519,
+      "sha256": "39e4035e32740ce2c1444714225083506d268748eb77232ddb00fffc5359fe48"
+    },
+    "Cargo.lock": {
+      "bytes": 67056,
+      "sha256": "0a5ecdf9fc94cf7eddad15c0ced7c61ed9f4db08a47f5e1a668d5a7f663c8419"
+    },
+    "reverie-kvm/src/failure/owned_future.rs": {
+      "bytes": 11676,
+      "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d"
+    },
+    "reverie-kvm/src/vm/worker_panic_tests.rs": {
+      "bytes": 27282,
+      "sha256": "7d9c5f8cde4eb7b732486066e80824baf53f85751a9de628a55ae624903e926f"
+    },
+    "reverie-kvm/src/runtime/failure_tests.rs": {
+      "bytes": 52820,
+      "sha256": "18d7d156bd5ecc3599c100a106698d55ff5aa9229c4b31713fb8312d1b9b7995"
+    },
+    "reverie-kvm/src/failure/tool_panics.rs": {
+      "bytes": 2129,
+      "sha256": "a0171080ee3e53c9e9b62a166abfc28126098ab080c23f90c25bb8390eb1a204"
+    },
+    "reverie-kvm/src/failure/tool_panics_tests.rs": {
+      "bytes": 14869,
+      "sha256": "1204b9e0810a436f6dbd6173db74bc98fe8fc2fe5c4a8ac1f6a914e75a2643ea"
+    },
+    "reverie-kvm/src/runtime/callback_completion_tests.rs": {
+      "bytes": 13014,
+      "sha256": "3797a8ac6596d3caea732fa2cba7975d8edbb0d40368ff61bfd584b773ff8604"
+    },
+    "reverie-kvm/src/runtime/consuming_panic_tests.rs": {
+      "bytes": 23012,
+      "sha256": "990cff878d780b90ec78750dfb8f93bfb9b5b305c165a15742201ba15f4aedbe"
+    },
+    "reverie-kvm/src/vm/public_tool_panic_tests.rs": {
+      "bytes": 13792,
+      "sha256": "bc345ba5c5feb931f58fb6e9a82cda8aac3d2a93acc65e6bc9001473929b050a"
+    },
+    "reverie-kvm/src/vm/instruction_callback_panic_tests.rs": {
+      "bytes": 7040,
+      "sha256": "6bca4acfd9ca474f489ad489e2ddecb1fe1c9bdd150c1b4e574e3135022743e3"
+    }
+  },
+  "changed_source_paths": [],
+  "executable_after": {
+    "bytes": 165779640,
+    "sha256": "4be7d3acd909edf89c9d366712e87c25eb3d822c6569e050d1b6e84b3d5e4157"
+  },
+  "tools_after": {
+    "cargo": {
+      "bytes": 35930328,
+      "sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+    },
+    "rustc": {
+      "bytes": 647712,
+      "sha256": "9da19b28ed198d7a7e3bd1ba5f6490b3d56c9b324f514bd05a5ed3f4661c95de"
+    },
+    "rustdoc": {
+      "bytes": 12485592,
+      "sha256": "68d9145d164f32d7dbf7b90213f6e07dc1b6e62efb1b329d6507e0471f4c3eed"
+    },
+    "rustfmt": {
+      "bytes": 5255768,
+      "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+    }
+  },
+  "caller_after": {
+    "runner.py": {
+      "bytes": 13065,
+      "sha256": "f183cc77fb7d7ed97c94a573c247181b88d6a096ae8ef7d2cdfa268f33a4a70f"
+    },
+    "support.py": {
+      "bytes": 3590,
+      "sha256": "4db320655c0a96058e7ac73c2cced6c3fe3d06f929a10f72eb380f09097c9ada"
+    }
+  },
+  "selection": {
+    "expected": {
+      "phase": "test-thread-cleanup-1",
+      "selector": "vm::tests::production_wrapper_cleans_tool_thread_after_boundary_restore_failure",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::production_wrapper_cleans_tool_thread_after_boundary_restore_failure"
+      ]
+    },
+    "summaries": [
+      [
+        "1",
+        "0",
+        "0"
+      ]
+    ]
+  },
+  "stream_records": {
+    "stdout": {
+      "bytes": 206,
+      "sha256": "781c30a1e88ae29028e4b779b387dfeb72f2e21c9e7ab64cafc73aad9828199d"
+    },
+    "stderr": {
+      "bytes": 392,
+      "sha256": "998230dfd1f52829d2acd8a1cd3ddd936c16814cf2cabd91eb98c990245c94db"
+    }
+  }
+}

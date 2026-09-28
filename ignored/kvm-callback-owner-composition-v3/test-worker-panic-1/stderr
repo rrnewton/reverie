@@ -1,0 +1,6 @@
+Running as unit: kvm-callback-owner-test-worker-panic-1-1283380.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 280ms
+             CPU time consumed: 22ms
+                   Memory peak: 3.5M (swap: 0B)

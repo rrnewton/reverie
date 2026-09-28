@@ -1,0 +1,350 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v3/retained-lib-1",
+    "--exact",
+    "runtime::failure_tests::normal_rpc_keeps_status_and_worker_before_leader_hooks",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "environment": {
+    "HOME": "/home/newton",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_TERM_COLOR": "never",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TZ": "UTC",
+    "RUSTUP_TOOLCHAIN": "nightly-2026-07-29",
+    "RUSTUP_AUTO_INSTALL": "0",
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "service": [
+    "/usr/bin/systemd-run",
+    "--user",
+    "--wait",
+    "--pipe",
+    "--collect",
+    "--unit",
+    "kvm-entry-owner-test-rpc-join-observation-3-3514071",
+    "--property=CPUQuota=200%",
+    "--property=MemoryMax=12G",
+    "--property=MemorySwapMax=0",
+    "--property=LimitCORE=0",
+    "--property=RuntimeMaxSec=60",
+    "--property=TimeoutStopSec=10",
+    "--property=KillMode=control-group",
+    "--working-directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+    "/usr/bin/env",
+    "-i",
+    "HOME=/home/newton",
+    "PATH=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/bin:/bin",
+    "CARGO_HOME=/home/newton/.cargo",
+    "CARGO_TARGET_DIR=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1",
+    "RUSTC=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC=/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_BUILD_JOBS=2",
+    "CARGO_NET_OFFLINE=true",
+    "CARGO_TERM_COLOR=never",
+    "LANG=C",
+    "LC_ALL=C",
+    "TZ=UTC",
+    "RUSTUP_TOOLCHAIN=nightly-2026-07-29",
+    "RUSTUP_AUTO_INSTALL=0",
+    "REVERIE_REQUIRE_KVM=1",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v3/retained-lib-1",
+    "--exact",
+    "runtime::failure_tests::normal_rpc_keeps_status_and_worker_before_leader_hooks",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "unit": "kvm-entry-owner-test-rpc-join-observation-3-3514071",
+  "source": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 56320,
+      "sha256": "95a565ffcc9ee06c2d6a312d9b95184c05e502892d1bfe585f42ec356f095dc3"
+    },
+    "reverie-kvm/src/entry/owner.rs": {
+      "bytes": 35506,
+      "sha256": "6b7be2e38a350c1dfc8d471a750f5eb79fe44dad4e06943da3496de03e637fc0"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 17673,
+      "sha256": "a952ee3593deb9b69bd9eba79e377c3c392b2e86d6cad984c42d9f39d11a61e7"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 2283,
+      "sha256": "6fa59d489a2b28cdec49b63f8c643eadaae6f3264999380fa4b88f7106da5c25"
+    },
+    "reverie-kvm/src/clock.rs": {
+      "bytes": 41627,
+      "sha256": "580080890af0ecd661cc8f016b32b25db85f35830aaaaada09296601bf5c4a16"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 414310,
+      "sha256": "32dd03d5b6a5248c47a625639b8638b242bab6a7635939770c0a1915c6bf51e7"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 275611,
+      "sha256": "b79a5cc0839215e4fcc87df89b096768d2c759aee9e9cab9c5ab3d5b7f716629"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "bytes": 133558,
+      "sha256": "4f1fc51291e59e2fd1d2ac48d31823a447ab8e9e91ad03f0bde3c68adbdd61f6"
+    },
+    "reverie-kvm/src/cpuid_runtime_tests.rs": {
+      "bytes": 5963,
+      "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 53064,
+      "sha256": "94995c40bc796cd8b289506d1f15fe0663e721065605144afe5af0a063738fc7"
+    },
+    "reverie-kvm/src/bootstrap.rs": {
+      "bytes": 43344,
+      "sha256": "46e856d87ac8fce52722af3655c4b5dfdb5e4b5ee09e32c0bb3597a010b4a0cc"
+    },
+    "reverie-kvm/src/executor.rs": {
+      "bytes": 1529884,
+      "sha256": "4609d36452b011e7f1c4b787cae669ee6e6f97f8e85eb4223af319f044626ff7"
+    },
+    "Cargo.lock": {
+      "bytes": 67056,
+      "sha256": "0a5ecdf9fc94cf7eddad15c0ced7c61ed9f4db08a47f5e1a668d5a7f663c8419"
+    },
+    "reverie-kvm/src/failure/owned_future.rs": {
+      "bytes": 11676,
+      "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d"
+    },
+    "reverie-kvm/src/vm/worker_panic_tests.rs": {
+      "bytes": 27282,
+      "sha256": "7d9c5f8cde4eb7b732486066e80824baf53f85751a9de628a55ae624903e926f"
+    },
+    "reverie-kvm/src/runtime/failure_tests.rs": {
+      "bytes": 53242,
+      "sha256": "efb1f468656f04276111c14f3ac4874251b1e7ba97a3796ccc7f81a42969e762"
+    },
+    "reverie-kvm/src/failure/tool_panics.rs": {
+      "bytes": 2129,
+      "sha256": "a0171080ee3e53c9e9b62a166abfc28126098ab080c23f90c25bb8390eb1a204"
+    },
+    "reverie-kvm/src/failure/tool_panics_tests.rs": {
+      "bytes": 14869,
+      "sha256": "1204b9e0810a436f6dbd6173db74bc98fe8fc2fe5c4a8ac1f6a914e75a2643ea"
+    },
+    "reverie-kvm/src/runtime/callback_completion_tests.rs": {
+      "bytes": 18488,
+      "sha256": "11e40eadf24aa8a70781f879804d53018d3a89d0cea129fd01bfb2011365b8f2"
+    },
+    "reverie-kvm/src/runtime/consuming_panic_tests.rs": {
+      "bytes": 23012,
+      "sha256": "990cff878d780b90ec78750dfb8f93bfb9b5b305c165a15742201ba15f4aedbe"
+    },
+    "reverie-kvm/src/vm/public_tool_panic_tests.rs": {
+      "bytes": 13792,
+      "sha256": "bc345ba5c5feb931f58fb6e9a82cda8aac3d2a93acc65e6bc9001473929b050a"
+    },
+    "reverie-kvm/src/vm/instruction_callback_panic_tests.rs": {
+      "bytes": 12101,
+      "sha256": "1f6dfa5f7f9dc8a1053bb6b0a4763a429fff3287975c1215a9c0bdd59a1759c7"
+    },
+    "reverie-kvm/src/entry/driver.rs": {
+      "bytes": 19549,
+      "sha256": "88d3317f108632f8b7145fa600579e31a9af9ffb3401566c6c7e94da498353b7"
+    },
+    "reverie-kvm/src/entry/driver/tests.rs": {
+      "bytes": 20819,
+      "sha256": "50ada60612ce119f51910bbd651734627c730b0ffe15f331f8327333c25769cc"
+    },
+    "reverie-kvm/src/runtime/entry_owner_tests.rs": {
+      "bytes": 8968,
+      "sha256": "f4f8a479230a0b3103cbc92fbbde7712cf3cd8c1e4e3cc905f243d72d283806c"
+    },
+    "reverie-kvm/src/vm/entry_owner_tests.rs": {
+      "bytes": 7382,
+      "sha256": "6fbeaa54086ee4e4aa1540ce069a0705aea3d24f6c78cc81af6e9c9b09a70079"
+    },
+    "reverie-kvm/src/vm/exec_wait_tests.rs": {
+      "bytes": 35146,
+      "sha256": "ee1062c5c3fd3c3dd56c67edea81c682b77649326611741073dc8860cacf42c2"
+    },
+    "reverie-kvm/README.md": {
+      "bytes": 21571,
+      "sha256": "003d8c5c40c545812740337ad8de2140612a8ff7b909408db93a7df748783196"
+    },
+    "reverie-kvm/src/vm/worker_join.rs": {
+      "bytes": 21177,
+      "sha256": "560a540dedc0e54cec94f37638cf1b586530a919e33704fa6b1383d2a825779f"
+    },
+    "reverie-kvm/src/parked_signal_runtime.rs": {
+      "bytes": 28392,
+      "sha256": "951d64e9a35f993f675104d33b9f9d7219e262c12c0ddbd8914172f78f6f87fa"
+    },
+    "reverie-kvm/src/runtime/entry_operation_tests.rs": {
+      "bytes": 31038,
+      "sha256": "485cb594954926124963642cc2a5f9e3ecda7d568be1f5ab4c87e0561166e4d0"
+    },
+    "reverie-kvm/src/vm/entry_public_tests.rs": {
+      "bytes": 22643,
+      "sha256": "c4def9041a16e7a8a3f396907babd384bf89b6c16afdd97d0a4f0d47d3bda68a"
+    },
+    "reverie-kvm/src/vm/entry_main_tests.rs": {
+      "bytes": 25322,
+      "sha256": "d0827d2e2e92c4b239782cceabf97e5eab4c3649b1aab7669ecabb088cb03fcd"
+    },
+    "reverie-kvm/src/vm/entry_spawn_tests.rs": {
+      "bytes": 23630,
+      "sha256": "a6cd0978a295041e7585aa98c3cac4f91b22b34b29e6b41b7c4e0d29f79b3ad8"
+    },
+    "reverie-kvm/src/vm/entry_hypercall_tests.rs": {
+      "bytes": 29288,
+      "sha256": "90749f756e3fcb71a0fe6602c023cd16c78dca319f23dac418baa197afc54cc2"
+    },
+    "reverie-kvm/src/vm/entry_race_tests.rs": {
+      "bytes": 8078,
+      "sha256": "3b2cba4611c33924b50e952efc42bb8f0087e59ce6bb60711235c26eb294cdb2"
+    },
+    "reverie-kvm/src/vm/entry_multi_owner_tests.rs": {
+      "bytes": 46478,
+      "sha256": "85210db4eb2e479129353297d6193f7e6f5aa1f3d573406508b38808da5ece91"
+    },
+    "reverie-kvm/src/vm/entry_action_tests.rs": {
+      "bytes": 26797,
+      "sha256": "e9e67fc026e695f3174c09b8d96941e3f0b0857f04f403033419f745fa683bfe"
+    },
+    "reverie-kvm/src/entry/cleanup_tests.rs": {
+      "bytes": 27125,
+      "sha256": "82ec6c92233eb0be6ec723d4db79219ae4635523d4d36f813893c58e7d66820c"
+    },
+    "reverie-kvm/src/vm/entry_wait_tests.rs": {
+      "bytes": 30732,
+      "sha256": "8982707cea0a05bf9ddd03f27b7d4d4d10a57e7a82f5b9627ad2c4e244cd2973"
+    },
+    "reverie-kvm/src/vm/entry_eintr_tests.rs": {
+      "bytes": 10930,
+      "sha256": "a92cae9e1dd1ab1fb7659e2a493966407ec872a6bf10d105d4e86931ebafde3d"
+    }
+  },
+  "source_manifest": "source-1.json",
+  "source_binding": {
+    "bytes": 6930,
+    "sha256": "69cce12356eb02bd7f7b0de7c529347ab3cf5cd6b1340a42551d227effe72ebf"
+  },
+  "plan": "PLAN-1.json",
+  "plan_binding": {
+    "bytes": 43395,
+    "sha256": "bab8e139ea8a6634917fab686425d5e53d1113aac5c8d518a4354e8c688719cc"
+  },
+  "executable_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v3/retained-lib-1",
+  "executable_before": {
+    "bytes": 240156496,
+    "sha256": "252de1fe6170ad58a136ad90c93ffb47c2d3ee8eec5cc29177cf98a1a54ff39d"
+  },
+  "tools_before": {
+    "cargo": {
+      "bytes": 35930328,
+      "sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+    },
+    "rustc": {
+      "bytes": 647712,
+      "sha256": "9da19b28ed198d7a7e3bd1ba5f6490b3d56c9b324f514bd05a5ed3f4661c95de"
+    },
+    "rustdoc": {
+      "bytes": 12485592,
+      "sha256": "68d9145d164f32d7dbf7b90213f6e07dc1b6e62efb1b329d6507e0471f4c3eed"
+    },
+    "rustfmt": {
+      "bytes": 5255768,
+      "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+    }
+  },
+  "caller_before": {
+    "runner.py": {
+      "bytes": 13173,
+      "sha256": "d51e8e9abebc8675c46d628ad830d00b02b3672580a00d07729da81f67e25814"
+    },
+    "support.py": {
+      "bytes": 3730,
+      "sha256": "96c9be26daecddf4cf9f6f8d3e60e8766842a795871a5ee7fb7e0fdd8e7b174c"
+    }
+  },
+  "retained_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v3/retained-lib-1",
+    "built_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/reverie_kvm-908667d8759d4789",
+    "executable": {
+      "bytes": 240156496,
+      "sha256": "252de1fe6170ad58a136ad90c93ffb47c2d3ee8eec5cc29177cf98a1a54ff39d"
+    },
+    "mode": "0555",
+    "artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "default",
+        "native-test-support"
+      ],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/reverie_kvm-908667d8759d4789"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/reverie_kvm-908667d8759d4789",
+      "fresh": false
+    },
+    "source_sha256": "69cce12356eb02bd7f7b0de7c529347ab3cf5cd6b1340a42551d227effe72ebf",
+    "plan_sha256": "bab8e139ea8a6634917fab686425d5e53d1113aac5c8d518a4354e8c688719cc",
+    "compile_records": {
+      "command.json": {
+        "bytes": 10884,
+        "sha256": "317093b21733eeb2506da0b5e0eedef6186967e2e34dd5c5446a487dafb3cf54"
+      },
+      "RAW-RESULT.json": {
+        "bytes": 949,
+        "sha256": "b5bd805fda0774630b0879310811b585848a225eac6fe830112a56ced6c187ac"
+      },
+      "result.json": {
+        "bytes": 9643,
+        "sha256": "3d529156e506ad63455b66553ae28a3286333a68b5df06ac16b7e938acf78099"
+      },
+      "stdout": {
+        "bytes": 128291,
+        "sha256": "9ab4233579cc5855db960de5cf21a562213eb8ae67f05230c49e8ba86e07b218"
+      },
+      "stderr": {
+        "bytes": 527,
+        "sha256": "216946414d137f2672526d8bb7a6054e1f0135725470420a0d6056f9a20f72eb"
+      }
+    }
+  },
+  "wall_seconds": 60,
+  "stream_cap_bytes": 16777216,
+  "dispatched_base": "91110d249ffd8957267d71fab8c83d9636105efe"
+}

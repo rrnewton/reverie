@@ -1,0 +1,285 @@
+--- previous/bind_dependencies.py
++++ current/bind_dependencies.py
+@@ -5,7 +5,7 @@
+ from common import check_file,file_record,json_read,require,write_new
+ HERE=Path(__file__).resolve().parent
+ REPO=Path(json_read(HERE/'SETUP.json')['source_root'])
+-META=Path(json_read(HERE/'CONTINUATION.json')['qualified_metadata'])
++META=HERE
+ result=json_read(META/'controls/metadata/result.json')
+ require(result['accepted'] and result['terminal_authenticated'] and result['inputs_unchanged'] and result['raw_status']==0,'metadata not qualified')
+ metadata=json_read(META/'observer/metadata/stdout')
+--- previous/retain_artifacts.py
++++ current/retain_artifacts.py
+@@ -1,5 +1,5 @@
+ #!/usr/bin/python3
+-"""Retain the freshly compiled corrected harness and emitted local libraries."""
++"""Retain both fresh ptrace test ELFs and local libraries before later Cargo phases."""
+ import json,os
+ from pathlib import Path
+ from common import check_file,digest,file_record,json_read,read,require,write_new
+@@ -9,9 +9,7 @@
+ plan=json_read(HERE/'compile-plan.json');result=json_read(HERE/'controls/compile/result.json')
+ require(result['accepted'] and result['terminal_authenticated'] and result['inputs_unchanged'] and result['raw_status']==0,'compile did not qualify')
+ require(result['plan_sha256']==digest(HERE/'compile-plan.json'),'compile plan differs');check(plan)
+-originals=json_read(HERE/'controls/compile/artifacts.json');require(set(originals)=={'ptrace'},'wrong artifact selection')
+-row=originals['ptrace'];cargo=row['cargo_artifact']
+-require(cargo.get('fresh') is False and cargo['manifest_path']==str(REPO/'reverie-ptrace/Cargo.toml') and cargo['target']['name']=='reverie_ptrace' and cargo['target']['kind']==['lib'] and cargo['profile']['test'] is True,'fresh ptrace test harness required')
++originals=json_read(HERE/'controls/compile/artifacts.json');require(set(originals)=={'ptrace','vsyscall'},'wrong artifact selection')
+ retained=HERE/'retained-binaries';retained.mkdir(mode=0o700)
+ def copy(original,destination):
+  check_file(original);source=Path(original['path']);require(source.resolve()==source and source.is_relative_to(Path(plan['target']['path'])),'artifact outside target')
+@@ -22,20 +20,24 @@
+  actual=file_record(destination);require(actual['sha256']==original['sha256'] and actual['bytes']==original['bytes'],'retained bytes differ')
+  require((source.stat().st_dev,source.stat().st_ino)!=(destination.stat().st_dev,destination.stat().st_ino),'retained inode aliases target');check_file(original)
+  return dict(original=original,retained=actual,distinct_inode=True)
+-check_file(row['file'],executable=True)
+-with Path(row['file']['path']).open('rb') as f:require(f.read(4)==b'\x7fELF','selected harness not ELF')
+-baseline=json_read(json_read(HERE/'CONTINUATION.json')['baseline_artifacts'])['ptrace']['file'];check_file(baseline,executable=True)
+-require(row['file']['sha256']!=baseline['sha256'],'corrected harness equals retained baseline bytes')
+-harness=copy(row['file'],retained/'ptrace.elf');libraries=[];seen=set()
+-raw_path=Path(plan['output'])/'stdout';rows=[json.loads(x) for x in read(raw_path).splitlines()]
+-for item in rows:
++harnesses={};artifacts={}
++for selector in plan['artifact_selectors']:
++ key=selector['id'];row=originals[key];cargo=row['cargo_artifact']
++ require(cargo.get('fresh') is False and cargo['manifest_path']==str(REPO/'reverie-ptrace/Cargo.toml') and cargo['target']['name']==selector['target'] and cargo['target']['kind']==selector['kind'] and cargo['profile']['test'] is True,'fresh selected test harness required')
++ check_file(row['file'],executable=True)
++ with Path(row['file']['path']).open('rb') as f:require(f.read(4)==b'\x7fELF','selected harness not ELF')
++ harnesses[key]=copy(row['file'],retained/(key+'.elf'))
++ artifacts[key]=dict(cargo_artifact=cargo,file=harnesses[key]['retained'])
++prior=json_read(HERE/'HISTORY.json')['previous_failed_elf'];check_file(prior,executable=True)
++require(artifacts['ptrace']['file']['sha256']!=prior['sha256'],'new library harness reused prior failed bytes')
++libraries=[];seen=set();raw_path=Path(plan['output'])/'stdout'
++for item in [json.loads(x) for x in read(raw_path).splitlines()]:
+  if item.get('reason')!='compiler-artifact' or not Path(item.get('manifest_path','/')).is_relative_to(REPO):continue
+  for name in item['filenames']:
+   path=Path(name)
+   if path.suffix not in ('.rlib','.so') or name in seen:continue
+   seen.add(name);libraries.append(dict(cargo_artifact=item,**copy(file_record(path),retained/('library-'+str(len(libraries))+'-'+path.name))))
+-require(libraries,'no locally emitted library artifact retained')
+-check(plan)
+-write_new(retained/'BINDING.json',dict(compile_plan=file_record(HERE/'compile-plan.json'),compile_result=file_record(HERE/'controls/compile/result.json'),cargo_output=file_record(raw_path),source_manifests=plan['sources'],original_artifacts=file_record(HERE/'controls/compile/artifacts.json'),harness=harness,retained_libraries=libraries,all_selected_harnesses_newly_built=True,meaning='Fresh ptrace test ELF plus emitted local libraries; dynamic loader closure is queried separately before the first succeeding phase. No test result.'))
+-write_new(retained/'ARTIFACTS.json',dict(ptrace=dict(cargo_artifact=cargo,file=harness['retained'])))
+-print(json.dumps(dict(retained_harness=harness['retained'],retained_local_libraries=len(libraries),executed=False)))
++require(libraries,'no locally emitted library artifact retained');check(plan)
++write_new(retained/'BINDING.json',dict(compile_plan=file_record(HERE/'compile-plan.json'),compile_result=file_record(HERE/'controls/compile/result.json'),cargo_output=file_record(raw_path),source_manifests=plan['sources'],original_artifacts=file_record(HERE/'controls/compile/artifacts.json'),harnesses=harnesses,retained_libraries=libraries,all_selected_harnesses_newly_built=True,previous_failed_harness=prior,meaning='Two freshly emitted retained test ELFs and local libraries; no transferred test results.'))
++write_new(retained/'ARTIFACTS.json',artifacts)
++print(json.dumps(dict(harnesses={k:v['file'] for k,v in artifacts.items()},retained_local_libraries=len(libraries))))
+--- previous/prepare.py
++++ current/prepare.py
+@@ -1,25 +1,30 @@
+ #!/usr/bin/python3
+-"""Prepare one exact reviewed phase; only bounded ELF/loader queries execute here."""
++"""Prepare a fixed phase after authenticating its predecessor and exact ELF closure."""
+ import json,os,re,sys
+ from pathlib import Path
+ from common import bounded_process,check_file,digest,file_record,json_read,read,require,write_new
+ HERE=Path(__file__).resolve().parent
+ REPO=Path(json_read(HERE/'SETUP.json')['source_root'])
+ 
+-def loader(executable,env):
+- bound=HERE/'loader/ptrace.json'
++def unique(rows):
++ result={}
++ for row in rows:
++  require(row['path'] not in result or result[row['path']]==row,'conflicting input identity')
++  result[row['path']]=row
++ return list(result.values())
++
++def loader(key,executable,env):
++ bound=HERE/'loader'/(key+'.json')
+  if not bound.exists():
+-  original=json_read(json_read(HERE/'CONTINUATION.json')['original_plan'])
+-  programs=[]
++  original=json_read(HERE/'metadata-plan.json');programs=[]
+   for name in ['/usr/bin/ldd','/usr/bin/readelf']:
+    matches=[x for x in original['inputs'] if x['path']==name]
+-   require(len(matches)==1,'loader tool was not originally bound');check_file(matches[0]);programs.append(matches[0])
++   require(len(matches)==1,'loader query tool not bound');check_file(matches[0]);programs.append(matches[0])
+   queries=[]
+   for label,argv in [('ldd',['/usr/bin/ldd',executable['path']]),('readelf',['/usr/bin/readelf','-W','-l','-d',executable['path']])]:
+-   q=bounded_process(argv,REPO,env,HERE/'loader'/label,5,65536)
++   q=bounded_process(argv,REPO,env,HERE/'loader'/(key+'-'+label),5,65536)
+    require(q['returncode']==0 and not q['forced'],'loader query failed')
+-   require(q['stdout']['bytes']<=65536 and q['stderr']['bytes']<=65536,'loader query stream bound')
+-   queries.append(q)
++   require(q['stdout']['bytes']<=65536 and q['stderr']['bytes']<=65536,'loader query stream bound');queries.append(q)
+   files={};links={}
+   for line in read(queries[0]['stdout']['path'],65536).decode().splitlines():
+    require('not found' not in line,'missing linked library')
+@@ -37,34 +42,30 @@
+  return [file_record(bound),*value['inputs'],*value['query_programs'],*[q[k] for q in value['queries'] for k in ['stdout','stderr']]],value['input_symlinks']
+ 
+ def main():
+- require(len(sys.argv)==2,'one planned phase required')
+- name=sys.argv[1];rows=[p for p in json_read(HERE/'PHASES.json')['phases'] if p['name']==name]
+- require(len(rows)==1,'phase not selected');row=rows[0]
+- continuation=json_read(HERE/'CONTINUATION.json');meta=Path(continuation['qualified_metadata'])
+- qualified=json_read(meta/'controls/metadata/result.json')
+- require(qualified['accepted'] and qualified['terminal_authenticated'] and qualified['inputs_unchanged'] and qualified['raw_status']==0,'metadata not qualified')
+- base=json_read(continuation['original_plan']);plan=json.loads(json.dumps(base))
+- plan.update(name=name,kind=row['kind'],path=str(HERE/(name+'-plan.json')),argv=row['argv'],selected=row['selected'],artifact_selectors=row['artifact_selectors'],lease=continuation['fresh_lease'],output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),scope='Frozen corrected source only: fresh ptrace library harness, format, inventory, core/ptrace check, strict Clippy and nine exact original declarations; no Hermit parity approval')
+- plan['limits']=row['limits'];plan['inputs']+=json_read(HERE/'RUNTIME-INPUTS.json')
+- plan['inputs']+=[file_record(HERE/'CALLER-TARGET.json'),file_record(HERE/'INPUTS.json')]
+- plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+- plan['input_symlinks']+=json_read(HERE/'dependency-symlinks.json')
++ require(len(sys.argv)==2,'one exact phase required')
++ name=sys.argv[1];rows=[p for p in json_read(HERE/'PHASES.json')['phases'] if p['name']==name];require(len(rows)==1,'unknown phase');row=rows[0]
++ if name=='metadata':
++  print(HERE/'metadata-plan.json',digest(HERE/'metadata-plan.json'));return
++ meta=json_read(HERE/'controls/metadata/result.json')
++ require(meta['accepted'] and meta['terminal_authenticated'] and meta['inputs_unchanged'] and meta['raw_status']==0,'metadata not qualified')
++ plan=json_read(HERE/'metadata-plan.json')
++ plan.update(name=name,kind=row['kind'],path=str(HERE/(name+'-plan.json')),argv=row['argv'],selected=row['selected'],artifact_selectors=row['artifact_selectors'],output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),scope='Fresh isolated clock and ptrace injection correction; no KVM or Hermit parity credit')
++ plan['limits']=row['limits']
++ plan['inputs'] += [file_record(HERE/n) for n in ['CALLER-TARGET.json','INPUTS.json','dependency-closure.json','dependency-symlinks.json','controls/metadata/result.json']]
++ plan['dependencies']=file_record(HERE/'dependency-inputs.json');plan['input_symlinks']+=json_read(HERE/'dependency-symlinks.json')
+  if name!='compile':
+-  compiled=json_read(HERE/'controls/compile/result.json')
+-  require(compiled['accepted'] and compiled['terminal_authenticated'] and compiled['inputs_unchanged'] and compiled['raw_status']==0,'compile not qualified')
+-  artifacts=json_read(HERE/'retained-binaries/ARTIFACTS.json');require(set(artifacts)=={'ptrace'},'wrong retained harness set')
+-  artifact=artifacts['ptrace']['file'];check_file(artifact,executable=True)
+-  require(artifact['path']==str(HERE/'retained-binaries/ptrace.elf'),'retained harness path differs')
+-  plan['inputs'] += [file_record(HERE/'controls/compile/result.json'),file_record(HERE/'controls/compile/artifacts.json'),file_record(HERE/'retained-binaries/ARTIFACTS.json'),file_record(HERE/'retained-binaries/BINDING.json'),artifact]
++  compiled=json_read(HERE/'controls/compile/result.json');require(compiled['accepted'] and compiled['terminal_authenticated'] and compiled['inputs_unchanged'] and compiled['raw_status']==0,'compile not qualified')
++  artifacts=json_read(HERE/'retained-binaries/ARTIFACTS.json');require(set(artifacts)=={'ptrace','vsyscall'},'wrong retained set')
++  plan['inputs'] += [file_record(HERE/n) for n in ['controls/compile/result.json','controls/compile/artifacts.json','retained-binaries/ARTIFACTS.json','retained-binaries/BINDING.json']]
++  for key,item in artifacts.items():
++   artifact=item['file'];check_file(artifact,executable=True);require(artifact['path']==str(HERE/'retained-binaries'/(key+'.elf')),'wrong retained path')
++   plan['inputs'].append(artifact);extra,aliases=loader(key,artifact,plan['environment']);plan['inputs']+=extra;plan['input_symlinks']+=aliases
+   for retained in json_read(HERE/'retained-binaries/BINDING.json')['retained_libraries']:
+    check_file(retained['retained']);plan['inputs'].append(retained['retained'])
+-  extra,aliases=loader(artifact,plan['environment']);plan['inputs']+=extra;plan['input_symlinks']+=aliases
+  if row['kind']=='test':
+-  inventory=json_read(HERE/'controls/list-ptrace/result.json')
+-  require(inventory['accepted'] and inventory['terminal_authenticated'] and inventory['inputs_unchanged'],'inventory not qualified')
+-  require(len(row['selected'])==1 and inventory['readback']['names'].count(row['selected'][0])==1,'test absent or ambiguous')
+-  plan['inputs'].append(file_record(HERE/'controls/list-ptrace/result.json'))
+- plan['inputs']=list({x['path']:x for x in plan['inputs']}.values());plan['input_symlinks']=list({x['path']:x for x in plan['input_symlinks']}.values())
+- write_new(Path(plan['path']),plan)
+- print(plan['path'],digest(plan['path']))
++  inventory_path=HERE/'controls'/('list-'+row['harness'])/'result.json';inventory=json_read(inventory_path)
++  require(inventory['accepted'] and inventory['terminal_authenticated'] and inventory['inputs_unchanged'] and inventory['raw_status']==0,'inventory not qualified')
++  require(len(row['selected'])==1 and inventory['readback']['names'].count(row['selected'][0])==1,'test absent or ambiguous');plan['inputs'].append(file_record(inventory_path))
++ plan['inputs']=unique(plan['inputs']);plan['input_symlinks']=unique(plan['input_symlinks'])
++ write_new(Path(plan['path']),plan);print(plan['path'],digest(plan['path']))
+ if __name__=='__main__':main()
+--- previous/execute.py
++++ current/execute.py
+@@ -1,11 +1,9 @@
+ #!/usr/bin/python3
+-"""Run the separately approved finite corrected sequence once; never retry."""
+-import fcntl,json,os,stat,subprocess,sys,time
++"""Execute the reviewed finite sequence once; stop on the first failed phase or guard."""
++import os,stat,subprocess,sys,time
+ from pathlib import Path
+-import cache_lease
+-from common import check_file,digest,file_record,json_read,require,write_new
++from common import check_file,digest,file_record,json_read,read,require,write_new
+ HERE=Path(__file__).resolve().parent
+-SEQUENCE=['compile','format','list-ptrace','core-check','clippy','new-01','new-02','new-03','new-04','new-05','new-06','neighbor-01','neighbor-02','neighbor-03']
+ 
+ def authenticate():
+  target=json_read(HERE/'CALLER-TARGET.json');check_file(target['inputs']);index=json_read(target['inputs']['path'])
+@@ -13,64 +11,49 @@
+  for row in index['symlinks']:
+   p=Path(row['path']);require(p.is_symlink() and os.readlink(p)==row['target'],'input alias changed')
+  for name in index['must_be_absent_before_execution']:
+-  p=Path(name);require(not p.exists() and not p.is_symlink(),'run destination exists: '+name)
+- continuation=json_read(HERE/'CONTINUATION.json');old=json_read(continuation['old_lease_plan'])
+- phase_base=json_read(continuation['original_plan']);target_path=Path(phase_base['target']['path']);target_stat=target_path.lstat()
+- require(stat.S_ISDIR(target_stat.st_mode) and [target_stat.st_dev,target_stat.st_ino,target_stat.st_uid]==phase_base['target']['identity'] and not list(target_path.iterdir()),'corrected build target not the original empty target')
+- require(digest(continuation['old_lease_plan'])==continuation['old_lease_plan_sha256'],'old plan differs')
+- metadata=Path(continuation['qualified_metadata']);qualified=json_read(metadata/'controls/metadata/result.json')
+- require(qualified['accepted'] and qualified['terminal_authenticated'] and qualified['inputs_unchanged'] and qualified['raw_status']==0,'metadata not qualified')
+- proof=json_read(HERE.parent/'metadata-terminal-diagnosis-v1/final-v1/READBACK.json')
+- require(proof['recovery_performed'] is False and proof['lease_state_records']==[] and proof['lease_token']==cache_lease.token(continuation['old_lease_plan_sha256']).decode(),'old refusal not retained')
+- require(len(proof['processes'])==6 and all(x['exists'] is False for x in proof['processes']),'old process closure incomplete')
+- require(all(not Path('/proc/'+str(x['pid'])).exists() for x in proof['processes']),'recorded old PID now present; separate disposition required')
+- final=proof['refusal_final_accounting'];require(final['cgroup_empty'] is True and final['properties']['MainPID']==0 and final['properties']['ControlGroup']=='' and final['properties']['ActiveState']=='inactive','old service closure missing')
+- fresh=Path(continuation['fresh_lease']['path']);s=fresh.lstat()
+- require(stat.S_ISREG(s.st_mode) and stat.S_IMODE(s.st_mode)==0o600 and s.st_size==0 and [s.st_dev,s.st_ino,s.st_uid]==continuation['fresh_lease']['identity'],'private lease not pristine')
+- state=Path(continuation['fresh_lease']['state_directory']);require(state.is_dir() and not state.is_symlink() and stat.S_IMODE(state.stat().st_mode)==0o700 and not list(state.iterdir()),'private state not pristine')
+- rows=json_read(HERE/'PHASES.json')['phases'];require([x['name'] for x in rows]==SEQUENCE,'finite phase sequence differs')
+- selection=json_read(HERE/'SELECTORS.json')
+- require(selection['exact_declarations']==9 and len(set(selection['ordered_names']))==9 and [x['selected'] for x in rows if x['kind']=='test']==[[name] for name in selection['ordered_names']],'exact corrected declarations differ')
+- return continuation,old
++  p=Path(name);require(not p.exists() and not p.is_symlink(),'run destination already exists: '+name)
++ plan=json_read(HERE/'metadata-plan.json');p=Path(plan['target']['path']);s=p.lstat()
++ require(stat.S_ISDIR(s.st_mode) and stat.S_IMODE(s.st_mode)==0o700 and [s.st_dev,s.st_ino,s.st_uid]==plan['target']['identity'] and not list(p.iterdir()),'fresh target differs')
++ lease=Path(plan['lease']['path']);s=lease.lstat()
++ require(stat.S_ISREG(s.st_mode) and stat.S_IMODE(s.st_mode)==0o600 and s.st_size==0 and [s.st_dev,s.st_ino,s.st_uid]==plan['lease']['identity'],'lease not pristine')
++ state=Path(plan['lease']['state_directory']);require(state.is_dir() and not state.is_symlink() and not list(state.iterdir()),'private state not pristine')
++ phases=json_read(HERE/'PHASES.json')['phases'];selectors=json_read(HERE/'SELECTORS.json')
++ tests=[p['selected'][0] for p in phases if p['kind']=='test']
++ require(tests==selectors['ordered_names'] and len(tests)==selectors['exact_declarations'] and len(tests)==len(set(tests)),'finite test selection changed')
++ require(any(line.endswith('[vsyscall]') for line in Path('/proc/self/maps').read_text().splitlines()),'legacy-vsyscall mapping absent; existing early return cannot qualify')
++ return phases
+ 
+-def command(label,argv,old_fd):
++def command(label,argv):
+  prefix=HERE/'launch'/label;start=time.monotonic()
+  with prefix.with_suffix('.stdout').open('xb') as out,prefix.with_suffix('.stderr').open('xb') as err:
+-  p=subprocess.run(argv,cwd=HERE,env={**os.environ,'PYTHONOPTIMIZE':'0','PYTHONDONTWRITEBYTECODE':'1'},stdin=subprocess.DEVNULL,stdout=out,stderr=err,pass_fds=(old_fd,),check=False)
++  p=subprocess.run(argv,cwd=HERE,env={**os.environ,'PYTHONOPTIMIZE':'0','PYTHONDONTWRITEBYTECODE':'1'},stdin=subprocess.DEVNULL,stdout=out,stderr=err,check=False)
+  record=dict(argv=argv,returncode=p.returncode,elapsed_seconds=time.monotonic()-start,stdout=file_record(prefix.with_suffix('.stdout')),stderr=file_record(prefix.with_suffix('.stderr')))
+  write_new(prefix.with_suffix('.json'),record);return record
+ 
+ def main():
+  require(sys.flags.optimize==0 and os.environ.get('PYTHONOPTIMIZE')=='0','explicit unoptimized Python required')
+- require(sys.argv[1:]==['run'],'execute.py run requires root authorization')
+- continuation,old=authenticate();old_sha=continuation['old_lease_plan_sha256'];fd=cache_lease.open_bound(old['lease'])
++ require(sys.argv[1:]==['run'],'execute.py run only after root authorization')
++ phases=authenticate();journal=dict(sequence=[p['name'] for p in phases],planned_phases=len(phases),planned_tests=sum(p['kind']=='test' for p in phases),attempts=[],accepted=[],error=None,no_retry=True,prior_lease_untouched=True)
+  try:
+-  fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);cache_lease.check_held(fd,old['lease'],old_sha)
+-  old_completion=Path(old['lease']['state_directory'])/(old_sha+'.json');require(not old_completion.exists() and not old_completion.is_symlink(),'old refused token completed')
+-  authenticate();journal=dict(sequence=SEQUENCE,planned_phases=14,planned_tests=9,attempts=[],accepted=[],error=None,old_lease_mutated=False)
+-  try:
+-   for name in SEQUENCE:
+-    prepared=command('prepare-'+name,['/usr/bin/python3','-B',str(HERE/'prepare.py'),name],fd)
+-    require(prepared['returncode']==0,'preparation failed; no retry: '+name)
+-    plan=HERE/(name+'-plan.json')
+-    outcome=command('phase-'+name,['/usr/bin/python3','-B',str(HERE/'phase.py'),'launch',str(plan),digest(plan)],fd)
+-    attempt=dict(name=name,transport=outcome);journal['attempts'].append(attempt)
+-    receipt=HERE/'controls'/name/'result.json'
+-    if receipt.is_file():attempt['receipt']=file_record(receipt)
+-    require(outcome['returncode']==0,'phase failed/refused; raw outcome retained without qualification: '+name)
+-    result=json_read(receipt)
+-    require(result['accepted'] and result['terminal_authenticated'] and result['inputs_unchanged'] and result['raw_status']==0,'phase did not qualify: '+name)
+-    journal['accepted'].append(name)
+-    if name=='compile':
+-     retained=command('retain-artifacts',['/usr/bin/python3','-B',str(HERE/'retain_artifacts.py')],fd)
+-     require(retained['returncode']==0,'artifact retention refused')
+-  except BaseException as error:
+-   journal['error']=repr(error);raise
+-  finally:
+-   try:
+-    cache_lease.check_held(fd,old['lease'],old_sha)
+-    require(not old_completion.exists() and not old_completion.is_symlink(),'old completion appeared')
+-    journal['old_token_unchanged']=True
+-   finally:write_new(HERE/'EXECUTION-RESULT.json',journal)
+- finally:os.close(fd)
++  for row in phases:
++   name=row['name'];prepared=command('prepare-'+name,['/usr/bin/python3','-B',str(HERE/'prepare.py'),name]);require(prepared['returncode']==0,'phase preparation refused: '+name)
++   plan=HERE/(name+'-plan.json');outcome=command('phase-'+name,['/usr/bin/python3','-B',str(HERE/'phase.py'),'launch',str(plan),digest(plan)])
++   attempt=dict(name=name,transport=outcome);journal['attempts'].append(attempt);receipt=HERE/'controls'/name/'result.json'
++   if receipt.is_file():attempt['receipt']=file_record(receipt)
++   require(outcome['returncode']==0,'phase failed/refused; no retry: '+name)
++   result=json_read(receipt);require(result['accepted'] and result['terminal_authenticated'] and result['inputs_unchanged'] and result['raw_status']==0,'phase did not qualify: '+name)
++   completion=HERE/'lease-state'/(digest(plan)+'.json');completed=json_read(completion)
++   require(completed['plan_sha256']==digest(plan) and completed['result']==file_record(receipt),'normal phase completion missing')
++   if row['kind']=='test':
++    raw=read(HERE/'observer'/name/'stderr',16*1024**2).decode()
++    require('skipping legacy-vsyscall test' not in raw,'legacy control skipped its real path')
++    for marker in row.get('required_markers',[]):require(raw.splitlines().count(marker)==1,'missing/duplicate exact child completion marker: '+marker)
++   journal['accepted'].append(name)
++   if name=='metadata':
++    bound=command('bind-dependencies',['/usr/bin/python3','-B',str(HERE/'bind_dependencies.py')]);require(bound['returncode']==0,'metadata closure binding refused')
++   if name=='compile':
++    retained=command('retain-artifacts',['/usr/bin/python3','-B',str(HERE/'retain_artifacts.py')]);require(retained['returncode']==0,'artifact retention refused')
++ except BaseException as error:
++  journal['error']=repr(error);raise
++ finally:write_new(HERE/'EXECUTION-RESULT.json',journal)
+ if __name__=='__main__':main()

@@ -1,0 +1,18 @@
+[evidence begin]
+command git diff --check f7bd85e11dd258112148ed2cba6531501a1a00d9..c4376212990ae5072a7bcfd0223ec52003cbaac0 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+expected_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+pre_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+pre_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+disk_before_bytes 443178659840
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:40:08Z
+
+
+[evidence end]
+exit_code 0
+post_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+post_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+disk_after_bytes 443178659840
+completed_at 2026-09-20T15:40:09Z

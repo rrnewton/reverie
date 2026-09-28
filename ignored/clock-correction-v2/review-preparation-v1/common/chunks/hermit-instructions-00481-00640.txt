@@ -1,0 +1,160 @@
+
+- its only caller is `.github/workflows/merge-gate.yml`, whose `on:` block is
+  `workflow_dispatch:` alone, so it cannot fire on a pull request;
+- `branches/main/protection` returns **404 Branch not protected**;
+- ruleset *"main check gating (admin-bypassable)"* is `enforcement=active` with
+  **`rules: []`** — active and empty, so it requires no check at all.
+
+⚠️ **A FALSE ENFORCEMENT CLAIM IS WORSE THAN A MISSING GATE**, which is why the
+correction is written out rather than quietly swapped. A reader who believes
+landing is gated has no reason to run anything by hand, so the claim removed the
+very behaviour it described. Every agent is told to read this file; almost none
+read the workflow YAML that would have contradicted it.
+
+**The script itself is sound — it is the wiring that is absent.** Its self-test
+must pass, and the live invocation below checks labels, body sections, exact-head
+review comments, and outstanding refusals. Run it before you land a labeled PR:
+
+```bash
+set -euo pipefail
+repo=rrnewton/hermit
+pr=<N>
+
+if ! pr_json=$(with-proxy gh api "repos/$repo/pulls/$pr"); then
+  echo "pull-request fetch FAILED -- this is not a pass" >&2
+  exit 2
+fi
+labels=$(jq -r '.labels[].name' <<<"$pr_json")
+body=$(jq -r '.body // ""' <<<"$pr_json")
+head_sha=$(jq -r '.head.sha' <<<"$pr_json")
+if ! files=$(with-proxy gh api --paginate "repos/$repo/pulls/$pr/files" \
+    --jq '.[].filename'); then
+  echo "changed-file fetch FAILED -- cannot decide whether this is KVM" >&2
+  exit 2
+fi
+files_kvm_status=0
+grep -qiE 'kvm' <<<"$files" || files_kvm_status=$?
+labels_kvm_status=0
+grep -Fixq kvm <<<"$labels" || labels_kvm_status=$?
+case "$files_kvm_status" in
+  0 | 1) ;;
+  *) echo "KVM changed-file lookup FAILED (grep exit $files_kvm_status)" >&2; exit 2 ;;
+esac
+case "$labels_kvm_status" in
+  0 | 1) ;;
+  *) echo "KVM label lookup FAILED (grep exit $labels_kvm_status)" >&2; exit 2 ;;
+esac
+if [ "$files_kvm_status" -eq 0 ] || [ "$labels_kvm_status" -eq 0 ]; then
+  is_kvm=true
+else
+  is_kvm=false
+fi
+pr_comments_file=$(mktemp)
+trap 'rm -f "$pr_comments_file"' EXIT
+if ! with-proxy gh api "repos/$repo/issues/$pr/comments?per_page=100" \
+    --paginate --slurp | jq -ce 'add // []' >"$pr_comments_file"; then
+  echo "comment fetch FAILED -- this is not a pass" >&2
+  exit 2
+fi
+
+PR_NUMBER="$pr" PR_LABELS="$labels" PR_BODY="$body" PR_IS_KVM="$is_kvm" \
+PR_HEAD_SHA="$head_sha" PR_COMMENTS_FILE="$pr_comments_file" \
+  bash scripts/core-review-protocol-lint.sh
+```
+
+⚠️ **THE INPUTS ARE REQUIRED, AND THE SCRIPT REFUSES RATHER THAN GUESSING.** An
+unset `PR_LABELS` or `PR_BODY` exits 2. For a labeled pull request, a missing
+`PR_HEAD_SHA` or missing/unreadable `PR_COMMENTS_FILE`/`PR_COMMENTS_JSON` exits
+1. Pass an explicit empty string only to mean "genuinely none". The file form is
+used above because a complete comment history can exceed the per-environment-
+variable size limit.
+
+⚠️ **DO NOT "FIX" THIS BY ARMING THE GATE.** Adding a `pull_request` trigger
+contradicts the standing directive that Actions never run automatically for
+pull requests or `main`. The portable workflow's automatic integration-branch
+run is supplemental evidence only. A trigger without a `required_status_checks`
+rule — or a rule without a trigger — yields either a check that gates nothing or
+a requirement nothing can satisfy. Both layers or neither, and that pairing is
+an owner decision.
+
+**What actually holds this line today is agents choosing to hold it.**
+
+GitHub Issues are the public issue tracker. In Meta environments, use
+appropriate proxies for accessing the web.
+
+```bash
+gh issue list -R rrnewton/hermit
+gh issue view <number> -R rrnewton/hermit
+```
+
+Network configuration is an environment requirement, not an authentication
+workaround. Create, edit, or close issues only when the task explicitly calls
+for that repository-side change.
+
+## Task Closure Policy
+
+Closing a task and landing the change are two different facts, and they are
+recorded by two different tags. Phantom closures — a task that reads as
+delivered while the work never reached `main` — are a recurring, expensive
+failure mode, which is what the second tag exists to prevent. The rules below
+are mandatory for every implementation and review agent.
+
+1. **You close your own task.** When your work is done, post the evidence, add
+   the `implemented` tag, and close the task yourself with
+   `tg update <task> --status closed`. Closure is not routed through a
+   coordinator. Leaving a finished, evidenced task open is itself a defect: it
+   hides the task from every queue that reads status, and the parent's health
+   tick reports `implemented` without `closed` as a lifecycle violation.
+2. **The implementor adds `implemented`; whoever lands the change adds
+   `landed`.** Both are tags, not TaskGraph statuses, and carrying them
+   separately is what makes "closed but not landed" a cheap query. `implemented`
+   means the feature branch is pushed and a pull request is open against
+   `rrnewton/hermit:main` — it does not claim a landing. Preserve the task's
+   existing tags when recording the transition and evidence:
+
+   ```bash
+   tg note <task> "IMPLEMENTED: https://github.com/rrnewton/hermit/pull/<n> \
+     | branch <feature-branch> @ <40-hex SHA> | base origin/main <SHA> \
+     | validation: <exact commands + results, assurance level, backend>"
+   tg update <task> --tags <existing-tags>,implemented
+   tg update <task> --status closed
+   ```
+
+   The PR link and the exact tested SHA are required, not optional. A branch
+   name alone is not evidence.
+3. **Adversarial review confirms the work exists in the PR.** Before a task's
+   `implemented` tag is trusted, a reviewer independently verifies that the claimed
+   change is actually present in the pull request diff, that the cited tests
+   exist and were run at the PR head SHA, and that the reported assurance level
+   (L0–L4), backend, and relaxations match reality. A claim that does not
+   survive this check must lose the `implemented` tag.
+4. **A closed task tagged `implemented` but not `landed` is unlanded work, and
+   it stays visible as exactly that.** Do not add `landed` for an open,
+   in-review, validation-red, awaiting-merge, or blocked-on-a-dependency pull
+   request. Removing a tag is how a false claim is retracted: if the published
+   artifact disappears or the implementation claim proves false, drop
+   `implemented` and say so in a note. Do not invent a status that TaskGraph
+   does not have.
+5. **Add `landed` once the commit is on `main`, verified against freshly
+   fetched ancestry.** A local green run, a GitHub state field, or a label is
+   not landing evidence. Recording the landing through the dev-hermit parent's
+   `./ci-hub/bin/close-task <task> --code <PR-or-full-SHA> --repo <owner/repo>
+   --source <checkout>` additionally writes the `CLOSURE-VERIFIED` note, which
+   is what the parent's health tick currently reads to discharge landing debt.
+
+### Landed vs. Not Landed
+
+Use these concrete examples to decide which tags a closed task carries. When in
+doubt, claim the weaker tag and say why in a task note.
+
+**`landed`:**
+
+- PR #### is merged into `rrnewton/hermit:main`; the merge commit is on `main`
+  and its freshly fetched ancestry confirms it.
+- A coordinated Hermit/Reverie change: both PRs merged, the parent gitlink(s)
+  updated to the exact landed SHAs, and the pair revalidated.
+
+**`implemented` but not `landed` (close the task; the tag carries the debt):**
+
+- Branch pushed, PR open, exact-head validation green, awaiting merge.
+- PR open but validation red, or an exact-head receipt missing/stale — report

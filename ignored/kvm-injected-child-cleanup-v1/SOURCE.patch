@@ -1,0 +1,221 @@
+--- before/reverie-kvm/src/vm.rs
++++ after/reverie-kvm/src/vm.rs
+@@ -2332,6 +2332,17 @@
+         first_error.map_or(Ok(()), Err)
+     }
+ 
++    /// Finish the action while its parent callback still owns borrowed state.
++    /// The outer driver retains the pending gates and owns error publication,
++    /// cancellation and joins after destroying that callback.
++    fn finish_injected_tool_process_action_at_boundary(
++        &mut self,
++        continuation: ProcessActionContinuation,
++        action_result: Result<ProcessActionOutcome>,
++    ) -> Result<ProcessActionOutcome> {
++        continuation.finish(self, action_result)
++    }
++
+     fn finish_tool_process_action_at_boundary(
+         &mut self,
+         executor: &mut ElfExecutor,
+@@ -2339,7 +2350,7 @@
+         continuation: ProcessActionContinuation,
+         action_result: Result<ProcessActionOutcome>,
+     ) -> Result<ProcessActionOutcome> {
+-        match continuation.finish(self, action_result) {
++        match self.finish_injected_tool_process_action_at_boundary(continuation, action_result) {
+             Ok(outcome) => Ok(outcome),
+             Err(action_error) => Err(self.cleanup_unstarted_tool_children_after_error(
+                 executor,
+@@ -2905,6 +2916,28 @@
+                 .await
+             }
+         }
++    }
++
++    /// Run an injected action without consuming pending children on error.
++    /// The caller must retain its SharedChildStarts outside the callback and
++    /// give the complete error to the outer driver after callback destruction.
++    pub(crate) async fn run_injected_process_action_with_tool_at_boundary<T>(
++        &mut self,
++        executor: &mut ElfExecutor,
++        action: ProcessAction,
++        context: ToolContext<'_, T>,
++        continuation: ProcessActionContinuation,
++    ) -> Result<ProcessActionOutcome>
++    where
++        T: Tool + 'static,
++        T::ThreadState: 'static,
++        T::GlobalState: 'static,
++        <T::GlobalState as GlobalTool>::Config: 'static,
++    {
++        let action_result = self
++            .run_process_action_with_tool_inner(executor, action, true, context, None)
++            .await;
++        self.finish_injected_tool_process_action_at_boundary(continuation, action_result)
+     }
+ 
+     /// Runs one Tool-owned process action and restores the completed syscall
+@@ -7071,6 +7104,162 @@
+         assert!(!backend.thread_group.discard_unstarted_worker(42).unwrap());
+     }
+ 
++    #[test]
++    fn injected_boundary_error_defers_each_child_until_callback_destruction() {
++        use std::sync::atomic::AtomicUsize;
++
++        struct CallbackGuard(Arc<AtomicBool>);
++        impl Drop for CallbackGuard {
++            fn drop(&mut self) {
++                assert!(!self.0.swap(true, Ordering::SeqCst));
++            }
++        }
++
++        for exec_failure in [false, true] {
++            let mut backend = KvmBackend::new(0x10_000).expect("this control requires /dev/kvm");
++            let mut executor = test_executor();
++            let starts = Arc::new(Mutex::new(Vec::new()));
++            let log = Arc::new(GateFailureLog::default());
++            let failure = crate::failure::RunFailure::new(&log);
++            backend.set_tool_failure(Some(crate::failure::FailureContext::new(
++                failure.clone(),
++                Pid::from_raw(1),
++                Pid::from_raw(1),
++            )));
++            let destroyed = Arc::new(AtomicBool::new(false));
++            let consumed = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
++            let child_error = Arc::new(Error::GuestClock("child cleanup error".to_owned()));
++
++            let (fork_sender, fork_receiver) = std::sync::mpsc::channel();
++            let fork_gate = ChildStartGate::new(fork_sender);
++            let child_destroyed = destroyed.clone();
++            let child_consumed = consumed.clone();
++            let child_failure = failure.clone();
++            let fork_handle = std::thread::spawn(move || {
++                assert_eq!(
++                    fork_receiver.recv().unwrap(),
++                    ChildStartCommand::CancelAfterFailure
++                );
++                assert!(child_destroyed.load(Ordering::SeqCst));
++                assert!(child_failure.published_primary().is_some());
++                assert_eq!(child_consumed[0].fetch_add(1, Ordering::SeqCst), 0);
++                Err(Error::RunAborted)
++            });
++            executor.register_child_process_with_gate(
++                41,
++                fork_gate.clone(),
++                Arc::new(Mutex::new(None)),
++                fork_handle,
++            );
++            starts
++                .lock()
++                .unwrap()
++                .push(PendingChildStart::fork_process(41, fork_gate.clone()));
++
++            let (thread_sender, thread_receiver) = std::sync::mpsc::channel();
++            let thread_gate = ChildStartGate::new(thread_sender);
++            let child_destroyed = destroyed.clone();
++            let child_consumed = consumed.clone();
++            let child_failure = failure.clone();
++            let child_cause = child_error.clone();
++            let thread_handle = std::thread::spawn(move || {
++                assert_eq!(
++                    thread_receiver.recv().unwrap(),
++                    ChildStartCommand::CancelAfterFailure
++                );
++                assert!(child_destroyed.load(Ordering::SeqCst));
++                assert!(child_failure.published_primary().is_some());
++                assert_eq!(child_consumed[1].fetch_add(1, Ordering::SeqCst), 0);
++                Err(Error::SharedFailure(child_cause))
++            });
++            backend
++                .thread_group
++                .add_unstarted_worker(42, thread_gate.clone(), thread_handle);
++            starts
++                .lock()
++                .unwrap()
++                .push(PendingChildStart::tool_thread(42, thread_gate.clone()));
++
++            let action_cleanup = Arc::new(Error::GuestClock("action cleanup error".to_owned()));
++            let action_cause = Arc::new(
++                Error::HostIo(std::io::Error::from_raw_os_error(libc::EAGAIN))
++                    .with_cleanup(vec![Error::SharedFailure(action_cleanup)]),
++            );
++            let action_error = Error::SharedFailure(action_cause.clone());
++            let action_error = if exec_failure {
++                Error::ExecWorkerTeardown(Box::new(action_error))
++            } else {
++                action_error
++            };
++            let callback = CallbackGuard(destroyed.clone());
++            // An action error must win without attempting this invalid restore.
++            let mut boundary = CompletedSyscallBoundary::for_test();
++            boundary.frame_address = backend.memory.guest_end();
++            let error = backend
++                .finish_injected_tool_process_action_at_boundary(
++                    ProcessActionContinuation::Restore(Box::new(boundary)),
++                    Err(action_error),
++                )
++                .unwrap_err();
++            let inner = match (&error, exec_failure) {
++                (Error::ExecWorkerTeardown(inner), true) => inner.as_ref(),
++                (error, false) => error,
++                _ => panic!("injected action lost its exec teardown disposition"),
++            };
++            let Error::SharedFailure(actual) = inner else {
++                panic!("injected action changed its original typed error");
++            };
++            assert!(Arc::ptr_eq(actual, &action_cause));
++            assert!(!destroyed.load(Ordering::SeqCst));
++            assert!(failure.published_primary().is_none());
++            assert!(log.failures.lock().unwrap().is_empty());
++            assert_eq!(starts.lock().unwrap().len(), 2);
++            assert!(fork_gate.is_pending());
++            assert!(thread_gate.is_pending());
++            assert_eq!(consumed[0].load(Ordering::SeqCst), 0);
++            assert_eq!(consumed[1].load(Ordering::SeqCst), 0);
++            assert!(executor.has_pending_child_process(41));
++            assert!(backend.thread_group.has_worker_handles());
++
++            drop(callback);
++            let error = backend.cleanup_unstarted_tool_children_after_error(
++                &mut executor,
++                &starts,
++                error,
++            );
++            let inner = match (&error, exec_failure) {
++                (Error::ExecWorkerTeardown(inner), true) => inner.as_ref(),
++                (error, false) => error,
++                _ => panic!("outer cleanup lost its exec teardown disposition"),
++            };
++            let Error::WithCleanup { primary, cleanup } = inner else {
++                panic!("outer cleanup lost the child's real error");
++            };
++            assert!(primary.retains_primary(&action_cause));
++            assert_eq!(cleanup.len(), 1);
++            assert!(cleanup[0].retains_primary(&child_error));
++            assert!(matches!(
++                error.primary(),
++                Error::HostIo(error) if error.raw_os_error() == Some(libc::EAGAIN)
++            ));
++            assert_eq!(log.failures.lock().unwrap().len(), 1);
++            assert_eq!(consumed[0].load(Ordering::SeqCst), 1);
++            assert_eq!(consumed[1].load(Ordering::SeqCst), 1);
++            assert!(starts.lock().unwrap().is_empty());
++            assert!(!executor.has_pending_child_process(41));
++            assert!(!backend.thread_group.has_worker_handles());
++            let error = backend.cleanup_unstarted_tool_children_after_error(
++                &mut executor,
++                &starts,
++                error,
++            );
++            assert!(error.retains_primary(&action_cause));
++            assert_eq!(log.failures.lock().unwrap().len(), 1);
++            assert_eq!(consumed[0].load(Ordering::SeqCst), 1);
++            assert_eq!(consumed[1].load(Ordering::SeqCst), 1);
++        }
++    }
++
+     #[derive(Default)]
+     struct GateFailureLog {
+         events: Mutex<Vec<(u8, i32, i32)>>,

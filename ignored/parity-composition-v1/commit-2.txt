@@ -1,0 +1,14 @@
+Preserve native pipe identity for captured KVM output
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Keep a native pipe open for each captured output stream and expose its
+actual device and inode through guest descriptor metadata. Share ownership
+across descriptor copies while keeping the private descriptors above the
+standard descriptor range and close-on-exec.
+
+Cover descriptor copies, closed standard descriptors, concurrent setup,
+unwind, and descriptor exhaustion. The composed CPUID and captured-pipe
+changes passed 83 exact KVM tests and the existing static checks. Preserve
+the first metadata setup timeout as a separate infrastructure refusal;
+these results do not establish full Hermit backend parity.

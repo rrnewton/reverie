@@ -1,0 +1,160 @@
+    /// defaults to [`Stdio::piped`] when used with `output`.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    /// use reverie_process::Stdio;
+    ///
+    /// let container = Container::new().stdout(Stdio::null());
+    /// ```
+    pub fn stdout<T: Into<Stdio>>(&mut self, cfg: T) -> &mut Self {
+        self.stdout = cfg.into();
+        self
+    }
+
+    /// Sets configuration for the child process's standard error (stderr)
+    /// handle.
+    ///
+    /// Defaults to [`Stdio::inherit`] when used with `spawn` or `status`, and
+    /// defaults to [`Stdio::piped`] when used with `output`.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    /// use reverie_process::Stdio;
+    ///
+    /// let container = Container::new().stderr(Stdio::null());
+    /// ```
+    pub fn stderr<T: Into<Stdio>>(&mut self, cfg: T) -> &mut Self {
+        self.stderr = cfg.into();
+        self
+    }
+
+    /// Changes the root directory of the calling process to the specified path.
+    /// This directory will be inherited by all child processes of the calling
+    /// process.
+    ///
+    /// Note that changing the root directory may cause the program to not be
+    /// found. As such, the program path should be relative to this directory.
+    pub fn chroot<P: AsRef<Path>>(&mut self, chroot: P) -> &mut Self {
+        self.chroot = Some(to_cstring(chroot.as_ref()));
+        self
+    }
+
+    /// Unshares parts of the process execution context that are normally shared
+    /// with the parent process. This is useful for executing the child process
+    /// in a new namespace.
+    pub fn unshare(&mut self, namespace: Namespace) -> &mut Self {
+        self.namespace |= namespace;
+        self
+    }
+
+    /// Returns the working directory for the child process.
+    ///
+    /// This returns None if the working directory will not be changed.
+    pub fn get_current_dir(&self) -> Option<&Path> {
+        if let Some(dir) = &self.current_dir {
+            Some(Path::new(OsStr::from_bytes(dir.to_bytes())))
+        } else {
+            None
+        }
+    }
+
+    /// Returns an iterator of the environment variables that will be set when
+    /// the process is spawned. Note that this does not include any environment
+    /// variables inherited from the parent process.
+    pub fn get_envs(&self) -> impl Iterator<Item = (&OsStr, Option<&OsStr>)> {
+        self.env.iter()
+    }
+
+    /// Returns a mapping of all environment variables that the new child process
+    /// will inherit.
+    pub fn get_captured_envs(&self) -> BTreeMap<OsString, OsString> {
+        self.env.capture()
+    }
+
+    /// Gets an environment variable. If the child process is to inherit this
+    /// environment variable from the current process, then this returns the
+    /// current process's environment variable unless it is to be overridden.
+    pub fn get_env<K: AsRef<OsStr>>(&self, env: K) -> Option<Cow<'_, OsStr>> {
+        self.env.get_captured(env)
+    }
+
+    /// Maps one user ID to another.
+    ///
+    /// Implies `Namespace::USER`.
+    ///
+    /// # Example
+    ///
+    /// This is can be used to gain `CAP_SYS_ADMIN` privileges in the user
+    /// namespace by mapping the root user inside the container to the current
+    /// user outside of the container.
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    ///
+    /// let container = Container::new().map_uid(1, unsafe { libc::getuid() });
+    /// ```
+    ///
+    /// # Implementation
+    ///
+    /// This modifies `/proc/{pid}/uid_map` where `{pid}` is the PID of the child
+    /// process. See [`user_namespaces(7)`] for more details.
+    ///
+    /// [`user_namespaces(7)`]: https://man7.org/linux/man-pages/man7/user_namespaces.7.html
+    pub fn map_uid(&mut self, inside_uid: libc::uid_t, outside_uid: libc::uid_t) -> &mut Self {
+        self.map_uid_range(inside_uid, outside_uid, 1)
+    }
+
+    /// Maps potentially many user IDs inside the new user namespace to user IDs
+    /// outside of the user namespace.
+    ///
+    /// Implies `Namespace::USER`.
+    ///
+    /// # Implementation
+    ///
+    /// This modifies `/proc/{pid}/uid_map` where `{pid}` is the PID of the child
+    /// process. See [`user_namespaces(7)`] for more details.
+    ///
+    /// [`user_namespaces(7)`]: https://man7.org/linux/man-pages/man7/user_namespaces.7.html
+    pub fn map_uid_range(
+        &mut self,
+        starting_inside_uid: libc::uid_t,
+        starting_outside_uid: libc::uid_t,
+        count: u32,
+    ) -> &mut Self {
+        self.uid_map
+            .push((starting_inside_uid, starting_outside_uid, count));
+        self.namespace |= Namespace::USER;
+        self
+    }
+
+    /// Convience function for mapping root (inside the container) to the current
+    /// user ID (outside the container). This is useful for gaining new
+    /// capabilities inside the container, such as being able to mount file
+    /// systems.
+    ///
+    /// Implies `Namespace::USER`.
+    ///
+    /// This is the same as:
+    /// ```no_run
+    /// use reverie_process::Container;
+    ///
+    /// let container = Container::new()
+    ///     .map_uid(0, unsafe { libc::geteuid() })
+    ///     .map_gid(0, unsafe { libc::getegid() });
+    /// ```
+    pub fn map_root(&mut self) -> &mut Self {
+        self.map_uid(0, unsafe { libc::geteuid() });
+        self.map_gid(0, unsafe { libc::getegid() })
+    }
+
+    /// Maps one group ID to another.
+    ///
+    /// Implies `Namespace::USER`.

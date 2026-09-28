@@ -1,0 +1,17 @@
+{
+  "old_exec_tests_exact_prefix": true,
+  "old_exec_tests_bytes": 12582,
+  "old_exec_tests_sha256": "da8bbab493f1d609c1113db8418ba469cc3299ce1dffc94fd21304c7017120f0",
+  "old_vm_test_module_suffix_exact": true,
+  "old_vm_test_module_suffix_sha256": "edbce53cdeecb126b63e48936bfd237b4c183dc06614280013e37c342f123064",
+  "added_tests": [
+    "exec_wait_success_requires_worker_tls_physical_completion",
+    "refused_exec_join_helper_preserves_original_worker_and_gate",
+    "exec_join_helper_retains_exact_worker_panic_through_repeated_teardown",
+    "exec_join_helper_does_not_capture_nested_discard_behind_another_worker",
+    "exec_join_helper_parent_spawn_hook_panic_restores_original_ownership",
+    "exec_join_helper_child_spawn_hook_panic_retains_handle_payload_and_originals",
+    "exec_join_helper_reuses_thread_and_defers_inherited_tls_to_outer_drain",
+    "leader_backend_drop_physically_reaps_idle_exec_join_helper"
+  ]
+}

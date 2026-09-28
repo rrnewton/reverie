@@ -1,0 +1,20 @@
+
+running 10 tests
+test vm::tests::entry_wait_tests::host_elf_same_run_second_close_waits_before_fresh_reopen ... FAILED
+test vm::tests::entry_wait_tests::host_elf_stop_after_retry_subscription_does_no_entry_work ... ok
+test vm::tests::entry_wait_tests::host_elf_stop_before_retry_subscription_does_no_entry_work ... ok
+test vm::tests::entry_wait_tests::parking_stop_after_retry_subscription_preserves_disposition ... ok
+test vm::tests::entry_wait_tests::parking_stop_before_retry_subscription_preserves_disposition ... ok
+test vm::tests::entry_wait_tests::tool_elf_global_stop_after_retry_subscription_does_no_entry_work ... ok
+test vm::tests::entry_wait_tests::tool_elf_global_stop_before_retry_subscription_does_no_entry_work ... ok
+test vm::tests::entry_wait_tests::tool_elf_group_stop_after_retry_subscription_does_no_entry_work ... ok
+test vm::tests::entry_wait_tests::tool_elf_group_stop_before_retry_subscription_does_no_entry_work ... ok
+test vm::tests::entry_wait_tests::tool_elf_same_run_second_close_waits_before_fresh_reopen ... ok
+
+failures:
+
+failures:
+    vm::tests::entry_wait_tests::host_elf_same_run_second_close_waits_before_fresh_reopen
+
+test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 713 filtered out; finished in 0.38s
+

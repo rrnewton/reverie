@@ -1,0 +1,23 @@
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+warning: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+warning: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: SaBRe source build completed in 1.33s (jobs=16)
+warning: reverie-e9patch@0.2.0: e9patch source build completed in 3.89s (jobs=16)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache MISS key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1789907169
+warning: reverie-dbt@0.2.0: DynamoRIO source build completed in 12.52s (jobs=16)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache PUBLISHED key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed install=/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Checking reverie-examples v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-examples)
+    Checking reverie-sabre-strace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/experimental/reverie-sabre-strace)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.74s

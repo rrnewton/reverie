@@ -1,0 +1,18 @@
+{
+  "test_suffix_only_insertions": true,
+  "changes": [
+    [
+      "insert",
+      2878,
+      2878,
+      2878,
+      3034
+    ]
+  ],
+  "old_direct_test_count": 74,
+  "new_direct_test_count": 75,
+  "foreign_live_opcodes_excluded": [],
+  "live_equals_owned_proposal": true,
+  "product_execution": false,
+  "formatter_executed": false
+}

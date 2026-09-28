@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.001609268
+    }
+  ]
+}

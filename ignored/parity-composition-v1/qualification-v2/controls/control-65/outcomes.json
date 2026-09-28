@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.001568576
+    }
+  ]
+}

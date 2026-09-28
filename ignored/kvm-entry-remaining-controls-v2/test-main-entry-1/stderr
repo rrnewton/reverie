@@ -1,0 +1,6 @@
+Running as unit: kvm-entry-owner-test-main-entry-1-3411881.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 393ms
+             CPU time consumed: 64ms
+                   Memory peak: 14.4M (swap: 0B)

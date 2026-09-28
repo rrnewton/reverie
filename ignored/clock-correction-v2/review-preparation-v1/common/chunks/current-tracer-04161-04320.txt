@@ -1,0 +1,160 @@
+                )
+            };
+            if waited == descendant_pid.as_raw()
+                || !std::path::Path::new(&format!("/proc/{descendant_pid}")).exists()
+            {
+                assert!(
+                    retained_while_parent_alive,
+                    "cleanup released a terminal descendant while its recorded parent still owned it"
+                );
+                assert!(
+                    released_after_reparenting,
+                    "cleanup retained a terminal descendant after reparenting"
+                );
+                return;
+            }
+            assert!(
+                waited == 0 || (waited == -1 && Errno::last() == Errno::ECHILD),
+                "unexpected wait result while cleaning reparented descendant: {waited}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("reparented descendant {descendant_pid} was not reaped");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn child_death_before_initialization_error_does_not_hang() {
+        let pid = match unsafe { unistd::fork() }.expect("fork dying child") {
+            ForkResult::Child => std::process::exit(42),
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        assert!(matches!(
+            Running::new(pid).next_state().await.unwrap(),
+            safeptrace::Wait::Exited(_, ExitStatus::Exited(42))
+        ));
+        let died = Stopped::new_unchecked(pid)
+            .resume(None)
+            .expect_err("resuming a reaped child must report Died");
+        assert!(matches!(died, TraceError::Died(_)));
+
+        tokio::time::timeout(Duration::from_secs(1), initialization_error(pid, died))
+            .await
+            .expect("initialization_error hung reaping an already terminal child");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_at_new_child_event_reaps_root_and_child() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 60 & wait"]);
+        let tracer = TracerBuilder::<InitFailureTool>::new(command)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .pause_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn fork-cancellation tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let child_pid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("tracee completed before cancellation: {result:?}"),
+                child = child_rx.recv() => child.expect("new-child hook closed"),
+            }
+        })
+        .await
+        .expect("tracee did not reach new-child cancellation window");
+
+        drop(wait);
+        assert_reaped("root", root_pid);
+        // A terminal child may have been reparented before the notifier
+        // releases its identity. At that point this process cannot reap it;
+        // require the new parent to finish reaping it within the same bounded
+        // interval used by fail-closed cleanup instead of racing procfs.
+        assert_eventually_reaped("child", child_pid);
+        for (role, pid) in [("root", root_pid), ("child", child_pid)] {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), Running::new(pid).next_state())
+                    .await
+                    .unwrap_or_else(|_| panic!("late {role} notifier wait hung")),
+                Err(TraceError::Errno(Errno::ECHILD))
+            );
+        }
+    }
+
+    fn clone_thread_guest_command() -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("locate test binary"));
+        command.args([
+            "--exact",
+            "tracer::tests::liteinst_clone_thread_guest",
+            "--nocapture",
+        ]);
+        command.env("REVERIE_LITEINST_CLONE_THREAD_GUEST", "1");
+        command
+    }
+
+    fn clone_parent_guest_command() -> Command {
+        static GUEST: LazyLock<PathBuf> = LazyLock::new(|| {
+            let source =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/clone_parent.c");
+            let output =
+                std::env::temp_dir().join(format!("reverie-clone-parent-{}", std::process::id()));
+            let status = std::process::Command::new("cc")
+                .args(["-O0", "-g"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&output)
+                .status()
+                .expect("invoke cc for CLONE_PARENT fixture");
+            assert!(status.success(), "compile {}", source.display());
+            output
+        });
+        Command::new(GUEST.as_path())
+    }
+
+    #[test]
+    fn liteinst_clone_thread_guest() {
+        if std::env::var_os("REVERIE_LITEINST_CLONE_THREAD_GUEST").is_none() {
+            return;
+        }
+        let thread = std::thread::spawn(|| {
+            loop {
+                std::thread::park();
+            }
+        });
+        thread.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn liteinst_clone_thread_fails_closed_and_reaps_group() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
+            .observe_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn CLONE_THREAD fail-closed tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let first = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => Either::Left(result),
+                child = child_rx.recv() => Either::Right(child.expect("new-thread observer closed")),
+            }
+        })
+        .await
+        .expect("tracee did not report CLONE_THREAD identity");
+        let (child_tid, completed) = match first {
+            Either::Left(result) => (
+                child_rx
+                    .recv()
+                    .await
+                    .expect("completed tracee omitted bound thread identity"),
+                Some(result),
+            ),
+            Either::Right(child_tid) => (child_tid, None),
+        };
+        assert_ne!(root_pid, child_tid, "thread event reused root TID");
+

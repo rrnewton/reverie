@@ -1,0 +1,25 @@
+{
+  "absent": [],
+  "arrived": [
+    "ai_docs/kvm-child-exit-signals.md",
+    "reverie-kvm/README.md",
+    "reverie-kvm/src/child_exit_signal_tests.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie/src/guest.rs"
+  ],
+  "corroborated": true,
+  "corroborated_against": "afd9ddc64d21967c6b1a9e203ffcd06964a4128a",
+  "files": [
+    "ai_docs/kvm-child-exit-signals.md",
+    "reverie-kvm/README.md",
+    "reverie-kvm/src/child_exit_signal_tests.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie/src/guest.rs"
+  ],
+  "main_sha": "be09e5100bca6dad77aede0349de9a5c92990854",
+  "moved_on": [],
+  "pr": "605",
+  "repo": "rrnewton/reverie",
+  "resolved_from": "refs/pull/605/head",
+  "resolved_head": "afd9ddc64d21967c6b1a9e203ffcd06964a4128a"
+}

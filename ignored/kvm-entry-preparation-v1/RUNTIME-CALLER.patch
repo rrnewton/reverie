@@ -1,0 +1,83 @@
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -3101,11 +3101,22 @@
+         } else if thread_entry {
+             ProcessExecutionContext::ThreadEntrySignal
+         } else {
+-            ProcessExecutionContext::SignalBoundary(CompletedSyscallBoundary::capture(
++            let mut stop = pin!(wait_for_failure(
++                global_state.as_ref(),
++                failure_subscription.clone(),
++            ));
++            let Some(boundary) = CompletedSyscallBoundary::capture_admitted(
+                 self,
+                 frame_address,
+                 Some(registers),
+-            )?)
++                stop.as_mut(),
++            )
++            .await?
++            else {
++                hide_tool_scratch(memory, tool_stack_top)?;
++                return Ok(CallbackOutcome::ThreadCancelled);
++            };
++            ProcessExecutionContext::SignalBoundary(boundary)
+         };
+         let continuation_site = executor
+             .signal_failure_context()
+@@ -3883,8 +3894,23 @@
+                         let handler_signal = Arc::new(Mutex::new(None));
+                         let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                         expose_tool_scratch(&memory, tool_stack_top)?;
+-                        let boundary =
+-                            CompletedSyscallBoundary::capture(self, frame_address, None)?;
++                        let boundary = {
++                            let mut stop = pin!(wait_for_failure(
++                                global_state.as_ref(),
++                                failure_subscription.clone(),
++                            ));
++                            CompletedSyscallBoundary::capture_admitted(
++                                self,
++                                frame_address,
++                                None,
++                                stop.as_mut(),
++                            )
++                            .await?
++                        };
++                        let Some(boundary) = boundary else {
++                            hide_tool_scratch(&memory, tool_stack_top)?;
++                            return Ok(self.cancelled_tool_thread_status(executor));
++                        };
+                         let outcome = {
+                             let mut guest_executor = StaticElfSyscallExecutor {
+                                 backend: self,
+@@ -4094,12 +4120,23 @@
+                 }
+                 let mut replaced_image = handler_replaced_image;
+                 if let Some(action) = pending_process {
+-                    let continuation = CompletedSyscallBoundary::capture_for_action(
+-                        self,
+-                        frame_address,
+-                        None,
+-                        &action,
+-                    )?;
++                    let continuation = {
++                        let mut stop = pin!(wait_for_failure(
++                            global_state.as_ref(),
++                            failure_subscription.clone(),
++                        ));
++                        CompletedSyscallBoundary::capture_for_action_admitted(
++                            self,
++                            frame_address,
++                            None,
++                            &action,
++                            stop.as_mut(),
++                        )
++                        .await?
++                    };
++                    let Some(continuation) = continuation else {
++                        return Ok(self.cancelled_tool_thread_status(executor));
++                    };
+                     let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                     let context: ToolContext<'_, T> = ToolContext {
+                         pid,

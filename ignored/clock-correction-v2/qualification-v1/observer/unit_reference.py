@@ -1,0 +1,204 @@
+"""Keep one authenticated user unit's actual results alive through scope teardown."""
+
+import ctypes, os, re, time
+
+
+class BusError(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("message", ctypes.c_char_p),
+        ("need_free", ctypes.c_int),
+    ]
+
+
+class UnitReference:
+    def __init__(self, library, unit):
+        assert unit is None or re.fullmatch(r"safehermit-[0-9]{8}T[0-9]{6}Z-[1-9][0-9]*\.service", unit)
+        self.unit = unit
+        self.calls = []
+        self.bus = ctypes.c_void_p()
+        self.held = False
+        self.lib = ctypes.CDLL(library)
+        self.lib.sd_bus_open_user.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        self.lib.sd_bus_open_user.restype = ctypes.c_int
+        self.lib.sd_bus_set_method_call_timeout.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+        ]
+        self.lib.sd_bus_set_method_call_timeout.restype = ctypes.c_int
+        self.lib.sd_bus_call_method.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(BusError),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_char_p,
+        ]
+        self.lib.sd_bus_call_method.restype = ctypes.c_int
+        self.lib.sd_bus_get_property.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(BusError),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_char_p,
+        ]
+        self.lib.sd_bus_get_property.restype = ctypes.c_int
+        self.lib.sd_bus_message_read.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        self.lib.sd_bus_message_read.restype = ctypes.c_int
+        self.lib.sd_bus_message_unref.argtypes = [ctypes.c_void_p]
+        self.lib.sd_bus_message_unref.restype = ctypes.c_void_p
+        self.lib.sd_bus_error_free.argtypes = [ctypes.POINTER(BusError)]
+        self.lib.sd_bus_error_free.restype = ctypes.POINTER(BusError)
+        self.lib.sd_bus_flush_close_unref.argtypes = [ctypes.c_void_p]
+        self.lib.sd_bus_flush_close_unref.restype = ctypes.c_void_p
+        status = self.lib.sd_bus_open_user(ctypes.byref(self.bus))
+        self.calls.append({"function": "sd_bus_open_user", "status": status})
+        if status < 0:
+            raise OSError(-status, os.strerror(-status))
+        status = self.lib.sd_bus_set_method_call_timeout(self.bus, 5_000_000)
+        self.calls.append(
+            {
+                "function": "sd_bus_set_method_call_timeout",
+                "microseconds": 5_000_000,
+                "status": status,
+            }
+        )
+        if status < 0:
+            self.close()
+            raise OSError(-status, os.strerror(-status))
+
+    def bind(self, unit):
+        assert self.unit is None and not self.held
+        assert re.fullmatch(r"safehermit-[0-9]{8}T[0-9]{6}Z-[1-9][0-9]*\.service", unit)
+        self.unit = unit
+
+    def call_timeout(self, deadline):
+        remaining = 250_000 if deadline is None else min(250_000, int((deadline - time.monotonic()) * 1_000_000))
+        if remaining <= 0:
+            raise TimeoutError("completed scope CPU query deadline")
+        status = self.lib.sd_bus_set_method_call_timeout(self.bus, remaining)
+        self.calls.append({"function": "sd_bus_set_method_call_timeout", "microseconds": remaining, "status": status})
+        if status < 0:
+            raise OSError(-status, os.strerror(-status))
+
+    def method(self, member, deadline=None):
+        assert self.unit is not None, "reference has no authenticated unit"
+        self.call_timeout(deadline)
+        assert member in ["RefUnit", "UnrefUnit", "GetUnit"]
+        error = BusError()
+        reply = ctypes.c_void_p()
+        started = time.monotonic()
+        try:
+            status = self.lib.sd_bus_call_method(
+                self.bus,
+                b"org.freedesktop.systemd1",
+                b"/org/freedesktop/systemd1",
+                b"org.freedesktop.systemd1.Manager",
+                member.encode(),
+                ctypes.byref(error),
+                ctypes.byref(reply),
+                b"s",
+                ctypes.c_char_p(self.unit.encode()),
+            )
+            row = {
+                "function": "sd_bus_call_method",
+                "destination": "org.freedesktop.systemd1",
+                "path": "/org/freedesktop/systemd1",
+                "interface": "org.freedesktop.systemd1.Manager",
+                "member": member,
+                "signature": "s",
+                "arguments": [self.unit],
+                "status": status,
+                "seconds": time.monotonic() - started,
+                "error_name": error.name.decode() if error.name else None,
+                "error_message": error.message.decode() if error.message else None,
+            }
+            self.calls.append(row)
+            if status < 0:
+                raise OSError(-status, str(row))
+            if member == "GetUnit":
+                value = ctypes.c_char_p()
+                read = self.lib.sd_bus_message_read(reply, b"o", ctypes.byref(value))
+                if read <= 0:
+                    raise RuntimeError(("GetUnit reply", read))
+                return value.value.decode()
+        finally:
+            if reply:
+                self.lib.sd_bus_message_unref(reply)
+            self.lib.sd_bus_error_free(ctypes.byref(error))
+
+    def property(self, path, interface, name, deadline):
+        self.call_timeout(deadline)
+        error = BusError()
+        reply = ctypes.c_void_p()
+        signature = {"CPUUsageNSec": b"t", "ExecMainStartTimestampMonotonic": b"t", "RuntimeMaxUSec": b"t", "MemoryMax": b"t", "MemorySwapMax": b"t", "ExecMainPID": b"u", "MainPID": b"u", "ExecMainCode": b"i", "ExecMainStatus": b"i", "IgnoreSIGPIPE": b"b"}.get(name, b"s")
+        started = time.monotonic()
+        try:
+            status = self.lib.sd_bus_get_property(
+                self.bus,
+                b"org.freedesktop.systemd1",
+                path.encode(),
+                interface.encode(),
+                name.encode(),
+                ctypes.byref(error),
+                ctypes.byref(reply),
+                signature,
+            )
+            row = {
+                "function": "sd_bus_get_property",
+                "path": path,
+                "interface": interface,
+                "property": name,
+                "status": status,
+                "seconds": time.monotonic() - started,
+                "error_name": error.name.decode() if error.name else None,
+                "error_message": error.message.decode() if error.message else None,
+            }
+            self.calls.append(row)
+            if status < 0:
+                raise OSError(-status, str(row))
+            value = {b"t": ctypes.c_uint64, b"u": ctypes.c_uint32, b"i": ctypes.c_int32, b"b": ctypes.c_int32, b"s": ctypes.c_char_p}[signature]()
+            read = self.lib.sd_bus_message_read(reply, signature, ctypes.byref(value))
+            if read <= 0:
+                raise RuntimeError(("property reply", name, read))
+            return value.value.decode() if signature == b"s" else value.value
+        finally:
+            if reply:
+                self.lib.sd_bus_message_unref(reply)
+            self.lib.sd_bus_error_free(ctypes.byref(error))
+
+    def properties(self, deadline):
+        # Use the already-held connection: a cancellable box must not leave an
+        # independently running systemctl query outside its measured scope.
+        path = self.method("GetUnit", deadline)
+        values = {
+            name: self.property(path, "org.freedesktop.systemd1.Unit", name, deadline)
+            for name in ["Id", "LoadState", "ActiveState", "SubState"]
+        }
+        values["CPUUsageNSec"] = self.property(
+            path, "org.freedesktop.systemd1.Service", "CPUUsageNSec", deadline
+        )
+        return values
+
+    def acquire(self):
+        assert self.bus and not self.held
+        self.method("RefUnit")
+        self.held = True
+
+    def close(self):
+        if self.bus:
+            try:
+                if self.held:
+                    self.method("UnrefUnit")
+                    self.held = False
+            finally:
+                self.lib.sd_bus_flush_close_unref(self.bus)
+                self.bus = ctypes.c_void_p()
+                self.calls.append(
+                    {"function": "sd_bus_flush_close_unref", "connection_closed": True}
+                )

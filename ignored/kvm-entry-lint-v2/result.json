@@ -1,0 +1,40 @@
+{
+  "raw_status": 101,
+  "elapsed_seconds": 14.24839496705681,
+  "source_unchanged": true,
+  "refusals": [],
+  "controls": [],
+  "terminal": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-entry-clippy-v2-3613339",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=[not set]\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "CPUUsageNSec": "[not set]"
+    }
+  },
+  "streams": {
+    "stdout": {
+      "bytes_seen": 0,
+      "stored_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr": {
+      "bytes_seen": 31560,
+      "stored_sha256": "41e9884b5aeaa874e60ab4a5945b5e77762eba098c09ceb67dcc549e38b51caa"
+    }
+  }
+}

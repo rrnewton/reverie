@@ -1,0 +1,35 @@
+{
+  "scope": "Unexecuted root lint source corrections",
+  "records": [
+    {
+      "path": "before/reverie-kvm/src/entry.rs",
+      "bytes": 56320,
+      "sha256": "95a565ffcc9ee06c2d6a312d9b95184c05e502892d1bfe585f42ec356f095dc3"
+    },
+    {
+      "path": "after/reverie-kvm/src/entry.rs",
+      "bytes": 57542,
+      "sha256": "3e5a2d66f5412bfe15584b262913b17f528627f91981ccf647632bdcc3e8c7a7"
+    },
+    {
+      "path": "before/reverie-kvm/src/entry/owner.rs",
+      "bytes": 35506,
+      "sha256": "6b7be2e38a350c1dfc8d471a750f5eb79fe44dad4e06943da3496de03e637fc0"
+    },
+    {
+      "path": "after/reverie-kvm/src/entry/owner.rs",
+      "bytes": 35724,
+      "sha256": "336863c37fcdf4365fab5dd7f29a51e55964cb3f3be931bd81adc2f0e8ac7380"
+    },
+    {
+      "path": "CHANGE.patch",
+      "bytes": 5748,
+      "sha256": "a9c297e7620ba73cd05fb78cab95732ef2f498bd61504ed6e11437d843b49ce8"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 1767,
+      "sha256": "a3616f96a42693e197bd69a1c408e733960853f23eaa81408375916af876c231"
+    }
+  ]
+}

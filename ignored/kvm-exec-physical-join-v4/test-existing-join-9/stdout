@@ -1,0 +1,6 @@
+
+running 1 test
+test vm::tests::pending_gated_worker_is_cancelled_before_teardown_join ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 676 filtered out; finished in 0.00s
+

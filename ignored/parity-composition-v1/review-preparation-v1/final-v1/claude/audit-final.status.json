@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/audit-final.py"
+  ],
+  "raw_status": 0,
+  "seconds": 1.3965318440459669,
+  "PYTHONOPTIMIZE": "0",
+  "parent_optimize": 0
+}

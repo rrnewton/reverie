@@ -1,0 +1,197 @@
+[
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "reverie_ptrace",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "error[E0603]: module `args` is private\n  --> reverie-ptrace/src/injection_stop_tests.rs:31:24\n   |\n31 | use reverie::syscalls::args::PathPtr;\n   |                        ^^^^  ------- struct `PathPtr` is not publicly re-exported\n   |                        |\n   |                        private module\n   |\nnote: the module `args` is defined here\n  --> reverie-syscalls/src/lib.rs:24:1\n   |\n24 | mod args;\n   | ^^^^^^^^\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "the module `args` is defined here",
+          "rendered": null,
+          "spans": [
+            {
+              "byte_end": 760,
+              "byte_start": 752,
+              "column_end": 9,
+              "column_start": 1,
+              "expansion": null,
+              "file_name": "reverie-syscalls/src/lib.rs",
+              "is_primary": true,
+              "label": null,
+              "line_end": 24,
+              "line_start": 24,
+              "suggested_replacement": null,
+              "suggestion_applicability": null,
+              "text": [
+                {
+                  "highlight_end": 9,
+                  "highlight_start": 1,
+                  "text": "mod args;"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "level": "error",
+      "message": "module `args` is private",
+      "spans": [
+        {
+          "byte_end": 924,
+          "byte_start": 920,
+          "column_end": 28,
+          "column_start": 24,
+          "expansion": null,
+          "file_name": "reverie-ptrace/src/injection_stop_tests.rs",
+          "is_primary": true,
+          "label": "private module",
+          "line_end": 31,
+          "line_start": 31,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 28,
+              "highlight_start": 24,
+              "text": "use reverie::syscalls::args::PathPtr;"
+            }
+          ]
+        },
+        {
+          "byte_end": 933,
+          "byte_start": 926,
+          "column_end": 37,
+          "column_start": 30,
+          "expansion": null,
+          "file_name": "reverie-ptrace/src/injection_stop_tests.rs",
+          "is_primary": false,
+          "label": "struct `PathPtr` is not publicly re-exported",
+          "line_end": 31,
+          "line_start": 31,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 37,
+              "highlight_start": 30,
+              "text": "use reverie::syscalls::args::PathPtr;"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "E0603",
+        "explanation": "A private item was used outside its scope.\n\nErroneous code example:\n\n```compile_fail,E0603\nmod foo {\n    const PRIVATE: u32 = 0x_a_bad_1dea_u32; // This const is private, so we\n                                            // can't use it outside of the\n                                            // `foo` module.\n}\n\nprintln!(\"const value: {}\", foo::PRIVATE); // error: constant `PRIVATE`\n                                                  //        is private\n```\n\nIn order to fix this error, you need to make the item public by using the `pub`\nkeyword. Example:\n\n```\nmod foo {\n    pub const PRIVATE: u32 = 0x_a_bad_1dea_u32; // We set it public by using the\n                                                // `pub` keyword.\n}\n\nprintln!(\"const value: {}\", foo::PRIVATE); // ok!\n```\n"
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "reverie_ptrace",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "warning: unused import: `std::io::Write`\n --> reverie-ptrace/src/injection_stop_tests.rs:7:5\n  |\n7 | use std::io::Write as _;\n  |     ^^^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\n",
+      "$message_type": "diagnostic",
+      "children": [
+        {
+          "children": [],
+          "code": null,
+          "level": "note",
+          "message": "`#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default",
+          "rendered": null,
+          "spans": []
+        }
+      ],
+      "level": "warning",
+      "message": "unused import: `std::io::Write`",
+      "spans": [
+        {
+          "byte_end": 212,
+          "byte_start": 198,
+          "column_end": 19,
+          "column_start": 5,
+          "expansion": null,
+          "file_name": "reverie-ptrace/src/injection_stop_tests.rs",
+          "is_primary": true,
+          "label": null,
+          "line_end": 7,
+          "line_start": 7,
+          "suggested_replacement": null,
+          "suggestion_applicability": null,
+          "text": [
+            {
+              "highlight_end": 19,
+              "highlight_start": 5,
+              "text": "use std::io::Write as _;"
+            }
+          ]
+        }
+      ],
+      "code": {
+        "code": "unused_imports",
+        "explanation": null
+      }
+    }
+  },
+  {
+    "reason": "compiler-message",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "reverie_ptrace",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "message": {
+      "rendered": "For more information about this error, try `rustc --explain E0603`.\n",
+      "$message_type": "diagnostic",
+      "children": [],
+      "level": "failure-note",
+      "message": "For more information about this error, try `rustc --explain E0603`.",
+      "spans": [],
+      "code": null
+    }
+  }
+]

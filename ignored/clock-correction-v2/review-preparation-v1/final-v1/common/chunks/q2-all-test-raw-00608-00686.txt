@@ -1,0 +1,79 @@
+SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855; 0 bytes
+--- literal stderr begins ---
+
+--- literal stderr ends ---
+### test-35: ['task::tests::short_successful_mapping_invalidates_the_whole_attempted_page']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-35/stdout
+SHA256 f815ae1b20baf52a75372caba1f633509f66b0049e05e344cc5049b0f3e10c93; 439 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page" }
+{ "type": "test", "name": "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.000317096 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-35/stderr
+SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855; 0 bytes
+--- literal stderr begins ---
+
+--- literal stderr ends ---
+### test-36: ['task::tests::cancellable_returns_a_completed_result']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-36/stdout
+SHA256 ff08f9b6254d99985e61e261edcac7fa2fb1b00f36266c6c3d8af72f311f01e0; 393 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "task::tests::cancellable_returns_a_completed_result" }
+{ "type": "test", "name": "task::tests::cancellable_returns_a_completed_result", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.000354292 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-36/stderr
+SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855; 0 bytes
+--- literal stderr begins ---
+
+--- literal stderr ends ---
+### test-37: ['task::tests::cancellable_observes_cancellation_in_the_same_poll']
+Original receipt accepted=True; raw_status=0; readback_error=None
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-37/stdout
+SHA256 57ef0851c5ea3f433300524ba4152437c17a198a767af8ea5a4acd6fb85dd30b; 417 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "task::tests::cancellable_observes_cancellation_in_the_same_poll" }
+{ "type": "test", "name": "task::tests::cancellable_observes_cancellation_in_the_same_poll", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 193, "exec_time": 0.000368514 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-37/stderr
+SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855; 0 bytes
+--- literal stderr begins ---
+
+--- literal stderr ends ---
+### test-38: ['suppressed_legacy_vsyscall_returns_to_caller']
+Original receipt accepted=False; raw_status=0; readback_error=JSONDecodeError('Expecting value: line 1 column 1 (char 0)')
+stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-38/stdout
+SHA256 93f5db94149307a43c43f25c5781140e278f2c71269877c54880874232250356; 9212 bytes
+--- literal stdout begins ---
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "suppressed_legacy_vsyscall_returns_to_caller" }
+[2m2026-09-18T21:28:53.361443Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::timer[0m[2m:[0m Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+[2m2026-09-18T21:28:53.361567Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::timer[0m[2m:[0m Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+[2m2026-09-18T21:28:53.361597Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::timer[0m[2m:[0m Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+[2m2026-09-18T21:28:53.361607Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::timer[0m[2m:[0m Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+[2m2026-09-18T21:28:53.362426Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [tool] (tid 3642550) beginning inject of syscall: mprotect, args SyscallArgs { arg0: 139752929992704, arg1: 8192, arg2: 7, arg3: 0, arg4: 0, arg5: 0 }
+[2m2026-09-18T21:28:53.362475Z[0m [35mTRACE[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [scheduler/tool] (pid = 3642550) untraced syscall: mprotect
+[2m2026-09-18T21:28:53.362562Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::vdso[0m[2m:[0m 3642550 patched __vdso_clock_getres@7f1ac3bfaf20
+[2m2026-09-18T21:28:53.362592Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::vdso[0m[2m:[0m 3642550 patched __vdso_clock_gettime@7f1ac3bfaad0
+[2m2026-09-18T21:28:53.362618Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::vdso[0m[2m:[0m 3642550 patched __vdso_getcpu@7f1ac3bfb020
+[2m2026-09-18T21:28:53.362637Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::vdso[0m[2m:[0m 3642550 patched __vdso_gettimeofday@7f1ac3bfa7e0
+[2m2026-09-18T21:28:53.362655Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::vdso[0m[2m:[0m 3642550 patched __vdso_time@7f1ac3bfaaa0
+[2m2026-09-18T21:28:53.362668Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [tool] (tid 3642550) beginning inject of syscall: mprotect, args SyscallArgs { arg0: 139752929992704, arg1: 8192, arg2: 5, arg3: 0, arg4: 0, arg5: 0 }
+[2m2026-09-18T21:28:53.362681Z[0m [35mTRACE[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [scheduler/tool] (pid = 3642550) untraced syscall: mprotect
+[2m2026-09-18T21:28:53.362821Z[0m [34mDEBUG[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [tool] (tid 3642550) beginning inject of syscall: mprotect, args SyscallArgs { arg0: 1895825408, arg1: 4096, arg2: 5, arg3: 0, arg4: 0, arg5: 0 }
+[2m2026-09-18T21:28:53.362877Z[0m [35mTRACE[0m [1mtracee.attach[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m[1mtracee.initialize[0m[1m{[0m[3mpid[0m[2m=[0m3642550[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [scheduler/tool] (pid = 3642550) untraced syscall: mprotect
+[2m2026-09-18T21:28:53.363445Z[0m [35mTRACE[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0mtime [3margs[0m[2m=[0mSyscallArgs { arg0: 139752925738680, arg1: 139752925738864, arg2: 93944911123184, arg3: 93944916987480, arg4: 93944916987504, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::syscall[0m[2m:[0m intercepting guest syscall
+[2m2026-09-18T21:28:53.363524Z[0m [35mTRACE[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0mtime [3margs[0m[2m=[0mSyscallArgs { arg0: 139752925738680, arg1: 139752925738864, arg2: 93944911123184, arg3: 93944916987480, arg4: 93944916987504, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::syscall[0m[2m:[0m completed guest syscall interception
+[2m2026-09-18T21:28:53.363566Z[0m [35mTRACE[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0msigaltstack [3margs[0m[2m=[0mSyscallArgs { arg0: 139752925738504, arg1: 0, arg2: 51, arg3: 93944916987480, arg4: 93944917501184, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::syscall[0m[2m:[0m intercepting guest syscall
+[2m2026-09-18T21:28:53.363590Z[0m [32m INFO[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0msigaltstack [3margs[0m[2m=[0mSyscallArgs { arg0: 139752925738504, arg1: 0, arg2: 51, arg3: 93944916987480, arg4: 93944917501184, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [tool] (tid 3642550) beginning tail_inject of syscall: sigaltstack
+[2m2026-09-18T21:28:53.363624Z[0m [35mTRACE[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0msigaltstack [3margs[0m[2m=[0mSyscallArgs { arg0: 139752925738504, arg1: 0, arg2: 51, arg3: 93944916987480, arg4: 93944917501184, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::syscall[0m[2m:[0m completed guest syscall interception

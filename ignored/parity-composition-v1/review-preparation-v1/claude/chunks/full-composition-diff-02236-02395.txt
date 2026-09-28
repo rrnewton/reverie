@@ -1,0 +1,160 @@
++                ToolInstructionResult::Timestamp(result),
++            ) => self.resume_timestamp_counter(boundary, result),
++            (ToolInstructionBoundary::Cpuid(boundary), ToolInstructionResult::Cpuid(result)) => {
++                let registers = crate::cpuid_instruction::result_registers(
++                    boundary.registers,
++                    boundary.instruction,
++                    result,
++                )
++                .ok_or_else(|| Error::UnexpectedVcpuExit("CPUID RIP overflow".to_owned()))?;
++                self.resume_instruction_registers(boundary, registers)
++            }
++            _ => Err(Error::UnexpectedVcpuExit(
++                "instruction callback result kind changed".to_owned(),
++            )),
++        }
++    }
++
++    fn resume_instruction_registers<I>(
++        &mut self,
++        boundary: InstructionBoundary<I>,
++        registers: kvm_regs,
++    ) -> Result<()> {
+         // Exception stubs preserve every GPR. Returning host-side injections
+         // cannot supply a replacement user register file. Preserve the saved
+         // instruction state, and any intentional injected FS/GS-base effect.
+@@ -2733,7 +2871,7 @@
+         self.vcpu.set_sregs(&special)?;
+         self.vcpu.set_regs(&registers)?;
+         if registers.rflags & (1 << 8) != 0 {
+-            // The timestamp has now retired. Preserve this backend's existing
++            // The instruction has now retired. Preserve this backend's existing
+             // typed #DB boundary here, before another guest instruction can
+             // run; resuming with TF would report the following instruction.
+             return Err(Error::GuestException {
+@@ -3179,17 +3317,33 @@
+     /// Runs the installed static ELF and its forked children until the root exits.
+     pub fn run_static_elf(&mut self) -> Result<i32> {
+         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+-        let mut executor = ElfExecutor::new(loaded, false);
++        let mut executor = ElfExecutor::with_output(loaded, None);
+         let (status, _, _) = self.run_static_elf_process(&mut executor)?;
+         Ok(conventional_exit_code(status))
+     }
+ 
+     /// Runs the installed ELF process tree and captures its standard output streams.
+     pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
++        // Declared before the executor so its private pipe identities outlive
++        // executor/child cleanup, including early-return and unwind paths.
++        let capture_owner = self.prepare_captured_output(true)?;
+         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+-        let mut executor = ElfExecutor::new(loaded, true);
++        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+         let (status, stdout, stderr) = self.run_static_elf_process(&mut executor)?;
+         Ok((conventional_exit_code(status), stdout, stderr))
++    }
++
++    pub(crate) fn prepare_captured_output(
++        &self,
++        capture_output: bool,
++    ) -> Result<Option<CapturedOutput>> {
++        self.static_elf
++            .as_ref()
++            .ok_or(Error::StaticElfNotInstalled)?;
++        capture_output
++            .then(CapturedOutput::try_new)
++            .transpose()
++            .map_err(Into::into)
+     }
+ 
+     fn run_static_elf_process(
+@@ -3198,6 +3352,7 @@
+     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+         // This loop never dispatches Tool events, including Host-owned workers.
+         self.set_rdtsc_interception(false)?;
++        self.set_cpuid_interception(false)?;
+         let _registration = self.register_guest_thread()?;
+         if self.is_guest_thread {
+             let entry_registers = self.vcpu.get_regs()?;
+@@ -3562,6 +3717,7 @@
+         F: FnMut(Syscall, &GuestMemory) -> i64,
+     {
+         self.set_rdtsc_interception(false)?;
++        self.set_cpuid_interception(false)?;
+         loop {
+             let vcpu_exit = self.vcpu.run()?;
+             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+@@ -3670,6 +3826,8 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    include!("cpuid_runtime_tests.rs");
+ 
+     mod initialization_tests {
+         use std::io::Seek;
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -14017,6 +14017,15 @@
+ #[path = "support/timestamp_terminal.rs"]
+ mod timestamp_terminal;
+ 
++#[path = "support/capture_identity.rs"]
++mod capture_identity;
++
++#[path = "support/cpuid_dispatch.rs"]
++mod cpuid_dispatch;
++
++#[path = "support/cpuid_terminal.rs"]
++mod cpuid_terminal;
++
+ const RDTSC_SENTINEL: u64 = 0x1122_3344_5566_7788;
+ const RDTSCP_SENTINEL: u64 = 0x99aa_bbcc_ddee_ff00;
+ const RDTSCP_AUX_SENTINEL: u32 = 0x1357_9bdf;
+--- /dev/null
++++ b/reverie-kvm/tests/support/capture_identity.rs
+@@ -0,0 +1,100 @@
++use super::*;
++
++#[derive(Debug, Default)]
++struct CaptureIdentityTool;
++
++#[reverie::tool]
++impl Tool for CaptureIdentityTool {
++    type GlobalState = ();
++    type ThreadState = ();
++}
++
++fn capture_identity_program() -> Vec<u8> {
++    let mut code = vec![
++        0x48, 0x81, 0xec, 0x00, 0x02, 0x00, 0x00, // sub rsp, 512
++        0x49, 0x89, 0xe4, // mov r12, rsp: stdout stat
++        0x4c, 0x8d, 0xac, 0x24, 0x90, 0x00, 0x00, 0x00, // lea r13,[rsp+144]: pipe stat
++        0x4c, 0x8d, 0xb4, 0x24, 0x20, 0x01, 0x00, 0x00, // lea r14,[rsp+288]: pipe fds
++    ];
++    let mut failures = Vec::new();
++    fn syscall_zero(code: &mut Vec<u8>, failures: &mut Vec<usize>, number: u32) {
++        code.push(0xb8);
++        code.extend_from_slice(&number.to_le_bytes());
++        code.extend_from_slice(&[0x0f, 0x05, 0x48, 0x85, 0xc0]); // syscall; test rax,rax
++        append_jne_failure(code, failures);
++    }
++    code.extend_from_slice(&[0xbf, 1, 0, 0, 0, 0x4c, 0x89, 0xe6]); // fd1; rsi=r12
++    syscall_zero(&mut code, &mut failures, libc::SYS_fstat as u32);
++    code.extend_from_slice(&[0x4c, 0x89, 0xf7, 0x31, 0xf6]); // rdi=r14; flags=0
++    syscall_zero(&mut code, &mut failures, libc::SYS_pipe2 as u32);
++    code.extend_from_slice(&[0x41, 0x8b, 0x3e, 0x4c, 0x89, 0xee]); // edi=[r14]; rsi=r13
++    syscall_zero(&mut code, &mut failures, libc::SYS_fstat as u32);
++    code.extend_from_slice(&[0x49, 0x8b, 0x04, 0x24, 0x49, 0x3b, 0x45, 0x00]); // cmp stdout.dev,pipe.dev
++    append_jne_failure(&mut code, &mut failures);
++    code.extend_from_slice(&[0x49, 0x8b, 0x44, 0x24, 0x08, 0x49, 0x3b, 0x45, 0x08]); // cmp inodes
++    code.extend_from_slice(&[0x0f, 0x84]); // je failure: distinct live objects
++    failures.push(code.len());
++    code.extend_from_slice(&0_i32.to_le_bytes());
++    for load in [
++        &[0x41, 0x8b, 0x44, 0x24, 0x18][..],
++        &[0x41, 0x8b, 0x45, 0x18][..],
++    ] {
++        code.extend_from_slice(load); // eax=st_mode
++        code.push(0x25); // and eax,S_IFMT
++        code.extend_from_slice(&libc::S_IFMT.to_le_bytes());

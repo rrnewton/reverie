@@ -1,0 +1,12 @@
+{
+  "expected": [
+    "vm::tests::pending_start_registered_after_cancellation_is_drained"
+  ],
+  "succeeded": [
+    "vm::tests::pending_start_registered_after_cancellation_is_drained"
+  ],
+  "raw_status": 0,
+  "ignored": 0,
+  "failed": 0,
+  "source_unchanged": true
+}

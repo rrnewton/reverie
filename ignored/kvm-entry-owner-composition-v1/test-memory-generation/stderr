@@ -1,0 +1,10 @@
+Running as unit: kvm-entry-owner-test-memory-generation-2542247.service
+
+thread 'memory::tests::entry_copy_tests::retained_memory_copy_keeps_its_issuing_callback_generation' (2542391) panicked at reverie-kvm/src/memory.rs:2259:21:
+retained callback copy unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 6ms
+             CPU time consumed: 5ms
+                   Memory peak: 1.3M (swap: 0B)

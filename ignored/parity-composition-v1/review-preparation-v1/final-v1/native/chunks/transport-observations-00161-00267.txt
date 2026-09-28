@@ -1,0 +1,107 @@
+      "kind": "write_msr",
+      "label": "disarm",
+      "index": 320,
+      "value": 0,
+      "count": 1
+    },
+    {
+      "line": 12,
+      "kind": "write_msr",
+      "label": "restore support state",
+      "index": 206,
+      "value": 2147483648,
+      "count": 1
+    },
+    {
+      "line": 13,
+      "kind": "read_msrs",
+      "label": "disarmed",
+      "count": 2,
+      "entries": [
+        {
+          "index": 206,
+          "reserved": 0,
+          "data": 2147483648
+        },
+        {
+          "index": 320,
+          "reserved": 0,
+          "data": 0
+        }
+      ]
+    },
+    {
+      "line": 14,
+      "kind": "fault",
+      "label": "disarmed CPUID reaches HLT",
+      "vector": 13,
+      "guest_rip": 2097164,
+      "error": 0,
+      "registers": {
+        "rax": 1635,
+        "rbx": 0,
+        "rcx": 1,
+        "rdx": 537921536
+      }
+    },
+    {
+      "line": 15,
+      "kind": "read_msrs",
+      "label": "unrelated initial",
+      "count": 2,
+      "entries": [
+        {
+          "index": 206,
+          "reserved": 0,
+          "data": 2147483648
+        },
+        {
+          "index": 320,
+          "reserved": 0,
+          "data": 0
+        }
+      ]
+    },
+    {
+      "line": 16,
+      "kind": "write_msr",
+      "label": "unrelated support",
+      "index": 206,
+      "value": 2147483648,
+      "count": 1
+    },
+    {
+      "line": 17,
+      "kind": "write_msr",
+      "label": "unrelated arm",
+      "index": 320,
+      "value": 1,
+      "count": 1
+    },
+    {
+      "line": 18,
+      "kind": "fault",
+      "label": "unrelated CLI still faults",
+      "vector": 13,
+      "guest_rip": 2097152,
+      "error": 0,
+      "registers": {
+        "rax": 0,
+        "rbx": 0,
+        "rcx": 0,
+        "rdx": 0
+      }
+    }
+  ],
+  "actual_guest_entries": 5,
+  "actual_separate_vm_backends": 3,
+  "same_vm_multivcpu_test": false,
+  "support_bit_initially_present": true,
+  "explicit_support_write_verified": true,
+  "enable_transitions_measured": [
+    0,
+    1,
+    0
+  ],
+  "cpuid_tool_callback_or_accounting_test": false
+}

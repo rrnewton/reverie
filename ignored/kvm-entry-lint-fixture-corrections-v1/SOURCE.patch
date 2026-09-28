@@ -1,0 +1,134 @@
+--- a/reverie-kvm/src/clock.rs
++++ b/reverie-kvm/src/clock.rs
+@@ -41,6 +41,9 @@
+ fn host_failure(operation: &str) -> Error {
+     failure(format!("{operation}: {}", std::io::Error::last_os_error()))
+ }
++
++#[cfg(test)]
++type BeforeRunHook = Box<dyn FnOnce(&RunProbe) + Send>;
+ 
+ #[cfg(test)]
+ #[derive(Default)]
+@@ -51,7 +54,7 @@
+     pub(crate) tracked_runs: std::sync::atomic::AtomicUsize,
+     pub(crate) clock_begins: std::sync::atomic::AtomicUsize,
+     pub(crate) intervals_created: std::sync::atomic::AtomicUsize,
+-    before_run: std::sync::Mutex<Option<Box<dyn FnOnce(&RunProbe) + Send>>>,
++    before_run: std::sync::Mutex<Option<BeforeRunHook>>,
+ }
+ 
+ #[cfg(test)]
+--- a/reverie-kvm/src/memory.rs
++++ b/reverie-kvm/src/memory.rs
+@@ -28,6 +28,9 @@
+ use crate::failure::FailureContext;
+ 
+ const PAGE_SIZE: usize = 4096;
++
++#[cfg(test)]
++type SyscallDispatchObserver = Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>;
+ 
+ /// A contiguous, page-aligned guest-physical memory region.
+ #[derive(Clone)]
+@@ -40,7 +43,7 @@
+     #[cfg(test)]
+     test_vector_copy_observer: Option<Arc<dyn Fn(usize, EntryOrigin) + Send + Sync>>,
+     #[cfg(test)]
+-    test_syscall_dispatch_observer: Option<Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>>,
++    test_syscall_dispatch_observer: Option<SyscallDispatchObserver>,
+ }
+ 
+ impl std::fmt::Debug for GuestMemory {
+@@ -444,7 +447,7 @@
+     #[cfg(test)]
+     pub(crate) fn set_test_syscall_dispatch_observer(
+         &mut self,
+-        observer: Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>,
++        observer: SyscallDispatchObserver,
+     ) {
+         self.test_syscall_dispatch_observer = Some(observer);
+     }
+@@ -1200,6 +1203,7 @@
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-132): Review partial user-range validation.
++    #[cfg(test)]
+     pub(crate) fn user_accessible_prefix(
+         &self,
+         guest_address: u64,
+@@ -2048,28 +2052,26 @@
+             poison_after: usize,
+             write: bool,
+         ) {
+-            let result;
+             let mut output = [0xa5; 4];
+-            if write {
++            let result = if write {
+                 let source = [io::IoSlice::new(b"AB"), io::IoSlice::new(b"CD")];
+                 // SAFETY: MemoryAccess treats these guest addresses only as
+                 // remote operands; this caller never dereferences the slice.
+                 let mut destination = unsafe {
+                     AddrSliceMut::from_raw_parts(AddrMut::from_raw(BASE as usize).unwrap(), 4)
+                 };
+-                result =
+-                    adapter.write_vectored(&source, &mut [unsafe { destination.as_ioslice_mut() }]);
++                adapter.write_vectored(&source, &mut [unsafe { destination.as_ioslice_mut() }])
+             } else {
+                 // SAFETY: as above, this is an address descriptor for the
+                 // actual adapter, not a host dereference of the guest address.
+                 let source =
+                     unsafe { AddrSlice::from_raw_parts(Addr::from_raw(BASE as usize).unwrap(), 4) };
+                 let (left, right) = output.split_at_mut(2);
+-                result = adapter.read_vectored(
++                adapter.read_vectored(
+                     &[unsafe { source.as_ioslice() }],
+                     &mut [io::IoSliceMut::new(left), io::IoSliceMut::new(right)],
+-                );
+-            }
++                )
++            };
+             assert_eq!(result, Err(Errno::EIO));
+             let mut expected = [0xa5; 4];
+             expected[..poison_after].copy_from_slice(&b"ABCD"[..poison_after]);
+--- a/reverie-kvm/src/entry/cleanup_tests.rs
++++ b/reverie-kvm/src/entry/cleanup_tests.rs
+@@ -256,12 +256,11 @@
+             .lock()
+             .unwrap_or_else(|error| error.into_inner())
+             .take();
+-        if let Some(handle) = handle {
+-            if let Err(payload) = handle.join() {
+-                if !std::thread::panicking() {
+-                    std::panic::resume_unwind(payload);
+-                }
+-            }
++        if let Some(handle) = handle
++            && let Err(payload) = handle.join()
++            && !std::thread::panicking()
++        {
++            std::panic::resume_unwind(payload);
+         }
+     }
+ }
+--- a/reverie-kvm/src/vm/exec_wait_tests.rs
++++ b/reverie-kvm/src/vm/exec_wait_tests.rs
+@@ -103,7 +103,7 @@
+     let handle = std::thread::spawn(move || {
+         let _done = WorkerDone(done);
+         let _notice = notice;
+-        (move || -> GuestWorkerResult {
++        let run_worker = move || -> GuestWorkerResult {
+             assert_eq!(
+                 wait_start.recv_timeout(WAIT).unwrap(),
+                 ChildStartCommand::Cancel
+@@ -115,7 +115,8 @@
+             assert!(worker_destroyed.load(Ordering::Acquire));
+             assert!(worker_run.published_primary().is_some());
+             Err(Error::RunAborted)
+-        })()
++        };
++        run_worker()
+     });
+     group.add_worker_handle_with_completion(2, Some(gate.clone()), Some(returning.clone()), handle);
+     let mut rescue = Rescue {

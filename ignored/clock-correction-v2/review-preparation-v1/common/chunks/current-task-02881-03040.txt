@@ -1,0 +1,160 @@
+        // post-exec Tool callback; failed exec attempts retain launch provenance.
+        let initial_command = self.command_bootstrap;
+        if initial_command {
+            self.timer.begin_initial_exec();
+        }
+        self.command_bootstrap = false;
+        if self.global_state.liteinst_runtime.is_some() {
+            if former_tid != self.tid() {
+                return Err(self.reject_liteinst_nonleader_exec(former_tid));
+            }
+            let state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::PreExec
+                && !(state.phase == LiteinstRuntimePhase::Ready && self.is_main_thread())
+            {
+                let phase = state.phase;
+                drop(state);
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::PostStartExec,
+                    Error::runtime(
+                        self.tid(),
+                        "reject LiteInst post-start exec",
+                        format!(
+                            "exec requires an activated thread-group leader (phase {phase:?}, tid {}, pid {})",
+                            self.tid(), self.pid()
+                        ),
+                    ),
+                );
+                return Err(Errno::ENOTSUPP.into());
+            }
+            let next = state.after_exec();
+            drop(state);
+            let next = match next {
+                Ok(next) => next,
+                Err(error) => {
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::PostStartExec,
+                        Error::runtime(
+                            self.tid(),
+                            "advance LiteInst execution generation",
+                            error.to_string(),
+                        ),
+                    );
+                    return Err(error.into());
+                }
+            };
+            // The kernel has replaced this address space. Other holders of the
+            // old image's state must not observe this reset, and no saved code
+            // or controller-stack address may be reused by the new image.
+            self.liteinst_runtime = Arc::new(StdMutex::new(next));
+            self.liteinst_entry_guard = None;
+        }
+        // execve/execveat are tail injected, however, after exec, the new
+        // program start as a clean slate, hence it is actually ok to do either
+        // inject or tail inject after execve succeeded.
+        self.pending_syscall = None;
+        self.pending_syscall_already_skipped = false;
+        self.injected_syscall_frame = None;
+
+        // TODO: Update PID? Need to write a test checking this.
+
+        // Step the tracee to get the SIGTRAP that immediately follows the
+        // PTRACE_EVENT_EXEC. We can't call `tracee_preinit` until after this
+        // because when it tries to step the tracee, it'll get this SIGTRAP
+        // signal instead.
+        let task = if self.global_state.liteinst_runtime.is_some() {
+            let expected_post_exec_rip = task.getregs()?.ip();
+            let wait = self.step_stopped(task, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            match wait {
+                Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) => {
+                    #[cfg(test)]
+                    let forced_external_sigtrap = self
+                        .global_state
+                        .liteinst_runtime
+                        .as_ref()
+                        .and_then(|runtime| runtime.force_post_exec_signal_once.as_ref())
+                        .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst));
+                    #[cfg(not(test))]
+                    let forced_external_sigtrap = false;
+                    self.validate_nested_liteinst_activation_signal(
+                        &task,
+                        Signal::SIGTRAP,
+                        LiteinstActivationOperation::WaitForPostExecTrap,
+                        NestedTrapExpectation::Breakpoint(expected_post_exec_rip),
+                        forced_external_sigtrap,
+                    )?;
+                    task
+                }
+                Wait::Stopped(task, Event::Signal(sig)) => {
+                    self.validate_nested_liteinst_activation_signal(
+                        &task,
+                        sig,
+                        LiteinstActivationOperation::WaitForPostExecTrap,
+                        NestedTrapExpectation::None,
+                        false,
+                    )?;
+                    unreachable!("activation validation must reject a non-SIGTRAP signal")
+                }
+                Wait::Stopped(_, event) => {
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::UnexpectedPostExecEvent,
+                        Error::runtime(
+                            self.tid(),
+                            "validate LiteInst post-exec trap",
+                            format!(
+                                "received unexpected {event:?} before tracee pre-initialization"
+                            ),
+                        ),
+                    );
+                    return Err(Errno::EPROTO.into());
+                }
+                Wait::Exited(pid, exit_status) => {
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::ExitedBeforePostExecTrap,
+                        Error::runtime(
+                            pid,
+                            "validate LiteInst post-exec trap",
+                            format!(
+                                "tracee exited with {exit_status:?} before the required post-exec SIGTRAP"
+                            ),
+                        ),
+                    );
+                    return Err(Errno::EPROTO.into());
+                }
+            }
+        } else {
+            let (task, event) = self
+                .step_stopped(task, None)?
+                .wait_for_signal(Signal::SIGTRAP)
+                .await?
+                .assume_stopped();
+            assert_eq!(event, Event::Signal(Signal::SIGTRAP));
+            self.arm_liteinst_root_stop(&task, &event);
+            task
+        };
+        let mut task = self.tracee_preinit(task).await?;
+        if let Err(error) = self.install_liteinst_entry_guard(&mut task) {
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::InstallExecutableEntryGuard,
+                Error::runtime(
+                    self.tid(),
+                    "install LiteInst executable-entry guard",
+                    error.to_string(),
+                ),
+            );
+            return Err(error);
+        }
+
+        #[cfg(test)]
+        if self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.activate_without_handshake)
+        {
+            if let Err(error) = self.restore_liteinst_entry_guard(&mut task) {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::RestoreExecutableEntryGuard,
+                    Error::runtime(
+                        self.tid(),

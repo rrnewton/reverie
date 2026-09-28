@@ -1,0 +1,62 @@
+{
+  "kind": "memory integration source preparation",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "source_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/memory.rs",
+  "source_sha256": "ab7537c4e07b2466b036066b1b92d9060d6e248f7c17775c2dd1e34a6f16f606",
+  "read_back_source_equal": true,
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/BASE-memory.rs",
+      "bytes": 93043,
+      "sha256": "ba6c2d7b32caa9440bef63a32ce896318bbcee577d588bbb4e9a0f9646ee0a14"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/START.json",
+      "bytes": 528,
+      "sha256": "188751a1bbcfe63700bba675182109e4633da5680906342de217a37876abf94f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/memory.rs",
+      "bytes": 118772,
+      "sha256": "ab7537c4e07b2466b036066b1b92d9060d6e248f7c17775c2dd1e34a6f16f606"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/SOURCE.patch",
+      "bytes": 43792,
+      "sha256": "c223ad12f68f9bdfbeeaddf156bcbf71d784c15ef54e987482331efa47818771"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/PRESERVATION.json",
+      "bytes": 2803,
+      "sha256": "9be7d44bc2164d27d990aa04e0971f52e8d6e60ec2acbf53c06377b98a0d33ee"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/REPORT.md",
+      "bytes": 4464,
+      "sha256": "cb476cd05e6fce1a413923c72a8044b5d0a8603d4eb17f79f6aece0333e45a1a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/TEST-PLAN.json",
+      "bytes": 7784,
+      "sha256": "8b1c3cc5c5d55c8002f742dcf099c3c43757fcf4f8d579106834d9511613fcaf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/API-CONTRACT.json",
+      "bytes": 1104,
+      "sha256": "92ffe7475bf801e3450684c33cb864e19cfcef3ef8c966314c98da2d90862f12"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/FORMAT.json",
+      "bytes": 343,
+      "sha256": "126b0f7d71a2e526ddaa7f94be0f4b7a9f6bbe143c3b015732f2f706e948f8d9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/FORMAT-FINAL.json",
+      "bytes": 343,
+      "sha256": "126b0f7d71a2e526ddaa7f94be0f4b7a9f6bbe143c3b015732f2f706e948f8d9"
+    }
+  ],
+  "execution_performed": false,
+  "complete_composition_frozen": false
+}

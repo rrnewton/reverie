@@ -1,0 +1,160 @@
+[
+  {
+    "phase": "test-02",
+    "selected": [
+      "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop"
+    ],
+    "accepted": true,
+    "events": [
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      }
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-02/stderr",
+      "bytes": 267,
+      "mode": 384,
+      "sha256": "f02857facd807ad7e27c7340fdcea88cc5bab9176ff088c5e2bf7244bf257d32"
+    }
+  },
+  {
+    "phase": "test-03",
+    "selected": [
+      "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers"
+    ],
+    "accepted": true,
+    "events": [
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {

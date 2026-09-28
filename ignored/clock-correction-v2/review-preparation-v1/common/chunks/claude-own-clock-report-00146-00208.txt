@@ -1,0 +1,63 @@
+**3. Failure renamed or relabelled as a pass — NO.** The cross-backend comparison is retained as `raw_status: 1`, `accepted: false`, `verdict: "diverged"`, first divergent record 11 / turn 2, ptrace `…001_262_230` vs KVM `…001_260_000`. I verified that divergence independently in the raw logs rather than accepting the summary. The off/on `accepted=false` is retained and the adjudication explicitly refuses to substitute a new receipt. Five named predecessor failures (missing-lock refusal, E0310, artifact-retention refusal, Clippy E0514, preparation path error) remain as immutable predecessors. The only blemish is F7's stale sentence.
+
+**4. Check deleted instead of satisfied — NO.** Nothing is removed. The design adds self-imposed anti-shortcut clauses that a naive fix would omit: "No numeric subtraction is allowed"; "do not wrap subtraction, reset the clock, clamp away work or claim an exact delivery that was late"; "If required arming fails, preserve the error and stopped-task failure path; do not resume claiming that the timer was armed". Those are the right constraints and I credit them.
+
+## Evidence limits I am preserving
+
+- The 2,230 ns / 223 RCB link is by **magnitude and locality** (223 × the unchanged 10 ns branch charge = 2,230; the sidecar places 223 user-mode branches strictly before the initial execve interception; the offset is constant from turn 2 to the final total). I did not derive the exact charge site from the logs and do not claim to have.
+- **Initial setup contributed zero branches only for this ELF.** Sidecar rows 5-9 are all 223 across preinit, post-exec and finalization. That is one program on one host.
+- **This ELF has no conditional branch before its first write** (rows 3-10 all 223). So this fixture alone cannot distinguish "counting starts at image entry" from "counting starts at the first write" — which is precisely why PLAN control 4 is mandatory and why F4's launcher-variation control is needed alongside it.
+- **The historical run1866 2,270 ns / 227-branch interval was never sampled** (`historical_227_interval_measured: false`). It is a different build (H80ce/f97) and must not be conflated with the measured 2,230 / 223.
+- The three within-backend verifications are real: `bitwise_parity: true`, 76/76 records, 17 turns / 17 syscalls, exit 0, identical 158-byte stdout, BitwiseInfoV1 canonical. ptrace-off and ptrace-on both finish at 9,112,750 ns, so the diagnostic feature itself perturbs nothing — a genuine control that passed.
+- The focused controls were 6 Rust selectors + 2 Python controls, 0 failures, inventory 185, `mode_counts_not_inferred: true`. The packet itself records that `precise_timer_delivery_reaches_tool` has a source-level early return when perf is unsupported (`tracer.rs`, `if !crate::perf::is_perf_supported() { return; }`) and captures its two child modes internally, so its pass is **not** an independent receipt for both modes. I preserve that.
+
+# Untested states and residual risks
+
+Nothing has been executed for the correction; no candidate exists. Beyond that:
+
+- The enable-on-exec host behaviour is unwitnessed (PLAN 2 proposes it; it has not run).
+- The `pinned`-event activation outcome is unwitnessed and uncontrolled (**F2**).
+- Deferred-request deliverability on the Command path is unestablished (**F1**).
+- Missing-`PT_INTERP` pre-commit ordering is not established by the bound kernel evidence (**F5**).
+- Distinguishing origin-at-exec from a tuned constant subtraction is not covered (**F4**).
+- LiteInst and aarch64 are explicitly unclaimed; the LiteInst post-exec branch (`task.rs:2935`, `resume_stopped` tail) is a second path the transition must satisfy.
+- Multi-thread and later-exec behaviour is argued but unmeasured; the measured program is single-threaded with one exec.
+- The dynamic-loader case (PLAN 7) has no fixture yet.
+
+---
+
+# Verdict
+
+## CHANGES REQUESTED
+
+for design `6e302d07efd4feb6e6c9116b964a945467073b09dea158ffc20c5a48227f6f93` on base `44fcb1955f44547f50d724fe8f7d718215fed446` / tree `7620fe83f486d665d9d09d4f09f0e93636b862e4`.
+
+The **clock half is sound and I endorse it**: `enable_on_exec` on the initial command's counting event is the right mechanism, correctly grounded in the kernel source the packet binds, correctly scoped to `command_bootstrap`, and its determinism argument holds at source. The measured defect is real and precisely located. If the timer half were removed entirely, the clock change plus suppression of the launcher-time sampler enable and artificial send would be authorizable as written.
+
+The **timer half is not yet implementable as specified**. F1 shows that steps 2/5/6 describe arming that cannot produce a delivery under the tick rules the design itself promises to preserve, and for a short request manufactures a discarded guest stop; F3 leaves the single load-bearing detail (status preservation) unstated, with both readings contradicting a different clause. An author following the design would write dead code, and the proposed controls would not catch it. F2 adds a new panic-to-`exit(101)` failure mode that no proposed control observes.
+
+These are concrete correctness and specification defects, not process objections, and none of them requires a DAG, a receipt, or a new gate to resolve.
+
+**What flips this to approval:** F1 resolved in either direction with the chosen direction written down; F3 stated explicitly; F2 named in the design and covered by the witness in F5's style; F4's launcher-variation control added; F5's control-6 assertion strengthened. F6 and F7 are editorial.
+
+## Concrete finite validation obligation
+
+Before a candidate is called correct, and in addition to the PLAN as written:
+
+1. **Enable-on-exec host witness (PLAN 2), strengthened.** Parent-owned `pinned` event on a held child; known branch loop → real failed exec → assert raw counter still 0 and no `PTRACE_EVENT_EXEC`; second known loop → successful exec; then assert, before any value comparison, that the event is live (`time_enabled == time_running`, successful read) and that a statically counted branch sequence increments it. Real hardware required; an unsupported-perf early return is nonqualifying. No numeric subtraction.
+2. **First-entry control (PLAN 4) plus a launcher-variation twin (F4).** The known-first-branch static ELF must report exactly 1 RCB at the first observed boundary even though `task.rs:2996` executes it, and must report the **same** value when the launcher performs a known extra number of pre-exec conditional branches.
+3. **Timer lifecycle controls (PLAN 1/5) with explicit status assertions (F1, F3).** For each request kind, assert `EventStatus` and `send_artificial_signal` before and after arming; assert no sampler enable and no artificial send while waiting; assert no revival after cancellation; assert the arming-error path preserves the error without resuming. Preserve the pre-fix premature-launcher observation as a retained negative. Either exhibit an actual delivered `handle_timer_event` from a pre-exec Command-path request, or record and assert its non-delivery as the intended outcome.
+4. **Initial-failure control (PLAN 6) with the absence assertion (F5).** Present ELF with missing `PT_INTERP`: observe the actual `execve` error, the absence of any `PTRACE_EVENT_EXEC`, unchanged failure exit, and no clock activation or timer callback.
+5. **Original-ELF regression (PLAN 3), unchanged in strictness.** Same ELF, same retained binary, same bounds; require raw zero before initial exec and before the first write, positive later counting, identical off/on trajectories, unchanged stdout and exit; then the full cross-backend comparison with `require_structured_events: true` and bound input hashes. Any remaining disagreement is preserved as a product failure. Sidecars do not override a comparator verdict. Neither existing `accepted=false` receipt is rewritten.
+
+An approval of this design, when earned, would authorize **authoring a candidate only**. It would not be source approval of that candidate, nor runtime, parity, activation, or landing approval of anything.
+
+---
+
+## Reading completeness and tool errors
+
+All 38 mandatory documents / 163 chunks / 23,680 lines read in listed order via ordinary `Read` with no offset/limit; no truncation occurred in any chunk. `COMPLETE_READS.json` itself (1,763 lines) exceeded the single-read cap and was paged in three reads — disclosed, not skipped. Six targeted `Grep` calls were used for follow-up line resolution on files already read completely (`task.rs`, `timer.rs`, `perf.rs`, `guest.rs`, and an `observe_event`/`finalize_requests` call-site sweep across `landed-44fcb195`); they supplemented, not substituted for, the chunks.
+
+One error of my own, corrected before it reached a finding: I initially derived `task.rs` line numbers arithmetically from chunk boundaries and got offsets that were mutually impossible, which led me to suspect the diagnostic patch did not apply to the landed base. The grep above refuted that — every patch hunk header (`@@ -1124`, `-2869`, `-3001`, `-3039`, `-4053`, `-4909`) matches the landed file exactly, confirming `base_equal_landed=True` as `SOURCE-IDENTITY.md` states. My arithmetic was wrong, not the packet; no finding rests on it.
+
+No Bash, network, MCP, agent, write, or execution tool was used. No other reviewer session, report, verdict or concurrent work was inspected.

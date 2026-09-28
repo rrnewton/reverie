@@ -1,0 +1,254 @@
+--- source-1/owner.rs
++++ keepalive-v2/owner.rs
+@@ -83,15 +83,23 @@
+ #[must_use = "notify only after releasing the entry gate and owner locks"]
+ pub(crate) struct OwnerNotification {
+     previous: Option<Change>,
++    // The upgrade may become the last owner after capture unlocks its mutex.
++    // Its current sender must not be dropped while the caller holds the gate.
++    keepalive: Option<Arc<DriverState>>,
+ }
+ 
+ impl OwnerNotification {
+     pub(crate) fn notify(self) {
+-        if let Some(previous) = self.previous {
++        let Self {
++            previous,
++            keepalive,
++        } = self;
++        if let Some(previous) = previous {
+             let _ = previous.sender.send(());
+             // Drop the old Shared receiver outside the owner lock too.
+             drop(previous.receiver);
+         }
++        drop(keepalive);
+     }
+ }
+ 
+@@ -99,6 +107,7 @@
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         f.debug_struct("OwnerNotification")
+             .field("has_change", &self.previous.is_some())
++            .field("keeps_owner_alive", &self.keepalive.is_some())
+             .finish()
+     }
+ }
+@@ -114,6 +123,7 @@
+     fn changed(&mut self) -> OwnerNotification {
+         OwnerNotification {
+             previous: Some(std::mem::replace(&mut self.change, Change::new())),
++            keepalive: None,
+         }
+     }
+ }
+@@ -364,6 +374,8 @@
+     pub(crate) failure: Arc<PendingFailure>,
+     pub(crate) lifecycle: DriverLifecycle,
+     pub(crate) owner_available: bool,
++    /// Defer this even when rejecting capture: it may retain the last owner.
++    pub(crate) notification: OwnerNotification,
+ }
+ 
+ impl OperationOrigin {
+@@ -423,31 +435,66 @@
+         &self,
+         failure: Arc<PendingFailure>,
+     ) -> std::result::Result<OwnerNotification, CaptureRejected> {
++        #[cfg(test)]
++        {
++            self.capture_inner(failure, || {})
++        }
++        #[cfg(not(test))]
++        {
++            self.capture_inner(failure)
++        }
++    }
++
++    fn capture_inner(
++        &self,
++        failure: Arc<PendingFailure>,
++        #[cfg(test)] after_unlock: impl FnOnce(),
++    ) -> std::result::Result<OwnerNotification, CaptureRejected> {
+         let Some(owner) = self.owner.upgrade() else {
+             return Err(CaptureRejected {
+                 failure,
+                 lifecycle: self.lifecycle(),
+                 owner_available: false,
++                notification: OwnerNotification {
++                    previous: None,
++                    keepalive: None,
++                },
+             });
+         };
+         let mut data = owner.data.lock().unwrap();
+         let lifecycle = self.lifecycle();
+         if lifecycle != DriverLifecycle::Active {
++            drop(data);
++            #[cfg(test)]
++            after_unlock();
+             return Err(CaptureRejected {
+                 failure,
+                 lifecycle,
+                 owner_available: true,
++                notification: OwnerNotification {
++                    previous: None,
++                    keepalive: Some(owner),
++                },
+             });
+         }
+-        if data
++        let mut notification = if data
+             .pending
+             .iter()
+             .any(|pending| Arc::ptr_eq(pending, &failure))
+         {
+-            return Ok(OwnerNotification { previous: None });
+-        }
+-        data.pending.push(failure);
+-        Ok(data.changed())
++            OwnerNotification {
++                previous: None,
++                keepalive: None,
++            }
++        } else {
++            data.pending.push(failure);
++            data.changed()
++        };
++        drop(data);
++        #[cfg(test)]
++        after_unlock();
++        notification.keepalive = Some(owner);
++        Ok(notification)
+     }
+ }
+ 
+@@ -477,6 +524,129 @@
+ 
+     fn poll<F: Future>(future: Pin<&mut F>, waker: &Waker) -> Poll<F::Output> {
+         future.poll(&mut Context::from_waker(waker))
++    }
++
++    #[test]
++    fn capture_defers_last_owner_drop_after_retirement_and_rejection() {
++        struct Observe {
++            gate: Arc<super::super::EntryGate>,
++            wakes: AtomicUsize,
++            gate_was_unlocked: AtomicBool,
++        }
++        impl Wake for Observe {
++            fn wake(self: Arc<Self>) {
++                self.wake_by_ref();
++            }
++
++            fn wake_by_ref(self: &Arc<Self>) {
++                if self.gate.state.try_lock().is_err() {
++                    self.gate_was_unlocked.store(false, Ordering::Release);
++                }
++                self.wakes.fetch_add(1, Ordering::Release);
++            }
++        }
++
++        for case in ["accepted", "duplicate", "rejected"] {
++            for notify in [false, true] {
++                let scope = DriverScope::new();
++                let owner = scope.owner();
++                let origin = owner.origin();
++                let failure = cause();
++                if case == "duplicate" {
++                    origin.capture(failure.clone()).unwrap().notify();
++                }
++                let scope = if case == "rejected" {
++                    let retirement = scope.retire();
++                    retirement.result.unwrap();
++                    assert!(retirement.pending.is_empty());
++                    retirement.notification.notify();
++                    None
++                } else {
++                    Some(scope)
++                };
++                let gate = super::super::EntryGate::new();
++                let observed = Arc::new(Observe {
++                    gate: gate.clone(),
++                    wakes: AtomicUsize::new(0),
++                    gate_was_unlocked: AtomicBool::new(true),
++                });
++                let controller_observed = observed.clone();
++                let expected = failure.clone();
++                let (unlocked, at_unlock) = std::sync::mpsc::channel();
++                let (owner_dropped, after_drop) = std::sync::mpsc::channel();
++                let (released, after_release) = std::sync::mpsc::channel();
++                let timeout = std::time::Duration::from_secs(2);
++                let controller = std::thread::spawn(move || {
++                    at_unlock.recv_timeout(timeout).unwrap();
++                    if let Some(scope) = scope {
++                        let retirement = scope.retire();
++                        retirement.result.unwrap();
++                        assert_eq!(retirement.pending.len(), 1);
++                        assert!(Arc::ptr_eq(&retirement.pending[0], &expected));
++                        retirement.notification.notify();
++                    }
++                    // The waiter must observe the fresh generation created by
++                    // retirement, not a sender already returned to capture.
++                    let waker = Waker::from(controller_observed);
++                    let mut changed = Box::pin(owner.subscribe());
++                    assert!(poll(changed.as_mut(), &waker).is_pending());
++                    drop(owner);
++                    owner_dropped.send(()).unwrap();
++                    after_release.recv_timeout(timeout).unwrap();
++                    // It is disconnection from final owner destruction, not
++                    // a Tool publication or an explicit current-generation send.
++                    assert!(matches!(
++                        poll(changed.as_mut(), &waker),
++                        Poll::Ready(Err(_))
++                    ));
++                });
++
++                let locked = gate.state.lock().unwrap();
++                let captured = origin.capture_inner(failure.clone(), || {
++                    // Precisely after owner-data unlock, before capture can
++                    // release its Weak upgrade or return to the gate caller.
++                    unlocked.send(()).unwrap();
++                    after_drop.recv_timeout(timeout).unwrap();
++                });
++                let wakes_before_unlock = observed.wakes.load(Ordering::Acquire);
++                let owners_before_unlock = origin.owner.strong_count();
++                let (notification, rejection) = match captured {
++                    Ok(notification) => (notification, None),
++                    Err(rejected) => (
++                        rejected.notification,
++                        Some((
++                            rejected.failure,
++                            rejected.lifecycle,
++                            rejected.owner_available,
++                        )),
++                    ),
++                };
++                drop(locked);
++                if notify {
++                    notification.notify();
++                } else {
++                    drop(notification);
++                }
++                released.send(()).unwrap();
++                controller.join().unwrap();
++
++                assert_eq!(wakes_before_unlock, 0, "{case}, notify={notify}");
++                assert_eq!(owners_before_unlock, 1, "capture must retain the last owner");
++                assert_eq!(observed.wakes.load(Ordering::Acquire), 1);
++                assert!(observed.gate_was_unlocked.load(Ordering::Acquire));
++                assert!(origin.owner.upgrade().is_none());
++                assert_eq!(origin.lifecycle(), DriverLifecycle::Retired);
++                match rejection {
++                    Some((cause, lifecycle, available)) => {
++                        assert_eq!(case, "rejected");
++                        assert!(Arc::ptr_eq(&cause, &failure));
++                        assert_eq!(lifecycle, DriverLifecycle::Retired);
++                        assert!(available);
++                    }
++                    None => assert_ne!(case, "rejected"),
++                }
++            }
++        }
+     }
+ 
+     #[test]

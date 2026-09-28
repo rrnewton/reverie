@@ -1,0 +1,7 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.52s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+thread 'runtime::signal_cleanup_completion_tests::poisoned_signal_cleanup_child_state_becomes_a_typed_invariant_error' (542330) panicked at reverie-kvm/src/runtime/signal_cleanup_completion_tests.rs:326:13:
+controlled child-start lock poison
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

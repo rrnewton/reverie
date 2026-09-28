@@ -1,0 +1,17 @@
+
+running 12 tests
+test entry::signal::tests::kernel_mask_uses_the_flexible_array_offset ... ok
+test entry::signal::tests::reserved_signal_protocol ... ok
+test entry::tests::abandoned_close_poison_is_sticky_and_wakes_existing_waiters ... ok
+test entry::tests::abandoned_entry_withdraws_without_claiming_cleanup ... ok
+test entry::tests::close_waits_for_setup_and_copies_and_retirement ... ok
+test entry::tests::closed_registration_does_not_admit_an_entry_or_copy ... ok
+test entry::tests::failed_send_preserves_running_accounting_and_typed_cause ... ok
+test entry::tests::identities_never_wrap_and_a_poison_cannot_look_open ... ok
+test entry::tests::primary_failure_is_not_replaced_by_cleanup ... ok
+test entry::tests::running_vcpu_is_interrupted_and_retires_before_close_completes ... ok
+test entry::tests::unwinding_control_operations_preserve_cleanup_and_failure ... ok
+test entry::tests::withdrawal_prevents_a_later_send_but_does_not_acknowledge ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 554 filtered out; finished in 0.05s
+

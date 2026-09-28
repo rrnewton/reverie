@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.006383699
+    }
+  ]
+}

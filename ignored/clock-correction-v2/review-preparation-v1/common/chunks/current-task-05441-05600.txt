@@ -1,0 +1,160 @@
+                    }
+                    let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
+                    if let Some(context) = context {
+                        if child_context.is_some() {
+                            // An injected-frame event temporarily replaces the
+                            // controller's live trap registers with the logical
+                            // guest frame. Restore every controller register;
+                            // leaving even a callee-saved register (notably R12,
+                            // used by LiteInst as its HookContext base) would
+                            // corrupt the callback that resumes after injection.
+                            stopped.setregs(&context)?;
+                        } else {
+                            // Restore syscall args to original values. This is
+                            // needed when we convert syscalls like SYS_open ->
+                            // SYS_openat, syscall args are modified need to restore
+                            // it back.
+                            restore_context(&stopped, context, None, false)?;
+                        }
+                    }
+                    Ok(result)
+                }
+                Event::NewChild(op, child) => {
+                    let ret = child.pid().as_raw() as i64;
+                    let _ = self
+                        .dispatch_new_task(op, stopped, child, context, child_context)
+                        .await?;
+                    Ok(Ok(ret))
+                }
+                Event::Exec(former_tid) => {
+                    // This should never return.
+                    let next_state = self.handle_exec_event(stopped, former_tid).await?;
+                    self.execve(next_state).await
+                }
+                Event::Syscall => {
+                    let regs = stopped.getregs()?;
+                    Ok(Errno::from_ret(regs.ret() as usize).map(|x| x as i64))
+                }
+                st => panic!("untraced_syscall returned unknown state: {:?}", st),
+            },
+            Wait::Exited(_pid, exit_status) => self.exit(exit_status).await,
+        }
+    }
+
+    async fn do_inject(&mut self, nr: Sysno, args: SyscallArgs) -> Result<i64, Errno> {
+        match self.inner_inject(nr, args).await {
+            Ok(ret) => ret,
+            Err(err) => self.abort(Err(err)).await,
+        }
+    }
+
+    async fn inner_inject(
+        &mut self,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        let task = self.assume_stopped();
+
+        tracing::debug!(
+            "[tool] (tid {}) beginning inject of syscall: {}, args {:?}",
+            self.tid(),
+            nr,
+            args,
+        );
+
+        if self.injected_syscall_frame.is_some() || self.pending_syscall_already_skipped {
+            self.pending_syscall = None;
+            self.untraced_syscall(task, nr, args).await
+        } else {
+            match self.pending_syscall.take() {
+                Some(original) if original == (nr, args) => {
+                    // Run the exact pending syscall and stop at its exit.
+                    self.validate_liteinst_mapping_execution(nr, args)?;
+                    let wait = self.syscall_stopped(task, None)?.next_state().await?;
+                    self.arm_liteinst_wait(&wait);
+                    let result = self.status_to_result(wait, None, None).await?;
+                    self.observe_liteinst_mapping_result(nr, args, result);
+                    Ok(result)
+                }
+                Some(_) => self.private_inject(task, nr, args).await,
+                None => self.untraced_syscall(task, nr, args).await,
+            }
+        }
+    }
+
+    async fn do_tail_inject(&mut self, nr: Sysno, args: SyscallArgs) -> ! {
+        match self.inner_tail_inject(nr, args).await {
+            Ok(_) => {
+                // Drop the handle_syscall_event future.
+                self.cancel_handler.store(true, Ordering::SeqCst);
+                future::pending().await
+            }
+            Err(err) => self.abort(Err(err)).await,
+        }
+    }
+
+    async fn inner_tail_inject(
+        &mut self,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        let tid = self.tid();
+
+        tracing::info!(
+            "[tool] (tid {}) beginning tail_inject of syscall: {}",
+            &tid,
+            nr,
+        );
+
+        let task = self.assume_stopped();
+
+        if self.injected_syscall_frame.is_some() {
+            self.pending_syscall = None;
+            let result = self.untraced_syscall(task, nr, args).await?;
+            let task = self.assume_stopped();
+            self.write_injected_syscall_result(&task, result)?;
+            return Ok(result);
+        }
+
+        if self.pending_syscall_already_skipped {
+            self.pending_syscall = None;
+            let result = self.untraced_syscall(task, nr, args).await?;
+            let task = self.assume_stopped();
+            set_ret(
+                &task,
+                result.unwrap_or_else(|errno| -(errno.into_raw() as i64)) as u64,
+            )?;
+            return Ok(result);
+        }
+
+        if is_liteinst_mapping_syscall(nr) && self.pending_syscall == Some((nr, args)) {
+            self.pending_syscall = None;
+            let result = self.private_inject(task, nr, args).await?;
+            let task = self.assume_stopped();
+            set_ret(
+                &task,
+                result.unwrap_or_else(|errno| -(errno.into_raw() as i64)) as u64,
+            )?;
+            return Ok(result);
+        }
+
+        match self.pending_syscall.take() {
+            Some(original) if original == (nr, args) => {
+                // The callback is cancelled next. Its final resume still owns
+                // execution of this original syscall; no second skip is due.
+                Ok(Ok(0))
+            }
+            Some(_) => self.private_inject(task, nr, args).await,
+            None => self.untraced_syscall(task, nr, args).await,
+        }
+    }
+
+    /// Get a ptrace stub which can do ptrace operations
+    // Assumption: Task is in stopped state as long as we have a valid
+    // reference to `TracedTask`.
+    fn assume_stopped(&self) -> Stopped {
+        Stopped::new_unchecked(self.tid())
+    }
+
+    async fn notify_gdb_stop(&self, reason: StopReason) -> Result<(), TraceError> {
+        if !self.attached_by_gdb {

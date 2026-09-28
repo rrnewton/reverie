@@ -1,0 +1,6 @@
+Running as unit: kvm-panic-consumer-test-exec-cleanup-1-3955084.service
+          Finished with result: success
+Main processes terminated with: code=exited, status=0/SUCCESS
+               Service runtime: 176ms
+             CPU time consumed: 14ms
+                   Memory peak: 8M (swap: 0B)

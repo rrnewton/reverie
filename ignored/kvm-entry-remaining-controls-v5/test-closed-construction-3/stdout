@@ -1,0 +1,6 @@
+
+running 1 test
+test vm::tests::entry_construction_tests::refused_real_thread_spawn_preserves_then_retires_unentered_participant ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.07s
+

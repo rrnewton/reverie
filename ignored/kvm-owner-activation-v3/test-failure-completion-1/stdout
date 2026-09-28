@@ -1,0 +1,13 @@
+
+running 8 tests
+test failure::tests::completion_keeps_distinct_shared_cleanup_causes_and_first_worker_identity ... ok
+test failure::tests::completion_promotes_joined_worker_cause_without_duplicate_diagnostic ... ok
+test failure::tests::concurrent_publishers_pair_first_typed_cause_with_first_terminal_event ... ok
+test failure::tests::independent_failure_subscribers_wake_before_and_after_publication ... ok
+test failure::tests::local_failure_wake_waits_for_synchronous_tool_terminal_transition ... ok
+test failure::tests::process_failure_subscriptions_preserve_fork_and_thread_ownership ... ok
+test failure::tests::refused_host_spawn_returns_exact_initialized_owner ... ok
+test failure::tests::repeated_secondary_entry_snapshots_report_once_without_losing_late_cleanup ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 648 filtered out; finished in 0.10s
+
