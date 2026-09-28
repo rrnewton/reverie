@@ -421,6 +421,65 @@ thread_local! {
     static EXIT_RESUME_CONTROL: std::cell::RefCell<Option<Arc<ExitResumeControl>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Test-only: makes the next exit-stop resume in `finish_ordinary_terminal`
+/// skip the retirement of the stops queued before that exit stop, so a
+/// genuinely stale stop reaches the non-exit arm. It changes which capability
+/// issues the one real `PTRACE_CONT`; it fabricates no status.
+#[cfg(test)]
+#[derive(Default)]
+struct ExitResumeRetirementBypass {
+    armed: AtomicBool,
+    bypassed: StdMutex<Option<Pid>>,
+}
+#[cfg(test)]
+thread_local! {
+    static EXIT_RESUME_RETIREMENT_BYPASS: std::cell::RefCell<Option<Arc<ExitResumeRetirementBypass>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test-only: holds the terminal path of the target TID after its exit-stop
+/// resume, before its next wait, until the notifier has queued a real
+/// PTRACE_EVENT_EXEC stop for it. A fatal signal sent after that lands after
+/// the replacement image's exec stop was reported (interleaving X). With
+/// `hold_for_release` the path stays held until the test sets `release`.
+/// `terminal` is a diagnostics readback of the held generation. It issues no
+/// ptrace request and fabricates no status.
+#[cfg(test)]
+#[derive(Default)]
+struct ExecReportHold {
+    target: std::sync::atomic::AtomicUsize,
+    hold_for_release: bool,
+    entered: AtomicBool,
+    release: AtomicBool,
+    terminal: StdMutex<Option<TerminalCleanup>>,
+}
+#[cfg(test)]
+thread_local! {
+    static EXEC_REPORT_HOLD: std::cell::RefCell<Option<Arc<ExecReportHold>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+async fn hold_until_exec_reported_for_test(running: &Running, terminal: &TerminalCleanup) {
+    let Some(hold) = EXEC_REPORT_HOLD.with(|slot| slot.borrow().clone()) else {
+        return;
+    };
+    let pid = running.pid();
+    if hold.target.load(Ordering::SeqCst) != pid.as_raw() as usize
+        || hold.entered.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    let exec_stop = (libc::PTRACE_EVENT_EXEC << 16) | (libc::SIGTRAP << 8) | 0x7f;
+    while !terminal.queued_raw_statuses().contains(&exec_stop) {
+        tokio::task::yield_now().await;
+    }
+    record_fatal_phase_for_test(|| format!("exec report held: tid={pid}"));
+    *hold.terminal.lock().unwrap() = Some(running.terminal_cleanup());
+    hold.entered.store(true, Ordering::SeqCst);
+    while hold.hold_for_release && !hold.release.load(Ordering::SeqCst) {
+        tokio::task::yield_now().await;
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("actual exec for {pid} from {former} has no retained preceding EXIT event status")]
 struct ExitEventStatusUnavailable {
@@ -551,6 +610,8 @@ async fn finish_ordinary_terminal(
 ) -> OrdinaryTerminal {
     let mut current = stopped;
     let mut exit_status = None;
+    // Whether this path has already failed the session for a non-exit stop.
+    let mut unexpected_stop_failed = false;
     #[cfg(test)]
     record_fatal_phase_for_test(|| format!("finish_ordinary_terminal entered: {current:?}"));
     loop {
@@ -596,6 +657,12 @@ async fn finish_ordinary_terminal(
                                 // superseded capability and transfer this same
                                 // generation to one retained wait; only its
                                 // actual terminal/Exec result can settle it.
+                                // No stop queued before this exit stop can be
+                                // popped by that wait, for one of two reasons.
+                                // On the exit future's marked capability, the
+                                // ESRCH has already retired them. On a queued
+                                // exit stop popped from the FIFO (below), the
+                                // wait consumed them in order before popping it.
                                 drop(stopped);
                                 break zombie.wait_owned();
                             }
@@ -604,6 +671,19 @@ async fn finish_ordinary_terminal(
                                 continue;
                             }
                         }
+                    }
+                    #[cfg(test)]
+                    if let Some(bypass) =
+                        EXIT_RESUME_RETIREMENT_BYPASS.with(|slot| slot.borrow().clone())
+                        && bypass.armed.swap(false, Ordering::SeqCst)
+                    {
+                        // GETEVENTMSG has just read this exact tracee's exit
+                        // stop. An unmarked capability for the same
+                        // generation resumes it without retiring its prefix.
+                        let pid = stopped.pid();
+                        stopped = Stopped::try_new_current_unchecked(pid)
+                            .expect("test bypass joins the registered generation");
+                        *bypass.bypassed.lock().unwrap() = Some(pid);
                     }
                     #[cfg(test)]
                     let resumed_pid = stopped.pid();
@@ -621,12 +701,18 @@ async fn finish_ordinary_terminal(
                         Ok(running) => {
                             // The sole capability has made the transition.
                             held.lock().unwrap().take();
+                            #[cfg(test)]
+                            hold_until_exec_reported_for_test(&running, terminal).await;
                             break running.wait_owned();
                         }
                         Err((retained, Errno::ESRCH)) => {
                             // A real group-fatal signal may advance this EXIT
                             // after GETEVENTMSG and before CONT. Keep its sole
                             // generation owner; ESRCH itself supplies no status.
+                            // As on success, the wait cannot pop a stop queued
+                            // before the exit stop: a marked capability's ESRCH
+                            // retired them, and for a queued exit stop popped
+                            // from the FIFO they were consumed before it.
                             break retained.wait_owned();
                         }
                         Err((retained, error)) => {
@@ -649,95 +735,140 @@ async fn finish_ordinary_terminal(
                 return future::pending().await;
             }
         };
-        let (state, receipt) = loop {
-            match (&mut wait).await {
-                // The notifier publishes the EXIT stop out of band, so a stop
-                // queued before it can still be at the FIFO front. The tracee
-                // left that stop to reach EXIT (a group exit's SIGKILL wakes
-                // it), so wait again without resuming it.
-                Ok(Wait::Stopped(stale, event))
-                    if event != Event::Exit && !matches!(event, Event::Exec(_)) =>
-                {
-                    wait = stale.wait_owned();
+        current = loop {
+            let (state, receipt) = loop {
+                match (&mut wait).await {
+                    Ok(state) => break (state, session.ordinary_receipt()),
+                    Err(error) => session.retry_after(anyhow::Error::new(error).into()).await,
                 }
-                Ok(state) => break (state, session.ordinary_receipt()),
-                Err(error) => session.retry_after(anyhow::Error::new(error).into()).await,
+            };
+            match state {
+                Wait::Exited(pid, status) => {
+                    #[cfg(test)]
+                    pause_callback_exit_for_test(session, pid, Some(status)).await;
+                    #[cfg(not(test))]
+                    let _ = pid;
+                    retire_ordinary_terminal(terminal, held).await;
+                    return OrdinaryTerminal::Exited(status, receipt);
+                }
+                Wait::Stopped(stopped, event) => {
+                    if let Event::Exec(former) = event {
+                        #[cfg(test)]
+                        EXIT_PAYLOAD_CONTROL.with(|slot| {
+                            if let Some(control) = slot.borrow().as_ref() {
+                                let mut payload = control.payload.lock().unwrap();
+                                if payload.is_none() {
+                                    *payload = Some((
+                                        stopped.pid(),
+                                        former,
+                                        exit_status
+                                            .take()
+                                            .expect("test erases an actual captured EXIT payload"),
+                                    ));
+                                }
+                            }
+                        });
+                        let replaced_status = if let Some(status) = exit_status {
+                            status
+                        } else {
+                            // Retain the genuine replacement stop. Losing the old
+                            // EXIT payload cannot authorize a fabricated consuming
+                            // hook, successful completion, or a panic that drops it.
+                            *held.lock().unwrap() =
+                                Some(HeldRootStop::from_event(&stopped, &event));
+                            loop {
+                                #[cfg(test)]
+                                if let Some(status) = EXIT_PAYLOAD_CONTROL.with(|slot| {
+                                    let control = slot.borrow();
+                                    let control = control.as_ref()?;
+                                    if !control.restore_for_teardown.load(Ordering::SeqCst) {
+                                        return None;
+                                    }
+                                    let (pid, recorded_former, status) =
+                                        control.payload.lock().unwrap().expect(
+                                            "test-only restore needs its actual erased payload",
+                                        );
+                                    assert_eq!((pid, recorded_former), (stopped.pid(), former));
+                                    Some(status)
+                                }) {
+                                    break status;
+                                }
+                                session
+                                    .retry_after(
+                                        anyhow::Error::new(ExitEventStatusUnavailable {
+                                            pid: stopped.pid(),
+                                            former,
+                                        })
+                                        .into(),
+                                    )
+                                    .await;
+                            }
+                        };
+                        held.lock().unwrap().take();
+                        return OrdinaryTerminal::Exec {
+                            stopped,
+                            former,
+                            // Read from the actual preceding Exit stop, before
+                            // resuming it. Never a fabricated former-task status.
+                            replaced_status,
+                            receipt,
+                        };
+                    } else if event != Event::Exit {
+                        #[cfg(test)]
+                        record_fatal_phase_for_test(|| {
+                            format!(
+                                "finish unexpected stop: tid={}, event={event:?}, first={}",
+                                stopped.pid(),
+                                !unexpected_stop_failed
+                            )
+                        });
+                        // A stop queued before the exit stop does not reach
+                        // this arm when the exit capability's resume (or its
+                        // ESRCH) retired it, as for the stale Seccomp stop of
+                        // group_exit_ignores_stop_queued_before_exit. A
+                        // non-exit stop that does reach it was not retired:
+                        // its prefix held a status that records lifecycle
+                        // state (safeptrace's stop_records_lifecycle_state),
+                        // or the retirement was bypassed.
+                        //
+                        // The first non-exit stop fails the session and
+                        // signals the groups, once. Any later one is only
+                        // drained: the failure and the group SIGKILL already
+                        // cover it.
+                        if !unexpected_stop_failed {
+                            unexpected_stop_failed = true;
+                            session.fail(
+                                anyhow::anyhow!("unexpected ptrace terminal stop: {event:?}")
+                                    .into(),
+                            );
+                            for error in session.signal_groups() {
+                                session.retry_after(error.into()).await;
+                            }
+                        }
+                        // This stop is not an exit stop. It is never re-entered:
+                        // no GETEVENTMSG and no resume are issued on it. The
+                        // group SIGKILL above supersedes it, so only this same
+                        // generation's actual next event can settle the path.
+                        wait = stopped.wait_owned();
+                        continue;
+                    }
+                    // An exit stop reaches this ordinary wait only if it was
+                    // queued: by a synchronous wait, or by the notifier for a
+                    // second exit stop under this PID with no Exec between
+                    // (a non-leader exec's thread that a fatal signal killed
+                    // before its exec stop), or with an Exec between that the
+                    // wait retired because the fatal signal had taken the
+                    // thread out of that exec stop before it was decoded. It
+                    // is resumed like the first; only the actual terminal
+                    // status settles the path.
+                    #[cfg(test)]
+                    record_fatal_phase_for_test(|| {
+                        format!("finish queued exit stop: tid={}", stopped.pid())
+                    });
+                    break Ok(stopped);
+                }
             }
         };
-        match state {
-            Wait::Exited(pid, status) => {
-                #[cfg(test)]
-                pause_callback_exit_for_test(session, pid, Some(status)).await;
-                #[cfg(not(test))]
-                let _ = pid;
-                retire_ordinary_terminal(terminal, held).await;
-                return OrdinaryTerminal::Exited(status, receipt);
-            }
-            Wait::Stopped(stopped, event) => {
-                if let Event::Exec(former) = event {
-                    #[cfg(test)]
-                    EXIT_PAYLOAD_CONTROL.with(|slot| {
-                        if let Some(control) = slot.borrow().as_ref() {
-                            let mut payload = control.payload.lock().unwrap();
-                            if payload.is_none() {
-                                *payload = Some((
-                                    stopped.pid(),
-                                    former,
-                                    exit_status
-                                        .take()
-                                        .expect("test erases an actual captured EXIT payload"),
-                                ));
-                            }
-                        }
-                    });
-                    let replaced_status = if let Some(status) = exit_status {
-                        status
-                    } else {
-                        // Retain the genuine replacement stop. Losing the old
-                        // EXIT payload cannot authorize a fabricated consuming
-                        // hook, successful completion, or a panic that drops it.
-                        *held.lock().unwrap() = Some(HeldRootStop::from_event(&stopped, &event));
-                        loop {
-                            #[cfg(test)]
-                            if let Some(status) = EXIT_PAYLOAD_CONTROL.with(|slot| {
-                                let control = slot.borrow();
-                                let control = control.as_ref()?;
-                                if !control.restore_for_teardown.load(Ordering::SeqCst) {
-                                    return None;
-                                }
-                                let (pid, recorded_former, status) =
-                                    control.payload.lock().unwrap().expect(
-                                        "test-only restore needs its actual erased payload",
-                                    );
-                                assert_eq!((pid, recorded_former), (stopped.pid(), former));
-                                Some(status)
-                            }) {
-                                break status;
-                            }
-                            session
-                                .retry_after(
-                                    anyhow::Error::new(ExitEventStatusUnavailable {
-                                        pid: stopped.pid(),
-                                        former,
-                                    })
-                                    .into(),
-                                )
-                                .await;
-                        }
-                    };
-                    held.lock().unwrap().take();
-                    return OrdinaryTerminal::Exec {
-                        stopped,
-                        former,
-                        // Read from the actual preceding Exit stop, before
-                        // resuming it. Never a fabricated former-task status.
-                        replaced_status,
-                        receipt,
-                    };
-                }
-                current = Ok(stopped);
-            }
-        }
     }
 }
 
@@ -6707,6 +6838,836 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_nonleader_exec_displaced_hook_failure_fences_replacement() {
         ordinary_exec_owner_control(true, 0).await;
+    }
+
+    /// Clears the leader step hold on every exit path, so a failing test does
+    /// not leave it armed for a later test on this thread.
+    struct LeaderStepExitHoldGuard(Arc<crate::task::LeaderStepExitHold>);
+
+    impl LeaderStepExitHoldGuard {
+        fn arm() -> Self {
+            let hold = Arc::new(crate::task::LeaderStepExitHold::default());
+            hold.armed.store(true, Ordering::SeqCst);
+            crate::task::LEADER_STEP_EXIT_HOLD.with(|slot| *slot.borrow_mut() = Some(hold.clone()));
+            Self(hold)
+        }
+
+        /// The hold's precondition: the leader's post-clone step stop was
+        /// queued, and its exit stop was published while it stayed queued.
+        fn assert_step_stop_was_queued_before_exit(&self) {
+            assert!(
+                !self.0.armed.load(Ordering::SeqCst),
+                "leader post-clone step never reached the hold"
+            );
+            assert!(
+                self.0.queued_step_is_trap.load(Ordering::SeqCst),
+                "leader step stop was not queued when the hold began: {:?}",
+                self.0.queued_step.lock().unwrap()
+            );
+            assert!(
+                self.0.exit_published.load(Ordering::SeqCst),
+                "leader exit stop was not published during the hold"
+            );
+        }
+    }
+
+    impl Drop for LeaderStepExitHoldGuard {
+        fn drop(&mut self) {
+            crate::task::LEADER_STEP_EXIT_HOLD.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    /// T6 for https://github.com/rrnewton/reverie/issues/686. The leader's
+    /// post-clone step stop (0x57f) is held in the FIFO until the nonleader
+    /// exec's zap has moved the leader into its exit stop, so the exit future
+    /// wins in `drive_ordinary` with the dead step stop still queued ahead of
+    /// the Exec. Before the fix the exit owner's next wait popped that step
+    /// stop and failed "unexpected ptrace terminal stop: Signal(SIGTRAP)".
+    /// Now the run Completes with every check of `ordinary_exec_owner_control`,
+    /// including exactly one on_exit_thread for the old leader's state with
+    /// Exited(0), and exactly one stop was retired.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_exec_retires_leader_step_stop_queued_before_exit() {
+        let hold = LeaderStepExitHoldGuard::arm();
+        ordinary_exec_owner_control(false, 0).await;
+        hold.assert_step_stop_was_queued_before_exit();
+        let terminal = hold
+            .0
+            .terminal
+            .lock()
+            .unwrap()
+            .take()
+            .expect("held leader generation");
+        assert_eq!(terminal.retired_stops_before_exit(), 1);
+    }
+
+    /// The ESRCH disposition of the same exit stop. The held step stop is
+    /// queued ahead of the leader's exit stop as in T6, and a real SIGKILL
+    /// reaches the group while the exit owner sits between GETEVENTMSG and
+    /// its resume. The resume gets a real ESRCH. Before the fix that left the
+    /// step stop queued, and the retained wait popped it and failed
+    /// "unexpected ptrace terminal stop: Signal(SIGTRAP)". Now exactly that
+    /// one stop is retired and the run Completes with the real
+    /// Signaled(SIGKILL) that the kernel reported after it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_exec_killed_exit_resume_retires_leader_step_stop() {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = None);
+                FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let hold = LeaderStepExitHoldGuard::arm();
+        let control = Arc::new(ExitResumeControl::default());
+        let _clear = Clear;
+        EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = Some(control.clone()));
+        FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = Some((Vec::new(), 0)));
+        let tracer = spawn_fn_with_config::<ExecOwnerTool, _>(
+            || {
+                std::thread::spawn(|| {
+                    let args = [
+                        c"/bin/sh".as_ptr(),
+                        c"-c".as_ptr(),
+                        c"printf survived".as_ptr(),
+                        std::ptr::null(),
+                    ];
+                    unsafe {
+                        libc::execv(args[0], args.as_ptr());
+                        libc::_exit(127);
+                    }
+                });
+                loop {
+                    unsafe {
+                        libc::pause();
+                    }
+                }
+            },
+            (false, 1),
+            true,
+        )
+        .await
+        .unwrap();
+        let root = tracer.guest_pid();
+        control
+            .target
+            .store(root.as_raw() as usize, Ordering::SeqCst);
+        let identity = untraced_process_identity(root);
+        let termination = tracer.termination_handle().unwrap();
+        let log = tracer.gref.0.clone();
+        let mut completion = Box::pin(tracer.wait_with_output_completion());
+        let gated =
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
+                while !control.entered.load(Ordering::SeqCst) {
+                    tokio::select! {
+                        _ = &mut completion => return false,
+                        () = tokio::task::yield_now() => {}
+                    }
+                }
+                true
+            })
+            .await;
+        let killed = if gated == Ok(true) {
+            // The leader's exit stop from the exec's zap carries status 0.
+            assert_eq!(control.payload.load(Ordering::SeqCst), 0);
+            identity.send_signal(Signal::SIGKILL).unwrap();
+            // The group has exited once the leader's pidfd is readable, so
+            // the resume below meets a real ESRCH.
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
+                loop {
+                    let mut query = libc::pollfd {
+                        fd: identity.pidfd.as_ref().unwrap().as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    let observed = unsafe { libc::poll(&mut query, 1, 0) };
+                    assert!(observed >= 0);
+                    if observed == 1 && query.revents & libc::POLLIN != 0 {
+                        break true;
+                    }
+                    tokio::select! {
+                        _ = &mut completion => break false,
+                        () = tokio::task::yield_now() => {}
+                    }
+                }
+            })
+            .await
+        } else {
+            Ok(false)
+        };
+        control.release.store(true, Ordering::SeqCst);
+        let result = if killed == Ok(true) {
+            Some(
+                tokio::time::timeout(
+                    deadline.saturating_duration_since(Instant::now()),
+                    &mut completion,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let resumes = control.results.lock().unwrap().clone();
+        let done = match result {
+            Some(Ok(ToolRunOutcome::Complete(done))) => done,
+            other => {
+                let description = match &other {
+                    None => format!("gate not reached: gated={gated:?}, killed={killed:?}"),
+                    Some(Ok(ToolRunOutcome::CleanupPending(pending))) => {
+                        format!("Pending({:?})", pending.failure())
+                    }
+                    Some(Ok(ToolRunOutcome::UnsupportedBackend(_))) => {
+                        "UnsupportedBackend".to_owned()
+                    }
+                    Some(Ok(ToolRunOutcome::Complete(_))) => unreachable!(),
+                    Some(Err(error)) => format!("Timeout({error})"),
+                };
+                let rescue_deadline = Instant::now() + Duration::from_secs(2);
+                termination.terminate(Error::Tool(anyhow::Error::new(TestDeadline)));
+                let signal = identity.send_signal(Signal::SIGKILL);
+                let rescued = match other {
+                    Some(Ok(ToolRunOutcome::CleanupPending(pending))) => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        pending.resume_cleanup(),
+                    )
+                    .await
+                    .is_ok(),
+                    _ => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        &mut completion,
+                    )
+                    .await
+                    .is_ok(),
+                };
+                panic!(
+                    "killed exit-resume run did not Complete within 3s: {description}; resumes={resumes:?}, rescue signal={signal:?}, rescued={rescued}"
+                );
+            }
+        };
+        assert_reaped("killed exit-resume root", root);
+        hold.assert_step_stop_was_queued_before_exit();
+        let status = ExitStatus::Signaled(Signal::SIGKILL, false);
+        let output = done.result.expect("the killed exit-resume run failed");
+        assert_eq!(output.status, status);
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        let leader_resumes: Vec<_> = resumes
+            .iter()
+            .filter(|(pid, _)| *pid == root)
+            .cloned()
+            .collect();
+        assert_eq!(
+            leader_resumes,
+            vec![(root, Err(Errno::ESRCH))],
+            "the exit owner's one resume did not meet the real ESRCH"
+        );
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.iter().all(|event| event.0 != 1),
+            "the killed exec reached post-exec: {events:?}"
+        );
+        let (records, omitted) = FATAL_REAP_CHRONOLOGY
+            .with(|slot| slot.borrow().clone())
+            .expect("chronology installed");
+        assert_eq!(omitted, 0, "chronology truncated: {records:?}");
+        assert!(
+            records
+                .iter()
+                .all(|record| !record.starts_with("finish unexpected stop:")),
+            "a stale stop reached the non-exit arm: {records:?}"
+        );
+        let terminal = hold
+            .0
+            .terminal
+            .lock()
+            .unwrap()
+            .take()
+            .expect("held leader generation");
+        assert_eq!(terminal.retired_stops_before_exit(), 1);
+        assert_eq!(terminal.observed_exit_status(), Ok(Some(status)));
+        assert!(terminal.queued_raw_statuses().is_empty());
+    }
+
+    /// Interleaving X in a run that has not failed: a real SIGKILL from
+    /// outside reaches the group after the replacement image's exec stop was
+    /// reported and before the leader's terminal path decoded that Exec. The
+    /// test holds the path until the exec stop is queued, sends the SIGKILL,
+    /// and releases the path only once the notifier has published the new
+    /// image's exit stop, so the Exec decode's GETEVENTMSG reads that exit
+    /// stop's message (the exit code 9) instead of a former TID. The wait
+    /// retires the dead Exec, the exit stop behind it is resumed once, the
+    /// former TID's owner is retired as lost, and the run Completes with the
+    /// real Signaled(SIGKILL). Before the fix the Exec decoded as a former
+    /// TID of 9 and the run stayed Pending; without the lost-former record
+    /// on the ordinary exit-wait path, the leader's thread join would wait
+    /// for the former thread's owner forever.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_exec_killed_after_exec_report_completes_with_the_kill() {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                EXEC_REPORT_HOLD.with(|slot| *slot.borrow_mut() = None);
+                EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = None);
+                FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let hold = Arc::new(ExecReportHold {
+            hold_for_release: true,
+            ..ExecReportHold::default()
+        });
+        // Target 0 matches no TID, so this control only records resumes.
+        let resumes = Arc::new(ExitResumeControl::default());
+        let _clear = Clear;
+        EXEC_REPORT_HOLD.with(|slot| *slot.borrow_mut() = Some(hold.clone()));
+        EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = Some(resumes.clone()));
+        FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = Some((Vec::new(), 0)));
+        let tracer = spawn_fn_with_config::<ExecOwnerTool, _>(
+            || {
+                std::thread::spawn(|| {
+                    let args = [
+                        c"/bin/sh".as_ptr(),
+                        c"-c".as_ptr(),
+                        c"printf survived".as_ptr(),
+                        std::ptr::null(),
+                    ];
+                    unsafe {
+                        libc::execv(args[0], args.as_ptr());
+                        libc::_exit(127);
+                    }
+                });
+                loop {
+                    unsafe {
+                        libc::pause();
+                    }
+                }
+            },
+            (false, 1),
+            true,
+        )
+        .await
+        .unwrap();
+        let root = tracer.guest_pid();
+        hold.target.store(root.as_raw() as usize, Ordering::SeqCst);
+        let identity = untraced_process_identity(root);
+        let termination = tracer.termination_handle().unwrap();
+        let log = tracer.gref.0.clone();
+        let mut completion = Box::pin(tracer.wait_with_output_completion());
+        let gated =
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
+                while !hold.entered.load(Ordering::SeqCst) {
+                    tokio::select! {
+                        _ = &mut completion => return false,
+                        () = tokio::task::yield_now() => {}
+                    }
+                }
+                true
+            })
+            .await;
+        let observed = if gated == Ok(true) {
+            identity.send_signal(Signal::SIGKILL).unwrap();
+            // The SIGKILL takes the new image out of its exec stop into its
+            // exit stop; wait until the notifier has published that stop.
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), async {
+                loop {
+                    if hold
+                        .terminal
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .expect("held leader generation")
+                        .exit_stop_observed()
+                    {
+                        break true;
+                    }
+                    tokio::select! {
+                        _ = &mut completion => break false,
+                        () = tokio::task::yield_now() => {}
+                    }
+                }
+            })
+            .await
+        } else {
+            Ok(false)
+        };
+        hold.release.store(true, Ordering::SeqCst);
+        let result = if observed == Ok(true) {
+            Some(
+                tokio::time::timeout(
+                    deadline.saturating_duration_since(Instant::now()),
+                    &mut completion,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let done = match result {
+            Some(Ok(ToolRunOutcome::Complete(done))) => done,
+            other => {
+                let description = match &other {
+                    None => format!("gate not reached: gated={gated:?}, observed={observed:?}"),
+                    Some(Ok(ToolRunOutcome::CleanupPending(pending))) => {
+                        format!("Pending({:?})", pending.failure())
+                    }
+                    Some(Ok(ToolRunOutcome::UnsupportedBackend(_))) => {
+                        "UnsupportedBackend".to_owned()
+                    }
+                    Some(Ok(ToolRunOutcome::Complete(_))) => unreachable!(),
+                    Some(Err(error)) => format!("Timeout({error})"),
+                };
+                let records = FATAL_REAP_CHRONOLOGY.with(|slot| slot.borrow().clone());
+                let rescue_deadline = Instant::now() + Duration::from_secs(2);
+                termination.terminate(Error::Tool(anyhow::Error::new(TestDeadline)));
+                let signal = identity.send_signal(Signal::SIGKILL);
+                let rescued = match other {
+                    Some(Ok(ToolRunOutcome::CleanupPending(pending))) => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        pending.resume_cleanup(),
+                    )
+                    .await
+                    .is_ok(),
+                    _ => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        &mut completion,
+                    )
+                    .await
+                    .is_ok(),
+                };
+                panic!(
+                    "run killed after its exec report did not Complete within 3s: {description}; rescue signal={signal:?}, rescued={rescued}, records={records:?}"
+                );
+            }
+        };
+        assert_reaped("root killed after its exec report", root);
+        let status = ExitStatus::Signaled(Signal::SIGKILL, false);
+        let output = done
+            .result
+            .expect("the run killed after its exec report failed");
+        assert_eq!(output.status, status);
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        let leader_resumes: Vec<_> = resumes
+            .results
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(pid, _)| *pid == root)
+            .cloned()
+            .collect();
+        assert_eq!(
+            leader_resumes,
+            vec![(root, Ok(())), (root, Ok(()))],
+            "the leader's two exit stops were not each resumed once"
+        );
+        let events = log.lock().unwrap().clone();
+        assert!(
+            events.iter().all(|event| event.0 != 1),
+            "the killed exec reached post-exec: {events:?}"
+        );
+        let started: Vec<Pid> = events
+            .iter()
+            .filter(|event| event.0 == 0 && event.1 != root)
+            .map(|event| event.1)
+            .collect();
+        assert_eq!(started.len(), 1, "guest thread starts: {events:?}");
+        let former = started[0];
+        assert!(
+            events
+                .iter()
+                .all(|event| !(event.0 == 2 && event.2 == former.as_raw() as usize)),
+            "on_exit_thread ran for the lost former: {events:?}"
+        );
+        let (records, omitted) = FATAL_REAP_CHRONOLOGY
+            .with(|slot| slot.borrow().clone())
+            .expect("chronology installed");
+        assert_eq!(omitted, 0, "chronology truncated: {records:?}");
+        assert!(
+            records.contains(&format!("exec report held: tid={root}")),
+            "the exec-report hold was not reached: {records:?}"
+        );
+        assert!(
+            records
+                .iter()
+                .all(|record| !record.starts_with("finish unexpected stop:")),
+            "a non-exit stop reached the non-exit arm: {records:?}"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| **record == format!("finish queued exit stop: tid={root}"))
+                .count(),
+            1,
+            "the exit stop behind the dead Exec was not resumed once: {records:?}"
+        );
+        let lost: Vec<&String> = records
+            .iter()
+            .filter(|record| record.starts_with("lost former retired: tid="))
+            .collect();
+        assert_eq!(
+            lost,
+            vec![&format!("lost former retired: tid={former}")],
+            "the exec thread's owner was not retired as lost: {records:?}"
+        );
+        let terminal = hold
+            .terminal
+            .lock()
+            .unwrap()
+            .take()
+            .expect("held leader generation");
+        assert_eq!(terminal.retired_dead_exec_stops(), 1);
+        assert_eq!(terminal.observed_exit_status(), Ok(Some(status)));
+        assert!(terminal.queued_raw_statuses().is_empty());
+    }
+
+    /// A genuinely unexpected non-exit stop after the exit-stop resume: the
+    /// same held step stop, with the exit resume forced through a capability
+    /// that does not retire it. The session fails exactly once with the
+    /// unchanged message, and the non-exit stop is never re-entered: the
+    /// leader's exit stop gets its one GETEVENTMSG and its one resume, and
+    /// nothing more is issued for that TID by the terminal path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_unexpected_nonexit_stop_after_exit_resume_fails_once_without_reentry() {
+        unexpected_nonexit_stops_after_exit_resume(false, false).await;
+    }
+
+    /// As above with two stale stops: the hold single-steps the leader once
+    /// more, so two real step stops are queued ahead of the exec. Both reach
+    /// the non-exit arm; only the first fails the session and signals the
+    /// groups, the second is only drained. Neither gets a GETEVENTMSG or a
+    /// resume.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_two_unexpected_nonexit_stops_after_exit_resume_fail_once_without_reentry() {
+        unexpected_nonexit_stops_after_exit_resume(true, false).await;
+    }
+
+    /// The single-stale-stop run with interleaving X forced: the leader's
+    /// terminal path holds after its exit-stop resume until the notifier has
+    /// queued the replacement image's real exec stop, so the group SIGKILL
+    /// that the unexpected stop triggers lands after that exec stop was
+    /// reported. Before the fix the wait decoding that Exec read the exit
+    /// stop's message as a former TID ("actual exec former 9 has no
+    /// same-process initialized owner"), or met ESRCH ("owned ptrace wait
+    /// observed death during decoding"), and the run stayed Pending. Now the
+    /// dead Exec is retired, the exit stop behind it is resumed once, and
+    /// the run Completes with the one unexpected-stop failure.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_unexpected_nonexit_stop_with_exec_reported_before_the_kill_fails_once() {
+        unexpected_nonexit_stops_after_exit_resume(false, true).await;
+    }
+
+    /// As above with two stale stops.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_two_unexpected_nonexit_stops_with_exec_reported_before_the_kill_fail_once() {
+        unexpected_nonexit_stops_after_exit_resume(true, true).await;
+    }
+
+    /// The interleavings of the group SIGKILL with the exec thread, told
+    /// apart by what the leader's notifier generation recorded.
+    #[derive(Debug, PartialEq)]
+    enum KillInterleaving {
+        /// Lands during de_thread: the exec thread dies under its former TID.
+        DuringDeThread,
+        /// Lands after de_thread, before the exec stop: a second exit stop
+        /// under the leader's PID with no Exec between.
+        BeforeExecStop,
+        /// Lands after the exec stop was reported: the Exec is retired as
+        /// dead and the exit stop behind it is resumed.
+        AfterExecStop,
+    }
+
+    async fn unexpected_nonexit_stops_after_exit_resume(
+        second_step: bool,
+        force_exec_report: bool,
+    ) {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                EXEC_REPORT_HOLD.with(|slot| *slot.borrow_mut() = None);
+                EXIT_RESUME_RETIREMENT_BYPASS.with(|slot| *slot.borrow_mut() = None);
+                EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = None);
+                FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let hold = LeaderStepExitHoldGuard::arm();
+        let words = FatalWords::new();
+        let release = if second_step { words.0 as usize } else { 0 };
+        hold.0.second_step_release.store(release, Ordering::SeqCst);
+        let bypass = Arc::new(ExitResumeRetirementBypass::default());
+        bypass.armed.store(true, Ordering::SeqCst);
+        // Target 0 matches no TID, so this control only records resumes.
+        let resumes = Arc::new(ExitResumeControl::default());
+        let exec_hold = Arc::new(ExecReportHold::default());
+        let _clear = Clear;
+        if force_exec_report {
+            EXEC_REPORT_HOLD.with(|slot| *slot.borrow_mut() = Some(exec_hold.clone()));
+        }
+        EXIT_RESUME_RETIREMENT_BYPASS.with(|slot| *slot.borrow_mut() = Some(bypass.clone()));
+        EXIT_RESUME_CONTROL.with(|slot| *slot.borrow_mut() = Some(resumes.clone()));
+        FATAL_REAP_CHRONOLOGY.with(|slot| *slot.borrow_mut() = Some((Vec::new(), 0)));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let tracer = spawn_fn_with_config::<ExecOwnerTool, _>(
+            move || {
+                std::thread::spawn(move || {
+                    if release != 0 {
+                        // Wait until the hold has queued the second step stop.
+                        let word = unsafe { &*(release as *const std::sync::atomic::AtomicUsize) };
+                        while word.load(Ordering::SeqCst) == 0 {
+                            std::hint::spin_loop();
+                        }
+                    }
+                    let args = [
+                        c"/bin/sh".as_ptr(),
+                        c"-c".as_ptr(),
+                        c"printf survived".as_ptr(),
+                        std::ptr::null(),
+                    ];
+                    unsafe {
+                        libc::execv(args[0], args.as_ptr());
+                        libc::_exit(127);
+                    }
+                });
+                loop {
+                    unsafe {
+                        libc::pause();
+                    }
+                }
+            },
+            (false, 1),
+            true,
+        )
+        .await
+        .unwrap();
+        let root = tracer.guest_pid();
+        exec_hold
+            .target
+            .store(root.as_raw() as usize, Ordering::SeqCst);
+        let identity = untraced_process_identity(root);
+        let termination = tracer.termination_handle().unwrap();
+        let log = tracer.gref.0.clone();
+        let mut completion = Box::pin(tracer.wait_with_output_completion());
+        let result = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            &mut completion,
+        )
+        .await;
+        let failure = match result {
+            Ok(ToolRunOutcome::Complete(completed)) => completed
+                .result
+                .expect_err("an unexpected terminal stop must fail the run"),
+            other => {
+                let description = match &other {
+                    Ok(ToolRunOutcome::CleanupPending(pending)) => {
+                        format!("Pending({:?})", pending.failure())
+                    }
+                    Ok(ToolRunOutcome::UnsupportedBackend(_)) => "UnsupportedBackend".to_owned(),
+                    Ok(ToolRunOutcome::Complete(_)) => unreachable!(),
+                    Err(error) => format!("Timeout({error})"),
+                };
+                let rescue_deadline = Instant::now() + Duration::from_secs(2);
+                termination.terminate(Error::Tool(anyhow::Error::new(TestDeadline)));
+                let signal = identity.send_signal(Signal::SIGKILL);
+                let rescued = match other {
+                    Ok(ToolRunOutcome::CleanupPending(pending)) => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        pending.resume_cleanup(),
+                    )
+                    .await
+                    .is_ok(),
+                    _ => tokio::time::timeout(
+                        rescue_deadline.saturating_duration_since(Instant::now()),
+                        &mut completion,
+                    )
+                    .await
+                    .is_ok(),
+                };
+                panic!(
+                    "unexpected-stop run did not Complete within 3s: {description}; rescue signal={signal:?}, rescued={rescued}"
+                );
+            }
+        };
+        assert_reaped("unexpected-stop root", root);
+        hold.assert_step_stop_was_queued_before_exit();
+        assert_eq!(*bypass.bypassed.lock().unwrap(), Some(root));
+        let messages: Vec<String> = std::iter::once(failure.primary().to_string())
+            .chain(
+                failure
+                    .secondary()
+                    .iter()
+                    .map(|entry| entry.error().to_string()),
+            )
+            .collect();
+        assert_eq!(
+            messages[0], "unexpected ptrace terminal stop: Signal(SIGTRAP)",
+            "{failure:?}"
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.contains("unexpected ptrace terminal stop"))
+                .count(),
+            1,
+            "session failed more than once for the unexpected stop: {failure:?}"
+        );
+        let leader_resumes: Vec<_> = resumes
+            .results
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(pid, _)| *pid == root)
+            .cloned()
+            .collect();
+        let (records, omitted) = FATAL_REAP_CHRONOLOGY
+            .with(|slot| slot.borrow().clone())
+            .expect("chronology installed");
+        assert_eq!(omitted, 0, "chronology truncated: {records:?}");
+        // The group SIGKILL races the exec thread. If it lands during
+        // de_thread, that thread dies under its former TID and the leader
+        // reports one exit stop. If it lands after de_thread gave the thread
+        // the leader's PID but before its exec stop, the thread skips that
+        // stop and reports a second actual exit stop under the leader's PID,
+        // with no Exec between. The notifier queues it, the terminal path
+        // resumes it, and the former TID's owner is retired as lost. If it
+        // lands after the exec stop was reported, the thread leaves that stop
+        // for its exit stop before the Exec is decoded: the wait retires the
+        // dead Exec, the exit stop behind it reaches the same wait and is
+        // resumed, and the former TID's owner is retired as lost. In every
+        // case no non-exit stop is resumed; each exit stop is resumed exactly
+        // once.
+        let queued_exit = format!("finish queued exit stop: tid={root}");
+        let lost: Vec<&String> = records
+            .iter()
+            .filter(|record| record.starts_with("lost former retired: tid="))
+            .collect();
+        let queued = records
+            .iter()
+            .filter(|record| **record == queued_exit)
+            .count();
+        let leader_terminal = hold
+            .0
+            .terminal
+            .lock()
+            .unwrap()
+            .take()
+            .expect("held leader generation");
+        let dead_execs = leader_terminal.retired_dead_exec_stops();
+        let interleaving = match (queued, dead_execs) {
+            (0, 0) => KillInterleaving::DuringDeThread,
+            (1, 0) => KillInterleaving::BeforeExecStop,
+            (1, 1) => KillInterleaving::AfterExecStop,
+            (queued, dead) => panic!(
+                "{queued} queued exit stops and {dead} retired dead Execs for the leader: {records:?}"
+            ),
+        };
+        // Shown by --show-output: which interleaving this run exercised.
+        eprintln!("kill interleaving: {interleaving:?}");
+        if force_exec_report {
+            assert_eq!(
+                interleaving,
+                KillInterleaving::AfterExecStop,
+                "the held exec report did not force X: {records:?}"
+            );
+            assert!(
+                records.contains(&format!("exec report held: tid={root}")),
+                "the exec-report hold was not reached: {records:?}"
+            );
+        }
+        // The exec thread is the one guest thread other than the leader.
+        let events = log.lock().unwrap().clone();
+        let started: Vec<Pid> = events
+            .iter()
+            .filter(|event| event.0 == 0 && event.1 != root)
+            .map(|event| event.1)
+            .collect();
+        assert_eq!(started.len(), 1, "guest thread starts: {events:?}");
+        let former = started[0];
+        assert!(
+            events.iter().all(|event| event.0 != 1),
+            "the killed exec reached post-exec: {events:?}"
+        );
+        // on_exit_thread for the exec thread's own state: only when it died
+        // under its former TID. A lost former has no status and no hook.
+        let former_exit_hooks = events
+            .iter()
+            .filter(|event| event.0 == 2 && event.2 == former.as_raw() as usize)
+            .count();
+        if interleaving == KillInterleaving::DuringDeThread {
+            assert_eq!(
+                leader_resumes,
+                vec![(root, Ok(()))],
+                "the terminal path resumed the leader's non-exit stop: {records:?}"
+            );
+            assert!(
+                lost.is_empty(),
+                "former lost with one exit stop: {records:?}"
+            );
+            assert_eq!(
+                former_exit_hooks, 1,
+                "exec thread that died under its own TID: {events:?}"
+            );
+        } else {
+            assert_eq!(
+                leader_resumes,
+                vec![(root, Ok(())), (root, Ok(()))],
+                "the leader's two exit stops were not each resumed once: {records:?}"
+            );
+            assert_eq!(
+                lost,
+                vec![&format!("lost former retired: tid={former}")],
+                "second exit stop, no lost former for the exec thread: {records:?}"
+            );
+            assert!(
+                resumes
+                    .results
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(pid, _)| *pid != former),
+                "the lost former's TID was resumed: {records:?}"
+            );
+            assert_eq!(
+                former_exit_hooks, 0,
+                "on_exit_thread ran for a lost former: {events:?}"
+            );
+        }
+        assert!(leader_terminal.queued_raw_statuses().is_empty());
+        let prefix = format!("finish getevent: tid={root},");
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.starts_with(&prefix))
+                .count(),
+            1,
+            "GETEVENTMSG issued on the leader's non-exit stop: {records:?}"
+        );
+        // Each stale stop reached the non-exit arm, and only the first one
+        // failed the session.
+        let prefix = format!("finish unexpected stop: tid={root},");
+        let arm: Vec<&String> = records
+            .iter()
+            .filter(|record| record.starts_with(&prefix))
+            .collect();
+        let expected: Vec<String> = std::iter::once(true)
+            .chain(second_step.then_some(false))
+            .map(|first| format!("{prefix} event=Signal(SIGTRAP), first={first}"))
+            .collect();
+        assert_eq!(
+            arm,
+            expected.iter().collect::<Vec<_>>(),
+            "non-exit arm visits: {records:?}"
+        );
+        if second_step {
+            assert_eq!(
+                *hold.0.second_step.lock().unwrap(),
+                Some("Ok(())".to_owned())
+            );
+            let step_stop = (libc::SIGTRAP << 8) | 0x7f;
+            assert_eq!(
+                *hold.0.queued_statuses.lock().unwrap(),
+                [step_stop, step_stop],
+                "the two real step stops were not both queued before the exec"
+            );
+        }
+        drop(words);
     }
 
     #[tokio::test(flavor = "current_thread")]
