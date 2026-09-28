@@ -435,6 +435,20 @@ pub enum TrapOnlyFailure {
         /// The (sign-extended 32-bit) syscall number.
         nr: i64,
     },
+    /// A patched site carried a syscall number that seccomp passes through
+    /// without running the filter (x86_64 335 `uretprobe` and 336 `uprobe`).
+    /// Plain ptrace runs it at the original site with no stop; the masked hop
+    /// cannot, because the slot's `syscall` would bypass the filter too, so
+    /// the run fails closed before the hop.
+    #[error(
+        "TrapOnlySeccompBypassingNumber: site {site:#x} carries syscall {nr}, which seccomp does not filter"
+    )]
+    SeccompBypassingNumber {
+        /// The patched site.
+        site: u64,
+        /// The (sign-extended 32-bit) syscall number.
+        nr: i64,
+    },
     /// At the syscall-exit stop of the masked hop the instruction pointer was
     /// neither the hop target's return address nor, for `rt_sigreturn`, the
     /// signal frame's saved instruction pointer (P2 spec O4, H4). Rewriting
