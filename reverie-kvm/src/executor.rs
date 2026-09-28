@@ -13184,23 +13184,64 @@ fn copy_received_control(memory: &GuestMemory, address: u64, control: &[u8]) -> 
     Ok(())
 }
 
-// Receive outputs are kernel-style copyout. Keep them separate from the
-// general write helpers, which also serve privileged/debugger memory access.
-// This does not add a whole-message permission preflight or change the
-// inherited receive header-precheck and late-right rollback policies.
-fn copy_received_header<T>(memory: &GuestMemory, address: u64, value: &T) -> i64 {
-    // SAFETY: these initialized Linux ABI headers are copied synchronously;
-    // the bounded byte view cannot outlive value.
-    let bytes = unsafe {
-        std::slice::from_raw_parts(
-            std::ptr::from_ref(value).cast::<u8>(),
-            std::mem::size_of::<T>(),
-        )
-    };
-    match memory.user().copy_to_user(address, bytes) {
-        Ok(()) => 0,
-        Err(_) => negative_errno(libc::EFAULT),
+// Linux writes receive result scalars, not the input pointers or C padding.
+// Keep every address addition checked and every scalar store permission-aware.
+fn received_field_address(address: u64, offset: usize) -> Result<u64, i64> {
+    address
+        .checked_add(offset as u64)
+        .ok_or_else(|| negative_errno(libc::EFAULT))
+}
+
+fn copy_received_name(
+    memory: &GuestMemory,
+    header_address: u64,
+    name_address: u64,
+    name: &[u8],
+    returned_length: libc::socklen_t,
+) -> Result<(), i64> {
+    if name_address == 0 {
+        return Ok(());
     }
+    let length_address = received_field_address(
+        header_address,
+        std::mem::offset_of!(libc::msghdr, msg_namelen),
+    )?;
+    // move_addr_to_user reads this field after payload/control copyout. It can
+    // have been overwritten since the original input header was imported.
+    let capacity: libc::c_int = read_guest_struct(memory, length_address)?;
+    if capacity < 0 {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    memory
+        .user()
+        .put_user_i32(length_address, returned_length as libc::c_int)
+        .map_err(|_| negative_errno(libc::EFAULT))?;
+    let copied = (capacity as usize).min(returned_length as usize);
+    let bytes = name
+        .get(..copied)
+        .ok_or_else(|| negative_errno(libc::EFAULT))?;
+    memory
+        .user()
+        .copy_to_user(name_address, bytes)
+        .map_err(|_| negative_errno(libc::EFAULT))
+}
+
+fn copy_received_header_outputs(
+    memory: &GuestMemory,
+    address: u64,
+    message: &libc::msghdr,
+) -> Result<(), i64> {
+    let flags = received_field_address(address, std::mem::offset_of!(libc::msghdr, msg_flags))?;
+    memory
+        .user()
+        .put_user_i32(flags, message.msg_flags)
+        .map_err(|_| negative_errno(libc::EFAULT))?;
+    let control_length =
+        received_field_address(address, std::mem::offset_of!(libc::msghdr, msg_controllen))?;
+    memory
+        .user()
+        .put_user_u64(control_length, message.msg_controllen as u64)
+        .map_err(|_| negative_errno(libc::EFAULT))
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -13231,11 +13272,6 @@ fn recvmsg_with_table(
         Ok(message) => message,
         Err(error) => return error,
     };
-    // Validate the final header copyout before consuming a datagram.
-    if copy_received_header(memory, message_address, &message) != 0 {
-        return negative_errno(libc::EFAULT);
-    }
-
     let iov_count = message.msg_iovlen;
     if iov_count > libc::UIO_MAXIOV as usize {
         return negative_errno(libc::EMSGSIZE);
@@ -13288,7 +13324,16 @@ fn recvmsg_with_table(
         return negative_errno(libc::EFAULT);
     }
     let mut payload = vec![0u8; payload_length];
-    let mut name = vec![0u8; name_capacity];
+    // Linux collects a full sockaddr_storage before applying the output length
+    // field. A payload/control alias can change that field before name copyout.
+    let mut name = vec![
+        0u8;
+        if message.msg_name.is_null() {
+            0
+        } else {
+            std::mem::size_of::<libc::sockaddr_storage>()
+        }
+    ];
     let mut control = vec![0u8; control_capacity];
     for (address, length) in [
         (message.msg_name as usize as u64, name_capacity),
@@ -13389,18 +13434,6 @@ fn recvmsg_with_table(
         }
         copied += length;
     }
-    if name_capacity != 0
-        && memory
-            .user()
-            .copy_to_user(
-                message.msg_name as usize as u64,
-                &name[..name_capacity.min(host_header.msg_namelen as usize)],
-            )
-            .is_err()
-    {
-        return negative_errno(libc::EFAULT);
-    }
-
     let installed = commit_received_rights(
         state,
         shared,
@@ -13413,7 +13446,16 @@ fn recvmsg_with_table(
         rollback_received_rights_with_table(state, shared, &installed);
         return negative_errno(libc::EFAULT);
     }
-    message.msg_namelen = host_header.msg_namelen;
+    if let Err(error) = copy_received_name(
+        memory,
+        message_address,
+        message.msg_name as usize as u64,
+        &name,
+        host_header.msg_namelen,
+    ) {
+        rollback_received_rights_with_table(state, shared, &installed);
+        return error;
+    }
     message.msg_controllen = control_bytes.len();
     message.msg_flags = host_header.msg_flags;
     if flags & libc::MSG_CMSG_CLOEXEC == 0 {
@@ -13422,9 +13464,9 @@ fn recvmsg_with_table(
     if stripped_unsupported {
         message.msg_flags |= libc::MSG_CTRUNC;
     }
-    if copy_received_header(memory, message_address, &message) != 0 {
+    if let Err(error) = copy_received_header_outputs(memory, message_address, &message) {
         rollback_received_rights_with_table(state, shared, &installed);
-        return negative_errno(libc::EFAULT);
+        return error;
     }
     received as i64
 }
@@ -13559,19 +13601,30 @@ fn recvmmsg_with_table(
             };
         }
         let mut payload = vec![0u8; payload_length];
-        let mut name = vec![0u8; name_capacity];
-        let mut control = vec![0u8; control_capacity];
-        if name_capacity != 0
-            && memory
-                .user()
-                .read(message.msg_hdr.msg_name as usize as u64, &mut name)
-                .is_err()
-        {
-            return if delivered == 0 {
-                negative_errno(libc::EFAULT)
+        let mut name = vec![
+            0u8;
+            if message.msg_hdr.msg_name.is_null() {
+                0
             } else {
-                delivered as i64
-            };
+                std::mem::size_of::<libc::sockaddr_storage>()
+            }
+        ];
+        let mut control = vec![0u8; control_capacity];
+        if name_capacity != 0 {
+            // Preserve the existing input-read policy without reading the new
+            // full-size local capture buffer from a shorter caller buffer.
+            let mut probe = vec![0; name_capacity];
+            if memory
+                .user()
+                .read(message.msg_hdr.msg_name as usize as u64, &mut probe)
+                .is_err()
+            {
+                return if delivered == 0 {
+                    negative_errno(libc::EFAULT)
+                } else {
+                    delivered as i64
+                };
+            }
         }
         if control_capacity != 0
             && memory
@@ -13696,21 +13749,6 @@ fn recvmmsg_with_table(
             }
             copied += length;
         }
-        if name_capacity != 0
-            && memory
-                .user()
-                .copy_to_user(
-                    message.msg_hdr.msg_name as usize as u64,
-                    &name[..name_capacity.min(host_header.msg_namelen as usize)],
-                )
-                .is_err()
-        {
-            return if delivered == 0 {
-                negative_errno(libc::EFAULT)
-            } else {
-                delivered as i64
-            };
-        }
         let installed = commit_received_rights(
             state,
             shared,
@@ -13733,7 +13771,20 @@ fn recvmmsg_with_table(
                 delivered as i64
             };
         }
-        message.msg_hdr.msg_namelen = host_header.msg_namelen;
+        if let Err(error) = copy_received_name(
+            memory,
+            message_address,
+            message.msg_hdr.msg_name as usize as u64,
+            &name,
+            host_header.msg_namelen,
+        ) {
+            rollback_received_rights_with_table(state, shared, &installed);
+            return if delivered == 0 {
+                error
+            } else {
+                delivered as i64
+            };
+        }
         message.msg_hdr.msg_controllen = control_bytes.len();
         message.msg_hdr.msg_flags = host_header.msg_flags;
         if flags & libc::MSG_CMSG_CLOEXEC == 0 {
@@ -13742,11 +13793,21 @@ fn recvmmsg_with_table(
         if stripped_unsupported {
             message.msg_hdr.msg_flags |= libc::MSG_CTRUNC;
         }
-        message.msg_len = received as libc::c_uint;
-        if copy_received_header(memory, message_address, &message) != 0 {
+        let header_result = copy_received_header_outputs(memory, message_address, &message.msg_hdr)
+            .and_then(|()| {
+                let length_address = received_field_address(
+                    message_address,
+                    std::mem::offset_of!(libc::mmsghdr, msg_len),
+                )?;
+                memory
+                    .user()
+                    .put_user_i32(length_address, received as libc::c_int)
+                    .map_err(|_| negative_errno(libc::EFAULT))
+            });
+        if let Err(error) = header_result {
             rollback_received_rights_with_table(state, shared, &installed);
             return if delivered == 0 {
-                negative_errno(libc::EFAULT)
+                error
             } else {
                 delivered as i64
             };
@@ -34006,12 +34067,11 @@ mod tests {
         const CONTROL: u64 = 4 * PAGE_SIZE;
         const CONTROL_LENGTH: usize = 64;
 
-        // Enforce writable destinations at the existing receive copyout stages.
-        // This is NOT a Linux-parity oracle: inherited KVM policy prechecks the
-        // header and rolls back installed rights on a late control
-        // fault, whereas Linux can publish earlier descriptors or report CTRUNC.
-        // The old PR610 whole-output-writable preflight would fail this test by
-        // retaining a datagram that the payload/control-fault paths consumed.
+        // Header faults now occur after consumption and payload/control copyout,
+        // as the native-first header tests require. Do not restore the old
+        // whole-header preflight. This is still NOT full Linux rights parity:
+        // KVM rolls back installed rights on a late fault, whereas Linux can
+        // leave earlier descriptors published or report CTRUNC.
         for (label, readonly_page) in [
             ("final header", HEADER),
             ("payload", PAYLOAD),
@@ -34129,19 +34189,25 @@ mod tests {
             );
             assert_eq!(
                 state.file_identity_table.lock().unwrap().next_inode,
-                next_inode + u64::from(readonly_page == CONTROL)
+                next_inode + u64::from(readonly_page != PAYLOAD)
             );
             assert_eq!(
                 read_guest_bytes::<1>(&memory, PAYLOAD).unwrap(),
-                if readonly_page == CONTROL {
+                if readonly_page != PAYLOAD {
                     *b"x"
                 } else {
                     [0xa5]
                 },
             );
+            let mut expected_control = [0xa5; CONTROL_LENGTH];
+            if readonly_page == HEADER {
+                let copied = rights_control(&[5]);
+                let record_length = control_messages(&copied).unwrap()[0].end;
+                expected_control[..record_length].copy_from_slice(&copied[..record_length]);
+            }
             assert_eq!(
                 read_guest_bytes::<CONTROL_LENGTH>(&memory, CONTROL).unwrap(),
-                [0xa5; CONTROL_LENGTH],
+                expected_control,
             );
             let mut header_after = vec![0; std::mem::size_of::<libc::msghdr>()];
             memory.user().read(HEADER, &mut header_after).unwrap();
@@ -34164,27 +34230,24 @@ mod tests {
                         0
                     ],
                 ),
-                if readonly_page == HEADER {
-                    1
-                } else {
-                    negative_errno(libc::EAGAIN)
-                },
-                "{label}: current dequeue boundary changed",
+                negative_errno(libc::EAGAIN),
+                "{label}: a late output fault must leave the datagram consumed",
             );
             if readonly_page == HEADER {
                 assert_eq!(read_guest_bytes::<1>(&memory, PAYLOAD).unwrap(), *b"x");
-                let received: libc::msghdr = read_struct(&memory, HEADER);
-                let mut control = vec![0; received.msg_controllen];
-                memory.user().read(CONTROL, &mut control).unwrap();
-                assert_eq!(control_rights(&control), [5]);
-                assert!(state.files.contains_key(&5));
-            } else {
-                assert_eq!(
-                    state.files.keys().copied().collect::<Vec<_>>(),
-                    files_before
-                );
-                assert!(!state.files.contains_key(&5));
+                let control = read_guest_bytes::<CONTROL_LENGTH>(&memory, CONTROL).unwrap();
+                assert_eq!(control_rights(&control[..24]), [5]);
             }
+            assert_eq!(
+                state.files.keys().copied().collect::<Vec<_>>(),
+                files_before
+            );
+            assert!(!state.files.contains_key(&5));
+            assert_eq!(
+                read_guest_bytes::<CONTROL_LENGTH>(&memory, CONTROL).unwrap(),
+                expected_control,
+                "{label}: empty receive must preserve the first copyout",
+            );
         }
     }
 
