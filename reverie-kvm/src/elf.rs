@@ -396,6 +396,26 @@ impl TaskLifecycleTable {
         (status, group_started)
     }
 
+    /// A still-live waiter may observe a peer's committed group exit before
+    /// the backend cancellation flag is published. Never grant that control to
+    /// a dead/reused task or a process whose cleanup has already failed.
+    pub(crate) fn live_task_group_exit_status(
+        &self,
+        identity: reverie::SignalTaskIdentity,
+    ) -> Option<ExitStatus> {
+        let task = self.tasks.get(&identity.tid.as_raw())?;
+        if task.generation != identity.task_generation
+            || task.tgid != identity.process.tgid.as_raw()
+            || task.process_generation != identity.process.generation
+        {
+            return None;
+        }
+        let exit = self
+            .process_exits
+            .get(&(task.tgid, task.process_generation))?;
+        if exit.failed { None } else { exit.group }
+    }
+
     pub(crate) fn process_exit_status(
         &self,
         tgid: i32,
@@ -853,11 +873,11 @@ pub(crate) struct LoadedStaticElf {
     // TODO-HUMAN-REVIEW(#86): Review descriptor and signal inheritance across exec.
     pub cloexec_fds: std::collections::BTreeSet<i32>,
     pub closed_standard_fds: std::collections::BTreeSet<i32>,
-    pub children: std::collections::BTreeMap<i32, ExitStatus>,
-    /// Exact numeric child selected and removed by the immediately preceding
-    /// wait syscall. The family ledger consumes this after the syscall returns,
-    /// avoiding a second copy of waitid's selection rule.
-    pub(crate) consumed_child_wait: Option<i32>,
+    pub(crate) children: crate::executor::ChildWaitContext,
+    /// Exact generation and consumer receipt for the already committed reap.
+    /// The checked syscall boundary acknowledges it after copyout, including
+    /// EFAULT; acknowledgement never selects or removes another child.
+    pub(crate) consumed_child_wait: Option<crate::executor::ChildWaitReceipt>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Track memfd-backed synthetic /proc descriptors.
     // TODO-HUMAN-REVIEW(reverie-kvm): Review synthetic /proc determinism.
     //
@@ -1029,7 +1049,7 @@ impl LoadedStaticElf {
             stderr_alias_fds: self.stderr_alias_fds.clone(),
             cloexec_fds: self.cloexec_fds.clone(),
             closed_standard_fds: self.closed_standard_fds.clone(),
-            children: std::collections::BTreeMap::new(),
+            children: crate::executor::ChildWaitContext::default(),
             consumed_child_wait: None,
             proc_files: self.proc_files.clone(),
             synthetic_proc_nofollow_fds: self.synthetic_proc_nofollow_fds.clone(),
@@ -1609,7 +1629,7 @@ fn load_executable(
         stderr_alias_fds: std::collections::BTreeSet::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
-        children: std::collections::BTreeMap::new(),
+        children: crate::executor::ChildWaitContext::default(),
         consumed_child_wait: None,
         proc_files: std::collections::BTreeMap::new(),
         synthetic_proc_nofollow_fds: std::collections::BTreeSet::new(),

@@ -571,22 +571,37 @@ mod unpermitted_retirement {
             return;
         }
         let mut f = FaultFixture::new();
+        let parent = f.executor.retired_process_identity();
+        let parent_wait = f.executor.fixture_child_wait_context();
         let orphan = f.executor.fork_child(4, false, false).unwrap();
         let child = orphan.retired_process_identity();
         let completion = Arc::new(crate::executor::ChildCompletionSlot::default());
-        let (notifier, notified) = std::sync::mpsc::channel();
         let context = crate::vm::OwnChildExitContext {
             child,
             _parent_binding: f.executor.retain_signal_process_binding(),
             completion: completion.clone(),
-            completion_notifier: notifier,
             raw_child_pid: child.tgid.as_raw(),
         };
         exit_syscall(&mut f.executor, &f.memory, true);
         f.executor.release_files_on_exit();
         f.executor = orphan;
         let status = f.finish_fault(Some(context), 0);
-        assert_eq!(notified.try_recv().unwrap(), child.tgid.as_raw());
+        // The family ledger retains the exact orphan generation and frozen
+        // completion, but must not make it waitable by the retired parent.
+        parent_wait.assert_namespace_reaped_child_for_test(child, status);
+        let registry = parent_wait.registry().unwrap();
+        assert_eq!(
+            registry.registered_child_wait(parent, child.tgid.as_raw()),
+            Some(child)
+        );
+        registry
+            .validate_owned_child_wait(
+                parent,
+                child,
+                crate::executor::ChildCompletion::AutoReaped(status),
+            )
+            .unwrap();
+        assert!(!parent_wait.contains_key(&child.tgid.as_raw()));
         assert!(
             !completion.publish(crate::executor::ChildCompletion::AutoReaped(status)),
             "orphan completion must already be published"

@@ -42,6 +42,18 @@ use super::set_signalfd_ready;
 use crate::elf::TaskLifecycleTable;
 use crate::signal::ProcessSignalState;
 
+#[path = "child_wait.rs"]
+mod child_wait;
+use std::sync::Condvar;
+
+pub(crate) use child_wait::ChildWaitContext;
+pub(crate) use child_wait::ChildWaitReceipt;
+pub(crate) use child_wait::ChildWaitSelection;
+#[cfg(test)]
+pub(crate) use child_wait::TestChildCompletion;
+use child_wait::WaitPhase;
+use child_wait::WaitPublication;
+
 type ProcessKey = (i32, u64);
 
 fn process_key(process: SignalProcessId) -> ProcessKey {
@@ -175,6 +187,12 @@ enum NamespaceReaper {
 struct ProcessFamilyState {
     direct_children: BTreeMap<ProcessKey, BTreeMap<ProcessKey, DirectChildState>>,
     terminal: BTreeMap<ProcessKey, ProcessFamilyExit>,
+    wait_publications: BTreeMap<ProcessKey, WaitPublication>,
+    wait_receipts: BTreeMap<(ProcessKey, ProcessKey), ChildWaitReceipt>,
+    wait_failed: bool,
+    wait_failure_notified: bool,
+    #[cfg(test)]
+    waiters: usize,
     reaper: NamespaceReaper,
     // Live exact generations adopted by an outside namespace init. An entry is
     // removed only by that generation's own exit or failure.
@@ -198,6 +216,13 @@ impl ProcessFamilyState {
     /// parent's claim on its status. Returns the adopted live children.
     fn reparent_children_to_outside_init(&mut self, process: ProcessKey) -> Vec<ProcessKey> {
         self.reparented.insert(process);
+        for publication in self.wait_publications.values_mut() {
+            if process_key(publication.parent) == process
+                && !matches!(publication.phase, WaitPhase::Consumed | WaitPhase::Failed)
+            {
+                publication.phase = WaitPhase::Retired;
+            }
+        }
         // An exit recorded for a live parent but not yet claimed has not been
         // announced to anyone. The parent's exit, not a later callback to the
         // now-terminal parent, decides that status: init reaps it.
@@ -268,7 +293,7 @@ impl ProcessFamilyState {
 }
 
 #[derive(Default)]
-pub(super) struct ProcessSignalRegistry {
+pub(crate) struct ProcessSignalRegistry {
     processes: Mutex<BTreeMap<(i32, u64), Weak<ProcessBinding>>>,
     // Logical process ancestry is independent of host join-handle placement.
     // It is retained by exact generation until a wait consumes a zombie, an
@@ -276,6 +301,7 @@ pub(super) struct ProcessSignalRegistry {
     // it to an outside namespace init. Reparenting to an in-tree init fails
     // closed.
     family: Mutex<ProcessFamilyState>,
+    wait_changed: Condvar,
     // Run-scoped at-most-once admission. Standard-signal coalescing is not an
     // operation ledger: after dequeue, the same child could otherwise enqueue
     // a second SIGCHLD. Retain exact generations until the run ends.
@@ -332,6 +358,18 @@ impl ProcessSignalRegistry {
                 .or_default()
                 .insert(process_key(binding.identity), DirectChildState::Live);
             debug_assert!(previous.is_none(), "duplicate KVM child process generation");
+            let previous = family.wait_publications.insert(
+                process_key(identity),
+                WaitPublication {
+                    parent,
+                    phase: WaitPhase::Pending,
+                },
+            );
+            assert!(
+                previous.is_none(),
+                "duplicate exact KVM child wait generation"
+            );
+            self.wait_changed.notify_all();
         }
         let mut processes = self.processes.lock().unwrap_or_else(|p| p.into_inner());
         processes.retain(|_, process| process.strong_count() != 0);
@@ -392,6 +430,12 @@ impl ProcessSignalRegistry {
             .terminal
             .insert(process_family_key, ProcessFamilyExit::Failed);
         family.namespace_orphans.remove(&process_family_key);
+        if let Some(publication) = family.wait_publications.get_mut(&process_family_key)
+            && publication.phase != WaitPhase::Consumed
+        {
+            publication.phase = WaitPhase::Failed;
+        }
+        self.wait_changed.notify_all();
         if let Some(parent) = parent {
             let parent_key = process_key(parent);
             if let Some(children) = family.direct_children.get_mut(&parent_key) {
@@ -475,6 +519,7 @@ impl ProcessSignalRegistry {
             // this status.
             let exit = ProcessFamilyExit::ReapedByNamespaceInit { status };
             family.terminal.insert(process_key(process), exit);
+            self.wait_changed.notify_all();
             let adopted = family.reparent_children_to_outside_init(process_key(process));
             self.label_orphans(&mut family, &adopted);
             return exit;
@@ -492,6 +537,7 @@ impl ProcessSignalRegistry {
                         ancestor: process_identity(ancestor),
                     };
                     family.terminal.insert(process_key(process), exit);
+                    self.wait_changed.notify_all();
                     return exit;
                 }
                 Err(ProcessFamilyAncestryError::MultipleParents {
@@ -505,6 +551,7 @@ impl ProcessSignalRegistry {
                         second_parent: process_identity(second_parent),
                     };
                     family.terminal.insert(process_key(process), exit);
+                    self.wait_changed.notify_all();
                     return exit;
                 }
             },
@@ -558,6 +605,7 @@ impl ProcessSignalRegistry {
             if !relation_exists {
                 let exit = ProcessFamilyExit::ParentChildRelationUnavailable { parent };
                 family.terminal.insert(process_key(process), exit);
+                self.wait_changed.notify_all();
                 return exit;
             }
             if waitable {
@@ -593,6 +641,7 @@ impl ProcessSignalRegistry {
             }
         };
         family.terminal.insert(process_key(process), exit);
+        self.wait_changed.notify_all();
         if matches!(exit, ProcessFamilyExit::Root | ProcessFamilyExit::Child(_))
             && matches!(family.reaper, NamespaceReaper::Outside { .. })
         {
@@ -674,6 +723,7 @@ impl ProcessSignalRegistry {
             .contains(&process_key(process))
     }
 
+    #[cfg(test)]
     pub(super) fn consume_child_wait(&self, parent: SignalProcessId, child_pid: i32) -> bool {
         let mut family = self.family.lock().unwrap_or_else(|p| p.into_inner());
         let parent_key = process_key(parent);
@@ -3041,7 +3091,7 @@ mod tests {
         assert!(completion.waitable);
         child
             .record_child_completion(
-                3,
+                grandchild_id,
                 crate::executor::ChildCompletion::from_waitability(
                     completion.status,
                     completion.waitable,
@@ -4443,12 +4493,34 @@ mod tests {
             const { std::cell::RefCell::new(None) };
     }
 
+    /// Retire the actual fork generation at this fixture's publication boundary.
+    /// Host-thread ownership remains live until the existing turn/release/TLS
+    /// protocol completes; family readiness alone never proves physical join.
+    fn publish_owned_fixture_child(
+        child: &Arc<Mutex<ElfExecutor>>,
+        slot: &super::super::ChildCompletionSlot,
+    ) {
+        let mut child = child.lock().unwrap();
+        let child_id = child.retired_process_identity();
+        let status = child
+            .retire_current_thread(reverie::ExitStatus::Exited(3), false)
+            .status;
+        assert!(child.signal_task_identity().is_none());
+        assert_eq!(status, reverie::ExitStatus::Exited(3));
+        child
+            .fixture_child_wait_context()
+            .publish_fixture_owner(status, slot)
+            .unwrap();
+        assert_eq!(child.retired_process_identity(), child_id);
+    }
+
     /// A child whose remaining work, like a Tool exit hook, needs a turn from
     /// a scheduler that only the exiting root's own executor polls, as Hermit's
     /// is. It needs the turn whether its gate starts or cancels it, and before
     /// or after publishing its status.
     /// The thread holds `lifetime` until its turn is granted.
     fn co_scheduled_child_thread(
+        child: Arc<Mutex<ElfExecutor>>,
         turns: TurnRequests,
         published_first: Option<std::sync::mpsc::Sender<()>>,
         lifetime: Arc<()>,
@@ -4463,11 +4535,7 @@ mod tests {
         let published = slot.clone();
         let handle = super::super::ChildThread::spawn(move || {
             started.recv().unwrap();
-            let publish = || {
-                assert!(published.publish(super::super::ChildCompletion::AutoReaped(
-                    reverie::ExitStatus::Exited(3),
-                )));
-            };
+            let publish = || publish_owned_fixture_child(&child, &published);
             if let Some(announce) = &published_first {
                 publish();
                 announce.send(()).unwrap();
@@ -4531,10 +4599,13 @@ mod tests {
         let mut root = outside_init_root();
         let mut children = Vec::new();
         if !matches!(direct, RootChild::None) {
-            children.push(root.fork_child(6, false, false).unwrap());
+            children.push(Arc::new(Mutex::new(
+                root.fork_child(6, false, false).unwrap(),
+            )));
             let (announce, announced) = std::sync::mpsc::channel();
             let collected = matches!(direct, RootChild::Collected);
             let (gate, slot, handle) = co_scheduled_child_thread(
+                children.last().unwrap().clone(),
                 turns.clone(),
                 collected.then_some(announce),
                 lifetime.clone(),
@@ -4549,8 +4620,16 @@ mod tests {
             }
         }
         let mut parent = root.fork_child(7, false, false).unwrap();
-        children.push(parent.fork_child(8, false, false).unwrap());
-        let (gate, slot, handle) = co_scheduled_child_thread(turns, None, lifetime.clone(), needed);
+        children.push(Arc::new(Mutex::new(
+            parent.fork_child(8, false, false).unwrap(),
+        )));
+        let (gate, slot, handle) = co_scheduled_child_thread(
+            children.last().unwrap().clone(),
+            turns,
+            None,
+            lifetime.clone(),
+            needed,
+        );
         parent.register_child_process_with_gate(8, gate, slot, handle);
 
         // The reparenting parent hands its child over although no scheduler
@@ -4643,6 +4722,7 @@ mod tests {
     /// cancels it, holding `lifetime` until then and through the thread-local
     /// teardown that follows.
     fn released_child_thread(
+        child: Arc<Mutex<ElfExecutor>>,
         published_first: Option<std::sync::mpsc::Sender<()>>,
         lifetime: Arc<()>,
     ) -> (
@@ -4657,11 +4737,7 @@ mod tests {
         let published = slot.clone();
         let handle = super::super::ChildThread::spawn(move || {
             started.recv().unwrap();
-            let publish = || {
-                assert!(published.publish(super::super::ChildCompletion::AutoReaped(
-                    reverie::ExitStatus::Exited(3),
-                )));
-            };
+            let publish = || publish_owned_fixture_child(&child, &published);
             if let Some(announce) = &published_first {
                 publish();
                 announce.send(()).unwrap();
@@ -4717,10 +4793,15 @@ mod tests {
         // The join reaps pending children, then collected ones, then orphans.
         // It first waits for the `awaited` kind; every later kind also waits.
         if !matches!(awaited, AwaitedChild::Orphan) {
-            children.push(root.fork_child(9, false, false).unwrap());
+            children.push(Arc::new(Mutex::new(
+                root.fork_child(9, false, false).unwrap(),
+            )));
             let (announce, announced) = std::sync::mpsc::channel();
-            let (gate, slot, handle, release) =
-                released_child_thread(Some(announce), lifetime.clone());
+            let (gate, slot, handle, release) = released_child_thread(
+                children.last().unwrap().clone(),
+                Some(announce),
+                lifetime.clone(),
+            );
             root.register_child_process_with_gate(9, gate, slot, handle);
             root.start_pending_child_processes().unwrap();
             announced.recv().unwrap();
@@ -4728,14 +4809,20 @@ mod tests {
             releases.push(release);
         }
         if matches!(awaited, AwaitedChild::Pending) {
-            children.push(root.fork_child(6, false, false).unwrap());
-            let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+            children.push(Arc::new(Mutex::new(
+                root.fork_child(6, false, false).unwrap(),
+            )));
+            let (gate, slot, handle, release) =
+                released_child_thread(children.last().unwrap().clone(), None, lifetime.clone());
             root.register_child_process_with_gate(6, gate, slot, handle);
             releases.push(release);
         }
         let mut parent = root.fork_child(7, false, false).unwrap();
-        children.push(parent.fork_child(8, false, false).unwrap());
-        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        children.push(Arc::new(Mutex::new(
+            parent.fork_child(8, false, false).unwrap(),
+        )));
+        let (gate, slot, handle, release) =
+            released_child_thread(children.last().unwrap().clone(), None, lifetime.clone());
         parent.register_child_process_with_gate(8, gate, slot, handle);
         parent.retire_current_thread(reverie::ExitStatus::SUCCESS, false);
         parent.join_all_child_processes().unwrap();
@@ -4982,8 +5069,9 @@ mod tests {
         let lifetime = Arc::new(());
         let mut root = outside_init_root();
         let mut parent = root.fork_child(7, false, false).unwrap();
-        let _orphan = parent.fork_child(8, false, false).unwrap();
-        let (gate, slot, mut handle, release) = released_child_thread(None, lifetime.clone());
+        let orphan = Arc::new(Mutex::new(parent.fork_child(8, false, false).unwrap()));
+        let (gate, slot, mut handle, release) =
+            released_child_thread(orphan.clone(), None, lifetime.clone());
         // Two blocking joins of the orphan panic before the third waits.
         handle.failed_joins = 2;
         parent.register_child_process_with_gate(8, gate, slot, handle);
@@ -5035,8 +5123,9 @@ mod tests {
         let lifetime = Arc::new(());
         let mut root = outside_init_root();
         let mut parent = root.fork_child(7, false, false).unwrap();
-        let _orphan = parent.fork_child(8, false, false).unwrap();
-        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        let orphan = Arc::new(Mutex::new(parent.fork_child(8, false, false).unwrap()));
+        let (gate, slot, handle, release) =
+            released_child_thread(orphan.clone(), None, lifetime.clone());
         parent.register_child_process_with_gate(8, gate, slot, handle);
         // An earlier panic poisoned the orphanage the parent's exit hands 8 to.
         {
@@ -5155,8 +5244,8 @@ mod tests {
         std::sync::mpsc::Sender<()>,
     ) {
         let mut root = outside_init_root();
-        let _child = root.fork_child(6, false, false).unwrap();
-        let (gate, slot, handle, release) = released_child_thread(None, lifetime.clone());
+        let child = Arc::new(Mutex::new(root.fork_child(6, false, false).unwrap()));
+        let (gate, slot, handle, release) = released_child_thread(child, None, lifetime.clone());
         root.register_child_process_with_gate(6, gate, slot, handle);
         let root_alive = Arc::downgrade(&root.transferred_processes);
         (root, root_alive, release)
@@ -5522,7 +5611,7 @@ mod tests {
             assert_eq!(parent.state.children.len(), 1);
             assert_eq!(
                 parent.state.children.get(&3),
-                Some(&reverie::ExitStatus::Exited(11))
+                Some(reverie::ExitStatus::Exited(11))
             );
             {
                 let family = parent.signal_registry.family.lock().unwrap();
@@ -5697,7 +5786,7 @@ mod tests {
                     assert_eq!(parent.state.children.contains_key(&2), keep != 0);
                     assert_eq!(
                         parent.state.children.get(&3),
-                        Some(&reverie::ExitStatus::Exited(11))
+                        Some(reverie::ExitStatus::Exited(11))
                     );
                     {
                         let family = parent.signal_registry.family.lock().unwrap();
@@ -5870,6 +5959,8 @@ mod tests {
             };
             assert_eq!(selected, expected.tgid.as_raw());
 
+            let remaining = [low_id, high_id]
+                .map(|child| parent.state.children.contains_key(&child.tgid.as_raw()));
             let family = parent
                 .signal_registry
                 .family
@@ -5879,7 +5970,7 @@ mod tests {
                 .direct_children
                 .get(&process_key(parent_id))
                 .expect("at least one waitable child remains");
-            for child in [low_id, high_id] {
+            for (index, child) in [low_id, high_id].into_iter().enumerate() {
                 let remains = !consume || child != expected;
                 assert_eq!(
                     children.get(&process_key(child)).copied(),
@@ -5887,8 +5978,7 @@ mod tests {
                     "family-ledger removal must follow the pid actually returned by the backend wait",
                 );
                 assert_eq!(
-                    parent.state.children.contains_key(&child.tgid.as_raw()),
-                    remains,
+                    remaining[index], remains,
                     "backend wait state and exact-generation family state must change together",
                 );
             }
@@ -5907,6 +5997,15 @@ mod tests {
             .state
             .children
             .insert(2, reverie::ExitStatus::Exited(2));
+        // Explicitly corrupt the only eligibility ledger after a valid fixture
+        // publication. No numeric status table may authorize this reap.
+        parent
+            .signal_registry
+            .family
+            .lock()
+            .unwrap()
+            .direct_children
+            .remove(&process_key(parent_id));
         let memory = GuestMemory::new(0, 4096).unwrap();
         let error = parent
             .execute_checked(
@@ -5926,7 +6025,7 @@ mod tests {
         ));
         assert!(
             !parent.state.children.contains_key(&2),
-            "the typed failure must retain that the backend already reaped the numeric child",
+            "a corrupt family edge must not remain eligible after the typed refusal",
         );
         assert!(parent.state.consumed_child_wait.is_none());
     }
@@ -5935,7 +6034,16 @@ mod tests {
     fn stale_child_wait_effect_refuses_before_another_syscall_dispatch() {
         let mut parent = executor();
         let parent_id = identity(&parent);
-        parent.state.consumed_child_wait = Some(17);
+        parent
+            .state
+            .children
+            .insert(17, reverie::ExitStatus::Exited(17));
+        let ChildWaitSelection::Ready(selected) =
+            parent.state.children.select(Some(17), true, true).unwrap()
+        else {
+            panic!("ready fixture child");
+        };
+        parent.state.consumed_child_wait = selected.receipt;
         let memory = GuestMemory::new(0, 4096).unwrap();
         let error = parent
             .execute_checked(
@@ -5950,7 +6058,14 @@ mod tests {
                 child_pid: 17,
             } if parent == parent_id
         ));
-        assert_eq!(parent.state.consumed_child_wait, Some(17));
+        assert_eq!(
+            parent
+                .state
+                .consumed_child_wait
+                .as_ref()
+                .map(|receipt| receipt.child_pid()),
+            Some(17)
+        );
     }
 
     #[test]
@@ -6678,4 +6793,6 @@ mod tests {
         drop(guard);
         assert!(registry.lookup(process).is_none());
     }
+    include!("process_child_wait_tests.rs");
+    include!("process_child_wait_guest_tests.rs");
 }

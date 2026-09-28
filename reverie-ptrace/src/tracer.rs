@@ -74,6 +74,10 @@ use crate::LiteinstInstrumentationStatsHandle;
 use crate::PtraceBackendStatsSource;
 use crate::cp;
 use crate::gdbstub::GdbServer;
+use crate::liteinst_trap_only::LiteinstTrapOnlyConfig;
+use crate::liteinst_trap_only::LiteinstTrapOnlyHandle;
+use crate::liteinst_trap_only::SitePatching;
+use crate::liteinst_trap_only::require_ia32_emulation;
 use crate::task::Child;
 use crate::task::FatalSession;
 use crate::task::InjectedSyscallProvenance;
@@ -112,6 +116,8 @@ pub struct Tracer<G> {
     // completion API remains explicitly unsupported.
     liteinst_cleanup: Option<LiteinstTraceeCleanup>,
     liteinst_instrumentation_stats: Option<Arc<StdMutex<LiteinstInstrumentationStats>>>,
+    // Present only for a runtime-free (trap-only) LiteInst launch.
+    liteinst_trap_only: Option<LiteinstTrapOnlyHandle>,
 
     // Present only when the caller requested general ptrace activity stats.
     backend_stats: Option<PtraceBackendStatsSource>,
@@ -3251,6 +3257,11 @@ impl<G: Default + 'static> Tracer<G> {
             .map(|stats| LiteinstInstrumentationStatsHandle::from_shared(Arc::clone(stats)))
     }
 
+    /// Returns the trap-only LiteInst state when this tracer was launched in that mode.
+    pub fn liteinst_trap_only(&self) -> Option<LiteinstTrapOnlyHandle> {
+        self.liteinst_trap_only.clone()
+    }
+
     /// Returns the live ptrace activity-statistics source when collection was enabled.
     pub fn backend_stats(&self) -> Option<PtraceBackendStatsSource> {
         self.backend_stats.clone()
@@ -3959,6 +3970,10 @@ pub struct TracerBuilder<T: Tool + 'static> {
     /// Dynamic LiteInst runtime handshake and hot-site configuration.
     liteinst_runtime: Option<LiteinstRuntimeConfig>,
 
+    /// Runtime-free LiteInst launch configuration. It never sets
+    /// `liteinst_runtime`, so every runtime branch keeps its ptrace arm.
+    liteinst_trap_only: Option<LiteinstTrapOnlyConfig>,
+
     /// Whether to collect general ptrace activity statistics.
     backend_stats_request: BackendStatsRequest,
 
@@ -3976,6 +3991,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             sequentialized_guest: false,
             injected_syscall_trap: None,
             liteinst_runtime: None,
+            liteinst_trap_only: None,
             backend_stats_request: BackendStatsRequest::DISABLED,
             #[cfg(all(test, target_arch = "x86_64"))]
             clock_test_launcher_branches: 0,
@@ -4126,6 +4142,51 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             #[cfg(test)]
             force_private_stub_mutation_once: None,
         });
+        self
+    }
+
+    /// Selects the runtime-free ("trap-only") LiteInst launch.
+    ///
+    /// Nothing is loaded into the guest: no preload, no runtime, and no
+    /// handshake. The launch uses the ordinary ptrace environment and
+    /// lifecycle, and the dynamic runtime configuration stays absent, so vfork,
+    /// exec by any thread, static images, and multi-task programs behave as
+    /// they do under plain ptrace. Patching state lives in a separate
+    /// per-address-space [`crate::SiteTable`].
+    ///
+    /// Trap-only patching needs the kernel's IA-32 syscall entry. `spawn`
+    /// probes whether `int 0x80` is serviced and fails closed with
+    /// [`crate::Ia32EmulationUnavailable`] when it is not. The mode cannot be
+    /// combined with [`Self::liteinst_runtime`].
+    ///
+    /// With [`SitePatching::Off`] no guest byte is ever written and the run is
+    /// the ordinary ptrace run.
+    // TODO-HUMAN-REVIEW(liteinst-trap-only-P1): Review the trap-only launch API.
+    pub fn liteinst_trap_only(self, patching: SitePatching) -> Self {
+        self.liteinst_trap_only_with_stats(patching, BackendStatsRequest::DISABLED)
+    }
+
+    /// Selects the trap-only LiteInst launch and optionally collects patch statistics.
+    ///
+    /// With [`SitePatching::Off`] the collected statistics stay empty.
+    pub fn liteinst_trap_only_with_stats(
+        mut self,
+        patching: SitePatching,
+        stats_request: BackendStatsRequest,
+    ) -> Self {
+        self.liteinst_trap_only = Some(LiteinstTrapOnlyConfig::new(
+            patching,
+            stats_request.is_enabled(),
+        ));
+        self
+    }
+
+    #[cfg(test)]
+    fn liteinst_trap_only_ia32_probe_for_test(mut self, probe: crate::Ia32EmulationProbe) -> Self {
+        self.liteinst_trap_only
+            .as_mut()
+            .expect("trap-only mode must be selected before overriding its probe")
+            .ia32_probe_override = Some(probe);
         self
     }
 
@@ -4375,6 +4436,21 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                 Errno::ENOTSUPP
             )));
         }
+        if self.liteinst_runtime.is_some() && self.liteinst_trap_only.is_some() {
+            return Err(Error::Tool(anyhow::anyhow!(
+                "LiteInst runtime activation and trap-only LiteInst are mutually exclusive ({})",
+                Errno::EINVAL
+            )));
+        }
+        if let Some(trap_only) = self.liteinst_trap_only.as_ref() {
+            // Refuse before anything is spawned. A trap-only run must never
+            // degrade to plain ptrace under the LiteInst label.
+            require_ia32_emulation(trap_only.ia32_probe()).map_err(anyhow::Error::new)?;
+        }
+        let liteinst_trap_only = self
+            .liteinst_trap_only
+            .as_ref()
+            .map(LiteinstTrapOnlyHandle::from_config);
         let backend_stats = PtraceBackendStatsSource::from_request(self.backend_stats_request);
         let mut command = self.command;
         let config = self.config.unwrap_or_default();
@@ -4461,7 +4537,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         let liteinst_instrumentation_stats = self
             .liteinst_runtime
             .as_ref()
-            .and_then(|runtime| runtime.instrumentation_stats.as_ref().map(Arc::clone));
+            .and_then(|runtime| runtime.instrumentation_stats.as_ref().map(Arc::clone))
+            .or_else(|| {
+                self.liteinst_trap_only
+                    .as_ref()
+                    .and_then(|trap_only| trap_only.instrumentation_stats.as_ref().map(Arc::clone))
+            });
         #[cfg(test)]
         let fail_discovery_once = self
             .liteinst_runtime
@@ -4597,6 +4678,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             stderr,
             liteinst_cleanup,
             liteinst_instrumentation_stats,
+            liteinst_trap_only,
             backend_stats,
         })
     }
@@ -4625,12 +4707,50 @@ where
     spawn_fn_with_config::<L, F>(fun, Default::default(), true).await
 }
 
+/// Ends a guest forked by `spawn_fn_with_config` once its function returns.
+///
+/// `std::process::exit` is unusable here: its runtime cleanup unregisters the
+/// main thread's stack-overflow guard under std's thread-registry lock
+/// (`stack_overflow::thread_info::LOCK`), which every thread start and exit
+/// also takes. The child inherits that lock held whenever another thread of
+/// the multi-threaded parent was starting or exiting at the `fork`, and then
+/// sleeps on it forever at exit. Buffered output is flushed first instead,
+/// and a guest that returned normally exits with status 1 if that flush
+/// fails, so lost output is not reported as success.
+fn exit_forked_guest(code: i32) -> ! {
+    let rust_flush = std::io::stdout().flush();
+    // SAFETY: flushes every C stdio stream (glibc resets their locks in a fork
+    // child); it returns EOF if any stream fails.
+    let c_flush_failed = unsafe { libc::fflush(std::ptr::null_mut()) } != 0;
+    let code = if code == 0 && (rust_flush.is_err() || c_flush_failed) {
+        let message = match rust_flush {
+            Err(error) => format!("Forked Rust process failed to flush stdout: {error}\n"),
+            Ok(()) => "Forked Rust process failed to flush C stdio\n".to_owned(),
+        };
+        // SAFETY: fd 2 stays open for the life of the process.
+        let _ = nix::unistd::write(unsafe { BorrowedFd::borrow_raw(2) }, message.as_bytes());
+        1
+    } else {
+        code
+    };
+    // SAFETY: exits without running the parent's runtime cleanup.
+    unsafe { libc::_exit(code) }
+}
+
 /// Spawn a function with instrumentation rather than a subprocess indicated with
 /// a Command. This still creates a fresh child process and runs it under ptrace.
 /// However, the child process is a fork of the current process, and is used to
 /// run the indicated function.
 ///
 /// The main use case for this entrypoint into the library is testing.
+///
+/// The child ends with `_exit` once the function returns (status 0) or panics
+/// (status 1), after flushing Rust's stdout and every C stdio stream; a
+/// failed flush turns status 0 into 1. Because it never runs the process's
+/// exit-time cleanup, `atexit` handlers and destructors registered in the
+/// child or inherited from the parent do not run. In particular, a coverage
+/// build's profile write-out (an `atexit` hook) is skipped, so code executed
+/// only inside the guest function is not counted in coverage reports.
 pub async fn spawn_fn_with_config<L, F>(
     fun: F,
     config: <L::GlobalState as GlobalTool>::Config,
@@ -4676,17 +4796,14 @@ where
             seccomp_filter.load().expect("Failed to set seccomp filter");
 
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(fun)) {
-                Ok(()) => {
-                    std::io::stdout().flush()?;
-                    std::process::exit(0);
-                }
+                Ok(()) => exit_forked_guest(0),
                 Err(e) => {
-                    std::io::stdout().flush()?;
+                    let _ = std::io::stdout().flush();
                     let _ = nix::unistd::write(
                         unsafe { BorrowedFd::borrow_raw(2) },
                         format!("Forked Rust process panicked, cause: {:?}", e).as_ref(),
                     );
-                    std::process::exit(1);
+                    exit_forked_guest(1)
                 }
             };
         }
@@ -4731,6 +4848,7 @@ where
                 stderr: Some(stderr),
                 liteinst_cleanup: None,
                 liteinst_instrumentation_stats: None,
+                liteinst_trap_only: None,
                 backend_stats: None,
             })
         }
@@ -4748,6 +4866,14 @@ mod injection_stop_tests;
 #[cfg(all(test, target_arch = "x86_64"))]
 #[path = "injected_error_tests.rs"]
 mod injected_error_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "liteinst_trap_only_tests.rs"]
+mod liteinst_trap_only_tests;
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[path = "seccomp_ip_window_tests.rs"]
+mod seccomp_ip_window_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6090,6 +6216,102 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_nonleader_exec_postexec_timer_survives_internal_step() {
         ordinary_exec_owner_control(false, 1).await;
+    }
+
+    /// Runs `body` with the order a loaded tracer thread produces by chance:
+    /// an exec'ing nonleader's run loop observes its former TID's ECHILD before
+    /// its exit future and before the leader's Exec edge takes its state.
+    /// Returns the wait operation of every ECHILD for which that run loop
+    /// stayed pending, so a caller can require that its pass went through the
+    /// run-loop branch.
+    async fn with_nonleader_run_loop_echild_first(
+        body: impl std::future::Future<Output = ()>,
+    ) -> Vec<&'static str> {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::task::NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(|slot| slot.set(false));
+                crate::task::NONLEADER_RUN_LOOP_ECHILD_PENDED
+                    .with(|pended| pended.borrow_mut().clear());
+            }
+        }
+        let _reset = Reset;
+        crate::task::NONLEADER_RUN_LOOP_ECHILD_PENDED.with(|pended| pended.borrow_mut().clear());
+        crate::task::NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(|slot| slot.set(true));
+        body.await;
+        crate::task::NONLEADER_RUN_LOOP_ECHILD_PENDED.with(|pended| pended.borrow().clone())
+    }
+
+    /// The exec'ing thread's run loop, not its exit future, observes the
+    /// former TID's ECHILD first, from a wait that names the TID directly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge() {
+        let pended =
+            with_nonleader_run_loop_echild_first(ordinary_exec_owner_control(false, 1)).await;
+        eprintln!("nonleader run loop stayed pending on: {pended:?}");
+        assert_eq!(
+            pended.len(),
+            1,
+            "the run loop did not stay pending exactly once on its former TID's ECHILD: {pended:?}"
+        );
+    }
+
+    #[derive(Default)]
+    struct InjectedExecTool;
+
+    #[reverie::tool]
+    impl Tool for InjectedExecTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::execve].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            // `inject`, not `tail_inject`: the wait inside the injection
+            // reports the former TID's ECHILD through the next-state channel.
+            Ok(guest.inject(syscall).await?)
+        }
+    }
+
+    /// As above, but the ECHILD comes from a wait inside an injected execve,
+    /// whose result reaches the run loop through the next-state channel.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_nonleader_injected_exec_echild_awaits_leader_exec_edge() {
+        let pended = with_nonleader_run_loop_echild_first(async {
+            let tracer = spawn_fn::<InjectedExecTool, _>(|| {
+                std::thread::spawn(|| {
+                    let args = [c"/bin/true".as_ptr(), std::ptr::null()];
+                    unsafe {
+                        libc::execv(args[0], args.as_ptr());
+                        libc::_exit(127);
+                    }
+                });
+                loop {
+                    unsafe {
+                        libc::pause();
+                    }
+                }
+            })
+            .await
+            .expect("spawn nonleader exec guest");
+            let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+                .await
+                .expect("nonleader injected exec hung")
+                .expect("nonleader injected exec tracing failed");
+            assert_eq!(status, ExitStatus::Exited(0));
+        })
+        .await;
+        assert_eq!(
+            pended,
+            ["wait during injected syscall"],
+            "the run loop did not stay pending on the injected wait's ECHILD"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

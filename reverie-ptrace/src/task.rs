@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -370,6 +371,90 @@ fn is_expected_breakpoint_trap(
     Ok((siginfo.si_code == libc::TRAP_BRKPT
         && (observed_rip == breakpoint_rip || Some(observed_rip) == after_breakpoint))
         || (siginfo.si_code == libc::SI_KERNEL && Some(observed_rip) == after_breakpoint))
+}
+
+/// Whether a stop reported as `sig` without a ptrace event is a job-control
+/// group stop rather than a signal-delivery stop. Under `PTRACE_TRACEME` both
+/// look identical in the wait status; only a group stop has no siginfo, so
+/// `PTRACE_GETSIGINFO` fails with `EINVAL` (see ptrace(2), "Group-stop").
+fn is_group_stop(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
+    if !matches!(
+        sig,
+        Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU
+    ) {
+        return Ok(false);
+    }
+    match task.getsiginfo() {
+        Ok(_) => Ok(false),
+        Err(safeptrace::Error::Errno(Errno::EINVAL)) => Ok(true),
+        Err(err) => Err(err),
+    }
+}
+
+/// The bit for `sig` in a kernel signal mask as read by `PTRACE_GETSIGMASK`.
+fn signal_mask_bit(sig: Signal) -> u64 {
+    1u64 << (sig as i32 - 1)
+}
+
+/// The signal mask the kernel dequeues under for the stopped thread `tid`
+/// (`task->blocked`, procfs `SigBlk`).
+///
+/// `PTRACE_GETSIGMASK` reports the saved mask instead while a mask-swapping
+/// syscall's restore is pending (`TIF_RESTORE_SIGMASK`), so it cannot tell
+/// whether that syscall's temporary mask blocks a signal.
+fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status"))
+        .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigBlk:"))
+        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+        .ok_or_else(|| Errno::EPROTO.into())
+}
+
+/// `si_code` of a SIGSYS raised by a seccomp filter's `SECCOMP_RET_TRAP`.
+const SYS_SECCOMP: libc::c_int = 1;
+
+/// Whether the SIGTRAP `task` stopped with is the single-step report of a
+/// private-page `syscall`: x86 raises it at syscall exit with `si_addr` set to
+/// the RIP just past the instruction (`after_syscall`).
+fn is_private_step_trap(task: &Stopped, after_syscall: u64) -> Result<bool, TraceError> {
+    let siginfo = task.getsiginfo()?;
+    // SAFETY: si_addr reads the fault-address member that SIGTRAP's
+    // TRAP_TRACE and TRAP_BRKPT reports fill in.
+    Ok(siginfo.si_signo == libc::SIGTRAP
+        && matches!(siginfo.si_code, libc::TRAP_TRACE | libc::TRAP_BRKPT)
+        && unsafe { siginfo.si_addr() } as u64 == after_syscall)
+}
+
+/// Whether the SIGSYS `task` stopped with was raised by a guest seccomp
+/// filter's `SECCOMP_RET_TRAP` for the private-page `syscall`. Its
+/// `si_call_addr` (which shares `si_addr`'s place in the siginfo union) is
+/// the RIP just past the trapped instruction (`after_syscall`).
+fn is_private_seccomp_trap(task: &Stopped, after_syscall: u64) -> Result<bool, TraceError> {
+    let siginfo = task.getsiginfo()?;
+    // SAFETY: for SYS_SECCOMP the union holds `_sigsys`, whose first member
+    // `_call_addr` is at the offset si_addr reads.
+    Ok(siginfo.si_signo == libc::SIGSYS
+        && siginfo.si_code == SYS_SECCOMP
+        && unsafe { siginfo.si_addr() } as u64 == after_syscall)
+}
+
+/// Whether `nr` installs a temporary signal mask that the kernel restores only
+/// after signal handling (`TIF_RESTORE_SIGMASK`). A ptrace mask write discards
+/// that pending restore, so a signal stopping such a syscall must not be
+/// returned to the kernel queue by masking it.
+fn swaps_signal_mask(nr: Sysno) -> bool {
+    matches!(
+        nr,
+        Sysno::rt_sigsuspend
+            | Sysno::ppoll
+            | Sysno::pselect6
+            | Sysno::epoll_pwait
+            | Sysno::epoll_pwait2
+            | Sysno::io_pgetevents
+            | Sysno::io_uring_enter
+    )
 }
 
 fn is_expected_private_syscall_trap(
@@ -1110,6 +1195,22 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
+    /// Forces the order a loaded tracer thread produces by chance: a nonleader
+    /// thread's run loop observes its own TID vanish in a non-leader execve
+    /// before `drive_ordinary` polls that thread's exit future again. Every
+    /// nonleader `drive_ordinary` on this thread leaves its exit future
+    /// unpolled for the duration of its run-loop race; the leader is
+    /// unaffected.
+    pub(crate) static NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The wait operation of every own-TID ECHILD for which a nonleader's run
+    /// loop stayed pending, in order. Tests read it to prove that a pass went
+    /// through that branch rather than through the exit future or an earlier
+    /// Exec transfer.
+    pub(crate) static NONLEADER_RUN_LOOP_ECHILD_PENDED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
     pub(crate) static FATAL_FORK_PAUSE: std::cell::RefCell<Option<Arc<FatalForkPause>>> = const { std::cell::RefCell::new(None) };
     pub(crate) static FATAL_SETUP_CONTROL: std::cell::RefCell<Option<Arc<FatalSetupControl>>> = const { std::cell::RefCell::new(None) };
     pub(crate) static FATAL_FREEZE_CONTROL: std::cell::RefCell<Option<Arc<FatalFreezeControl>>> = const { std::cell::RefCell::new(None) };
@@ -1835,6 +1936,13 @@ pub struct TracedTask<L: Tool> {
     /// syscall got interrupted (by signal)
     pending_signal: Option<Signal>,
 
+    /// Whether an injected syscall's single step ended at a held signal
+    /// (`step_private_syscall`) before collecting its step SIGTRAP, which the
+    /// kernel therefore still has queued. The next SIGTRAP stop carrying that
+    /// step's siginfo is discarded instead of being read as a later step's
+    /// completion or reported as an unexpected trap.
+    stale_private_step_trap: bool,
+
     /// A channel to allow short-circuiting the next state to main run loop. This
     /// is useful inside of `inject` or `tail_inject` where we might need to
     /// cancel a future early.
@@ -2017,6 +2125,7 @@ impl<L: Tool> TracedTask<L> {
             },
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            stale_private_step_trap: false,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage,
@@ -2081,6 +2190,7 @@ impl<L: Tool> TracedTask<L> {
             timer: Timer::new(self.pid, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            stale_private_step_trap: false,
             child_procs: self.child_procs.clone(),
             child_threads: self.child_threads.clone(),
             orphanage: self.orphanage.clone(),
@@ -2144,6 +2254,7 @@ impl<L: Tool> TracedTask<L> {
             timer: Timer::new(child, child),
             cancel_handler: Arc::new(AtomicBool::new(false)),
             pending_signal: None,
+            stale_private_step_trap: false,
             child_procs: Arc::new(Mutex::new(Children::new())),
             child_threads: Arc::new(Mutex::new(Children::new())),
             orphanage: self.orphanage.clone(),
@@ -2276,6 +2387,13 @@ fn set_ret(task: &Stopped, ret: Reg) -> Result<Reg, TraceError> {
     task.setregs(&regs)?;
     Ok(old)
 }
+
+/// Late timer overflow signals discarded at injected syscalls, for tests.
+pub(crate) static LATE_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
+
+/// Timer overflow signals discarded while the LiteInst patch helper ran, for
+/// tests.
+pub(crate) static LITEINST_HELPER_TIMER_SIGNALS_DISCARDED: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical marker emitted when a guest-thread task dies of a panic.
 ///
@@ -2942,6 +3060,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(regs)
     }
 
+    /// Whether a signal-delivery stop reports this thread's own unconsumed
+    /// precise-timer overflow notification, which must never be delivered to
+    /// the guest. A match is recorded as consumed.
+    fn consume_own_timer_overflow(&mut self, task: &Stopped) -> Result<bool, TraceError> {
+        let siginfo = task.getsiginfo()?;
+        self.timer
+            .consume_overflow_signal(&siginfo)
+            .map_err(TraceError::Errno)
+    }
+
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
@@ -3007,6 +3135,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
         self.timer.observe_event();
+        // The guest can remove a timer notification between two stops without
+        // an injection seeing the queue. See `untraced_syscall`.
+        self.timer.expire_overflow_records(&stopped);
         let tid = self.tid();
 
         #[cfg(test)]
@@ -3403,6 +3534,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         let resumed_by_gdb_step = self
             .resumed_by_gdb
             .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
+        // A standard signal is queued at most once, so any SIGTRAP stop
+        // consumes the step SIGTRAP an injection left queued.
+        if std::mem::take(&mut self.stale_private_step_trap)
+            && !resumed_by_gdb_step
+            && is_private_step_trap(
+                &task,
+                (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64,
+            )?
+        {
+            tracing::debug!(
+                "[scheduler/tool] (pid = {}) discarding the step SIGTRAP of an injected syscall that ended at a held signal",
+                task.pid()
+            );
+            return Ok(HandleSignalResult::SignalSuppressed(
+                self.resume_stopped(task, None)?.next_state().await?,
+            ));
+        }
         let mut regs = task.getregs()?;
         if let Some(guard) = self.liteinst_entry_guard
             && regs.ip() == guard.address.saturating_add(1)
@@ -4800,6 +4948,76 @@ impl<L: Tool + 'static> TracedTask<L> {
                     );
                     return Err(self.liteinst_helper_failure(original, rollback));
                 }
+                Wait::Stopped(stopped, Event::Signal(sig)) if sig == Timer::signal_type() => {
+                    // The counter counts the helper's branches, so the timer's
+                    // own overflow notification can be raised while the helper
+                    // runs. (One already pending at the seccomp stop that led
+                    // here is taken by untraced_syscall when the helper's CPUID
+                    // policy is read, before the helper starts, when overflow
+                    // records exist.) That stop ticked the timer event, and
+                    // nothing has requested one since, so the event is Armed or
+                    // Cancelled and its signal's own stop would drop it. It
+                    // never reaches the guest; resume the helper without it.
+                    // Any other signal, one not backed by an unconsumed
+                    // overflow record, and a failure to tell still roll the
+                    // helper back. Without overflow records (the kernel is or
+                    // may be PREEMPT_RT, or the records could not be mapped)
+                    // no signal is backed by one, so an overflow raised in
+                    // the helper still fails the run, as it did before this
+                    // arm.
+                    match self.consume_own_timer_overflow(&stopped) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let original = Error::runtime(
+                                self.tid(),
+                                "run LiteInst patch helper",
+                                format!("unexpected stopped event: {:?}", Event::Signal(sig)),
+                            );
+                            return Err(self
+                                .rollback_liteinst_helper_error(stopped, &saved, original)
+                                .await);
+                        }
+                        Err(error) => {
+                            return Err(self
+                                .rollback_liteinst_helper_error(
+                                    stopped,
+                                    &saved,
+                                    Error::Internal(error),
+                                )
+                                .await);
+                        }
+                    }
+                    tracing::debug!(
+                        "[{}] discarding a timer overflow signal in the LiteInst patch helper",
+                        stopped.pid()
+                    );
+                    LITEINST_HELPER_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
+                    let running = match self.resume_stopped(stopped, None) {
+                        Ok(running) => running,
+                        Err(error) => {
+                            return Err(self
+                                .rollback_liteinst_helper_error(
+                                    Stopped::new_unchecked(self.tid()),
+                                    &saved,
+                                    Error::Internal(error),
+                                )
+                                .await);
+                        }
+                    };
+                    wait = match running.next_state().await {
+                        Ok(wait) => wait,
+                        Err(error) => {
+                            return Err(self
+                                .rollback_liteinst_helper_error(
+                                    Stopped::new_unchecked(self.tid()),
+                                    &saved,
+                                    Error::Internal(error),
+                                )
+                                .await);
+                        }
+                    };
+                    self.arm_liteinst_wait(&wait);
+                }
                 Wait::Stopped(stopped, event) => {
                     let original = Error::runtime(
                         self.tid(),
@@ -6012,6 +6230,27 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // numerically signal the root PID.
                     return Err(anyhow::Error::new(err).into());
                 }
+                if !self.is_main_thread()
+                    && let Some(_operation) = self.own_tid_echild_operation(&err)
+                {
+                    // A nonleader execve (de_thread) hands this thread's TID
+                    // to the leader's pid object and releases it, so a wait on
+                    // the former TID reports ECHILD. The run loop can see that
+                    // before `drive_ordinary` re-polls this thread's exit
+                    // future, which applies the same rule. ECHILD authorizes
+                    // neither exit nor failure: stay pending so the leader's
+                    // actual Exec edge transfers this state, while session
+                    // cancellation and backend failure remain observable.
+                    #[cfg(test)]
+                    {
+                        NONLEADER_RUN_LOOP_ECHILD_PENDED
+                            .with(|pended| pended.borrow_mut().push(_operation));
+                        if let Some(slot) = self.ordinary_exec.lock().unwrap().get(&self.tid()) {
+                            slot.changed.notify_waiters();
+                        }
+                    }
+                    return future::pending().await;
+                }
                 // Note: Calling handle_internal_error cannot happen in the
                 // `select!()` of the `run` function because then the exit
                 // events that get generated in here cannot be caught by the
@@ -6099,7 +6338,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                     task_state = futures::select_biased! {
                         next_state = fut1 => {
                             if let Some(next_state) = next_state {
-                                next_state.map_err(Error::Internal)
+                                next_state.map_err(|error| match error {
+                                    // Only this task's own handlers send here
+                                    // (`abort`), from `inject`, `tail_inject`
+                                    // and the nested handlers they run. Their
+                                    // waits are all on this TID: a new child is
+                                    // waited on in its own spawned task. ptrace
+                                    // and process_vm_* never return ECHILD. So
+                                    // an ECHILD here is a wait on this TID, or
+                                    // a Tool post-exec callback's errno that a
+                                    // nested `handle_exec_event` relays
+                                    // (`ordinary_callback_errno` returns it as
+                                    // `TraceError::Errno`). Both get this label.
+                                    // The callback case is harmless: before
+                                    // returning the errno, that function has
+                                    // published the session failure, which
+                                    // `drive_ordinary` sees as cancellation.
+                                    // Other errors keep their unattributed form.
+                                    TraceError::Errno(Errno::ECHILD) => Error::Tracee {
+                                        operation: "wait during injected syscall",
+                                        pid: tid,
+                                        source: error,
+                                    },
+                                    error => Error::Internal(error),
+                                })
                             } else {
                                 Err(Error::runtime(
                                     tid,
@@ -6264,6 +6526,36 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// The wait operation, when `err` is ECHILD from a wait on this task's own
+    /// TID. Only an error that names this TID qualifies: a bare
+    /// `Error::Internal` ECHILD could come from any `?` (`From<Errno>` makes
+    /// every propagated errno one), so it does not. Every own-TID wait that
+    /// can report ECHILD to the ordinary run loop carries this TID: the
+    /// initial resume and seccomp resume waits, the handlers that
+    /// `handle_stop_event` annotates, and waits inside injected syscalls,
+    /// which `run_loop_events` annotates when their result comes back through
+    /// the next-state channel.
+    ///
+    /// The converse does not hold: not every qualifying error is a wait.
+    /// `handle_stop_event` names this TID on any error from `handle_signal`,
+    /// `handle_exec_event`, `dispatch_new_task` and `handle_vfork_done_event`,
+    /// and `ordinary_callback_errno` returns a Tool callback's errno as
+    /// `TraceError::Errno`, so a callback that returns ECHILD qualifies too.
+    /// That is harmless today. This rule applies only without LiteInst, and
+    /// there `ordinary_callback_errno` either never returns or publishes the
+    /// session failure before it returns the errno, so `drive_ordinary` takes
+    /// its cancellation branch while the run loop stays pending.
+    fn own_tid_echild_operation(&self, err: &Error) -> Option<&'static str> {
+        match err {
+            Error::Tracee {
+                operation,
+                pid,
+                source: TraceError::Errno(Errno::ECHILD),
+            } if *pid == self.tid() => Some(operation),
+            _ => None,
+        }
+    }
+
     fn ordinary_failure_enabled(&self) -> bool {
         // Configured static traps use the same stopped-task ownership as
         // seccomp. Dynamic LiteInst retains its separate session cleanup guard.
@@ -6414,6 +6706,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         if matches!(&start, OrdinaryStart::Newborn(..)) && self.is_a_daemon {
             self.ndaemons.fetch_add(1, Ordering::SeqCst);
         }
+        #[cfg(test)]
+        let hold_transfer = !self.is_main_thread()
+            && NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(std::cell::Cell::get);
         loop {
             // Covers the entire run, parked callbacks, terminal waits, and
             // failure cleanup. The actual Exec requester owns the replacement
@@ -6422,7 +6717,25 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let drive = self
                     .drive_ordinary(start, &mut exit_event, &stop, &session)
                     .fuse();
-                let transfer = slot.requested().fuse();
+                let transfer = async {
+                    slot.requested().await;
+                    // The forced order is complete only once the run loop,
+                    // not an earlier Exec transfer, has observed the former
+                    // TID's ECHILD. Hold the transfer until then.
+                    #[cfg(test)]
+                    if hold_transfer {
+                        loop {
+                            let changed = slot.changed.notified();
+                            if NONLEADER_RUN_LOOP_ECHILD_PENDED
+                                .with(|pended| !pended.borrow().is_empty())
+                            {
+                                break;
+                            }
+                            changed.await;
+                        }
+                    }
+                }
+                .fuse();
                 futures::pin_mut!(drive, transfer);
                 futures::select_biased! {
                     () = transfer => None,
@@ -6530,12 +6843,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                             .timer
                             .exec_test_identity()
                             .expect("read replacement perf identity");
+                        // Probe by event ID, not by descriptor number: other
+                        // tests in this process reuse a freed number at once.
                         let closed = displaced.as_ref().is_some_and(|old| {
-                            [old.clock_fd, old.timer_fd].into_iter().all(|fd| {
-                                (unsafe { libc::fcntl(fd, libc::F_GETFD) }) == -1
-                                    && std::io::Error::last_os_error().raw_os_error()
-                                        == Some(libc::EBADF)
-                            })
+                            [
+                                (old.clock_fd, old.clock_event_id),
+                                (old.timer_fd, old.timer_event_id),
+                            ]
+                            .into_iter()
+                            .all(|(fd, id)| crate::perf::fd_no_longer_names_event(fd, id))
                         });
                         EXEC_TIMER_TRANSFERS.with(|control| {
                             control.borrow().as_ref().unwrap().lock().unwrap().push(
@@ -6554,6 +6870,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.next_state = tx;
                     self.next_state_rx = Some(rx);
                     self.pending_signal = None;
+                    self.stale_private_step_trap = false;
                     self.pending_syscall = None;
                     self.pending_syscall_already_skipped = false;
                     self.cancel_handler.store(false, Ordering::Release);
@@ -6628,12 +6945,22 @@ impl<L: Tool + 'static> TracedTask<L> {
         session: &Arc<FatalSession>,
     ) -> crate::tracer::OrdinaryTerminal {
         let global = self.global_state.gs_ref.clone();
+        #[cfg(test)]
+        let exit_deferred = !self.is_main_thread()
+            && NONLEADER_RUN_LOOP_OBSERVES_ECHILD_FIRST.with(std::cell::Cell::get);
         let outcome = {
             let run_loop = self.ordinary_start(start).fuse();
             let cancelled = session.cancelled().fuse();
             let global_failure = global.wait_for_backend_failure().fuse();
             futures::pin_mut!(run_loop, cancelled, global_failure);
-            let exit = (&mut *exit_event).fuse();
+            let exit = async {
+                #[cfg(test)]
+                if exit_deferred {
+                    return future::pending().await;
+                }
+                (&mut *exit_event).await
+            }
+            .fuse();
             futures::pin_mut!(exit);
             futures::select_biased! {
                 () = cancelled => None,
@@ -7118,6 +7445,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
     ) -> Result<Result<i64, Errno>, TraceError> {
         self.validate_liteinst_mapping_execution(nr, args)?;
+        self.timer.expire_overflow_records(&task);
         tracing::trace!(
             "[scheduler/tool] (pid = {}) untraced syscall: {:?}",
             task.pid(),
@@ -7150,15 +7478,310 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let wait = self.step_stopped(task, None)?.next_state().await?;
-        self.arm_liteinst_wait(&wait);
+        let (mut wait, mut seccomp_trapped) = self.step_private_syscall(task, nr).await?;
+
+        // A late overflow notification of the timer can be pending when the
+        // step starts. Its delivery stop precedes the syscall instruction. No
+        // guest branch runs during an injection, so the overflow predates the
+        // current stop, which ends the event it belongs to. The notification
+        // has nothing to deliver: discard it and step again.
+        //
+        // A guest signal can carry the same signal number, code, and file
+        // descriptor number, so a match also requires a kernel record of an
+        // overflow whose notification has not been consumed. At each stop and
+        // before each injection, the records expire unless such a
+        // notification is pending for the thread. This still leaves these
+        // cases:
+        //
+        // - A guest signal with the same siginfo that is pending when the
+        //   injection starts is discarded while a record is unconsumed and
+        //   its notification
+        //   - is pending too, since the kernel keeps one instance of a
+        //     standard signal;
+        //   - left the queue after the last check, for example because
+        //     another guest thread flushed it;
+        //   - never had a queue entry of its own, because it coalesced into
+        //     a pending guest signal of the same number with other siginfo,
+        //     such as one sent by `tgkill`. That signal does not consume the
+        //     record.
+        // - A late notification reaches the guest when no record backs it or
+        //   its records expired early:
+        //   - the kernel also notifies when a non-sample record, such as a
+        //     throttling record, crosses the buffer's wakeup watermark, and
+        //     when a full buffer loses the sample;
+        //   - another guest thread removed an earlier queue entry while the
+        //     queue was being read, so the read skipped the notification;
+        //   - the queue was read after the kernel wrote the record but before
+        //     it queued the notification, which follows from an irq_work;
+        //   - the timer's records could not be mapped, or the kernel is or
+        //     may be PREEMPT_RT, where a notification can follow its record,
+        //     so records are not used.
+        while let Wait::Stopped(stopped, Event::Signal(sig)) = &wait
+            && *sig == Timer::signal_type()
+            && stopped.getregs()?.ip() as usize == cp::PRIVATE_PAGE_OFFSET
+            && self.consume_own_timer_overflow(stopped)?
+        {
+            self.validate_nested_liteinst_activation_signal(
+                stopped,
+                *sig,
+                LiteinstActivationOperation::FinishInjectedSyscall,
+                NestedTrapExpectation::PrivateSyscall(
+                    (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64,
+                ),
+                false,
+            )?;
+            tracing::debug!(
+                "[{}] discarding a late timer overflow signal before an injected syscall",
+                stopped.pid()
+            );
+            LATE_TIMER_SIGNALS_DISCARDED.fetch_add(1, Ordering::Relaxed);
+            let Wait::Stopped(stopped, _) = wait else {
+                unreachable!("the loop condition matched a stopped task")
+            };
+            // The step again needs every case `step_private_syscall` handles:
+            // a group stop, a signal delivered after the `syscall` completed,
+            // a seccomp trap. The discarded stop preceded the `syscall`, so
+            // the finished step requeued nothing, saw no seccomp trap, and
+            // collected any stale step SIGTRAP, which Linux dequeues ahead of
+            // this notification. A new step therefore starts from the same
+            // state. During LiteInst activation the validation above rejects
+            // the notification, so this is reached only outside activation.
+            //
+            // The notification is never seen after the `syscall`: the step
+            // SIGTRAP queued at syscall exit is a synchronous signal, which
+            // Linux dequeues first, so a notification sent during the syscall
+            // stays queued past this step and reaches the timer's own
+            // handling at the next run-loop stop. It is therefore never
+            // requeued or held in `pending_signal` here.
+            (wait, seccomp_trapped) = self.step_private_syscall(stopped, nr).await?;
+        }
 
         // Get the result of the syscall to return to the caller.
         let result = self
             .status_to_result(wait, Some(oldregs), child_context)
             .await?;
+        // A guest seccomp filter's `SECCOMP_RET_TRAP` skipped the syscall and
+        // left its number in RAX. Report that it did not run; the guest's
+        // SIGSYS handler still runs, and seccomp(2) leaves the register it
+        // finds architecture-dependent.
+        let result = if seccomp_trapped {
+            Err(Errno::ENOSYS)
+        } else {
+            result
+        };
         self.observe_liteinst_mapping_result(nr, args, result);
         Ok(result)
+    }
+
+    /// Single-steps the private-page `syscall` and waits for the stop that
+    /// reports its outcome. Also returns whether a seccomp filter the guest
+    /// installed trapped the syscall (`SECCOMP_RET_TRAP`), in which case the
+    /// kernel did not execute it and RAX holds the syscall number that
+    /// `syscall_rollback` restored rather than a result; the SIGSYS it raised
+    /// (`si_code` `SYS_SECCOMP`, `si_call_addr` just past the private
+    /// `syscall`) is handled like any other signal below.
+    ///
+    /// Three kinds of stop can precede that outcome without describing it:
+    ///
+    /// - A job-control group stop. Under `PTRACE_TRACEME` it is reported as a
+    ///   bare stop signal, distinguishable from a signal-delivery stop only
+    ///   because `PTRACE_GETSIGINFO` fails with `EINVAL`. A restarted ptraced
+    ///   tracee does not honor a group stop, so the step is simply resumed:
+    ///   before the `syscall` this executes it; after it, the kernel next
+    ///   dequeues the step SIGTRAP that syscall exit already queued. Linux
+    ///   checks for a pending group stop before dequeuing any signal, so this
+    ///   stop can arrive after the syscall completed. Unlike a group stop in
+    ///   the main loop, it is not reported to `Tool::handle_signal_event`:
+    ///   honoring it is impossible either way, and resuming the step without
+    ///   a signal is what the main loop's forwarded stop amounts to.
+    /// - A stale step SIGTRAP before the `syscall` executed: the single-step
+    ///   report of an earlier injection whose step ended at a held signal
+    ///   (below), recognized by its siginfo (`si_addr` just past the private
+    ///   `syscall`, which this step has not reached). It is discarded, as the
+    ///   main loop discards it when no further injection follows; read as
+    ///   this step's completion it would report a syscall that never ran.
+    /// - A genuine signal-delivery stop after the `syscall` completed (RIP past
+    ///   the instruction). Linux dequeues a synchronous-class signal (positive
+    ///   `si_code`) queued before the step SIGTRAP ahead of it; several such
+    ///   signals arrive one stop each. RAX already holds the kernel's result
+    ///   (or, after `SECCOMP_RET_TRAP`, the rolled-back syscall number), so
+    ///   none of them may turn the syscall into a restart. Each is returned
+    ///   to the kernel's queue unchanged: the tracer blocks it and resumes
+    ///   with it, and `ptrace_signal` requeues a resumed signal that is now
+    ///   blocked, with its original siginfo, behind the step SIGTRAP. Once
+    ///   the step SIGTRAP is collected the masks are lifted again. Nothing
+    ///   has run in between, so the kernel then delivers the signals in their
+    ///   original order at the next resume, each through a signal-delivery
+    ///   stop that the main loop reports to `Tool::handle_signal_event`, just
+    ///   as it would after the syscall returned in place. No signal is taken
+    ///   into `pending_signal`, whose single slot could otherwise be
+    ///   overwritten.
+    ///
+    ///   This does not reproduce native delivery when the same callback
+    ///   injects another syscall: natively the handlers would run between
+    ///   the two syscalls and the second would succeed, but here the
+    ///   requeued signals are still pending before the next injected
+    ///   `syscall`, which is then reported as interrupted (the case below).
+    ///   With `SA_RESTART` the guest's syscall is restarted and the callback
+    ///   runs again, including injections that already completed. This
+    ///   limitation predates the requeueing.
+    ///
+    ///   The signal may already be blocked: `dequeue_synchronous_signal`
+    ///   returns the first queued synchronous-class entry without consulting
+    ///   the mask whenever any unblocked synchronous signal (the step SIGTRAP
+    ///   among them) is pending. Such a signal is resumed without touching
+    ///   the mask, so `ptrace_signal` requeues it still blocked, as it does
+    ///   for any tracer (which then sees it again whenever the quirk next
+    ///   dequeues it); recording it for the final unmask would unblock a
+    ///   signal the guest itself blocked. After a mask-swapping syscall the
+    ///   temporary mask decides, read through procfs because
+    ///   `PTRACE_GETSIGMASK` reports the saved mask while its restore is
+    ///   pending.
+    ///
+    ///   The one exception is an unblocked signal after a syscall that swaps
+    ///   in a temporary signal mask (`swaps_signal_mask`): a ptrace mask
+    ///   write would discard the saved mask the kernel restores after signal
+    ///   handling, so the signal cannot be returned to the queue. Its stop is
+    ///   returned as the outcome instead, and `status_to_result` holds the
+    ///   signal in `pending_signal` for delivery at the guest's syscall site.
+    ///   Stepping stops there, so any further signals and the step SIGTRAP
+    ///   stay queued in the kernel with the temporary mask and its pending
+    ///   restore intact, and the kernel delivers them after the held signal
+    ///   exactly as it would for the syscall run in place.
+    ///
+    /// The same signal returning to this stop is a protocol violation (a
+    /// standard signal is queued at most once, a requeued entry lands behind
+    /// the step SIGTRAP, and the step SIGTRAP ends the loop) and fails closed
+    /// rather than stepping forever.
+    ///
+    /// A genuine signal-delivery stop before the `syscall` executed is returned
+    /// for `status_to_result` to report as an interrupted syscall. During
+    /// LiteInst activation every stop is returned unchanged so the activation
+    /// signal validation keeps rejecting it.
+    async fn step_private_syscall(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+    ) -> Result<(Wait, bool), TraceError> {
+        let after_syscall = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
+        // Signals returned to the kernel queue during this step, still blocked
+        // by the tracer. Only these bits are lifted at the final stop.
+        let mut requeued: u64 = 0;
+        // Every signal resumed at a stop after the `syscall`, including those
+        // the guest already blocked.
+        let mut returned: u64 = 0;
+        let mut seccomp_trapped = false;
+        let lift_requeued = |stopped: &Stopped, requeued: u64| -> Result<(), TraceError> {
+            if requeued != 0 {
+                let mask = stopped.getsigmask()?;
+                stopped.setsigmask(mask & !requeued)?;
+            }
+            Ok(())
+        };
+        let mut running = self.step_stopped(task, None)?;
+        loop {
+            let wait = running.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            let (stopped, sig) = match wait {
+                Wait::Stopped(stopped, Event::Signal(sig))
+                    if !self.liteinst_activation_in_progress() =>
+                {
+                    if sig == Signal::SIGTRAP
+                        && std::mem::take(&mut self.stale_private_step_trap)
+                        && stopped.getregs()?.ip() != after_syscall
+                        && is_private_step_trap(&stopped, after_syscall)?
+                    {
+                        tracing::debug!(
+                            "[scheduler/tool] (pid = {}) discarding a stale step SIGTRAP before injected {}",
+                            stopped.pid(),
+                            nr
+                        );
+                        running = self.step_stopped(stopped, None)?;
+                        continue;
+                    }
+                    if sig == Signal::SIGTRAP {
+                        lift_requeued(&stopped, requeued)?;
+                        return Ok((Wait::Stopped(stopped, Event::Signal(sig)), seccomp_trapped));
+                    }
+                    (stopped, sig)
+                }
+                Wait::Stopped(stopped, event) => {
+                    lift_requeued(&stopped, requeued)?;
+                    return Ok((Wait::Stopped(stopped, event), seccomp_trapped));
+                }
+                wait => return Ok((wait, seccomp_trapped)),
+            };
+            if is_group_stop(&stopped, sig)? {
+                tracing::debug!(
+                    "[scheduler/tool] (pid = {}) resuming injected syscall step past {} group stop",
+                    stopped.pid(),
+                    sig
+                );
+                running = self.step_stopped(stopped, None)?;
+            } else if stopped.getregs()?.ip() == after_syscall {
+                let bit = signal_mask_bit(sig);
+                if returned & bit != 0 {
+                    tracing::error!(
+                        "[scheduler/tool] (pid = {}) {} stopped injected {} again after it was returned",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    return Err(Errno::EPROTO.into());
+                }
+                if sig == Signal::SIGSYS && is_private_seccomp_trap(&stopped, after_syscall)? {
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) injected {} was trapped by the guest's seccomp filter",
+                        stopped.pid(),
+                        nr
+                    );
+                    seccomp_trapped = true;
+                }
+                // The mask in force, and a mask to write back if not. A
+                // mask-swapping syscall's temporary mask is visible only
+                // through procfs and must not be written.
+                let (blocked, mask) = if swaps_signal_mask(nr) {
+                    (blocked_signal_mask(stopped.pid())?, None)
+                } else {
+                    let mask = stopped.getsigmask()?;
+                    (mask, Some(mask))
+                };
+                if blocked & bit != 0 {
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) requeueing already-blocked {} delivered after injected {} completed",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    returned |= bit;
+                    running = self.step_stopped(stopped, sig)?;
+                } else if let Some(mask) = mask {
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) requeueing {} delivered after injected {} completed",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    stopped.setsigmask(mask | bit)?;
+                    requeued |= bit;
+                    returned |= bit;
+                    running = self.step_stopped(stopped, sig)?;
+                } else {
+                    tracing::debug!(
+                        "[scheduler/tool] (pid = {}) holding {} delivered after injected {} completed; later signals stay queued",
+                        stopped.pid(),
+                        sig,
+                        nr
+                    );
+                    lift_requeued(&stopped, requeued)?;
+                    self.stale_private_step_trap = true;
+                    return Ok((Wait::Stopped(stopped, Event::Signal(sig)), seccomp_trapped));
+                }
+            } else {
+                lift_requeued(&stopped, requeued)?;
+                return Ok((Wait::Stopped(stopped, Event::Signal(sig)), seccomp_trapped));
+            }
+        }
     }
 
     // Replace an actual, unconverted seccomp entry. The caller must have taken
@@ -7256,10 +7879,28 @@ impl<L: Tool + 'static> TracedTask<L> {
                         regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE
                             || regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET
                     );
-                    // interrupted by signal, return -ERESTARTSYS so that tracee can do a
-                    // restart_syscall.
                     if sig != Signal::SIGTRAP {
-                        *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
+                        // Interrupted by a signal before the `syscall`
+                        // executed: return -ERESTARTSYS so that the tracee
+                        // restarts it once the signal is delivered. Past the
+                        // instruction, `step_private_syscall` returns only a
+                        // signal it could not requeue after a mask-swapping
+                        // syscall. That syscall already ran and RAX holds its
+                        // outcome (usually -ERESTARTNOHAND, which the kernel
+                        // resolves when the held signal is delivered);
+                        // overwriting it would execute the syscall twice.
+                        if regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET {
+                            *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
+                        }
+                        if let Some(held) = self.pending_signal {
+                            // TaskGraph reverie_pending_signal_single_slot.
+                            tracing::warn!(
+                                "[scheduler/tool] (pid = {}) {} replaces held {} in the single pending-signal slot",
+                                stopped.pid(),
+                                sig,
+                                held
+                            );
+                        }
                         self.pending_signal = Some(sig);
                     }
                     let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);

@@ -87,7 +87,15 @@ pub enum SoftwareEvent {
 pub struct PerfCounter {
     fd: libc::c_int,
     mmap: Option<NonNull<perf::perf_event_mmap_page>>,
+    records: Option<SampleRecords>,
     raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+}
+
+/// A ring buffer mapping that receives the sample records of a counter.
+#[derive(Debug)]
+struct SampleRecords {
+    page: NonNull<perf::perf_event_mmap_page>,
+    len: usize,
 }
 
 impl Event {
@@ -311,6 +319,7 @@ impl Builder {
         Ok(PerfCounter {
             fd,
             mmap,
+            records: None,
             raw_syscall,
         })
     }
@@ -776,6 +785,11 @@ impl PerfCounter {
         fd_phase: &'static str,
     ) -> Vec<(&'static str, Errno)> {
         let mut errors = Vec::new();
+        if let Some(records) = self.records.take()
+            && let Err(error) = records.close()
+        {
+            errors.push((mmap_phase, error));
+        }
         if let Some(ptr) = self.mmap.take() {
             let result = terminal_mmap_size()
                 .and_then(|size| try_close_mmap(ptr.as_ptr(), size, self.raw_syscall));
@@ -791,6 +805,116 @@ impl PerfCounter {
         }
         errors
     }
+
+    /// Map a ring buffer that receives a record of each overflow the kernel
+    /// handles. The overflow handler writes the record before it queues the
+    /// notification signal, so the record is evidence of that signal. An
+    /// overflow whose interrupt is never handled has neither. The buffer holds
+    /// one page of records; [`PerfCounter::take_sample_records`] must release
+    /// them before it fills, or later records are lost.
+    pub(crate) fn map_sample_records(&mut self) -> Result<(), Errno> {
+        if self.raw_syscall.is_some() || self.records.is_some() {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        let len = 2 * get_mmap_size();
+        // A writable mapping lets the reader advance `data_tail`. The kernel
+        // then never overwrites a record that has not been taken.
+        let ptr = Errno::result(unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.fd,
+                0,
+            )
+        })?;
+        let page = NonNull::new(ptr.cast()).ok_or(Errno::ENOMEM)?;
+        self.records = Some(SampleRecords { page, len });
+        Ok(())
+    }
+
+    /// Count the sample records written since the last call and release
+    /// their space. Other record types, such as throttling and loss records,
+    /// are not counted. Returns `None` if no records are mapped.
+    pub(crate) fn take_sample_records(&mut self) -> Option<u64> {
+        use core::ptr::addr_of;
+        use core::ptr::addr_of_mut;
+        use core::sync::atomic::Ordering;
+        use core::sync::atomic::fence;
+
+        let records = self.records.as_ref()?;
+        let page = records.page.as_ptr();
+        let page_size = get_mmap_size() as u64;
+        // SAFETY: `page` maps the metadata page followed by the data pages
+        // for the lifetime of `records`. Only this method writes `data_tail`,
+        // and `&mut self` excludes concurrent calls.
+        let samples = unsafe {
+            let head = core::ptr::read_volatile(addr_of!((*page).data_head));
+            // Pairs with the kernel's barrier before it publishes `data_head`.
+            fence(Ordering::Acquire);
+            let tail = core::ptr::read_volatile(addr_of!((*page).data_tail));
+            // Kernels before 4.1 leave these fields zero and place the data
+            // immediately after the metadata page.
+            let offset = match core::ptr::read_volatile(addr_of!((*page).data_offset)) {
+                0 => page_size,
+                offset => offset,
+            };
+            let size = match core::ptr::read_volatile(addr_of!((*page).data_size)) {
+                0 => records.len as u64 - page_size,
+                size => size,
+            };
+            let data = page.cast::<u8>().add(offset as usize);
+            // Records are 8-byte aligned and the data size is a multiple of
+            // the page size, so a header never wraps.
+            let samples = count_sample_records(tail, head, |position| {
+                core::ptr::read_volatile(
+                    data.add((position % size) as usize)
+                        .cast::<perf::perf_event_header>(),
+                )
+            });
+            // The records must be read before their space is released.
+            fence(Ordering::SeqCst);
+            core::ptr::write_volatile(addr_of_mut!((*page).data_tail), head);
+            samples
+        };
+        Some(samples)
+    }
+
+    /// Remove the sample record mapping, leaving the counter without overflow
+    /// evidence.
+    #[cfg(test)]
+    pub(crate) fn unmap_sample_records(&mut self) {
+        self.records = None;
+    }
+}
+
+/// Count the `PERF_RECORD_SAMPLE` records from `tail` to `head` of a ring
+/// buffer, where `read_header` reads the header of the record at a position.
+fn count_sample_records(
+    tail: u64,
+    head: u64,
+    mut read_header: impl FnMut(u64) -> perf::perf_event_header,
+) -> u64 {
+    let header_size = core::mem::size_of::<perf::perf_event_header>() as u64;
+    let mut position = tail;
+    let mut samples = 0;
+    while head.wrapping_sub(position) >= header_size {
+        let header = read_header(position);
+        let record_size = u64::from(header.size);
+        if record_size < header_size || record_size > head.wrapping_sub(position) {
+            error!(
+                ?header,
+                position, head, "Malformed perf sample record; ignoring the rest"
+            );
+            break;
+        }
+        if header.type_ == perf::PERF_RECORD_SAMPLE {
+            samples += 1;
+        }
+        position = position.wrapping_add(record_size);
+    }
+    samples
 }
 
 /// Execute the `rdpmc` instruction to read hardware performance counter number
@@ -861,6 +985,51 @@ fn try_close_mmap(
     }
 }
 
+impl SampleRecords {
+    /// Unmap the records without panicking. Linux may have removed the
+    /// mapping even when munmap reports an error, so Drop does not retry it.
+    fn close(self) -> Result<(), Errno> {
+        let records = core::mem::ManuallyDrop::new(self);
+        Errno::result(unsafe { libc::munmap(records.page.as_ptr().cast(), records.len) })
+            .map(|_| ())
+    }
+}
+
+impl Drop for SampleRecords {
+    fn drop(&mut self) {
+        Errno::result(unsafe { libc::munmap(self.page.as_ptr().cast(), self.len) })
+            .expect("Could not munmap sample records");
+    }
+}
+
+/// Whether descriptor number `fd` has stopped naming the perf event whose
+/// `PERF_EVENT_IOC_ID` was `id`.
+///
+/// A descriptor number is not an identity: once a counter is closed, the
+/// kernel hands the lowest free number to the next `open`, `pipe` or
+/// `perf_event_open` of any thread in this process, and the parallel unit
+/// tests in this binary open descriptors continuously. `F_GETFD` returning
+/// `EBADF` therefore cannot be the closure proof. The event ID can: it comes
+/// from a global counter and is never reused, and while the old descriptor is
+/// open its number cannot be handed to anyone else. So the old event is gone
+/// from `fd` exactly when `fd` is free, names a non-perf file, or names a perf
+/// event with a different ID.
+#[cfg(test)]
+pub(crate) fn fd_no_longer_names_event(fd: libc::c_int, id: u64) -> bool {
+    match std::fs::read_link(format!("/proc/self/fd/{fd}")) {
+        Err(error) => return error.raw_os_error() == Some(libc::ENOENT),
+        Ok(target) if target.as_os_str() != "anon_inode:[perf_event]" => return true,
+        Ok(_) => {}
+    }
+    let mut current = 0u64;
+    // SAFETY: the pointer names a live, writable u64 for the ioctl's duration.
+    if unsafe { ioctls::ID(fd, &mut current as *mut u64) } == 0 {
+        return current != id;
+    }
+    // Closed or replaced by a non-perf file between the two probes.
+    matches!(Errno::last(), Errno::EBADF | Errno::ENOTTY)
+}
+
 impl Drop for PerfCounter {
     fn drop(&mut self) {
         if let Some(ptr) = self.mmap.take() {
@@ -874,9 +1043,10 @@ impl Drop for PerfCounter {
 }
 
 // Safety:
-// The mmap region is never written to. Multiple readers then race with the
-// kernel as any single thread would. Though the reads are racy, that is the
-// intended behavior of the perf api.
+// The mmap region is never written to through a shared reference. Multiple
+// readers then race with the kernel as any single thread would. Though the
+// reads are racy, that is the intended behavior of the perf api. Only
+// `take_sample_records`, which requires `&mut self`, writes a mapping.
 unsafe impl std::marker::Send for PerfCounter {}
 unsafe impl std::marker::Sync for PerfCounter {}
 
@@ -1028,6 +1198,57 @@ pub fn do_branches(mut count: u64) {
 mod support_test {
     use super::*;
 
+    /// The closure predicate used by the nonleader-exec counter handoff test
+    /// must key on the event, not on the descriptor number. `dup2` replaces a
+    /// number atomically, so this reproduces a parallel test reusing a closed
+    /// counter's number without ever leaving it free for another thread.
+    #[test]
+    fn closed_counter_is_recognized_after_its_fd_number_is_reused() {
+        ret_without_perf!();
+        use std::os::fd::AsRawFd;
+        let dummy = || {
+            Builder::new(0, -1)
+                .event(Event::Software(SoftwareEvent::Dummy))
+                .sample_period(PerfCounter::DISABLE_SAMPLE_PERIOD)
+                .create()
+                .expect("open a software perf event")
+        };
+        let old = dummy();
+        let old_id = old.id().unwrap();
+        let fd = old.exec_test_fd();
+        assert!(
+            !fd_no_longer_names_event(fd, old_id),
+            "an open counter was reported closed"
+        );
+        let other = dummy();
+        let other_id = other.id().unwrap();
+        assert_ne!(old_id, other_id);
+        let devnull = std::fs::File::open("/dev/null").unwrap();
+        for (replacement, what) in [
+            (devnull.as_raw_fd(), "a non-perf file"),
+            (other.exec_test_fd(), "another perf event"),
+        ] {
+            // Closes whatever `fd` named and reuses its number in one step.
+            assert_eq!(unsafe { libc::dup2(replacement, fd) }, fd);
+            assert_ne!(
+                unsafe { libc::fcntl(fd, libc::F_GETFD) },
+                -1,
+                "the number is open again, so EBADF cannot prove closure"
+            );
+            assert!(
+                fd_no_longer_names_event(fd, old_id),
+                "old counter reported open after its number now names {what}"
+            );
+        }
+        assert!(
+            !fd_no_longer_names_event(fd, other_id),
+            "a live duplicate of another counter was reported closed"
+        );
+        // `old` owns `fd` again only as a number; its event is already gone.
+        drop(old);
+        assert!(fd_no_longer_names_event(fd, old_id));
+    }
+
     #[test]
     fn perf_event_open_errors_mean_pmu_is_unsupported() {
         for errno in [
@@ -1083,6 +1304,7 @@ pub(crate) mod terminal_close_tests {
         PerfCounter {
             fd: fd.into_raw_fd(),
             mmap: Some(NonNull::new(mapping.cast()).unwrap()),
+            records: None,
             raw_syscall: Some(raw_syscall),
         }
     }

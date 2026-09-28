@@ -42,8 +42,16 @@ use reverie::RegDisplay;
 use reverie::RegDisplayOptions;
 use reverie::Signal;
 use reverie::Tid;
+#[cfg(target_arch = "x86_64")]
+use reverie::syscalls::Addr;
+#[cfg(target_arch = "x86_64")]
+use reverie::syscalls::AddrMut;
+#[cfg(target_arch = "x86_64")]
+use reverie::syscalls::MemoryAccess;
 use safeptrace::Error as TraceError;
 use safeptrace::Event as TraceEvent;
+#[cfg(target_arch = "x86_64")]
+use safeptrace::Regs;
 use safeptrace::Running;
 use safeptrace::Stopped;
 use safeptrace::Wait;
@@ -90,6 +98,41 @@ pub const SKID_MARGIN_OVERRIDE_ENV: &str = "REVERIE_SKID_MARGIN_OVERRIDE";
 pub const WITNESS_TOKEN_ENV: &str = "HERMIT_SKID_WITNESS_TOKEN";
 
 static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
+
+/// Overflow records forgotten because their notification had left the
+/// thread's pending queue, for tests.
+pub(crate) static OVERFLOW_RECORDS_EXPIRED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Whether the running kernel may be built with `PREEMPT_RT`. A kernel whose
+/// version cannot be read counts as one.
+fn kernel_is_preempt_rt() -> bool {
+    static PREEMPT_RT: OnceLock<bool> = OnceLock::new();
+    *PREEMPT_RT.get_or_init(|| {
+        let mut uts = core::mem::MaybeUninit::<libc::utsname>::zeroed();
+        // SAFETY: `uts` is valid for writes, and on success the kernel
+        // NUL-terminates `version`.
+        let version = (unsafe { libc::uname(uts.as_mut_ptr()) } == 0).then(|| {
+            unsafe { std::ffi::CStr::from_ptr(uts.assume_init_ref().version.as_ptr()) }
+                .to_string_lossy()
+                .into_owned()
+        });
+        version.is_none_or(|version| version_is_preempt_rt(&version))
+            || std::fs::read_to_string("/sys/kernel/realtime")
+                .is_ok_and(|value| value.trim() == "1")
+    })
+}
+
+/// Whether a `uname` version string names a kernel that is or may be
+/// `PREEMPT_RT`. Mainline adds the word `PREEMPT_RT` for `CONFIG_PREEMPT_RT`
+/// (`init/Makefile`, `UTS_VERSION`), and `/sys/kernel/realtime` exists only in
+/// some distributions' kernels. The version is cut to 64 bytes, after the
+/// build version and flags, so a version of that length may have lost the
+/// word and counts as `PREEMPT_RT`.
+fn version_is_preempt_rt(version: &str) -> bool {
+    const UTS_VERSION_MAX: usize = 64;
+    version.len() >= UTS_VERSION_MAX || version.split_whitespace().any(|word| word == "PREEMPT_RT")
+}
 
 pub(crate) fn get_pmu_config() -> &'static PmuConfig {
     PMU_CONFIG.get_or_init(PmuConfig::new)
@@ -483,6 +526,61 @@ impl Timer {
         (dur.as_secs() * 600_000_000) + (u64::from(dur.subsec_nanos()) * 6 / 10)
     }
 
+    /// Whether `signal` is an unconsumed overflow notification of this timer's
+    /// counter, and if so, record that it has been consumed.
+    ///
+    /// Such a signal belongs to Reverie and is never guest-visible. An overflow
+    /// interrupt can arrive after the guest has reached its next event, which
+    /// cancels the timer event, so this can match at stops where the timer
+    /// has nothing left to deliver. Artificial timer signals carry no overflow
+    /// siginfo and do not match.
+    ///
+    /// Matching siginfo alone does not prove provenance: a guest file with
+    /// `F_SETSIG` set to the timer signal reports its own descriptor number,
+    /// which can equal the timer's. The kernel must also have recorded an
+    /// overflow whose notification has not been consumed. A counter that
+    /// passed its period is not enough, because the overflow interrupt can be
+    /// lost. Without overflow records nothing matches. A match while the
+    /// current programming has passed its period disables the counter, which
+    /// only prevents notifications of a timer event that has already been
+    /// cancelled.
+    pub(crate) fn consume_overflow_signal(
+        &mut self,
+        signal: &libc::siginfo_t,
+    ) -> Result<bool, Errno> {
+        match self.inner_mut_noinit() {
+            Some(timer) => timer.consume_overflow_signal(signal),
+            None => Ok(false),
+        }
+    }
+
+    /// Forget recorded overflows whose notification the kernel no longer
+    /// holds for the stopped thread `task`. Called at each stop and before
+    /// each injected syscall.
+    ///
+    /// A notification can leave the thread's pending queue without a stop
+    /// that consumes it: the guest can dequeue it with `sigtimedwait` or a
+    /// signalfd, flush it by ignoring the signal, or receive it where a guest
+    /// signal was expected. Its records would then authorize discarding a
+    /// later guest signal with the same siginfo. Nothing is read unless
+    /// records are unconsumed.
+    ///
+    /// The whole queue is read: real-time signals queue one entry each, so the
+    /// notification can sit behind any number of them. If the queue cannot be
+    /// read, the records are kept. For a stopped thread that happens only when
+    /// the thread has died, and then no discard follows.
+    pub(crate) fn expire_overflow_records(&mut self, task: &Stopped) {
+        if let Some(timer) = self.inner_mut_noinit()
+            && timer.has_overflow_records()
+        {
+            // The notification is sent to the thread, not the process.
+            match task.peeksiginfo_all(None) {
+                Ok(pending) => timer.expire_overflow_records(&pending),
+                Err(err) => debug!("Could not read pending signals of {}: {err}", task.pid()),
+            }
+        }
+    }
+
     /// Return the signal type sent by the timer. This is intended to allow
     /// pre-filtering signals without the full overhead of gathering signal info
     /// to pass to ['Timer::generated_signal`].
@@ -703,6 +801,16 @@ struct TimerImpl {
     /// not flush kernel queues and must not clear this record.
     artificial_signal_sent: bool,
 
+    /// The sample period `timer` was last programmed with after a reset,
+    /// while that programming may still be enabled. A count at or beyond it
+    /// shows that the programming has passed its period, not that an
+    /// overflow notification exists.
+    overflow_period: Option<u64>,
+
+    /// Whether the kernel has recorded an overflow whose notification has not
+    /// been consumed. Records survive reprogramming.
+    overflow_recorded: bool,
+
     initial_command: InitialCommand,
 
     /// Requests made before the first post-exec callback have no physical
@@ -884,7 +992,7 @@ impl TimerImpl {
             builder.precise_ip(1);
         }
 
-        let timer = builder.check_for_pmu_bugs().create()?;
+        let mut timer = builder.check_for_pmu_bugs().create()?;
         timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
         timer.reset()?;
         // measure the target tid irrespective of CPU
@@ -897,7 +1005,48 @@ impl TimerImpl {
         if initial_command {
             clock_builder.enable_on_exec();
         }
-        let clock = clock_builder.create()?;
+        // Each thread locks up to three pages of perf buffer: the clock's
+        // fast-read page and the timer's metadata and record pages. The kernel
+        // charges them to a per-user budget of `perf_event_mlock_kb` per online
+        // CPU, then to RLIMIT_MEMLOCK. The record pages make that budget run out
+        // three times as soon, so a clock that cannot map its page falls back to
+        // read(2), which returns the same count.
+        let clock = match clock_builder.create() {
+            Ok(clock) => clock,
+            Err(errno) => {
+                // A failure of the counter itself fails again here.
+                let clock = clock_builder.fast_reads(false).create()?;
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    warn!(
+                        %errno,
+                        "Could not map a clock for fast reads; reading clocks with read(2)"
+                    )
+                });
+                clock
+            }
+        };
+        // Mapped after the clock, so that it never takes this thread's clock
+        // page.
+        if kernel_is_preempt_rt() {
+            // PREEMPT_RT sends the notification from a kernel thread some time
+            // after the record is written, so a record does not show that the
+            // notification is pending.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                warn!(
+                    "PREEMPT_RT kernel; late timer signals at injected syscalls will be delivered to the guest"
+                )
+            });
+        } else if let Err(errno) = timer.map_sample_records() {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                warn!(
+                    %errno,
+                    "Could not map timer overflow records; late timer signals at injected syscalls will be delivered to the guest"
+                )
+            });
+        }
         clock.reset()?;
         if !initial_command {
             clock.enable()?;
@@ -913,6 +1062,8 @@ impl TimerImpl {
             timer_status: EventStatus::Cancelled,
             send_artificial_signal: false,
             artificial_signal_sent: false,
+            overflow_period: None,
+            overflow_recorded: false,
             initial_command: if initial_command {
                 InitialCommand::WaitingForExec
             } else {
@@ -954,19 +1105,69 @@ impl TimerImpl {
         if let Some(error) = self.fail_next_notification.take() {
             return Err(error);
         }
+        // Keep the record buffer from filling.
+        self.collect_overflow_records();
         self.send_artificial_signal = if notification <= SINGLESTEP_TIMEOUT_RCBS {
             // If there's an existing event making use of the timer counter,
             // we need to "overwrite" it the same way setting an actual RCB
             // notification does.
             self.timer.disable()?;
+            self.overflow_period = None;
             true
         } else {
             self.timer.reset()?;
+            self.overflow_period = None;
             self.timer.set_period(notification)?;
             self.timer.enable()?;
+            self.overflow_period = Some(notification);
             false
         };
         Ok(())
+    }
+
+    /// Whether the current programming of `timer` has passed its period.
+    fn current_overflow(&self) -> Result<bool, Errno> {
+        match self.overflow_period {
+            Some(period) => Ok(self.timer.ctr_value()? >= period),
+            None => Ok(false),
+        }
+    }
+
+    /// Note the overflows the kernel has recorded since the last call.
+    fn collect_overflow_records(&mut self) {
+        if self
+            .timer
+            .take_sample_records()
+            .is_some_and(|samples| samples > 0)
+        {
+            self.overflow_recorded = true;
+        }
+    }
+
+    /// Record that the notification of every overflow recorded so far has
+    /// been consumed. Standard signals coalesce, so one notification accounts
+    /// for all of them.
+    fn mark_overflows_consumed(&mut self) {
+        self.collect_overflow_records();
+        self.overflow_recorded = false;
+    }
+
+    /// Whether the kernel has recorded an overflow whose notification has not
+    /// been consumed.
+    fn has_overflow_records(&mut self) -> bool {
+        self.collect_overflow_records();
+        self.overflow_recorded
+    }
+
+    /// Forget the recorded overflows unless `pending`, the stopped thread's
+    /// private pending signals, holds a notification with this timer's
+    /// siginfo. The thread is stopped, so no overflow can be recorded between
+    /// reading `pending` and this call.
+    fn expire_overflow_records(&mut self, pending: &[libc::siginfo_t]) {
+        if self.overflow_recorded && !pending.iter().any(|s| self.owns_overflow_signal(s)) {
+            self.mark_overflows_consumed();
+            OVERFLOW_RECORDS_EXPIRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     fn event_at(evt: TimerEventRequest, clock: u64) -> ActiveEvent {
@@ -1091,6 +1292,36 @@ impl TimerImpl {
                     && get_si_fd(signal) == self.timer.raw_fd()))
     }
 
+    fn owns_overflow_signal(&self, signal: &libc::siginfo_t) -> bool {
+        self.initial_command == InitialCommand::Ordinary
+            && Self::is_timer_generated_signal(signal)
+            // The guest can produce the same siginfo: an `F_SETSIG`
+            // descriptor of its own with this number sends the timer's signal
+            // and code. Delivery of timer signals assumes it does not.
+            // `consume_overflow_signal`, which discards signals at injected
+            // syscalls, also requires a recorded overflow.
+            && get_si_fd(signal) == self.timer.raw_fd()
+    }
+
+    fn consume_overflow_signal(&mut self, signal: &libc::siginfo_t) -> Result<bool, Errno> {
+        if !self.owns_overflow_signal(signal) {
+            return Ok(false);
+        }
+        self.collect_overflow_records();
+        if !self.overflow_recorded {
+            return Ok(false);
+        }
+        if self.current_overflow()? {
+            // The notification can be this programming's, whose timer event
+            // the stop has ended. A programming that has not passed its
+            // period stays armed.
+            self.timer.disable()?;
+            self.overflow_period = None;
+        }
+        self.mark_overflows_consumed();
+        Ok(true)
+    }
+
     pub fn read_clock(&self) -> u64 {
         self.clock.ctr_value_fast().expect("Failed to read clock")
     }
@@ -1150,6 +1381,11 @@ impl TimerImpl {
                 "Passed a signal that wasn't for this timer, likely indicating a bug!",
             );
             return Err(HandleFailure::ImproperSignal(task));
+        }
+        if self.owns_overflow_signal(&signal) {
+            // Otherwise a later injected syscall could mistake a guest signal
+            // for this notification.
+            self.mark_overflows_consumed();
         }
 
         if controller {
@@ -1252,6 +1488,14 @@ impl TimerImpl {
             current, target_rcb
         );
         let mut task = task;
+        // The registers before each step. A step's cleanup reads them back
+        // afterwards, so they carry over to the next step.
+        #[cfg(target_arch = "x86_64")]
+        let mut regs = task.getregs()?;
+        // Whether the guest itself has set TF. No step of this sequence has
+        // run yet, so Linux has not set TF itself.
+        #[cfg(target_arch = "x86_64")]
+        let mut guest_trap_flag = regs.eflags & TRAP_FLAG != 0;
         loop {
             if !current
                 .is_behind(target_rcb, target_instr)
@@ -1263,16 +1507,44 @@ impl TimerImpl {
             trace!(
                 "[instruction]\n{}\n{}",
                 crate::decoder::decode_instruction(&task)?,
-                task.getregs()?
-                    .display_with_options(RegDisplayOptions { multiline: true })
+                regs.display_with_options(RegDisplayOptions { multiline: true })
             );
+            #[cfg(target_arch = "x86_64")]
+            let start = StepStart {
+                instruction: stepped_instruction(&task, &regs),
+                rip: regs.rip,
+                rsp: regs.rsp,
+                rax: regs.rax,
+            };
             let wait = step(task)?.next_state().await?;
             observe(&wait)?;
             task = match wait {
                 // a successful single step results in SIGTRAP stop
                 Wait::Stopped(new_task, TraceEvent::Signal(Signal::SIGTRAP)) => new_task,
+                // Any other stop ends the stepping. The step's instruction may
+                // still have run: a `syscall` stops at its seccomp stop after
+                // loading r11, for example. The stop is passed on even if the
+                // cleanup fails, because it can be an event, such as a new
+                // child, that must be handled.
+                #[cfg(target_arch = "x86_64")]
+                Wait::Stopped(mut new_task, event) => {
+                    if let Err(err) =
+                        remove_stepping_trap_flag(&mut new_task, &start, guest_trap_flag)
+                    {
+                        warn!(
+                            "Could not remove the single-step trap flag at {:?}: {:?}",
+                            event, err
+                        );
+                    }
+                    return Err(HandleFailure::Event(Wait::Stopped(new_task, event)));
+                }
                 wait => return Err(HandleFailure::Event(wait)),
             };
+            #[cfg(target_arch = "x86_64")]
+            {
+                (guest_trap_flag, regs) =
+                    remove_stepping_trap_flag(&mut task, &start, guest_trap_flag)?;
+            }
             current.single_step_with_clock(self.read_clock());
         }
         Ok(task)
@@ -1287,6 +1559,365 @@ impl TimerImpl {
             .disable()
             .expect("Must be able to disable timer before stepping");
     }
+}
+
+/// The x86 trap flag (TF) in RFLAGS.
+#[cfg(target_arch = "x86_64")]
+const TRAP_FLAG: u64 = 0x100;
+
+/// TF in the second byte of a flags image in memory.
+#[cfg(target_arch = "x86_64")]
+const TRAP_FLAG_HIGH_BYTE: u8 = (TRAP_FLAG >> 8) as u8;
+
+/// Where `rt_sigreturn` reads the RFLAGS it restores, relative to the stack
+/// pointer at its `syscall`. The signal frame's `ucontext` starts there, just
+/// past the return address that the handler's `ret` popped.
+#[cfg(target_arch = "x86_64")]
+const SIGRETURN_FLAGS_OFFSET: u64 = (core::mem::offset_of!(libc::ucontext_t, uc_mcontext)
+    + core::mem::offset_of!(libc::mcontext_t, gregs)
+    + libc::REG_EFL as usize * core::mem::size_of::<libc::greg_t>())
+    as u64;
+
+/// The instruction a single step runs, as far as the step can leave the TF
+/// that stepping sets where the guest sees it. `at` is the address of the
+/// instruction, with its prefixes, and `end` the address just past it, where a
+/// step that completes it stops.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FlagsInstruction {
+    /// `pushf` stores RFLAGS, including the stepping TF, on the stack.
+    Pushf {
+        end: u64,
+    },
+    /// `popf` loads RFLAGS from the stack, and Linux then treats TF as the
+    /// guest's.
+    Popf {
+        end: u64,
+    },
+    /// `popf` in the same step as a `mov ss` before it. Linux looks only at
+    /// the first instruction of a step, so it can hide the TF this loads.
+    PopfAfterMovSs {
+        end: u64,
+    },
+    /// `iret` loads RFLAGS like `popf`, and rip and rsp from the stack too.
+    Iret {
+        at: u64,
+    },
+    /// `syscall` saves RFLAGS in r11, and the kernel returns it there.
+    Syscall {
+        at: u64,
+        end: u64,
+    },
+    Other,
+}
+
+/// What a single step starts from.
+#[cfg(target_arch = "x86_64")]
+struct StepStart {
+    instruction: FlagsInstruction,
+    rip: u64,
+    rsp: u64,
+    rax: u64,
+}
+
+/// Reads guest code in aligned words with PTRACE_PEEKDATA, which also reads
+/// execute-only pages and never reads past the word holding the last byte
+/// examined.
+#[cfg(target_arch = "x86_64")]
+struct CodeReader<'a> {
+    task: &'a Stopped,
+    word_addr: Option<u64>,
+    word: [u8; 8],
+}
+
+#[cfg(target_arch = "x86_64")]
+impl CodeReader<'_> {
+    fn byte(&mut self, addr: u64) -> Option<u8> {
+        if self.word_addr != Some(addr & !7) {
+            self.word = read_aligned_word(self.task, addr & !7).ok()?.to_ne_bytes();
+            self.word_addr = Some(addr & !7);
+        }
+        Some(self.word[(addr & 7) as usize])
+    }
+}
+
+/// The errors with which a syscall asks Linux to restart it when no handler
+/// runs: ERESTARTSYS, ERESTARTNOINTR, ERESTARTNOHAND and
+/// ERESTART_RESTARTBLOCK (include/linux/errno.h).
+#[cfg(target_arch = "x86_64")]
+const RESTART_ERRORS: [i64; 4] = [-512, -513, -514, -516];
+
+/// The instruction that the next step of a guest with `regs` runs.
+///
+/// That is the instruction at rip, unless the guest is stopped at the end of
+/// a syscall that asks to be restarted, which a signal or task work has
+/// interrupted. Resuming it without a signal, as a step does, makes Linux move
+/// rip back over the `syscall` and run it again (arch_do_signal_or_restart).
+/// Linux reads the syscall number from the low 32 bits of orig_rax, and
+/// orig_rax is -1 if the stop was not in a syscall.
+#[cfg(target_arch = "x86_64")]
+fn stepped_instruction(task: &Stopped, regs: &Regs) -> FlagsInstruction {
+    if regs.orig_rax as i32 != -1 && RESTART_ERRORS.contains(&(regs.rax as i64)) {
+        let restarted = flags_instruction(task, regs.rip.wrapping_sub(2));
+        if matches!(restarted, FlagsInstruction::Syscall { end, .. } if end == regs.rip) {
+            return restarted;
+        }
+    }
+    flags_instruction(task, regs.rip)
+}
+
+/// Decodes enough of the instruction at `ip` to tell whether it is `pushf`,
+/// `popf`, `iret` or `syscall`, with any prefixes.
+///
+/// A `mov` to SS holds back the debug trap until the next instruction has
+/// run, so a step that starts there runs both, and the second decides what
+/// the step leaks. Code that cannot be read is `Other`; the step itself then
+/// reports the fault.
+#[cfg(target_arch = "x86_64")]
+fn flags_instruction(task: &Stopped, ip: u64) -> FlagsInstruction {
+    /// The longest x86 instruction, in bytes.
+    const MAX_INSTRUCTION_LEN: u64 = 15;
+    let mut code = CodeReader {
+        task,
+        word_addr: None,
+        word: [0; 8],
+    };
+    let mut start = ip;
+    let mut after_mov_ss = false;
+    let mut addr = ip;
+    while addr < start.saturating_add(MAX_INSTRUCTION_LEN) {
+        let Some(opcode) = code.byte(addr) else {
+            return FlagsInstruction::Other;
+        };
+        match opcode {
+            0x9c => return FlagsInstruction::Pushf { end: addr + 1 },
+            0x9d if after_mov_ss => return FlagsInstruction::PopfAfterMovSs { end: addr + 1 },
+            0x9d => return FlagsInstruction::Popf { end: addr + 1 },
+            0xcf => return FlagsInstruction::Iret { at: start },
+            0x0f if code.byte(addr + 1) == Some(0x05) => {
+                return FlagsInstruction::Syscall {
+                    at: start,
+                    end: addr + 2,
+                };
+            }
+            // `mov ss, r/m16`. Of consecutive loads of SS only the first is
+            // sure to hold the trap back, so a second is not followed.
+            0x8e if !after_mov_ss => {
+                let Some(modrm) = code.byte(addr + 1) else {
+                    return FlagsInstruction::Other;
+                };
+                if (modrm >> 3) & 7 != 2 {
+                    return FlagsInstruction::Other;
+                }
+                let Some(len) = modrm_len(&mut code, addr + 1, modrm) else {
+                    return FlagsInstruction::Other;
+                };
+                addr += 1 + len;
+                start = addr;
+                after_mov_ss = true;
+                continue;
+            }
+            // Legacy prefixes, then REX.
+            0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x66 | 0x67 | 0xf0 | 0xf2 | 0xf3 => {}
+            0x40..=0x4f => {}
+            _ => return FlagsInstruction::Other,
+        }
+        addr += 1;
+    }
+    FlagsInstruction::Other
+}
+
+/// The length, in 64-bit mode, of the ModRM byte `modrm` at `addr` together
+/// with the SIB byte and displacement that follow it.
+#[cfg(target_arch = "x86_64")]
+fn modrm_len(code: &mut CodeReader, addr: u64, modrm: u8) -> Option<u64> {
+    let (mode, rm) = (modrm >> 6, modrm & 7);
+    if mode == 3 {
+        return Some(1);
+    }
+    let mut len = 1;
+    if rm == 4 {
+        let sib = code.byte(addr + 1)?;
+        len += 1;
+        // No base register: a 32-bit displacement instead.
+        if mode == 0 && sib & 7 == 5 {
+            len += 4;
+        }
+    } else if mode == 0 && rm == 5 {
+        // RIP-relative.
+        len += 4;
+    }
+    len += match mode {
+        1 => 1,
+        2 => 4,
+        _ => 0,
+    };
+    Some(len)
+}
+
+/// Removes the TF that a single step left where the guest can see it, unless
+/// the guest set TF itself. Returns whether the guest's own TF is set after
+/// the step, and the registers the guest now has.
+///
+/// Whether the step ran its instruction is read from where it stopped, and
+/// for an instruction that loads rsp from where the stack is, not from the
+/// stop: a SIGTRAP can come from elsewhere, and a stop other than the step's
+/// SIGTRAP (a group stop, or a seccomp stop at a `syscall`) can follow an
+/// instruction that ran.
+///
+/// PTRACE_SINGLESTEP runs one instruction with TF set. Linux normally hides
+/// that TF from PTRACE_GETREGS and clears it when the tracee is next resumed,
+/// but it leaks in three ways (arch/x86/kernel/step.c):
+///
+/// - A stepped `pushf` stores RFLAGS as it is, so the guest's stack receives
+///   TF=1 although the guest never set it. When the guest restores that image
+///   with `popf`, as LiteInst's trampolines do, TF stays set.
+/// - Stepping `popf` or `iret` makes Linux treat TF as the guest's own
+///   (`is_setting_trap_flag`). It still sets TF for every later step in the
+///   sequence, but never takes it back as its own, so TF shows in the
+///   registers and stays set when the tracee is resumed.
+/// - A stepped `syscall` saves RFLAGS, TF included, in r11, where the guest
+///   finds it when the syscall returns. It does so before any seccomp stop,
+///   so a step that ends at one leaks it too, and again when a step restarts
+///   an interrupted syscall.
+///
+/// In the first two ways the guest then runs with TF set and every
+/// instruction traps.
+///
+/// An instruction that loads the guest's flags decides the guest's TF for
+/// later steps. Linux notices a stepped `popf` or `iret`, and shows the TF it
+/// loads. It does not notice a `popf` that runs in the same step as a
+/// `mov ss`, or the RFLAGS that `rt_sigreturn` restores from a signal frame,
+/// and hides a TF these load while it has set TF itself (TIF_FORCED_TF).
+/// Those are read from memory, and set again through PTRACE_SETREGS, which
+/// makes them the guest's.
+#[cfg(target_arch = "x86_64")]
+fn remove_stepping_trap_flag(
+    task: &mut Stopped,
+    start: &StepStart,
+    guest_trap_flag: bool,
+) -> Result<(bool, Regs), TraceError> {
+    let mut regs = task.getregs()?;
+    match start.instruction {
+        // The flags just loaded are the guest's own.
+        FlagsInstruction::Popf { end } if regs.rip == end => {
+            return Ok((regs.eflags & TRAP_FLAG != 0, regs));
+        }
+        FlagsInstruction::Iret { at } if returned(&regs, start, at) => {
+            return Ok((regs.eflags & TRAP_FLAG != 0, regs));
+        }
+        FlagsInstruction::PopfAfterMovSs { end } if regs.rip == end => {
+            let image = read_byte(task, start.rsp + 1).map_err(|err| memory_error(task, err))?;
+            return adopt_trap_flag(task, regs, image & TRAP_FLAG_HIGH_BYTE != 0);
+        }
+        // A completed `rt_sigreturn` restores every register from the signal
+        // frame, r11 and RFLAGS included, and sets orig_rax to -1. Linux takes
+        // the syscall number from the low 32 bits of rax. The frame may send
+        // rip back to the `syscall` with another syscall number in rax.
+        FlagsInstruction::Syscall { at, .. }
+            if start.rax as u32 == libc::SYS_rt_sigreturn as u32
+                && regs.orig_rax as i64 == -1
+                && (returned(&regs, start, at) || regs.rax != start.rax) =>
+        {
+            let restored = regs.eflags & TRAP_FLAG != 0 || {
+                let addr = start.rsp + SIGRETURN_FLAGS_OFFSET + 1;
+                let image = read_byte(task, addr).map_err(|err| memory_error(task, err))?;
+                image & TRAP_FLAG_HIGH_BYTE != 0
+            };
+            return adopt_trap_flag(task, regs, restored);
+        }
+        _ => {}
+    }
+    if guest_trap_flag {
+        return Ok((true, regs));
+    }
+    let mut changed = false;
+    match start.instruction {
+        // pushfq stores 8 bytes and pushfw 2.
+        FlagsInstruction::Pushf { end }
+            if regs.rip == end && matches!(start.rsp.wrapping_sub(regs.rsp), 2 | 8) =>
+        {
+            // TF is bit 0 of the image's second byte, in either size.
+            let addr = regs.rsp + 1;
+            let byte = read_byte(task, addr).map_err(|err| memory_error(task, err))?;
+            if byte & TRAP_FLAG_HIGH_BYTE != 0 {
+                let addr = AddrMut::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
+                task.write_exact(addr, &[byte & !TRAP_FLAG_HIGH_BYTE])
+                    .map_err(|err| memory_error(task, err))?;
+            }
+        }
+        // The `syscall` ran if the step ended just past it, whether the
+        // syscall completed or stopped at its entry.
+        FlagsInstruction::Syscall { end, .. } if regs.rip == end && regs.r11 & TRAP_FLAG != 0 => {
+            regs.r11 &= !TRAP_FLAG;
+            changed = true;
+        }
+        _ => {}
+    }
+    // Linux sets TF for every step but has lost track of it, so it shows here
+    // and would stay set when the guest resumes.
+    if regs.eflags & TRAP_FLAG != 0 {
+        regs.eflags &= !TRAP_FLAG;
+        changed = true;
+    }
+    if changed {
+        task.setregs(&regs)?;
+    }
+    Ok((false, regs))
+}
+
+/// Whether a step from `start` ran the instruction at `at`, which loads rip
+/// and rsp from memory. A step that stops before the instruction or faults in
+/// it leaves rsp as it was and rip at `at`, or at the start of the step if
+/// that is a `mov ss` before it. The instruction may return to either address
+/// too, but it then also moves rsp, unless it has loaded the rip and rsp that
+/// run it again, on the same stack.
+#[cfg(target_arch = "x86_64")]
+fn returned(regs: &Regs, start: &StepStart, at: u64) -> bool {
+    (regs.rip != start.rip && regs.rip != at) || regs.rsp != start.rsp
+}
+
+/// Makes `own` the guest's TF after a step loaded flags that Linux did not
+/// notice. Linux hides the TF it sets for stepping, and clears it on resume;
+/// a TF set through PTRACE_SETREGS is the guest's, and a clear one leaves
+/// only Linux's own.
+#[cfg(target_arch = "x86_64")]
+fn adopt_trap_flag(
+    task: &mut Stopped,
+    mut regs: Regs,
+    own: bool,
+) -> Result<(bool, Regs), TraceError> {
+    if (regs.eflags & TRAP_FLAG != 0) != own {
+        regs.eflags ^= TRAP_FLAG;
+        task.setregs(&regs)?;
+    }
+    Ok((own, regs))
+}
+
+/// Guest memory access reports a tracee that has died with a plain ESRCH.
+/// PTRACE_GETREGS reports it as `Died`, which the caller reaps.
+#[cfg(target_arch = "x86_64")]
+fn memory_error(task: &Stopped, err: Errno) -> TraceError {
+    if err == Errno::ESRCH
+        && let Err(died @ TraceError::Died(_)) = task.getregs()
+    {
+        return died;
+    }
+    TraceError::Errno(err)
+}
+
+/// Reads the guest byte at `addr`.
+#[cfg(target_arch = "x86_64")]
+fn read_byte(task: &Stopped, addr: u64) -> Result<u8, Errno> {
+    Ok(read_aligned_word(task, addr & !7)?.to_ne_bytes()[(addr & 7) as usize])
+}
+
+/// Reads the aligned word at `addr` with PTRACE_PEEKDATA.
+#[cfg(target_arch = "x86_64")]
+fn read_aligned_word(task: &Stopped, addr: u64) -> Result<u64, Errno> {
+    debug_assert_eq!(addr % 8, 0);
+    let addr = Addr::<u64>::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
+    task.read_value(addr)
 }
 
 #[cfg(target_os = "linux")]
@@ -1368,6 +1999,8 @@ mod tests {
                 timer_status: EventStatus::Scheduled,
                 send_artificial_signal: true,
                 artificial_signal_sent: false,
+                overflow_period: None,
+                overflow_recorded: false,
                 initial_command: InitialCommand::Ordinary,
                 held_initial_event: Some(event),
                 fail_next_notification: None,
@@ -1486,6 +2119,236 @@ mod tests {
         );
         assert_eq!(timer.fail_next_notification, None);
         assert_eq!(timer.timer_status, EventStatus::Cancelled);
+    }
+
+    /// Takes the pending timer signal of the calling thread, which must have
+    /// blocked it.
+    fn take_timer_signal() -> Option<libc::siginfo_t> {
+        let mut set: libc::sigset_t = unsafe { core::mem::zeroed() };
+        let mut info: libc::siginfo_t = unsafe { core::mem::zeroed() };
+        let timeout = libc::timespec {
+            tv_sec: 5,
+            tv_nsec: 0,
+        };
+        unsafe {
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, super::MARKER_SIGNAL as i32);
+        }
+        let signo = unsafe { libc::sigtimedwait(&set, &mut info, &timeout) };
+        (signo == super::MARKER_SIGNAL as i32).then_some(info)
+    }
+
+    #[test]
+    fn overflow_signal_provenance_requires_a_recorded_overflow() {
+        use reverie::Pid;
+
+        use super::TimerImpl;
+        use crate::perf::do_branches;
+
+        // The timer signals this thread; keep its notifications pending so the
+        // test can take their real siginfo.
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        assert_eq!(timer.timer.take_sample_records(), Some(0));
+        const PERIOD: u64 = 10_000;
+
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        let notification = take_timer_signal().expect("the counter overflowed");
+        assert!(timer.owns_overflow_signal(&notification));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        // A guest signal can have identical siginfo. With every overflow
+        // consumed, it is not the timer's.
+        assert!(timer.owns_overflow_signal(&notification));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+
+        // A new programming that has not overflowed owns nothing.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD / 2);
+        timer.timer.disable().unwrap();
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert!(take_timer_signal_now().is_none());
+
+        // An overflow whose notification is still pending survives both kinds
+        // of reprogramming, and consuming it leaves the new programming armed.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        timer
+            .prepare_notification(super::SINGLESTEP_TIMEOUT_RCBS)
+            .unwrap();
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert!(take_timer_signal().is_some());
+
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        timer.prepare_notification(PERIOD).unwrap();
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        assert!(take_timer_signal().is_some());
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert!(take_timer_signal().is_some());
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+
+        // Consumption ends a programming that has passed its period, so no
+        // notification of its cancelled timer event follows. This includes
+        // consuming late, after several overflows, and with a period the
+        // kernel may restart.
+        for period in [PERIOD, PERIOD / 10] {
+            timer.prepare_notification(period).unwrap();
+            do_branches(period * 7 / 2);
+            // The counter keeps running, so unlike a stopped tracee's, its
+            // overflow interrupt can still be in flight. The kernel writes the
+            // record before it queues the notification.
+            assert!(wait_for_timer_signal_pending());
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(true));
+            let stopped_at = timer.timer.ctr_value().unwrap();
+            do_branches(PERIOD * 3);
+            assert_eq!(timer.timer.ctr_value(), Ok(stopped_at));
+            assert!(take_timer_signal().is_some());
+            assert!(take_timer_signal_now().is_none());
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+        }
+
+        // A counter can pass its period without the kernel handling the
+        // overflow interrupt, for example when the interrupt arrives after the
+        // thread is scheduled out. No notification exists. Raising the
+        // hardware period produces the same counter state.
+        timer.prepare_notification(PERIOD).unwrap();
+        timer
+            .timer
+            .set_period(crate::perf::PerfCounter::DISABLE_SAMPLE_PERIOD)
+            .unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        assert!(timer.timer.ctr_value().unwrap() >= PERIOD);
+        assert!(take_timer_signal_now().is_none());
+        assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+
+        // Records expire unless the thread's pending signals hold a
+        // notification with the timer's siginfo: signal number, code and
+        // descriptor.
+        let mut other_signo = notification;
+        other_signo.si_signo = libc::SIGUSR1;
+        // `tgkill` sends the timer's signal number with this code.
+        let mut other_code = notification;
+        other_code.si_code = libc::SI_TKILL;
+        let mut other_fd = notification;
+        set_si_fd(&mut other_fd, super::get_si_fd(&notification) + 1);
+        assert!(!timer.owns_overflow_signal(&other_signo));
+        assert!(!timer.owns_overflow_signal(&other_code));
+        assert!(!timer.owns_overflow_signal(&other_fd));
+        let others = [other_signo, other_code, other_fd];
+        for pending in [&[other_signo][..], &[other_code], &[other_fd], &others, &[]] {
+            timer.prepare_notification(PERIOD).unwrap();
+            do_branches(PERIOD * 3);
+            timer.timer.disable().unwrap();
+            assert!(timer.has_overflow_records());
+            timer.expire_overflow_records(&[other_signo, other_code, other_fd, notification]);
+            assert!(timer.has_overflow_records());
+            timer.expire_overflow_records(pending);
+            assert!(!timer.has_overflow_records());
+            assert_eq!(timer.consume_overflow_signal(&notification), Ok(false));
+            assert!(take_timer_signal().is_some());
+        }
+
+        // Without records, even a real notification is not consumed.
+        timer.prepare_notification(PERIOD).unwrap();
+        do_branches(PERIOD * 3);
+        timer.timer.disable().unwrap();
+        let unrecorded = take_timer_signal().expect("the counter overflowed");
+        timer.timer.unmap_sample_records();
+        assert_eq!(timer.timer.take_sample_records(), None);
+        assert!(timer.owns_overflow_signal(&unrecorded));
+        assert_eq!(timer.consume_overflow_signal(&unrecorded), Ok(false));
+
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
+        }
+    }
+
+    /// Overwrite `si_fd`, at the offset `get_si_fd` reads.
+    fn set_si_fd(signal: &mut libc::siginfo_t, fd: libc::c_int) {
+        // Three `int`s, then the pointer-aligned union whose SIGPOLL member
+        // is `{ long si_band; int si_fd; }`.
+        let offset =
+            core::mem::size_of::<*const libc::c_void>() * 2 + core::mem::size_of::<libc::c_long>();
+        unsafe {
+            (signal as *mut libc::siginfo_t)
+                .cast::<u8>()
+                .add(offset)
+                .cast::<libc::c_int>()
+                .write_unaligned(fd);
+        }
+        assert_eq!(super::get_si_fd(signal), fd);
+    }
+
+    #[test]
+    fn preempt_rt_is_read_from_the_kernel_version() {
+        use super::version_is_preempt_rt;
+        assert!(version_is_preempt_rt(
+            "#1 SMP PREEMPT_RT Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(version_is_preempt_rt("#1 PREEMPT_RT"));
+        assert!(!version_is_preempt_rt(
+            "#1 SMP PREEMPT Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(!version_is_preempt_rt(
+            "#1 SMP PREEMPT_DYNAMIC Mon Aug 24 01:30:09 PDT 2026"
+        ));
+        assert!(!version_is_preempt_rt("#1 SMP PREEMPT_RTX"));
+        assert!(!version_is_preempt_rt(""));
+        // A build version of 49 digits cuts the word of a PREEMPT_RT kernel
+        // at the 64-byte limit.
+        let cut = format!("#{} SMP PREEMPT_R", "1".repeat(49));
+        assert_eq!(cut.len(), 64);
+        assert!(version_is_preempt_rt(&cut));
+        // One digit less keeps the word.
+        let whole = format!("#{} SMP PREEMPT_RT", "1".repeat(48));
+        assert_eq!(whole.len(), 64);
+        assert!(version_is_preempt_rt(&whole));
+        let short = format!("#{} SMP PREEMPT_DYNAMIC", "1".repeat(42));
+        assert_eq!(short.len(), 63);
+        assert!(!version_is_preempt_rt(&short));
+    }
+
+    /// Wait up to five seconds for a timer notification to be pending,
+    /// without taking it.
+    fn wait_for_timer_signal_pending() -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            let mut pending: libc::sigset_t = unsafe { core::mem::zeroed() };
+            unsafe { libc::sigpending(&mut pending) };
+            if unsafe { libc::sigismember(&pending, super::MARKER_SIGNAL as i32) } == 1 {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
+    }
+
+    fn take_timer_signal_now() -> Option<libc::siginfo_t> {
+        let mut pending: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe { libc::sigpending(&mut pending) };
+        if unsafe { libc::sigismember(&pending, super::MARKER_SIGNAL as i32) } == 1 {
+            take_timer_signal()
+        } else {
+            None
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

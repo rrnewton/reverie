@@ -10,10 +10,20 @@ use syscalls::Errno;
 
 use super::Pid;
 
-pub(super) const CHILD_STACK_SIZE: usize = 2 * 1024 * 1024;
+/// Usable bytes in a cloned child's stack, excluding the guard pages.
+///
+/// The in-container tracer's main thread runs on this stack, including the
+/// tokio `block_on` frames and everything the tool does underneath them, so it
+/// gets what an ordinary main thread gets: 8 MiB is the default
+/// `RLIMIT_STACK`. 2 MiB was measured to be too small for a debug build of
+/// Hermit's LiteInst statistics path behind `--backend-engagement-json`: with
+/// the guard pages below, it faults in them; a core taken before they existed
+/// showed all 0x200000 bytes in use, about 1.1 MB in Hermit's own async frames.
+/// Only the pages the child actually touches are backed by memory.
+pub(super) const CHILD_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 // Supported Linux clone ABIs grow the stack down. Keep several inaccessible
-// pages below the usable stack, without reducing its existing 2 MiB capacity.
+// pages below the usable stack; they are in addition to CHILD_STACK_SIZE.
 const GUARD_PAGES: usize = 4;
 
 pub(super) struct ChildStack {
@@ -248,6 +258,9 @@ mod tests {
 
     #[test]
     fn default_child_stack_keeps_the_container_run_minimum() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stack = child_stack().unwrap();
         let size = stack.top() as usize - stack.bottom() as usize;
         assert!(
@@ -260,7 +273,27 @@ mod tests {
     }
 
     #[test]
+    fn default_child_stack_is_a_main_thread_stack() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let mut stack = child_stack().unwrap();
+        let size = stack.top() as usize - stack.bottom() as usize;
+        assert!(
+            size >= 8 * 1024 * 1024,
+            "the in-container tracer's main thread runs on the child stack and needs the \
+             8 MiB a main thread gets; 2 MiB was measured to overflow"
+        );
+        // The guard pages are added to the mapping, not carved out of the
+        // usable stack.
+        assert_eq!(stack.mapping_len, stack.guard_len + CHILD_STACK_SIZE);
+    }
+
+    #[test]
     fn child_keeps_its_stack_after_parent_unmaps() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stack = child_stack().unwrap();
         let bottom = stack.bottom() as usize;
         let top = stack.top() as usize;
@@ -298,6 +331,9 @@ mod tests {
 
     #[test]
     fn stack_is_unmapped_after_clone_failure() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         // Isolate the address space so another test thread cannot reuse the
         // just-unmapped addresses before mincore checks them.
         let pid = unsafe { libc::fork() };
@@ -349,6 +385,9 @@ mod tests {
 
     #[test]
     fn shared_address_space_is_rejected() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         assert_eq!(
             clone(|| 99, libc::SIGCHLD | libc::CLONE_VM),
             Err(Errno::EINVAL)
@@ -391,6 +430,9 @@ mod tests {
 
     #[test]
     fn stack_overflow_faults_in_guard() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stack = child_stack().unwrap();
         let guard_start = stack.mapping as usize;
         let bottom = stack.bottom() as usize;

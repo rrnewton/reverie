@@ -265,7 +265,10 @@ impl PageZeroFault {
     }
 }
 
-extern "C" fn interrupt_guest_worker(_signal: libc::c_int) {}
+extern "C" fn interrupt_guest_worker(_signal: libc::c_int) {
+    #[cfg(test)]
+    tests::inline_interrupt_tests::observe_delivery();
+}
 
 fn worker_interrupt_signal() -> libc::c_int {
     libc::SIGURG
@@ -910,6 +913,229 @@ pub(crate) struct GuestThreadRegistration {
     restore_blocked_signal: bool,
 }
 
+impl GuestThreadRegistration {
+    fn register(group: Arc<GuestThreadGroup>, root: bool) -> Result<Self> {
+        let restore_blocked_signal = set_guest_interrupt_signal_mask(libc::SIG_UNBLOCK)?;
+        // SAFETY: pthread_self identifies this live calling thread.
+        let pthread = unsafe { libc::pthread_self() };
+        if root {
+            let previous = group
+                .root
+                .lock()
+                .expect("KVM guest root lock poisoned")
+                .replace(pthread);
+            assert!(previous.is_none(), "KVM guest root already registered");
+        } else {
+            group
+                .workers
+                .lock()
+                .expect("KVM guest worker lock poisoned")
+                .push(pthread);
+        }
+        Ok(Self {
+            group,
+            pthread,
+            root,
+            restore_blocked_signal,
+        })
+    }
+
+    fn suspend_for_inline_fork(
+        &self,
+        gate: Arc<crate::entry::EntryGate>,
+        origin: crate::entry::EntryOrigin,
+        panics: Arc<crate::failure::tool_panics::ToolPanics>,
+    ) -> Result<GuestInterruptSuspension<'_>> {
+        // Only the private synchronous Direct driver supplies this owner.
+        if unsafe { libc::pthread_equal(libc::pthread_self(), self.pthread) } == 0 {
+            return Err(interrupt_ownership_error(
+                "Direct fork moved off its registered pthread",
+            ));
+        }
+        let restore_blocked_signal = set_guest_interrupt_signal_mask(libc::SIG_BLOCK)?;
+        let mut suspended = GuestInterruptSuspension {
+            registration: self,
+            restore_blocked_signal,
+            detached: false,
+            active: true,
+            gate,
+            origin,
+            panics,
+        };
+        let withdrawn = if self.root {
+            match self.group.root.lock() {
+                Ok(mut root) if *root == Some(self.pthread) => {
+                    *root = None;
+                    suspended.detached = true;
+                    Ok(())
+                }
+                Ok(_) => Err(interrupt_ownership_error(
+                    "Direct root registration changed",
+                )),
+                Err(_) => Err(interrupt_ownership_error("Direct root registry poisoned")),
+            }
+        } else {
+            match self.group.workers.lock() {
+                Ok(mut workers)
+                    if workers.iter().filter(|&&id| id == self.pthread).count() == 1 =>
+                {
+                    workers.retain(|id| *id != self.pthread);
+                    suspended.detached = true;
+                    Ok(())
+                }
+                Ok(_) => Err(interrupt_ownership_error(
+                    "Direct worker registration changed",
+                )),
+                Err(_) => Err(interrupt_ownership_error("Direct worker registry poisoned")),
+            }
+        };
+        // Senders hold these same locks through pthread_kill. No old-parent
+        // send remains in flight, and no registry lock crosses the child await.
+        if let Err(error) = withdrawn.and_then(|()| deliver_guest_interrupt_at_neutral_boundary()) {
+            return suspended.finish(Err(error));
+        }
+        Ok(suspended)
+    }
+}
+
+fn interrupt_ownership_error(message: &'static str) -> Error {
+    Error::EntryControl {
+        operation: "Direct inline-fork interrupt ownership",
+        source: std::io::Error::other(message),
+    }
+}
+
+/// Called only with SIGURG blocked and its old group's target withdrawn.
+/// Linux x86-64 signal delivery and normal rt_sigreturn recheck pending work
+/// before returning to this caller. A competing handler's temporary mask is
+/// restored on sigreturn; a handler that changes the saved mask to keep SIGURG
+/// blocked is refused below. We do not synchronously consume any signal.
+fn deliver_guest_interrupt_at_neutral_boundary() -> Result<()> {
+    set_guest_interrupt_signal_mask(libc::SIG_UNBLOCK)?;
+    if set_guest_interrupt_signal_mask(libc::SIG_BLOCK)? {
+        return Err(interrupt_ownership_error(
+            "SIGURG remained blocked after neutral delivery",
+        ));
+    }
+    // Observation only, never query-then-wait: an unexpected new/foreign pending
+    // SIGURG refuses transfer rather than being consumed as an ancestor kick.
+    let mut pending = unsafe { std::mem::zeroed::<libc::sigset_t>() };
+    if unsafe { libc::sigpending(&mut pending) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe { libc::sigismember(&pending, worker_interrupt_signal()) } == 1 {
+        return Err(interrupt_ownership_error(
+            "SIGURG remains pending after neutral delivery",
+        ));
+    }
+    Ok(())
+}
+
+/// Physical target suspension only: group state, handles, start gates and
+/// logical cancellation stay owned. Actual Direct callers poll on one pthread;
+/// this private guard does not make arbitrary migrating futures safe.
+struct GuestInterruptSuspension<'a> {
+    registration: &'a GuestThreadRegistration,
+    restore_blocked_signal: bool,
+    detached: bool,
+    active: bool,
+    gate: Arc<crate::entry::EntryGate>,
+    origin: crate::entry::EntryOrigin,
+    panics: Arc<crate::failure::tool_panics::ToolPanics>,
+}
+
+impl GuestInterruptSuspension<'_> {
+    fn restore(&mut self) -> Result<()> {
+        let registration = self.registration;
+        if unsafe { libc::pthread_equal(libc::pthread_self(), registration.pthread) } == 0 {
+            return Err(interrupt_ownership_error(
+                "Direct restoration moved off its registered pthread",
+            ));
+        }
+        let mut errors = Vec::new();
+        if self.detached {
+            // The awaited child's registration has already withdrawn, even
+            // when its backend object remains in existing deferred cleanup.
+            match set_guest_interrupt_signal_mask(libc::SIG_BLOCK) {
+                Ok(_) => {
+                    if let Err(error) = deliver_guest_interrupt_at_neutral_boundary() {
+                        errors.push(error);
+                    }
+                }
+                Err(error) => errors.push(error),
+            }
+            if registration.root {
+                let mut root = match registration.group.root.lock() {
+                    Ok(root) => root,
+                    Err(poisoned) => {
+                        errors.push(interrupt_ownership_error(
+                            "restoring poisoned Direct root registry",
+                        ));
+                        poisoned.into_inner()
+                    }
+                };
+                if root.is_none() {
+                    *root = Some(registration.pthread);
+                } else {
+                    errors.push(interrupt_ownership_error(
+                        "Direct root was replaced while suspended",
+                    ));
+                }
+            } else {
+                let mut workers = match registration.group.workers.lock() {
+                    Ok(workers) => workers,
+                    Err(poisoned) => {
+                        errors.push(interrupt_ownership_error(
+                            "restoring poisoned Direct worker registry",
+                        ));
+                        poisoned.into_inner()
+                    }
+                };
+                if !workers.contains(&registration.pthread) {
+                    workers.push(registration.pthread);
+                } else {
+                    errors.push(interrupt_ownership_error(
+                        "Direct worker was replaced while suspended",
+                    ));
+                }
+            }
+            self.detached = false;
+        }
+        if let Err(error) = set_guest_interrupt_signal_mask(if self.restore_blocked_signal {
+            libc::SIG_BLOCK
+        } else {
+            libc::SIG_UNBLOCK
+        }) {
+            errors.push(error);
+        }
+        Error::combine(errors)
+    }
+
+    fn finish<T>(mut self, result: Result<T>) -> Result<T> {
+        self.active = false;
+        crate::entry::driver::combine_pending(result, self.restore())
+    }
+}
+
+impl Drop for GuestInterruptSuspension<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.active = false;
+            if let Err(error) = self.restore() {
+                // Retain a typed control failure on this exact entry owner.
+                // EntryGate captures before waking; a wake panic must not
+                // replace an already-unwinding child or destroy its payload.
+                let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.gate.poison(self.origin.clone(), error);
+                }));
+                if let Err(payload) = caught {
+                    self.panics.append(vec![payload]);
+                }
+            }
+        }
+    }
+}
+
 impl Drop for GuestThreadRegistration {
     fn drop(&mut self) {
         if self.root {
@@ -917,7 +1143,7 @@ impl Drop for GuestThreadRegistration {
                 .group
                 .root
                 .lock()
-                .expect("KVM guest root lock poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if *root == Some(self.pthread) {
                 *root = None;
             }
@@ -925,7 +1151,7 @@ impl Drop for GuestThreadRegistration {
             self.group
                 .workers
                 .lock()
-                .expect("KVM guest worker lock poisoned")
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .retain(|worker| *worker != self.pthread);
         }
         if self.restore_blocked_signal {
@@ -1308,7 +1534,6 @@ pub(crate) struct OwnChildExitContext {
     pub(crate) child: SignalProcessId,
     pub(crate) _parent_binding: ProcessSignalBindingGuard,
     pub(crate) completion: Arc<ChildCompletionSlot>,
-    pub(crate) completion_notifier: std::sync::mpsc::Sender<i32>,
     pub(crate) raw_child_pid: i32,
 }
 
@@ -2272,10 +2497,12 @@ impl KvmBackend {
         let (fs_base, gs_base) = child_executor.segment_bases();
         set_user_segment_base(&child.vcpu, SegmentBase::Fs, fs_base)?;
         set_user_segment_base(&child.vcpu, SegmentBase::Gs, gs_base)?;
+        // The child uses root transport for future syscalls, but its initial
+        // return belongs to the issuing thread's frame in the private snapshot.
         configure_process_syscall_return(
             &child.memory,
             &child.vcpu,
-            child.syscall_frame_address,
+            self.syscall_frame_address,
             0,
             child_stack,
         )?;
@@ -2382,7 +2609,7 @@ impl KvmBackend {
             snapshot.completion.status,
             snapshot.completion.waitable,
         );
-        executor.record_child_completion(child.pid, completion)?;
+        executor.record_child_completion(snapshot.completion.child, completion)?;
         executor.append_output(stdout, stderr);
         configure_process_syscall_return(
             &self.memory,
@@ -2402,6 +2629,7 @@ impl KvmBackend {
         park_syscall_return: bool,
         fault: Option<&PageZeroFault>,
         mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
+        direct_registration: Option<&GuestThreadRegistration>,
     ) -> Result<ProcessActionOutcome> {
         let outcome = match &action {
             ProcessAction::Fork { child_pid, .. } => {
@@ -2422,7 +2650,7 @@ impl KvmBackend {
                 clear_sighand,
                 share_address_space,
             } => {
-                let Some(mut child) = self
+                let Some(child) = self
                     .prepare_forked_process_admitted(
                         executor,
                         child_pid,
@@ -2440,72 +2668,94 @@ impl KvmBackend {
                 else {
                     return Ok(ProcessActionOutcome::cancelled());
                 };
-                // This direct fork runs on the parent's call stack.
-                // It is nested work, not an independent driver
-                // that can await the parent's terminal publication.
-                child.backend.entry_driver = self.entry_driver_owner();
-                child
-                    .backend
-                    .set_operation_origin(self.memory.entry_origin().operation);
-                child.executor.bind_address_space(&child.backend.memory);
-                // Inline descendants share this executor with their parent.
-                // Boxing breaks the recursive future type without entering a
-                // second LocalPool or moving guest work to another host thread.
-                let result = Box::pin(
+                let parent_interrupt = direct_registration
+                    .map(|registration| {
+                        registration.suspend_for_inline_fork(
+                            self.memory.entry_gate(),
+                            self.memory.entry_origin(),
+                            self.tool_panic_owner(),
+                        )
+                    })
+                    .transpose()?;
+                // The child's run registration/future retires before restoring
+                // the parent target. Its backend object can remain in existing
+                // deferred Tool cleanup; that ownership is unchanged.
+                let result = async {
+                    let mut child = child;
+                    // This direct fork runs on the parent's call stack.
+                    // It is nested work, not an independent driver
+                    // that can await the parent's terminal publication.
+                    child.backend.entry_driver = self.entry_driver_owner();
                     child
                         .backend
-                        .run_static_elf_process_inner(&mut child.executor),
-                )
-                .await;
-                let result = match result {
-                    Ok((status, stdout, stderr)) => self
-                        .finish_forked_process_inner(executor, &mut child, status, stdout, stderr),
-                    Err(error) => Err(error),
-                };
-                if let Ok(ForkedProcessCompletion::Detached) = result {
-                    return Ok(ProcessActionOutcome::cancelled());
-                }
-                if let Err(error) = result {
-                    if self.entry_driver.is_some() {
-                        // KvmBackend::drop cancels/joins. Keep that destruction
-                        // outside the enclosing callback along with every
-                        // nested owned consumer, after outer publication.
-                        let transfer = ChildToolPanicTransfer {
-                            parent: self.tool_panic_owner(),
-                            child: child.backend.tool_panic_owner(),
-                        };
-                        executor.retain_unstarted_tool_cleanup(Box::pin(async move {
-                            let transfer = transfer;
-                            child.backend.restore_entry_origin();
-                            child.executor.bind_address_space(&child.backend.memory);
-                            let cleanup =
-                                crate::runtime::finish_unstarted_tool_cleanups_with_panics(
-                                    &mut child.executor,
-                                    &child.backend.tool_panics,
-                                )
-                                .await;
-                            child.backend.cancel_guest_threads_after_failure();
-                            let workers = child.backend.guest_worker_teardown_result();
-                            let children = child
-                                .executor
-                                .join_child_processes_after_failure_async()
-                                .await;
-                            drop(transfer);
-                            Error::combine(
-                                [cleanup, workers, children]
-                                    .into_iter()
-                                    .filter_map(Result::err)
-                                    .collect(),
-                            )
-                        }));
-                    } else {
-                        // This Direct child has no enclosing Tool callback or
-                        // deferred publisher. Collect its reader/worker errors
-                        // before dropping the backend and its diagnostic cache.
-                        return Err(child.backend.finish_direct_process_error(error));
+                        .set_operation_origin(self.memory.entry_origin().operation);
+                    child.executor.bind_address_space(&child.backend.memory);
+                    // Inline descendants share this executor with their parent.
+                    // Boxing breaks the recursive future type without entering a
+                    // second LocalPool or moving guest work to another host thread.
+                    let result = Box::pin(
+                        child
+                            .backend
+                            .run_static_elf_process_inner(&mut child.executor),
+                    )
+                    .await;
+                    let result = match result {
+                        Ok((status, stdout, stderr)) => self.finish_forked_process_inner(
+                            executor, &mut child, status, stdout, stderr,
+                        ),
+                        Err(error) => Err(error),
+                    };
+                    if let Ok(ForkedProcessCompletion::Detached) = result {
+                        return Ok(ProcessActionOutcome::cancelled());
                     }
-                    return Err(error);
+                    if let Err(error) = result {
+                        if self.entry_driver.is_some() {
+                            // KvmBackend::drop cancels/joins. Keep that destruction
+                            // outside the enclosing callback along with every
+                            // nested owned consumer, after outer publication.
+                            let transfer = ChildToolPanicTransfer {
+                                parent: self.tool_panic_owner(),
+                                child: child.backend.tool_panic_owner(),
+                            };
+                            executor.retain_unstarted_tool_cleanup(Box::pin(async move {
+                                let transfer = transfer;
+                                child.backend.restore_entry_origin();
+                                child.executor.bind_address_space(&child.backend.memory);
+                                let cleanup =
+                                    crate::runtime::finish_unstarted_tool_cleanups_with_panics(
+                                        &mut child.executor,
+                                        &child.backend.tool_panics,
+                                    )
+                                    .await;
+                                child.backend.cancel_guest_threads_after_failure();
+                                let workers = child.backend.guest_worker_teardown_result();
+                                let children = child
+                                    .executor
+                                    .join_child_processes_after_failure_async()
+                                    .await;
+                                drop(transfer);
+                                Error::combine(
+                                    [cleanup, workers, children]
+                                        .into_iter()
+                                        .filter_map(Result::err)
+                                        .collect(),
+                                )
+                            }));
+                        } else {
+                            // This Direct child has no enclosing Tool callback or
+                            // deferred publisher. Collect its reader/worker errors
+                            // before dropping the backend and its diagnostic cache.
+                            return Err(child.backend.finish_direct_process_error(error));
+                        }
+                        return Err(error);
+                    }
+                    Ok(outcome)
                 }
+                .await;
+                return match parent_interrupt {
+                    Some(suspended) => suspended.finish(result),
+                    None => result,
+                };
             }
             // TODO-HUMAN-REVIEW(PR-172): Review concurrent CLONE_THREAD lifecycle semantics.
             ProcessAction::Thread {
@@ -2740,6 +2990,7 @@ impl KvmBackend {
             park_syscall_return,
             None,
             stop.as_mut(),
+            None,
         ))
         .map(|_| ())
     }
@@ -2934,10 +3185,18 @@ impl KvmBackend {
         executor: &mut ElfExecutor,
         action: ProcessAction,
         continuation: ProcessActionContinuation,
+        registration: &GuestThreadRegistration,
     ) -> Result<ProcessActionOutcome> {
         let mut stop = std::pin::pin!(std::future::pending());
         let result = self
-            .run_process_action_inner(executor, action, true, None, stop.as_mut())
+            .run_process_action_inner(
+                executor,
+                action,
+                true,
+                None,
+                stop.as_mut(),
+                Some(registration),
+            )
             .await;
         continuation.finish(self, result)
     }
@@ -3034,15 +3293,12 @@ impl KvmBackend {
                 let subscriptions = context.subscriptions;
                 let pending_child_starts = context.pending_child_starts;
                 let raw_child_pid = child.pid;
-                let completion_notifier = executor.child_completion_notifier();
                 let completion = Arc::new(ChildCompletionSlot::default());
                 let child_completion = completion.clone();
-                let child_completion_notifier = completion_notifier.clone();
                 let child_exit_context = OwnChildExitContext {
                     child: child_signal_process,
                     _parent_binding: parent_signal_binding,
                     completion: completion.clone(),
-                    completion_notifier,
                     raw_child_pid,
                 };
                 let panic_owner = child.backend.tool_failure.as_ref().map(|failure| {
@@ -3157,8 +3413,11 @@ impl KvmBackend {
                                         .backend
                                         .report_tool_failure("fork owner retirement", error)
                                 });
-                        if result.is_err() && child_completion.fail_if_pending() {
-                            let _ = child_completion_notifier.send(raw_child_pid);
+                        if result.is_err() {
+                            child_completion.fail_if_pending();
+                            child
+                                .executor
+                                .fail_child_wait_publication(child_signal_process);
                         }
                         child
                             .backend
@@ -3255,6 +3514,7 @@ impl KvmBackend {
                     park_syscall_return,
                     fault,
                     stop.as_mut(),
+                    None,
                 )
                 .await
             }
@@ -3567,6 +3827,7 @@ impl KvmBackend {
                     park_syscall_return,
                     fault,
                     stop.as_mut(),
+                    None,
                 )
                 .await
             }
@@ -4458,7 +4719,7 @@ impl KvmBackend {
         // This loop never dispatches Tool events, including Host-owned workers.
         self.set_rdtsc_interception(false)?;
         self.set_cpuid_interception(false)?;
-        let _registration = self.register_guest_thread()?;
+        let registration = self.register_guest_thread()?;
         if self.is_guest_thread {
             let entry_registers = self.vcpu.get_regs()?;
             while let Some(pending) = executor
@@ -4576,6 +4837,10 @@ impl KvmBackend {
                             match self.execute_static_elf_syscall(executor, &request, &self.memory)
                             {
                                 Ok(result) => result,
+                                Err(Error::ChildWaitGroupExit { status }) => {
+                                    let exit = executor.retire_child_wait_group_exit(status)?;
+                                    return self.finish_static_elf_thread(executor, exit);
+                                }
                                 Err(Error::TerminalReadCancelled) => {
                                     let exit = match self.guest_thread_group_exit_status() {
                                         Some(status) => {
@@ -4641,6 +4906,7 @@ impl KvmBackend {
                         executor,
                         action,
                         continuation.expect("a process action has a continuation policy"),
+                        &registration,
                     )
                     .await?;
                 if outcome.cancelled {
@@ -4715,30 +4981,7 @@ impl KvmBackend {
     }
 
     pub(crate) fn register_guest_thread(&self) -> Result<GuestThreadRegistration> {
-        let restore_blocked_signal = set_guest_interrupt_signal_mask(libc::SIG_UNBLOCK)?;
-        // SAFETY: pthread_self returns the live calling thread's identifier.
-        let pthread = unsafe { libc::pthread_self() };
-        if self.is_guest_thread {
-            self.thread_group
-                .workers
-                .lock()
-                .expect("KVM guest worker lock poisoned")
-                .push(pthread);
-        } else {
-            let previous = self
-                .thread_group
-                .root
-                .lock()
-                .expect("KVM guest root lock poisoned")
-                .replace(pthread);
-            assert!(previous.is_none(), "KVM guest root already registered");
-        }
-        Ok(GuestThreadRegistration {
-            group: self.thread_group.clone(),
-            pthread,
-            root: !self.is_guest_thread,
-            restore_blocked_signal,
-        })
+        GuestThreadRegistration::register(self.thread_group.clone(), !self.is_guest_thread)
     }
 
     /// Drop this backend's reserved input description at terminal ownership
@@ -5287,6 +5530,7 @@ mod tests {
     include!("vm/entry_action_tests.rs");
     include!("vm/entry_wait_tests.rs");
     include!("vm/entry_eintr_tests.rs");
+    include!("vm/inline_interrupt_tests.rs");
     include!("vm/memory_publication_tests.rs");
 
     #[test]
@@ -7095,6 +7339,133 @@ mod tests {
         )
     }
 
+    // Exercise the real fork preparation with different leader/worker frames.
+    // No guest runs: register readback isolates the initial return from all
+    // later wait/publication behavior, while the guest tests cover that path.
+    #[test]
+    fn fork_child_restores_issuing_thread_frame_from_private_snapshot() {
+        for from_worker in [false, true] {
+            for child_stack in [None, Some(0xde_0000)] {
+                let mut parent =
+                    KvmBackend::new(16 * 1024 * 1024).expect("fork transport control requires KVM");
+                parent
+                    .install_static_elf(&minimal_test_elf(&[HLT]), "/bin/fork-transport")
+                    .unwrap();
+                let leader = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+                let sibling = leader.thread_child(2).unwrap();
+                let initial = parent.vcpu.get_regs().unwrap();
+                let mut worker = KvmBackend::from_thread_state(
+                    parent.memory.clone(),
+                    initial,
+                    parent.vcpu.get_xsave().unwrap(),
+                    None,
+                    parent.cpuid_policy,
+                    2,
+                    parent.thread_group.clone(),
+                )
+                .unwrap();
+                assert_ne!(parent.syscall_frame_address, worker.syscall_frame_address);
+                assert_eq!(parent.memory.host_address(), worker.memory.host_address());
+                let user_registers = |seed, stack, flags| kvm_regs {
+                    rax: seed,
+                    rbx: seed + 1,
+                    rcx: initial.rip + seed,
+                    rdx: seed + 2,
+                    rsi: seed + 3,
+                    rdi: seed + 4,
+                    rsp: stack,
+                    rbp: seed + 5,
+                    r8: seed + 6,
+                    r9: seed + 7,
+                    r10: seed + 8,
+                    r11: flags,
+                    r12: seed + 9,
+                    r13: seed + 10,
+                    r14: seed + 11,
+                    r15: seed + 12,
+                    rip: initial.rip + seed,
+                    rflags: flags,
+                };
+                let leader_user = user_registers(0x10, 0xe0_0000, 0x202);
+                let worker_user = user_registers(0x80, 0xdf_0000, 0x246);
+                stage_process_syscall_return(
+                    &mut parent.memory,
+                    &parent.vcpu,
+                    parent.syscall_frame_address,
+                    leader_user,
+                )
+                .unwrap();
+                stage_process_syscall_return(
+                    &mut worker.memory,
+                    &worker.vcpu,
+                    worker.syscall_frame_address,
+                    worker_user,
+                )
+                .unwrap();
+                let read_frame = |memory: &GuestMemory, address| {
+                    let mut frame = [0; FRAME_SIZE];
+                    memory.read_raw(address, &mut frame).unwrap();
+                    frame
+                };
+                let leader_frame = read_frame(&parent.memory, parent.syscall_frame_address);
+                let worker_frame = read_frame(&worker.memory, worker.syscall_frame_address);
+                assert_ne!(leader_frame, worker_frame);
+                let leader_before = parent.vcpu.get_regs().unwrap();
+                let worker_before = worker.vcpu.get_regs().unwrap();
+                let (issuer, executor, mut expected) = if from_worker {
+                    (&mut worker, &sibling, worker_user)
+                } else {
+                    (&mut parent, &leader, leader_user)
+                };
+                let child = issuer
+                    .prepare_forked_process(
+                        executor,
+                        3,
+                        child_stack,
+                        None,
+                        None,
+                        None,
+                        false,
+                        false,
+                        false,
+                        None,
+                    )
+                    .unwrap();
+                expected.rax = 0;
+                if let Some(stack) = child_stack {
+                    expected.rsp = stack;
+                }
+                assert_eq!(child.backend.vcpu.get_regs().unwrap(), expected);
+                assert_ne!(
+                    child.backend.memory.host_address(),
+                    parent.memory.host_address()
+                );
+                assert_eq!(
+                    child.backend.syscall_trampoline_address,
+                    SYSCALL_TRAMPOLINE_ADDRESS
+                );
+                assert_eq!(child.backend.syscall_frame_address, SYSCALL_FRAME_ADDRESS);
+                // IA32_LSTAR must still select the new process's root transport.
+                let mut msrs = kvm_bindings::Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
+                    index: 0xc000_0082,
+                    ..Default::default()
+                }])
+                .unwrap();
+                assert_eq!(child.backend.vcpu.get_msrs(&mut msrs).unwrap(), 1);
+                assert_eq!(msrs.as_slice()[0].data, SYSCALL_TRAMPOLINE_ADDRESS);
+                for (address, frame) in [
+                    (parent.syscall_frame_address, leader_frame),
+                    (worker.syscall_frame_address, worker_frame),
+                ] {
+                    assert_eq!(read_frame(&parent.memory, address), frame);
+                    assert_eq!(read_frame(&child.backend.memory, address), frame);
+                }
+                assert_eq!(parent.vcpu.get_regs().unwrap(), leader_before);
+                assert_eq!(worker.vcpu.get_regs().unwrap(), worker_before);
+            }
+        }
+    }
+
     // Exercise real sibling dispatch and the production private-fork snapshot
     // without entering KVM_RUN. Both thread VMs share the parent mapping; the
     // forked VM must inherit its completed layout and then remain independent.
@@ -7352,10 +7723,17 @@ mod tests {
                 &executor, 4, None, None, None, None, false, false, false, None,
             )
             .unwrap();
+        let child_id = child.executor.signal_task_identity().unwrap().process;
         executor.retire_current_thread(ExitStatus::Exited(1), false);
         child
             .executor
             .retire_current_thread(ExitStatus::Exited(7), false);
+        assert!(matches!(
+            child.executor.process_family_exit().unwrap(),
+            crate::executor::ProcessFamilyExit::ReapedByNamespaceInit {
+                status: ExitStatus::Exited(7)
+            }
+        ));
         let result = parent.finish_forked_process(
             &mut executor,
             child,
@@ -7363,6 +7741,9 @@ mod tests {
             b"orphan out".to_vec(),
             b"orphan err".to_vec(),
         );
+        executor
+            .fixture_child_wait_context()
+            .assert_namespace_reaped_child_for_test(child_id, ExitStatus::Exited(7));
         (result, executor)
     }
 
@@ -7375,17 +7756,25 @@ mod tests {
             (b"orphan out".to_vec(), b"orphan err".to_vec()),
             "a detached child's output still reaches the run",
         );
-        let memory = GuestMemory::new(0, 4096).unwrap();
         assert_eq!(
-            executor.execute(
-                &SyscallRequest::new(
-                    libc::SYS_wait4 as u64,
-                    [4, 0, libc::WNOHANG as u64, 0, 0, 0],
-                ),
-                &memory,
-            ),
-            -i64::from(libc::ECHILD),
+            executor.fixture_child_wait_context().get(&4),
+            None,
             "init reaped the child, so its former parent has nothing to wait for",
+        );
+        assert!(executor.signal_task_identity().is_none());
+        let memory = GuestMemory::new(0, 4096).unwrap();
+        assert!(
+            matches!(
+                executor.execute_checked(
+                    &SyscallRequest::new(
+                        libc::SYS_wait4 as u64,
+                        [4, 0, libc::WNOHANG as u64, 0, 0, 0],
+                    ),
+                    &memory,
+                ),
+                Err(Error::RunAborted)
+            ),
+            "a terminal caller cannot issue another guest wait"
         );
     }
 
@@ -9245,12 +9634,22 @@ mod tests {
 
         let (first_sender, first_receiver) = std::sync::mpsc::channel();
         let first_gate = ChildStartGate::new(first_sender);
+        let mut child = leader.fork_child(41, false, false).unwrap();
+        let child_id = child.signal_task_identity().unwrap().process;
+        child.retire_current_thread(ExitStatus::SUCCESS, false);
+        let first_completion = Arc::new(ChildCompletionSlot::default());
+        leader
+            .publish_child_wait(
+                child_id,
+                ChildCompletion::Waitable(ExitStatus::SUCCESS),
+                &first_completion,
+                false,
+            )
+            .unwrap();
         leader.register_child_process_with_gate(
             41,
             first_gate.clone(),
-            Arc::new(ChildCompletionSlot::with_completion(
-                ChildCompletion::Waitable(ExitStatus::SUCCESS),
-            )),
+            first_completion,
             ChildThread::spawn(|| Ok(())),
         );
 

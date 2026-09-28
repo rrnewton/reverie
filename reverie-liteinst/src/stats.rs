@@ -150,6 +150,14 @@ impl LiteinstBackendStatsSource {
         }
     }
 
+    /// Builds the source for a runtime-free (trap-only) LiteInst run.
+    ///
+    /// Trap-only sites are recorded through the same tracer-owned collector as
+    /// the host hybrid; with patching off it stays empty.
+    pub(crate) fn from_trap_only(stats: reverie_ptrace::LiteinstInstrumentationStats) -> Self {
+        Self::from_ptrace_host_hybrid(stats)
+    }
+
     /// Returns the captured snapshot without performing another collection pass.
     pub const fn snapshot(&self) -> &LiteinstBackendStatsSnapshot {
         &self.snapshot

@@ -21,6 +21,26 @@ use crate::TracerBuilder;
 pub use crate::perf::do_branches;
 use crate::spawn_fn_with_config;
 
+/// The number of late timer overflow signals this process has discarded at
+/// injected syscalls. Concurrent tests in one process share the count.
+pub fn late_timer_signals_discarded() -> u64 {
+    crate::task::LATE_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The number of timer overflow signals this process has discarded while the
+/// LiteInst patch helper ran. Concurrent tests in one process share the
+/// count.
+pub fn liteinst_helper_timer_signals_discarded() -> u64 {
+    crate::task::LITEINST_HELPER_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The number of times this process forgot timer overflow records because
+/// their notification had left the thread's pending queue. Concurrent tests
+/// in one process share the count.
+pub fn timer_overflow_records_expired() -> u64 {
+    crate::timer::OVERFLOW_RECORDS_EXPIRED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// For some tests, its nice to show what was printed.
 pub fn print_tracee_output(output: &Output) {
     println!(

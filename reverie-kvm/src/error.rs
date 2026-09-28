@@ -49,6 +49,15 @@ pub enum Error {
     #[error("inherited stdin read retired after terminal cancellation")]
     TerminalReadCancelled,
 
+    /// A process-family wait observed its caller's already committed group
+    /// exit. This private dispatch control must be consumed nonreturningly by
+    /// Direct/Tool drivers before failure publication or any syscall result.
+    #[error("child wait retired by committed group exit {status:?}")]
+    ChildWaitGroupExit {
+        /// Winner validated against the caller's exact live task generation.
+        status: reverie::ExitStatus,
+    },
+
     /// A native reader control operation failed. This is never a guest errno.
     /// An unjoined reader retains its endpoint and storage until process exit.
     #[error(

@@ -126,6 +126,8 @@ struct PtraceBackendStatsCollector {
     vfork_stops: AtomicU64,
     clone_stops: AtomicU64,
     vfork_done_stops: AtomicU64,
+    #[cfg(test)]
+    stop_trace: std::sync::Mutex<Vec<(reverie::Pid, String)>>,
 }
 
 /// Live source for a ptrace backend activity snapshot.
@@ -146,6 +148,8 @@ impl PtraceBackendStatsSource {
     }
 
     pub(crate) fn record_wait(&self, wait: &Wait) {
+        #[cfg(test)]
+        self.record_stop_trace(wait);
         match wait {
             Wait::Exited(_, _) => {}
             Wait::Stopped(_, event) => {
@@ -180,6 +184,50 @@ impl PtraceBackendStatsSource {
                 }
             }
         }
+    }
+
+    /// Appends one run-loop wait to the test-only stop sequence.
+    ///
+    /// Seccomp stops carry the syscall number, and new-child stops carry the
+    /// child's PID, so that two runs of the same guest can be compared stop by
+    /// stop and task by task.
+    #[cfg(test)]
+    fn record_stop_trace(&self, wait: &Wait) {
+        let (pid, description) = match wait {
+            Wait::Exited(pid, status) => (*pid, format!("exited {status:?}")),
+            Wait::Stopped(stopped, event) => {
+                let description = match event {
+                    Event::NewChild(operation, child) => {
+                        format!("new-child {operation:?} {}", child.pid())
+                    }
+                    Event::Exec(_) => "exec".to_owned(),
+                    Event::Seccomp => match stopped.getregs() {
+                        #[cfg(target_arch = "x86_64")]
+                        Ok(regs) => format!("seccomp {}", regs.orig_rax),
+                        #[cfg(not(target_arch = "x86_64"))]
+                        Ok(_) => "seccomp".to_owned(),
+                        Err(error) => format!("seccomp <getregs failed: {error}>"),
+                    },
+                    other => format!("{other:?}"),
+                };
+                (stopped.pid(), description)
+            }
+        };
+        self.collector
+            .stop_trace
+            .lock()
+            .expect("stop trace lock poisoned")
+            .push((pid, description));
+    }
+
+    /// Returns every recorded run-loop wait in arrival order.
+    #[cfg(test)]
+    pub(crate) fn stop_trace(&self) -> Vec<(reverie::Pid, String)> {
+        self.collector
+            .stop_trace
+            .lock()
+            .expect("stop trace lock poisoned")
+            .clone()
     }
 
     pub(crate) fn record_tracee_exit(&self) {
