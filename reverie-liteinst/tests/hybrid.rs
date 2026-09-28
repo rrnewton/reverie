@@ -2363,3 +2363,349 @@ async fn a_timer_before_the_next_hook_trap_fires() {
     );
     assert_eq!(timer_events, 64);
 }
+
+/// What `UnsubscribedHookTimerTool` tells its global state.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum UnsubscribedHookTimerNote {
+    Getpid,
+    /// The guest's RCBs from the latest getpid to a getppid, when the Tool
+    /// subscribes it.
+    Getppid(u64),
+    /// The guest's RCBs from the latest getpid to a timer event.
+    TimerEvent(u64),
+}
+
+#[derive(Debug, Default)]
+struct UnsubscribedHookTimerEvents {
+    getpids: AtomicU64,
+    getppids: std::sync::Mutex<Vec<u64>>,
+    timer_events: std::sync::Mutex<Vec<u64>>,
+}
+
+/// The configuration of `UnsubscribedHookTimerTool`.
+#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct UnsubscribedHookTimerConfig {
+    /// The timer's RCBs from each getpid to its target.
+    rcbs: u64,
+    /// Whether the Tool also subscribes getppid, to measure where it traps.
+    getppid: bool,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for UnsubscribedHookTimerEvents {
+    type Request = UnsubscribedHookTimerNote;
+    type Response = ();
+    type Config = UnsubscribedHookTimerConfig;
+
+    async fn receive_rpc(&self, _from: Tid, note: UnsubscribedHookTimerNote) {
+        match note {
+            UnsubscribedHookTimerNote::Getpid => {
+                self.getpids.fetch_add(1, Ordering::SeqCst);
+            }
+            UnsubscribedHookTimerNote::Getppid(rcbs) => self.getppids.lock().unwrap().push(rcbs),
+            UnsubscribedHookTimerNote::TimerEvent(rcbs) => {
+                self.timer_events.lock().unwrap().push(rcbs)
+            }
+        }
+    }
+}
+
+/// Answers every getpid itself, with 0x4242, and requests a precise timer
+/// there. It subscribes nothing else, unless configured to measure getppid.
+#[derive(Default)]
+struct UnsubscribedHookTimerTool;
+
+#[reverie::tool]
+impl Tool for UnsubscribedHookTimerTool {
+    type GlobalState = UnsubscribedHookTimerEvents;
+    /// The guest's RCB clock at the latest getpid.
+    type ThreadState = u64;
+
+    fn subscriptions(config: &UnsubscribedHookTimerConfig) -> Subscription {
+        if config.getppid {
+            [Sysno::getpid, Sysno::getppid].into_iter().collect()
+        } else {
+            [Sysno::getpid].into_iter().collect()
+        }
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        match syscall.number() {
+            Sysno::getpid => {
+                *guest.thread_state_mut() = guest.read_clock()?;
+                guest.send_rpc(UnsubscribedHookTimerNote::Getpid).await;
+                guest.set_timer_precise(TimerSchedule::Rcbs(guest.config().rcbs))?;
+                Ok(0x4242)
+            }
+            Sysno::getppid => {
+                let rcbs = guest.read_clock()? - *guest.thread_state();
+                guest
+                    .send_rpc(UnsubscribedHookTimerNote::Getppid(rcbs))
+                    .await;
+                guest.tail_inject(syscall).await
+            }
+            other => panic!("unsubscribed {other}"),
+        }
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        let rcbs = guest.read_clock().unwrap() - *guest.thread_state();
+        guest
+            .send_rpc(UnsubscribedHookTimerNote::TimerEvent(rcbs))
+            .await;
+    }
+}
+
+/// Runs `hybrid_unsubscribed_hook_timer.c` with a precise timer `rcbs` RCBs
+/// past each getpid, which the guest follows with `before + i % leads`
+/// branches in round `i`, a getppid through the same patched site, and
+/// `after` branches. Returns the RCBs from the getpid to each timer event,
+/// and, if the Tool subscribes `getppid`, to each getppid.
+async fn run_unsubscribed_hook_timer(
+    config: UnsubscribedHookTimerConfig,
+    before: u64,
+    leads: u64,
+    rounds: u64,
+    after: u64,
+) -> (Vec<u64>, Vec<u64>) {
+    let (_directory, guest) = compile_fixture("hybrid_unsubscribed_hook_timer.c");
+    let mut command = Command::new(guest);
+    command.args([
+        before.to_string(),
+        leads.to_string(),
+        rounds.to_string(),
+        after.to_string(),
+    ]);
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(120),
+        LiteinstBackend::run_host_with_output_and_preload::<UnsubscribedHookTimerTool>(
+            command,
+            config,
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("the unsubscribed hook guest did not complete")
+    .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("rounds={rounds} wrong=0\n")
+    );
+    assert_eq!(global.getpids.load(Ordering::SeqCst), rounds + 1);
+    (
+        global.timer_events.into_inner().unwrap(),
+        global.getppids.into_inner().unwrap(),
+    )
+}
+
+/// Runs the guest with no timer target in reach, `rcbs` RCBs past each
+/// getpid, `before` branches from each getpid to its getppid, and the Tool
+/// subscribed to getppid.
+async fn run_unsubscribed_hook_timer_steps(rcbs: u64, before: u64) -> Vec<u64> {
+    let config = UnsubscribedHookTimerConfig {
+        rcbs,
+        getppid: false,
+    };
+    let rounds = 16;
+    let (events, getppids) = run_unsubscribed_hook_timer(config, before, 1, rounds, 2 * rcbs).await;
+    assert!(getppids.is_empty());
+    assert_eq!(events.len(), rounds as usize + 1, "{events:?}");
+    events
+}
+
+// A getppid through a patched site is a LiteInst hook trap that the Tool does
+// not observe, because it subscribes only getpid. Without LiteInst the
+// getppid would make no stop at all, so the trap must not change the timer
+// event that the getpid before it requested: every round's event fires once,
+// at its target, in the branches after the getppid.
+//
+// Each target is 200 RCBs past its getpid, and the getppid's trap 100 RCBs
+// and the hook's own branches past it. 200 RCBs is within the skid margin of
+// every AMD processor in Reverie's PMU table, so there the timer is delivered
+// with an artificial signal, the steps start at the getpid, and the trap
+// interrupts them. On Intel the steps start at most 100 or 125 RCBs before
+// the target.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unsubscribed_hook_trap_in_the_timer_steps_keeps_the_event() {
+    reverie_ptrace::ret_without_perf!();
+    let rcbs = 200;
+    let events = run_unsubscribed_hook_timer_steps(rcbs, 100).await;
+    assert!(events.iter().all(|&event| event == rcbs), "{events:?}");
+}
+
+// The control: the target is 50 RCBs past each getpid, before the getppid, so
+// the steps reach it before the trap.
+#[tokio::test(flavor = "current_thread")]
+async fn a_timer_before_an_unsubscribed_hook_trap_fires() {
+    reverie_ptrace::ret_without_perf!();
+    let rcbs = 50;
+    let events = run_unsubscribed_hook_timer_steps(rcbs, 100).await;
+    assert!(events.iter().all(|&event| event == rcbs), "{events:?}");
+}
+
+// The timer's PMU notification can be pending at the unsubscribed hook trap,
+// when the counter overflows a few branches before it and the processor's
+// interrupt latency lands the signal after the trap. The notification then
+// reaches the syscall that Reverie injects for the hook, before any stop has
+// decided the event. It is the event's own: the event must fire at its
+// target once the syscall returns, and not be taken for a late notification
+// of a cancelled event and discarded.
+//
+// A first run, with the Tool subscribed to getppid, measures how many
+// branches past the guest's loop the getppid traps. In the second run each
+// round's counter then overflows one of `leads` distances before the trap, as
+// in reverie-ptrace/tests/late_timer_signal.rs. Whichever side of the trap
+// the signal comes, the event must fire at its target.
+#[tokio::test(flavor = "current_thread")]
+async fn a_timer_notification_at_an_unsubscribed_hook_syscall_fires_the_event() {
+    reverie_ptrace::ret_without_perf!();
+    let margin = reverie_ptrace::PmuConfig::new().skid_margin();
+    let period = 10_000;
+    let leads = 80.min(margin / 4);
+    let rounds = 200;
+    let rcbs = period + margin;
+    let measure = UnsubscribedHookTimerConfig {
+        rcbs: 4 * period,
+        getppid: true,
+    };
+    let (_, getppids) = run_unsubscribed_hook_timer(measure, period, 1, 4, 1).await;
+    // The guest's first getppid precedes every getpid, and the site's first
+    // getpid reaches the Tool through seccomp rather than the hook.
+    assert_eq!(getppids.len(), 6, "{getppids:?}");
+    let hook = getppids[2] - period;
+    assert!(
+        getppids[2..].iter().all(|&rcbs| rcbs == period + hook),
+        "the getppid must trap at one distance past the loop: {getppids:?}"
+    );
+    assert!(
+        hook + leads < margin,
+        "the trap must come before the target: {hook} branches past the loop"
+    );
+    eprintln!("the getppid traps {hook} branches past the loop");
+    let config = UnsubscribedHookTimerConfig {
+        rcbs,
+        getppid: false,
+    };
+    let live_before = reverie_ptrace::testing::live_timer_signals_taken();
+    let late_before = reverie_ptrace::testing::late_timer_signals_discarded();
+    let (events, _) =
+        run_unsubscribed_hook_timer(config, period - hook - leads / 2, leads, rounds, 2 * margin)
+            .await;
+    let live = reverie_ptrace::testing::live_timer_signals_taken() - live_before;
+    let late = reverie_ptrace::testing::late_timer_signals_discarded() - late_before;
+    eprintln!("notifications taken at injected syscalls: {live}, discarded as late: {late}");
+    assert_eq!(events, vec![rcbs; rounds as usize + 1]);
+    assert_eq!(late, 0, "no notification here is late");
+    // Otherwise no round tested the notification at the injection.
+    assert!(live > 0, "no notification reached an injected syscall");
+}
+
+#[derive(Debug, Default)]
+struct SigreturnHookTimerEvents {
+    requests: AtomicU64,
+    timer_events: std::sync::Mutex<Vec<u64>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for SigreturnHookTimerEvents {
+    /// The guest's RCBs from the latest request to a timer event, or `None`
+    /// for a request.
+    type Request = Option<u64>;
+    type Response = ();
+    /// The timer's RCBs from each request to its target.
+    type Config = u64;
+
+    async fn receive_rpc(&self, _from: Tid, note: Option<u64>) {
+        match note {
+            None => {
+                self.requests.fetch_add(1, Ordering::SeqCst);
+            }
+            Some(rcbs) => self.timer_events.lock().unwrap().push(rcbs),
+        }
+    }
+}
+
+/// Answers every getpid itself, with 0x4242, and requests a precise timer at
+/// a getpid whose first argument is 1. It subscribes nothing else.
+#[derive(Default)]
+struct SigreturnHookTimerTool;
+
+#[reverie::tool]
+impl Tool for SigreturnHookTimerTool {
+    type GlobalState = SigreturnHookTimerEvents;
+    /// The guest's RCB clock at the latest request.
+    type ThreadState = u64;
+
+    fn subscriptions(_config: &u64) -> Subscription {
+        [Sysno::getpid].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::getpid);
+        let (_, args) = syscall.into_parts();
+        if args.arg0 == 1 {
+            *guest.thread_state_mut() = guest.read_clock()?;
+            guest.send_rpc(None).await;
+            guest.set_timer_precise(TimerSchedule::Rcbs(*guest.config()))?;
+        }
+        Ok(0x4242)
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        let rcbs = guest.read_clock().unwrap() - *guest.thread_state();
+        guest.send_rpc(Some(rcbs)).await;
+    }
+}
+
+// A signal handler's restorer that makes its rt_sigreturn through a patched
+// site traps into LiteInst, and Reverie makes the rt_sigreturn for the hook
+// without a Tool callback. Without LiteInst the rt_sigreturn would make no
+// stop, so the trap must not change the timer event that the handler
+// requested: each handler requests an event whose PMU notification comes
+// after the rt_sigreturn, and it must fire at its target after the handler
+// has returned.
+#[tokio::test(flavor = "current_thread")]
+async fn an_rt_sigreturn_hook_trap_keeps_the_timer_event() {
+    reverie_ptrace::ret_without_perf!();
+    let margin = reverie_ptrace::PmuConfig::new().skid_margin();
+    let period = 10_000;
+    let rcbs = period + margin;
+    let rounds = 16;
+    let (_directory, guest) = compile_fixture("hybrid_sigreturn_hook_timer.c");
+    let mut command = Command::new(guest);
+    command.args([
+        (period / 2).to_string(),
+        rounds.to_string(),
+        (2 * rcbs).to_string(),
+    ]);
+    let (output, global) = tokio::time::timeout(
+        Duration::from_secs(60),
+        LiteinstBackend::run_host_with_output_and_preload::<SigreturnHookTimerTool>(
+            command,
+            rcbs,
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("the rt_sigreturn hook guest did not complete")
+    .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("rounds={rounds} handled={rounds} wrong=0\n")
+    );
+    assert_eq!(global.requests.load(Ordering::SeqCst), rounds);
+    assert_eq!(
+        global.timer_events.into_inner().unwrap(),
+        vec![rcbs; rounds as usize]
+    );
+}
