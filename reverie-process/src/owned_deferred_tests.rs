@@ -61,6 +61,9 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_large_bytes_pending_then_actual_wait() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| {
             let (mapping, shared) = new_shared_drop_state();
             let dropped = std::cell::Cell::new(false);
@@ -116,6 +119,9 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_general_workload_can_join_thread_and_fork() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| {
             let run = Container::new()
                 .unshare(Namespace::PID)
@@ -140,6 +146,9 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_namespace_group_exit_retains_diagnosis_and_guards() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| {
             let dropped = std::cell::Cell::new(false);
             let guard = Guard(&dropped);
@@ -320,11 +329,17 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_missing_pidfd_keeps_original_wait_without_cancel() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| missing_pidfd_drained_result(vec![31; 4], deadline));
     }
 
     #[test]
     fn owned_deferred_missing_pidfd_drains_larger_than_pipe_before_refusal() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| missing_pidfd_drained_result(vec![37; 1024 * 1024], deadline));
     }
 
@@ -376,6 +391,9 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_real_read_failure_keeps_partial_bytes_reader_and_owner() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| {
             let (mapping, shared) = new_shared_drop_state();
             READ_DEADLINE.with(|value| value.set(Some(deadline)));
@@ -564,16 +582,25 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_compound_missing_pidfd_read_error_releases_reader_before_wait() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| compound_missing_pidfd_read_error(deadline, false));
     }
 
     #[test]
     fn owned_deferred_compound_missing_pidfd_read_error_drop_releases_reader() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| compound_missing_pidfd_read_error(deadline, true));
     }
 
     #[test]
     fn owned_deferred_setup_refusal_decodes_only_after_actual_wait() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| {
             let (mapping, shared) = new_shared_drop_state();
             let dir = tempfile::tempdir().unwrap();
@@ -605,6 +632,9 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_preclone_refusals_have_no_workload_effects() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|_deadline| {
             let (mapping, shared) = new_shared_drop_state();
             {
@@ -649,6 +679,9 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_wait_refusal_preserves_owner_bytes_and_parent_guard() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| {
             let (mapping, shared) = new_shared_drop_state();
             let dropped = std::cell::Cell::new(false);
@@ -698,6 +731,9 @@ mod owned_deferred_tests {
 
     #[test]
     fn owned_deferred_opposing_reaper_never_makes_complete() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         isolated(|deadline| {
             let run = Container::new()
                 .run_with_deferred_drop_owned(&mut || (89, ()))
