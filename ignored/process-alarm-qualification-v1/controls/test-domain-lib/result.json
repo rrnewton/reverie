@@ -1,0 +1,75 @@
+{
+  "plan_sha256": "77c6e23953f7a8d668d1468142a74cda3079d7b5cd4ef2950ef18f827011efab",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/test-domain-lib",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/test-domain-lib-plan.json",
+      "77c6e23953f7a8d668d1468142a74cda3079d7b5cd4ef2950ef18f827011efab"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 2.8592747289221734,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/controls/test-domain-lib/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "b733af4c4e9aa348f4fd57827a27178c7d2fe55d57d9ad8601890ed2e2fa3800"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/controls/test-domain-lib/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/test-domain-lib/result.json",
+    "bytes": 36110,
+    "mode": 384,
+    "sha256": "12fef132a240418e15f0f538b2279d63cdcfb195426ad422c6f76572b5cb7dd6"
+  },
+  "readback": {
+    "executed": 3,
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 461,
+      "exec_time": 0.002414868
+    },
+    "names": [
+      "executor::tests::blocked_tool_replacement_requeues_without_consuming_another_event",
+      "executor::tests::delivery_selection_refreshes_every_signalfd_alias_before_filtering",
+      "executor::tests::structured_replacement_uses_replacement_disposition_and_mask"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.00453066686168313
+  },
+  "inputs_unchanged": true
+}

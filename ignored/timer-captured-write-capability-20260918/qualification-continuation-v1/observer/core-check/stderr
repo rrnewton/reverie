@@ -1,0 +1,54 @@
+    Checking futures-sink v0.3.34
+    Checking futures-core v0.3.34
+    Checking lock_api v0.4.14
+   Compiling syn v2.0.119
+    Checking parking_lot v0.12.5
+    Checking futures-channel v0.3.34
+    Checking bytes v1.12.1
+    Checking futures-util v0.3.34
+    Checking tokio v1.53.1
+   Compiling pkg-config v0.3.34
+    Checking once_cell v1.21.4
+    Checking tracing-core v0.1.36
+   Compiling unwind-sys v0.1.4
+    Checking futures-executor v0.3.34
+   Compiling zmij v1.0.23
+   Compiling derive_more-impl v1.0.0
+    Checking futures v0.3.34
+    Checking reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-memory)
+    Checking log v0.4.34
+    Checking regex-syntax v0.8.11
+   Compiling serde_json v1.0.151
+    Checking regex-automata v0.4.18
+    Checking derive_more v1.0.0
+    Checking reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-process)
+   Compiling tracing-attributes v0.1.31
+   Compiling foreign-types-macros v0.2.4
+    Checking itoa v1.0.18
+   Compiling unwind v0.4.2
+    Checking time-core v0.1.9
+    Checking foreign-types-shared v0.3.1
+    Checking powerfmt v0.2.0
+    Checking num_threads v0.1.7
+    Checking num-conv v0.2.2
+    Checking deranged v0.5.8
+    Checking foreign-types v0.5.0
+    Checking tracing v0.1.44
+    Checking reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-syscalls)
+    Checking time v0.3.55
+    Checking matchers v0.2.0
+    Checking tracing-log v0.2.0
+    Checking tokio-util v0.7.19
+    Checking tracing-serde v0.2.0
+    Checking sharded-slab v0.1.7
+    Checking thread_local v1.1.10
+    Checking nu-ansi-term v0.50.3
+    Checking goblin v0.10.7
+    Checking reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie)
+    Checking tracing-subscriber v0.3.23
+    Checking tokio-stream v0.1.19
+    Checking safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/safeptrace)
+    Checking iced-x86 v1.21.0
+    Checking close-err v1.0.2
+    Checking reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-ptrace)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.18s

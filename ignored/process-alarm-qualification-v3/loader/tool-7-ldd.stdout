@@ -1,0 +1,6 @@
+	linux-vdso.so.1 (0x00007f7da0940000)
+	libpcre2-8.so.0 => /lib64/libpcre2-8.so.0 (0x00007f7da0895000)
+	libz.so.1 => /lib64/libz.so.1 (0x00007f7da087b000)
+	libcrypto.so.3 => /lib64/libcrypto.so.3 (0x00007f7d9fe00000)
+	libc.so.6 => /lib64/libc.so.6 (0x00007f7d9fa00000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007f7da0942000)

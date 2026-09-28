@@ -1,0 +1,18 @@
+{
+  "name": "errno.h",
+  "path": "include/linux/errno.h",
+  "sha": "8b0c754bab02562b28ac7e7a539c7652764cdbb7",
+  "size": 1481,
+  "url": "https://api.github.com/repos/gregkh/linux/contents/include/linux/errno.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "html_url": "https://github.com/gregkh/linux/blob/199c9959d3a9b53f346c221757fc7ac507fbac50/include/linux/errno.h",
+  "git_url": "https://api.github.com/repos/gregkh/linux/git/blobs/8b0c754bab02562b28ac7e7a539c7652764cdbb7",
+  "download_url": "https://raw.githubusercontent.com/gregkh/linux/199c9959d3a9b53f346c221757fc7ac507fbac50/include/linux/errno.h",
+  "type": "file",
+  "content": "LyogU1BEWC1MaWNlbnNlLUlkZW50aWZpZXI6IEdQTC0yLjAgKi8KI2lmbmRl\nZiBfTElOVVhfRVJSTk9fSAojZGVmaW5lIF9MSU5VWF9FUlJOT19ICgojaW5j\nbHVkZSA8dWFwaS9saW51eC9lcnJuby5oPgoKCi8qCiAqIFRoZXNlIHNob3Vs\nZCBuZXZlciBiZSBzZWVuIGJ5IHVzZXIgcHJvZ3JhbXMuICBUbyByZXR1cm4g\nb25lIG9mIEVSRVNUQVJUKgogKiBjb2Rlcywgc2lnbmFsX3BlbmRpbmcoKSBN\nVVNUIGJlIHNldC4gIE5vdGUgdGhhdCBwdHJhY2UgY2FuIG9ic2VydmUgdGhl\nc2UKICogYXQgc3lzY2FsbCBleGl0IHRyYWNpbmcsIGJ1dCB0aGV5IHdpbGwg\nbmV2ZXIgYmUgbGVmdCBmb3IgdGhlIGRlYnVnZ2VkIHVzZXIKICogcHJvY2Vz\ncyB0byBzZWUuCiAqLwojZGVmaW5lIEVSRVNUQVJUU1lTCTUxMgojZGVmaW5l\nIEVSRVNUQVJUTk9JTlRSCTUxMwojZGVmaW5lIEVSRVNUQVJUTk9IQU5ECTUx\nNAkvKiByZXN0YXJ0IGlmIG5vIGhhbmRsZXIuLiAqLwojZGVmaW5lIEVOT0lP\nQ1RMQ01ECTUxNQkvKiBObyBpb2N0bCBjb21tYW5kICovCiNkZWZpbmUgRVJF\nU1RBUlRfUkVTVEFSVEJMT0NLIDUxNiAvKiByZXN0YXJ0IGJ5IGNhbGxpbmcg\nc3lzX3Jlc3RhcnRfc3lzY2FsbCAqLwojZGVmaW5lIEVQUk9CRV9ERUZFUgk1\nMTcJLyogRHJpdmVyIHJlcXVlc3RzIHByb2JlIHJldHJ5ICovCiNkZWZpbmUg\nRU9QRU5TVEFMRQk1MTgJLyogb3BlbiBmb3VuZCBhIHN0YWxlIGRlbnRyeSAq\nLwojZGVmaW5lIEVOT1BBUkFNCTUxOQkvKiBQYXJhbWV0ZXIgbm90IHN1cHBv\ncnRlZCAqLwoKLyogRGVmaW5lZCBmb3IgdGhlIE5GU3YzIHByb3RvY29sICov\nCiNkZWZpbmUgRUJBREhBTkRMRQk1MjEJLyogSWxsZWdhbCBORlMgZmlsZSBo\nYW5kbGUgKi8KI2RlZmluZSBFTk9UU1lOQwk1MjIJLyogVXBkYXRlIHN5bmNo\ncm9uaXphdGlvbiBtaXNtYXRjaCAqLwojZGVmaW5lIEVCQURDT09LSUUJNTIz\nCS8qIENvb2tpZSBpcyBzdGFsZSAqLwojZGVmaW5lIEVOT1RTVVBQCTUyNAkv\nKiBPcGVyYXRpb24gaXMgbm90IHN1cHBvcnRlZCAqLwojZGVmaW5lIEVUT09T\nTUFMTAk1MjUJLyogQnVmZmVyIG9yIHJlcXVlc3QgaXMgdG9vIHNtYWxsICov\nCiNkZWZpbmUgRVNFUlZFUkZBVUxUCTUyNgkvKiBBbiB1bnRyYW5zbGF0YWJs\nZSBlcnJvciBvY2N1cnJlZCAqLwojZGVmaW5lIEVCQURUWVBFCTUyNwkvKiBU\neXBlIG5vdCBzdXBwb3J0ZWQgYnkgc2VydmVyICovCiNkZWZpbmUgRUpVS0VC\nT1gJNTI4CS8qIFJlcXVlc3QgaW5pdGlhdGVkLCBidXQgd2lsbCBub3QgY29t\ncGxldGUgYmVmb3JlIHRpbWVvdXQgKi8KI2RlZmluZSBFSU9DQlFVRVVFRAk1\nMjkJLyogaW9jYiBxdWV1ZWQsIHdpbGwgZ2V0IGNvbXBsZXRpb24gZXZlbnQg\nKi8KI2RlZmluZSBFUkVDQUxMQ09ORkxJQ1QJNTMwCS8qIGNvbmZsaWN0IHdp\ndGggcmVjYWxsZWQgc3RhdGUgKi8KI2RlZmluZSBFTk9HUkFDRQk1MzEJLyog\nTkZTIGZpbGUgbG9jayByZWNsYWltIHJlZnVzZWQgKi8KCiNlbmRpZgo=\n",
+  "encoding": "base64",
+  "_links": {
+    "self": "https://api.github.com/repos/gregkh/linux/contents/include/linux/errno.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+    "git": "https://api.github.com/repos/gregkh/linux/git/blobs/8b0c754bab02562b28ac7e7a539c7652764cdbb7",
+    "html": "https://github.com/gregkh/linux/blob/199c9959d3a9b53f346c221757fc7ac507fbac50/include/linux/errno.h"
+  }
+}

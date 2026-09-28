@@ -1,0 +1,101 @@
+{
+  "task": "Read-only source investigation and author preparation; no independent implementation review verdict",
+  "agent": "/root/executable_review",
+  "destination": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-descriptor-width-residuals-20260918",
+  "source_checkout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "landed_commit_as_reported_by_coordinator": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+  "same_tree_local_commit_previously_independently_verified": "4f76247c1aea721fc9f09d546cad234dd9dc3598",
+  "previously_verified_tree": "a12d56466eed51cdd7d12087b5fafa9d66d8c864",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm/src/executor.rs",
+    "bytes": 1431750,
+    "sha256": "1f20e4259eb6b90ffdc6363c218a847eede94c1510477dcca49f70c5e5704242",
+    "matches_prior_verified_commit_file": true
+  },
+  "binding_limit": "Current task performed no SCM or network operation. Landing identity is coordinator-provided; current complete executor bytes independently match the prior exact-commit verification.",
+  "prior_verification": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-scalar-fd-final-review-20260918/VERIFICATION.json",
+    "sha256": "29c5df740e170a127f70fa6b9b557ff4c883aca79072050a47b868ab22b12f40"
+  },
+  "instructions_read": [
+    "/home/newton/work/dev-hermit/.llms/skills/code-review/SKILL.md",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/CONTRIBUTING.md"
+  ],
+  "product_agents_files": {
+    "AGENTS.md": "absent",
+    "reverie-kvm/AGENTS.md": "absent",
+    "reverie-kvm/src/AGENTS.md": "absent"
+  },
+  "source_ranges": [
+    [
+      341,
+      388
+    ],
+    [
+      1341,
+      1368
+    ],
+    [
+      1378,
+      1401
+    ],
+    [
+      4698,
+      4810
+    ],
+    [
+      5155,
+      5166
+    ],
+    [
+      5283,
+      5420
+    ],
+    [
+      6742,
+      6781
+    ],
+    [
+      7954,
+      8053
+    ],
+    [
+      8706,
+      8739
+    ],
+    [
+      9194,
+      9219
+    ],
+    [
+      29205,
+      29364
+    ]
+  ],
+  "execution": {
+    "product_commands": 0,
+    "tests": 0,
+    "builds": 0,
+    "native_probes": 0,
+    "network_operations": 0,
+    "SCM_operations": 0,
+    "product_mutations": 0
+  },
+  "proposal": {
+    "production_path": "reverie-kvm/src/executor.rs",
+    "production_sites": [
+      "read arg0 conversion",
+      "pread64 arg0 conversion",
+      "pwrite64 arg0 conversion",
+      "virtual_signalfd_write_error SYS_pwrite64 fd lookup only"
+    ],
+    "patch_created": false,
+    "applied": false
+  },
+  "conclusions": {
+    "high_bit_vectored_signalfd_payload_escape": "Refuted by existing low-bit-aware vectored guard; no execution claim",
+    "scalar_checked_conversion_rejections": "Source-derived; new before/native measurements pending",
+    "sendmsg_signalfd_error_ordering": "Separate source-derived gap; excluded from proposed scalar change",
+    "historical_regression_or_census_relation": "No claim"
+  }
+}

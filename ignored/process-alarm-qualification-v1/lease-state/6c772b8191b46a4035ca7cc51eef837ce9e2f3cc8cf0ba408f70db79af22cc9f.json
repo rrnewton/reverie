@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "6c772b8191b46a4035ca7cc51eef837ce9e2f3cc8cf0ba408f70db79af22cc9f",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/controls/test-alarm-lib/result.json",
+    "bytes": 3689,
+    "mode": 420,
+    "sha256": "50c0510a67a3b4f84c24a047acf25a3d74bf802a22352ab09c28d95e0de74a9e"
+  }
+}

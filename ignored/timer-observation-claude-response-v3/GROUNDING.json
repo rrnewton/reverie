@@ -1,0 +1,75 @@
+{
+  "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "head": "f97b7be1de4e2ef10ecc24cee5d8cc47f2fd254f",
+  "prior_grounding": {
+    "method": "code-review and deterministic-scheduling-review",
+    "prior_manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-signal-correction-independent-review-20260918/TARGET_INPUT_MANIFEST.json",
+    "prior_order": [
+      "applicable instructions",
+      "complete paper including appendix",
+      "complete immutable scheduler",
+      "complete primary visions",
+      "complete proposal diff and relevant surrounding paths"
+    ],
+    "reuse_only_identical_sources": true,
+    "target_scheduler_identical_to_14d": true,
+    "target_scheduler_lines": 8153,
+    "inputs": [
+      {
+        "source": "/tmp/codex-kvm-paper-JILNekxj/reproducible-containers.pdf",
+        "resolved_source": "/tmp/codex-kvm-paper-JILNekxj/reproducible-containers.pdf",
+        "bytes": 596500,
+        "sha256": "6346dfa0e5ea193fb975d5330da80d030f2a7641d95c7063069c8f8d7d875539",
+        "role": "paper PDF",
+        "read_coverage": "byte authenticated; paper read through assigned full text extraction",
+        "current_identity_matches_prior": true,
+        "reuse": "Prior complete ordered read retained; no reread-by-summary substitution"
+      },
+      {
+        "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/prejoin-design-independent-review-20260917/paper.txt",
+        "resolved_source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/prejoin-design-independent-review-20260917/paper.txt",
+        "bytes": 84193,
+        "sha256": "7a8d52fa86a659b0ee314a736fc0a3eb7c8b587306a7bf1a4bed2d7df45f532c",
+        "role": "paper text",
+        "read_coverage": "complete extraction including appendix read before scheduler",
+        "current_identity_matches_prior": true,
+        "reuse": "Prior complete ordered read retained; no reread-by-summary substitution"
+      },
+      {
+        "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-signal-correction-independent-review-20260918/scheduler-base.rs",
+        "resolved_source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-signal-correction-independent-review-20260918/scheduler-base.rs",
+        "bytes": 353840,
+        "sha256": "d9b94c41fb688d46bfae5420bb0319a8ad26249f39691f11d2dec908394da358",
+        "role": "immutable scheduler",
+        "read_coverage": "complete 8153 lines read before visions and proposal",
+        "current_identity_matches_prior": true,
+        "reuse": "Prior complete ordered read retained; no reread-by-summary substitution"
+      },
+      {
+        "source": "/home/newton/work/dev-hermit/PROJECT_VISION.md",
+        "resolved_source": "/home/newton/work/dev-hermit/PROJECT_VISION.md",
+        "bytes": 10684,
+        "sha256": "b0453aa9e05cfe86c0f0d934a40fda4db2ca93f148cc62d57d732566b75b7540",
+        "role": "primary vision",
+        "read_coverage": "complete text read before proposal",
+        "current_identity_matches_prior": true,
+        "reuse": "Prior complete ordered read retained; no reread-by-summary substitution"
+      },
+      {
+        "source": "/home/newton/work/dev-hermit/ai_docs/hermit-v2-roadmap.md",
+        "resolved_source": "/home/newton/work/dev-hermit/ai_docs/hermit-v2-roadmap.md",
+        "bytes": 27942,
+        "sha256": "c7140f6f6cbdca706ed08b270ff1b2869d1448df49de2c2d9186b4a40eeccde1",
+        "role": "primary roadmap",
+        "read_coverage": "complete text read before proposal",
+        "current_identity_matches_prior": true,
+        "reuse": "Prior complete ordered read retained; no reread-by-summary substitution"
+      }
+    ]
+  },
+  "current_scheduler": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/prerequisite-source-v1/source/detcore/src/scheduler.rs",
+  "scope": "Implementation response; no independent review claim; frozen-v2 immutable",
+  "current_scheduler_sha256": "a5da44ec706ad656230cf78aa5742fc40c5339a14aad30410b880dc18b576fa3",
+  "current_scheduler_read": "complete lines 1\u20138174 incl tests; truncated portions 450\u2013710 and 4300\u20134470 read explicitly",
+  "ordered_continuity": "own complete paper extraction authenticated first, complete new scheduler read second, own complete identical vision/roadmap authentication third; findings read as assignment before grounding, production proposal examined afterward; no independent approval"
+}

@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::signalfd_backing_is_not_writable_seekable_or_pollout_visible" }
+{ "type": "test", "name": "executor::tests::signalfd_backing_is_not_writable_seekable_or_pollout_visible", "event": "failed" }
+{ "type": "suite", "event": "failed", "passed": 0, "failed": 1, "ignored": 0, "measured": 0, "filtered_out": 487, "exec_time": 0.001059861 }

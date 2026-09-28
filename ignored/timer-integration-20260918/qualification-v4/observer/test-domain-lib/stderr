@@ -1,0 +1,6 @@
+
+thread 'executor::tests::signal_dequeue_reused_task_refuses_before_all_three_removals' (2248635) panicked at reverie-kvm/src/signal_dequeue_tests.rs:220:9:
+assertion `left == right` failed: stale ReturnToUser cannot observe a replacement lifetime
+  left: 1
+ right: -3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

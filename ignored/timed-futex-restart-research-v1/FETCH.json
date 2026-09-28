@@ -1,0 +1,183 @@
+{
+  "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "requests": [
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/kernel/futex/waitwake.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/kernel/futex/waitwake.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--waitwake.c.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--waitwake.c.stderr",
+      "raw_sha256": "33ab7553c35ed7fd508713a2ed122a0c5e77a7b5a6ed840d35e3b5314a26db83",
+      "raw_bytes": 29357,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--waitwake.c",
+      "git_blob": "ceed9d879059215c968402dde1040a101ec0ce25",
+      "bytes": 20533,
+      "sha256": "8fef66ab2f161b81517097478c96f7aea8898fd993ca6894620b055c65cd9a7c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50"
+    },
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/kernel/futex/syscalls.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/kernel/futex/syscalls.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--syscalls.c.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--syscalls.c.stderr",
+      "raw_sha256": "90e3e4190a42addd0435fa1541a3e08b813954185f2af6ea72b96a443b29fd00",
+      "raw_bytes": 19895,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--syscalls.c",
+      "git_blob": "77ad9691f6a613960bdaec9e50c6a84373876dee",
+      "bytes": 13668,
+      "sha256": "a9ff67cdf6d18e41bbc5708aa89a75f75f468358375e13fe61755db4848a5b64",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50"
+    },
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/kernel/futex/futex.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/kernel/futex/futex.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--futex.h.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--futex.h.stderr",
+      "raw_sha256": "886526710fdf7ac450cce0b2b9c375874d1c31750827f804c99e3ef42ac2656b",
+      "raw_bytes": 18560,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-kernel--futex--futex.h",
+      "git_blob": "9f6bf6f585fca545bf5d49e527bf1f6fbe7f9f1b",
+      "bytes": 12713,
+      "sha256": "fc8ed24a1e20ea04547e26e253179a0f86e45d33ff8c3825e1287731b73029d1",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50"
+    },
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/include/linux/restart_block.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/include/linux/restart_block.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--restart_block.h.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--restart_block.h.stderr",
+      "raw_sha256": "eda198a218ec962bc23f8750e846588729e6b784134e9baa0c8257aa3bbccb1f",
+      "raw_bytes": 2659,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--restart_block.h",
+      "git_blob": "9b262109726d25ca1d7871d916280a7bf336355a",
+      "bytes": 1128,
+      "sha256": "33f1dba420b1b8a62d5d1c550e0e8c54518f7827a43b56128a564eff15769bc7",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50"
+    },
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/include/linux/errno.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/include/linux/errno.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--errno.h.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--errno.h.stderr",
+      "raw_sha256": "832ad4cc6982408a5b0267fd4b60ab046ec2c09fde255e07858dbdc90eae80a8",
+      "raw_bytes": 3089,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/linux-include--linux--errno.h",
+      "git_blob": "8b0c754bab02562b28ac7e7a539c7652764cdbb7",
+      "bytes": 1481,
+      "sha256": "e49469284a3014e6cbca27f852a75e4e540818d38b33edff7eb2c4fe8dd268c6",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50"
+    },
+    {
+      "url": "https://man7.org/linux/man2/FUTEX_WAIT.2const.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man2/FUTEX_WAIT.2const.html"
+      ],
+      "rc": 22,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-FUTEX_WAIT.2const.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-FUTEX_WAIT.2const.stderr",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0
+    },
+    {
+      "url": "https://man7.org/linux/man2/FUTEX_WAIT_BITSET.2const.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man2/FUTEX_WAIT_BITSET.2const.html"
+      ],
+      "rc": 22,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-FUTEX_WAIT_BITSET.2const.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-FUTEX_WAIT_BITSET.2const.stderr",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0
+    },
+    {
+      "url": "https://man7.org/linux/man2/restart_syscall.2.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man2/restart_syscall.2.html"
+      ],
+      "rc": 22,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-restart_syscall.2.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-restart_syscall.2.stderr",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0
+    },
+    {
+      "url": "https://man7.org/linux/man2/futex.2.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man2/futex.2.html"
+      ],
+      "rc": 22,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-futex.2.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/man-futex.2.stderr",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_bytes": 0
+    }
+  ]
+}

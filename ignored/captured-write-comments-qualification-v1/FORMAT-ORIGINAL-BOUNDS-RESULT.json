@@ -1,0 +1,38 @@
+{
+  "head": "7b28de2b20b6e7fdcdab92e552d4166908b50cad",
+  "limits": {
+    "aggregate_cpu_usec": 30000000,
+    "wall_seconds": 60,
+    "lethal_stderr_bytes": 16777216,
+    "live_stdout_samples_bytes": 67108864,
+    "phase_read_bytes": 16777216,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "free_floor_bytes": 107374182400
+  },
+  "accepted": true,
+  "raw_status": 0,
+  "terminal_authenticated": true,
+  "payload_seconds": 0.4246814379002899,
+  "aggregate_cpu_seconds": 3.085549,
+  "observer_seconds": 3.684458843,
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/format-original-bounds-plan.json",
+    "bytes": 35760,
+    "mode": 420,
+    "sha256": "f6378d549681280242869390a3f84b1a247fa40a5e3d2c453bc5179d1321a52a"
+  },
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/controls/format-original-bounds/result.json",
+    "bytes": 2670,
+    "mode": 420,
+    "sha256": "0345943db13ecec85df9ecb9a06cb20b64a3c060e527ad6c99544dbd4358e905"
+  },
+  "observer": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/observer/format-original-bounds/result.json",
+    "bytes": 49911,
+    "mode": 384,
+    "sha256": "6509c3e6a93879f80d442988695d2d9f1c435a91aeb16b62c0b80deff9ffe007"
+  },
+  "earlier_artifacts_unchanged": true
+}

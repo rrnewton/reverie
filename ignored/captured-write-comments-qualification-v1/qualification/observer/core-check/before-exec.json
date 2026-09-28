@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/captured-write-comments-qualification-v1/qualification/core-check-plan.json",
+      "e516926479cd44b2becc21c9ed676f56983d742c4a7f718ffa9dee55fbda1186"
+    ]
+  },
+  "token": "d6555ebee80a0d0f6e56f94bbd44d191662e104ff1e7fda7c37a7d42cf32478a",
+  "observer_pid": 3154350,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 188547835,
+  "deadline_monotonic_ns": 1885503395987995
+}

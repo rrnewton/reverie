@@ -1,0 +1,5 @@
+bounded-run-space/v1
+directory=/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/observer/test-write/safehermit/brs-safehermit-20260918T103653Z-556811-556826-1789727814028520073
+device_inode=7340147:256
+subvolume_id=2128
+limit_bytes=8000000000

@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract" }
+{ "type": "test", "name": "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract", "event": "failed" }
+{ "type": "suite", "event": "failed", "passed": 0, "failed": 1, "ignored": 0, "measured": 0, "filtered_out": 289, "exec_time": 1.8648789030000001 }

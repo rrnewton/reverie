@@ -1,0 +1,41 @@
+
+thread 'parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract' (1351821) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract: status=Some(101) stdout=
+running 1 test
+test parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract ... FAILED
+
+failures:
+
+failures:
+    parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 290 filtered out; finished in 0.09s
+
+ stderr=
+thread 'parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract' (1351825) panicked at reverie-kvm/tests/support/parked_signals.rs:212:17:
+assertion `left == right` failed
+  left: Ok(ParkedSignalObservation { steps: [Ignored { dequeue: DequeueId { process: SignalProcessId { tgid: Pid(1), generation: 1 }, sequence: 2 } }], stop: NoEligibleSignal })
+ right: Err(RejectedBeforeRemoval { errno: EINVAL })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'parked_signals::parked_signal_caught_action_posthook_refusal' (1351852) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+parked_signals::parked_signal_caught_action_posthook_refusal: status=Some(101) stdout=
+running 1 test
+test parked_signals::parked_signal_caught_action_posthook_refusal ... FAILED
+
+failures:
+
+failures:
+    parked_signals::parked_signal_caught_action_posthook_refusal
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 290 filtered out; finished in 0.09s
+
+ stderr=
+thread 'parked_signals::parked_signal_caught_action_posthook_refusal' (1351855) panicked at reverie-kvm/tests/support/parked_signals.rs:285:29:
+assertion `left == right` failed
+  left: Ok(0)
+ right: Err(ENOSYS)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+

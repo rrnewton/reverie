@@ -1,0 +1,22 @@
+{
+  "groups": {
+    "test-admission": {
+      "artifact": "static",
+      "names": [
+        "captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission"
+      ]
+    },
+    "test-write": {
+      "artifact": "static",
+      "names": [
+        "captured_write_signals::scalar_write_high_fd_uncaptured_baseline_oracle"
+      ]
+    },
+    "test-signalfd": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::signalfd_backing_is_not_writable_seekable_or_pollout_visible"
+      ]
+    }
+  }
+}

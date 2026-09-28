@@ -1,0 +1,30 @@
+
+/usr/lib64/libc.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .plt:
+
+Disassembly of section .plt.sec:
+
+Disassembly of section .text:
+
+0000000000108b70 <syscall>:
+  108b70:	f3 0f 1e fa          	endbr64 
+  108b74:	48 89 f8             	mov    %rdi,%rax
+  108b77:	48 89 f7             	mov    %rsi,%rdi
+  108b7a:	48 89 d6             	mov    %rdx,%rsi
+  108b7d:	48 89 ca             	mov    %rcx,%rdx
+  108b80:	4d 89 c2             	mov    %r8,%r10
+  108b83:	4d 89 c8             	mov    %r9,%r8
+  108b86:	4c 8b 4c 24 08       	mov    0x8(%rsp),%r9
+  108b8b:	0f 05                	syscall 
+  108b8d:	48 3d 01 f0 ff ff    	cmp    $0xfffffffffffff001,%rax
+  108b93:	73 01                	jae    108b96 <syscall+0x26>
+  108b95:	c3                   	retq   
+  108b96:	48 8b 0d 5b 22 0f 00 	mov    0xf225b(%rip),%rcx        # 1fadf8 <.got+0x78>
+  108b9d:	f7 d8                	neg    %eax
+  108b9f:	64 89 01             	mov    %eax,%fs:(%rcx)
+  108ba2:	48 83 c8 ff          	or     $0xffffffffffffffff,%rax
+  108ba6:	c3                   	retq   
+
+Disassembly of section __libc_freeres_fn:

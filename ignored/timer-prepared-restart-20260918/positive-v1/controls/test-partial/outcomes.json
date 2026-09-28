@@ -1,0 +1,24 @@
+{
+  "started": [
+    "parked_signals::parked_signal_prepared_partial_read_is_not_replayed"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "parked_signals::parked_signal_prepared_partial_read_is_not_replayed",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 300,
+      "exec_time": 0.117274564
+    }
+  ]
+}

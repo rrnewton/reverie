@@ -1,0 +1,32 @@
+{
+  "base": "2c75f5b46e737ca1cbd5d407803e14572f873c0f",
+  "branch": "codex/kvm-setitimer-20260918",
+  "tracked_status": "",
+  "before": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie/src/guest.rs",
+      "bytes": 24865,
+      "sha256": "206a31ecb2ed85f4f260c7a265a5f718aaab3e1600b4eb1bf95befd75b9112a2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie-kvm/src/runtime.rs",
+      "bytes": 181112,
+      "sha256": "6f67fe78b3e6f64ba7aa8cc0f407d3a5bfaeabdff1d28b90911a61949c8926f0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie-kvm/src/executor.rs",
+      "bytes": 1427258,
+      "sha256": "689a3c9341d88ed2a9ef629e70d17994a8f643c1a0f497446d45c309e200c1c1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie-kvm/src/parked_signal_runtime.rs",
+      "bytes": 26995,
+      "sha256": "5512f71c59dec74f7ed6446dce60fc7311b91135382eca6d007be7c9284da824"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/before/reverie-kvm/tests/static_elf.rs",
+      "bytes": 478542,
+      "sha256": "d987e823bdfb8578ae8df28111d21e2883e3f6a32504b638ace51370e53cde73"
+    }
+  ]
+}

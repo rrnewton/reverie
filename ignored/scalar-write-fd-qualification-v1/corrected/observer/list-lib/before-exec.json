@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/corrected/list-lib-plan.json",
+      "3c40d799967016e6ebd5268c16682f678643f9b83392bfc0c25f79249f4cc2de"
+    ]
+  },
+  "token": "c7fa901c92fcb1076f70aefe98244eea3f6519779d0c13367b6c5e61eb2f87ab",
+  "observer_pid": 676217,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 188687487,
+  "deadline_monotonic_ns": 1886899922099703
+}

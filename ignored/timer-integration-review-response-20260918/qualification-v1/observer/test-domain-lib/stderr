@@ -1,0 +1,6 @@
+
+thread 'executor::tests::parked_handles_reject_equal_ordinals_across_fork_and_stale_callbacks' (1349224) panicked at reverie-kvm/src/signal_dequeue_tests.rs:292:5:
+assertion `left != right` failed: equal local ordinals are not equal lifetime handles
+  left: PreparedSignalToken { callback_nonce: 1, selection_nonce: 1 }
+ right: PreparedSignalToken { callback_nonce: 1, selection_nonce: 1 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

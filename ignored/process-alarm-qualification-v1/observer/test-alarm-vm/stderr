@@ -1,0 +1,21 @@
+
+thread 'process_alarm_signals::process_alarm_signal_tool_boundary_contract' (3654355) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+process_alarm_signals::process_alarm_signal_tool_boundary_contract: status=Some(101) stdout=
+running 1 test
+test process_alarm_signals::process_alarm_signal_tool_boundary_contract ... FAILED
+
+failures:
+
+failures:
+    process_alarm_signals::process_alarm_signal_tool_boundary_contract
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.10s
+
+ stderr=
+thread 'process_alarm_signals::process_alarm_signal_tool_boundary_contract' (3654359) panicked at reverie-kvm/tests/support/process_alarm_signals.rs:104:17:
+assertion `left == right` failed: publication must not invoke the Tool hook
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

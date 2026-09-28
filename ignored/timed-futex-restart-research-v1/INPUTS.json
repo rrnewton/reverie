@@ -1,0 +1,180 @@
+{
+  "status": "Source-only primary-reference research; no code or execution",
+  "kernel_revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "kernel_reference": "upstream v7.1.3; not authenticated vendor patches",
+  "host_uname_r": "7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf",
+  "man_pages_version": "6.19, page dates/rendering retained in HTML",
+  "retrieval": {
+    "requests": 17,
+    "successes": 11,
+    "http404": 6,
+    "collection_assertion_failures_preserved": 2,
+    "kernel_blobs_verified": 7,
+    "man_pages_fetched": 4
+  },
+  "request_records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/FETCH.json",
+      "bytes": 9437,
+      "sha256": "cd89d2978b299329fa233f1819c37216621e0aee3e0090a8e128372b946e5ac4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/FETCH-FOLLOWUP.json",
+      "bytes": 4986,
+      "sha256": "e8c66da78aadbc055ab7e45129e38b0c9824b1733c4e8c8204d8ec467b7a8119"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/FETCH-CONSTANTS.json",
+      "bytes": 2159,
+      "sha256": "e33827b97b1b7cd0c0238dca10b26e0f1a682a2d96f8bd17986275e9f864ca59"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/FETCH-CORE.json",
+      "bytes": 954,
+      "sha256": "6bae6cfce6e804a47695ec97d0f4befc4653cb8a54f805f4d4ebc1d4af339fca"
+    }
+  ],
+  "reused": [
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/linux-arch--x86--kernel--signal.c",
+        "bytes": 12387,
+        "sha256": "55a684e8cec8ce77090c6104404dfa417f22bea7751077144de2c84dddd964d7"
+      },
+      "snapshot": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/reused/linux-arch--x86--kernel--signal.c",
+        "bytes": 12387,
+        "sha256": "55a684e8cec8ce77090c6104404dfa417f22bea7751077144de2c84dddd964d7"
+      },
+      "git_blob": "2404233336ab613293c0db0eac76cb237ab132b3",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "api": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/reused/linux-arch--x86--kernel--signal.c.api.json",
+        "bytes": 18064,
+        "sha256": "e6800ea6e40d0e351e2b00da86ea2cd2fa746d93804abe4fb67f53ef6e700afd"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/linux-kernel--signal.c",
+        "bytes": 134578,
+        "sha256": "c8e3ea51d8cbbd5467477cefcd4c524dddae896925163ce44e043c9453b75a8d"
+      },
+      "snapshot": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/reused/linux-kernel--signal.c",
+        "bytes": 134578,
+        "sha256": "c8e3ea51d8cbbd5467477cefcd4c524dddae896925163ce44e043c9453b75a8d"
+      },
+      "git_blob": "9c2b32c4d755320ffdc330e7a9e34565000c5ac5",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "api": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/reused/linux-kernel--signal.c.api.json",
+        "bytes": 186365,
+        "sha256": "63d71912c541d62d462108a6efbad0dddd9bd7fb7bb8b61f5a3c0b76e4a0b1f3"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/doc-signal.txt",
+        "bytes": 37612,
+        "sha256": "407168393cee65885f5743f999125e43c6090d8c8e47bfbdcecb347eac8680ed"
+      },
+      "snapshot": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/reused/doc-signal.txt",
+        "bytes": 37612,
+        "sha256": "407168393cee65885f5743f999125e43c6090d8c8e47bfbdcecb347eac8680ed"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/PRIMARY_REFERENCE_INPUTS_V1.json",
+        "bytes": 29734,
+        "sha256": "5de1e471e8a78bccdee36718dcd57b1736c49713e304103d9ab80d4e51f61c02"
+      },
+      "snapshot": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/reused/PRIMARY_REFERENCE_INPUTS_V1.json",
+        "bytes": 29734,
+        "sha256": "5de1e471e8a78bccdee36718dcd57b1736c49713e304103d9ab80d4e51f61c02"
+      }
+    },
+    {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/PRIMARY_REFERENCE_READBACK_V1.json",
+        "bytes": 1482,
+        "sha256": "b425ebb1f05b711b0ae60fe4d350f0afa1c023915b747e565fd0fbca3b1eadc3"
+      },
+      "snapshot": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/reused/PRIMARY_REFERENCE_READBACK_V1.json",
+        "bytes": 1482,
+        "sha256": "b425ebb1f05b711b0ae60fe4d350f0afa1c023915b747e565fd0fbca3b1eadc3"
+      }
+    }
+  ],
+  "products": [
+    {
+      "repository": "reverie",
+      "revision": "000c15a1161ea2d58749431b5ddaaa97f7aa37d5",
+      "git_blob": "a10fed6355f7b5edf7db29bfd6afa26c3d12c044",
+      "snapshot": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/source/reverie/reverie-kvm/src/runtime.rs",
+        "bytes": 182731,
+        "sha256": "1cee59050cb86814e76e54776635afd4f6c93a361da7a70b52828386aa124fdb"
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/reverie-kvm/src/runtime.rs",
+        "bytes": 182731,
+        "sha256": "1cee59050cb86814e76e54776635afd4f6c93a361da7a70b52828386aa124fdb"
+      }
+    },
+    {
+      "repository": "hermit",
+      "context": "frozen v27",
+      "head": "e740bdcf42153fc986d3b58891ad7a7ba9546dce",
+      "snapshot": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/source/hermit/detcore/src/syscalls/threads.rs",
+        "bytes": 138063,
+        "sha256": "8a7adc4492141e6c6a62952ee0ecd989586ec1e638f9c5178f309b11c0d33381"
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-integration-review-v27/source/detcore/src/syscalls/threads.rs",
+        "bytes": 138063,
+        "sha256": "8a7adc4492141e6c6a62952ee0ecd989586ec1e638f9c5178f309b11c0d33381"
+      }
+    },
+    {
+      "repository": "hermit",
+      "context": "frozen v27",
+      "head": "e740bdcf42153fc986d3b58891ad7a7ba9546dce",
+      "snapshot": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timed-futex-restart-research-v1/source/hermit/detcore/src/tool_global.rs",
+        "bytes": 276715,
+        "sha256": "ec37d67af31aeac606cfc092510fe0a111f84e88cc33ee4416f59dedceb38eb2"
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/timer-integration-review-v27/source/detcore/src/tool_global.rs",
+        "bytes": 276715,
+        "sha256": "ec37d67af31aeac606cfc092510fe0a111f84e88cc33ee4416f59dedceb38eb2"
+      }
+    }
+  ],
+  "read_coverage": {
+    "kernel/futex/syscalls.c": "111\u2013207 dispatch, flags, timeout conversion",
+    "kernel/futex/waitwake.c": "596\u2013753 value/enrollment, outcome priority, wait and restart",
+    "kernel/futex/core.c": "453\u2013481 timer setup",
+    "include/linux/errno.h": "complete",
+    "include/linux/restart_block.h": "complete",
+    "include/linux/thread_info.h": "75\u201391 set_restart_fn",
+    "kernel/futex/futex.h": "30\u201360 flag conversion and setup declaration",
+    "arch/x86/kernel/signal.c": "250\u2013367 caught/no-handler branches",
+    "kernel/signal.c": "3171\u20133187 restart syscall",
+    "documentation": "Full substantive WAIT, WAIT_BITSET, restart_syscall sections; futex options/errors, signal7 interruption/restart sections",
+    "products": "Hermit threads733\u2013844/1223\u20131377; tool_global3405\u20133439; Reverie runtime3295\u20133345/3480\u20133668/3684\u20133740"
+  },
+  "limits": [
+    "No vendor/native measurement",
+    "No tests/builds/guests",
+    "No PI/requeue-PI/waitv policy conclusion",
+    "No product/SCM mutation",
+    "No independent review verdict"
+  ]
+}

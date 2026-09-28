@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "d534e26ad01c5e8a5925e17163e0523fc4b928601d4b6585ac8809c5ec418b5a",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/publication-fd-composition-qualification-v1/qualification-v1/controls/test-26/result.json",
+    "bytes": 2957,
+    "mode": 420,
+    "sha256": "5cbff9991b13b2074d8293c4be4326f3cb333d0bf980ca0308f189b725b16b4f"
+  }
+}

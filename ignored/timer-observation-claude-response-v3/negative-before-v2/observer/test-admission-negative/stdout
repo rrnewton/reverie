@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest" }
+{ "type": "test", "name": "parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest", "event": "failed" }
+{ "type": "suite", "event": "failed", "passed": 0, "failed": 1, "ignored": 0, "measured": 0, "filtered_out": 297, "exec_time": 0.135764576 }

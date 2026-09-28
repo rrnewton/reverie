@@ -1,0 +1,59 @@
+{
+  "plan_sha256": "02c961b8825161aad16c06799eba51a3cf275084c1ffc7aefab893d5aa1de7b4",
+  "accepted": false,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 101,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/negative-before-v3/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/negative-before-v3/observer/test-eintr",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/negative-before-v3/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/negative-before-v3/test-eintr-plan.json",
+      "02c961b8825161aad16c06799eba51a3cf275084c1ffc7aefab893d5aa1de7b4"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 1,
+    "elapsed_seconds": 2.905860804952681,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/negative-before-v3/controls/test-eintr/observer.stdout",
+      "bytes": 163,
+      "mode": 420,
+      "sha256": "3b557a32cd8f6de637cb53483a68b9d0e78acd3e6219e1527f75e7df92d400c3"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/negative-before-v3/controls/test-eintr/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-prepared-restart-20260918/negative-before-v3/observer/test-eintr/result.json",
+    "bytes": 46116,
+    "mode": 384,
+    "sha256": "4888dfe16843a38068001fcfc6043bfe703c594268fc387fb0bea67d612c4a1e"
+  },
+  "readback_error": "RuntimeError('actual selected outcomes differ')",
+  "payload_exit": {
+    "returncode": 101,
+    "reaped": true,
+    "elapsed_seconds": 0.10981063079088926
+  },
+  "error": "RuntimeError('actual payload failed')",
+  "inputs_unchanged": true
+}

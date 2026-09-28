@@ -1,0 +1,6 @@
+
+thread 'executor::tests::shared_file_table_reopen_same_inode_replaces_description' (1987048) panicked at reverie-kvm/src/executor.rs:25110:9:
+assertion `left == right` failed: same inode must not retain the replaced OFD; the dup keeps the original OFD
+  left: (1, 32770, 1, [49], 2, 2, 32770)
+ right: (5, 33794, 1, [53], 6, 1, 32770)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -1,0 +1,6 @@
+{
+  "plan": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/test-replaced-description-plan.json",
+  "plan_sha256": "7fdca57562b7359f222211ebea7b6e63d55c7a2a8e138c3281f166653389c9b8",
+  "returncode": 1,
+  "elapsed_seconds": 5.039375301916152
+}

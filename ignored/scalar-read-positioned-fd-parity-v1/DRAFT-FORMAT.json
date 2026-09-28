@@ -1,0 +1,16 @@
+{
+  "purpose": "source-artifact formatting, not qualification",
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config-path",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/rustfmt.toml"
+  ],
+  "returncode": 0,
+  "stderr": "",
+  "input_bytes": 3558,
+  "output_bytes": 4132,
+  "live_source_mutated": false,
+  "new_unit_file_also_formatted": true
+}

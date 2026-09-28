@@ -1,0 +1,26 @@
+{
+  "lease_identity": [
+    48,
+    816917584,
+    212630
+  ],
+  "last_plan_sha256": "7fdca57562b7359f222211ebea7b6e63d55c7a2a8e138c3281f166653389c9b8",
+  "completion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/lease-state/7fdca57562b7359f222211ebea7b6e63d55c7a2a8e138c3281f166653389c9b8.json",
+    "bytes": 410,
+    "mode": 420,
+    "sha256": "055be854bb25d73a3fbded8c36ff22d8466da4e57d580e827800a5df2e40723b"
+  },
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/controls/test-replaced-description/result.json",
+    "bytes": 2686,
+    "mode": 420,
+    "sha256": "0d7f22f24f42c7f6a296303399fad96fef216431deb161bcf09208bdb427863c"
+  },
+  "exclusive_lock_available": true,
+  "token_unchanged": true,
+  "phase_terminal": true,
+  "accepted_remains_false": true,
+  "no_lease_mutation": true,
+  "lock_released": true
+}

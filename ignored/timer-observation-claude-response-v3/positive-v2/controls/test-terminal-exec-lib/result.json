@@ -1,0 +1,77 @@
+{
+  "plan_sha256": "c15682044bbae9744713ba3b9ee766611e81f4fce07acebad2da896ec980e911",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/test-terminal-exec-lib",
+      "--cpu-usec",
+      "30000000",
+      "--wall-seconds",
+      "60",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/test-terminal-exec-lib-plan.json",
+      "c15682044bbae9744713ba3b9ee766611e81f4fce07acebad2da896ec980e911"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "wall_limit_seconds": 110,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 3.0088303349912167,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/controls/test-terminal-exec-lib/observer.stdout",
+      "bytes": 160,
+      "mode": 420,
+      "sha256": "1c77cab16ed0de0a97c8bdf62fa5290b6a0e8b0aedb0c08234ce1de3952eb216"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/controls/test-terminal-exec-lib/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/positive-v2/observer/test-terminal-exec-lib/result.json",
+    "bytes": 47099,
+    "mode": 384,
+    "sha256": "abc67903f7c2ad87af6204e214a77977a4c50306b26e29f04a43d48bc07e2bb6"
+  },
+  "readback": {
+    "executed": 5,
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 481,
+      "exec_time": 0.177846678
+    },
+    "names": [
+      "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join",
+      "runtime::failure_tests::failure_precedes_ready_callback_and_keeps_child_start_gate_closed",
+      "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup",
+      "vm::tests::worker_exec_action_preserves_cancelled_group_before_parking",
+      "vm::tests::worker_exec_action_preserves_cancelled_group_without_parking"
+    ]
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 0.18032752978615463
+  },
+  "inputs_unchanged": true
+}

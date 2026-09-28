@@ -1,0 +1,18 @@
+{
+  "name": "restart_block.h",
+  "path": "include/linux/restart_block.h",
+  "sha": "9b262109726d25ca1d7871d916280a7bf336355a",
+  "size": 1128,
+  "url": "https://api.github.com/repos/gregkh/linux/contents/include/linux/restart_block.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "html_url": "https://github.com/gregkh/linux/blob/199c9959d3a9b53f346c221757fc7ac507fbac50/include/linux/restart_block.h",
+  "git_url": "https://api.github.com/repos/gregkh/linux/git/blobs/9b262109726d25ca1d7871d916280a7bf336355a",
+  "download_url": "https://raw.githubusercontent.com/gregkh/linux/199c9959d3a9b53f346c221757fc7ac507fbac50/include/linux/restart_block.h",
+  "type": "file",
+  "content": "LyogU1BEWC1MaWNlbnNlLUlkZW50aWZpZXI6IEdQTC0yLjAgKi8KLyoKICog\nQ29tbW9uIHN5c2NhbGwgcmVzdGFydGluZyBkYXRhCiAqLwojaWZuZGVmIF9f\nTElOVVhfUkVTVEFSVF9CTE9DS19ICiNkZWZpbmUgX19MSU5VWF9SRVNUQVJU\nX0JMT0NLX0gKCiNpbmNsdWRlIDxsaW51eC9jb21waWxlci5oPgojaW5jbHVk\nZSA8bGludXgvdGltZTY0Lmg+CiNpbmNsdWRlIDxsaW51eC90eXBlcy5oPgoK\nc3RydWN0IF9fa2VybmVsX3RpbWVzcGVjOwpzdHJ1Y3QgdGltZXNwZWM7CnN0\ncnVjdCBvbGRfdGltZXNwZWMzMjsKc3RydWN0IHBvbGxmZDsKCmVudW0gdGlt\nZXNwZWNfdHlwZSB7CglUVF9OT05FCQk9IDAsCglUVF9OQVRJVkUJPSAxLAoJ\nVFRfQ09NUEFUCT0gMiwKfTsKCi8qCiAqIFN5c3RlbSBjYWxsIHJlc3RhcnQg\nYmxvY2suCiAqLwpzdHJ1Y3QgcmVzdGFydF9ibG9jayB7Cgl1bnNpZ25lZCBs\nb25nIGFyY2hfZGF0YTsKCWxvbmcgKCpmbikoc3RydWN0IHJlc3RhcnRfYmxv\nY2sgKik7Cgl1bmlvbiB7CgkJLyogRm9yIGZ1dGV4X3dhaXQoKSAqLwoJCXN0\ncnVjdCB7CgkJCXUzMiBfX3VzZXIgKnVhZGRyOwoJCQl1MzIgdmFsOwoJCQl1\nMzIgZmxhZ3M7CgkJCXUzMiBiaXRzZXQ7CgkJCWt0aW1lX3QgdGltZTsKCQkJ\ndTMyIF9fdXNlciAqdWFkZHIyOwoJCX0gZnV0ZXg7CgkJLyogRm9yIG5hbm9z\nbGVlcCAqLwoJCXN0cnVjdCB7CgkJCWNsb2NraWRfdCBjbG9ja2lkOwoJCQll\nbnVtIHRpbWVzcGVjX3R5cGUgdHlwZTsKCQkJdW5pb24gewoJCQkJc3RydWN0\nIF9fa2VybmVsX3RpbWVzcGVjIF9fdXNlciAqcm10cDsKCQkJCXN0cnVjdCBv\nbGRfdGltZXNwZWMzMiBfX3VzZXIgKmNvbXBhdF9ybXRwOwoJCQl9OwoJCQlr\ndGltZV90IGV4cGlyZXM7CgkJfSBuYW5vc2xlZXA7CgkJLyogRm9yIHBvbGwg\nKi8KCQlzdHJ1Y3QgewoJCQlzdHJ1Y3QgcG9sbGZkIF9fdXNlciAqdWZkczsK\nCQkJaW50IG5mZHM7CgkJCWludCBoYXNfdGltZW91dDsKCQkJc3RydWN0IHRp\nbWVzcGVjNjQgZW5kX3RpbWU7CgkJfSBwb2xsOwoJfTsKfTsKCmV4dGVybiBs\nb25nIGRvX25vX3Jlc3RhcnRfc3lzY2FsbChzdHJ1Y3QgcmVzdGFydF9ibG9j\nayAqcGFybSk7CgojZW5kaWYgLyogX19MSU5VWF9SRVNUQVJUX0JMT0NLX0gg\nKi8K\n",
+  "encoding": "base64",
+  "_links": {
+    "self": "https://api.github.com/repos/gregkh/linux/contents/include/linux/restart_block.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+    "git": "https://api.github.com/repos/gregkh/linux/git/blobs/9b262109726d25ca1d7871d916280a7bf336355a",
+    "html": "https://github.com/gregkh/linux/blob/199c9959d3a9b53f346c221757fc7ac507fbac50/include/linux/restart_block.h"
+  }
+}

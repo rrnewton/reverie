@@ -1,0 +1,4 @@
+
+thread 'executor::tests::signal_dequeue_raw_consumers_keep_bookkeeping_failure_terminal' (1570657) panicked at reverie-kvm/src/signal_dequeue_tests.rs:567:13:
+SignalFd bookkeeping refusal must prevent delivery of its intermediate raw result
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

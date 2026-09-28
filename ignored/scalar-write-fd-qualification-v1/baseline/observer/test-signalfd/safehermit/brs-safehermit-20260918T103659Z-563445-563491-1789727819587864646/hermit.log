@@ -1,0 +1,6 @@
+
+thread 'executor::tests::signalfd_backing_is_not_writable_seekable_or_pollout_visible' (565372) panicked at reverie-kvm/src/executor.rs:29255:13:
+assertion `left == right` failed: upper descriptor bits must not expose the signalfd carrier
+  left: -9
+ right: -22
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

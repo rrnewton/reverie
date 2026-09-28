@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::signal_dequeue_reused_task_refuses_before_all_three_removals"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::signal_dequeue_reused_task_refuses_before_all_three_removals",
+      "event": "failed"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "failed",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 470,
+      "exec_time": 0.001266871
+    }
+  ]
+}

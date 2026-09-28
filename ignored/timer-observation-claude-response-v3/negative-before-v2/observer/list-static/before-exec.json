@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/negative-before-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-observation-claude-response-v3/negative-before-v2/list-static-plan.json",
+      "49b5bd3e11ae12965dc929230e1a97bb63d6d01ae30a628b7a1726bb996fcf0f"
+    ]
+  },
+  "token": "d505a1ad2d9c8a38a9724142bc06ae5dff8125a2dcc4a99d6b454da343cf583b",
+  "observer_pid": 2372836,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 187914535,
+  "deadline_monotonic_ns": 1879170403297028
+}

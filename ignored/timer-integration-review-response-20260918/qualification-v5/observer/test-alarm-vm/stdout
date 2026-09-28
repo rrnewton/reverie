@@ -1,0 +1,6 @@
+{ "type": "suite", "event": "started", "test_count": 2 }
+{ "type": "test", "event": "started", "name": "parked_signals::parked_signal_capacity_failure_is_terminal_before_getpid" }
+{ "type": "test", "name": "parked_signals::parked_signal_capacity_failure_is_terminal_before_getpid", "event": "failed" }
+{ "type": "test", "event": "started", "name": "parked_signals::parked_signal_two_thread_owned_dequeues" }
+{ "type": "test", "name": "parked_signals::parked_signal_two_thread_owned_dequeues", "event": "failed" }
+{ "type": "suite", "event": "failed", "passed": 0, "failed": 2, "ignored": 0, "measured": 0, "filtered_out": 292, "exec_time": 0.216968003 }

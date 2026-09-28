@@ -1,0 +1,211 @@
+{
+  "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "requests": [
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/fs/pipe.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/fs/pipe.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-fs--pipe.c.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-fs--pipe.c.stderr",
+      "raw_sha256": "0dd48cbcccd6e7b921da042acff41e710e829204668206c438c358371a5559c3",
+      "raw_bytes": 53139,
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "git_blob": "9841648c9cf3e8e569cf6ba5c792624fe92396f5",
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-fs--pipe.c",
+      "bytes": 37858,
+      "sha256": "5f676fe4c7900ee436172b057e88f486307785bf9096ee2c2e8bda2ca9e8ecf7"
+    },
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/fs/read_write.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/fs/read_write.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-fs--read_write.c.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-fs--read_write.c.stderr",
+      "raw_sha256": "8b3d1967d0a11b94a4c31a3981885e88f6806c5111caf9030d7eecbdec9b0e76",
+      "raw_bytes": 62803,
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "git_blob": "50bff7edc91f36fe5ee24198bd51a33c278d40a2",
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-fs--read_write.c",
+      "bytes": 44844,
+      "sha256": "58fe9b05f89c830accaf97a4f4b680c48e94f7c59ea22e2c2b6dbeb0b063c59f"
+    },
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/contents/include/linux/fs.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://api.github.com/repos/gregkh/linux/contents/include/linux/fs.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-include--linux--fs.h.api.json",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-include--linux--fs.h.stderr",
+      "raw_sha256": "87a36001e4e625eb0cb1800d852063edd7688d8c7d8695d95fbcd79a29abe187",
+      "raw_bytes": 168380,
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "git_blob": "11559c513dfbb2f9bf15a8c7516f031aab3e094f",
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/linux-include--linux--fs.h",
+      "bytes": 121462,
+      "sha256": "7f9bc710325ab7d7373ab221a0cf57665bde5b349554e53e8cb287f5b456db90"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/open.2.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/open.2.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--open.2.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--open.2.stderr",
+      "raw_sha256": "d665489cadb85624d98fae03a8d8d06209030f32735cff8aeba949ad8491c789",
+      "raw_bytes": 76506,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--open.2.txt",
+      "bytes": 54567,
+      "sha256": "f82bda2ea3f64784f43137bc73111507edb28ebd0b4e63edc3f94fb5a8f100b1"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/F_SETFL.2const.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/F_SETFL.2const.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--F_SETFL.2const.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--F_SETFL.2const.stderr",
+      "raw_sha256": "3b4a44532dd0165d4dfbd4aff628b1f78932dc8ade58a655588214223517acf0",
+      "raw_bytes": 10224,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--F_SETFL.2const.txt",
+      "bytes": 4881,
+      "sha256": "84211d8b54ec9c0e7dbd8d015515ee425d30399abd863906c9f1152bd20352c1"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/dup.2.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/dup.2.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--dup.2.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--dup.2.stderr",
+      "raw_sha256": "f0b886340b0471a181d135320ed5b3847de410ab05ca4a29b78780d1aa2aa2ae",
+      "raw_bytes": 15840,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--dup.2.txt",
+      "bytes": 9033,
+      "sha256": "1fa9c6115f15ccc9365ad5993b661a15cf41986c001a313677c4ee09390b41c7"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man7/fifo.7.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man7/fifo.7.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man7--fifo.7.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man7--fifo.7.stderr",
+      "raw_sha256": "9c9bbe3240e79d086dc46cfb546dcedadb9a9ba56408994131e6482fa500749f",
+      "raw_bytes": 9248,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man7--fifo.7.txt",
+      "bytes": 4927,
+      "sha256": "8c10fa88edee36766357c000ad5270a0d96fed2c78584eebd7f18259ec623ebc"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/poll.2.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/poll.2.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--poll.2.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--poll.2.stderr",
+      "raw_sha256": "411bb440dcaf29549937e84bbeb4de2ab19ba07becaf21071fc8146c02898c38",
+      "raw_bytes": 29911,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--poll.2.txt",
+      "bytes": 19879,
+      "sha256": "7e4da1720276518b430f40ade2b823fb19686866d724aac6289f2c5f88245a3b"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man7/unix.7.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man7/unix.7.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man7--unix.7.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man7--unix.7.stderr",
+      "raw_sha256": "3e1f055e2be8f0a84603a4976ab90bd4e7457ad76a38bd8b4dfe85b32410e4bd",
+      "raw_bytes": 47026,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man7--unix.7.txt",
+      "bytes": 36569,
+      "sha256": "eb5fcfa7389ca7db5eea4000c41c726508dcd90d7ce509dd540d11e517f229ae"
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/preadv.2.html",
+      "argv": [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--max-time",
+        "40",
+        "https://man7.org/linux/man-pages/man2/preadv.2.html"
+      ],
+      "rc": 0,
+      "raw": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--preadv.2.html",
+      "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--preadv.2.stderr",
+      "raw_sha256": "40413f8f02fceb6ccc6deacfef00b8f4f73f31e2633a46f4427f8262362fd77a",
+      "raw_bytes": 25497,
+      "decoded": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/fifo-read-probe-ownership-v1/man-man2--preadv.2.txt",
+      "bytes": 16993,
+      "sha256": "2164be356a67c017aaa5485f2b48ec16dce668f23ed826d1b68e73c492455e09"
+    }
+  ]
+}

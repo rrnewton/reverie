@@ -1,0 +1,21 @@
+
+thread 'parked_signals::parked_signal_prepared_read_returns_eintr_without_restart' (2976211) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+parked_signals::parked_signal_prepared_read_returns_eintr_without_restart: status=Some(101) stdout=
+running 1 test
+test parked_signals::parked_signal_prepared_read_returns_eintr_without_restart ... FAILED
+
+failures:
+
+failures:
+    parked_signals::parked_signal_prepared_read_returns_eintr_without_restart
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.10s
+
+ stderr=
+thread 'parked_signals::parked_signal_prepared_read_returns_eintr_without_restart' (2976216) panicked at reverie-kvm/tests/support/parked_signals.rs:218:17:
+assertion `left == right` failed: only SA_RESTART may repeat the read
+  left: 17
+ right: 18
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

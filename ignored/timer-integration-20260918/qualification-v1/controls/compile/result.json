@@ -1,0 +1,59 @@
+{
+  "plan_sha256": "0187152a552d3b11dcd281c3b797348841b5810037df3af6193867e03e66c3ce",
+  "accepted": false,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 101,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v1/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v1/observer/compile",
+      "--cpu-usec",
+      "600000000",
+      "--wall-seconds",
+      "900",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v1/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v1/compile-plan.json",
+      "0187152a552d3b11dcd281c3b797348841b5810037df3af6193867e03e66c3ce"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+    "wall_limit_seconds": 950,
+    "forced": false,
+    "returncode": 1,
+    "elapsed_seconds": 9.218191466992721,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v1/controls/compile/observer.stdout",
+      "bytes": 163,
+      "mode": 420,
+      "sha256": "8bea55560d94302825468b01f68cecbcf6fb879c2462942184b2392cb610f0d5"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v1/controls/compile/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/qualification-v1/observer/compile/result.json",
+    "bytes": 35352,
+    "mode": 384,
+    "sha256": "c896f5337b23366be7955d21a1c7dc09af0aa73103f0ca6a061d0cba38783adc"
+  },
+  "readback_error": "RuntimeError('missing successful Cargo completion')",
+  "payload_exit": {
+    "returncode": 101,
+    "reaped": true,
+    "elapsed_seconds": 6.666862691985443
+  },
+  "error": "RuntimeError('actual payload failed')",
+  "inputs_unchanged": true
+}

@@ -1,0 +1,22 @@
+{
+  "url": "https://api.github.com/repos/gregkh/linux/contents/fs/open.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "argv": [
+    "curl",
+    "--silent",
+    "--show-error",
+    "--fail",
+    "--max-time",
+    "40",
+    "https://api.github.com/repos/gregkh/linux/contents/fs/open.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+  ],
+  "rc": 0,
+  "raw": "ignored/fifo-read-probe-ownership-v1/linux-fs--open.c.api.json",
+  "stderr": "ignored/fifo-read-probe-ownership-v1/linux-fs--open.c.stderr",
+  "raw_bytes": 55681,
+  "raw_sha256": "f69fc1a50a9b593e03882511d3c437d948b49ff9e3899e5d13504bc1c25c974f",
+  "decoded": "ignored/fifo-read-probe-ownership-v1/linux-fs--open.c",
+  "bytes": 39704,
+  "sha256": "340e10469b1fc0988a540d2d25fe8e006d4ede3b461be6a16432ec0b0ca6a45f",
+  "git_blob": "681d405bc61ebe1162cc6389bbd9de1cd498d752"
+}

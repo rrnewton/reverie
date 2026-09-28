@@ -1,0 +1,15 @@
+# Committed process-alarm primitive: ownership transferred to root
+
+Root has sole source, SCM and landing write ownership from this handoff. Author has stopped product/SCM writes and is yielding. No active qualification session remains.
+
+Repository Reverie, owned slot kvm-setitimer-reverie-20260918, branch codex/kvm-setitimer-20260918. Base 99d1e4827cce2404442d7c27ab447886a5839326; committed HEAD b116e2f6fe4d02f6f52a5189c09be686f3661a29; tree fea1d0744b6eb77bd9d2643f5d9b2af7e3854e3f. Commit adds exactly the twelve frozen source paths. No rebase, push or PR was performed. Tracked worktree and index are clean; HANDOFF.md and ignored/ remain untracked evidence.
+
+Read ignored/process-alarm-commit-20260918/VERIFY.json. Committed base-to-head full-index patch is byte-identical to frozen source e9ec808ff3cdf17537f172e9b9285dfb884d468cdae4644369855427948bde25. Every one of the2,612 committed tree entries matches source-manifest-v2.json mode/blob, and current regular/symlink bytes match that corrected manifest. Commit message is byte-identical to the prepared message; its first body line is refreshed exact who-am-i output, including the unresolved-identity result. The authorized commit changes the live raw index identity; old review/qualification records remain unchanged and the index was not restored to satisfy them.
+
+PR title/body are ready in ignored/process-alarm-commit-20260918/pr-title.txt and pr-body.md. Root owns actual Claude successor review reconciliation and verified landing. Root reported native successor APPROVE at support ignored/kvm-process-alarm-native-review-v2-20260918/REPORT.md SHA748743a11b5e8677547b72640be9e93d0b4fa3f527196c199913f80f51cd98bb.
+
+Qualification is in ignored/process-alarm-qualification-v5/REPORT.md SHA1663977690855a47798e6b53c53a45e4ca772ad80f1887ea2b386ab9cef9c375, RESULTS.json, EVIDENCE_INDEX.json and FINAL_MANIFEST.json. Actual24 library tests and two VM tests passed, zero failed/ignored; actual inventories466/289; enhanced alarm VM includes returning-Fork mode9. Focused rustfmt/Clippy -D warnings passed. Final library ELF ff6981a67636f198e85c273007ec19811078cddff5ad3f5e6a3d4309029af830; static ELF2fe8dfc1ec212f4eac529e3a41ac5d58fbafddf9e7fe882be4d496b6257aa5d7.
+
+Frozen source response before/after, SOURCE_INPUTS, DELTA, review rationale and kernel reference are in ignored/process-alarm-review-response-v1. Preserve all prior evidence: original v1 VM failure/raw101 and PID correction; v3 qualification; v4 real successful compile with stale descriptive source metadata; explicit MANIFEST_ERRATUM; corrected source-manifest-v2 SHA df9853dbdb86e18b542df142956c3190f0c0264c5755252cd1ca942c7bd55057; v5 qualification. No source/evidence rewrite is needed for commit binding.
+
+The new API remains unused by Hermit. Setitimer delivery, dequeue-driven periodic rearm, parked-wait continuation, RPC-origin capability and getitimer interval state are still outside this patch. No broad parity/determinism or disabled-cell pass is claimed.

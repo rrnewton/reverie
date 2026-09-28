@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "1d6eeb6d85a76bdf69065806564f0229578049343f35541d2ade59c092c4a30c",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-captured-write-capability-20260918/qualification-v1/controls/clippy/result.json",
+    "bytes": 2615,
+    "mode": 420,
+    "sha256": "6e6170f99a306d3d7f313cf613a08a495e4001ec03adf886c9e70ba4f267c2cc"
+  }
+}

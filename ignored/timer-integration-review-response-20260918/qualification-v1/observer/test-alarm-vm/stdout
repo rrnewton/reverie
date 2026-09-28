@@ -1,0 +1,6 @@
+{ "type": "suite", "event": "started", "test_count": 2 }
+{ "type": "test", "event": "started", "name": "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract" }
+{ "type": "test", "name": "parked_signals::parked_signal_actual_callback_frame_and_dequeue_contract", "event": "failed" }
+{ "type": "test", "event": "started", "name": "parked_signals::parked_signal_caught_action_posthook_refusal" }
+{ "type": "test", "name": "parked_signals::parked_signal_caught_action_posthook_refusal", "event": "failed" }
+{ "type": "suite", "event": "failed", "passed": 0, "failed": 2, "ignored": 0, "measured": 0, "filtered_out": 289, "exec_time": 0.182405203 }

@@ -1,0 +1,33 @@
+{
+  "claude_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-process-alarm-claude-review-v2-20260918/CLAUDE-REPORT.md",
+    "bytes": 24410,
+    "sha256": "6d27b6a74b0490559160c7dd21499eea3a3240cc1ae122ebb812ca98c8124f05"
+  },
+  "linux_source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/linux-kernel--signal.c",
+    "bytes": 134578,
+    "sha256": "c8e3ea51d8cbbd5467477cefcd4c524dddae896925163ce44e043c9453b75a8d"
+  },
+  "linux_revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "source_provenance": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/PRIMARY_REFERENCE_INPUTS_V1.json",
+    "bytes": 29734,
+    "sha256": "5de1e471e8a78bccdee36718dcd57b1736c49713e304103d9ab80d4e51f61c02"
+  },
+  "read_ranges": [
+    [
+      618,
+      635
+    ],
+    [
+      2734,
+      2780
+    ],
+    [
+      2905,
+      2928
+    ]
+  ],
+  "conclusion": "dequeue_signal preserves private/shared type; synchronous faults use PIDTYPE_PID; ptrace_signal requeues blocked replacement with original type, including SIGCHLD"
+}

@@ -1,0 +1,25 @@
+{
+  "source_entries": 2620,
+  "all_entries_unchanged": true,
+  "lockfile": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/baseline-source/Cargo.lock",
+    "bytes": 67056,
+    "mode": 420,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+  },
+  "manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/source-manifest.json",
+    "bytes": 690301,
+    "mode": 420,
+    "sha256": "083a6be0ad5cc028d8cc08ff0c1f856ea0abb4a4693a54796e20cf13a2f6ab40"
+  },
+  "live_scm_unchanged": true,
+  "elf_retention": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/ELF-RETENTION.json",
+    "bytes": 1006,
+    "mode": 420,
+    "sha256": "ff3cfe81502aacc2952e6cc7c2f546146a5038104e1818c83e0bce7fafa5613b"
+  },
+  "compiled_elf_current_sha256": "f1dd13829f04d940392e97704746b5544f04cf96974dfa7c69063e6635ca5a25",
+  "retained_elf_current_sha256": "f1dd13829f04d940392e97704746b5544f04cf96974dfa7c69063e6635ca5a25"
+}

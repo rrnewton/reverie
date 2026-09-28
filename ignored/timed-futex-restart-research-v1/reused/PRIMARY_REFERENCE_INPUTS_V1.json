@@ -1,0 +1,725 @@
+{
+  "scope": "Append-only primary-reference research; frozen earlier diagnosis/proposal preserved; no product mutation or execution",
+  "frozen_at_utc": "2026-09-18T04:38:49.753150+00:00",
+  "report": {
+    "path": "PRIMARY_REFERENCE_ADDENDUM_V1.md",
+    "bytes": 20133,
+    "sha256": "8d786442a710aea1999434d37c7bdb93f279b9b3b1caa4fc6ecaee5d76481ec8"
+  },
+  "original_targets": {
+    "hermit": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+      "commit": "f615104d0df26402babcfd9f642950a31efa57ec",
+      "tree": "f82f7ca9b052676543cf49de9b525c932c069d8c"
+    },
+    "reverie": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918",
+      "commit": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+      "tree": "ba584b989e7dc89fce4ac7eabaa05166ba035069"
+    },
+    "historical-c752": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+      "commit": "c7520a6c38731128ec3e0bf802d80b0d1cca80c0",
+      "tree": "9075b01937911d6f93cdedde53069e6a8f3c4704"
+    }
+  },
+  "prior_frozen_primary_artifacts": [
+    {
+      "path": "REPORT.md",
+      "bytes": 13349,
+      "sha256": "a96f4cc34d5eed3123135b8c93b0f2d7855694c4d5e853fd9c64dd299b29f85f"
+    },
+    {
+      "path": "DELIVERY_PROPOSAL.md",
+      "bytes": 15659,
+      "sha256": "6e8526b1c29053885e71e1f580aaa17d50b22472360160cf41a8da16a3c9d5e9"
+    },
+    {
+      "path": "SOURCE_INPUTS.json",
+      "bytes": 30930,
+      "sha256": "909de57af6f381d555c81a4ccfdbc647f03d33977712232bffd991761425ebb6"
+    },
+    {
+      "path": "GROUNDING.json",
+      "bytes": 3582,
+      "sha256": "32423f7c6ce8569c4c15c2ae8f0bd97b075024d956862229c4138a9f052f3f51"
+    },
+    {
+      "path": "READBACK.json",
+      "bytes": 9535,
+      "sha256": "e30774ecf5c86486296b08c8ee4b344cf3d147e6698159ba0044af8ba1733b7f"
+    }
+  ],
+  "linux_new_sources": [
+    {
+      "kind": "upstream Linux source",
+      "path": "kernel/time/itimer.c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/kernel/time/itimer.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/kernel/time/itimer.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "response_bytes": 16192,
+      "response_sha256": "fa027a91ada7ad530ab9f69f6938393119b9fcf0104e5d41d4a42e358ea442a9",
+      "file": "linux-kernel--time--itimer.c",
+      "bytes": 11046,
+      "sha256": "81e85138a009817f3afae65ebedc63a1c13928ab90b02ebaa109625688c19597",
+      "git_blob": "7c6110e964e7ecd19ab8c5c9b81f1b113c1ae7bd",
+      "blob_authenticated": true,
+      "read_coverage": "Complete 422-line source read including get/set/expiry/rearm and CPU-timer distinction"
+    },
+    {
+      "kind": "upstream Linux source",
+      "path": "kernel/signal.c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/kernel/signal.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/kernel/signal.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "response_bytes": 186365,
+      "response_sha256": "63d71912c541d62d462108a6efbad0dddd9bd7fb7bb8b61f5a3c0b76e4a0b1f3",
+      "file": "linux-kernel--signal.c",
+      "bytes": 134578,
+      "sha256": "c8e3ea51d8cbbd5467477cefcd4c524dddae896925163ce44e043c9453b75a8d",
+      "git_blob": "9c2b32c4d755320ffdc330e7a9e34565000c5ac5",
+      "blob_authenticated": true,
+      "read_coverage": "Focused sig_ignored/prepare_signal, pending queues, dequeue/rearm, legacy coalescing, kill_pid_info, flush_itimer_signals, get_signal/ptrace, siginfo copyout, sigtimedwait, do_sigaction and flush_signal_handlers; not complete file"
+    },
+    {
+      "kind": "upstream Linux source",
+      "path": "kernel/time/hrtimer.c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/kernel/time/hrtimer.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/kernel/time/hrtimer.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "response_bytes": 103793,
+      "response_sha256": "1b717035d73de4a018072cfbbcac9f71b84b819d8e6ac7540a5baa56d697a309",
+      "file": "linux-kernel--time--hrtimer.c",
+      "bytes": 74620,
+      "sha256": "ed82d76521ae1c675c1916dac39e649ba167c4df180412dd175c4703582e528b",
+      "git_blob": "5bd6efe598f0f03f57b46fe358d57aaa25b2fb30",
+      "blob_authenticated": true,
+      "read_coverage": "Focused hrtimer_forward and nanosleep/restart paths; not complete file"
+    },
+    {
+      "kind": "upstream Linux source",
+      "path": "kernel/fork.c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/kernel/fork.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/kernel/fork.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "response_bytes": 118042,
+      "response_sha256": "e4df93c2113818378647464d2227b9148cdc9253d7088ce2cf9ec216bdcd44ea",
+      "file": "linux-kernel--fork.c",
+      "bytes": 85000,
+      "sha256": "384aabaa48c2f4bb2d619c6d561be98e62cd9527024c3eccd5853dfc1f3a76ae",
+      "git_blob": "145bcc4c8e125e723b5221399c4f0cc722c8a33e",
+      "blob_authenticated": true,
+      "read_coverage": "Focused copy_signal, real_timer initialization and private pending initialization; not complete file"
+    },
+    {
+      "kind": "upstream Linux source",
+      "path": "include/linux/signal.h",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/include/linux/signal.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/include/linux/signal.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "response_bytes": 20436,
+      "response_sha256": "4de60808f0ab19333ae65fecf9e35d509bc4bc7e83f5f510a3050abb71398ce9",
+      "file": "linux-include--linux--signal.h",
+      "bytes": 14116,
+      "sha256": "f6b75a1b35c5fb2b0e5994964ce75ef30bcdd0a4d412f8755c0c791d56a7eab4",
+      "git_blob": "f19816832f0552ed9ccdd47db9a821d5eb84d6ff",
+      "blob_authenticated": true,
+      "read_coverage": "Focused SEND_SIG_PRIV and signal-info/dequeue definitions; not complete file"
+    },
+    {
+      "kind": "upstream Linux source",
+      "path": "include/uapi/asm-generic/siginfo.h",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/include/uapi/asm-generic/siginfo.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/include/uapi/asm-generic/siginfo.h?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "response_bytes": 15917,
+      "response_sha256": "2c474016e33d28b22b0862c6efc42716c24d2c8811958d65015c9e2b6cfb9b13",
+      "file": "linux-include--uapi--asm-generic--siginfo.h",
+      "bytes": 10783,
+      "sha256": "22b270974fa6db12d9278a58bf412411f15c2c4e90ad861e4e0e54e662356e52",
+      "git_blob": "5a1ca43b5fc60623d9c229f91447f83460bf77b1",
+      "blob_authenticated": true,
+      "read_coverage": "Focused siginfo layout, size, SI_KERNEL and SI_TIMER; not complete file"
+    },
+    {
+      "path": "arch/x86/kernel/signal.c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/arch/x86/kernel/signal.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/arch/x86/kernel/signal.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "file": "linux-arch--x86--kernel--signal.c",
+      "bytes": 12387,
+      "sha256": "55a684e8cec8ce77090c6104404dfa417f22bea7751077144de2c84dddd964d7",
+      "git_blob": "2404233336ab613293c0db0eac76cb237ab132b3",
+      "blob_authenticated": true,
+      "read_coverage": "Focused handle_signal and arch_do_signal_or_restart; not complete file"
+    },
+    {
+      "path": "kernel/time/posix-timers.c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/kernel/time/posix-timers.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/kernel/time/posix-timers.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "file": "linux-kernel--time--posix-timers.c",
+      "bytes": 44546,
+      "sha256": "e1d689647d4035267923792a30a79371eaed8246a0a802cbcee5e4fde7fbde89",
+      "git_blob": "9331e1614124693dda2332f51ab7458310e1d226",
+      "blob_authenticated": true,
+      "read_coverage": "Focused exit_itimers/posix_timers scope; not complete file"
+    },
+    {
+      "path": "fs/signalfd.c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://api.github.com/repos/gregkh/linux/contents/fs/signalfd.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "gh",
+        "api",
+        "repos/gregkh/linux/contents/fs/signalfd.c?ref=199c9959d3a9b53f346c221757fc7ac507fbac50"
+      ],
+      "status": 0,
+      "file": "linux-fs--signalfd.c",
+      "bytes": 8849,
+      "sha256": "83c3adad57fff5d3421a175ed2fa7a58a342bcadcfac29ad73246cb899f9e518",
+      "git_blob": "dff53745e352413ce2f1c8c1a94b25a16b6ddf66",
+      "blob_authenticated": true,
+      "read_coverage": "Focused signalfd_copyinfo/dequeue/read_iter; not complete file"
+    }
+  ],
+  "linux_reused_sources": [
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/fs--exec.c",
+      "file": "linux-fs--exec.c",
+      "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+      "url": "https://github.com/gregkh/linux/blob/199c9959d3a9b53f346c221757fc7ac507fbac50/fs/exec.c",
+      "bytes": 50069,
+      "sha256": "5719b011ce9fdb29ae18247e11633ce5545c138ed21168c73c1cdcebe4fe5889",
+      "git_blob": "ba12b4c466f6daf48cdc898e59c062341e400e36",
+      "prior_provenance": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/PROVENANCE.json",
+      "blob_reauthenticated": true,
+      "read_coverage": "Focused exec exit_itimers, pending cleanup and disposition reset; prior named de_thread research remains separately bound, not complete file"
+    }
+  ],
+  "primary_documents": [
+    {
+      "kind": "primary documentation",
+      "url": "https://man7.org/linux/man-pages/man2/setitimer.2.html",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "45",
+        "--dump-header",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/doc-setitimer.headers",
+        "https://man7.org/linux/man-pages/man2/setitimer.2.html"
+      ],
+      "status": 0,
+      "file": "doc-setitimer.html",
+      "bytes": 17329,
+      "sha256": "0302bfabf176bf16f2608b81d51010853993ea3a39f341ed07c514473e4ec63b",
+      "read_coverage": "Relevant API text including contract, inheritance, interruption and standards/history; unrelated page navigation not relied on"
+    },
+    {
+      "kind": "primary documentation",
+      "url": "https://man7.org/linux/man-pages/man7/signal.7.html",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "45",
+        "--dump-header",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/doc-signal.headers",
+        "https://man7.org/linux/man-pages/man7/signal.7.html"
+      ],
+      "status": 0,
+      "file": "doc-signal.html",
+      "bytes": 56519,
+      "sha256": "6ab11c524ae2c90beb2dc121ce345e2b54fcca2c008e96672e73e0e933f538db",
+      "read_coverage": "Relevant API text including contract, inheritance, interruption and standards/history; unrelated page navigation not relied on"
+    },
+    {
+      "kind": "primary documentation",
+      "url": "https://man7.org/linux/man-pages/man2/nanosleep.2.html",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "45",
+        "--dump-header",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/doc-nanosleep.headers",
+        "https://man7.org/linux/man-pages/man2/nanosleep.2.html"
+      ],
+      "status": 0,
+      "file": "doc-nanosleep.html",
+      "bytes": 15419,
+      "sha256": "d0a7ffe33f60ac80b591fc9e53735d28b27f6483d173eabddb4ddb9890cc8c0d",
+      "read_coverage": "Relevant API text including contract, inheritance, interruption and standards/history; unrelated page navigation not relied on"
+    },
+    {
+      "kind": "primary documentation",
+      "url": "https://man7.org/linux/man-pages/man2/sigaction.2.html",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "45",
+        "--dump-header",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/doc-sigaction.headers",
+        "https://man7.org/linux/man-pages/man2/sigaction.2.html"
+      ],
+      "status": 0,
+      "file": "doc-sigaction.html",
+      "bytes": 49157,
+      "sha256": "9c80ae199feabb9faeefd71051df679e0c327ac9d11ca8fa8daaa0d2c9d966bf",
+      "read_coverage": "Relevant API text including contract, inheritance, interruption and standards/history; unrelated page navigation not relied on"
+    },
+    {
+      "kind": "primary documentation",
+      "url": "https://pubs.opengroup.org/onlinepubs/9699919799/functions/setitimer.html",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "45",
+        "--dump-header",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/doc-posix-setitimer.headers",
+        "https://pubs.opengroup.org/onlinepubs/9699919799/functions/setitimer.html"
+      ],
+      "status": 0,
+      "file": "doc-posix-setitimer.html",
+      "bytes": 9357,
+      "sha256": "3bba8031b813171632d6222959ffd8526e4a92e1b34e136ddc7bda689a150f6b",
+      "read_coverage": "Relevant API text including contract, inheritance, interruption and standards/history; unrelated page navigation not relied on"
+    },
+    {
+      "kind": "primary documentation",
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html",
+      "argv": [
+        "/usr/bin/with-proxy",
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "45",
+        "--dump-header",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-setitimer-signal-research-20260918/primary-references-v1/doc-posix-signal.headers",
+        "https://pubs.opengroup.org/onlinepubs/9799919799/functions/V2_chap02.html"
+      ],
+      "status": 0,
+      "file": "doc-posix-signal.html",
+      "bytes": 330207,
+      "sha256": "9e9dc6276c456bf30309dcd0fd76912fc118c16ab1bbc8f3c9503a8de03458a3",
+      "read_coverage": "Focused sections 2.4.1\u20132.4.4; no claim of complete 199650-byte chapter read"
+    }
+  ],
+  "skills_read_identities": [
+    {
+      "path": "/home/newton/.codex/skills/github-with-proxy/SKILL.md",
+      "bytes": 5096,
+      "sha256": "8e553a46bde7f6a52b589e960efca122481822d72d045c9d193a8374c8ccc5d1"
+    },
+    {
+      "path": "/home/newton/.llms/skills/claude-templates/internet-access/SKILL.md",
+      "bytes": 8380,
+      "sha256": "70d699115d7be340f93cac4ad9c11371a674cd5888e54baeca6cdedeb42be810"
+    },
+    {
+      "path": "/home/newton/.llms/skills/claude-templates/with-proxy/SKILL.md",
+      "bytes": 11197,
+      "sha256": "14c6bfd7f4f7cfec2f1200a51b9bb1f555512b3a137817b3d54ad0687bc36226"
+    }
+  ],
+  "earlier_linux_revision_provenance": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/PROVENANCE.json",
+      "bytes": 956,
+      "sha256": "af3d4d785996feba11ff3bdb05de99fb03f40e3fa4fea0e1c22100a068c1c73e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-chaosrand-choice-research-20260918/linux-exec-reference/FETCHED_SOURCES.json",
+      "bytes": 3287,
+      "sha256": "1c55eaaa038ade37e36dc3f583ae86567e4b1420a786cac05bf3f6bf9e04d473"
+    }
+  ],
+  "new_reference_artifacts": [
+    {
+      "path": "primary-references-v1/FETCH_DOCUMENTS.json",
+      "bytes": 4315,
+      "sha256": "a204d0876ca591e1789cc38fb083ba38debd26c217a5ba9a7beb0e55f3f21881"
+    },
+    {
+      "path": "primary-references-v1/FETCH_EXTRA_KERNEL.json",
+      "bytes": 1378,
+      "sha256": "e94dc33a0122c642a2c5c8699227559ccf6b9a40ff13d63b76c9dd9897b421a0"
+    },
+    {
+      "path": "primary-references-v1/FETCH_KERNEL.json",
+      "bytes": 4970,
+      "sha256": "8b50f9bd143bc6fd69d8ec5307d4a553cc30203078001b35465a4553abecc7fa"
+    },
+    {
+      "path": "primary-references-v1/FETCH_SIGNALFD.json",
+      "bytes": 602,
+      "sha256": "746e62afb00d85a71e3cf44d52e801bce6ed1060153187d80ea8ff863cb43f90"
+    },
+    {
+      "path": "primary-references-v1/RETRIEVAL_SCOPE.json",
+      "bytes": 965,
+      "sha256": "f4d90daf4c9b4167c10d9aec6744c84a64a77e72143cb55aa2312820cbf9b54c"
+    },
+    {
+      "path": "primary-references-v1/REUSED_INPUTS.json",
+      "bytes": 766,
+      "sha256": "720d99085d34dcf34a0e38cf9968e97441fbba37c9bbf41bf703d9685382b16f"
+    },
+    {
+      "path": "primary-references-v1/TEXT_EXTRACTION.json",
+      "bytes": 1862,
+      "sha256": "fc383718fad2d5652d30c40cf77c37846055b150a1d32f79a17d05a011d7db09"
+    },
+    {
+      "path": "primary-references-v1/doc-nanosleep.headers",
+      "bytes": 686,
+      "sha256": "9a2d2e04528816e829a84c3154879af91cef737fb12f31fa3b77523679672159"
+    },
+    {
+      "path": "primary-references-v1/doc-nanosleep.html",
+      "bytes": 15419,
+      "sha256": "d0a7ffe33f60ac80b591fc9e53735d28b27f6483d173eabddb4ddb9890cc8c0d"
+    },
+    {
+      "path": "primary-references-v1/doc-nanosleep.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/doc-nanosleep.txt",
+      "bytes": 8293,
+      "sha256": "01cd2cd3be19c80394475fa3f62a3056b80d3221123119f428d0c1069fb712f3"
+    },
+    {
+      "path": "primary-references-v1/doc-posix-setitimer.headers",
+      "bytes": 1212,
+      "sha256": "d9836281cfcaaf9dafe4c00050debed3b5e326c457de74216108201e05001fb8"
+    },
+    {
+      "path": "primary-references-v1/doc-posix-setitimer.html",
+      "bytes": 9357,
+      "sha256": "3bba8031b813171632d6222959ffd8526e4a92e1b34e136ddc7bda689a150f6b"
+    },
+    {
+      "path": "primary-references-v1/doc-posix-setitimer.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/doc-posix-setitimer.txt",
+      "bytes": 4089,
+      "sha256": "5b4a309800c0097fb002eb5b1e911a1ced14873e65d4f10e5d3fe61c7cdcee57"
+    },
+    {
+      "path": "primary-references-v1/doc-posix-signal.headers",
+      "bytes": 1211,
+      "sha256": "71ea44e9cc83b88bc66c94ddd04a09925274160bef9ff3837c3127955061f561"
+    },
+    {
+      "path": "primary-references-v1/doc-posix-signal.html",
+      "bytes": 330207,
+      "sha256": "9e9dc6276c456bf30309dcd0fd76912fc118c16ab1bbc8f3c9503a8de03458a3"
+    },
+    {
+      "path": "primary-references-v1/doc-posix-signal.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/doc-posix-signal.txt",
+      "bytes": 199650,
+      "sha256": "d33cf0abd757b951c927ad9d23aa9333ece988c7612378db4a3da22f658eb41e"
+    },
+    {
+      "path": "primary-references-v1/doc-setitimer.headers",
+      "bytes": 686,
+      "sha256": "5487dd68b2c9340bdcb49c1560e2be2b32aa708d5532889d96c08d6cb4e9d822"
+    },
+    {
+      "path": "primary-references-v1/doc-setitimer.html",
+      "bytes": 17329,
+      "sha256": "0302bfabf176bf16f2608b81d51010853993ea3a39f341ed07c514473e4ec63b"
+    },
+    {
+      "path": "primary-references-v1/doc-setitimer.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/doc-setitimer.txt",
+      "bytes": 10281,
+      "sha256": "c15147123673d9c3925e0dcd0e94173ebfa07ee47556815d78be85621c33ecee"
+    },
+    {
+      "path": "primary-references-v1/doc-sigaction.headers",
+      "bytes": 686,
+      "sha256": "05413d76c31ae8137c56426b5dfad789e4eee1e9fef4c68fa8b9d6646e6bdaec"
+    },
+    {
+      "path": "primary-references-v1/doc-sigaction.html",
+      "bytes": 49157,
+      "sha256": "9c80ae199feabb9faeefd71051df679e0c327ac9d11ca8fa8daaa0d2c9d966bf"
+    },
+    {
+      "path": "primary-references-v1/doc-sigaction.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/doc-sigaction.txt",
+      "bytes": 35147,
+      "sha256": "86866e2ac8decfdf0142f29fd713f702252a6e055eda3e6e7aa4a24c4fb0cb44"
+    },
+    {
+      "path": "primary-references-v1/doc-signal.headers",
+      "bytes": 685,
+      "sha256": "41f7b1f12d285cda40a3570cd2d9bca05a42c81635e866077c703dd1ccb2b526"
+    },
+    {
+      "path": "primary-references-v1/doc-signal.html",
+      "bytes": 56519,
+      "sha256": "6ab11c524ae2c90beb2dc121ce345e2b54fcca2c008e96672e73e0e933f538db"
+    },
+    {
+      "path": "primary-references-v1/doc-signal.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/doc-signal.txt",
+      "bytes": 37612,
+      "sha256": "407168393cee65885f5743f999125e43c6090d8c8e47bfbdcecb347eac8680ed"
+    },
+    {
+      "path": "primary-references-v1/fetch_extra_sources.py",
+      "bytes": 1161,
+      "sha256": "2dcc4ba54fb5b8e306e1017f06942c6a2f1941703ddb6f47ee9c87433f59951b"
+    },
+    {
+      "path": "primary-references-v1/fetch_sources.py",
+      "bytes": 2656,
+      "sha256": "59c4d733546715fa442656e865c6bc25d208c60b0c6ba6fc548132d7ef4d29db"
+    },
+    {
+      "path": "primary-references-v1/linux-arch--x86--kernel--signal.c",
+      "bytes": 12387,
+      "sha256": "55a684e8cec8ce77090c6104404dfa417f22bea7751077144de2c84dddd964d7"
+    },
+    {
+      "path": "primary-references-v1/linux-arch--x86--kernel--signal.c.api.json",
+      "bytes": 18064,
+      "sha256": "e6800ea6e40d0e351e2b00da86ea2cd2fa746d93804abe4fb67f53ef6e700afd"
+    },
+    {
+      "path": "primary-references-v1/linux-arch--x86--kernel--signal.c.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/linux-fs--exec.c",
+      "bytes": 50069,
+      "sha256": "5719b011ce9fdb29ae18247e11633ce5545c138ed21168c73c1cdcebe4fe5889"
+    },
+    {
+      "path": "primary-references-v1/linux-fs--signalfd.c",
+      "bytes": 8849,
+      "sha256": "83c3adad57fff5d3421a175ed2fa7a58a342bcadcfac29ad73246cb899f9e518"
+    },
+    {
+      "path": "primary-references-v1/linux-fs--signalfd.c.api.json",
+      "bytes": 13125,
+      "sha256": "96b2ee169e2d1967824d9517e326102e540be6a0ecb738f36ffa6d5ca39afdef"
+    },
+    {
+      "path": "primary-references-v1/linux-fs--signalfd.c.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/linux-include--linux--signal.h",
+      "bytes": 14116,
+      "sha256": "f6b75a1b35c5fb2b0e5994964ce75ef30bcdd0a4d412f8755c0c791d56a7eab4"
+    },
+    {
+      "path": "primary-references-v1/linux-include--linux--signal.h.api.json",
+      "bytes": 20436,
+      "sha256": "4de60808f0ab19333ae65fecf9e35d509bc4bc7e83f5f510a3050abb71398ce9"
+    },
+    {
+      "path": "primary-references-v1/linux-include--linux--signal.h.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/linux-include--uapi--asm-generic--siginfo.h",
+      "bytes": 10783,
+      "sha256": "22b270974fa6db12d9278a58bf412411f15c2c4e90ad861e4e0e54e662356e52"
+    },
+    {
+      "path": "primary-references-v1/linux-include--uapi--asm-generic--siginfo.h.api.json",
+      "bytes": 15917,
+      "sha256": "2c474016e33d28b22b0862c6efc42716c24d2c8811958d65015c9e2b6cfb9b13"
+    },
+    {
+      "path": "primary-references-v1/linux-include--uapi--asm-generic--siginfo.h.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--fork.c",
+      "bytes": 85000,
+      "sha256": "384aabaa48c2f4bb2d619c6d561be98e62cd9527024c3eccd5853dfc1f3a76ae"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--fork.c.api.json",
+      "bytes": 118042,
+      "sha256": "e4df93c2113818378647464d2227b9148cdc9253d7088ce2cf9ec216bdcd44ea"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--fork.c.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--signal.c",
+      "bytes": 134578,
+      "sha256": "c8e3ea51d8cbbd5467477cefcd4c524dddae896925163ce44e043c9453b75a8d"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--signal.c.api.json",
+      "bytes": 186365,
+      "sha256": "63d71912c541d62d462108a6efbad0dddd9bd7fb7bb8b61f5a3c0b76e4a0b1f3"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--signal.c.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--hrtimer.c",
+      "bytes": 74620,
+      "sha256": "ed82d76521ae1c675c1916dac39e649ba167c4df180412dd175c4703582e528b"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--hrtimer.c.api.json",
+      "bytes": 103793,
+      "sha256": "1b717035d73de4a018072cfbbcac9f71b84b819d8e6ac7540a5baa56d697a309"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--hrtimer.c.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--itimer.c",
+      "bytes": 11046,
+      "sha256": "81e85138a009817f3afae65ebedc63a1c13928ab90b02ebaa109625688c19597"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--itimer.c.api.json",
+      "bytes": 16192,
+      "sha256": "fa027a91ada7ad530ab9f69f6938393119b9fcf0104e5d41d4a42e358ea442a9"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--itimer.c.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--posix-timers.c",
+      "bytes": 44546,
+      "sha256": "e1d689647d4035267923792a30a79371eaed8246a0a802cbcee5e4fde7fbde89"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--posix-timers.c.api.json",
+      "bytes": 62390,
+      "sha256": "a3e81ce71da21cf760f2832498dc82e2a352eca7a743f622ab93d6a83801d5a6"
+    },
+    {
+      "path": "primary-references-v1/linux-kernel--time--posix-timers.c.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "read_limits": "Source authentication covers full retained bytes. Reasoning coverage is limited as explicitly listed; no full Linux/whole POSIX chapter/vendor-patch identity claim.",
+  "native_source_followup": "Original f615 tool_global response sites, scheduler production-call count, and pinned7d executor dequeue/domain/error boundaries inspected in unchanged source snapshots",
+  "runtime_executions": 0,
+  "product_source_mutations": 0,
+  "implementation_authorized_by_this_report": false,
+  "design_approval": false
+}

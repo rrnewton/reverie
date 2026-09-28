@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "pending_signal_applies_linux_erestartsys_policy_after_the_tool_hook" }
+{ "type": "test", "name": "pending_signal_applies_linux_erestartsys_policy_after_the_tool_hook", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 300, "exec_time": 17.268746215 }

@@ -1,0 +1,2066 @@
+diff --git a/reverie-kvm/src/child_exit_signal_tests.rs b/reverie-kvm/src/child_exit_signal_tests.rs
+index 024adb4dd9df85d684786026076c369493c98ea2..da2a502cecdc68fde16d0f233a3f9f6dd05eeff7 100644
+--- a/reverie-kvm/src/child_exit_signal_tests.rs
++++ b/reverie-kvm/src/child_exit_signal_tests.rs
+@@ -180,7 +180,10 @@ fn child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish() {
+             executor.queue_child_exit_signal(event),
+             RejectedBeforeCommit { kind, errno }
+         );
+-        assert_eq!(executor.prepare_filtered_signal_delivery(event), Err(errno));
++        assert_eq!(
++            executor.prepare_filtered_signal_delivery(event, PendingSignalDomain::Process),
++            Err(errno)
++        );
+         assert_eq!(executor.take_pending_signal(), None);
+         assert!(executor.state.thread_signals.lock().pending.is_empty());
+         assert!(
+@@ -599,7 +602,10 @@ fn child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements
+         executor.queue_child_exit_signal(first),
+         reverie::ChildExitSignalOutcome::Accepted { .. }
+     ));
+-    assert_eq!(executor.prepare_filtered_signal_delivery(second), Ok(None));
++    assert_eq!(
++        executor.prepare_filtered_signal_delivery(second, PendingSignalDomain::Process),
++        Ok(None)
++    );
+     assert!(executor.state.thread_signals.lock().pending.is_empty());
+     executor
+         .state
+@@ -609,7 +615,7 @@ fn child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements
+         .remove(libc::SIGCHLD);
+     assert_eq!(executor.take_pending_signal().unwrap().event, first);
+     assert_eq!(
+-        executor.prepare_filtered_signal_delivery(second),
++        executor.prepare_filtered_signal_delivery(second, PendingSignalDomain::Process),
+         Ok(Some(PendingSignal {
+             event: second,
+             domain: PendingSignalDomain::Process,
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 85f69a79eff33e34cc4c1acd1f9b8b28a8252a57..1c238e7d3a3869a37a07be9f5c0d8748d2085e19 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -3085,14 +3085,184 @@ impl ElfExecutor {
+         }
+     }
+ 
++    /// Publishes only the normal Linux ITIMER_REAL process-alarm payload.
++    /// The runtime adapter separately owns the transported boundary witness.
++    pub(crate) fn queue_process_alarm_signal(
++        &mut self,
++        event: reverie::SignalEvent,
++    ) -> reverie::ProcessAlarmSignalOutcome {
++        use reverie::ProcessAlarmSignalDisposition;
++        use reverie::ProcessAlarmSignalErrorKind::Backend;
++        use reverie::ProcessAlarmSignalErrorKind::Invalid;
++        use reverie::ProcessAlarmSignalErrorKind::Unsupported;
++        use reverie::ProcessAlarmSignalOutcome::Accepted;
++        use reverie::ProcessAlarmSignalOutcome::FailedAfterCommit;
++        use reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit;
++        use reverie::ProcessAlarmSignalReceipt;
++        use reverie::syscalls::Errno;
++
++        let info = event.siginfo();
++        let code = i32::from_ne_bytes(info[8..12].try_into().expect("siginfo code"));
++        if event.signal() != libc::SIGALRM || code != libc::SI_KERNEL {
++            return RejectedBeforeCommit {
++                kind: Unsupported,
++                errno: Errno::ENOSYS,
++            };
++        }
++        let reverie::SignalTarget::Process { pid } = event.target() else {
++            return RejectedBeforeCommit {
++                kind: Unsupported,
++                errno: Errno::ENOSYS,
++            };
++        };
++        if pid.as_raw() <= 0 || pid.as_raw() != self.state.pid {
++            return RejectedBeforeCommit {
++                kind: Invalid,
++                errno: Errno::ESRCH,
++            };
++        }
++        // SEND_SIG_PRIV clears the complete siginfo before setting these two
++        // fields. Reject nonzero errno, pid/uid, padding and expansion bytes.
++        let mut expected = [0; reverie::SIGNAL_INFO_SIZE];
++        expected[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
++        expected[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
++        if info != expected {
++            return RejectedBeforeCommit {
++                kind: Invalid,
++                errno: Errno::EINVAL,
++            };
++        }
++        if self.has_pending_exit() {
++            return RejectedBeforeCommit {
++                kind: Invalid,
++                errno: Errno::ESRCH,
++            };
++        }
++        // A pending exec has no return to the original image, and a pending
++        // fork/thread action has not finished establishing its receivers.
++        if self.process_action.is_some() {
++            return RejectedBeforeCommit {
++                kind: Unsupported,
++                errno: Errno::ENOSYS,
++            };
++        }
++        let (receipt, matching_fds) = {
++            // Retirement, reuse and sibling creation cannot cross publication.
++            // Keep lifecycle -> process signal -> thread signal lock order.
++            let lifecycle = self
++                .state
++                .task_lifecycle
++                .lock()
++                .unwrap_or_else(|poisoned| poisoned.into_inner());
++            if !lifecycle.get(self.state.tid).is_some_and(|task| {
++                task.generation == self.task_generation
++                    && task.process_generation == self.process_generation
++                    && task.tgid == self.state.pid
++            }) {
++                return RejectedBeforeCommit {
++                    kind: Invalid,
++                    errno: Errno::ESRCH,
++                };
++            }
++            if !self.is_thread_group_leader()
++                || lifecycle.has_live_sibling(self.state.tid, self.state.pid)
++            {
++                return RejectedBeforeCommit {
++                    kind: Unsupported,
++                    errno: Errno::ENOSYS,
++                };
++            }
++            let mut process = self
++                .state
++                .process_signals
++                .lock()
++                .unwrap_or_else(|poisoned| poisoned.into_inner());
++            let thread = self.state.thread_signals.lock();
++            let pending_generation = process.pending_generation(libc::SIGALRM);
++            let action = process
++                .dispositions
++                .get(&libc::SIGALRM)
++                .copied()
++                .unwrap_or_default();
++            let disposition = if action.is_ignored() {
++                ProcessAlarmSignalDisposition::Ignored
++            } else if action.handler == libc::SIG_DFL as u64 {
++                ProcessAlarmSignalDisposition::DefaultFatal
++            } else {
++                ProcessAlarmSignalDisposition::Caught
++            };
++            let matching_fds = process
++                .signalfd_masks
++                .iter()
++                .filter_map(|(&fd, mask)| mask.contains(libc::SIGALRM).then_some(fd))
++                .collect::<Vec<_>>();
++            if matching_fds
++                .iter()
++                .any(|fd| !self.state.files.contains_key(fd))
++            {
++                return RejectedBeforeCommit {
++                    kind: Backend,
++                    errno: Errno::EBADF,
++                };
++            }
++            // Unlike child-exit generation, SIG_IGN does not suppress this
++            // Tool-observable alarm. In particular blocked+ignored is pending.
++            let inserted = match process.shared_pending.enqueue(event, pending_generation) {
++                Ok(inserted) => inserted,
++                Err(errno) => {
++                    // Defensive: enqueue currently rejects only nonstandard
++                    // signals, but this path has already validated SIGALRM.
++                    return RejectedBeforeCommit {
++                        kind: Backend,
++                        errno,
++                    };
++                }
++            };
++            (
++                ProcessAlarmSignalReceipt {
++                    blocked: thread.blocked.contains(libc::SIGALRM),
++                    disposition,
++                    pending_generation,
++                    coalesced: !inserted,
++                },
++                matching_fds,
++            )
++        };
++        // Publication is final before bounded eventfd I/O. A readiness error
++        // must never be represented as permission to retry an uncommitted send.
++        // Also refresh after coalescing: setting ready is idempotent, and a
++        // caller retrying after a prior readiness failure can repair readiness
++        // without replacing the first siginfo or publishing another signal.
++        for fd in matching_fds {
++            let file = self
++                .state
++                .files
++                .get(&fd)
++                .expect("preflighted signalfd disappeared");
++            if let Err(error) = set_signalfd_ready(file, true) {
++                return FailedAfterCommit {
++                    errno: Errno::new(i32::try_from(-error).unwrap_or(libc::EIO)),
++                    receipt,
++                };
++            }
++        }
++        Accepted(receipt)
++    }
++
+     /// Resolves the exact event returned by a Tool hook for this boundary.
+     ///
+     /// If the replacement is blocked, preserve its thread or process pending
+     /// ownership and end the boundary. Otherwise return it directly so the
+     /// delivery path cannot accidentally dequeue a different unfiltered event.
++    /// The original domain also applies to a SIGCHLD replacement of a private
++    /// signal or fault; replacement provenance does not change queue ownership.
++    /// Linux's dequeue_signal/get_signal pass the original type to ptrace_signal,
++    /// which uses that type when a tracer replacement is reblocked:
++    /// https://github.com/gregkh/linux/blob/199c9959d3a9b53f346c221757fc7ac507fbac50/kernel/signal.c#L2734
+     pub(crate) fn prepare_filtered_signal_delivery(
+         &mut self,
+         event: reverie::SignalEvent,
++        domain: PendingSignalDomain,
+     ) -> Result<Option<PendingSignal>, reverie::syscalls::Errno> {
+         let child_exit = event.signal() == libc::SIGCHLD;
+         if child_exit {
+@@ -3102,19 +3272,17 @@ impl ElfExecutor {
+             self.validate_deferred_signal_event(event)?;
+         }
+         if signal_is_blocked(&self.state, event.signal()) {
+-            queue_signal_event(&mut self.state, event, child_exit).map_err(|raw| {
++            queue_signal_event(
++                &mut self.state,
++                event,
++                domain == PendingSignalDomain::Process,
++            )
++            .map_err(|raw| {
+                 reverie::syscalls::Errno::new(i32::try_from(-raw).unwrap_or(libc::EIO))
+             })?;
+             return Ok(None);
+         }
+-        Ok(Some(PendingSignal {
+-            event,
+-            domain: if child_exit {
+-                PendingSignalDomain::Process
+-            } else {
+-                PendingSignalDomain::Thread
+-            },
+-        }))
++        Ok(Some(PendingSignal { event, domain }))
+     }
+ 
+     /// Removes the next eligible event, preferring the caller's thread queue
+@@ -14202,6 +14370,7 @@ mod tests {
+ 
+     include!("pipe_fionread_tests.rs");
+     include!("child_exit_signal_tests.rs");
++    include!("process_alarm_signal_tests.rs");
+ 
+     #[test]
+     fn proc_root_identity_requires_qualified_mount_and_directory() {
+@@ -27286,7 +27455,7 @@ mod tests {
+         .unwrap();
+         assert_eq!(
+             executor
+-                .prepare_filtered_signal_delivery(replacement)
++                .prepare_filtered_signal_delivery(replacement, selected.domain)
+                 .unwrap(),
+             None,
+         );
+@@ -36323,7 +36492,7 @@ mod tests {
+         )
+         .unwrap();
+         let pending = executor
+-            .prepare_filtered_signal_delivery(replaced)
++            .prepare_filtered_signal_delivery(replaced, PendingSignalDomain::Thread)
+             .unwrap()
+             .unwrap();
+ 
+@@ -36388,7 +36557,7 @@ mod tests {
+ 
+         assert_eq!(
+             executor
+-                .prepare_filtered_signal_delivery(replacement)
++                .prepare_filtered_signal_delivery(replacement, selected.domain)
+                 .unwrap(),
+             None,
+             "a replacement newly blocked by its signal number is requeued",
+diff --git a/reverie-kvm/src/process_alarm_runtime_tests.rs b/reverie-kvm/src/process_alarm_runtime_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..36fa9f3ddab10da04e141f513a712366266a7a75
+--- /dev/null
++++ b/reverie-kvm/src/process_alarm_runtime_tests.rs
+@@ -0,0 +1,281 @@
++use reverie::ProcessAlarmSignalDisposition;
++use reverie::ProcessAlarmSignalErrorKind;
++use reverie::ProcessAlarmSignalOutcome;
++use reverie::ProcessAlarmSignalReceipt;
++
++use super::*;
++
++#[derive(Default)]
++struct LowerTool;
++#[reverie::tool]
++impl Tool for LowerTool {
++    type GlobalState = ();
++    type ThreadState = ();
++}
++#[derive(Default)]
++struct AdapterTool(LowerTool);
++impl AsMut<LowerTool> for AdapterTool {
++    fn as_mut(&mut self) -> &mut LowerTool {
++        &mut self.0
++    }
++}
++#[reverie::tool]
++impl Tool for AdapterTool {
++    type GlobalState = ();
++    type ThreadState = Box<()>;
++}
++struct QueueExecutor {
++    expected: SignalEvent,
++    outcome: ProcessAlarmSignalOutcome,
++    calls: usize,
++}
++impl GuestSyscallExecutor<AdapterTool> for QueueExecutor {
++    fn read_clock(&self) -> Result<u64> {
++        Err(Error::GuestClock(
++            "signal test adapter has no guest counter".into(),
++        ))
++    }
++
++    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
++        panic!("queue operation executed a guest syscall")
++    }
++    fn defer_signal_delivery(&mut self, _: SignalEvent) -> std::result::Result<(), Errno> {
++        panic!("queue operation used private signal deferral")
++    }
++    fn queue_process_alarm_signal(&mut self, event: SignalEvent) -> ProcessAlarmSignalOutcome {
++        assert_eq!(event, self.expected);
++        self.calls += 1;
++        self.outcome
++    }
++    fn complete_injection<'a>(
++        &'a mut self,
++        _: ToolContext<'a, AdapterTool>,
++    ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
++    where
++        AdapterTool: 'a,
++    {
++        panic!("queue operation completed an injection")
++    }
++}
++
++#[test]
++fn process_alarm_signal_into_guest_forwards_complete_outcomes_without_guest_effects() {
++    use ProcessAlarmSignalDisposition::Caught;
++    use ProcessAlarmSignalDisposition::DefaultFatal;
++    use ProcessAlarmSignalDisposition::Ignored;
++    use ProcessAlarmSignalErrorKind::Backend;
++    use ProcessAlarmSignalErrorKind::Invalid;
++    use ProcessAlarmSignalErrorKind::Unsupported;
++    use ProcessAlarmSignalOutcome::Accepted;
++    use ProcessAlarmSignalOutcome::FailedAfterCommit;
++    use ProcessAlarmSignalOutcome::RejectedBeforeCommit;
++    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
++    info[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
++    info[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
++    let event = SignalEvent::new(
++        libc::SIGALRM,
++        info,
++        reverie::SignalTarget::Process {
++            pid: Pid::from_raw(1),
++        },
++    )
++    .unwrap();
++    let mut outcomes = Vec::new();
++    for blocked in [false, true] {
++        for disposition in [Ignored, Caught, DefaultFatal] {
++            for coalesced in [false, true] {
++                let receipt = ProcessAlarmSignalReceipt {
++                    blocked,
++                    disposition,
++                    coalesced,
++                    pending_generation: 7,
++                };
++                outcomes.push(Accepted(receipt));
++                outcomes.push(FailedAfterCommit {
++                    errno: Errno::EIO,
++                    receipt,
++                });
++            }
++        }
++    }
++    for (kind, errno) in [
++        (Unsupported, Errno::ENOSYS),
++        (Invalid, Errno::ESRCH),
++        (Backend, Errno::EBADF),
++    ] {
++        outcomes.push(RejectedBeforeCommit { kind, errno });
++    }
++    for adapted in [false, true] {
++        for &outcome in &outcomes {
++            let mut executor = QueueExecutor {
++                expected: event,
++                outcome,
++                calls: 0,
++            };
++            let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
++            let mut state = Box::new(());
++            let subscriptions = Subscription::none();
++            let signal = Arc::new(Mutex::new(None));
++            let starts = Arc::new(Mutex::new(Vec::new()));
++            let (sender, receiver) = std::sync::mpsc::channel();
++            starts.lock().unwrap().push(PendingChildStart::tool_thread(
++                2,
++                ChildStartGate::new(sender),
++            ));
++            let observed = {
++                let mut guest = KvmGuest::<AdapterTool>::new(
++                    Pid::from_raw(1),
++                    Pid::from_raw(1),
++                    Arc::new(AdapterTool::default()),
++                    memory,
++                    &[],
++                    unsafe { std::mem::zeroed() },
++                    &mut state,
++                    &mut executor,
++                    &(),
++                    None,
++                    &(),
++                    &subscriptions,
++                    signal.clone(),
++                    starts.clone(),
++                    crate::bootstrap::TOOL_STACK_TOP,
++                    Arc::new(AtomicBool::new(false)),
++                );
++                futures::executor::block_on(async {
++                    if adapted {
++                        <_ as Guest<LowerTool>>::queue_process_alarm_signal(
++                            &mut guest.into_guest(),
++                            event,
++                        )
++                        .await
++                    } else {
++                        guest.queue_process_alarm_signal(event).await
++                    }
++                })
++            };
++            assert_eq!(observed, outcome, "adapted={adapted}");
++            assert_eq!(executor.calls, 1);
++            assert!(signal.lock().unwrap().is_none());
++            assert_eq!(
++                receiver.try_recv(),
++                Err(std::sync::mpsc::TryRecvError::Empty)
++            );
++            assert_eq!(starts.lock().unwrap().len(), 1);
++        }
++    }
++}
++
++struct UnsupportedExecutor;
++impl GuestSyscallExecutor<AdapterTool> for UnsupportedExecutor {
++    fn read_clock(&self) -> Result<u64> {
++        panic!("refusal read a guest counter")
++    }
++    fn execute(&mut self, _: &SyscallRequest, _: &GuestMemory) -> i64 {
++        panic!("refusal executed a guest syscall")
++    }
++}
++
++#[test]
++fn process_alarm_signal_guest_executor_default_refuses_explicitly() {
++    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
++    info[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
++    info[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
++    let event = SignalEvent::new(
++        libc::SIGALRM,
++        info,
++        reverie::SignalTarget::Process {
++            pid: Pid::from_raw(1),
++        },
++    )
++    .unwrap();
++    let mut executor = UnsupportedExecutor;
++    let memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
++    let mut state = Box::new(());
++    let subscriptions = Subscription::none();
++    let signal = Arc::new(Mutex::new(None));
++    let starts = Arc::new(Mutex::new(Vec::new()));
++    let mut guest = KvmGuest::<AdapterTool>::new(
++        Pid::from_raw(1),
++        Pid::from_raw(1),
++        Arc::new(AdapterTool::default()),
++        memory,
++        &[],
++        unsafe { std::mem::zeroed() },
++        &mut state,
++        &mut executor,
++        &(),
++        None,
++        &(),
++        &subscriptions,
++        signal.clone(),
++        starts.clone(),
++        crate::bootstrap::TOOL_STACK_TOP,
++        Arc::new(AtomicBool::new(false)),
++    );
++    assert_eq!(
++        futures::executor::block_on(guest.queue_process_alarm_signal(event)),
++        ProcessAlarmSignalOutcome::RejectedBeforeCommit {
++            kind: ProcessAlarmSignalErrorKind::Unsupported,
++            errno: Errno::ENOSYS,
++        }
++    );
++    assert!(signal.lock().unwrap().is_none());
++    assert!(starts.lock().unwrap().is_empty());
++}
++
++#[test]
++fn process_alarm_signal_transport_contexts_match_resumable_boundaries() {
++    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
++    info[0..4].copy_from_slice(&libc::SIGSEGV.to_ne_bytes());
++    info[8..12].copy_from_slice(&crate::signal::SEGV_MAPERR.to_ne_bytes());
++    let fault = PageZeroFault::for_test(
++        SignalEvent::new(
++            libc::SIGSEGV,
++            info,
++            reverie::SignalTarget::Thread {
++                pid: Pid::from_raw(1),
++                tid: Pid::from_raw(1),
++            },
++        )
++        .unwrap(),
++    );
++    let contexts = [
++        (
++            "initial exec",
++            ProcessExecutionContext::InitialExec(SyscallRequest::new(
++                libc::SYS_execve as u64,
++                [0; 6],
++            )),
++            false,
++        ),
++        (
++            "initial exec completed",
++            ProcessExecutionContext::InitialExecCompleted,
++            false,
++        ),
++        ("lifecycle", ProcessExecutionContext::Lifecycle, false),
++        (
++            "thread entry signal",
++            ProcessExecutionContext::ThreadEntrySignal,
++            true,
++        ),
++        (
++            "signal",
++            ProcessExecutionContext::SignalBoundary(CompletedSyscallBoundary::for_test()),
++            true,
++        ),
++        (
++            "fault",
++            ProcessExecutionContext::FaultBoundary(Box::new(fault)),
++            true,
++        ),
++        (
++            "syscall",
++            ProcessExecutionContext::SyscallBoundary(CompletedSyscallBoundary::for_test()),
++            true,
++        ),
++    ];
++    for (name, context, expected) in contexts {
++        assert_eq!(context.has_resumable_signal_boundary(), expected, "{name}");
++    }
++}
+diff --git a/reverie-kvm/src/process_alarm_signal_tests.rs b/reverie-kvm/src/process_alarm_signal_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..020207d675b77371edd0d26739260c463d0d60ca
+--- /dev/null
++++ b/reverie-kvm/src/process_alarm_signal_tests.rs
+@@ -0,0 +1,737 @@
++// Included in executor::tests. These are pending-state controls, not VM delivery.
++fn process_alarm_event(pid: i32) -> reverie::SignalEvent {
++    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
++    info[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
++    info[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
++    reverie::SignalEvent::new(
++        libc::SIGALRM,
++        info,
++        reverie::SignalTarget::Process {
++            pid: reverie::Pid::from_raw(pid),
++        },
++    )
++    .unwrap()
++}
++
++#[derive(Debug, Eq, PartialEq)]
++struct ProcessAlarmSnapshot {
++    logical_clock_ns: u64,
++    process: crate::signal::ProcessSignalState,
++    thread: crate::signal::ThreadSignalState,
++    readiness: Vec<(i32, Option<i16>)>,
++}
++
++fn process_alarm_snapshot(executor: &ElfExecutor) -> ProcessAlarmSnapshot {
++    let process = executor.state.process_signals.lock().unwrap().clone();
++    let thread = executor.state.thread_signals.lock().clone();
++    let readiness = process
++        .signalfd_masks
++        .keys()
++        .map(|&fd| {
++            (
++                fd,
++                executor.state.files.get(&fd).map(|file| {
++                    let mut pfd = libc::pollfd {
++                        fd: file.as_raw_fd(),
++                        events: libc::POLLIN,
++                        revents: 0,
++                    };
++                    assert!(unsafe { libc::poll(&mut pfd, 1, 0) } >= 0);
++                    pfd.revents
++                }),
++            )
++        })
++        .collect();
++    ProcessAlarmSnapshot {
++        logical_clock_ns: executor.state.logical_clock_ns,
++        process,
++        thread,
++        readiness,
++    }
++}
++
++fn process_alarm_signalfd(executor: &mut ElfExecutor, memory: &mut GuestMemory) -> i32 {
++    let mut mask = KernelSigset::default();
++    mask.insert(libc::SIGALRM);
++    memory.write(0x80, &mask.to_bytes()).unwrap();
++    let fd = syscall_result(
++        memory,
++        &mut executor.state,
++        libc::SYS_signalfd4,
++        [
++            u64::MAX,
++            0x80,
++            KERNEL_SIGSET_SIZE as u64,
++            libc::SFD_NONBLOCK as u64,
++            0,
++            0,
++        ],
++    );
++    assert!(fd >= 0, "signalfd failed: {fd}");
++    fd as i32
++}
++
++#[test]
++fn process_alarm_signal_complete_state_for_each_mask_and_disposition() {
++    use reverie::ProcessAlarmSignalDisposition::Caught;
++    use reverie::ProcessAlarmSignalDisposition::DefaultFatal;
++    use reverie::ProcessAlarmSignalDisposition::Ignored;
++    let root = TestDir::new();
++    for (handler, disposition) in [(0, DefaultFatal), (1, Ignored), (0x4321, Caught)] {
++        for blocked in [false, true] {
++            let mut executor = ElfExecutor::new(test_state(&root.0), false);
++            executor.observe_ignored_signals_with_tool();
++            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++            let fd = process_alarm_signalfd(&mut executor, &mut memory);
++            let mut mask = KernelSigset::default();
++            mask.insert(libc::SIGUSR1);
++            test_install_signal_action(
++                &executor.state,
++                libc::SIGALRM,
++                KernelSigaction {
++                    handler,
++                    flags: libc::SA_RESTART as u64,
++                    mask,
++                    ..Default::default()
++                }
++                .encode(),
++            );
++            if blocked {
++                test_block_signal(&mut executor.state, libc::SIGALRM);
++            }
++            let unrelated =
++                event_for_thread(libc::SIGUSR2, executor.state.pid, executor.state.tid).unwrap();
++            executor.defer_signal_delivery(unrelated).unwrap();
++            let event = process_alarm_event(executor.state.pid);
++            let mut expected = process_alarm_snapshot(&executor);
++            assert_eq!(expected.readiness, [(fd, Some(0))]);
++            assert!(expected.process.shared_pending.enqueue(event, 0).unwrap());
++            expected.readiness = vec![(fd, Some(libc::POLLIN))];
++            assert_eq!(
++                executor.queue_process_alarm_signal(event),
++                reverie::ProcessAlarmSignalOutcome::Accepted(reverie::ProcessAlarmSignalReceipt {
++                    blocked,
++                    disposition,
++                    pending_generation: 0,
++                    coalesced: false,
++                })
++            );
++            assert_eq!(process_alarm_snapshot(&executor), expected);
++            assert_eq!(
++                executor.queue_process_alarm_signal(event),
++                reverie::ProcessAlarmSignalOutcome::Accepted(reverie::ProcessAlarmSignalReceipt {
++                    blocked,
++                    disposition,
++                    pending_generation: 0,
++                    coalesced: true,
++                })
++            );
++            // A live signalfd remains ready after the idempotent coalesced
++            // refresh, with complete queue/mask/action/generation state intact.
++            assert_eq!(process_alarm_snapshot(&executor), expected);
++            assert!(
++                !executor.has_pending_exit(),
++                "default-fatal receipt is not delivery"
++            );
++            assert!(executor.process_action.is_none());
++        }
++    }
++}
++
++#[test]
++fn process_alarm_signal_rejects_all_noncanonical_bytes_without_state_changes() {
++    use reverie::ProcessAlarmSignalErrorKind::Invalid;
++    use reverie::ProcessAlarmSignalErrorKind::Unsupported;
++    use reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit;
++    use reverie::syscalls::Errno;
++    let root = TestDir::new();
++    let mut executor = ElfExecutor::new(test_state(&root.0), false);
++    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++    process_alarm_signalfd(&mut executor, &mut memory);
++    test_block_signal(&mut executor.state, libc::SIGALRM);
++    let valid = process_alarm_event(executor.state.pid);
++    // Seed both domains to prove refusal does not flush or overwrite pending info.
++    executor.defer_signal_delivery(valid).unwrap();
++    assert!(matches!(
++        executor.queue_process_alarm_signal(valid),
++        reverie::ProcessAlarmSignalOutcome::Accepted(_)
++    ));
++    let before = process_alarm_snapshot(&executor);
++    let mut cases = Vec::new();
++    for offset in (4..8).chain(12..reverie::SIGNAL_INFO_SIZE) {
++        let mut info = valid.siginfo();
++        info[offset] = 0xa5;
++        cases.push((
++            reverie::SignalEvent::new(libc::SIGALRM, info, valid.target()).unwrap(),
++            Invalid,
++            Errno::EINVAL,
++        ));
++    }
++    for code in [
++        libc::SI_USER,
++        libc::SI_TKILL,
++        libc::SI_TIMER,
++        libc::CLD_EXITED,
++    ] {
++        let mut info = valid.siginfo();
++        info[8..12].copy_from_slice(&code.to_ne_bytes());
++        cases.push((
++            reverie::SignalEvent::new(libc::SIGALRM, info, valid.target()).unwrap(),
++            Unsupported,
++            Errno::ENOSYS,
++        ));
++    }
++    let mut info = valid.siginfo();
++    info[0..4].copy_from_slice(&libc::SIGUSR1.to_ne_bytes());
++    cases.push((
++        reverie::SignalEvent::new(libc::SIGUSR1, info, valid.target()).unwrap(),
++        Unsupported,
++        Errno::ENOSYS,
++    ));
++    for pid in [-1, 0, executor.state.pid + 1] {
++        cases.push((
++            reverie::SignalEvent::new(
++                libc::SIGALRM,
++                valid.siginfo(),
++                reverie::SignalTarget::Process {
++                    pid: reverie::Pid::from_raw(pid),
++                },
++            )
++            .unwrap(),
++            Invalid,
++            Errno::ESRCH,
++        ));
++    }
++    cases.push((
++        reverie::SignalEvent::new(
++            libc::SIGALRM,
++            valid.siginfo(),
++            reverie::SignalTarget::Thread {
++                pid: reverie::Pid::from_raw(executor.state.pid),
++                tid: reverie::Pid::from_raw(executor.state.tid),
++            },
++        )
++        .unwrap(),
++        Unsupported,
++        Errno::ENOSYS,
++    ));
++    for (event, kind, errno) in cases {
++        assert_eq!(
++            executor.queue_process_alarm_signal(event),
++            RejectedBeforeCommit { kind, errno },
++            "{event:?}"
++        );
++        assert_eq!(process_alarm_snapshot(&executor), before);
++    }
++}
++
++#[test]
++fn process_alarm_signal_coalesces_with_first_shared_info_without_changing_private_defers() {
++    let root = TestDir::new();
++    let mut executor = ElfExecutor::new(test_state(&root.0), false);
++    let alarm = process_alarm_event(executor.state.pid);
++    executor.defer_signal_delivery(alarm).unwrap();
++    let mut info = event_for_process(libc::SIGALRM, executor.state.pid)
++        .unwrap()
++        .siginfo();
++    info[127] = 0xa5;
++    let software = reverie::SignalEvent::new(libc::SIGALRM, info, alarm.target()).unwrap();
++    queue_signal_event(&mut executor.state, software, true).unwrap();
++    let before = process_alarm_snapshot(&executor);
++    assert_eq!(
++        executor.queue_process_alarm_signal(alarm),
++        reverie::ProcessAlarmSignalOutcome::Accepted(reverie::ProcessAlarmSignalReceipt {
++            blocked: false,
++            disposition: reverie::ProcessAlarmSignalDisposition::DefaultFatal,
++            pending_generation: 0,
++            coalesced: true,
++        })
++    );
++    assert_eq!(process_alarm_snapshot(&executor), before);
++    assert_eq!(
++        executor.take_pending_signal(),
++        Some(PendingSignal {
++            event: alarm,
++            domain: PendingSignalDomain::Thread
++        })
++    );
++    assert_eq!(
++        executor.take_pending_signal(),
++        Some(PendingSignal {
++            event: software,
++            domain: PendingSignalDomain::Process
++        })
++    );
++    assert_eq!(executor.take_pending_signal(), None);
++}
++
++fn process_alarm_set_action(executor: &mut ElfExecutor, memory: &mut GuestMemory, handler: u64) {
++    memory
++        .write(
++            0x100,
++            &KernelSigaction {
++                handler,
++                ..Default::default()
++            }
++            .encode(),
++        )
++        .unwrap();
++    assert_eq!(
++        rt_sigaction(
++            memory,
++            &mut executor.state,
++            &[
++                libc::SIGALRM as u64,
++                0x100,
++                0,
++                KERNEL_SIGSET_SIZE as u64,
++                0,
++                0
++            ]
++        ),
++        0
++    );
++}
++
++#[test]
++fn process_alarm_signal_blocked_ignored_generation_differs_from_later_sigign() {
++    use reverie::ProcessAlarmSignalDisposition::Caught;
++    use reverie::ProcessAlarmSignalDisposition::Ignored;
++    use reverie::ProcessAlarmSignalOutcome::Accepted;
++    use reverie::ProcessAlarmSignalReceipt;
++    let root = TestDir::new();
++    let mut executor = ElfExecutor::new(test_state(&root.0), false);
++    let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++    test_block_signal(&mut executor.state, libc::SIGALRM);
++    let fd = process_alarm_signalfd(&mut executor, &mut memory);
++    let event = process_alarm_event(executor.state.pid);
++    process_alarm_set_action(&mut executor, &mut memory, libc::SIG_IGN as u64);
++    assert_eq!(
++        executor.queue_process_alarm_signal(event),
++        Accepted(ProcessAlarmSignalReceipt {
++            blocked: true,
++            disposition: Ignored,
++            pending_generation: 1,
++            coalesced: false,
++        })
++    );
++    assert_eq!(
++        process_alarm_snapshot(&executor).readiness,
++        [(fd, Some(libc::POLLIN))]
++    );
++    process_alarm_set_action(&mut executor, &mut memory, 0x4321);
++    assert_eq!(
++        executor.queue_process_alarm_signal(event),
++        Accepted(ProcessAlarmSignalReceipt {
++            blocked: true,
++            disposition: Caught,
++            pending_generation: 1,
++            coalesced: true,
++        })
++    );
++    executor
++        .state
++        .thread_signals
++        .lock()
++        .blocked
++        .remove(libc::SIGALRM);
++    assert_eq!(
++        executor.take_pending_signal_for_delivery().unwrap(),
++        Some(PendingSignal {
++            event,
++            domain: PendingSignalDomain::Process,
++        })
++    );
++    assert_eq!(process_alarm_snapshot(&executor).readiness, [(fd, Some(0))]);
++    test_block_signal(&mut executor.state, libc::SIGALRM);
++    assert!(matches!(
++        executor.queue_process_alarm_signal(event),
++        Accepted(_)
++    ));
++    process_alarm_set_action(&mut executor, &mut memory, libc::SIG_IGN as u64);
++    let after = process_alarm_snapshot(&executor);
++    assert_eq!(after.process.pending_generation(libc::SIGALRM), 2);
++    assert!(after.process.shared_pending.is_empty());
++    assert!(after.thread.pending.is_empty());
++    assert!(after.thread.blocked.contains(libc::SIGALRM));
++    assert_eq!(after.readiness, [(fd, Some(0))]);
++}
++
++#[test]
++fn process_alarm_signal_receiver_lifetime_and_process_actions_refuse_before_mutation() {
++    use reverie::ProcessAlarmSignalErrorKind::Invalid;
++    use reverie::ProcessAlarmSignalErrorKind::Unsupported;
++    use reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit;
++    use reverie::syscalls::Errno;
++    let root = TestDir::new();
++    for case in 0..7 {
++        let mut executor = ElfExecutor::new(test_state(&root.0), false);
++        let event = process_alarm_event(executor.state.pid);
++        let mut sibling = None;
++        let (kind, errno) = match case {
++            0 => {
++                executor.cancel_current_thread();
++                (Invalid, Errno::ESRCH)
++            }
++            1 => {
++                sibling = Some(executor.thread_child(7).unwrap());
++                (Unsupported, Errno::ENOSYS)
++            }
++            2 => {
++                assert!(
++                    executor.prepare_thread(
++                        THREAD_CLONE_REQUIRED_FLAGS,
++                        Some(0x8000),
++                        None,
++                        None,
++                        None
++                    ) > 0
++                );
++                (Unsupported, Errno::ENOSYS)
++            }
++            3 => {
++                executor.process_action = Some(ProcessAction::Exec {
++                    executable_path: root.0.join("pending-exec"),
++                    executable_file: None,
++                    image: Vec::new(),
++                    argv: Vec::new(),
++                    envp: Vec::new(),
++                });
++                (Unsupported, Errno::ENOSYS)
++            }
++            4 => {
++                executor
++                    .state
++                    .task_lifecycle
++                    .lock()
++                    .unwrap()
++                    .remove(executor.state.tid, executor.task_generation);
++                executor.state.task_lifecycle.lock().unwrap().register(
++                    executor.state.tid,
++                    executor.state.pid,
++                    executor.state.pgid,
++                    true,
++                );
++                (Invalid, Errno::ESRCH)
++            }
++            5 => {
++                executor.process_generation += 1;
++                (Invalid, Errno::ESRCH)
++            }
++            6 => {
++                assert!(executor.prepare_fork(None, None, None, None, false, false) > 0);
++                (Unsupported, Errno::ENOSYS)
++            }
++            _ => unreachable!(),
++        };
++        let before = process_alarm_snapshot(&executor);
++        let next_pid = executor.next_pid.load(Ordering::SeqCst);
++        assert_eq!(
++            executor.queue_process_alarm_signal(event),
++            RejectedBeforeCommit { kind, errno },
++            "case={case}"
++        );
++        assert_eq!(process_alarm_snapshot(&executor), before, "case={case}");
++        assert_eq!(executor.next_pid.load(Ordering::SeqCst), next_pid);
++        if let Some(sibling) = sibling.as_mut() {
++            let before = process_alarm_snapshot(sibling);
++            assert_eq!(
++                sibling.queue_process_alarm_signal(event),
++                RejectedBeforeCommit {
++                    kind: Unsupported,
++                    errno: Errno::ENOSYS
++                }
++            );
++            assert_eq!(process_alarm_snapshot(sibling), before);
++        }
++    }
++}
++
++#[test]
++fn process_alarm_signal_readiness_failure_distinguishes_pre_and_post_publication() {
++    use reverie::ProcessAlarmSignalOutcome::Accepted;
++    use reverie::ProcessAlarmSignalOutcome::FailedAfterCommit;
++    use reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit;
++    use reverie::syscalls::Errno;
++    let root = TestDir::new();
++    for precommit in [false, true] {
++        for coalesced in [false, true] {
++            let mut executor = ElfExecutor::new(test_state(&root.0), false);
++            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++            let fd = process_alarm_signalfd(&mut executor, &mut memory);
++            let event = process_alarm_event(executor.state.pid);
++            if coalesced {
++                assert!(matches!(
++                    executor.queue_process_alarm_signal(event),
++                    Accepted(_)
++                ));
++            }
++            if precommit {
++                executor.state.files.remove(&fd);
++            } else {
++                executor
++                    .state
++                    .files
++                    .insert(fd, std::fs::File::open("/dev/null").unwrap());
++            }
++            let mut expected = process_alarm_snapshot(&executor);
++            let outcome = executor.queue_process_alarm_signal(event);
++            if precommit {
++                assert_eq!(
++                    outcome,
++                    RejectedBeforeCommit {
++                        kind: reverie::ProcessAlarmSignalErrorKind::Backend,
++                        errno: Errno::EBADF
++                    }
++                );
++            } else {
++                assert_eq!(
++                    outcome,
++                    FailedAfterCommit {
++                        errno: Errno::EBADF,
++                        receipt: reverie::ProcessAlarmSignalReceipt {
++                            blocked: false,
++                            disposition: reverie::ProcessAlarmSignalDisposition::DefaultFatal,
++                            pending_generation: 0,
++                            coalesced,
++                        },
++                    }
++                );
++                assert_eq!(
++                    expected.process.shared_pending.enqueue(event, 0).unwrap(),
++                    !coalesced
++                );
++            }
++            assert_eq!(process_alarm_snapshot(&executor), expected);
++        }
++    }
++}
++
++#[test]
++fn process_alarm_signal_tool_reblocking_keeps_actual_pending_domain_and_first_info() {
++    let root = TestDir::new();
++    for domain in [PendingSignalDomain::Thread, PendingSignalDomain::Process] {
++        let mut executor = ElfExecutor::new(test_state(&root.0), false);
++        let event = process_alarm_event(executor.state.pid);
++        if domain == PendingSignalDomain::Thread {
++            executor.defer_signal_delivery(event).unwrap();
++        } else {
++            assert!(matches!(
++                executor.queue_process_alarm_signal(event),
++                reverie::ProcessAlarmSignalOutcome::Accepted(_)
++            ));
++        }
++        let selected = executor
++            .take_pending_signal_for_delivery()
++            .unwrap()
++            .unwrap();
++        assert_eq!(selected.domain, domain);
++        test_block_signal(&mut executor.state, libc::SIGALRM);
++        // Another signal of the same domain arrives while the Tool owns selected.
++        let replacement = event_for_process(libc::SIGALRM, executor.state.pid).unwrap();
++        queue_signal_event(
++            &mut executor.state,
++            replacement,
++            domain == PendingSignalDomain::Process,
++        )
++        .unwrap();
++        let before = process_alarm_snapshot(&executor);
++        assert_eq!(
++            executor.prepare_filtered_signal_delivery(selected.event, selected.domain),
++            Ok(None)
++        );
++        assert_eq!(process_alarm_snapshot(&executor), before);
++        executor
++            .state
++            .thread_signals
++            .lock()
++            .blocked
++            .remove(libc::SIGALRM);
++        assert_eq!(
++            executor.take_pending_signal_for_delivery().unwrap(),
++            Some(PendingSignal {
++                event: replacement,
++                domain
++            })
++        );
++        assert_eq!(executor.take_pending_signal(), None);
++    }
++}
++
++#[test]
++fn process_alarm_signal_tool_sigchld_replacement_preserves_thread_fault_and_process_domains() {
++    let root = TestDir::new();
++    for origin in ["thread", "fault", "process"] {
++        for blocked in [false, true] {
++            let mut executor = ElfExecutor::new(test_state(&root.0), false);
++            let alarm = process_alarm_event(executor.state.pid);
++            let selected = match origin {
++                "fault" => {
++                    crate::vm::PageZeroFault::for_test(executor.page_zero_fault_event(0)).pending()
++                }
++                "thread" | "process" => {
++                    if origin == "thread" {
++                        executor.defer_signal_delivery(alarm).unwrap();
++                    } else {
++                        assert!(matches!(
++                            executor.queue_process_alarm_signal(alarm),
++                            reverie::ProcessAlarmSignalOutcome::Accepted(_)
++                        ));
++                    }
++                    executor
++                        .take_pending_signal_for_delivery()
++                        .unwrap()
++                        .unwrap()
++                }
++                _ => unreachable!(),
++            };
++            let domain = if origin == "process" {
++                PendingSignalDomain::Process
++            } else {
++                PendingSignalDomain::Thread
++            };
++            assert_eq!(selected.domain, domain);
++            assert_eq!(
++                selected.event.signal(),
++                if origin == "fault" {
++                    libc::SIGSEGV
++                } else {
++                    libc::SIGALRM
++                }
++            );
++            test_install_signal_action(
++                &executor.state,
++                libc::SIGCHLD,
++                KernelSigaction {
++                    handler: 0x4321,
++                    ..Default::default()
++                }
++                .encode(),
++            );
++            if blocked {
++                test_block_signal(&mut executor.state, libc::SIGCHLD);
++            }
++            // Process provenance describes the replacement, not ownership of
++            // the dequeued event. Faults and private defers stay thread-private.
++            let replacement = child_exit_test_event(executor.state.pid, 41, 37, 0xa5);
++            let mut expected = process_alarm_snapshot(&executor);
++            let actual = executor.prepare_filtered_signal_delivery(replacement, selected.domain);
++            if blocked {
++                assert_eq!(actual, Ok(None));
++                let generation = expected.process.pending_generation(libc::SIGCHLD);
++                let pending = if domain == PendingSignalDomain::Thread {
++                    &mut expected.thread.pending
++                } else {
++                    &mut expected.process.shared_pending
++                };
++                assert!(pending.enqueue(replacement, generation).unwrap());
++                assert_eq!(process_alarm_snapshot(&executor), expected);
++                assert_eq!(
++                    executor.has_shared_pending_signal(),
++                    domain == PendingSignalDomain::Process
++                );
++                executor
++                    .state
++                    .thread_signals
++                    .lock()
++                    .blocked
++                    .remove(libc::SIGCHLD);
++                assert_eq!(
++                    executor.take_pending_signal_for_delivery().unwrap(),
++                    Some(PendingSignal {
++                        event: replacement,
++                        domain
++                    })
++                );
++            } else {
++                assert_eq!(
++                    actual,
++                    Ok(Some(PendingSignal {
++                        event: replacement,
++                        domain
++                    }))
++                );
++                assert_eq!(process_alarm_snapshot(&executor), expected);
++            }
++            assert_eq!(executor.take_pending_signal(), None);
++        }
++    }
++}
++
++#[test]
++fn process_alarm_signal_fork_and_exec_keep_process_pending_lifetime() {
++    let root = TestDir::new();
++    let mut executor = ElfExecutor::new(test_state(&root.0), false);
++    test_block_signal(&mut executor.state, libc::SIGALRM);
++    test_install_signal_action(
++        &executor.state,
++        libc::SIGALRM,
++        KernelSigaction {
++            handler: 0x4321,
++            ..Default::default()
++        }
++        .encode(),
++    );
++    let event = process_alarm_event(executor.state.pid);
++    assert!(matches!(
++        executor.queue_process_alarm_signal(event),
++        reverie::ProcessAlarmSignalOutcome::Accepted(_)
++    ));
++    let before = process_alarm_snapshot(&executor);
++    let forked = executor.state.try_clone_for_fork(2).unwrap();
++    assert!(
++        forked
++            .process_signals
++            .lock()
++            .unwrap()
++            .shared_pending
++            .is_empty()
++    );
++    assert!(forked.thread_signals.lock().pending.is_empty());
++    assert_eq!(forked.thread_signals.lock().blocked, before.thread.blocked);
++    assert_eq!(
++        forked.process_signals.lock().unwrap().dispositions,
++        before.process.dispositions
++    );
++    assert_eq!(process_alarm_snapshot(&executor), before);
++    let old_generation = executor.task_generation;
++    executor.replace_after_exec(test_state(&root.0));
++    assert_eq!(
++        executor.task_generation, old_generation,
++        "exec preserves the task lifetime"
++    );
++    let after = process_alarm_snapshot(&executor);
++    assert_eq!(after.process.shared_pending, before.process.shared_pending);
++    assert_eq!(
++        after.process.pending_generations,
++        before.process.pending_generations
++    );
++    assert_eq!(after.thread.blocked, before.thread.blocked);
++    assert_eq!(
++        executor.signal_disposition(libc::SIGALRM),
++        SignalDisposition::Terminate
++    );
++    assert_eq!(
++        executor.queue_process_alarm_signal(event),
++        reverie::ProcessAlarmSignalOutcome::Accepted(reverie::ProcessAlarmSignalReceipt {
++            blocked: true,
++            disposition: reverie::ProcessAlarmSignalDisposition::DefaultFatal,
++            pending_generation: 0,
++            coalesced: true,
++        })
++    );
++    assert_eq!(executor.take_pending_signal(), None);
++    executor
++        .state
++        .thread_signals
++        .lock()
++        .blocked
++        .remove(libc::SIGALRM);
++    assert_eq!(
++        executor.take_pending_signal(),
++        Some(PendingSignal {
++            event,
++            domain: PendingSignalDomain::Process
++        })
++    );
++}
+diff --git a/reverie-kvm/src/runtime.rs b/reverie-kvm/src/runtime.rs
+index e99508f85dba6f1f0d07bddbf020dcd01eecb3c1..577a5fd7d73f32f595c2b25ff26356d74d6c0494 100644
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -269,6 +269,16 @@ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
+         }
+     }
+ 
++    fn queue_process_alarm_signal(
++        &mut self,
++        _event: SignalEvent,
++    ) -> reverie::ProcessAlarmSignalOutcome {
++        reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
++            kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
++            errno: Errno::ENOSYS,
++        }
++    }
++
+     fn ordinary_injection_allowed(&self, _request: &SyscallRequest) -> bool {
+         true
+     }
+@@ -332,6 +342,18 @@ enum ProcessExecutionContext {
+ }
+ 
+ impl ProcessExecutionContext {
++    fn has_resumable_signal_boundary(&self) -> bool {
++        // These contexts carry an exact user continuation for a signal frame.
++        // Lifecycle and initial-exec callbacks have no such transport.
++        matches!(
++            self,
++            Self::SignalBoundary(_)
++                | Self::FaultBoundary(_)
++                | Self::SyscallBoundary(_)
++                | Self::ThreadEntrySignal
++        )
++    }
++
+     fn tail_injection_allowed(&self) -> bool {
+         !matches!(
+             self,
+@@ -483,35 +505,43 @@ where
+     }
+ 
+     fn defer_signal_delivery(&mut self, event: SignalEvent) -> std::result::Result<(), Errno> {
+-        match self.process_context {
+-            // The stopped syscall transport provides an exact userspace
+-            // register file and a frame slot for delivery at this boundary.
+-            // SignalBoundary is the same transport while the structured hook
+-            // filters the selected event.
+-            ProcessExecutionContext::SignalBoundary(_)
+-            | ProcessExecutionContext::FaultBoundary(_)
+-            | ProcessExecutionContext::SyscallBoundary(_)
+-            | ProcessExecutionContext::ThreadEntrySignal => {
+-                self.executor.defer_signal_delivery(event)
+-            }
+-            // Initial-start/post-exec callbacks do not have that transport.
+-            // Refuse rather than silently delaying until an unrelated syscall.
+-            _ => Err(Errno::ENOSYS),
++        if self.process_context.has_resumable_signal_boundary() {
++            self.executor.defer_signal_delivery(event)
++        } else {
++            Err(Errno::ENOSYS)
+         }
+     }
+ 
+     fn queue_child_exit_signal(&mut self, event: SignalEvent) -> reverie::ChildExitSignalOutcome {
+-        match self.process_context {
+-            ProcessExecutionContext::SignalBoundary(_)
+-            | ProcessExecutionContext::FaultBoundary(_)
+-            | ProcessExecutionContext::SyscallBoundary(_)
+-            | ProcessExecutionContext::ThreadEntrySignal => {
+-                self.executor.queue_child_exit_signal(event)
+-            }
+-            _ => reverie::ChildExitSignalOutcome::RejectedBeforeCommit {
++        if self.process_context.has_resumable_signal_boundary() {
++            self.executor.queue_child_exit_signal(event)
++        } else {
++            reverie::ChildExitSignalOutcome::RejectedBeforeCommit {
+                 kind: reverie::ChildExitSignalErrorKind::Unsupported,
+                 errno: Errno::ENOSYS,
+-            },
++            }
++        }
++    }
++
++    fn queue_process_alarm_signal(
++        &mut self,
++        event: SignalEvent,
++    ) -> reverie::ProcessAlarmSignalOutcome {
++        // Process actions may consume and restore this transport. This bounded
++        // primitive requires the callback's original, unconsumed boundary.
++        if *self.process_completed {
++            return reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
++                kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
++                errno: Errno::ENOSYS,
++            };
++        }
++        if self.process_context.has_resumable_signal_boundary() {
++            self.executor.queue_process_alarm_signal(event)
++        } else {
++            reverie::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
++                kind: reverie::ProcessAlarmSignalErrorKind::Unsupported,
++                errno: Errno::ENOSYS,
++            }
+         }
+     }
+ 
+@@ -837,6 +867,13 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
+         self.executor.queue_child_exit_signal(event)
+     }
+ 
++    async fn queue_process_alarm_signal(
++        &mut self,
++        event: SignalEvent,
++    ) -> reverie::ProcessAlarmSignalOutcome {
++        self.executor.queue_process_alarm_signal(event)
++    }
++
+     async fn stack(&mut self) -> Self::Stack {
+         KvmStack::new(
+             self.memory.clone(),
+@@ -2413,7 +2450,7 @@ impl KvmBackend {
+                     Some(fault.pending())
+                 } else {
+                     executor
+-                        .prepare_filtered_signal_delivery(event)
++                        .prepare_filtered_signal_delivery(event, pending.domain)
+                         .map_err(|errno| Error::Reverie(errno.into()))?
+                 };
+                 if pending.is_some_and(|pending| {
+@@ -4003,3 +4040,7 @@ mod child_exit_tests;
+ #[cfg(test)]
+ #[path = "runtime/failure_tests.rs"]
+ mod failure_tests;
++
++#[cfg(test)]
++#[path = "process_alarm_runtime_tests.rs"]
++mod process_alarm_tests;
+diff --git a/reverie-kvm/src/signal.rs b/reverie-kvm/src/signal.rs
+index ed94e5041e0346c055b6b4b0f54701ed4c23a691..d1473264952bbcbcd94995df3a0e8ba16155074f 100644
+--- a/reverie-kvm/src/signal.rs
++++ b/reverie-kvm/src/signal.rs
+@@ -229,6 +229,7 @@ const PENDING_SIGNAL_GENERATION_COUNT: usize = 65;
+ pub(crate) type PendingSignalGenerations = [u64; PENDING_SIGNAL_GENERATION_COUNT];
+ 
+ #[derive(Clone, Debug)]
++#[cfg_attr(test, derive(Eq, PartialEq))]
+ struct QueuedStandardSignal {
+     event: SignalEvent,
+     generation: u64,
+@@ -236,6 +237,7 @@ struct QueuedStandardSignal {
+ 
+ /// One coalescing standard-signal pending domain.
+ #[derive(Clone, Debug, Default)]
++#[cfg_attr(test, derive(Eq, PartialEq))]
+ pub(crate) struct StandardPendingSignals(BTreeMap<i32, QueuedStandardSignal>);
+ 
+ impl StandardPendingSignals {
+@@ -367,6 +369,7 @@ impl StandardPendingSignals {
+ 
+ /// Signal state shared by all threads in one guest process.
+ #[derive(Clone, Debug)]
++#[cfg_attr(test, derive(Eq, PartialEq))]
+ pub(crate) struct ProcessSignalState {
+     pub(crate) dispositions: BTreeMap<i32, KernelSigaction>,
+     pub(crate) shared_pending: StandardPendingSignals,
+@@ -429,6 +432,7 @@ impl ProcessSignalState {
+ 
+ /// Signal state private to one guest thread.
+ #[derive(Clone, Debug, Default)]
++#[cfg_attr(test, derive(Eq, PartialEq))]
+ pub(crate) struct ThreadSignalState {
+     pub(crate) blocked: KernelSigset,
+     pub(crate) altstack: Option<GuestStack>,
+diff --git a/reverie-kvm/src/vm.rs b/reverie-kvm/src/vm.rs
+index fc60e9050869ca82a4c97c01f82390e74b88351c..a196284094c865226affca18293e5e4659886eac 100644
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -135,6 +135,25 @@ pub(crate) struct PageZeroFault {
+ }
+ 
+ impl PageZeroFault {
++    #[cfg(test)]
++    pub(crate) fn for_test(event: reverie::SignalEvent) -> Self {
++        Self {
++            event,
++            // SAFETY: these plain KVM ABI structures admit all-zero values.
++            // Policy and pending-domain tests never submit this fixture to KVM.
++            registers: unsafe { std::mem::zeroed() },
++            halted_registers: unsafe { std::mem::zeroed() },
++            special_registers: unsafe { std::mem::zeroed() },
++            xsave: Arc::new(unsafe { std::mem::zeroed() }),
++            code_segment: crate::signal::USER_CODE_SELECTOR,
++            stack_segment: crate::signal::USER_DATA_SELECTOR,
++            error_code: 4,
++            address: 0,
++            transport: [0; FRAME_SIZE],
++            transport_address: 0x1000,
++        }
++    }
++
+     pub(crate) fn pending(&self) -> crate::executor::PendingSignal {
+         crate::executor::PendingSignal {
+             event: self.event,
+diff --git a/reverie-kvm/tests/fixtures/process_alarm_signal.c b/reverie-kvm/tests/fixtures/process_alarm_signal.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..358fe9ebade5e3f0fd3d5374ca07e91027be820b
+--- /dev/null
++++ b/reverie-kvm/tests/fixtures/process_alarm_signal.c
+@@ -0,0 +1,91 @@
++#define _GNU_SOURCE
++#include <errno.h>
++#include <sched.h>
++#include <signal.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/signalfd.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++static volatile sig_atomic_t handled;
++static unsigned char stack[65536] __attribute__((aligned(16)));
++static int child(void *unused) { (void)unused; return 0; }
++static void handler(int signal, siginfo_t *info, void *context) {
++  (void)context;
++  unsigned char expected[128] = {0};
++  int code = SI_KERNEL;
++  memcpy(expected, &signal, sizeof(signal));
++  memcpy(expected + 8, &code, sizeof(code));
++  if (signal != SIGALRM || memcmp(info, expected, sizeof(expected))) _exit(71);
++  if (++handled != 1) _exit(72);
++}
++static int pending(void) {
++  sigset_t mask;
++  if (sigpending(&mask)) _exit(73);
++  return sigismember(&mask, SIGALRM);
++}
++int main(int argc, char **argv) {
++  if (argc != 2) return 2;
++  int mode = atoi(argv[1]);
++  struct sigaction action = {0};
++  action.sa_sigaction = handler;
++  action.sa_flags = SA_SIGINFO;
++  sigemptyset(&action.sa_mask);
++  if (mode == 2 || mode == 3) action.sa_handler = SIG_IGN;
++  if (mode == 7) action.sa_handler = SIG_DFL;
++  if (sigaction(SIGALRM, &action, NULL)) return 3;
++  sigset_t selected; sigemptyset(&selected); sigaddset(&selected, SIGALRM);
++  int blocked = mode == 1 || mode == 3 || mode == 4 || mode == 8;
++  if (blocked && sigprocmask(SIG_BLOCK, &selected, NULL)) return 4;
++  int fd = -1;
++  if (mode == 8) {
++    fd = signalfd(-1, &selected, SFD_NONBLOCK);
++    if (fd < 0) return 5;
++  }
++  pid_t expected_pid = getpid();
++  // The Tool publishes two alarms, or probes refusal after a returning fork.
++  long result = syscall(SYS_getpid, 0x616c726d, mode);
++  // A Tool-injected fork child resumes the marked boundary with result zero.
++  if (mode == 9 && result == 0) _exit(0);
++  if (result != expected_pid) return 6;
++  if (mode == 7) return 74; // Default disposition must have terminated us.
++  if (mode == 9) {
++    if (handled || pending()) return 17;
++  } else if (mode == 2 || mode == 6) {
++    if (handled || pending()) return 7;
++  } else if (mode == 8) {
++    if (handled || !pending()) return 8;
++    struct signalfd_siginfo actual, expected = {0};
++    memset(&actual, 0xa5, sizeof(actual));
++    expected.ssi_signo = SIGALRM; expected.ssi_code = SI_KERNEL;
++    if (read(fd, &actual, sizeof(actual)) != sizeof(actual) ||
++        memcmp(&actual, &expected, sizeof(actual))) return 9;
++    if (handled || pending()) return 10;
++    close(fd);
++  } else {
++    if (blocked || mode == 5) {
++      if (handled || !pending()) return 11;
++      if (mode == 3) {
++        action.sa_sigaction = handler;
++        if (sigaction(SIGALRM, &action, NULL)) return 12;
++      }
++      if (mode == 4) {
++        action.sa_handler = SIG_IGN;
++        if (sigaction(SIGALRM, &action, NULL) || pending()) return 13;
++      }
++      if (mode == 5) {
++        // Shared ownership must survive the Tool's reblock. The backend refuses
++        // sibling creation while a process-pending signal lacks a recipient.
++        errno = 0;
++        if (clone(child, stack + sizeof(stack), CLONE_VM | CLONE_FS | CLONE_FILES |
++            CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM, NULL, NULL, NULL, NULL) != -1 || errno != ENOSYS) return 14;
++      }
++      if (sigprocmask(SIG_UNBLOCK, &selected, NULL)) return 15;
++    }
++    if (handled != (mode == 4 ? 0 : 1) || pending()) return 16;
++  }
++  puts("process-alarm-boundary-checked");
++  return 0;
++}
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 2fc8fd4439a4bc8cd9313930407c8ca06205de05..c193e1b9ecbb8c818a1e63f1a857c614374725d9 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -13913,3 +13913,6 @@ mod terminal_fork;
+ 
+ #[path = "support/leader_exit.rs"]
+ mod leader_exit;
++
++#[path = "support/process_alarm_signals.rs"]
++mod process_alarm_signals;
+diff --git a/reverie-kvm/tests/support/process_alarm_signals.rs b/reverie-kvm/tests/support/process_alarm_signals.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0432d2dc9c834f40ccdf0068273bc9b1fc7e9dbe
+--- /dev/null
++++ b/reverie-kvm/tests/support/process_alarm_signals.rs
+@@ -0,0 +1,307 @@
++// Real KvmGuest -> StaticElfSyscallExecutor -> shared pending -> Tool/frame path.
++// This fixture has no scheduler timer, periodic rearm, or parked-wait bridge.
++use reverie::ProcessAlarmSignalDisposition;
++use reverie::ProcessAlarmSignalErrorKind;
++use reverie::ProcessAlarmSignalOutcome;
++use reverie::ProcessAlarmSignalReceipt;
++
++use super::*;
++
++#[derive(Clone, Debug)]
++enum Observation {
++    Refused(&'static str),
++    Published(ProcessAlarmSignalOutcome),
++    ForkReaped(i64),
++    Signal(SignalEvent),
++    ThreadExit(ExitStatus),
++    ProcessExit(ExitStatus),
++}
++static OBSERVATIONS: Mutex<Vec<Observation>> = Mutex::new(Vec::new());
++fn observe(value: Observation) {
++    OBSERVATIONS.lock().unwrap().push(value);
++}
++fn event(pid: Pid) -> SignalEvent {
++    let mut info = [0; reverie::SIGNAL_INFO_SIZE];
++    info[0..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
++    info[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
++    SignalEvent::new(libc::SIGALRM, info, SignalTarget::Process { pid }).unwrap()
++}
++#[derive(Default)]
++struct AlarmLog;
++#[reverie::global_tool]
++impl GlobalTool for AlarmLog {
++    type Request = ();
++    type Response = ();
++    type Config = u8;
++    async fn receive_rpc(&self, _: Pid, _: ()) {}
++}
++#[derive(Default)]
++struct AlarmTool {
++    mode: u8,
++    observations: AtomicU64,
++}
++impl AlarmTool {
++    async fn refused<G: Guest<Self>>(&self, guest: &mut G, context: &'static str) {
++        let alarm = event(guest.pid());
++        assert_eq!(
++            guest.queue_process_alarm_signal(alarm).await,
++            ProcessAlarmSignalOutcome::RejectedBeforeCommit {
++                kind: ProcessAlarmSignalErrorKind::Unsupported,
++                errno: Errno::ENOSYS,
++            },
++            "{context}"
++        );
++        observe(Observation::Refused(context));
++    }
++}
++#[reverie::tool]
++impl Tool for AlarmTool {
++    type GlobalState = AlarmLog;
++    type ThreadState = ();
++    fn new(_: Pid, mode: &u8) -> Self {
++        Self {
++            mode: *mode,
++            ..Self::default()
++        }
++    }
++    async fn handle_thread_start<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++    ) -> Result<(), reverie::Error> {
++        self.refused(guest, "thread start").await;
++        Ok(())
++    }
++    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
++        self.refused(guest, "post exec").await;
++        Ok(())
++    }
++    async fn handle_syscall_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        syscall: Syscall,
++    ) -> Result<i64, reverie::Error> {
++        if matches!(syscall, Syscall::Execve(_)) {
++            self.refused(guest, "initial exec").await;
++        }
++        let (_, args) = syscall.into_parts();
++        if syscall.number() == Sysno::getpid && args.arg0 == 0x616c726d {
++            assert_eq!(args.arg1 as u8, self.mode);
++            if self.mode == 9 {
++                // A real returning process action consumes this callback's
++                // transport even though its SyscallBoundary context remains.
++                let child = guest.inject(Fork::new()).await?;
++                assert!(child > 0);
++                self.refused(guest, "returning fork").await;
++                assert_eq!(self.observations.load(Ordering::SeqCst), 0);
++                let wait = Syscall::from_raw(
++                    Sysno::wait4,
++                    SyscallArgs::new(child as usize, 0, 0, 0, 0, 0),
++                );
++                assert_eq!(guest.inject(wait).await?, child);
++                observe(Observation::ForkReaped(child));
++                return Ok(i64::from(guest.pid().as_raw()));
++            }
++            let alarm = event(guest.pid());
++            let registers = guest.regs().await;
++            for coalesced in [false, true] {
++                let outcome = guest.queue_process_alarm_signal(alarm).await;
++                observe(Observation::Published(outcome));
++                let receipt = ProcessAlarmSignalReceipt {
++                    blocked: matches!(self.mode, 1 | 3 | 4 | 8),
++                    disposition: match self.mode {
++                        2 | 3 => ProcessAlarmSignalDisposition::Ignored,
++                        7 => ProcessAlarmSignalDisposition::DefaultFatal,
++                        _ => ProcessAlarmSignalDisposition::Caught,
++                    },
++                    pending_generation: u64::from(matches!(self.mode, 2 | 3)),
++                    coalesced,
++                };
++                assert_eq!(outcome, ProcessAlarmSignalOutcome::Accepted(receipt));
++                assert_eq!(
++                    self.observations.load(Ordering::SeqCst),
++                    0,
++                    "publication must not invoke the Tool hook"
++                );
++            }
++            let after = guest.regs().await;
++            assert_eq!(after.rip, registers.rip);
++            assert_eq!(after.rsp, registers.rsp);
++            assert_eq!(after.rax, registers.rax);
++            return Ok(i64::from(guest.pid().as_raw()));
++        }
++        guest.tail_inject(syscall).await
++    }
++    async fn handle_structured_signal_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        alarm: SignalEvent,
++    ) -> Result<Option<SignalEvent>, Errno> {
++        assert_eq!(alarm, event(guest.pid()));
++        observe(Observation::Signal(alarm));
++        let ordinal = self.observations.fetch_add(1, Ordering::SeqCst);
++        if self.mode == 6 {
++            return Ok(None);
++        }
++        if self.mode == 5 && ordinal == 0 {
++            let mut stack = guest.stack().await;
++            let mask = stack.push(1_u64 << (libc::SIGALRM - 1)).as_raw() as u64;
++            let _guard = stack.commit()?;
++            let block = reverie_kvm::SyscallRequest::new(
++                libc::SYS_rt_sigprocmask as u64,
++                [libc::SIG_BLOCK as u64, mask, 0, 8, 0, 0],
++            )
++            .into_syscall()
++            .unwrap();
++            assert_eq!(guest.inject(block).await?, 0);
++        }
++        Ok(Some(alarm))
++    }
++    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
++        &self,
++        _: Pid,
++        _: &G,
++        _: (),
++        status: ExitStatus,
++    ) -> Result<(), reverie::Error> {
++        observe(Observation::ThreadExit(status));
++        Ok(())
++    }
++    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
++        self,
++        _: Pid,
++        _: &G,
++        status: ExitStatus,
++    ) -> Result<(), reverie::Error> {
++        observe(Observation::ProcessExit(status));
++        Ok(())
++    }
++}
++
++#[test]
++fn process_alarm_signal_tool_boundary_contract() {
++    const TEST: &str = "process_alarm_signals::process_alarm_signal_tool_boundary_contract";
++    if !leader_self_exec_bounded(TEST) {
++        return;
++    }
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "process-alarm-signal",
++        include_str!("../fixtures/process_alarm_signal.c"),
++    );
++    for mode in 0..=9_u8 {
++        OBSERVATIONS.lock().unwrap().clear();
++        let argument = mode.to_string();
++        let program = executable.to_str().unwrap();
++        let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
++        backend
++            .install_static_elf_file_with_context(
++                std::fs::File::open(&executable).unwrap(),
++                &[program, &argument],
++                &[],
++                &directory.0,
++            )
++            .unwrap();
++        let (_, code, stdout, stderr) =
++            futures::executor::block_on(backend.run_static_elf_with_tool::<AlarmTool>(mode, true))
++                .unwrap();
++        let observations = OBSERVATIONS.lock().unwrap().clone();
++        eprintln!("process-alarm mode={mode} code={code} observations={observations:?}");
++        assert!(stderr.is_empty(), "mode={mode} stderr={stderr:?}");
++        if mode == 7 {
++            assert_eq!(code, 128 + libc::SIGALRM);
++            assert!(stdout.is_empty());
++        } else {
++            assert_eq!(code, 0, "mode={mode} stdout={stdout:?}");
++            assert_eq!(stdout, b"process-alarm-boundary-checked\n");
++        }
++        let expected_status = if mode == 7 {
++            ExitStatus::Signaled(reverie::Signal::SIGALRM, false)
++        } else {
++            ExitStatus::Exited(0)
++        };
++        let thread_exits: Vec<_> = observations
++            .iter()
++            .filter_map(|o| match o {
++                Observation::ThreadExit(status) => Some(*status),
++                _ => None,
++            })
++            .collect();
++        let process_exits: Vec<_> = observations
++            .iter()
++            .filter_map(|o| match o {
++                Observation::ProcessExit(status) => Some(*status),
++                _ => None,
++            })
++            .collect();
++        if mode == 9 {
++            assert_eq!(thread_exits, [expected_status, expected_status]);
++            assert_eq!(process_exits, [expected_status, expected_status]);
++        } else {
++            assert_eq!(thread_exits, [expected_status]);
++            assert_eq!(process_exits, [expected_status]);
++        }
++        let refusals: Vec<_> = observations
++            .iter()
++            .filter_map(|o| match o {
++                Observation::Refused(context) => Some(*context),
++                _ => None,
++            })
++            .collect();
++        if mode == 9 {
++            let mut refusals = refusals;
++            refusals.sort_unstable();
++            assert_eq!(
++                refusals,
++                [
++                    "initial exec",
++                    "post exec",
++                    "returning fork",
++                    "thread start",
++                    "thread start"
++                ]
++            );
++        } else {
++            assert_eq!(refusals, ["thread start", "initial exec", "post exec"]);
++        }
++        let children: Vec<_> = observations
++            .iter()
++            .filter_map(|o| match o {
++                Observation::ForkReaped(child) => Some(*child),
++                _ => None,
++            })
++            .collect();
++        if mode == 9 {
++            assert_eq!(children.len(), 1);
++            assert!(children[0] > 1);
++        } else {
++            assert!(children.is_empty());
++        }
++        let published: Vec<_> = observations
++            .iter()
++            .filter_map(|o| match o {
++                Observation::Published(outcome) => Some(*outcome),
++                _ => None,
++            })
++            .collect();
++        assert_eq!(published.len(), if mode == 9 { 0 } else { 2 });
++        let signals: Vec<_> = observations
++            .iter()
++            .filter_map(|o| match o {
++                Observation::Signal(event) => Some(*event),
++                _ => None,
++            })
++            .collect();
++        assert_eq!(
++            signals.len(),
++            match mode {
++                4 | 8 | 9 => 0,
++                5 => 2,
++                _ => 1,
++            }
++        );
++        for alarm in signals {
++            assert_eq!(alarm, event(Pid::from_raw(1)));
++        }
++    }
++}
+diff --git a/reverie/src/guest.rs b/reverie/src/guest.rs
+index 26436f171192e995e5291752c2645049d0a14cb9..486fdb1af5716ceee008f2aa892c4f9be027870d 100644
+--- a/reverie/src/guest.rs
++++ b/reverie/src/guest.rs
+@@ -272,6 +272,29 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
+         }
+     }
+ 
++    /// Publishes a Tool-selected process alarm at this stopped task's boundary.
++    ///
++    /// The caller owns deterministic ordering and supplies the complete normal
++    /// Linux SIGALRM/SI_KERNEL siginfo (zero except for signo and code). KVM
++    /// supports only the current sole live receiver, with no pending process
++    /// action and a resumable transported boundary that has not completed an
++    /// injected process action. The operation preserves
++    /// shared pending ownership and first siginfo, including when blocked or
++    /// ignored. Installing SIG_IGN later invalidates older pending generations.
++    ///
++    /// No Tool hook, guest instruction, timer operation, or wait completion is
++    /// performed. The receipt is only pending-state publication. The historical
++    /// private [`Guest::defer_signal_delivery`] operation remains independent.
++    async fn queue_process_alarm_signal(
++        &mut self,
++        _event: SignalEvent,
++    ) -> crate::ProcessAlarmSignalOutcome {
++        crate::ProcessAlarmSignalOutcome::RejectedBeforeCommit {
++            kind: crate::ProcessAlarmSignalErrorKind::Unsupported,
++            errno: Errno::ENOSYS,
++        }
++    }
++
+     /// Like [`Guest::inject`], but will retry the syscall if `EINTR` or
+     /// `ERESTARTSYS` are returned.
+     ///
+@@ -523,6 +546,13 @@ where
+         self.inner.queue_child_exit_signal(event).await
+     }
+ 
++    async fn queue_process_alarm_signal(
++        &mut self,
++        event: SignalEvent,
++    ) -> crate::ProcessAlarmSignalOutcome {
++        self.inner.queue_process_alarm_signal(event).await
++    }
++
+     fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+         self.inner.set_timer(sched)
+     }
+diff --git a/reverie/src/signal.rs b/reverie/src/signal.rs
+index 7ed7202809b7f0c508cffdf403be84988bf72047..7892cb50ce1dd61ee9fc77d62736c2fc6ee3cd31 100644
+--- a/reverie/src/signal.rs
++++ b/reverie/src/signal.rs
+@@ -74,6 +74,70 @@ pub enum ChildExitSignalOutcome {
+     },
+ }
+ 
++/// Current disposition of a process-pending alarm, before Tool filtering.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum ProcessAlarmSignalDisposition {
++    /// The Tool may observe the signal, but this disposition runs no handler.
++    Ignored,
++    /// A caught disposition; delivery and interruption have not occurred.
++    Caught,
++    /// The default SIGALRM action terminates the process when delivered.
++    DefaultFatal,
++}
++
++/// State captured when a process-alarm pending operation commits.
++///
++/// This is a publication receipt, not a dequeue identity, timer rearm, Tool
++/// observation, handler execution, or authorization to return `EINTR`. A later
++/// mask or disposition change may invalidate this eligibility snapshot.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct ProcessAlarmSignalReceipt {
++    /// Whether the sole receiver currently blocks SIGALRM.
++    pub blocked: bool,
++    /// The disposition at publication, independently of the receiver's mask.
++    pub disposition: ProcessAlarmSignalDisposition,
++    /// The SIGALRM disposition/pending generation, not a delivery counter.
++    pub pending_generation: u64,
++    /// An existing shared standard signal retained its first complete siginfo.
++    pub coalesced: bool,
++}
++
++/// Why a process-alarm operation was refused without changing backend state.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum ProcessAlarmSignalErrorKind {
++    /// This backend, callback, receiver configuration or producer is unsupported.
++    Unsupported,
++    /// The complete metadata or current receiver identity is invalid.
++    Invalid,
++    /// A backend operation failed before publication.
++    Backend,
++}
++
++/// Complete result of publishing a process-pending SIGALRM.
++///
++/// Accepted alarms always belong to the shared process pending set, including
++/// blocked or ignored alarms. A Tool still observes eligible ignored signals.
++/// Retrying a failure after publication as if it were a refusal is incorrect.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum ProcessAlarmSignalOutcome {
++    /// Shared pending state and its signalfd readiness were published.
++    Accepted(ProcessAlarmSignalReceipt),
++    /// Neither pending state nor signalfd readiness changed.
++    RejectedBeforeCommit {
++        /// Failure class independent of diagnostic text.
++        kind: ProcessAlarmSignalErrorKind,
++        /// Original errno.
++        errno: Errno,
++    },
++    /// Shared insertion/coalescing committed before a readiness update failed.
++    FailedAfterCommit {
++        /// Original readiness-update errno.
++        errno: Errno,
++        /// The published state; some readiness updates may also have completed.
++        receipt: ProcessAlarmSignalReceipt,
++    },
++}
++
+ /// Identifies both the selected guest task and whether a signal was originally
+ /// process-directed or thread-directed.
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]

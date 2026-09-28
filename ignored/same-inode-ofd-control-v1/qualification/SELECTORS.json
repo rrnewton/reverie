@@ -1,0 +1,22 @@
+{
+  "groups": {
+    "test-replaced-description": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::shared_file_table_reopen_same_inode_replaces_description"
+      ]
+    },
+    "test-shared-alias-neighbor": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state"
+      ]
+    },
+    "test-object-identity-neighbor": {
+      "artifact": "lib",
+      "names": [
+        "executor::tests::forked_states_share_file_object_identity_namespace"
+      ]
+    }
+  }
+}

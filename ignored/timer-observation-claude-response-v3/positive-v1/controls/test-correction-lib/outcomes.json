@@ -1,0 +1,60 @@
+{
+  "started": [
+    "executor::tests::signal_dequeue_full_journal_failure_retains_partial_read_and_every_removal",
+    "executor::tests::signal_dequeue_no_effect_error_preserves_live_sibling_stream",
+    "executor::tests::signal_dequeue_raw_consumers_keep_bookkeeping_failure_terminal",
+    "runtime::signal_cleanup_tests::signal_bookkeeping_failure_cannot_resume_injected_or_unsubscribed_syscall",
+    "runtime::signal_cleanup_tests::signal_cleanup_pending_callback_observes_published_peer_failure",
+    "runtime::signal_cleanup_tests::signal_cleanup_ready_result_precedes_terminal_cancellation",
+    "runtime::signal_cleanup_tests::signal_cleanup_real_fifo_wait_retains_only_waiting_owner_after_failure"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::signal_dequeue_full_journal_failure_retains_partial_read_and_every_removal",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::signal_dequeue_no_effect_error_preserves_live_sibling_stream",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "executor::tests::signal_dequeue_raw_consumers_keep_bookkeeping_failure_terminal",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "runtime::signal_cleanup_tests::signal_bookkeeping_failure_cannot_resume_injected_or_unsubscribed_syscall",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "runtime::signal_cleanup_tests::signal_cleanup_pending_callback_observes_published_peer_failure",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "runtime::signal_cleanup_tests::signal_cleanup_ready_result_precedes_terminal_cancellation",
+      "event": "ok"
+    },
+    {
+      "type": "test",
+      "name": "runtime::signal_cleanup_tests::signal_cleanup_real_fifo_wait_retains_only_waiting_owner_after_failure",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 478,
+      "exec_time": 0.171955493
+    }
+  ]
+}

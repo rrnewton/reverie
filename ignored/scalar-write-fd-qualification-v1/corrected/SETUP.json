@@ -1,0 +1,6 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918",
+  "base": "1a28260f548267fcd8bd2da46f7a697573455166",
+  "purpose": "Exact reviewed scalar-write correction in owned product source; no snapshot-only selector"
+}

@@ -1,0 +1,28 @@
+[
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/reverie_kvm-43ce2f687796397a",
+      "bytes": 118575600,
+      "mode": 493,
+      "sha256": "ff75064c3f08ce265d9884b5a6aaa132ec1244416e1bbe79d72def419b93b26a"
+    },
+    "retained": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/frozen-v1/artifacts/lib",
+      "bytes": 118575600,
+      "sha256": "ff75064c3f08ce265d9884b5a6aaa132ec1244416e1bbe79d72def419b93b26a"
+    }
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/target/process-alarm-qualification-v1/debug/deps/static_elf-8045a74b4f627592",
+      "bytes": 158848016,
+      "mode": 493,
+      "sha256": "4da6810353295a0e1822774eff2d6256ab4f3463736a2a984988df0703be8d6c"
+    },
+    "retained": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-20260918/frozen-v1/artifacts/static",
+      "bytes": 158848016,
+      "sha256": "4da6810353295a0e1822774eff2d6256ab4f3463736a2a984988df0703be8d6c"
+    }
+  }
+]

@@ -1,0 +1,25 @@
+diff --git a/reverie/src/guest.rs b/reverie/src/guest.rs
+--- a/reverie/src/guest.rs
++++ b/reverie/src/guest.rs
+@@ -318,7 +318,9 @@
+     /// operation or injection. KVM additionally requires its existing sole-live-
+     /// leader boundary, no prior injected execution, and no active observation
+     /// or checked-out stack. Ordinary files, pipes, sockets and uncaptured host
+-    /// streams are not admitted. Unsupported backends return `None`.
++    /// streams are not admitted by this query. The query does not change signal
++    /// publication admission; callers must act on `None` themselves. Unsupported
++    /// backends return `None`.
+     fn captured_write_signal_site(
+         &self,
+         _call: crate::syscalls::Write,
+diff --git a/reverie-kvm/tests/fixtures/captured_write_signal.c b/reverie-kvm/tests/fixtures/captured_write_signal.c
+--- a/reverie-kvm/tests/fixtures/captured_write_signal.c
++++ b/reverie-kvm/tests/fixtures/captured_write_signal.c
+@@ -58,6 +58,7 @@
+   errno = 0;
+   long result = syscall(mode == 9 ? SYS_getpid : SYS_write,
+                         raw_fd, data, length, 0x63617077UL, mode, 0x9876UL);
++  // Mode 17 records KVM scalar-write EBADF; Linux uses the low 32 fd bits.
+   if (mode == 6 || mode == 17) {
+     if (result != -1 || errno != EBADF) return 9;
+   } else if (mode == 13) {

@@ -1,0 +1,6 @@
+{ "type": "suite", "event": "started", "test_count": 2 }
+{ "type": "test", "event": "started", "name": "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks" }
+{ "type": "test", "name": "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks", "event": "ok" }
+{ "type": "test", "event": "started", "name": "worker_exec_is_refused_without_replacing_shared_memory" }
+{ "type": "test", "name": "worker_exec_is_refused_without_replacing_shared_memory", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 2, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 296, "exec_time": 2.656879264 }

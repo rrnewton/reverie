@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "a203cb743e1a47a10cef60d589e4d83da436843cc0d41a4cc1e25c01a1a7c720",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/qualification-preparation-v1/controls/timestamp-36/result.json",
+    "bytes": 2945,
+    "mode": 420,
+    "sha256": "b1190b76cf98868a4a8c0206856a6afedf26b10d17fdeceb8c1448df9e52bfaf"
+  }
+}

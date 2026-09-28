@@ -1,0 +1,21 @@
+
+thread 'parked_signals::parked_signal_prepared_read_restarts_only_after_handler' (2988922) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+parked_signals::parked_signal_prepared_read_restarts_only_after_handler: status=Some(101) stdout=
+running 1 test
+test parked_signals::parked_signal_prepared_read_restarts_only_after_handler ... FAILED
+
+failures:
+
+failures:
+    parked_signals::parked_signal_prepared_read_restarts_only_after_handler
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.11s
+
+ stderr=
+thread 'parked_signals::parked_signal_prepared_read_restarts_only_after_handler' (2988930) panicked at reverie-kvm/tests/support/parked_signals.rs:219:17:
+assertion `left == right` failed: callback re-entered before the prepared handler ran
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

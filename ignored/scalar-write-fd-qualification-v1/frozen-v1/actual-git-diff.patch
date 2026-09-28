@@ -1,0 +1,165 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index a6cb4517..c777c555 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -4490,9 +4490,8 @@ fn write(
+     args: &[u64; 6],
+     output: Option<&mut CapturedOutput>,
+ ) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux write consumes the low 32 descriptor bits, as vectored I/O does.
++    let fd = args[0] as libc::c_int;
+     let Ok(requested_length) = usize::try_from(args[2]) else {
+         return negative_errno(libc::EINVAL);
+     };
+@@ -6761,8 +6760,11 @@ fn virtual_signalfd_write_error(
+         }
+         _ => return None,
+     };
+-    let Ok(fd) = libc::c_int::try_from(args[0]) else {
+-        return None;
++    let fd = if number == libc::SYS_write as u64 {
++        // Match scalar write before it can reach the private eventfd carrier.
++        args[0] as libc::c_int
++    } else {
++        libc::c_int::try_from(args[0]).ok()?
+     };
+     signalfd_mask(state, fd).map(|_| negative_errno(errno))
+ }
+@@ -29251,6 +29253,18 @@ mod tests {
+             ),
+             negative_errno(libc::EINVAL),
+         );
++        for fd in [signal_fd, alias] {
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_write,
++                    [(1_u64 << 32) | fd as u64, DATA, 8, 0, 0, 0],
++                ),
++                negative_errno(libc::EINVAL),
++                "upper descriptor bits must not expose the signalfd carrier",
++            );
++        }
+         memory.write(DATA + 8, &2_u64.to_ne_bytes()).unwrap();
+         let vectors = [
+             libc::iovec {
+diff --git a/reverie-kvm/src/runtime.rs b/reverie-kvm/src/runtime.rs
+index 41769d10..a10fed63 100644
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -701,9 +701,9 @@ where
+             return None;
+         }
+         let site = self.current_parked_site()?;
+-        // Match scalar write's checked descriptor conversion, not the typed
+-        // accessor's truncation of a malformed raw ABI value.
+-        let fd = i32::try_from(request.args()[0]).ok()?;
++        // Descriptor lookup uses Linux's low 32 bits only after exact raw-call
++        // equality above; distinct upper argument bits do not share admission.
++        let fd = request.args()[0] as libc::c_int;
+         self.executor.captured_write_site(site, fd)
+     }
+     fn set_signal_guard(&mut self, guard: SignalGuard) -> SignalGuard {
+diff --git a/reverie-kvm/tests/fixtures/captured_write_signal.c b/reverie-kvm/tests/fixtures/captured_write_signal.c
+index da3245f6..414d2c9a 100644
+--- a/reverie-kvm/tests/fixtures/captured_write_signal.c
++++ b/reverie-kvm/tests/fixtures/captured_write_signal.c
+@@ -54,12 +54,13 @@ int main(int argc, char **argv) {
+     data = large;
+   }
+   unsigned long raw_fd = (unsigned long)fd;
+-  if (mode == 17) raw_fd += 1UL << 32;
++  if (mode == 17 || mode == 19) raw_fd += 1UL << 32;
++  if (mode == 18) raw_fd = (1UL << 32) | UINT32_MAX;
+   errno = 0;
+   long result = syscall(mode == 9 ? SYS_getpid : SYS_write,
+                         raw_fd, data, length, 0x63617077UL, mode, 0x9876UL);
+-  // Mode 17 records KVM scalar-write EBADF; Linux uses the low 32 fd bits.
+-  if (mode == 6 || mode == 17) {
++  // Upper bits are ignored for lookup; mode 18 still names the invalid fd -1.
++  if (mode == 6 || mode == 18) {
+     if (result != -1 || errno != EBADF) return 9;
+   } else if (mode == 13) {
+     if (result != -1 || errno != EFAULT) return 10;
+@@ -68,7 +69,7 @@ int main(int argc, char **argv) {
+   } else if (mode == 9) {
+     if (result != getpid()) return 12;
+   } else if (result != 3) return 13;
+-  int published = mode <= 3 || (mode >= 11 && mode <= 16);
++  int published = mode <= 3 || (mode >= 11 && mode <= 17);
+   if (mode == 15) {
+     if (handled || sigprocmask(SIG_UNBLOCK, &blocked, NULL)) return 14;
+   }
+diff --git a/reverie-kvm/tests/support/captured_write_signals.rs b/reverie-kvm/tests/support/captured_write_signals.rs
+index 8c385178..24a81928 100644
+--- a/reverie-kvm/tests/support/captured_write_signals.rs
++++ b/reverie-kvm/tests/support/captured_write_signals.rs
+@@ -94,7 +94,7 @@ impl Tool for CaptureTool {
+                 i64::from(guest.pid().as_raw())
+             );
+         }
+-        let expected = self.mode <= 3 || (11..=16).contains(&self.mode);
++        let expected = self.mode <= 3 || (11..=17).contains(&self.mode);
+         let site = guest.captured_write_signal_site(call);
+         assert_eq!(site.is_some(), expected, "mode {}", self.mode);
+         record(Event::Query(site));
+@@ -116,6 +116,15 @@ impl Tool for CaptureTool {
+                         .is_none()
+                 );
+             }
++            // The same low fd is insufficient: admission requires the exact
++            // original upper bits as well as all other raw arguments.
++            let mut same_fd = raw;
++            same_fd[0] ^= 1_usize << 32;
++            assert!(
++                guest
++                    .captured_write_signal_site(saved_write(same_fd))
++                    .is_none()
++            );
+             if self.mode == 12 {
+                 let stack = guest.stack().await;
+                 assert!(guest.captured_write_signal_site(call).is_none());
+@@ -176,7 +185,7 @@ fn run_modes(modes: impl IntoIterator<Item = u8>) {
+             )
+             .unwrap();
+         let (_, status, stdout, stderr) = futures::executor::block_on(
+-            backend.run_static_elf_with_tool::<CaptureTool>(mode, mode != 4),
++            backend.run_static_elf_with_tool::<CaptureTool>(mode, !matches!(mode, 4 | 19)),
+         )
+         .unwrap();
+         let events = EVENTS.lock().unwrap().clone();
+@@ -195,7 +204,7 @@ fn run_modes(modes: impl IntoIterator<Item = u8>) {
+                 .count(),
+             1
+         );
+-        let published = mode <= 3 || (11..=16).contains(&mode);
++        let published = mode <= 3 || (11..=17).contains(&mode);
+         for kind in [Event::Published, Event::Dequeue, Event::Hook] {
+             assert_eq!(
+                 events.iter().filter(|e| **e == kind).count(),
+@@ -211,7 +220,12 @@ fn run_modes(modes: impl IntoIterator<Item = u8>) {
+             let hook = events.iter().position(|e| *e == Event::Hook).unwrap();
+             assert!(write < hook, "signal hook ran before actual write result");
+         }
+-        let standard_output = matches!(mode, 0 | 2 | 10 | 11 | 12 | 15 | 16);
++        if matches!(mode, 17 | 19) {
++            assert!(events.contains(&Event::WriteResult(Ok(3))));
++        } else if mode == 18 {
++            assert!(events.contains(&Event::WriteResult(Err(Errno::EBADF))));
++        }
++        let standard_output = matches!(mode, 0 | 2 | 10 | 11 | 12 | 15 | 16 | 17);
+         if mode == 14 {
+             assert_eq!(stdout.len(), 16 * 1024 * 1024 + 1);
+             assert!(stdout[..stdout.len() - 1].iter().all(|byte| *byte == b'a'));
+@@ -268,6 +282,6 @@ fn captured_write_signal_capability_blocks_nested_and_malformed_admission() {
+     if leader_self_exec_bounded(
+         "captured_write_signals::captured_write_signal_capability_blocks_nested_and_malformed_admission",
+     ) {
+-        run_modes([15, 16, 17]);
++        run_modes([15, 16, 17, 18, 19]);
+     }
+ }

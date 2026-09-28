@@ -1,0 +1,19 @@
+
+thread 'parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest' (2396025) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest: status=Some(101) stdout=
+running 1 test
+test parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest ... FAILED
+
+failures:
+
+failures:
+    parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 297 filtered out; finished in 0.13s
+
+ stderr=
+thread 'parked_signals::parked_signal_admission_resolves_actual_thread_owner_before_global_or_guest' (2396031) panicked at reverie-kvm/tests/support/parked_signals.rs:1018:13:
+incompatible effective ownership must fail during admission
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -1,0 +1,4 @@
+
+thread 'runtime::signal_cleanup_tests::signal_cleanup_pending_callback_observes_published_peer_failure' (1559921) panicked at reverie-kvm/src/parked_signal_runtime.rs:338:9:
+a published lost owner must terminate consuming cleanup, not leave it parked
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

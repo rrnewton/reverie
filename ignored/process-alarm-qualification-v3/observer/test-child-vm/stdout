@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract" }
+{ "type": "test", "name": "child_exit_signals::child_exit_signal_native_and_tool_receiver_contract", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 288, "exec_time": 1.343334655 }

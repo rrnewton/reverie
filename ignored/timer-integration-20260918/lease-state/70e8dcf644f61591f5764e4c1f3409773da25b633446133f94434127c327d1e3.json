@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "70e8dcf644f61591f5764e4c1f3409773da25b633446133f94434127c327d1e3",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/timer-integration-review-response-20260918/qualification-v3/controls/list-static/result.json",
+    "bytes": 19363,
+    "mode": 420,
+    "sha256": "2d1efbafb51a99d5f0e386ec12ae58608c3b4de72c4c576dda3171e59f0145fb"
+  }
+}

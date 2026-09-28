@@ -1,0 +1,81 @@
+{
+  "recipe": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/METADATA-CONTINUITY.json",
+    "bytes": 928,
+    "mode": 420,
+    "sha256": "95d938200c41df57846c0252072e9e1812bdf78b804aa41d0336f769d24d8a6c"
+  },
+  "mapping": {
+    "from": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/baseline-source",
+    "to": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918"
+  },
+  "packages_equal": true,
+  "resolve_equal": true,
+  "workspace_members_equal": true,
+  "old_metadata": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/process-alarm-qualification-v1/observer/metadata/stdout",
+    "bytes": 1261212,
+    "mode": 384,
+    "sha256": "1dbbd4fbf21106a79a25bf242074439c5b75051e14cee2650bc05fba8a4ea005"
+  },
+  "new_actual_metadata": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/observer/metadata/stdout",
+    "bytes": 1281712,
+    "mode": 384,
+    "sha256": "799e8bfc614488b24968e0e007a525a4d2bc24ca9e3186b6dd292134963bebe5"
+  },
+  "external_files_freshly_authenticated": 7083,
+  "external_bytes": 170540804,
+  "symlinks": 0,
+  "retained_closure_remains_historically_labelled": true,
+  "new_source_bound_separately": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/source-manifest.json",
+    "bytes": 690301,
+    "mode": 420,
+    "sha256": "083a6be0ad5cc028d8cc08ff0c1f856ea0abb4a4693a54796e20cf13a2f6ab40"
+  },
+  "copied": [
+    {
+      "origin": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/dependency-inputs.json",
+        "bytes": 1748252,
+        "mode": 420,
+        "sha256": "e6c31b56795af4f8a4f69ec6bce84f291a12ae8f947b3c2212f302f9e954c6c5"
+      },
+      "copy": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/dependency-inputs.json",
+        "bytes": 1748252,
+        "mode": 420,
+        "sha256": "e6c31b56795af4f8a4f69ec6bce84f291a12ae8f947b3c2212f302f9e954c6c5"
+      }
+    },
+    {
+      "origin": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/dependency-symlinks.json",
+        "bytes": 3,
+        "mode": 420,
+        "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+      },
+      "copy": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/dependency-symlinks.json",
+        "bytes": 3,
+        "mode": 420,
+        "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+      }
+    },
+    {
+      "origin": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/scalar-write-fd-qualification-v1/baseline/dependency-closure.json",
+        "bytes": 61650,
+        "mode": 420,
+        "sha256": "bf38733f21b86c19cebd8ee383dc6c0c862b181e619ad5a1af2ef5f94b637af0"
+      },
+      "copy": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/same-inode-ofd-control-v1/qualification/dependency-closure.json",
+        "bytes": 61650,
+        "mode": 420,
+        "sha256": "bf38733f21b86c19cebd8ee383dc6c0c862b181e619ad5a1af2ef5f94b637af0"
+      }
+    }
+  ]
+}

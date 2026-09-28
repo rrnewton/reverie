@@ -1,0 +1,21 @@
+
+thread 'captured_write_signals::scalar_write_high_fd_uncaptured_baseline_oracle' (557342) panicked at reverie-kvm/tests/static_elf.rs:1590:5:
+captured_write_signals::scalar_write_high_fd_uncaptured_baseline_oracle: status=Some(101) stdout=
+running 1 test
+test captured_write_signals::scalar_write_high_fd_uncaptured_baseline_oracle ... FAILED
+
+failures:
+
+failures:
+    captured_write_signals::scalar_write_high_fd_uncaptured_baseline_oracle
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 304 filtered out; finished in 0.12s
+
+ stderr=
+thread 'captured_write_signals::scalar_write_high_fd_uncaptured_baseline_oracle' (557345) panicked at reverie-kvm/tests/support/captured_write_signals.rs:192:9:
+assertion `left == right` failed: mode=19 events=[Query(None), WriteResult(Err(EBADF))]
+  left: 13
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
