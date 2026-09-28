@@ -853,7 +853,8 @@ impl Container {
 
         // NOTE: Must use a dynamically allocated stack here. Programs expect to
         // have at least 2 MB of stack space and if we've already used up some
-        // stack space before this is called we could overflow the stack.
+        // stack space before this is called we could overflow the stack. See
+        // CHILD_STACK_SIZE for the size child_stack() provides (8 MiB).
         let mut stack = child_stack()?;
 
         // Disable io redirection just before forking. We want the child process to
