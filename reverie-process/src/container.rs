@@ -2847,6 +2847,9 @@ mod tests {
 
     #[test]
     fn owned_startup_atomic_identity_and_complete_decode() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use std::os::fd::AsFd;
         let parent = Pid::this();
         let mut actual_child = None;
@@ -2903,6 +2906,9 @@ mod tests {
 
     #[test]
     fn owned_parent_callback_unwind_reaps_child_and_retains_factory() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         struct FactoryCapture {
             shared: *mut SharedDropState,
             parent: Pid,
@@ -2986,6 +2992,9 @@ mod tests {
 
     #[test]
     fn owned_startup_namespace_and_filter_are_unchanged() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let result = Container::new()
             .unshare(Namespace::USER | Namespace::PID)
             .run_with_startup_owned(
@@ -3032,6 +3041,9 @@ mod tests {
 
     #[test]
     fn owned_startup_large_result_drains_before_pending_teardown() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let handle = Container::new()
             .run_with_startup_owned(
@@ -3085,6 +3097,9 @@ mod tests {
 
     #[test]
     fn owned_pending_result_never_constructs_generic_value() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         OWNED_DECODE_COUNT.store(0, Ordering::SeqCst);
         let (mapping, shared) = new_shared_drop_state();
         let handle = Container::new()
@@ -3114,6 +3129,9 @@ mod tests {
 
     #[test]
     fn owned_lost_wait_status_is_physical_exit_not_success() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let handle = Container::new()
             .run_with_startup_owned(
                 Duration::from_secs(2),
@@ -3148,6 +3166,9 @@ mod tests {
 
     #[test]
     fn owned_startup_before_parent_failure_retains_cleanup_authority() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         OWNED_STARTUP_CANCEL_ERROR.with(|v| v.set(Some(Errno::EPERM)));
         let mut called = false;
@@ -3205,6 +3226,9 @@ mod tests {
 
     #[test]
     fn owned_signal_esrch_is_not_a_terminal_status() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let mut handle = Container::new()
             .run_with_startup_owned(
@@ -3228,6 +3252,9 @@ mod tests {
 
     #[test]
     fn owned_result_read_error_retains_same_fd_partial_bytes_and_child() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let (reader, writer) = pipe().unwrap();
         let reader_fd = reader.as_raw_fd();
@@ -3295,6 +3322,9 @@ mod tests {
 
     #[test]
     fn owned_atomic_clone_refusals_do_not_start_work() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use super::super::clone::OwnedCloneTestFault;
         use super::super::clone::clone_with_stack_owned;
         let _fault = OwnedCloneFaultGuard::install(OwnedCloneTestFault::Probe(Errno::ENOSYS));
@@ -3361,6 +3391,9 @@ mod tests {
 
     #[test]
     fn owned_missing_atomic_pidfd_refuses_permission_without_fake_owner() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let _fault =
             OwnedCloneFaultGuard::install(super::super::clone::OwnedCloneTestFault::MissingPidfd);
         let (mapping, shared) = new_shared_drop_state();
@@ -3402,6 +3435,9 @@ mod tests {
 
     #[test]
     fn owned_nonzero_and_signal_after_result_remain_failures() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let run = Container::new()
             .run_with_startup_owned(
                 Duration::from_secs(2),
@@ -3436,6 +3472,9 @@ mod tests {
 
     #[test]
     fn owned_closed_result_reader_observes_actual_sigpipe() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (reader, writer) = pipe().unwrap();
         let rfd = reader.as_raw_fd();
         let wfd = writer.as_raw_fd();
@@ -3470,6 +3509,9 @@ mod tests {
 
     #[test]
     fn owned_invalid_request_and_permission_never_enter_work() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use StartupTestFault::*;
         for fault in [
             RequestEmptyTrailing,
@@ -3508,6 +3550,9 @@ mod tests {
 
     #[test]
     fn owned_persistent_signal_refusal_still_observes_independent_exit() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         // Install the real policy ONLY in this isolated process. Both inner
         // cancellation attempts must see EPERM; actual wait still obtains 17.
         let filter = seccomp::FilterBuilder::new()
@@ -3565,6 +3610,9 @@ mod tests {
 
     #[test]
     fn owned_atomic_immediate_exit_has_actual_status_and_reclaims_fd() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stack = child_stack().unwrap();
         let child =
             super::super::clone::clone_with_stack_owned(|| 17, Namespace::empty(), &mut stack)
@@ -3588,6 +3636,9 @@ mod tests {
 
     #[test]
     fn owned_wait_retries_actual_interrupted_pidfd_poll() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let _serial = WAITPID_SIGNAL_TEST.lock().unwrap();
         OWNED_POLL_INTERRUPTED.store(0, Ordering::Release);
         let previous = unsafe {
@@ -3685,6 +3736,9 @@ mod tests {
 
     #[test]
     fn owned_borrowed_factories_remain_in_parent_until_child_and_worker_settle() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use std::sync::atomic::AtomicUsize;
         let mapping = unsafe {
             libc::mmap(
@@ -3799,6 +3853,9 @@ mod tests {
 
     #[test]
     fn owned_decode_refusal_retains_exact_bytes_and_actual_status() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         for bytes in [
             vec![255],
             {
@@ -3839,6 +3896,9 @@ mod tests {
 
     #[test]
     fn owned_unknown_wait_retains_payload_and_same_child_on_retry() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let mut run = Container::new()
             .run_with_startup_owned(
@@ -3911,6 +3971,9 @@ mod tests {
 
     #[test]
     fn owned_post_ready_serialization_death_keeps_external_worker_and_factory() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use std::sync::Arc;
         let release = Arc::new(AtomicBool::new(false));
         let joined = Arc::new(AtomicBool::new(false));
@@ -3972,6 +4035,9 @@ mod tests {
 
     #[test]
     fn owned_implicit_disposal_waits_before_worker_factory_and_second_clone() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         // Persistent cancellation refusal forces Drop to observe natural exit.
         // The policy and all helper threads live only in this isolated process.
         let filter = seccomp::FilterBuilder::new()
@@ -4080,6 +4146,9 @@ mod tests {
 
     #[test]
     fn owned_stalled_serializer_requires_outer_process_containment() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let mut stack = child_stack().unwrap();
         // The supervised outer process is PID-namespace init. Its forced death
@@ -4129,6 +4198,9 @@ mod tests {
 
     #[test]
     fn owned_provisional_cancel_reaps_actual_child_and_preserves_bytes() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let run = Container::new()
             .run_with_startup_owned(
@@ -4169,6 +4241,9 @@ mod tests {
 
     #[test]
     fn owned_pending_cancel_stays_failed_after_refused_signal_and_exit_zero() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let filter = seccomp::FilterBuilder::new()
             .default_action(seccomp::Action::Allow)
             .syscalls([(
@@ -4254,6 +4329,9 @@ mod tests {
 
     #[test]
     fn startup_corrupt_request_or_permission_never_runs_workload() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use StartupTestFault::*;
         for fault in [
             RequestEmptyTrailing,
@@ -4304,6 +4382,9 @@ mod tests {
 
     #[test]
     fn startup_fragmented_request_transfers_each_right_exactly_once() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let _fault = StartupFaultGuard::install(StartupTestFault::Fragmented);
         let (pid, handle) = Container::new()
             .run_with_startup(
@@ -4333,6 +4414,9 @@ mod tests {
 
     #[test]
     fn startup_final_permission_has_no_later_parent_deadline_validation() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         // Deliberately delay the parent after final permission is sent and its
         // write side closed. This models scheduling after release, without
         // bypassing any protocol checks. The child's genuine result still must
@@ -4355,6 +4439,9 @@ mod tests {
 
     #[test]
     fn startup_ignored_descriptor_overflow_still_refuses_workload() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let result = Container::new().run_with_startup(
             Duration::from_secs(2),
@@ -4392,6 +4479,9 @@ mod tests {
 
     #[test]
     fn startup_binds_parent_child_and_transfers_owned_descriptor_once() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use std::os::fd::AsFd;
         let parent = Pid::this();
         let (mapping, shared) = new_shared_drop_state();
@@ -4456,6 +4546,9 @@ mod tests {
 
     #[test]
     fn startup_does_not_allocate_a_child_namespace_helper_pid() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let baseline = Container::new()
             .unshare(Namespace::USER | Namespace::PID)
             .run(namespace_population_probe)
@@ -4497,6 +4590,9 @@ mod tests {
 
     #[test]
     fn startup_precedes_seccomp_without_widening_the_filter() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use syscalls::Sysno;
 
         use super::seccomp::Action;
@@ -4534,6 +4630,9 @@ mod tests {
 
     #[test]
     fn startup_drains_large_result_before_deferred_cleanup_and_actual_wait() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let (pid, handle) = Container::new()
             .run_with_startup(
@@ -4560,6 +4659,9 @@ mod tests {
 
     #[test]
     fn startup_keeps_cleanup_failure_and_drop_reap_semantics() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (pid, handle) = Container::new()
             .run_with_startup(
                 Duration::from_secs(2),
@@ -4588,6 +4690,9 @@ mod tests {
 
     #[test]
     fn startup_parent_refusal_cancels_owned_child_without_running_workload() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let mut pid = None;
         let result = Container::new().run_with_startup(
@@ -4616,6 +4721,9 @@ mod tests {
 
     #[test]
     fn startup_child_setup_and_callback_refusals_are_not_readiness() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("absent");
         let result = Container::new().current_dir(missing).run_with_startup(
@@ -4659,6 +4767,9 @@ mod tests {
 
     #[test]
     fn startup_premature_child_exit_retains_actual_status() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let result = Container::new().run_with_startup(
             Duration::from_secs(2),
             |_| Ok(()),
@@ -4676,6 +4787,9 @@ mod tests {
 
     #[test]
     fn startup_deadline_kills_a_child_stuck_before_readiness() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let result = Container::new().run_with_startup(
             Duration::from_millis(100),
             |_| Ok(()),
@@ -4697,6 +4811,9 @@ mod tests {
 
     #[test]
     fn startup_late_parent_callback_cannot_release_workload() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let mut pid = None;
         let result = Container::new().run_with_startup(
@@ -4726,6 +4843,9 @@ mod tests {
 
     #[test]
     fn startup_invalid_timeout_refuses_before_clone_or_callbacks() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         for timeout in [Duration::ZERO, Duration::MAX] {
             let result = Container::new().run_with_startup(
                 timeout,
@@ -4742,6 +4862,9 @@ mod tests {
 
     #[test]
     fn startup_protocol_rejects_malformed_wrong_phase_and_trailing_frames() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let good = {
             let mut frame = [0u8; STARTUP_FRAME_SIZE];
             frame[..4].copy_from_slice(b"RVS1");
@@ -4795,6 +4918,9 @@ mod tests {
 
     #[test]
     fn startup_descriptor_cardinality_is_finite_and_refusal_closes_rights() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut context = ChildStartContext {
             deadline: Instant::now() + Duration::from_secs(2),
             descriptors: StartupFds::default(),
@@ -4828,6 +4954,9 @@ mod tests {
 
     #[test]
     fn can_panic() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let result = Container::new().run::<_, ()>(|| panic!());
         assert!(
             matches!(
@@ -4842,8 +4971,53 @@ mod tests {
         );
     }
 
+    /// A `Container` child copies the descriptor table of the process that
+    /// runs the test, and without an `execve` its `O_CLOEXEC` descriptors
+    /// survive. In the libtest harness process that table holds the pipes and
+    /// pidfds of tests running on other threads. The memfd opened here, only
+    /// in the harness process, stands in for such a descriptor. The child must
+    /// not hold it, which is true only when the test body runs in a process of
+    /// its own.
+    #[test]
+    fn run_child_holds_no_descriptor_of_another_test() {
+        use std::os::fd::FromRawFd;
+        const NAME: &std::ffi::CStr = c"reverie-process-another-tests-descriptor";
+        let _another_tests_descriptor = std::env::var_os(crate::ISOLATED_TEST_MARKER)
+            .is_none()
+            .then(|| {
+                // SAFETY: NAME is NUL-terminated and the flags are valid.
+                let fd = unsafe { libc::memfd_create(NAME.as_ptr(), libc::MFD_CLOEXEC) };
+                assert!(fd >= 0, "memfd_create: {}", std::io::Error::last_os_error());
+                // SAFETY: memfd_create just returned this descriptor to us alone.
+                unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }
+            });
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let held = Container::new()
+            .run(|| {
+                let name = NAME.to_str().unwrap();
+                std::fs::read_dir("/proc/self/fd")
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter_map(|e| std::fs::read_link(e.path()).ok())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .filter(|p| p.contains(name))
+                    .collect::<Vec<String>>()
+            })
+            .unwrap();
+        assert_eq!(
+            held,
+            Vec::<String>::new(),
+            "the child holds a descriptor that another test opened"
+        );
+    }
+
     #[test]
     fn is_new_process() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let my_pid = unsafe { libc::getpid() };
 
         assert_eq!(
@@ -4858,6 +5032,9 @@ mod tests {
 
     #[test]
     fn pid_namespace() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         assert_eq!(
             Container::new()
                 .unshare(Namespace::USER | Namespace::PID)
@@ -4871,6 +5048,9 @@ mod tests {
 
     #[test]
     fn return_value() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         assert_eq!(Container::new().run(|| 42), Ok(42));
 
         assert_eq!(
@@ -4935,6 +5115,9 @@ mod tests {
 
     #[test]
     fn deferred_drop_publishes_result_before_cleanup_completes() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
 
         let run = Container::new()
@@ -4955,6 +5138,9 @@ mod tests {
 
     #[test]
     fn dropping_cleanup_handle_still_reaps_the_child() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let (mapping, shared) = new_shared_drop_state();
         let run = Container::new()
             .run_with_deferred_drop(|| ((), BlockingDrop { shared }))
@@ -4976,6 +5162,9 @@ mod tests {
 
     #[test]
     fn deferred_finalize_retries_an_interrupted_wait_and_reaps() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let _serial = WAITPID_SIGNAL_TEST.lock().unwrap();
         WAITPID_ENTERED.store(false, Ordering::Release);
         WAITPID_INTERRUPTED.store(0, Ordering::Release);
@@ -5039,6 +5228,9 @@ mod tests {
 
     #[test]
     fn deferred_drop_exposes_cleanup_failure() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let run = Container::new()
             .run_with_deferred_drop(|| (42, ExitDuringDrop(71)))
             .unwrap();
@@ -5052,6 +5244,9 @@ mod tests {
 
     #[test]
     fn mount_error_from_child_is_returned() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let source_dir = tempfile::tempdir().unwrap();
         let missing_source = source_dir.path().join("missing");
 
@@ -5069,6 +5264,9 @@ mod tests {
 
     #[test]
     fn test_directory_is_available_after_mount() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let result = Container::new()
             .unshare(Namespace::USER | Namespace::MOUNT)
             .map_root()
@@ -5100,6 +5298,9 @@ mod tests {
     /// reproduces the inheritance that makes them locked.
     #[test]
     fn a_readonly_bind_survives_a_nosuid_nodev_source() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let shm = Path::new("/dev/shm");
         // Fail closed rather than silently stop exercising the condition.
         let flags = nix::sys::statvfs::statvfs(shm).expect("statvfs /dev/shm");
@@ -5131,6 +5332,9 @@ mod tests {
 
     #[test]
     fn huge_return_value() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         assert_eq!(
             Container::new().run(|| {
                 // Need something larger than /proc/sys/fs/pipe-max-size, which
@@ -5143,6 +5347,9 @@ mod tests {
 
     #[test]
     pub fn bind_to_low_port() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         use std::net::Ipv4Addr;
         use std::net::SocketAddrV4;
         use std::net::TcpListener;
@@ -5209,6 +5416,9 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     pub fn pin_affinity_to_all_cores() -> Result<(), Error> {
+        if crate::test_runs_in_own_process() {
+            return Ok(());
+        }
         use std::collections::HashMap;
 
         use raw_cpuid::CpuId;
