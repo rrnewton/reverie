@@ -1025,14 +1025,15 @@ fn waiting_tool_finishes_once_another_tasks_callback_runs() {
 }
 
 #[test]
-fn waiting_tool_fails_closed_when_no_other_task_runs() {
+fn waiting_tool_fails_closed_when_the_kernel_stops_yielding() {
     let host = host::<Rendezvous>();
     let kernel = FakeKernel::new();
     let root = kernel.spawn_root(&host, BASE);
     kernel.script_repoll(&[RepollWait::Yielded; 3]);
 
-    // Three waits end with nobody having run the `gettid` callback, and the
-    // fourth is refused.
+    // Three waits end with nobody having run the `gettid` callback. The core
+    // does not count them: the callback fails closed only because the kernel
+    // refuses the fourth.
     let result = kernel.syscall(&host, root, request(Sysno::getpid, NONE));
     assert!(
         matches!(result, Err(NarfFatal::ToolSuspended)),
@@ -1105,6 +1106,104 @@ fn tool_killed_while_waiting_is_dropped_and_its_task_torn_down() {
     assert_eq!(kernel.violations(), []);
     // The callback checked the task back in, so the kill tears it down.
     assert_teardowns(&kernel, &[(1000, exited(true))]);
+    assert_eq!((host.live_threads(), host.live_processes()), (0, 0));
+}
+
+std::thread_local! {
+    /// The tid a `TidOnDrop` guard read through the guest when it dropped.
+    static DROP_TID: Cell<i32> = const { Cell::new(0) };
+}
+
+/// Reads the calling task's tid through the guest from its drop glue.
+struct TidOnDrop<'g, G: Guest<GuardedNeverReady>>(&'g mut G);
+
+impl<G: Guest<GuardedNeverReady>> Drop for TidOnDrop<'_, G> {
+    fn drop(&mut self) {
+        DROP_TID.set(self.0.tid().as_raw());
+    }
+}
+
+/// Holds a guard that reaches the guest when dropped, and never finishes.
+#[derive(Default)]
+struct GuardedNeverReady;
+
+#[async_trait]
+impl Tool for GuardedNeverReady {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        _syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let _guard = TidOnDrop(guest);
+        Forever.await
+    }
+}
+
+#[test]
+fn killed_tool_is_dropped_under_its_frame() {
+    let host = host::<GuardedNeverReady>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Killed]);
+
+    // A guest method outside a poll panics, so the drop glue can read the
+    // tid only if the future is dropped while the frame is published.
+    context_managed(kernel.syscall(&host, root, request(Sysno::getpid, NONE)));
+    assert_eq!(DROP_TID.get(), 1000, "drop glue reached the guest");
+    assert_eq!(kernel.violations(), []);
+}
+
+#[test]
+fn killed_tool_is_dropped_before_the_callback_returns() {
+    let host = host::<NeverReady>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.script_repoll(&[RepollWait::Killed]);
+    let getpid = request(Sysno::getpid, NONE);
+
+    // Enter the host directly, so the kill's exit is not reported yet: a
+    // future kept past the callback would be dropped only at teardown.
+    let result = {
+        let mut services = kernel.services(root, Some(getpid));
+        host.handle_syscall(&mut services, SyscallEntry::new(getpid))
+    };
+    context_managed(result);
+    assert!(kernel.teardowns().is_empty(), "no teardown ran yet");
+    assert_eq!(FOREVER.get(), (1, 1), "dropped inside the callback");
+}
+
+#[test]
+fn waiting_tool_is_killed_when_a_sibling_ends_its_process() {
+    let host = host::<Rendezvous>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    let thread = complete(kernel.syscall(
+        &host,
+        root,
+        request(Sysno::clone, [CLONE_THREAD, 0, 0, 0, 0, 0]),
+    ));
+    let thread = pid(thread as i32);
+    kernel.script_repoll(&[RepollWait::Yielded]);
+
+    // While the root's callback waits, its sibling's `exit_group` ends the
+    // process. The kernel answers the wait as a kill, and reports the root's
+    // exit only once the root's callback has returned.
+    let mut ended = None;
+    let mut others = || {
+        if ended.is_none() {
+            let exit_group = request(Sysno::exit_group, [3, 0, 0, 0, 0, 0]);
+            ended = Some(kernel.syscall(&host, thread, exit_group));
+        }
+    };
+    let waited = kernel.syscall_with_others(&host, root, request(Sysno::getpid, NONE), &mut others);
+    context_managed(waited);
+    context_managed(ended.expect("the sibling's callback ran during the wait"));
+    assert_eq!(kernel.repoll_waits(), [1000], "the kill ended the one wait");
+    assert_eq!(kernel.violations(), []);
+    assert_teardowns(&kernel, &[(1001, exited(false)), (1000, exited(true))]);
     assert_eq!((host.live_threads(), host.live_processes()), (0, 0));
 }
 
