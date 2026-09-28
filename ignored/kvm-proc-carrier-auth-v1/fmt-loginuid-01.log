@@ -1,0 +1,12 @@
+Diff in /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm/src/executor.rs:20684:
+     #[test]
+     fn generic_non_loginuid_procfd_reopen_is_a_writable_unsealed_residual() {
+         const BUFFER: u64 = 0x200;
+-        for path in [
+-            "/dev/urandom",
+-            "/sys/devices/system/cpu/cpufreq/boost",
+-        ] {
++        for path in ["/dev/urandom", "/sys/devices/system/cpu/cpufreq/boost"] {
+             let root = TestDir::new();
+             let mut state = test_state(&root.0);
+             let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();

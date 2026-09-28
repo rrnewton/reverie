@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-6ae5e35517e53716)
+
+running 4 tests
+test executor::tests::recvmmsg_translates_guest_headers_and_receives_multiple_datagrams ... ok
+test executor::tests::recvmmsg_later_readonly_header_preserves_prior_commit_and_later_datagram ... ok
+test executor::tests::recvmmsg_commits_prior_authenticated_message_but_not_later_bad_reserved_right ... ok
+test executor::tests::recvmmsg_auth_budget_is_syscall_wide_and_cache_is_message_local ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 846 filtered out; finished in 0.59s
+

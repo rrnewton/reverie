@@ -1,0 +1,223 @@
+   Compiling cfg-if v1.0.5
+   Compiling memchr v2.8.3
+   Compiling pin-project-lite v0.2.17
+   Compiling smallvec v1.16.1
+   Compiling scopeguard v1.2.0
+   Compiling futures-sink v0.3.34
+   Compiling futures-core v0.3.34
+   Compiling lazy_static v1.5.0
+   Compiling linux-raw-sys v0.12.1
+   Compiling slab v0.4.12
+   Compiling futures v0.1.31
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling adler2 v2.0.1
+   Compiling simd-adler32 v0.3.10
+   Compiling bitflags v1.3.2
+   Compiling unty v0.0.4
+   Compiling iana-time-zone v0.1.65
+   Compiling static_assertions v1.1.0
+   Compiling twox-hash v2.1.4
+   Compiling equivalent v1.0.2
+   Compiling hex v0.4.3
+   Compiling byteorder v1.5.0
+   Compiling hashbrown v0.17.1
+   Compiling foldhash v0.1.5
+   Compiling gimli v0.33.0
+   Compiling fallible-iterator v0.3.0
+   Compiling rustc-demangle v0.1.28
+   Compiling typed-arena v2.0.2
+   Compiling never-say-never v6.6.666
+   Compiling once_cell v1.21.4
+   Compiling getrandom v0.4.3
+   Compiling regex-syntax v0.8.11
+   Compiling itoa v1.0.18
+   Compiling fastrand v2.5.0
+   Compiling log v0.4.34
+   Compiling typenum v1.20.1
+   Compiling plain v0.2.3
+   Compiling powerfmt v0.2.0
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling num_threads v0.1.7
+   Compiling deranged v0.5.8
+   Compiling nu-ansi-term v0.50.3
+   Compiling foreign-types-shared v0.3.1
+   Compiling cpufeatures v0.2.17
+   Compiling unicode-width v0.2.2
+   Compiling unicase v2.9.0
+   Compiling subtle v2.6.1
+   Compiling utf8parse v0.2.2
+   Compiling anstyle v1.0.14
+   Compiling anstyle-query v1.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling colorchoice v1.0.5
+   Compiling strsim v0.11.1
+   Compiling clap_lex v1.1.1
+   Compiling symlink v0.1.0
+   Compiling strsim v0.10.0
+   Compiling cfg-if v0.1.10
+   Compiling stable_deref_trait v1.2.1
+   Compiling atomic v0.5.3
+   Compiling hashbrown v0.12.3
+   Compiling os_str_bytes v6.6.1
+   Compiling termcolor v1.4.1
+   Compiling lock_api v0.4.14
+   Compiling futures-channel v0.3.34
+   Compiling miniz_oxide v0.9.1
+   Compiling colored v2.2.0
+   Compiling twox-hash v1.6.3
+   Compiling ruzstd v0.8.3
+   Compiling raw-cpuid v10.7.0
+   Compiling thread_local v1.1.10
+   Compiling sharded-slab v0.1.7
+   Compiling iced-x86 v1.21.0
+   Compiling libc v0.2.189
+   Compiling serde_core v1.0.229
+   Compiling crc32fast v1.5.2
+   Compiling anyhow v1.0.104
+   Compiling cpp_demangle v0.5.1
+   Compiling hashbrown v0.15.5
+   Compiling zmij v1.0.23
+   Compiling anstyle-parse v1.0.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling reverie-sabre v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre)
+   Compiling memoffset v0.9.1
+   Compiling num-traits v0.2.19
+   Compiling libmimalloc-sys v0.1.49
+   Compiling thiserror v2.0.20
+   Compiling derive_more v1.0.0
+   Compiling scroll v0.13.0
+   Compiling foreign-types v0.5.0
+   Compiling tracing-core v0.1.36
+   Compiling hash32 v0.3.1
+   Compiling textwrap v0.16.4
+   Compiling mimalloc v0.1.52
+   Compiling darling_core v0.14.4
+   Compiling anstream v1.0.0
+   Compiling heapless v0.8.0
+   Compiling clap_lex v0.2.4
+   Compiling ruzstd v0.7.3
+   Compiling aho-corasick v1.1.5
+   Compiling goblin v0.10.7
+   Compiling crossbeam-channel v0.5.17
+   Compiling flate2 v1.1.10
+   Compiling tracing v0.1.44
+   Compiling tracing-log v0.2.0
+   Compiling indexmap v1.9.3
+   Compiling indexmap v2.14.2
+   Compiling generic-array v0.14.7
+   Compiling object v0.39.1
+   Compiling object v0.36.7
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling hmac v0.12.1
+   Compiling parking_lot_core v0.9.12
+   Compiling errno v0.3.14
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling futures-util v0.3.34
+   Compiling memmap2 v0.9.11
+   Compiling time v0.3.55
+   Compiling unwind-sys v0.1.4
+   Compiling perf-event-open-sys v5.0.0
+   Compiling close-err v1.0.2
+   Compiling vmm-sys-util v0.15.0
+   Compiling dirs-sys v0.3.7
+   Compiling atty v0.2.14
+   Compiling unwind v0.4.2
+   Compiling darling_macro v0.14.4
+   Compiling signal-hook-registry v1.4.8
+   Compiling dirs v2.0.2
+   Compiling parking_lot v0.12.5
+   Compiling regex-automata v0.4.18
+   Compiling reverie-dbt v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-dbt)
+   Compiling darling v0.14.4
+   Compiling reverie-rpc-macros v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-rpc-macros)
+   Compiling reverie-sabre-macros v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre-macros)
+   Compiling kvm-bindings v0.14.1
+   Compiling serde v1.0.229
+   Compiling bitflags v2.13.2
+   Compiling serde_json v1.0.151
+   Compiling rustix v1.1.5
+   Compiling nix v0.30.1
+   Compiling nix v0.31.3
+   Compiling kvm-ioctls v0.25.0
+   Compiling syscalls v0.6.18
+   Compiling bytes v1.12.1
+   Compiling bincode v2.0.1
+   Compiling chrono v0.4.45
+   Compiling linked-hash-map v0.5.6
+   Compiling tracing-serde v0.2.0
+   Compiling bincode v1.3.3
+   Compiling reverie-rpc v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-rpc)
+   Compiling reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-memory)
+   Compiling nostd-print v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/nostd-print)
+   Compiling riptrace-rpc v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/riptrace/rpc)
+   Compiling tokio v1.53.1
+   Compiling procfs-core v0.18.0
+   Compiling addr2line v0.26.1
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling matchers v0.2.0
+   Compiling regex v1.13.1
+   Compiling tracing-subscriber v0.3.23
+   Compiling clap v3.2.25
+   Compiling reverie-e9patch v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-e9patch)
+   Compiling tempfile v3.27.0
+   Compiling terminal_size v0.4.4
+   Compiling clap_builder v4.6.7
+   Compiling tracing-appender v0.2.5
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+warning: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+warning: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: SaBRe source build completed in 1.39s (jobs=16)
+   Compiling procfs v0.18.0
+   Compiling reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-syscalls)
+   Compiling clap v4.6.7
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-process)
+   Compiling tokio-util v0.7.19
+   Compiling tokio-stream v0.1.19
+   Compiling safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/safeptrace)
+   Compiling reverie-host v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-host)
+   Compiling riptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/riptrace)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache HIT key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1790065715 install=/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie)
+warning: reverie-e9patch@0.2.0: e9patch source build completed in 3.85s (jobs=16)
+   Compiling reverie-rpc-transport v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-rpc-transport)
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm)
+   Compiling reverie-util v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-util)
+   Compiling reverie-sabre-stats v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre-stats)
+   Compiling reverie-preload v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-preload)
+   Compiling reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-ptrace)
+   Compiling liteinst2 v0.1.0 (https://github.com/rrnewton/liteinst2?rev=4dab7f01d4d6d394e968fbfad842019f72743c81#4dab7f01)
+   Compiling riptrace-tool v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/riptrace/tool)
+warning: method `public_id` is never used
+   --> reverie-kvm/src/proc_carrier.rs:340:19
+    |
+319 | impl ProcCarrierAuthority {
+    | ------------------------- method in this implementation
+...
+340 |     pub(crate) fn public_id(&self) -> [u8; 16] {
+    |                   ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling reverie-liteinst v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-liteinst)
+warning: `reverie-kvm` (lib) generated 1 warning
+   Compiling reverie-examples v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-examples)
+   Compiling reverie-sabre-strace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre-strace)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.98s

@@ -1,0 +1,12 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm)
+warning: constant `LINUX_F_SEAL_EXEC` is never used
+   --> reverie-kvm/src/executor.rs:128:7
+    |
+128 | const LINUX_F_SEAL_EXEC: libc::c_int = 0x0020;
+    |       ^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-kvm` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.53s
+  Executable tests/static_elf.rs (target/debug/deps/static_elf-517cc153de5ead7b)
