@@ -34,6 +34,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
+#include <setjmp.h>
 #include <spawn.h>
 #include <stddef.h>
 #include <signal.h>
@@ -68,6 +69,8 @@
 #define SEND_RESUME 0x800
 /* The Tool requests a precise timer of a5 (r8) branches at this stop. */
 #define ARM_TIMER 0x1000
+/* The Tool sends SIGSTOP to the calling thread at this stop. */
+#define SEND_SIGSTOP 0x2000
 
 long tp_site_fn(long nr, long a1, long a2, long a3, long a4, long a5, long a6);
 extern char tp_site[], tp_site_end[];
@@ -1358,6 +1361,91 @@ static void mode_timer_allow(void) {
   report_result("timer allow", r);
 }
 
+/* A counting-phase precise timer armed at a patched getppid, PM_BRANCHES + 1
+ * branches out, with an Allow-class number (500) run through a warmed
+ * generic site before the branch loop in which the timer fires. The hop's
+ * internal stop must not cancel the armed timer. */
+static void mode_timer_hop_unknown(void) {
+  warm();
+  long pid = getpid();
+  for (int j = 0; j < 3; j++)
+    if (tp_gen0_fn(SYS_getpid) != pid)
+      die("warm generic site");
+  SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+  long r = tp_gen0_fn(500);
+  for (volatile int j = 0; j < PM_BRANCHES; j++)
+    ;
+  long g = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  unsigned char *p = (unsigned char *)tp_gen0;
+  say("timer hop unknown ret=%ld getpid=%d bytes after %02x %02x\n", r, g == pid, p[0], p[1]);
+}
+
+/* A syscall site executed exactly once, so its stop is always an ordinary
+ * x86_64 stop (a site is patched only after it has been seen). */
+static long __attribute__((noinline)) getpid_once(void) {
+  long r;
+  __asm__ volatile("syscall" : "=a"(r) : "a"((long)SYS_getpid) : "rcx", "r11", "memory");
+  return r;
+}
+
+/* The same counting-phase timer, cancelled by a Tool-visible stop before
+ * the branch loop: first a patched-site getpid, then an ordinary x86_64
+ * getpid. A last timer with no stop before its loop fires, so the run's one
+ * timer event is that one. */
+static void mode_timer_cancel(void) {
+  warm();
+  long pid = getpid();
+  /* A cancelled timer's counter still overflows, as an internal signal
+   * stop. The loops after each cancelling call are three times the armed
+   * distance, so that overflow lands inside the loop rather than next to
+   * the following syscall, where skid alone would order the two stops. The
+   * live timer likewise fires in the middle of the last loop. */
+  SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+  long site = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
+    ;
+  SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+  long ordinary = getpid_once();
+  for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
+    ;
+  SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+  for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
+    ;
+  say("timer cancel site=%d ordinary=%d\n", site == pid, ordinary == pid);
+}
+
+static void timer_hop_handler(int sig, siginfo_t *si, void *uc_) {
+  (void)sig;
+  (void)si;
+  (void)uc_;
+  SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
+}
+
+/* The same timer, armed at the patched getppid inside a signal handler
+ * whose restorer runs rt_sigreturn through that same warmed site (an
+ * Allow-class hop), before the branch loop in which the timer fires. */
+static void mode_timer_hop_sigreturn(void) {
+  warm();
+  struct {
+    void *handler;
+    unsigned long flags;
+    void *restorer;
+    unsigned long mask;
+  } ksa = {(void *)timer_hop_handler, SA_SIGINFO | 0x04000000 /* SA_RESTORER */,
+           (void *)tp_restorer, 0};
+  if (syscall(SYS_rt_sigaction, SIGUSR1, &ksa, NULL, 8) != 0)
+    die("rt_sigaction");
+  long pid = getpid();
+  long tid = syscall(SYS_gettid);
+  if (syscall(SYS_tgkill, pid, tid, SIGUSR1) != 0)
+    die("tgkill");
+  for (volatile int j = 0; j < PM_BRANCHES; j++)
+    ;
+  long g = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  unsigned char *p = (unsigned char *)tp_site;
+  say("timer hop sigreturn getpid=%d bytes after %02x %02x\n", g == pid, p[0], p[1]);
+}
+
 /* T4b: under a partial subscription (the Tool does not subscribe to
  * getuid), the shared site is never patched. */
 static void mode_partial(void) {
@@ -1403,6 +1491,130 @@ static void mode_sigreturn(void) {
   dump("sigreturn again");
 }
 
+/* The private page's `syscall; ud2` return address (reverie's traced stub,
+ * mapped under plain ptrace too). */
+#define SLOT_RET_ADDR 0x71000006UL
+static sigjmp_buf slot_ret_env;
+static volatile unsigned long slot_ret_addr, slot_ret_rip;
+
+static void slot_ret_usr1(int sig, siginfo_t *si, void *uc_) {
+  (void)sig;
+  (void)si;
+  ((ucontext_t *)uc_)->uc_mcontext.gregs[REG_RIP] = (greg_t)SLOT_RET_ADDR;
+}
+
+static void slot_ret_ill(int sig, siginfo_t *si, void *uc_) {
+  (void)sig;
+  slot_ret_addr = (unsigned long)si->si_addr;
+  slot_ret_rip = ((ucontext_t *)uc_)->uc_mcontext.gregs[REG_RIP];
+  siglongjmp(slot_ret_env, 1);
+}
+
+/* rt_sigreturn through the warmed shared site to a frame whose saved rip is
+ * the slot's own return address: the frame's registers win, so the guest
+ * executes the ud2 there, as under plain ptrace. */
+static void mode_sigreturn_slot_ret(void) {
+  warm();
+  install(SIGILL, 0, slot_ret_ill);
+  struct {
+    void *handler;
+    unsigned long flags;
+    void *restorer;
+    unsigned long mask;
+  } ksa = {(void *)slot_ret_usr1, SA_SIGINFO | 0x04000000 /* SA_RESTORER */,
+           (void *)tp_restorer, 0};
+  if (syscall(SYS_rt_sigaction, SIGUSR1, &ksa, NULL, 8) != 0)
+    die("rt_sigaction");
+  if (!sigsetjmp(slot_ret_env, 1)) {
+    syscall(SYS_tgkill, getpid(), syscall(SYS_gettid), SIGUSR1);
+    say("slot-ret no SIGILL\n");
+  } else {
+    say("slot-ret SIGILL addr-is-slot-ret=%d rip-is-slot-ret=%d\n", slot_ret_addr == SLOT_RET_ADDR,
+        slot_ret_rip == SLOT_RET_ADDR);
+  }
+  long r = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  say("slot-ret getpid after pid=%d\n", r == getpid());
+  site_bytes("slot-ret after");
+}
+
+static sigjmp_buf bad_frame_env;
+static volatile long bad_frame_code, bad_frame_rip, bad_frame_rax;
+
+static void bad_frame_segv(int sig, siginfo_t *si, void *uc_) {
+  (void)sig;
+  ucontext_t *uc = uc_;
+  bad_frame_code = si->si_code;
+  bad_frame_rip = uc->uc_mcontext.gregs[REG_RIP];
+  bad_frame_rax = uc->uc_mcontext.gregs[REG_RAX];
+  siglongjmp(bad_frame_env, 1);
+}
+
+/* rt_sigreturn through a warmed generic site with rsp at an unmapped page,
+ * so the kernel cannot read the frame (and neither can the tracer): the
+ * kernel returns 0 at S+2 and forces SIGSEGV, delivered on an alternate
+ * stack. */
+static void mode_sigreturn_bad_frame(void) {
+  long pid = getpid();
+  for (int j = 0; j < 3; j++)
+    if (tp_gen1_fn(SYS_getpid) != pid)
+      die("warm generic site");
+  static char altstack[65536];
+  stack_t ss = {.ss_sp = altstack, .ss_size = sizeof altstack, .ss_flags = 0};
+  if (sigaltstack(&ss, NULL) != 0)
+    die("sigaltstack");
+  install(SIGSEGV, SA_ONSTACK, bad_frame_segv);
+  if (!sigsetjmp(bad_frame_env, 1)) {
+    __asm__ volatile("mov $0x10, %%rsp\n"
+                     "mov $15, %%eax\n"
+                     "jmp tp_gen1\n" ::
+                         : "memory");
+    __builtin_unreachable();
+  }
+  unsigned char *p = (unsigned char *)tp_gen1;
+  say("bad-frame SIGSEGV code=%ld rip-next=%d rax=%ld bytes after %02x %02x\n", bad_frame_code,
+      bad_frame_rip == (long)tp_gen1 + 2, bad_frame_rax, p[0], p[1]);
+  say("bad-frame getpid after=%d\n", tp_gen1_fn(SYS_getpid) == pid);
+}
+
+static sigjmp_buf probe_env;
+static volatile long probe_sig_code;
+
+static void probe_ill(int sig, siginfo_t *si, void *uc_) {
+  (void)sig;
+  (void)uc_;
+  probe_sig_code = si->si_code;
+  siglongjmp(probe_env, 1);
+}
+
+/* x86_64 335 (uretprobe) and 336 (uprobe), which seccomp passes through
+ * without running the filter, through a warmed generic site. Outside a
+ * uprobe trampoline 335 raises SIGILL and 336 returns -ENXIO; a kernel
+ * without them returns -ENOSYS. */
+static void probe_nr(long nr) {
+  long pid = getpid();
+  for (int j = 0; j < 3; j++)
+    if (tp_gen2_fn(SYS_getpid) != pid)
+      die("warm generic site");
+  install(SIGILL, 0, probe_ill);
+  if (!sigsetjmp(probe_env, 1)) {
+    long r = tp_gen2_fn(nr);
+    say("probe nr=%ld ret=%ld\n", nr, r);
+  } else {
+    say("probe nr=%ld SIGILL code=%ld\n", nr, probe_sig_code);
+  }
+}
+
+/* A SIGSTOP pending when a patched site's hop resumes the thread. Plain
+ * ptrace suppresses every SIGSTOP at its delivery stop (handle_sigstop), so
+ * the call completes; trap-only has no SIGSTOP handling in the hop yet (the
+ * deferred O1.4 step) and must fail closed instead. */
+static void mode_sigstop_hop(void) {
+  warm();
+  long r = SITEM(SYS_getpid, 0, 0, 0, 0, 0, SHAPE_TAIL | SEND_SIGSTOP);
+  say("sigstop tail getpid returned pid=%d\n", r == getpid());
+  site_bytes("sigstop");
+}
+
 /* The unknown-number cases: each runs through its own warmed site. */
 static void mode_unknown(void) {
   static const struct {
@@ -1412,6 +1624,9 @@ static void mode_unknown(void) {
   } cases[] = {
       {"nr500", 500, 0},
       {"nr-1", -1, 0},
+      /* 337, not 335 or 336: x86_64 335 (uretprobe) and 336 (uprobe) are
+       * passed through by seccomp without running the filter, by upstream
+       * design, so they are no gap (see probe_nr). */
       {"gap337", 337, 0},
       {"high-getpid", 0x100000027L, 1},
       {"high500", 0x1000001f4L, 0},
@@ -1563,6 +1778,22 @@ int main(int argc, char **argv) {
     mode_perf_marker();
   else if (!strcmp(m, "timer_allow"))
     mode_timer_allow();
+  else if (!strcmp(m, "timer_cancel"))
+    mode_timer_cancel();
+  else if (!strcmp(m, "timer_hop_unknown"))
+    mode_timer_hop_unknown();
+  else if (!strcmp(m, "timer_hop_sigreturn"))
+    mode_timer_hop_sigreturn();
+  else if (!strcmp(m, "sigreturn_slot_ret"))
+    mode_sigreturn_slot_ret();
+  else if (!strcmp(m, "sigreturn_bad_frame"))
+    mode_sigreturn_bad_frame();
+  else if (!strcmp(m, "sigstop_hop"))
+    mode_sigstop_hop();
+  else if (!strcmp(m, "probe_uretprobe"))
+    probe_nr(335);
+  else if (!strcmp(m, "probe_uprobe"))
+    probe_nr(336);
   else if (!strcmp(m, "partial"))
     mode_partial();
   else if (!strcmp(m, "sigreturn"))
