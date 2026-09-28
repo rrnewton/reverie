@@ -110,7 +110,7 @@ struct GdbServerImpl {
     /// only when every sender on this channel is gone; holding it in `self` for
     /// the lifetime of [`GdbServerImpl::run`] made that impossible. See the
     /// deadlock note on `run`.
-    pkt_tx: Option<mpsc::Sender<Packet>>,
+    pkt_tx: mpsc::Sender<Packet>,
     server_rx: Option<oneshot::Receiver<()>>,
     session: Option<Session>,
 }
@@ -175,7 +175,7 @@ impl GdbServerImpl {
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
-            pkt_tx: Some(tx),
+            pkt_tx: tx,
             server_rx: Some(server_rx),
             session: Some(session),
         })
@@ -199,7 +199,7 @@ impl GdbServerImpl {
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
-            pkt_tx: Some(tx),
+            pkt_tx: tx,
             server_rx: Some(server_rx),
             session: Some(session),
         })
@@ -222,8 +222,6 @@ impl GdbServerImpl {
 
     async fn send_packet(&mut self, packet: Packet) -> Result<(), Error> {
         self.pkt_tx
-            .as_ref()
-            .ok_or(Error::GdbServerSendPacketError)?
             .send(packet)
             .await
             .map_err(|_| Error::GdbServerSendPacketError)
@@ -253,7 +251,6 @@ impl GdbServerImpl {
         // never returned when its gdb exited without connecting, and still never
         // returned once the accept was released -- the hang had simply moved
         // here.
-        self.pkt_tx.take();
 
         // remote client closed connection.
         Ok(())
