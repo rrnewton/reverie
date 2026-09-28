@@ -318,7 +318,11 @@ mod tests {
                 for offset in (0..len).step_by(page_size) {
                     let mut resident = 0;
                     let result = unsafe {
-                        libc::mincore(mapping.cast::<u8>().add(offset).cast(), 1, &mut resident)
+                        libc::mincore(
+                            mapping.cast::<u8>().wrapping_add(offset).cast(),
+                            1,
+                            &mut resident,
+                        )
                     };
                     if result != -1 || Errno::last() != Errno::ENOMEM {
                         return Err(Errno::EINVAL);
