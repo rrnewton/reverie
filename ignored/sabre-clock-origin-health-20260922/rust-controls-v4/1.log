@@ -1,0 +1,40 @@
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+warning: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+warning: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: SaBRe source build completed in 1.93s (jobs=2)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running tests/late_function_registration.rs (/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/debug/deps/late_function_registration-f191ce6d185f908d)
+
+running 2 tests
+late detour fixture retained at /tmp/reverie-late-detours-627554
+test declared_detours_register_before_actual_stats_initialization ... ok
+late detour dynamic: Output { status: ExitStatus(unix_wait_status(0)), stdout: "CLIENT_OK\n", stderr: "" }
+late detour static: Output { status: ExitStatus(unix_wait_status(0)), stdout: "STATIC_OK\n", stderr: "" }
+late detour conflict: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "sabre: conflicting function intercept registration\n" }
+late detour capacity: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "sabre: function intercept table is full\n" }
+late detour alias-prefix: Output { status: ExitStatus(unix_wait_status(32512)), stdout: "", stderr: "Fatal error in /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c:625\noverlapping function intercept target\n" }
+late detour alias-elf: Output { status: ExitStatus(unix_wait_status(32512)), stdout: "", stderr: "Fatal error in /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c:625\noverlapping function intercept target\n" }
+late detour alias-conflict: Output { status: ExitStatus(unix_wait_status(32512)), stdout: "", stderr: "Fatal error in /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c:625\noverlapping function intercept target\n" }
+late detour static-alias: Output { status: ExitStatus(unix_wait_status(32512)), stdout: "", stderr: "Fatal error in /home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c:625\noverlapping function intercept target\n" }
+test late_detours_preserve_tls_original_calls_and_reject_aliases ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+
+     Running tests/loader_plugin_finalizers.rs (/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/debug/deps/loader_plugin_finalizers-4212e9a69fcf6fcc)
+
+running 1 test
+test plugin_finalizers_preserve_order_domain_and_other_maps ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+

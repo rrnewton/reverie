@@ -1,0 +1,152 @@
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c b/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
+index 4b247856..dc2b2b6d 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <arch/rewriter_tools.h>
++#include <arch/syscall_stackframe.h>
+ #include <assert.h>
+ #include <fcntl.h>
+ #include <inttypes.h>
+@@ -13,6 +14,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <sys/time.h>
++#include <time.h>
+ #ifdef __x86_64__
+ #include <asm/prctl.h>
+ #endif
+@@ -20,6 +22,7 @@
+ #include <string.h>
+ #include <sys/mman.h>
+ #include <sys/syscall.h>
++#include <sys/uio.h>
+ 
+ #include "bootstrap.h"
+ #include "compiler.h"
+@@ -479,7 +482,102 @@ static void_void_fn actual_time = NULL;
+ #endif // __x86_64__
+ 
+ typedef int clock_gettime_fn(clockid_t, struct timespec *);
++
++/* LOCAL DIAGNOSTIC ONLY: excluded unless the bounded diagnostic build names
++ * its own output file. No routing decision or guest-visible result changes. */
++#ifdef SBR_ORIGIN_DIAGNOSTIC_PATH
++static char *origin_text(char *out, const char *text) {
++  while (*text) *out++ = *text++;
++  return out;
++}
++
++static char *origin_hex(char *out, uintptr_t value) {
++  static const char digits[] = "0123456789abcdef";
++  *out++ = '0'; *out++ = 'x';
++  for (int shift = 60; shift >= 0; shift -= 4)
++    *out++ = digits[(value >> shift) & 15];
++  return out;
++}
++
++static void origin_write(int fd, const char *data, size_t bytes) {
++  while (bytes) {
++    long n = real_syscall(SYS_write, fd, (long)data, bytes, 0, 0, 0);
++    if (n == -EINTR) continue;
++    if (n <= 0) return;
++    data += n; bytes -= n;
++  }
++}
++
++extern const uint64_t sbr_bootstrap_frame_layout_v1[9];
++
++static void origin_diagnostic(const char *route, long sc_no, uintptr_t site,
++                              const uintptr_t *caller_sp, int plugin) {
++  static unsigned records;
++  static int maps_written;
++  static int entered;
++  /* Nonblocking diagnostic-only lock: recursion/concurrency skips evidence,
++   * never the original route. All counters and map output use this lock. */
++  if (__atomic_exchange_n(&entered, 1, __ATOMIC_ACQUIRE)) return;
++  if (records >= 128) {
++    __atomic_store_n(&entered, 0, __ATOMIC_RELEASE);
++    return;
++  }
++  int saved_errno = errno;
++  long fd = real_syscall(SYS_openat, AT_FDCWD, (long)SBR_ORIGIN_DIAGNOSTIC_PATH,
++                        O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600, 0, 0);
++  if (fd >= 0) {
++    if (!maps_written && plugin == 0) {
++      maps_written = 1;
++      origin_write(fd, "MAPS_BEGIN\n", 11);
++      long maps = real_syscall(SYS_openat, AT_FDCWD, (long)"/proc/self/maps",
++                              O_RDONLY | O_CLOEXEC, 0, 0, 0);
++      if (maps >= 0) {
++        char block[4096];
++        for (unsigned i = 0; i < 16; ++i) {
++          long n = real_syscall(SYS_read, maps, (long)block, sizeof(block), 0, 0, 0);
++          if (n <= 0) break;
++          origin_write(fd, block, n);
++        }
++        real_syscall(SYS_close, maps, 0, 0, 0, 0, 0);
++      }
++      origin_write(fd, "MAPS_END\n", 9);
++    }
++    uintptr_t words[16] = {0};
++    struct iovec local = {words, sizeof(words)};
++    struct iovec remote = {(void *)caller_sp, sizeof(words)};
++    long pid = real_syscall(SYS_getpid, 0, 0, 0, 0, 0, 0);
++    long copied = caller_sp ? real_syscall(SYS_process_vm_readv, pid, (long)&local, 1,
++                                           (long)&remote, 1, 0) : 0;
++    char line[1024]; char *out = line;
++    out = origin_text(out, "ORIGIN route="); out = origin_text(out, route);
++    out = origin_text(out, " sc="); out = origin_hex(out, sc_no);
++    out = origin_text(out, " plugin="); out = origin_hex(out, plugin);
++    out = origin_text(out, " site="); out = origin_hex(out, site);
++    out = origin_text(out, " caller_sp="); out = origin_hex(out, (uintptr_t)caller_sp);
++    out = origin_text(out, " copied="); out = origin_hex(out, copied);
++    for (unsigned i = 0; i < 16; ++i) {
++      out = origin_text(out, " "); out = origin_hex(out, words[i]);
++    }
++    *out++ = '\n'; origin_write(fd, line, out - line);
++    real_syscall(SYS_close, fd, 0, 0, 0, 0, 0);
++  }
++  ++records;
++  errno = saved_errno;
++  __atomic_store_n(&entered, 0, __ATOMIC_RELEASE);
++}
++#endif
++
+ static int vdso_clock_gettime_router(clockid_t arg1, struct timespec *arg2) {
++#ifdef SBR_ORIGIN_DIAGNOSTIC_PATH
++  if (arg1 == CLOCK_MONOTONIC) {
++    uintptr_t *router_frame = __builtin_frame_address(0);
++    uintptr_t *second_frame = (uintptr_t *)router_frame[0];
++    uintptr_t *first_frame = (uintptr_t *)second_frame[0];
++    origin_diagnostic("vdso", SYS_clock_gettime, first_frame[1],
++                      (uintptr_t *)((char *)first_frame + 160),
++                      calling_from_plugin ? calling_from_plugin() : -1);
++  }
++#endif
+   if (plugin_clock_gettime == NULL || calling_from_plugin == NULL ||
+       calling_from_plugin())
+     return ((clock_gettime_fn *)actual_clock_gettime)(arg1, arg2);
+@@ -564,6 +662,20 @@ void setup_plugin_vdso(sbr_icept_vdso_callback_fn plugin_vdso_callback) {
+ 
+ long runtime_syscall_router(long sc_no, long arg1, long arg2, long arg3,
+                             long arg4, long arg5, long arg6, void *wrapper_sp) {
++#ifdef SBR_ORIGIN_DIAGNOSTIC_PATH
++  if ((sc_no == SYS_clock_gettime && arg1 == CLOCK_MONOTONIC) ||
++      sc_no == SYS_madvise) {
++    /* The existing exported frame layout owns these offsets. fake_ret is
++     * the original instruction continuation; ret is a generated trampoline.
++     * The rewriter reserves 128 bytes above the complete assembly frame. */
++    uintptr_t *site = (uintptr_t *)((char *)wrapper_sp +
++                                    sbr_bootstrap_frame_layout_v1[5]);
++    uintptr_t *original_sp = (uintptr_t *)((char *)wrapper_sp +
++                                           sbr_bootstrap_frame_layout_v1[1] + 128);
++    origin_diagnostic("syscall", sc_no, *site, original_sp,
++                      calling_from_plugin ? calling_from_plugin() : -1);
++  }
++#endif
+   // TODO(andronat): the following if code can be optimized by completely avoid
+   // calling real_syscall if we carefully refactor handle_syscall.S
+   // TODO(andronat): calling_from_plugin can be optimized if we somehow copy the

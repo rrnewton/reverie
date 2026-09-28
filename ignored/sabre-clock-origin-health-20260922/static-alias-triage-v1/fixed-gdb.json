@@ -1,0 +1,29 @@
+{
+  "command": [
+    "timeout",
+    "--kill-after=2s",
+    "20s",
+    "gdb",
+    "-q",
+    "-batch",
+    "-ex",
+    "set pagination off",
+    "-ex",
+    "handle SIGILL nostop noprint pass",
+    "-ex",
+    "run",
+    "-ex",
+    "bt",
+    "-ex",
+    "info registers rip rsp rbp fs_base",
+    "--args",
+    "/home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922/sabre",
+    "/tmp/reverie-late-detours-295258/plugin.so",
+    "static-alias",
+    "--",
+    "/tmp/reverie-late-detours-295258/client-static"
+  ],
+  "native_exit": -6,
+  "stdout": "3.10.9+fb (3.10:1dd9be6, May  4 2022, 01:23:45) [Clang 19.1.2 (ssh://git.vip.facebook.com/data/gitrepos/osmeta/external/llvm-pro\nScript information not found in binary, assuming oldest version\nType \"fbload\" to load fb-specific gdb extensions.\nSaving history to /tmp/tmpn4f8u48s (unless set in your .gdbinit)\n/home/engshare/third-party2/gdb/9.x/src/gdb-9.x/gdb/stap-probe.c:1293: internal-error: sect_index_data not initialized\nA problem internal to GDB has been detected,\nfurther debugging may prove unreliable.\nQuit this debugging session? (y or n) [answered Y; input not from terminal]\n",
+  "stderr": "\nThis is a bug, please report it.  For instructions, see:\n<http://www.gnu.org/software/gdb/bugs/>.\n\ntimeout: the monitored command dumped core\n"
+}

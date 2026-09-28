@@ -1,0 +1,409 @@
+From f3be94e21627667b58ea1f1b52af8db01483c28b Mon Sep 17 00:00:00 2001
+From: Ryan Newton <rrnewton@gmail.com>
+Date: Tue, 22 Sep 2026 10:53:53 -0700
+Subject: [PATCH] Guard SaBRe plugin finalizers in the tool domain
+
+[hermit2, unknown-agentname, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+Keep SaBRe plugin ELF finalizers in the tool domain. Mimalloc cleanup after guest main previously entered shared Detcore as guest clock_gettime and madvise calls. Guard only the selected plugin map while preserving its original reverse FINI_ARRAY then FINI callbacks and the caller's prior domain. Guest and dependency finalizers remain unchanged.
+
+The retained pid-probe strict repeat pair stays matched while removing 39 allocator clocks and 7 madvise calls per execution (52 to 6 syscalls). This is focused repaired-loader evidence with the retained H839 product binary, not a current-main full-profile result; the separate startup cross-backend mismatch remains red.
+
+Validation: selected real loader and map-control tests, cargo fmt --all -- --check, cargo clippy --offline -p reverie-sabre --tests -- -D warnings; safehermit strict SaBRe pid-probe pair, 31/31 INFO records, no relaxations.
+---
+ .../late_function_registration/client.c       | 11 +++
+ .../late_function_registration/library.c      | 12 +++
+ .../late_function_registration/plugin.c       | 19 ++++
+ .../tests/late_function_registration.rs       |  6 +-
+ .../tests/loader_plugin_finalizers.c          | 88 +++++++++++++++++++
+ .../tests/loader_plugin_finalizers.rs         | 62 +++++++++++++
+ .../vendor/sabre/loader/premain.c             | 84 ++++++++++++++++++
+ 7 files changed, 281 insertions(+), 1 deletion(-)
+ create mode 100644 experimental/reverie-sabre/tests/loader_plugin_finalizers.c
+ create mode 100644 experimental/reverie-sabre/tests/loader_plugin_finalizers.rs
+
+diff --git a/experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c b/experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c
+index e9f3bbd5..73736d11 100644
+--- a/experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c
++++ b/experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c
+@@ -1,10 +1,13 @@
++#include <stdbool.h>
+ #include <assert.h>
+ #include <errno.h>
+ #include <stddef.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+ extern ssize_t late_probe(unsigned char *, size_t, unsigned);
++extern bool late_guest_ran;
+ int main(void) {
++  late_guest_ran = true;
+   unsigned char b[4] = {0, 1, 2, 3};
+   errno = 0;
+   assert(late_probe(b, 4, 0x1357) == 137);
+@@ -13,3 +16,11 @@ int main(void) {
+   assert(write(1, "CLIENT_OK\n", 10) == 10);
+   return 0;
+ }
++
++/* These belong to the guest and its ordinary dependency, not the plugin. */
++extern bool calling_from_plugin(void) __attribute__((weak));
++__attribute__((destructor)) static void guest_finalizer(void) {
++  if (!late_guest_ran) return;
++  assert(calling_from_plugin != NULL);
++  assert(!calling_from_plugin());
++}
+diff --git a/experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c b/experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c
+index b3ab5994..974cc54c 100644
+--- a/experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c
++++ b/experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c
+@@ -1,4 +1,6 @@
+ #define _GNU_SOURCE
++#include <assert.h>
++#include <stdbool.h>
+ #include <errno.h>
+ #include <stddef.h>
+ #include <sys/types.h>
+@@ -19,4 +21,14 @@ __attribute__((noinline)) long late_raw_getpid(void) {
+   return result;
+ }
+ 
++bool late_guest_ran;
++
+ extern __typeof(late_probe) late_probe_alias __attribute__((alias("late_probe")));
++
++/* These belong to the guest and its ordinary dependency, not the plugin. */
++extern bool calling_from_plugin(void) __attribute__((weak));
++__attribute__((destructor)) static void guest_finalizer(void) {
++  if (!late_guest_ran) return;
++  assert(calling_from_plugin != NULL);
++  assert(!calling_from_plugin());
++}
+diff --git a/experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c b/experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c
+index 44ba6839..0b36125e 100644
+--- a/experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c
++++ b/experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c
+@@ -26,6 +26,24 @@ static unsigned long expected_fs;
+ static __thread unsigned tls_marker __attribute__((tls_model("initial-exec")));
+ static unsigned char *expected_buffer;
+ static bool is_static;
++static bool initialized;
++static unsigned finalizer_phase;
++__attribute__((destructor(201))) static void finalize_second(void) {
++  if (!initialized) return;
++  assert(calling_from_plugin());
++  assert(finalizer_phase++ == 0);
++}
++__attribute__((destructor(200))) static void finalize_first(void) {
++  if (!initialized) return;
++  assert(calling_from_plugin());
++  assert(finalizer_phase++ == 1);
++}
++void finalizer_last(void) {
++  if (!initialized) return;
++  assert(calling_from_plugin());
++  assert(finalizer_phase++ == 2);
++}
++
+ static unsigned long fs(void) {
+   unsigned long address = 0;
+   assert(real_syscall(SYS_arch_prctl, ARCH_GET_FS, (long)&address, 0, 0, 0, 0) == 0);
+@@ -166,5 +184,6 @@ void sbr_init(int *argc, char ***argv, sbr_icept_reg_fn reg,
+     }
+     expected_buffer=NULL;
+   }
++  initialized = true;
+   (*argc)-=2; (*argv)+=2;
+ }
+diff --git a/experimental/reverie-sabre/tests/late_function_registration.rs b/experimental/reverie-sabre/tests/late_function_registration.rs
+index b71e47d8..f1105a8b 100644
+--- a/experimental/reverie-sabre/tests/late_function_registration.rs
++++ b/experimental/reverie-sabre/tests/late_function_registration.rs
+@@ -81,7 +81,11 @@ fn late_detours_preserve_tls_original_calls_and_reject_aliases() {
+             // as the plugin's recursion functions. Bind its own functions locally.
+             .args([&search, &runpath, "-Wl,-z,now", "-llate_probe", "-o"])
+             .arg(out.join("plugin.so"))
+-            .args(["-UNDEBUG", "-Wl,-Bsymbolic-functions"]),
++            .args([
++                "-UNDEBUG",
++                "-Wl,-Bsymbolic-functions",
++                "-Wl,-fini,finalizer_last",
++            ]),
+     );
+     for (mode, code, text) in [
+         ("dynamic", 0, "CLIENT_OK\n"),
+diff --git a/experimental/reverie-sabre/tests/loader_plugin_finalizers.c b/experimental/reverie-sabre/tests/loader_plugin_finalizers.c
+new file mode 100644
+index 00000000..3c2d5bfa
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/loader_plugin_finalizers.c
+@@ -0,0 +1,88 @@
++/* Exercise the actual selected-map finalizer guard and ELF callback order.
++ * No Hermit guest or syscall comparator is replaced by this fixture. */
++#define _GNU_SOURCE 1
++#include <assert.h>
++#include <stdio.h>
++#include <string.h>
++#include "../vendor/sabre/loader/premain.c"
++
++static bool domain;
++static char sequence[8];
++static size_t used;
++static bool get_domain(void) { return domain; }
++static void enter_domain(void) { domain = true; }
++static void exit_domain(void) { domain = false; }
++calling_from_plugin_fn calling_from_plugin = get_domain;
++enter_plugin_fn enter_plugin = enter_domain;
++exit_plugin_fn exit_plugin = exit_domain;
++static void record(char value) {
++  assert(domain);
++  assert(used < sizeof(sequence) - 1);
++  sequence[used++] = value;
++}
++static void first(void) { record('1'); }
++static void second(void) { record('2'); }
++static void last(void) { record('F'); }
++static void guest(void) { assert(!domain); }
++
++int main(int argc, char **argv) {
++  assert(argc == 2);
++  const char *mode = argv[1];
++  bool prior = strcmp(mode, "prior-plugin") == 0;
++  bool array = strcmp(mode, "fini-only") != 0 && strcmp(mode, "empty") != 0;
++  bool fini = strcmp(mode, "array-only") != 0 && strcmp(mode, "empty") != 0;
++  bool zero = strcmp(mode, "zero-array") == 0;
++  plugin_fini_fn originals[] = {first, second};
++  ElfW(Dyn) array_entry = {.d_tag = DT_FINI_ARRAY};
++  ElfW(Dyn) size_entry = {.d_tag = DT_FINI_ARRAYSZ};
++  ElfW(Dyn) fini_entry = {.d_tag = DT_FINI};
++  struct ld_link_map before = {.l_addr = 0x1000};
++  struct ld_link_map selected = {.l_addr = 0x2000};
++  struct ld_link_map after = {.l_addr = 0x3000};
++  before.l_next = (struct link_map *)&selected;
++  selected.l_prev = (struct link_map *)&before;
++  selected.l_next = (struct link_map *)&after;
++  after.l_prev = (struct link_map *)&selected;
++  array_entry.d_un.d_ptr = (ElfW(Addr))originals - selected.l_addr;
++  size_entry.d_un.d_val = zero ? 0 : sizeof(originals);
++  fini_entry.d_un.d_ptr = (ElfW(Addr))last - selected.l_addr;
++  if (array) {
++    selected.l_info[DT_FINI_ARRAY] = &array_entry;
++    selected.l_info[DT_FINI_ARRAYSZ] = &size_entry;
++  }
++  if (fini)
++    selected.l_info[DT_FINI] = &fini_entry;
++  struct ld_link_map before_copy = before, after_copy = after;
++  if (strcmp(mode, "bad-size") == 0)
++    size_entry.d_un.d_val = sizeof(originals) - 1;
++  if (strcmp(mode, "missing-size") == 0)
++    selected.l_info[DT_FINI_ARRAYSZ] = NULL;
++  if (strcmp(mode, "duplicate-map") == 0)
++    before.l_addr = selected.l_addr;
++  uintptr_t base = strcmp(mode, "missing-map") == 0 ? 0x4000 : selected.l_addr;
++
++  guest();
++  domain = prior;
++  guard_plugin_finalizers(&after, base);
++  assert(memcmp(&before, &before_copy, sizeof(before)) == 0);
++  assert(memcmp(&after, &after_copy, sizeof(after)) == 0);
++  assert(domain == prior);
++  struct ld_link_map installed = selected;
++  guard_plugin_finalizers(&selected, base);
++  assert(memcmp(&selected, &installed, sizeof(selected)) == 0);
++  if (array || fini) {
++    assert(selected.l_info[DT_FINI_ARRAY] == NULL);
++    assert(selected.l_info[DT_FINI_ARRAYSZ] == NULL);
++    ((plugin_fini_fn)(selected.l_addr +
++                     selected.l_info[DT_FINI]->d_un.d_ptr))();
++  } else {
++    assert(selected.l_info[DT_FINI] == NULL);
++  }
++  assert(domain == prior);
++  assert(strcmp(sequence, !array || zero ? (fini ? "F" : "")
++                                         : (fini ? "21F" : "21")) == 0);
++  domain = false;
++  guest();
++  printf("PASS %s\n", mode);
++  return 0;
++}
+diff --git a/experimental/reverie-sabre/tests/loader_plugin_finalizers.rs b/experimental/reverie-sabre/tests/loader_plugin_finalizers.rs
+new file mode 100644
+index 00000000..037b727d
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/loader_plugin_finalizers.rs
+@@ -0,0 +1,62 @@
++#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
++
++use std::process::Command;
++
++#[test]
++fn plugin_finalizers_preserve_order_domain_and_other_maps() {
++    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
++    let out =
++        std::env::temp_dir().join(format!("reverie-plugin-finalizers-{}", std::process::id()));
++    std::fs::create_dir(&out).unwrap();
++    let binary = out.join("plugin-finalizers");
++    let output = cc::Build::new()
++        .cargo_metadata(false)
++        .opt_level(2)
++        .host("x86_64-unknown-linux-gnu")
++        .target("x86_64-unknown-linux-gnu")
++        .get_compiler()
++        .to_command()
++        .args([
++            "-std=gnu99",
++            "-UNDEBUG",
++            "-ffunction-sections",
++            "-fdata-sections",
++            "-Wl,--gc-sections",
++        ])
++        .arg("-I")
++        .arg(source.join("vendor/sabre/includes"))
++        .arg("-I")
++        .arg(source.join("vendor/sabre/includes/loader"))
++        .arg("-I")
++        .arg(source.join("vendor/libelf"))
++        .arg(source.join("tests/loader_plugin_finalizers.c"))
++        .arg("-o")
++        .arg(&binary)
++        .output()
++        .unwrap();
++    assert!(output.status.success(), "{output:?}");
++    for case in [
++        "array-fini",
++        "prior-plugin",
++        "array-only",
++        "fini-only",
++        "empty",
++        "zero-array",
++    ] {
++        let output = Command::new(&binary).arg(case).output().unwrap();
++        assert!(output.status.success(), "case={case}: {output:?}");
++        assert_eq!(output.stdout, format!("PASS {case}\n").as_bytes());
++    }
++    for (case, reason) in [
++        ("bad-size", "invalid plugin finalizer array"),
++        ("missing-size", "invalid plugin finalizer array"),
++        ("missing-map", "missing plugin finalizer map"),
++        ("duplicate-map", "ambiguous plugin finalizer map"),
++    ] {
++        let output = Command::new(&binary).arg(case).output().unwrap();
++        assert_eq!(output.status.code(), Some(1), "case={case}: {output:?}");
++        assert!(String::from_utf8_lossy(&output.stderr).contains(reason));
++    }
++    std::fs::remove_file(&binary).unwrap();
++    std::fs::remove_dir(&out).unwrap();
++}
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/premain.c b/experimental/reverie-sabre/vendor/sabre/loader/premain.c
+index d74493f8..dbfbba2b 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/premain.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/premain.c
+@@ -41,6 +41,83 @@ static _dl_map_object_fn real_dl_map_object;
+ typedef int (*clock_gettime_fn)(clockid_t, struct timespec *);
+ static clock_gettime_fn real_clock_gettime;
+ 
++
++/* Plugin ELF finalizers are tool work just like sbr_init. The dynamic linker
++ * otherwise invokes them after main with the guest routing domain active.
++ * Keep the original callbacks and their ELF ordering; only their domain changes.
++ */
++typedef void (*plugin_fini_fn)(void);
++static struct ld_link_map *client_link_maps;
++static struct ld_link_map *guarded_plugin_map;
++static plugin_fini_fn *plugin_fini_array;
++static size_t plugin_fini_count;
++static plugin_fini_fn plugin_fini;
++static ElfW(Dyn) guarded_fini_entry = {.d_tag = DT_FINI};
++
++static void run_plugin_finalizers(void) {
++  bool was_plugin = calling_from_plugin();
++  enter_plugin();
++  for (size_t i = plugin_fini_count; i > 0; --i)
++    plugin_fini_array[i - 1]();
++  if (plugin_fini != NULL)
++    plugin_fini();
++  if (was_plugin)
++    enter_plugin();
++  else
++    exit_plugin();
++}
++
++static void guard_plugin_finalizers(struct ld_link_map *maps,
++                                    uintptr_t plugin_base) {
++  /* Match the actual mapped object, not a filename or a dependency prefix.
++   * dl_init can receive a map in the middle of its namespace's list.
++   */
++  while (maps != NULL && maps->l_prev != NULL)
++    maps = (struct ld_link_map *)maps->l_prev;
++  struct ld_link_map *plugin_map = NULL;
++  for (struct ld_link_map *map = maps; map != NULL;
++       map = (struct ld_link_map *)map->l_next) {
++    if (map->l_addr == plugin_base) {
++      if (plugin_map != NULL)
++        errx(EXIT_FAILURE, "ambiguous plugin finalizer map");
++      plugin_map = map;
++    }
++  }
++  if (plugin_map == NULL)
++    errx(EXIT_FAILURE, "missing plugin finalizer map");
++  if (guarded_plugin_map != NULL) {
++    if (guarded_plugin_map != plugin_map)
++      errx(EXIT_FAILURE, "plugin finalizer map changed");
++    return;
++  }
++  guarded_plugin_map = plugin_map;
++
++  ElfW(Dyn) *array = plugin_map->l_info[DT_FINI_ARRAY];
++  ElfW(Dyn) *fini = plugin_map->l_info[DT_FINI];
++  if (array != NULL) {
++    ElfW(Dyn) *size = plugin_map->l_info[DT_FINI_ARRAYSZ];
++    if (size == NULL || size->d_un.d_val % sizeof(plugin_fini_fn) != 0)
++      errx(EXIT_FAILURE, "invalid plugin finalizer array");
++    plugin_fini_count = size->d_un.d_val / sizeof(plugin_fini_fn);
++    plugin_fini_array =
++        (plugin_fini_fn *)(plugin_base + array->d_un.d_ptr);
++  }
++  if (fini != NULL)
++    plugin_fini = (plugin_fini_fn)(plugin_base + fini->d_un.d_ptr);
++  if (array == NULL && fini == NULL)
++    return;
++
++  /* glibc calls FINI_ARRAY in reverse order, then FINI. One replacement FINI
++   * invokes that exact sequence, so it also covers objects with only one kind.
++   * ElfW(Addr) arithmetic is unsigned, including a lower-address loader shim.
++   */
++  guarded_fini_entry.d_un.d_ptr =
++      (ElfW(Addr))run_plugin_finalizers - plugin_map->l_addr;
++  plugin_map->l_info[DT_FINI_ARRAY] = NULL;
++  plugin_map->l_info[DT_FINI_ARRAYSZ] = NULL;
++  plugin_map->l_info[DT_FINI] = &guarded_fini_entry;
++}
++
+ /* A matching name may be an undefined reference or a data object. Neither
+  * implements this optional ABI, and neither may become a callable address.
+  */
+@@ -114,6 +191,12 @@ static void init_sbr_plugin(bool switch_client_tls) {
+   if (switch_client_tls)
+     load_client_tls();
+ 
++  /* Static clients preload the plugin into the loader namespace; dynamic
++   * clients use the namespace supplied by their intercepted dl_init. */
++  guard_plugin_finalizers(switch_client_tls ? client_link_maps
++                                             : (struct ld_link_map *)_r_debug.r_map,
++                           lib_base);
++
+   // TODO(andronat): We need to split plugins into loadtime and runtime. In case
+   // of splitting, how do we transfer state between loadtime and runtime
+   // plugins?
+@@ -191,6 +274,7 @@ void sbr_dl_init(struct ld_link_map *main_map, int ac, char **av, char **e) {
+   // Make sure this function shouldn't use the %fs register. e.g. don't use
+   // printf.
+   assert(main_map != NULL);
++  client_link_maps = main_map;
+ 
+   ElfW(Dyn) *preinit_array_p = main_map->l_info[DT_PREINIT_ARRAY];
+   ElfW(Dyn) *preinit_array_size_p = main_map->l_info[DT_PREINIT_ARRAYSZ];
+-- 
+2.53.0-Meta
+

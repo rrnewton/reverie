@@ -1,0 +1,32 @@
+-- The C compiler identification is GNU 11.5.0
+-- The ASM compiler identification is GNU
+-- Found assembler: /usr/bin/cc
+-- The CXX compiler identification is GNU 11.5.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found ZLIB: /usr/lib64/libz.so (found version "1.2.11")
+-- Performing Test tsan_avail
+-- Performing Test tsan_avail - Failed
+CMake Warning (dev) at tests/CMakeLists.txt:45 (message):
+  ThreadSanitizer is not supported by the system compiler
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Performing Test no_pie
+-- Performing Test no_pie - Success
+CMake Warning (dev) at tests/CMakeLists.txt:26 (message):
+  Optional test dependency "ntfs-3g" not found
+Call Stack (most recent call first):
+  tests/CMakeLists.txt:88 (FIND_TEST_FEATURE)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Configuring done (0.5s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/newton/work/dev-hermit/worktrees/slots/pr-drain-ci-signal-parent-scorecard-20260920/hermit/target/diagnostics/sabre-clock-origin-health-20260922

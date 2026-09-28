@@ -1,0 +1,33 @@
+[
+  [
+    "/home/newton/.cargo/bin/cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  [
+    "/home/newton/.cargo/bin/cargo",
+    "test",
+    "--offline",
+    "-p",
+    "reverie-sabre",
+    "--test",
+    "loader_plugin_finalizers",
+    "--test",
+    "late_function_registration",
+    "--",
+    "--nocapture"
+  ],
+  [
+    "/home/newton/.cargo/bin/cargo",
+    "clippy",
+    "--offline",
+    "-p",
+    "reverie-sabre",
+    "--tests",
+    "--",
+    "-D",
+    "warnings"
+  ]
+]

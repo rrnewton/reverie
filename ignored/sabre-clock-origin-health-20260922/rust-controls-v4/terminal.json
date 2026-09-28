@@ -1,0 +1,52 @@
+{
+  "results": [
+    {
+      "phase": 0,
+      "argv": [
+        "/home/newton/.cargo/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "native_exit": 0,
+      "wall_seconds": 2.1254113516770303
+    },
+    {
+      "phase": 1,
+      "argv": [
+        "/home/newton/.cargo/bin/cargo",
+        "test",
+        "--offline",
+        "-p",
+        "reverie-sabre",
+        "--test",
+        "loader_plugin_finalizers",
+        "--test",
+        "late_function_registration",
+        "--",
+        "--nocapture"
+      ],
+      "native_exit": 0,
+      "wall_seconds": 0.8317701173946261
+    },
+    {
+      "phase": 2,
+      "argv": [
+        "/home/newton/.cargo/bin/cargo",
+        "clippy",
+        "--offline",
+        "-p",
+        "reverie-sabre",
+        "--tests",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "native_exit": 0,
+      "wall_seconds": 21.295122355688363
+    }
+  ],
+  "wall_seconds": 24.253557756077498,
+  "finished_at": "2026-09-22T17:52:41.223678+00:00"
+}

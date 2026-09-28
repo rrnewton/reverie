@@ -1,0 +1,11 @@
+Guard SaBRe plugin finalizers in the tool domain
+
+[hermit2, unknown-agentname, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+Keep SaBRe plugin ELF finalizers in the tool domain. Mimalloc cleanup after guest main previously entered shared Detcore as guest clock_gettime and madvise calls. Guard only the selected plugin map while preserving its original reverse FINI_ARRAY then FINI callbacks and the caller's prior domain. Guest and dependency finalizers remain unchanged.
+
+The retained pid-probe strict repeat pair stays matched while removing 39 allocator clocks and 7 madvise calls per execution (52 to 6 syscalls). This is focused repaired-loader evidence with the retained H839 product binary, not a current-main full-profile result; the separate startup cross-backend mismatch remains red.
+
+Validation: selected real loader and map-control tests, cargo fmt --all -- --check, cargo clippy --offline -p reverie-sabre --tests -- -D warnings; safehermit strict SaBRe pid-probe pair, 31/31 INFO records, no relaxations.

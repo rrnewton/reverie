@@ -1,0 +1,26 @@
+[ 23%] Built target plugin_api
+[ 26%] Building ASM object arch/CMakeFiles/backend.dir/handle_syscall.S.o
+[ 30%] Building ASM object arch/CMakeFiles/backend.dir/handle_syscall_loader.s.o
+[ 34%] Building C object arch/CMakeFiles/backend.dir/rewriter.c.o
+[ 38%] Building ASM object arch/CMakeFiles/backend.dir/handle_vdso.s.o
+[ 42%] Building C object arch/CMakeFiles/backend.dir/syscall_stackframe.c.o
+[ 46%] Building C object arch/CMakeFiles/backend.dir/x86_decoder.c.o
+[ 50%] Building ASM object arch/CMakeFiles/backend.dir/handle_rdtsc.s.o
+[ 53%] Linking C static library libbackend.a
+[ 53%] Built target backend
+[ 57%] Building C object loader/CMakeFiles/loader.dir/backend_stats.c.o
+[ 61%] Building C object loader/CMakeFiles/loader.dir/bootstrap.c.o
+[ 65%] Building C object loader/CMakeFiles/loader.dir/elf_loading.c.o
+[ 69%] Building C object loader/CMakeFiles/loader.dir/ld_sc_handler.c.o
+[ 73%] Building C object loader/CMakeFiles/loader.dir/loader.c.o
+[ 76%] Building C object loader/CMakeFiles/loader.dir/maps.c.o
+[ 80%] Building C object loader/CMakeFiles/loader.dir/premain.c.o
+/home/newton/work/dev-hermit/worktrees/slots/ci-signal-main-health-20260919/reverie/experimental/reverie-sabre/vendor/sabre/loader/premain.c:70:13: error: ‘guard_plugin_finalizers’ defined but not used [-Werror=unused-function]
+   70 | static void guard_plugin_finalizers(struct ld_link_map *maps,
+      |             ^~~~~~~~~~~~~~~~~~~~~~~
+cc1: all warnings being treated as errors
+gmake[3]: *** [loader/CMakeFiles/loader.dir/build.make:163: loader/CMakeFiles/loader.dir/premain.c.o] Error 1
+gmake[3]: *** Waiting for unfinished jobs....
+gmake[2]: *** [CMakeFiles/Makefile2:372: loader/CMakeFiles/loader.dir/all] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:314: arch/CMakeFiles/sabre.dir/rule] Error 2
+gmake: *** [Makefile:138: sabre] Error 2

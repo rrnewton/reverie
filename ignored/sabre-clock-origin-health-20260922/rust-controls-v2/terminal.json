@@ -1,0 +1,18 @@
+{
+  "results": [
+    {
+      "phase": 0,
+      "argv": [
+        "/home/newton/.cargo/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "native_exit": 1,
+      "wall_seconds": 2.2352329581044614
+    }
+  ],
+  "wall_seconds": 2.2356404890306294,
+  "finished_at": "2026-09-22T17:47:13.047764+00:00"
+}
