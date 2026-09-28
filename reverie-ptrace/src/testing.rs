@@ -34,11 +34,72 @@ pub fn liteinst_helper_timer_signals_discarded() -> u64 {
     crate::task::LITEINST_HELPER_TIMER_SIGNALS_DISCARDED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The number of timer overflow signals this process has taken at injected
+/// syscalls as the notification of a timer event that no stop had decided, to
+/// deliver the event. Concurrent tests in one process share the count.
+pub fn live_timer_signals_taken() -> u64 {
+    crate::task::LIVE_TIMER_SIGNALS_TAKEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Makes the precise timers this process creates from now on map no overflow
+/// records, as on a kernel that is or may be `PREEMPT_RT`. Timers already
+/// created keep theirs. For tests of the behaviour without records; a test
+/// binary that calls this should run nothing that expects records.
+pub fn disable_timer_overflow_records() {
+    crate::timer::OVERFLOW_RECORDS_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The number of times this process forgot timer overflow records because
 /// their notification had left the thread's pending queue. Concurrent tests
 /// in one process share the count.
 pub fn timer_overflow_records_expired() -> u64 {
     crate::timer::OVERFLOW_RECORDS_EXPIRED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Checks that each of a run's precise timer events that a PMU notification
+/// delivered fired at its target, `target` RCBs past its request, except
+/// where Reverie witnessed a skid overshoot: `witnesses` is the change in
+/// `reverie::take_skid_overshoot_count` over the run.
+///
+/// A precise event is delivered by single steps that start when its PMU
+/// notification arrives, a skid margin before the target. The processor's
+/// interrupt latency occasionally exceeds the margin, and then the guest has
+/// passed the target when the notification arrives. Reverie delivers the
+/// event late and counts it as a skid overshoot, and prints the
+/// `HERMIT_SKID_OVERSHOOT` marker, by which Hermit refuses such a run as
+/// nondeterministic.
+///
+/// So an event may fire past its target only if Reverie witnessed it, once:
+/// the number of events past the target must equal `witnesses`. The caller
+/// must also check how many events fired, since an event cancelled past its
+/// target would be witnessed too. Never before the target. Prints the
+/// overshoots of the late events, if any.
+///
+/// The count is process global, so the tests of a process that use this must
+/// run one at a time (`--test-threads=1`).
+pub fn assert_at_target_unless_witnessed(events: &[u64], target: u64, witnesses: u64) {
+    assert!(
+        events.iter().all(|&event| event >= target),
+        "no event may fire before its target {target}: {events:?}"
+    );
+    let late = events.iter().filter(|&&event| event > target).count() as u64;
+    assert_eq!(
+        late, witnesses,
+        "every event past its target {target}, and nothing else, must be a witnessed skid \
+         overshoot: {events:?}"
+    );
+    if late > 0 {
+        let overshoots: Vec<u64> = events
+            .iter()
+            .filter(|&&event| event > target)
+            .map(|&event| event - target)
+            .collect();
+        eprintln!(
+            "{late} of {} events fired past the target {target} with a witnessed skid \
+             overshoot of {overshoots:?}",
+            events.len()
+        );
+    }
 }
 
 /// For some tests, its nice to show what was printed.
