@@ -1119,7 +1119,15 @@ static void mode_timer_allow(void) {
 /* A counting-phase precise timer armed at a patched getppid, PM_BRANCHES + 1
  * branches out, with an Allow-class number (500) run through a warmed
  * generic site before the branch loop in which the timer fires. The hop's
- * internal stop must not cancel the armed timer. */
+ * internal stop must not cancel the armed timer.
+ *
+ * The loop is three times the armed distance, as in mode_timer_cancel, so
+ * that the timer fires in the middle of it. With a loop of exactly the armed
+ * distance the target was the loop's last iteration: a perf overflow signal
+ * delayed past the skid margin then arrived after the following getpid's
+ * syscall stop, which cancels the timer, and the timer vanished from
+ * whichever run was delayed (seen once in a loaded 8-thread run, with no
+ * HERMIT_SKID_OVERSHOOT line because the timer never fired). */
 static void mode_timer_hop_unknown(void) {
   warm();
   long pid = getpid();
@@ -1128,7 +1136,7 @@ static void mode_timer_hop_unknown(void) {
       die("warm generic site");
   SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1, ARM_TIMER);
   long r = tp_gen0_fn(500);
-  for (volatile int j = 0; j < PM_BRANCHES; j++)
+  for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
     ;
   long g = SITE(SYS_getpid, 0, 0, 0, 0, 0);
   unsigned char *p = (unsigned char *)tp_gen0;
@@ -1178,7 +1186,8 @@ static void timer_hop_handler(int sig, siginfo_t *si, void *uc_) {
 
 /* The same timer, armed at the patched getppid inside a signal handler
  * whose restorer runs rt_sigreturn through that same warmed site (an
- * Allow-class hop), before the branch loop in which the timer fires. */
+ * Allow-class hop), before the branch loop in which the timer fires (three
+ * times the armed distance, for the reason given at mode_timer_hop_unknown). */
 static void mode_timer_hop_sigreturn(void) {
   warm();
   struct {
@@ -1194,7 +1203,7 @@ static void mode_timer_hop_sigreturn(void) {
   long tid = syscall(SYS_gettid);
   if (syscall(SYS_tgkill, pid, tid, SIGUSR1) != 0)
     die("tgkill");
-  for (volatile int j = 0; j < PM_BRANCHES; j++)
+  for (volatile int j = 0; j < 3 * PM_BRANCHES; j++)
     ;
   long g = SITE(SYS_getpid, 0, 0, 0, 0, 0);
   unsigned char *p = (unsigned char *)tp_site;
