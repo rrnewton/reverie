@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
+import io
 import json
 import os
 import re
@@ -13,6 +15,7 @@ import stat
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,6 +43,42 @@ LAUNCHER_OBSERVATION_TIMEOUT_SECONDS = 5.0
 CONSUMED_IDENTITY_TIMEOUT_SECONDS = 5.0
 EXACT_VALIDATE_STATUS_SCHEMA_VERSION = 3
 
+# THE DECISION DOES NOT FIT IN THE HEALTH TICK, SO IT RUNS BESIDE IT.
+# Measured on devbig014, 2026-09-28: the first ci-hub call in each freshly
+# materialized tool tree is a cold release compile (44.7s for `--help`), and
+# each exact `validate-status --sha` then spends 34-60s, about 31s of it
+# replaying the whole validation ledger (7170 events). The decision needs two
+# such reads plus admission, roughly 115-150s, against the 75s this gate may
+# spend inside the serial tick. Largely as a result devbig014 has launched no
+# periodic validate since 2026-09-18T21:49Z, and devbig030 never has.
+#
+# The gate therefore reports the previous decision and starts the next one in a
+# transient user unit running this same file (`--decide`) from the same exact
+# tool commit. That decider holds the same tick.lock and makes exactly the
+# decision the gate used to make, with the budgets below; nothing it checks was
+# removed. It records its outcome in decisions/<dispatch id>.json, which the
+# next gate reports with that decision's exit code: findings lag one cadence.
+# While a decider is live the gate starts no second one, and a decider that
+# ended without a record is itself reported as an unknown decision.
+DETACHED_TOTAL_TIMEOUT_SECONDS = 600.0
+DETACHED_RUNTIME_MAX_SECONDS = 900
+DECIDER_LOCK_WAIT_SECONDS = 120.0
+DECIDER_DISPATCH_TIMEOUT_SECONDS = 10.0
+DECIDER_OBSERVATION_TIMEOUT_SECONDS = 5.0
+DISPATCH_RECORD = "dispatch.json"
+UNRELATED_UNREADABLE_RECORD = "unrelated-unreadable-handles.json"
+DECIDER_TOOL_RELATIVE = "ci-hub/health/integration_tip_validate.py"
+DISPATCH_ID_PATTERN = r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}"
+DECIDER_HISTORY_KEEP = 48
+
+# An unreadable run handle blocks the launch unless its file last changed
+# before the target commit existed: a handle is written only after its target
+# is chosen, so bytes last written before that commit cannot name it, and a
+# live owner keeps the target it launched with. The margin absorbs clock skew
+# between the committing host and this one.
+UNREADABLE_HANDLE_CLOCK_MARGIN_SECONDS = 3600
+COMMIT_TIME_TIMEOUT_SECONDS = 5.0
+
 
 class ObservationUnavailable(RuntimeError):
     """One required authority could not answer within this tick."""
@@ -47,6 +86,33 @@ class ObservationUnavailable(RuntimeError):
 
 class CommandNotStarted(ObservationUnavailable):
     """The command was refused before its child process could be started."""
+
+
+@dataclass(frozen=True)
+class PhaseLimits:
+    """Per-authority caps; the decision's total deadline still bounds their sum."""
+
+    fetch: float = 25.0
+    first_status: float = FIRST_STATUS_TIMEOUT_SECONDS
+    launcher_observation: float = LAUNCHER_OBSERVATION_TIMEOUT_SECONDS
+    consumed_identity: float = CONSUMED_IDENTITY_TIMEOUT_SECONDS
+    admission: float = 10.0
+    second_status: float = 25.0
+    launch: float = LAUNCH_TIMEOUT_SECONDS
+
+
+# Each cap is at least three times the slowest reading measured for its phase
+# on 2026-09-28 (first status 106.6s cold through operational-tool, a later
+# status 59.6s, admission 1.1s).
+DETACHED_PHASE_LIMITS = PhaseLimits(
+    fetch=60.0,
+    first_status=330.0,
+    launcher_observation=15.0,
+    consumed_identity=15.0,
+    admission=30.0,
+    second_status=180.0,
+    launch=30.0,
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +125,7 @@ class Settings:
     tool_parent_sha: str | None
     state_dir: Path
     total_timeout_seconds: float
+    limits: PhaseLimits = PhaseLimits()
 
     @classmethod
     def defaults(
@@ -72,6 +139,7 @@ class Settings:
         tool_parent_sha: str | None = None,
         state_dir: Path | None = None,
         total_timeout_seconds: float = DEFAULT_TOTAL_TIMEOUT_SECONDS,
+        limits: PhaseLimits = PhaseLimits(),
     ) -> "Settings":
         state_root = state_root.resolve()
         configured_operational_tool = os.environ.get("DEV_HERMIT_OPERATIONAL_TOOL")
@@ -91,12 +159,15 @@ class Settings:
                 or state_root / "ignored" / "ci-hub" / "integration-tip-validate"
             ).resolve(),
             total_timeout_seconds=total_timeout_seconds,
+            limits=limits,
         )
 
 
 Runner = Callable[[Sequence[str], Path, float], subprocess.CompletedProcess[str]]
 Fetcher = Callable[[Settings, float], str]
 Spawner = Callable[[Settings, str, str, str, Path, Path, float], Mapping[str, object]]
+DeciderSpawner = Callable[[Settings, str, str, Path, float], None]
+Tick = Callable[[Settings], int]
 
 
 def one_line(value: object) -> str:
@@ -184,9 +255,131 @@ def command_json(
     return completed, value
 
 
+def utc_text(moment: float) -> str:
+    return datetime.fromtimestamp(moment, timezone.utc).isoformat()
+
+
+def handle_last_change(path: Path) -> float:
+    """Latest mtime or ctime of the path and, for a symlink, of its target.
+
+    ctime cannot be set from user space and moves on every rename or copy, so a
+    restored or relabelled file cannot look older than its latest write.
+    """
+
+    metadata = path.lstat()
+    moments = [metadata.st_mtime, metadata.st_ctime]
+    if stat.S_ISLNK(metadata.st_mode):
+        target = path.stat()
+        moments += [target.st_mtime, target.st_ctime]
+    return max(moments)
+
+
+def target_commit_time(settings: Settings, target: str, timeout: float, run: Runner) -> int:
+    completed = run(
+        [
+            "git",
+            "-C",
+            str(settings.source_checkout),
+            "show",
+            "-s",
+            "--format=%ct",
+            f"{target}^{{commit}}",
+        ],
+        settings.state_root,
+        timeout,
+    )
+    text = completed.stdout.strip()
+    if completed.returncode != 0 or re.fullmatch(r"[0-9]+", text) is None:
+        detail = completed.stderr.strip() or f"exit {completed.returncode}"
+        raise ObservationUnavailable(
+            f"cannot read the commit time of exact tip {target}: {one_line(detail)}"
+        )
+    return int(text)
+
+
+def unrelated_unreadable_handles(
+    settings: Settings,
+    target: str,
+    unreadable: Sequence[object],
+    deadline: float,
+    run: Runner,
+) -> dict[str, object]:
+    """Prove every unreadable run handle predates `target`, or refuse the decision.
+
+    Returns the evidence record for the handles set aside. Any handle that
+    cannot be inspected, or that last changed within the clock margin of the
+    target's commit time or later, still refuses the whole decision.
+    """
+
+    inspected: list[tuple[Path, str, float]] = []
+    blocking: list[tuple[Path, str]] = []
+    for entry in unreadable:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("path"), str)
+            or not entry["path"]
+        ):
+            raise ObservationUnavailable(
+                "exact validate-status returned an unreadable handle without a path"
+            )
+        path = Path(entry["path"])
+        if not path.is_absolute():
+            path = settings.state_root / path
+        try:
+            last_change = handle_last_change(path)
+        except OSError as error:
+            blocking.append((path, f"cannot inspect it: {one_line(error)}"))
+            continue
+        inspected.append((path, one_line(entry.get("error", "")), last_change))
+    commit_time: int | None = None
+    cutoff: int | None = None
+    if inspected and not blocking:
+        commit_time = target_commit_time(
+            settings, target, remaining(deadline, COMMIT_TIME_TIMEOUT_SECONDS), run
+        )
+        cutoff = commit_time - UNREADABLE_HANDLE_CLOCK_MARGIN_SECONDS
+        blocking.extend(
+            (path, f"it last changed {utc_text(last_change)}, not before {utc_text(cutoff)}")
+            for path, _error, last_change in inspected
+            if last_change >= cutoff
+        )
+    if blocking:
+        path, reason = blocking[0]
+        raise ObservationUnavailable(
+            f"exact validate-status could not read {len(unreadable)} run handle(s); "
+            f"{len(blocking)} may postdate exact tip {target} (for example {path}: {reason}); "
+            "a malformed handle without a readable target cannot be proved unrelated"
+        )
+    assert commit_time is not None and cutoff is not None
+    return {
+        "schema_version": 1,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "target": target,
+        "target_commit_time": utc_text(commit_time),
+        "cutoff": utc_text(cutoff),
+        "rule": (
+            "each handle last changed before the target commit time minus "
+            f"{UNREADABLE_HANDLE_CLOCK_MARGIN_SECONDS}s, so it cannot name the target"
+        ),
+        "count": len(inspected),
+        "handles": [
+            {"path": str(path), "error": error, "last_change": utc_text(last_change)}
+            for path, error, last_change in inspected
+        ],
+    }
+
+
 def exact_record_count(
-    settings: Settings, target: str, timeout: float, run: Runner
+    settings: Settings, target: str, deadline: float, cap: float, run: Runner
 ) -> tuple[int, int, dict[str, object]]:
+    """Read and bind one exact validate-status report.
+
+    Unreadable handles that provably predate the target are recorded in
+    UNRELATED_UNREADABLE_RECORD and listed in the returned report under
+    `unrelated_unreadable`; any other unreadable handle refuses the decision.
+    """
+
+    timeout = remaining(deadline, cap)
     completed, report = command_json(
         [
             str(settings.ci_hub),
@@ -239,11 +432,6 @@ def exact_record_count(
             "exact validate-status omitted exact_records, run_handles, in_progress, "
             "or unreadable_handles"
         )
-    if unreadable:
-        raise ObservationUnavailable(
-            f"exact validate-status could not read {len(unreadable)} run handle(s); "
-            "a malformed handle without a readable target cannot be proved unrelated"
-        )
     if type(in_progress_count) is not int or in_progress_count != len(in_progress):
         raise ObservationUnavailable("exact validate-status returned inconsistent in-progress data")
     if any(
@@ -286,6 +474,20 @@ def exact_record_count(
             raise ObservationUnavailable(
                 "the validation ledger could not establish that this exact tip has no record"
             )
+    # Checked last, so the commit-time query and the evidence write happen only
+    # for a report that is otherwise bound to this exact target.
+    report["unrelated_unreadable"] = None
+    if unreadable:
+        record = unrelated_unreadable_handles(settings, target, unreadable, deadline, run)
+        record_path = settings.state_dir / UNRELATED_UNREADABLE_RECORD
+        try:
+            atomic_write_json(record_path, record)
+        except OSError as error:
+            raise ObservationUnavailable(
+                f"cannot record {record['count']} unrelated unreadable run handle(s) "
+                f"at {record_path}: {one_line(error)}"
+            ) from error
+        report["unrelated_unreadable"] = {"count": record["count"], "record": str(record_path)}
     return count, in_progress_count, report
 
 
@@ -424,15 +626,15 @@ def atomic_write_json(path: Path, value: Mapping[str, object]) -> None:
             pass
 
 
-def read_json(path: Path) -> dict[str, object] | None:
+def read_json(path: Path, label: str = "prior tick attempt") -> dict[str, object] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, json.JSONDecodeError) as error:
-        raise ObservationUnavailable(f"cannot read prior tick attempt {path}: {error}") from error
+        raise ObservationUnavailable(f"cannot read {label} {path}: {error}") from error
     if not isinstance(value, dict) or value.get("schema_version") != 1:
-        raise ObservationUnavailable(f"prior tick attempt {path} has an unsupported shape")
+        raise ObservationUnavailable(f"{label} {path} has an unsupported shape")
     return value
 
 
@@ -474,6 +676,14 @@ def prior_launcher_observation(
         raise ObservationUnavailable(
             "prior attempt lacks an exact bound launcher identity; " + prior_attempt_text(attempt)
         )
+    return observe_user_unit(settings, unit, timeout, run, "prior launcher")
+
+
+def observe_user_unit(
+    settings: Settings, unit: str, timeout: float, run: Runner, label: str
+) -> dict[str, str]:
+    """Classify one exact user unit as absent, terminal, or live, or refuse."""
+
     fields = ("Id", "LoadState", "ActiveState", "SubState", "MainPID", "InvocationID")
     completed = run(
         ["systemctl", "--user", "show", unit, "--no-pager", *(
@@ -484,14 +694,14 @@ def prior_launcher_observation(
     )
     if completed.returncode != 0:
         raise ObservationUnavailable(
-            f"cannot observe prior launcher {unit}: "
+            f"cannot observe {label} {unit}: "
             f"{one_line(completed.stderr.strip() or f'exit {completed.returncode}')}"
         )
     properties: dict[str, str] = {}
     for line in completed.stdout.splitlines():
         name, separator, value = line.partition("=")
         if not separator or name in properties or name not in fields:
-            raise ObservationUnavailable(f"malformed systemctl reply for prior launcher {unit}")
+            raise ObservationUnavailable(f"malformed systemctl reply for {label} {unit}")
         properties[name] = value
     if (
         set(properties) != set(fields)
@@ -502,7 +712,7 @@ def prior_launcher_observation(
             and re.fullmatch(r"[0-9a-f]{32}", properties["InvocationID"]) is None
         )
     ):
-        raise ObservationUnavailable(f"incomplete or mismatched prior launcher observation for {unit}")
+        raise ObservationUnavailable(f"incomplete or mismatched {label} observation for {unit}")
     state = properties["ActiveState"]
     if (
         properties["LoadState"] == "not-found"
@@ -522,7 +732,7 @@ def prior_launcher_observation(
             "active", "activating", "deactivating", "reloading", "refreshing", "maintenance"
         } and properties["InvocationID"]:
             return {**properties, "observation": "live"}
-    raise ObservationUnavailable(f"uncertain prior launcher state for {unit}: {properties}")
+    raise ObservationUnavailable(f"uncertain {label} state for {unit}: {properties}")
 
 
 def launcher_prerequisites(settings: Settings) -> tuple[Path, str]:
@@ -750,10 +960,17 @@ def run_tick(
     dry_run: bool = False,
 ) -> int:
     deadline = time.monotonic() + settings.total_timeout_seconds
-    target = fetch(settings, remaining(deadline, 25.0))
+    limits = settings.limits
+    target = fetch(settings, remaining(deadline, limits.fetch))
     count, in_progress, status = exact_record_count(
-        settings, target, remaining(deadline, FIRST_STATUS_TIMEOUT_SECONDS), run
+        settings, target, deadline, limits.first_status, run
     )
+    set_aside = status["unrelated_unreadable"]
+    if set_aside is not None:
+        emit(
+            unrelated_unreadable_handles=set_aside["count"],
+            unrelated_unreadable_record=set_aside["record"],
+        )
     first_outstanding = outstanding_run_handles(status)
     verified = [handle for handle in first_outstanding if handle["process_verified"] is True]
     if in_progress and not verified:
@@ -774,7 +991,7 @@ def run_tick(
             observed = prior_launcher_observation(
                 settings,
                 tick_attempt,
-                remaining(deadline, LAUNCHER_OBSERVATION_TIMEOUT_SECONDS),
+                remaining(deadline, limits.launcher_observation),
                 run,
             )
             if observed["observation"] == "live":
@@ -806,7 +1023,7 @@ def run_tick(
                         consumed_prior = consumed_launcher_identity(
                             settings,
                             tick_attempt,
-                            remaining(deadline, CONSUMED_IDENTITY_TIMEOUT_SECONDS),
+                            remaining(deadline, limits.consumed_identity),
                             run,
                         )
                     except ObservationUnavailable as error:
@@ -824,10 +1041,12 @@ def run_tick(
         # identity. Read the lock between snapshots and preserve outstanding
         # handles from either read so the periodic check never creates a
         # duplicate during that window.
-        admission = admission_status(settings, target, remaining(deadline, 10.0), run)
+        admission = admission_status(
+            settings, target, remaining(deadline, limits.admission), run
+        )
         lock_reports_exact_target = admission_reports_exact_target(admission)
         count, in_progress, status = exact_record_count(
-            settings, target, remaining(deadline, 25.0), run
+            settings, target, deadline, limits.second_status, run
         )
         second_outstanding = outstanding_run_handles(status)
         outstanding = merge_run_handles(first_outstanding, second_outstanding)
@@ -913,7 +1132,9 @@ def run_tick(
         status["run_handles"],
     )
     if admission is None:
-        admission = admission_status(settings, target, remaining(deadline, 10.0), run)
+        admission = admission_status(
+            settings, target, remaining(deadline, limits.admission), run
+        )
     if admission["admissible"] is not True:
         reason = one_line(admission.get("detail", admission.get("reason_code", "unknown")))
         admission_state = str(admission["state"])
@@ -951,7 +1172,7 @@ def run_tick(
 
     # Refuse an exhausted decision or missing launcher prerequisites before
     # writing intent. A later setup error can still be classified not-started.
-    remaining(deadline, LAUNCH_TIMEOUT_SECONDS)
+    remaining(deadline, limits.launch)
     launcher_prerequisites(settings)
     observed_at = datetime.now(timezone.utc).isoformat()
     token = uuid.uuid4().hex[:12]
@@ -989,7 +1210,7 @@ def run_tick(
     atomic_write_json(attempt_path, attempt)
     try:
         try:
-            launch_timeout = remaining(deadline, LAUNCH_TIMEOUT_SECONDS)
+            launch_timeout = remaining(deadline, limits.launch)
         except ObservationUnavailable as error:
             raise CommandNotStarted(str(error)) from error
         launch = spawn(
@@ -1067,6 +1288,359 @@ def run_tick(
     return 0
 
 
+def dispatch_token(dispatch_id: str) -> str:
+    return dispatch_id.rsplit("-", 1)[1]
+
+
+def decider_unit(dispatch_id: str) -> str:
+    return f"integration-tip-decide-{dispatch_token(dispatch_id)}.service"
+
+
+def decision_path(settings: Settings, dispatch_id: str) -> Path:
+    return settings.state_dir / "decisions" / f"{dispatch_id}.json"
+
+
+def decider_log(settings: Settings, dispatch_id: str) -> Path:
+    return settings.state_dir / "logs" / f"{dispatch_id}-decider.log"
+
+
+def captured_fields(output: str) -> dict[str, str]:
+    """Parse the `key=value` lines tick-hub also captures; the last value wins."""
+
+    fields: dict[str, str] = {}
+    for line in output.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and re.fullmatch(r"[a-z_][a-z0-9_]*", key):
+            fields[key] = value
+    return fields
+
+
+def spawn_decider(
+    settings: Settings, dispatch_id: str, unit: str, log: Path, timeout: float
+) -> None:
+    """Start this file's `--decide` mode from the same exact tool commit."""
+
+    operational_tool, parent_sha = launcher_prerequisites(settings)
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        os.close(os.open(log, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except OSError as error:
+        raise CommandNotStarted(f"cannot prepare decider log {log}: {error}") from error
+    command = [
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--collect",
+        f"--unit={unit.removesuffix('.service')}",
+        "--description=decide whether to start one periodic exact-tip Hermit validate",
+        f"--property=RuntimeMaxSec={DETACHED_RUNTIME_MAX_SECONDS}",
+        f"--property=StandardOutput=append:{log}",
+        f"--property=StandardError=append:{log}",
+        f"--working-directory={settings.state_root}",
+        f"--setenv=PATH={os.environ.get('PATH', '')}",
+        f"--setenv=DEV_HERMIT_PARENT={settings.state_root}",
+        "--",
+        str(operational_tool),
+        "--run-current-tool",
+        "--state-root",
+        str(settings.state_root),
+        "--tool-parent-sha",
+        parent_sha,
+        "--tool-relative",
+        DECIDER_TOOL_RELATIVE,
+        "--",
+        "--state-root",
+        str(settings.state_root),
+        "--state-dir",
+        str(settings.state_dir),
+        "--source-checkout",
+        str(settings.source_checkout),
+        "--decide",
+        "--dispatch-id",
+        dispatch_id,
+    ]
+    completed = run_bounded(command, settings.state_root, timeout)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit {completed.returncode}"
+        raise ObservationUnavailable(f"systemd-run did not confirm {unit}: {one_line(detail)}")
+
+
+def prune_decider_history(settings: Settings, keep: int = DECIDER_HISTORY_KEEP) -> None:
+    """Keep the newest decision records and decider logs; the rest are routine."""
+
+    for directory, suffix in (
+        (settings.state_dir / "decisions", ".json"),
+        (settings.state_dir / "logs", "-decider.log"),
+    ):
+        try:
+            names = sorted(
+                name
+                for name in os.listdir(directory)
+                if re.fullmatch(DISPATCH_ID_PATTERN + re.escape(suffix), name)
+            )
+        except OSError:
+            continue
+        for name in names[:-keep]:
+            try:
+                (directory / name).unlink()
+            except OSError:
+                pass
+
+
+def dispatch_next_decider(
+    settings: Settings, deadline: float, spawn: DeciderSpawner
+) -> tuple[str, str]:
+    """Record intent, start one decider, and return its dispatch id and unit."""
+
+    remaining(deadline, DECIDER_DISPATCH_TIMEOUT_SECONDS)
+    launcher_prerequisites(settings)
+    now = datetime.now(timezone.utc)
+    dispatch_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:12]}"
+    unit = decider_unit(dispatch_id)
+    log = decider_log(settings, dispatch_id)
+    record: dict[str, object] = {
+        "schema_version": 1,
+        "dispatch_id": dispatch_id,
+        "unit": unit,
+        "state": "dispatching",
+        "dispatched_at": now.isoformat(),
+        "log": str(log),
+        "decision_record": str(decision_path(settings, dispatch_id)),
+        "tool_parent_sha": settings.tool_parent_sha,
+    }
+    path = settings.state_dir / DISPATCH_RECORD
+    try:
+        atomic_write_json(path, record)
+    except OSError as error:
+        raise ObservationUnavailable(f"cannot record decider intent at {path}: {error}") from error
+    try:
+        try:
+            timeout = remaining(deadline, DECIDER_DISPATCH_TIMEOUT_SECONDS)
+        except ObservationUnavailable as error:
+            raise CommandNotStarted(str(error)) from error
+        spawn(settings, dispatch_id, unit, log, timeout)
+    except ObservationUnavailable as error:
+        record.update(
+            state="not-started" if isinstance(error, CommandNotStarted) else "unconfirmed",
+            detail=one_line(error),
+        )
+        with contextlib.suppress(OSError):
+            atomic_write_json(path, record)
+        raise
+    record["state"] = "accepted"
+    with contextlib.suppress(OSError):
+        atomic_write_json(path, record)
+    prune_decider_history(settings)
+    return dispatch_id, unit
+
+
+def recorded_decision(
+    dispatch: Mapping[str, object], result: Mapping[str, object]
+) -> tuple[dict[str, object], int]:
+    fields = result.get("fields")
+    exit_code = result.get("exit_code")
+    finished_at = result.get("finished_at")
+    if (
+        result.get("dispatch_id") != dispatch["dispatch_id"]
+        or not isinstance(fields, dict)
+        or not all(
+            isinstance(key, str) and re.fullmatch(r"[a-z_][a-z0-9_]*", key) and isinstance(value, str)
+            for key, value in fields.items()
+        )
+        or type(exit_code) is not int
+        or not isinstance(finished_at, str)
+    ):
+        raise ObservationUnavailable(
+            f"decision record for {dispatch['dispatch_id']} has an unsupported shape"
+        )
+    summary = fields.get("summary") or f"no summary was recorded; see {dispatch.get('log')}"
+    report: dict[str, object] = {
+        **fields,
+        "decision": dispatch["dispatch_id"],
+        "decided_at": finished_at,
+        "decision_log": dispatch.get("log"),
+        "summary": f"decision {dispatch['dispatch_id']} finished {finished_at}: {summary}",
+    }
+    return report, exit_code
+
+
+def gate_tick(
+    settings: Settings,
+    *,
+    run: Runner = run_bounded,
+    spawn: DeciderSpawner = spawn_decider,
+) -> int:
+    """Report the previous detached decision and start the next one."""
+
+    deadline = time.monotonic() + settings.total_timeout_seconds
+    previous = read_json(settings.state_dir / DISPATCH_RECORD, "decider dispatch record")
+    report: dict[str, object] = {}
+    report_exit = 0
+    if previous is not None:
+        dispatch_id = previous.get("dispatch_id")
+        if (
+            not isinstance(dispatch_id, str)
+            or re.fullmatch(DISPATCH_ID_PATTERN, dispatch_id) is None
+            or previous.get("unit") != decider_unit(dispatch_id)
+        ):
+            raise ObservationUnavailable(
+                f"decider dispatch record {settings.state_dir / DISPATCH_RECORD} "
+                "does not bind a dispatch id to its unit"
+            )
+        result = read_json(decision_path(settings, dispatch_id), "decision record")
+        if result is not None:
+            report, report_exit = recorded_decision(previous, result)
+        else:
+            unit = decider_unit(dispatch_id)
+            observed = observe_user_unit(
+                settings,
+                unit,
+                remaining(deadline, DECIDER_OBSERVATION_TIMEOUT_SECONDS),
+                run,
+                "prior decider",
+            )
+            if observed["observation"] == "live":
+                emit(
+                    state="deciding",
+                    decision=dispatch_id,
+                    decision_unit=unit,
+                    decision_pid=observed["MainPID"],
+                    decision_log=previous.get("log"),
+                    launched=0,
+                    summary=(
+                        f"decider {unit}, dispatched {previous.get('dispatched_at')}, is still "
+                        f"{observed['ActiveState']}; no second decider started; its decision is "
+                        "reported by the next tick"
+                    ),
+                )
+                return 0
+            report = {
+                "state": "unknown",
+                "launched": 0,
+                "decision": dispatch_id,
+                "decision_unit": unit,
+                "decision_log": previous.get("log"),
+                "summary": (
+                    f"decider {unit}, dispatched {previous.get('dispatched_at')} with dispatch "
+                    f"state {previous.get('state')}, is {observed['observation']} "
+                    f"({observed['ActiveState']}/{observed['SubState']}) and recorded no "
+                    f"decision; read {previous.get('log')}"
+                ),
+            }
+            report_exit = 2
+    try:
+        next_id, next_unit = dispatch_next_decider(settings, deadline, spawn)
+    except ObservationUnavailable as error:
+        earlier = f"; previous: {report['summary']}" if report else ""
+        emit(
+            **{
+                **report,
+                "state": "unknown",
+                "launched": 0,
+                "next_decision": "not-started",
+                "summary": f"could not start the next decision: {one_line(error)}{earlier}",
+            }
+        )
+        return 2
+    if not report:
+        emit(
+            state="decision-dispatched",
+            launched=0,
+            next_decision=next_id,
+            next_decision_unit=next_unit,
+            summary=(
+                f"no earlier decision is recorded; started decider {next_unit}, whose "
+                "decision is reported by the next tick"
+            ),
+        )
+        return 0
+    emit(**report, next_decision=next_id, next_decision_unit=next_unit)
+    return report_exit
+
+
+def acquire_lock(lock: object, wait_seconds: float) -> bool:
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
+
+
+def decide(
+    settings: Settings,
+    dispatch_id: str,
+    *,
+    tick: Tick = run_tick,
+    lock_wait_seconds: float = DECIDER_LOCK_WAIT_SECONDS,
+) -> int:
+    """Make one decision under tick.lock and record it for the gate.
+
+    Returns 0 once the decision is recorded, whatever it was: the gate reports
+    the recorded exit code. Nonzero means no decision record was written.
+    """
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    lock_path = settings.state_dir / "tick.lock"
+    buffer = io.StringIO()
+    exit_code = 2
+    try:
+        with lock_path.open("a+") as lock:
+            acquired = acquire_lock(lock, lock_wait_seconds)
+            with contextlib.redirect_stdout(buffer):
+                if not acquired:
+                    emit(
+                        state="unknown",
+                        launched=0,
+                        summary=(
+                            f"decider could not take {lock_path} within "
+                            f"{lock_wait_seconds:.0f}s; no decision was made"
+                        ),
+                    )
+                else:
+                    try:
+                        exit_code = tick(settings)
+                    except ObservationUnavailable as error:
+                        emit(
+                            state="unknown",
+                            launched=0,
+                            summary=(
+                                "could not decide whether to start the periodic validate: "
+                                f"{one_line(error)}"
+                            ),
+                        )
+                    except Exception as error:  # noqa: BLE001 - recorded, never silent
+                        traceback.print_exc(file=sys.stderr)
+                        emit(
+                            state="unknown",
+                            launched=0,
+                            summary=f"the decider failed: {type(error).__name__}: {one_line(error)}",
+                        )
+            output = buffer.getvalue()
+            sys.stdout.write(output)
+            sys.stdout.flush()
+            atomic_write_json(
+                decision_path(settings, dispatch_id),
+                {
+                    "schema_version": 1,
+                    "dispatch_id": dispatch_id,
+                    "unit": decider_unit(dispatch_id),
+                    "started_at": started_at,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "exit_code": exit_code,
+                    "fields": captured_fields(output),
+                    "output": output,
+                },
+            )
+    except OSError as error:
+        print(f"could not record decision {dispatch_id}: {error}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     result.add_argument("--state-root", type=Path, default=STATE_ROOT)
@@ -1074,32 +1648,63 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--source-checkout", type=Path)
     result.add_argument("--ci-hub", type=Path)
     result.add_argument("--state-dir", type=Path)
-    result.add_argument(
+    mode = result.add_mutually_exclusive_group()
+    mode.add_argument(
         "--dry-run",
         action="store_true",
-        help="report whether a validate would start without creating a run or launcher",
+        help=(
+            "decide in the foreground and report whether a validate would start, "
+            "without creating a run or launcher"
+        ),
     )
+    mode.add_argument(
+        "--decide",
+        action="store_true",
+        help="make one decision in the foreground and record it under --dispatch-id",
+    )
+    result.add_argument("--dispatch-id", help="the gate's dispatch id; requires --decide")
     result.add_argument(
         "--total-timeout-seconds",
         type=float,
-        default=DEFAULT_TOTAL_TIMEOUT_SECONDS,
+        help=(
+            f"decision deadline: default {DEFAULT_TOTAL_TIMEOUT_SECONDS:.0f}s for the gate, "
+            f"{DETACHED_TOTAL_TIMEOUT_SECONDS:.0f}s for --dry-run and --decide"
+        ),
     )
     return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    if args.total_timeout_seconds <= 0 or args.total_timeout_seconds >= 180:
-        raise SystemExit("--total-timeout-seconds must be greater than 0 and less than 180")
+    if args.decide != (args.dispatch_id is not None):
+        raise SystemExit("--decide and --dispatch-id must be given together")
+    if args.decide and re.fullmatch(DISPATCH_ID_PATTERN, args.dispatch_id) is None:
+        raise SystemExit(f"--dispatch-id must match {DISPATCH_ID_PATTERN}")
+    foreground = args.dry_run or args.decide
+    total = args.total_timeout_seconds
+    if foreground:
+        total = DETACHED_TOTAL_TIMEOUT_SECONDS if total is None else total
+        if total <= 0 or total > DETACHED_TOTAL_TIMEOUT_SECONDS:
+            raise SystemExit(
+                "--total-timeout-seconds must be greater than 0 and at most "
+                f"{DETACHED_TOTAL_TIMEOUT_SECONDS:.0f} for a foreground decision"
+            )
+    else:
+        total = DEFAULT_TOTAL_TIMEOUT_SECONDS if total is None else total
+        if total <= 0 or total >= 180:
+            raise SystemExit("--total-timeout-seconds must be greater than 0 and less than 180")
     settings = Settings.defaults(
         tool_root=args.tool_root,
         state_root=args.state_root,
         source_checkout=args.source_checkout,
         ci_hub=args.ci_hub,
         state_dir=args.state_dir,
-        total_timeout_seconds=args.total_timeout_seconds,
+        total_timeout_seconds=total,
+        limits=DETACHED_PHASE_LIMITS if foreground else PhaseLimits(),
     )
     settings.state_dir.mkdir(parents=True, exist_ok=True)
+    if args.decide:
+        return decide(settings, args.dispatch_id)
     lock_path = settings.state_dir / "tick.lock"
     try:
         with lock_path.open("a+") as lock:
@@ -1116,7 +1721,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return 0
             try:
-                return run_tick(settings, dry_run=args.dry_run)
+                if args.dry_run:
+                    return run_tick(settings, dry_run=True)
+                return gate_tick(settings)
             except ObservationUnavailable as error:
                 emit(
                     state="unknown",

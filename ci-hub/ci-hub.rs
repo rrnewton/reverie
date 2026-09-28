@@ -126,6 +126,25 @@ const HISTORY_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// record kind with their own schema. `ci-hub/validate/service_result.py` owns
 /// the name; keep the two spellings identical.
 const SERVICE_RESULT_SUFFIX: &str = ".service-result.json";
+/// Reverie count sidecars are the second companion kind in that directory:
+/// `ci-hub/validate/reverie_node.py` publishes `<handle>.json` +
+/// `COUNT_SIDECAR_SUFFIX` beside a completed Reverie handle, with a `schema`
+/// of `reverie-count-handoff/v<N>`. Keep both spellings identical to that file.
+const REVERIE_COUNT_SIDECAR_SUFFIX: &str = ".reverie-count.json";
+const REVERIE_COUNT_SCHEMA_PREFIX: &str = "reverie-count-handoff/";
+/// Fields that make a JSON object a run handle, or give it storage to own. A
+/// file carrying any of them is read as a handle even when its name looks like
+/// a companion sidecar, as `start_unit._is_owned_validation_companion_sidecar`
+/// already requires.
+const RUN_HANDLE_IDENTITY_FIELDS: &[&str] = &[
+    "schema_version",
+    "producer",
+    "unit",
+    "checkout",
+    "source_checkout",
+    "cargo_home",
+    "runtime_root",
+];
 const NO_RUN_NOTE: &str = "NO-RUN means no readable validation ledger record identifies that commit; it cannot distinguish a validation that was never attempted from one that failed before writing a ledger record, and an unreadable row may not identify its commit.";
 const ROOT_HELP: &str = r#"Typed front door for dev-hermit validation, GH Actions, and runner operations
 
@@ -8275,6 +8294,51 @@ fn current_main_status_lines(
     lines
 }
 
+/// Whether `path` is the Reverie count sidecar that belongs to a Reverie run
+/// handle read in the same scan, rather than a malformed handle.
+///
+/// All four conditions are required: the exact `<handle>.json.reverie-count.json`
+/// name, a `reverie-count-handoff/` schema, no run-handle identity or storage
+/// field, and a readable owning handle that is a Reverie validation carrying the
+/// count request the sidecar answers. A lookalike that fails any of them is still
+/// returned to the caller, which reports it as unreadable.
+fn is_owned_reverie_count_sidecar<'a>(
+    path: &Path,
+    value: &serde_json::Value,
+    owner_of: impl Fn(&Path) -> Option<&'a serde_json::Value>,
+) -> bool {
+    let Some(owner_name) = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|name| name.strip_suffix(REVERIE_COUNT_SIDECAR_SUFFIX))
+    else {
+        return false;
+    };
+    if !owner_name.ends_with(".json") {
+        return false;
+    }
+    let Some(sidecar) = value.as_object() else {
+        return false;
+    };
+    if !sidecar
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|schema| schema.starts_with(REVERIE_COUNT_SCHEMA_PREFIX))
+        || RUN_HANDLE_IDENTITY_FIELDS
+            .iter()
+            .any(|field| sidecar.contains_key(*field))
+    {
+        return false;
+    }
+    let Some(owner) = owner_of(&path.with_file_name(owner_name)) else {
+        return false;
+    };
+    owner.get("kind").and_then(serde_json::Value::as_str) == Some("reverie-validate")
+        && owner
+            .get("reverie_count_request")
+            .is_some_and(serde_json::Value::is_object)
+}
+
 fn live_validate_runs_from(
     tool_root: &Path,
     state_root: &Path,
@@ -8356,6 +8420,24 @@ fn live_validate_runs_from(
         };
         records.push((path, value));
     }
+    // Completed Reverie validates publish a count sidecar. Read as a
+    // handle, each became a permanent "malformed" entry: 72 of them had
+    // accumulated on devbig014 by 2026-09-28, and `integration_tip_validate.py`
+    // refused every decision on them. Drop only sidecars whose owner is present.
+    let owned_count_sidecars = {
+        let by_path = records
+            .iter()
+            .map(|(path, value)| (path.as_path(), value))
+            .collect::<BTreeMap<_, _>>();
+        records
+            .iter()
+            .filter(|(path, value)| {
+                is_owned_reverie_count_sidecar(path, value, |owner| by_path.get(owner).copied())
+            })
+            .map(|(path, _)| path.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    records.retain(|(path, _)| !owned_count_sidecars.contains(path));
     let current_paths = records
         .iter()
         .filter(|(_, value)| validate_run_handle::is_current(value))
@@ -14929,6 +15011,153 @@ mod tests {
             runs.join("validate-not-a-sidecar.json")
         );
         assert_eq!(scan.attempts.len(), 1, "the real handle is still read");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn owned_reverie_count_sidecars_are_not_read_as_run_handles() {
+        // Every completed Reverie validate leaves `<handle>.json.reverie-count.json`
+        // beside its handle. Measured 2026-09-28 on devbig014: all 72 unreadable
+        // handles were such sidecars, each owned by a completed Reverie handle,
+        // and `integration_tip_validate.py` refused every hourly decision on them.
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-reverie-count-sidecar-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let write = |name: &str, value: &serde_json::Value| {
+            std::fs::write(runs.join(name), serde_json::to_vec(value).unwrap()).unwrap();
+        };
+        write(
+            "validate-run.json",
+            &serde_json::json!({
+                "schema_version": 1,
+                "state": "completed",
+                "unit": "validate-run.service",
+                "target": "a".repeat(40),
+                "repo": CANONICAL_VALIDATE_REPO,
+                "started_at": "2026-09-28T00:00:00Z",
+                "finished_at": "2026-09-28T00:05:00Z",
+                "result": "success",
+                "exit_code": 0
+            }),
+        );
+        write(
+            "validate-rev.json",
+            &serde_json::json!({
+                "schema_version": 1,
+                "kind": "reverie-validate",
+                "state": "completed",
+                "unit": "validate-rev.service",
+                "target": "b".repeat(40),
+                "repo": "rrnewton/reverie",
+                "started_at": "2026-09-28T00:00:00Z",
+                "finished_at": "2026-09-28T00:05:00Z",
+                "result": "success",
+                "exit_code": 0,
+                "reverie_count_request": {
+                    "schema": "reverie-count-handoff/v1",
+                    "nonce": "c".repeat(32),
+                    "producer_files": {}
+                }
+            }),
+        );
+        // The real top-level key set, copied from the 72 sidecars on devbig014.
+        let sidecar = serde_json::json!({
+            "schema": "reverie-count-handoff/v2",
+            "canonical": {"final": {"commit": "b".repeat(40)}},
+            "canonical_sha256": "d".repeat(64),
+            "context": {},
+            "execution": {},
+            "final_id": "reverie-final-0",
+            "invocation_id": "invocation-0",
+            "run_id": "run-0",
+            "source_id": "source-0"
+        });
+        write("validate-rev.json.reverie-count.json", &sidecar);
+
+        let scan_now = || {
+            live_validate_runs_from(
+                &root,
+                &root,
+                CANONICAL_VALIDATE_REPO,
+                &root.join("proc"),
+                &root.join("boot_id"),
+                chrono::Utc::now(),
+                false,
+            )
+            .unwrap()
+        };
+        let scan = scan_now();
+        assert!(
+            scan.unreadable_handles.is_empty(),
+            "an owned Reverie count sidecar must not be an unreadable handle: {:?}",
+            scan.unreadable_handles
+        );
+        assert_eq!(scan.attempts.len(), 1, "the Hermit handle is still read");
+        assert_eq!(scan.attempts[0].unit, "validate-run.service");
+
+        // CONTROLS THAT MUST STILL FAIL. Each lacks exactly one of the four
+        // required conditions, so each must still be an unreadable handle.
+        let reverie_owner = |unit: &str| {
+            serde_json::json!({
+                "schema_version": 1,
+                "kind": "reverie-validate",
+                "state": "completed",
+                "unit": format!("{unit}.service"),
+                "target": "b".repeat(40),
+                "repo": "rrnewton/reverie",
+                "started_at": "2026-09-28T00:00:00Z",
+                "reverie_count_request": {}
+            })
+        };
+        // (a) Name: the same bytes under an ordinary handle name.
+        write("validate-not-a-sidecar.json", &sidecar);
+        // (b) Owner: the sidecar name without its owning handle.
+        write("validate-gone.json.reverie-count.json", &sidecar);
+        // (c) Owner: a Hermit handle that never asked for a Reverie count.
+        write("validate-run.json.reverie-count.json", &sidecar);
+        // (d) Identity: a run-handle `unit` field.
+        write("validate-rev-d.json", &reverie_owner("validate-rev-d"));
+        let mut with_unit = sidecar.clone();
+        with_unit["unit"] = serde_json::json!("validate-rev-d.json.reverie-count.service");
+        write("validate-rev-d.json.reverie-count.json", &with_unit);
+        // (e) Storage: a `checkout` the file would own.
+        write("validate-rev-e.json", &reverie_owner("validate-rev-e"));
+        let mut storage = sidecar.clone();
+        storage["checkout"] = serde_json::json!("/tmp/checkout");
+        write("validate-rev-e.json.reverie-count.json", &storage);
+        // (f) Schema: not the count handoff.
+        write("validate-rev-f.json", &reverie_owner("validate-rev-f"));
+        let mut schema = sidecar.clone();
+        schema["schema"] = serde_json::json!("something-else/v1");
+        write("validate-rev-f.json.reverie-count.json", &schema);
+
+        let scan = scan_now();
+        let unreadable = scan
+            .unreadable_handles
+            .iter()
+            .filter_map(|record| record.path.file_name()?.to_str().map(str::to_owned))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            unreadable,
+            [
+                "validate-gone.json.reverie-count.json",
+                "validate-not-a-sidecar.json",
+                "validate-rev-d.json.reverie-count.json",
+                "validate-rev-e.json.reverie-count.json",
+                "validate-rev-f.json.reverie-count.json",
+                "validate-run.json.reverie-count.json",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>(),
+            "every lookalike must remain unreadable, and the owned sidecar must not: {:?}",
+            scan.unreadable_handles
+        );
+        assert_eq!(scan.attempts.len(), 1, "the Hermit handle is still read");
         std::fs::remove_dir_all(root).unwrap();
     }
 
