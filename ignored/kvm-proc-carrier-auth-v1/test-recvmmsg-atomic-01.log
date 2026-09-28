@@ -1,0 +1,50 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-09c0d8956b925072)
+
+running 1 test
+test executor::tests::recvmmsg_translates_guest_headers_and_receives_multiple_datagrams ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 815 filtered out; finished in 0.00s
+
+     Running tests/counter.rs (target/debug/deps/counter-e8d5f42d4277a828)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/erestartsys.rs (target/debug/deps/erestartsys-f3b8099a2b128244)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/native_entry_signal.rs (target/debug/deps/native_entry_signal-72a1d9df1638eec8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/read_clock.rs (target/debug/deps/read_clock-c4b40f4a94001cd8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/static_elf.rs (target/debug/deps/static_elf-b2f134c8feedb841)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 338 filtered out; finished in 0.00s
+
+     Running tests/strace.rs (target/debug/deps/strace-569da3f703135e79)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/vmcall.rs (target/debug/deps/vmcall-74a8903fa699acff)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+

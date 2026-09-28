@@ -1,0 +1,40 @@
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm)
+error[E0277]: `?` couldn't convert the error to `i64`
+     --> reverie-kvm/src/executor.rs:10600:82
+      |
+10588 | ) -> Result<PreparedReceivedRights, i64> {
+      |      ----------------------------------- expected `i64` because of this
+...
+10600 |         let shared_file = state.file_retirement.stage_clone(local_file.as_file())?;
+      |                                                 ---------------------------------^ the trait `From<std::io::Error>` is not implemented for `i64`
+      |                                                 |
+      |                                                 this can't be annotated with `?` because it has type `Result<_, std::io::Error>`
+      |
+      = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+      = help: `i64` implements trait `From<T>`:
+                From<bool>
+                From<i16>
+                From<i32>
+                From<i8>
+                From<nix::poll_timeout::PollTimeout>
+                From<object::endian::I64<E>>
+                From<object::endian::I64<E>>
+                From<scroll::leb128::Sleb128>
+              and 3 others
+
+warning: variable does not need to be mutable
+     --> reverie-kvm/src/executor.rs:10661:10
+      |
+10661 |     for (mut right, object_identity) in prepared.rights.drain(..).zip(identities) {
+      |          ----^^^^^
+      |          |
+      |          help: remove this `mut`
+      |
+      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `reverie-kvm` (lib) generated 1 warning
+error: could not compile `reverie-kvm` (lib) due to 1 previous error; 1 warning emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `reverie-kvm` (lib test) generated 1 warning (1 duplicate)
+error: could not compile `reverie-kvm` (lib test) due to 1 previous error; 1 warning emitted

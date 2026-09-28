@@ -1,0 +1,15 @@
+command: CARGO_INCREMENTAL=0 timeout 180s cargo check -p reverie-kvm
+head: 14cb0ebb905fd5ec9847f166ba737e75e9d63fa0
+Cargo.lock sha256 before: 3e6e50a6cec5239e5cc10e5fb291de2ec42f09015046b963697c10459ef2ed7a
+available bytes before: 500593950720
+status before:
+ M BUCK
+ M reverie-kvm/Cargo.toml
+ M reverie-kvm/src/elf.rs
+ M reverie-kvm/src/error.rs
+ M reverie-kvm/src/executor.rs
+ M reverie-kvm/src/lib.rs
+ M reverie-kvm/src/vm.rs
+ M reverie-kvm/tests/static_elf.rs
+?? ignored/
+?? reverie-kvm/src/proc_carrier.rs

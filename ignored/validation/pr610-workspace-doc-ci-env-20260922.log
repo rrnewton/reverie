@@ -1,0 +1,258 @@
+   Compiling rand_core v0.10.1
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.13
+   Compiling num_cpus v1.17.0
+   Compiling test-case-core v3.3.1
+   Compiling env_filter v2.0.0
+   Compiling reverie-rpc-macros v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-rpc-macros)
+   Compiling reverie-sabre-macros v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre-macros)
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-process)
+warning: reverie-e9patch@0.2.0: e9patch source build completed in 3.85s (jobs=16)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache HIT key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1790065715 install=/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+   Compiling getrandom v0.4.3
+   Compiling cc v1.4.7
+   Compiling env_logger v0.11.11
+   Compiling tempfile v3.27.0
+   Compiling rand v0.10.3
+   Compiling reverie-rpc v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-rpc)
+   Compiling quickcheck v1.1.0
+   Compiling riptrace-rpc v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/riptrace/rpc)
+   Compiling test-case-macros v3.3.1
+   Compiling test-case v3.3.1
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie)
+   Compiling safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/safeptrace)
+   Compiling reverie-host v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-host)
+   Compiling libmimalloc-sys v0.1.49
+   Compiling reverie-sabre v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre)
+   Compiling mimalloc v0.1.52
+   Compiling reverie-rpc-transport v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-rpc-transport)
+   Compiling reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-ptrace)
+   Compiling reverie-sabre-stats v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre-stats)
+   Compiling reverie-util v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-util)
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm)
+   Compiling reverie-preload v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-preload)
+   Compiling reverie-dbt v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-dbt)
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_begin.c: In function 'elf_begin':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1176:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:  1176 |       if (unlikely (ref != NULL && ref->cmd != ELF_C_READ_MMAP_PRIVATE))
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_begin.c:1184:5: note: here
+warning: reverie-sabre@0.2.0:  1184 |     case ELF_C_READ:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_cntl.c: In function 'elf_cntl':
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:57:10: warning: this statement may fall through [-Wimplicit-fallthrough=]
+warning: reverie-sabre@0.2.0:    57 |       if (elf->map_address == NULL && __libelf_readall (elf) == NULL)
+warning: reverie-sabre@0.2.0:       |          ^
+warning: reverie-sabre@0.2.0: /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre/vendor/libelf/elf_cntl.c:65:5: note: here
+warning: reverie-sabre@0.2.0:    65 |     case ELF_C_FDDONE:
+warning: reverie-sabre@0.2.0:       |     ^~~~
+warning: reverie-sabre@0.2.0: SaBRe source build completed in 1.83s (jobs=16)
+   Compiling reverie-e9patch v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-e9patch)
+   Compiling reverie-liteinst v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-liteinst)
+   Compiling riptrace-tool v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/riptrace/tool)
+   Compiling reverie-examples v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-examples)
+   Compiling reverie-sabre-strace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/experimental/reverie-sabre-strace)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.51s
+   Doc-tests nostd_print
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie
+
+running 4 tests
+test reverie/src/backend.rs - backend::Backend (line 118) ... ignored
+test reverie/src/guest.rs - guest::Guest::tail_inject (line 185) - compile ... ok
+test reverie/src/guest.rs - guest::Guest::backtrace (line 466) ... ok
+test reverie/src/tool.rs - tool::Tool (line 338) ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.30s; merged doctests compilation took 0.30s
+   Doc-tests reverie_dbt
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_e9patch
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_examples
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_host
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_kvm
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_liteinst
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_memory
+
+running 1 test
+test reverie-memory/src/local.rs - local::LocalMemory::new (line 37) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.15s; merged doctests compilation took 0.15s
+   Doc-tests reverie_preload
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_process
+
+running 30 tests
+test reverie-process/src/builder.rs - builder::Command::arg (line 104) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::arg (line 118) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::arg (line 98) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::current_dir (line 303) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::args (line 138) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::domainname (line 600) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::env (line 200) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::env_clear (line 269) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::env_remove (line 253) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::envs (line 220) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::hostname (line 581) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::map_root (line 528) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::map_uid (line 481) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::new (line 52) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::stderr (line 364) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::stdin (line 322) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::stdout (line 343) - compile ... ok
+test reverie-process/src/container.rs - container::Container::current_dir (line 287) - compile ... ok
+test reverie-process/src/container.rs - container::Container::domainname (line 536) - compile ... ok
+test reverie-process/src/container.rs - container::Container::env (line 182) - compile ... ok
+test reverie-process/src/container.rs - container::Container::env_clear (line 253) - compile ... ok
+test reverie-process/src/container.rs - container::Container::env_remove (line 237) - compile ... ok
+test reverie-process/src/container.rs - container::Container::envs (line 202) - compile ... ok
+test reverie-process/src/container.rs - container::Container::hostname (line 519) - compile ... ok
+test reverie-process/src/container.rs - container::Container::map_root (line 466) - compile ... ok
+test reverie-process/src/container.rs - container::Container::map_uid (line 419) - compile ... ok
+test reverie-process/src/container.rs - container::Container::stderr (line 348) - compile ... ok
+test reverie-process/src/container.rs - container::Container::stdout (line 327) - compile ... ok
+test reverie-process/src/container.rs - container::Container::stdin (line 306) - compile ... ok
+test reverie-process/src/builder.rs - builder::Command::get_program (line 434) ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test reverie-process/src/container.rs - container::Container::run_with_deferred_drop (line 1321) - compile fail ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+all doctests ran in 0.30s; merged doctests compilation took 0.27s
+   Doc-tests reverie_ptrace
+
+running 1 test
+test reverie-ptrace/src/backend.rs - backend::PtraceBackend (line 37) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.26s; merged doctests compilation took 0.26s
+   Doc-tests reverie_rpc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_rpc_macros
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_rpc_transport
+
+running 11 tests
+test reverie-rpc-transport/src/guest_log/buffer/ordered.rs - guest_log::buffer::ordered::Buffer::receive (line 244) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log/buffer.rs - guest_log::buffer::SharedBuffer::activate (line 552) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log/buffer.rs - guest_log::buffer::SharedBuffer::receive (line 318) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log/buffer/ordered.rs - guest_log::buffer::ordered::channel_pair (line 190) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log/buffer.rs - guest_log::buffer::channel_pair (line 184) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log/buffer/ordered.rs - guest_log::buffer::ordered::Buffer::activate (line 424) - compile fail ... ok
+test reverie-rpc-transport/src/mapped.rs - mapped::MappedStream::create (line 142) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log/capture.rs - guest_log::capture::prepared_capture (line 519) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log/capture/plan.rs - guest_log::capture::plan::InertCapturePlan::new (line 45) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log.rs - guest_log::LogSink::reader (line 562) - compile fail ... ok
+test reverie-rpc-transport/src/guest_log/capture/plan.rs - guest_log::capture::plan::InertCapturePlan (line 20) - compile fail ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+   Doc-tests reverie_sabre
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_sabre_macros
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_sabre_stats
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_sabre_strace_plugin
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_syscalls
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests reverie_util
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests riptrace_rpc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests riptrace_plugin
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests safeptrace
+
+running 1 test
+test safeptrace/src/lib.rs - peek_all (line 909) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.12s; merged doctests compilation took 0.12s

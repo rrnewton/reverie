@@ -1,0 +1,258 @@
+    Checking reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-memory)
+    Checking reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-process)
+    Checking reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-syscalls)
+    Checking reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie)
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm)
+error: this function has too many arguments (8/7)
+    --> reverie-kvm/src/elf.rs:1363:1
+     |
+1363 | / fn load_executable(
+1364 | |     memory: &mut GuestMemory,
+1365 | |     image: &[u8],
+1366 | |     argv: &[&str],
+...    |
+1371 | |     proc_carrier_authority: Arc<crate::proc_carrier::ProcCarrierAuthority>,
+1372 | | ) -> Result<LoadedStaticElf> {
+     | |____________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+     = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: manual implementation of `.is_multiple_of()`
+   --> reverie-kvm/src/proc_carrier.rs:709:8
+    |
+709 |     if value.len() % 2 != 0 {
+    |        ^^^^^^^^^^^^^^^^^^^^ help: replace with: `!value.len().is_multiple_of(2)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+    = note: `-D clippy::manual-is-multiple-of` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_is_multiple_of)]`
+
+error: using `chunks_exact` with a constant chunk size
+   --> reverie-kvm/src/proc_carrier.rs:713:10
+    |
+713 |         .chunks_exact(2)
+    |          ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0.iter()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#chunks_exact_to_as_chunks
+    = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+error: casting to the same type is unnecessary (`i64` -> `i64`)
+   --> reverie-kvm/src/proc_carrier.rs:836:46
+    |
+836 |         stat: stable_stat_from_statx(&statx, filesystem.f_type as i64, None),
+    |                                              ^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `filesystem.f_type`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#unnecessary_cast
+    = note: `-D clippy::unnecessary-cast` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_cast)]`
+
+error: unneeded late initialization
+   --> reverie-kvm/src/proc_carrier.rs:920:9
+    |
+920 | /         if unique_mount_id {
+921 | |             let mut output = 0_u64;
+...   |
+950 | |             })?;
+951 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_late_init
+    = note: `-D clippy::needless-late-init` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_late_init)]`
+help: move the declarations here and remove the assignments from the branches
+    |
+918 ~         
+919 ~         
+920 ~         let (result, mount_id) = if unique_mount_id {
+921 |             let mut output = 0_u64;
+922 |             // SAFETY: all pointers are live. Raw syscall is required because the
+923 |             // libc wrapper types this Linux-6.12 output as c_int rather than u64.
+924 ~             (unsafe {
+925 +                 libc::syscall(
+926 +                     libc::SYS_name_to_handle_at,
+927 +                     file.as_raw_fd(),
+928 +                     c"".as_ptr(),
+929 +                     handle,
+930 +                     std::ptr::from_mut(&mut output),
+931 +                     libc::AT_EMPTY_PATH | AT_HANDLE_MNT_ID_UNIQUE,
+932 +                 )
+933 +             }, output)
+934 |         } else {
+935 |             let mut output: libc::c_int = 0;
+936 |             // SAFETY: all pointers are live and output has the legacy c_int ABI.
+937 ~             (unsafe {
+938 +                 libc::syscall(
+939 +                     libc::SYS_name_to_handle_at,
+940 +                     file.as_raw_fd(),
+941 +                     c"".as_ptr(),
+942 +                     handle,
+943 +                     std::ptr::from_mut(&mut output),
+944 +                     libc::AT_EMPTY_PATH,
+945 +                 )
+946 +             }, u64::try_from(output).map_err(|_| {
+947 +                 io::Error::new(io::ErrorKind::InvalidData, "negative legacy mount ID")
+948 +             })?)
+949 ~         };
+    |
+
+error: manual implementation of `.is_multiple_of()`
+   --> reverie-kvm/src/proc_carrier.rs:985:12
+    |
+985 |         || requested % HANDLE_SIZE_GRANULE != 0
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!requested.is_multiple_of(HANDLE_SIZE_GRANULE)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: manual implementation of `.is_multiple_of()`
+   --> reverie-kvm/src/proc_carrier.rs:999:12
+    |
+999 |         || returned % HANDLE_SIZE_GRANULE != 0
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `!returned.is_multiple_of(HANDLE_SIZE_GRANULE)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_is_multiple_of
+
+error: manual `!Range::contains` implementation
+    --> reverie-kvm/src/proc_carrier.rs:1342:8
+     |
+1342 |     if seconds < 0 || seconds >= i64::MAX || nanoseconds >= 1_000_000_000 {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `!(0..i64::MAX).contains(&seconds)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#manual_range_contains
+     = note: `-D clippy::manual-range-contains` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_range_contains)]`
+
+error: this comparison involving the minimum or maximum element for this type contains a case that is always true or always false
+    --> reverie-kvm/src/proc_carrier.rs:1342:23
+     |
+1342 |     if seconds < 0 || seconds >= i64::MAX || nanoseconds >= 1_000_000_000 {
+     |                       ^^^^^^^^^^^^^^^^^^^
+     |
+     = help: because `i64::MAX` is the maximum value for this type, the case where the two sides are not equal never occurs, consider using `seconds == i64::MAX` instead
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#absurd_extreme_comparisons
+     = note: `#[deny(clippy::absurd_extreme_comparisons)]` on by default
+
+error: could not compile `reverie-kvm` (lib) due to 9 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: for loop over a single element
+     --> reverie-kvm/src/executor.rs:21308:9
+      |
+21308 | /         for path in ["/sys/devices/system/cpu/cpufreq/boost"] {
+21309 | |             let root = TestDir::new();
+21310 | |             let mut state = test_state(&root.0);
+21311 | |             let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+...     |
+21345 | |             assert_eq!(close(&mut state, direct as u64), 0);
+21346 | |         }
+      | |_________^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#single_element_loop
+      = note: `-D clippy::single-element-loop` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::single_element_loop)]`
+help: try
+      |
+21308 ~         {
+21309 +             let path = "/sys/devices/system/cpu/cpufreq/boost";
+21310 +             let root = TestDir::new();
+21311 +             let mut state = test_state(&root.0);
+21312 +             let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+21313 +             memory.write(BUFFER, b"z").unwrap();
+21314 +             let direct = open_readonly(&mut memory, &mut state, path);
+21315 +             assert!(direct >= 0, "direct open failed for {path}: {direct}");
+21316 +             assert!(
+21317 +                 !state.proc_files.contains_key(&(direct as libc::c_int)),
+21318 +                 "generic virtual carrier was accidentally classified as sealed proc: {path}"
+21319 +             );
+21320 +             let host = host_fd(&state, direct as libc::c_int).unwrap();
+21321 +             // memfd_create without MFD_ALLOW_SEALING starts with only
+21322 +             // F_SEAL_SEAL, so these generic carriers lack all mutation seals.
+21323 +             // SAFETY: host is a live generic virtual-file carrier.
+21324 +             assert_eq!(
+21325 +                 unsafe { libc::fcntl(host, libc::F_GET_SEALS) },
+21326 +                 libc::F_SEAL_SEAL
+21327 +             );
+21328 + 
+21329 +             let procfd = format!("/proc/self/fd/{direct}");
+21330 +             let writable = open_with_flags(&mut memory, &mut state, &procfd, libc::O_RDWR);
+21331 +             assert!(
+21332 +                 writable >= 0,
+21333 +                 "generic virtual proc-fd writable-reopen residual changed for {path}: {writable}"
+21334 +             );
+21335 +             assert_eq!(
+21336 +                 syscall_result(
+21337 +                     &mut memory,
+21338 +                     &mut state,
+21339 +                     libc::SYS_write,
+21340 +                     [writable as u64, BUFFER, 1, 0, 0, 0],
+21341 +                 ),
+21342 +                 1,
+21343 +                 "generic virtual proc-fd carrier ceased to be writable for {path}"
+21344 +             );
+21345 +             assert_eq!(close(&mut state, writable as u64), 0);
+21346 +             assert_eq!(close(&mut state, direct as u64), 0);
+21347 +         }
+      |
+
+error: can be more succinctly written as a byte str
+     --> reverie-kvm/src/executor.rs:28324:34
+      |
+28324 |         let mut second_payload = [b'b'];
+      |                                  ^^^^^^ help: try: `*b"b"`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#byte_char_slices
+      = note: `-D clippy::byte-char-slices` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::byte_char_slices)]`
+
+error: can be more succinctly written as a byte str
+     --> reverie-kvm/src/executor.rs:28500:36
+      |
+28500 |             let mut host_payload = [b'x'];
+      |                                    ^^^^^^ help: try: `*b"x"`
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#byte_char_slices
+
+error: casting to the same type is unnecessary (`i64` -> `i64`)
+    --> reverie-kvm/src/proc_carrier.rs:1639:34
+     |
+1639 |                 filesystem_type: TMPFS_MAGIC as i64,
+     |                                  ^^^^^^^^^^^^^^^^^^ help: try: `TMPFS_MAGIC`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#unnecessary_cast
+
+error: casting to the same type is unnecessary (`i64` -> `i64`)
+    --> reverie-kvm/src/proc_carrier.rs:1824:52
+     |
+1824 |         let first = stable_stat_from_statx(&first, TMPFS_MAGIC as i64, Some(11));
+     |                                                    ^^^^^^^^^^^^^^^^^^ help: try: `TMPFS_MAGIC`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#unnecessary_cast
+
+error: casting to the same type is unnecessary (`i64` -> `i64`)
+    --> reverie-kvm/src/proc_carrier.rs:1825:54
+     |
+1825 |         let second = stable_stat_from_statx(&second, TMPFS_MAGIC as i64, Some(11));
+     |                                                      ^^^^^^^^^^^^^^^^^^ help: try: `TMPFS_MAGIC`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#unnecessary_cast
+
+error: can be more succinctly written as a byte str
+    --> reverie-kvm/src/proc_carrier.rs:2212:20
+     |
+2212 |         let byte = [b'x'];
+     |                    ^^^^^^ help: try: `*b"x"`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#byte_char_slices
+
+error: useless use of `vec!`
+    --> reverie-kvm/src/proc_carrier.rs:1908:23
+     |
+1908 |         let storage = vec![0_u64; 4];
+     |                       ^^^^^^^^^^^^^^ help: you can use an array directly: `[0_u64; 4]`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#useless_vec
+     = note: `-D clippy::useless-vec` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::useless_vec)]`
+
+error: could not compile `reverie-kvm` (lib test) due to 17 previous errors

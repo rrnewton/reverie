@@ -1,0 +1,3 @@
+check-skill-discovery: host . — canonical .claude/skills, Claude mirror .llms/skills, Codex .agents/skills, policy absent (tolerated while skills are regrown), 0 skill(s)
+check-skill-discovery: host reverie-liteinst — canonical .llms/skills, Claude mirror .claude/skills, Codex .agents/skills, policy absent (tolerated while skills are regrown), 3 skill(s): liteinst-binary-instrumentation, liteinst-testing, liteinst-tool-lifecycle
+check-skill-discovery: PASS (discovered 2 host(s) and 3 skill(s); each is reachable by both Claude and Codex)

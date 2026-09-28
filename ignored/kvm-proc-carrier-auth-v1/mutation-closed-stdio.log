@@ -1,0 +1,22 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.37s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-6ae5e35517e53716)
+
+running 1 test
+test executor::tests::received_right_in_closed_standard_slot_cannot_resurrect_supervisor_stdio ... FAILED
+
+failures:
+
+---- executor::tests::received_right_in_closed_standard_slot_cannot_resurrect_supervisor_stdio stdout ----
+
+thread 'executor::tests::received_right_in_closed_standard_slot_cannot_resurrect_supervisor_stdio' (2894477) panicked at reverie-kvm/src/executor.rs:29833:13:
+assertion failed: state.closed_standard_fds.contains(&target)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    executor::tests::received_right_in_closed_standard_slot_cannot_resurrect_supervisor_stdio
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 850 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

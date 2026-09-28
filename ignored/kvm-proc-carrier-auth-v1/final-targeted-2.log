@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-6ae5e35517e53716)
+
+running 4 tests
+test executor::tests::resolve_exec_shebang_single_level_kernel_order ... ok
+test executor::tests::resolve_exec_shebang_plain_elf_is_unchanged ... ok
+test executor::tests::resolve_exec_shebang_rejects_infinite_recursion ... ok
+test elf::tests::proc_carrier_authority_is_fresh_per_root_and_shared_by_fork_exec_and_shebang ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 847 filtered out; finished in 0.02s
+

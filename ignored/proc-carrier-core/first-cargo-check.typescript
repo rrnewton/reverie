@@ -1,0 +1,79 @@
+Script started on 2026-09-21 03:26:04-07:00 [<not executed on terminal>]
+    Updating crates.io index
+     Locking 2 packages to latest compatible versions
+      Adding hmac v0.12.1 (available: v0.13.0)
+      Adding subtle v2.6.1
+   Compiling version_check v0.9.5
+    Checking typenum v1.20.1
+    Checking subtle v2.6.1
+    Checking cpufeatures v0.2.17
+   Compiling generic-array v0.14.7
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking digest v0.10.7
+    Checking hmac v0.12.1
+    Checking sha2 v0.10.9
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm)
+warning: unused import: `crate::elf::load_static_elf`
+  --> reverie-kvm/src/executor.rs:43:5
+   |
+43 | use crate::elf::load_static_elf;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0599]: no associated function or constant named `reserved_guest_name` found for struct `ProcCarrierAuthority` in the current scope
+    --> reverie-kvm/src/executor.rs:6764:51
+     |
+6764 |     if crate::proc_carrier::ProcCarrierAuthority::reserved_guest_name(&name) {
+     |                                                   ^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `ProcCarrierAuthority`
+     |
+    ::: reverie-kvm/src/proc_carrier.rs:301:1
+     |
+ 301 | pub(crate) struct ProcCarrierAuthority {
+     | -------------------------------------- associated function or constant `reserved_guest_name` not found for this struct
+
+error[E0599]: no method named `candidate_kind` found for struct `std::sync::Arc<ProcCarrierAuthority>` in the current scope
+    --> reverie-kvm/src/executor.rs:7559:60
+     |
+7559 |         let candidate = match state.proc_carrier_authority.candidate_kind(source_file) {
+     |                                                            ^^^^^^^^^^^^^^ method not found in `std::sync::Arc<ProcCarrierAuthority>`
+
+error[E0599]: no method named `open_inspection_alias` found for struct `std::sync::Arc<ProcCarrierAuthority>` in the current scope
+    --> reverie-kvm/src/executor.rs:7571:14
+     |
+7569 |           let inspection = match state
+     |  ________________________________-
+7570 | |             .proc_carrier_authority
+7571 | |             .open_inspection_alias(source_file)
+     | |             -^^^^^^^^^^^^^^^^^^^^^ method not found in `std::sync::Arc<ProcCarrierAuthority>`
+     | |_____________|
+     |
+
+error[E0599]: no method named `candidate_kind` found for struct `std::sync::Arc<ProcCarrierAuthority>` in the current scope
+     --> reverie-kvm/src/executor.rs:10689:14
+      |
+10687 |           let (proc_inode, synthetic_proc_nofollow) = match state
+      |  ___________________________________________________________-
+10688 | |             .proc_carrier_authority
+10689 | |             .candidate_kind(local_file.as_file())
+      | |             -^^^^^^^^^^^^^^ method not found in `std::sync::Arc<ProcCarrierAuthority>`
+      | |_____________|
+      |
+
+error[E0599]: no method named `open_inspection_alias` found for struct `std::sync::Arc<ProcCarrierAuthority>` in the current scope
+     --> reverie-kvm/src/executor.rs:10698:22
+      |
+10696 |                   let inspection = state
+      |  __________________________________-
+10697 | |                     .proc_carrier_authority
+10698 | |                     .open_inspection_alias(local_file.as_file())
+      | |                     -^^^^^^^^^^^^^^^^^^^^^ method not found in `std::sync::Arc<ProcCarrierAuthority>`
+      | |_____________________|
+      |
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `reverie-kvm` (lib) generated 1 warning
+error: could not compile `reverie-kvm` (lib) due to 5 previous errors; 1 warning emitted
+
+Script done on 2026-09-21 03:26:08-07:00 [COMMAND_EXIT_CODE="101"]

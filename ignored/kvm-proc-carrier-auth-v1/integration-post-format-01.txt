@@ -1,0 +1,24 @@
+Command:
+  df -B1 --output=avail .
+Observed available bytes:
+  516649013248
+
+Command:
+  rustfmt --edition 2024 --config skip_children=true reverie-kvm/src/elf.rs reverie-kvm/src/executor.rs reverie-kvm/src/vm.rs reverie-kvm/tests/static_elf.rs
+Exit status:
+  0
+Transcript:
+  ignored/kvm-proc-carrier-auth-v1/fmt-integration-post-core-01.typescript
+
+Command:
+  git diff --check
+Exit status:
+  0
+
+Owned-path SHA-256 after formatting:
+  d42a049badd2f61847045c5f139ce85c2556c3dd53d14df562632225a3ee2e1f  reverie-kvm/src/elf.rs
+  fb3a56c975f2969dddc891ef2715317fb26b7996da95bf2ba3d8793613d3a136  reverie-kvm/src/executor.rs
+  5cc46fc699e934bd92baf3bbdb5dd154429a02c102c2ff26efcba627435a3d8f  reverie-kvm/src/vm.rs
+  c455d5ce0c44ac01799b29f49f74d018ac9ec0c83485d2d9ec4ef1d7343ec26c  reverie-kvm/tests/static_elf.rs
+
+These are a checkpoint, not a source freeze: compile/test fixes may still change them.
