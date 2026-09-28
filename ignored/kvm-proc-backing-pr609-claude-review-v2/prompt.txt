@@ -1,0 +1,61 @@
+You are the independent actual Claude-family adversarial reviewer of Reverie pull request https://github.com/rrnewton/reverie/pull/609. You have read-only tools only. Do not edit files, execute commands, delegate, publish comments, or attempt to write a plan file. Return the complete review report directly in your final response.
+
+Review target: rrnewton/reverie base b13ad926a34f27bb39a349429a1d08e812d741b4, exact head 33d8ee90c2ae81556e42345b3d05e37f088b9c04, tree 4d9a7b3333dc791439449e3d6b9ee4aefc5572af. The exact head is frozen and must not be altered. BASE-TO-HEAD.patch is the complete binary diff and has SHA-256 ca2a95b12e6cdadfb3ac983c67aa21dd6fee6e9b7ac66271a7e7228732e5eb1e. INPUTS.json binds every immutable packet input. SOURCE.json records the exact local checkout, remote PR/base refs, remote PR-body identity, source hashes, qualification identities, and pinned Linux-source hashes.
+
+Start by reading context/code-review-SKILL.md completely. Then read primary/PR-BODY.md and qualification/v9/REPORT.md as claims to audit, not conclusions to trust. Read the complete diff. Use candidate/reverie-kvm/src/ and candidate/reverie-kvm/tests/ as the complete exact-head source and test snapshots, and base/ for all three changed files at the base revision. Read relevant surrounding implementation, not just changed hunks. The product and backend documents are under primary/. Pinned upstream Linux v6.3 and v7.1 namei/open/fcntl/proc-fd/seq-file/read-write sources and the pre-6.4 behavior-change patch are under linux/. These include the code needed to audit fdinfo negative lookup and seq-file pwrite behavior rather than relying on prose. If anything needed is missing or truncated, state the limitation.
+
+The v9 REPORT was written while these exact source bytes were the uncommitted candidate atop the prior v8 commit, so its heading names that then-current v8 HEAD. Its final source hashes and base-to-working-tree patch hash are now byte-identical to this committed exact head. Audit that identity through SOURCE.json, BASE-TO-HEAD.patch, qualification/v9/final-source.sha256, qualification/v9/final-patch.sha256, and the proof manifests; do not infer it from the report filename or a success label.
+
+Intended behavior and review boundary:
+
+- Replace writable anonymous backing descriptions for all 17 fixed paths returned by synthetic_proc_content, plus already-readable dynamic fdinfo content, with owned MFD_ALLOW_SEALING memfds populated before publication. Require mode 0444 and F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL, permitting the kernel-added F_SEAL_EXEC variant only. The O_RDWR construction description must never enter the guest file table. Fixed snapshots receive newly reopened O_RDONLY or O_PATH descriptions; already-supported dynamic fdinfo content receives O_RDONLY only.
+- Preserve deterministic bytes and metadata. Trace carrier construction, write/seek/chmod/seal/reopen failure handling, fd allocation and cleanup, descriptor aliasing, dup/close/fork/exec/snapshot behavior, and any way writable or metadata-mutating authority could leak. Check pwrite, ftruncate, fchmod, mmap and later mprotect implications against the precise claims; do not turn an explicitly disclosed residual into an implicit success.
+- Match the scoped Linux open and proc-fd semantics: complete non-O_PATH __O_TMPFILE shape/access validation before pathname access; global O_CREAT|O_DIRECTORY precedence selected by the cached host-policy probe; direct and /proc/self/fd opens; O_NOFOLLOW, O_EXCL, O_DIRECTORY, O_CLOEXEC and supported status bits; ordinary O_PATH normalization; /proc/mounts handling; bad pointer, bad dirfd, missing/closed path, low-32-bit guest-fd decoding, and path-specific mutation errors.
+- Audit the host policy probe itself: verified path choice, race resistance, EINTR bounding, exact accepted outcomes, failure caching/fail-closed behavior, startup placement, and preservation across fork and exec. Compare current and pre-6.4 ordering with linux/ rather than trusting comments or injected tests.
+- Audit fdinfo existence/content separation and ordering. A syntactically valid live /proc/<selector>/fdinfo/<fd> path must have metadata even if ordinary content rendering is unsupported. Valid write-capable O_TMPFILE/plain O_DIRECTORY and LegacyLookup create-directory errors must precede ENOSYS; only otherwise-admissible content opens should reach content support. Failed opens must not allocate a carrier, consume sequence state, or change file/fdinfo tables.
+- Audit fdinfo lifecycle and locking through leader/thread-self selection, dead leader with live worker, live and closed descriptors, dup/fork/exec/snapshot/close, and success/failure interleavings. Check whether generation and file-table identity can become stale, aliased, or nondeterministic.
+- Check newfstatat/statx synthetic metadata for live supported and unsupported fdinfo targets, including path lookup, mode/link/size semantics, ownership and identity nonclaims, statx mask behavior, and consistency with open behavior.
+- Trace the real guest execution path, not just helper names or tests: ELF loader initialization, syscall dispatch, guest pointer import, path parsing, file-table/fdinfo-table mutation, carrier creation, KVM static-ELF test path, and returned errno/result.
+
+V9 corrections that require fresh, skeptical review:
+
+- Under injected LegacyLookup, an existing /proc/mounts with O_CREAT|O_DIRECTORY now returns ENOTDIR, or EEXIST with O_EXCL, even with O_NOFOLLOW. Ordinary /proc/mounts|O_NOFOLLOW remains ELOOP. Check this against v6.3 namei ordering.
+- Fdinfo parsing now distinguishes a live target, a missing nonempty final component, an exact empty trailing-slash final component, and an invalid task parent. Under LegacyLookup, present live entries yield ENOTDIR/EEXIST; missing/closed/malformed nonempty entries yield ENOENT; exact /proc/.../fdinfo/ yields EISDIR after task liveness. Check this directly against v6.3 fs/proc/fd.c and fs/namei.c. A prior reviewer proposed EACCES for the negative case; do not inherit either answer without tracing procfs lookup.
+- A successful synthetic carrier open without O_NOFOLLOW removes any stale reused-fd entry from synthetic_proc_nofollow_fds. Check all insert, reuse, dup, close, fork, exec and snapshot paths rather than trusting the new focused test.
+- Readable live fdinfo now has direct carrier access-mode/seal checks and a native/guest pwrite truth table. Check ESPIPE for nonnegative offsets, EINVAL for negative offsets, and invalid-fd/bad-pointer precedence against proc fd, seq_file and read_write Linux sources.
+- Native DAC-sensitive EACCES/EPERM comparisons are skipped only when the supervisor is uid 0; credential-independent native checks and every guest immutability assertion remain unconditional. The guest separately proves modeled uid/euid 0. Determine whether this is an honest oracle qualification or a test exemption that hides a required parity failure.
+- The tests now explicitly characterize three generic virtual-file carriers as unsealed and writable through guest proc-fd, the truncated fdinfo statx mask, future-seal fail-closed behavior, and the ordinary trailing-slash fdinfo residual. Determine whether each is accurately bounded or whether any invalidates the narrower claimed safety boundary.
+
+Explicit scope and claim audit:
+
+- This patch is a prerequisite, not syncfs. It does not implement authenticated SCM_RIGHTS carrier identity, an identity marker, record/replay, or complete KVM parity.
+- /proc/self/loginuid, deterministic random devices, and synthetic sysfs remain on the generic virtual-file path. Only /proc/self/loginuid, /dev/urandom, and one cpufreq path are sampled; no claim covers every such path.
+- Linux allows bare live-fdinfo O_PATH forms, including O_PATH|O_NOFOLLOW and ignored legacy bits; Reverie deliberately retains pre-existing ENOSYS. Fdinfo O_TRUNC, O_DIRECT, and bare O_CREAT|O_EXCL precedence are also disclosed residuals.
+- Exact /proc/self/fdinfo/ ordinary-open, O_DIRECTORY, and O_TMPFILE behavior remains a pre-existing ENOENT residual; v9 claims only the LegacyLookup create-directory EISDIR correction.
+- Direct /proc/mounts and proc-fd O_PATH|O_NOFOLLOW link identity, noncanonical aliases, SCM_RIGHTS identity, mmap type/MAP_SHARED_VALIDATE, and mprotect maximum-protection provenance are disclosed residuals.
+- Fdinfo statx deliberately exposes the pre-existing truncated basic-stat mask instead of claiming full parity.
+- Guest mutation protection is deliberately host-DAC-independent and can differ from native uid-0 mutation results; credential-exact root parity is not claimed.
+- A future implicit memfd seal other than F_SEAL_EXEC deliberately fails closed with EOPNOTSUPP.
+- There is no genuine Linux 5.8-6.3 runtime result. Legacy behavior is supported only by pinned upstream code/commit and injected exact tests.
+
+Determine whether each nonclaim is accurately bounded and whether any disclosed or undisclosed residual invalidates the narrower safety, determinism, or Linux-semantics claims actually made. Do not credit the patch with a broader capability. Conversely, do not request unrelated full-parity work unless it is required for the stated boundary to be safe or truthful.
+
+Audit the validation evidence adversarially. Exact-source claims are: cargo fmt passed in 2.143 s; 33 focused synthetic-proc library tests passed in 23.205 s; exact seal, fdinfo carrier/pwrite, dead-leader lifecycle, and stale-nofollow controls each passed; the required real-KVM test passed 1/1 in 31.112 s with REVERIE_REQUIRE_KVM=1; the full reverie-kvm library passed 815/815 in 13.905 s; strict all-target Clippy passed in 9.842 s; expanded native matrices passed in 0.232 s; and four causal mutations each failed the exact intended assertion and restored source and patch identity. The proof inventory contains 78 files and proof-artifacts.sha256 itself has SHA-256 65bb95c36e8d6af9389e51fa8af3fe62008121c604d7c5862fb75a365a1f3edc. The first format check failed before formatting. The first 815-test full run had an unrelated concurrent pipe-test failure (814 pass, 1 fail); its exact rerun passed, an immediate full retry passed 815/815, and the final full run also passed 815/815 without a source fix for that flake. There are no claimed old-kernel runtime results. Inspect raw status/log/script/hash/recipe/patch artifacts in qualification/v9/ and determine what each result does and does not prove. Verify evidence linkage to the exact source/head and verify mutation causality rather than accepting filenames, labels, or exit statuses.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation now meets the original requirement or whether the requirement was changed to admit the implementation. Call out either result explicitly, including when no lowering of the bar is present.
+
+State all four categories explicitly and use exact base-versus-head evidence.
+
+Report findings first. Each finding must include severity, exact candidate file and line evidence, guest-visible or determinism impact, and the required correction. If there are no findings, say so explicitly. Then provide: the four-part goalpost-moving assessment; separate conclusions for determinism, Linux semantics, lifecycle/locking, and sealed-carrier integrity; an audit of every material residual/nonclaim; verification actually inspected and its limitations. Bind the verdict only to exact head 33d8ee90c2ae81556e42345b3d05e37f088b9c04; a changed head requires a fresh review.
+
+End the response with one final nonempty line containing exactly APPROVE or CHANGES REQUESTED. Do not use either all-caps verdict token anywhere else in the response.

@@ -1,0 +1,30 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+warning: constant `LEGACY_O_TMPFILE_PRIVATE` is never used
+   --> reverie-kvm/src/executor.rs:199:7
+    |
+199 | const LEGACY_O_TMPFILE_PRIVATE: u64 = (libc::O_TMPFILE & !libc::O_DIRECTORY) as u64;
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `reverie-kvm` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.70s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-09c0d8956b925072)
+
+running 1 test
+
+thread 'executor::tests::synthetic_proc_tmpfile_admission_precedes_every_path_and_descriptor_resolution' (970946) panicked at reverie-kvm/src/executor.rs:18448:13:
+assertion `left == right` failed: bad pointer invalid flags=0x410000
+  left: -14
+ right: -22
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::synthetic_proc_tmpfile_admission_precedes_every_path_and_descriptor_resolution ... FAILED
+
+failures:
+
+failures:
+    executor::tests::synthetic_proc_tmpfile_admission_precedes_every_path_and_descriptor_resolution
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 811 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

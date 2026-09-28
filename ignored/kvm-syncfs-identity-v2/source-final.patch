@@ -1,0 +1,1169 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 8b562d11..f5b53328 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -120,6 +120,11 @@ const ARCH_SET_FS: u64 = 0x1002;
+ const ARCH_GET_FS: u64 = 0x1003;
+ const ARCH_GET_GS: u64 = 0x1004;
+ const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
++// Linux UAPI value added with executable memfd policy. Keep the literal so
++// this crate continues to build with libc versions that predate the binding.
++const LINUX_F_SEAL_EXEC: libc::c_int = 0x0020;
++const SYNTHETIC_PROC_REQUIRED_SEALS: libc::c_int =
++    libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+ // TODO-HUMAN-REVIEW(PR-136): Review anonymous-object filesystem classification.
+ const ANON_INODE_FS_MAGIC: libc::c_long = 0x0904_1934;
+ const PIPEFS_MAGIC: libc::c_long = 0x5049_5045;
+@@ -1995,7 +2000,13 @@ fn open_fdinfo(
+     });
+     // The empty, read-only backing file supplies descriptor ownership and
+     // synthetic proc metadata only. Reads/seeks must use the description.
+-    let result = open_synthetic_proc(state, &path, b"", flags & libc::O_CLOEXEC as u64 != 0);
++    let result = open_synthetic_proc(
++        state,
++        &path,
++        b"",
++        flags & libc::O_CLOEXEC as u64 != 0,
++        false,
++    );
+     if result >= 0 {
+         let fd = result as i32;
+         let host = state.files[&fd].as_raw_fd();
+@@ -5647,9 +5658,11 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
+ }
+ 
+ fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    if (args[3] as libc::off_t) < 0 {
++        return negative_errno(libc::EINVAL);
++    }
++    // Linux syscall argument decoding consumes only the low descriptor word.
++    let fd = args[0] as libc::c_int;
+     let Ok(requested_length) = usize::try_from(args[2]) else {
+         return negative_errno(libc::EINVAL);
+     };
+@@ -5657,6 +5670,19 @@ fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
+     let Some(file) = state.files.get(&fd) else {
+         return negative_errno(libc::EBADF);
+     };
++    if state
++        .proc_files
++        .get(&fd)
++        .is_some_and(|inode| !is_synthetic_proc_directory_inode(*inode))
++    {
++        // Regular procfs files do not support positioned writes. After the
++        // global signed-offset check, O_PATH access precedes that refusal.
++        return match file_status_flags(file) {
++            Ok(status) if status & libc::O_PATH != 0 => negative_errno(libc::EBADF),
++            Ok(_) => negative_errno(libc::ESPIPE),
++            Err(error) => error,
++        };
++    }
+     if let Err(error) = ensure_writable(file) {
+         return error;
+     }
+@@ -6663,17 +6689,25 @@ fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64
+ }
+ 
+ fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(fd) = i32::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    let length = args[1] as libc::off_t;
++    if length < 0 {
++        return negative_errno(libc::EINVAL);
++    }
++    // Linux syscall argument decoding consumes only the low descriptor word.
++    let fd = args[0] as libc::c_int;
+     let Some(host_fd) = host_fd(state, fd) else {
+         return negative_errno(libc::EBADF);
+     };
+-    if let Err(error) = ensure_writable_fd(host_fd) {
+-        return error;
++    let status = match fd_status_flags(host_fd) {
++        Ok(status) => status,
++        Err(error) => return error,
++    };
++    if status & libc::O_PATH != 0 {
++        return negative_errno(libc::EBADF);
+     }
+-    let length = args[1] as libc::off_t;
+-    if length < 0 {
++    if status & libc::O_ACCMODE == libc::O_RDONLY {
++        // Unlike write(2), Linux reports EINVAL when ftruncate receives an
++        // otherwise-live regular-file description that is not open for write.
+         return negative_errno(libc::EINVAL);
+     }
+     // SAFETY: host_fd names a live writable descriptor and length is nonnegative.
+@@ -6931,12 +6965,13 @@ fn open_file(
+     // Serve the synthetic /proc surface before touching the host filesystem, so
+     // deterministic content replaces the deliberately-refused real procfs.
+     if let Some(content) = synthetic_proc_content(state, path) {
+-        if flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64 {
++        let path_only = flags & libc::O_PATH as u64 != 0;
++        if !path_only && flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64 {
+             return negative_errno(libc::EACCES);
+         }
+         let normalized =
+             normalize_proc_path(state, path).expect("a synthesized /proc path always normalizes");
+-        return open_synthetic_proc(state, &normalized, &content, close_on_exec);
++        return open_synthetic_proc(state, &normalized, &content, close_on_exec, path_only);
+     }
+     // A relative lookup beneath the synthetic directory must never fall
+     // through to the harmless host directory that backs the descriptor.
+@@ -7250,6 +7285,15 @@ fn open_guest_fd_path(
+     }
+     let source_alias = output_alias(state, guest_fd);
+     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
++    if source_proc_inode.is_some_and(|inode| !is_synthetic_proc_directory_inode(inode))
++        && flags & (libc::O_PATH | libc::O_NOFOLLOW | libc::O_DIRECTORY) as u64 == 0
++        && flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64
++    {
++        // Enforce the synthetic regular proc file's read-only access without
++        // relying on the supervisor's credentials or DAC capabilities. Keep
++        // magic-link and wrong-type precedence delegated to the host below.
++        return negative_errno(libc::EACCES);
++    }
+     let source_object_inode = guest_fd_object_identity(state, guest_fd);
+ 
+     // Opening a proc-fd magic link creates a fresh open file description. A
+@@ -12054,12 +12098,23 @@ fn symlink_at(
+ }
+ 
+ fn fchmod(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+-    let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
+-        return negative_errno(libc::EBADF);
+-    };
++    // Linux syscall argument decoding consumes only the low descriptor word.
++    let guest_fd = args[0] as libc::c_int;
+     let Some(host_fd) = host_fd(state, guest_fd) else {
+         return negative_errno(libc::EBADF);
+     };
++    let status = match fd_status_flags(host_fd) {
++        Ok(status) => status,
++        Err(error) => return error,
++    };
++    if status & libc::O_PATH != 0 {
++        return negative_errno(libc::EBADF);
++    }
++    if state.proc_files.contains_key(&guest_fd) {
++        // A classified procfs object must retain the mode that protects its
++        // private carrier. Native fchmod on procfs reports EPERM.
++        return negative_errno(libc::EPERM);
++    }
+     let mode = args[1] as libc::mode_t & 0o7777;
+     // SAFETY: host_fd names a live descriptor and mode is bounded to permission bits.
+     zero_or_errno(unsafe { libc::fchmod(host_fd, mode) })
+@@ -12823,6 +12878,11 @@ fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
+     content
+ }
+ 
++fn supported_synthetic_proc_seals(seals: libc::c_int) -> bool {
++    seals == SYNTHETIC_PROC_REQUIRED_SEALS
++        || seals == (SYNTHETIC_PROC_REQUIRED_SEALS | LINUX_F_SEAL_EXEC)
++}
++
+ /// Back a synthesized /proc file with a memfd holding `content` and record it in
+ /// `proc_files` so `fstat`/`statx` report deterministic metadata.
+ fn open_synthetic_proc(
+@@ -12830,12 +12890,13 @@ fn open_synthetic_proc(
+     normalized_path: &[u8],
+     content: &[u8],
+     close_on_exec: bool,
++    path_only: bool,
+ ) -> i64 {
+     // SAFETY: the name is a valid NUL-terminated C string.
+     let raw = unsafe {
+         libc::memfd_create(
+             c"reverie-kvm-proc".as_ptr(),
+-            libc::MFD_CLOEXEC as libc::c_uint,
++            (libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) as libc::c_uint,
+         )
+     };
+     if raw < 0 {
+@@ -12843,15 +12904,63 @@ fn open_synthetic_proc(
+     }
+     // SAFETY: memfd_create returned a new owned descriptor on success.
+     let mut file = unsafe { std::fs::File::from_raw_fd(raw as RawFd) };
+-    if file.write_all(content).is_err() {
++    if let Err(error) = file.write_all(content) {
++        return io_error(error);
++    }
++    // Match the read-only mode exposed by the synthesized proc metadata. This
++    // also makes a writable proc-fd reopen fail before the private carrier can
++    // enter the guest table.
++    // SAFETY: file owns a live descriptor and the mode contains permission bits only.
++    if unsafe { libc::fchmod(file.as_raw_fd(), 0o444) } != 0 {
++        return io_error(std::io::Error::last_os_error());
++    }
++    // Seal the populated snapshot before publishing any guest-visible handle.
++    // In particular, F_SEAL_SEAL makes this exact immutable set permanent.
++    // SAFETY: file owns a live sealable memfd and the seal mask is valid.
++    if unsafe {
++        libc::fcntl(
++            file.as_raw_fd(),
++            libc::F_ADD_SEALS,
++            SYNTHETIC_PROC_REQUIRED_SEALS,
++        )
++    } != 0
++    {
+         return io_error(std::io::Error::last_os_error());
+     }
+-    // SAFETY: file owns a live descriptor; rewind so the guest reads from zero.
+-    if unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_SET) } < 0 {
++    // A host may implicitly add F_SEAL_EXEC under vm.memfd_noexec policy. No
++    // other missing or extra seal is an accepted carrier shape.
++    // SAFETY: file owns a live descriptor and F_GET_SEALS has no third argument.
++    let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
++    if seals < 0 {
+         return io_error(std::io::Error::last_os_error());
+     }
++    if !supported_synthetic_proc_seals(seals) {
++        return negative_errno(libc::EOPNOTSUPP);
++    }
++    let proc_path = format!("/proc/self/fd/{}", file.as_raw_fd());
++    let exposed = if path_only {
++        let proc_path = CString::new(proc_path).expect("host fd path has no NUL");
++        // Follow the supervisor's private proc magic link to expose an O_PATH
++        // description of the immutable memfd itself.
++        // SAFETY: proc_path is NUL-terminated and the source descriptor is live.
++        let descriptor = unsafe { libc::open(proc_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
++        if descriptor < 0 {
++            return io_error(std::io::Error::last_os_error());
++        }
++        // SAFETY: open returned a new descriptor owned by this call.
++        unsafe { std::fs::File::from_raw_fd(descriptor) }
++    } else {
++        match std::fs::OpenOptions::new().read(true).open(proc_path) {
++            Ok(read_only) => read_only,
++            Err(error) => return io_error(error),
++        }
++    };
++    // The writable construction handle never enters the guest table. Opening
++    // the proc-fd link creates a fresh O_RDONLY or O_PATH description at offset
++    // zero without sharing the construction description.
++    drop(file);
+     let inode = synthetic_proc_inode(normalized_path);
+-    let guest_fd = insert_file_with_flags(state, file, close_on_exec, None);
++    let guest_fd = insert_file_with_flags(state, exposed, close_on_exec, None);
+     if guest_fd >= 0 {
+         state.proc_files.insert(guest_fd as i32, inode);
+     }
+@@ -13977,10 +14086,7 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
+     if !is_anonymous && !args[5].is_multiple_of(PAGE_SIZE) {
+         return negative_errno(libc::EINVAL);
+     }
+-    if !is_anonymous
+-        && let Ok(fd) = libc::c_int::try_from(args[4])
+-        && signalfd_mask(state, fd).is_some()
+-    {
++    if !is_anonymous && signalfd_mask(state, args[4] as libc::c_int).is_some() {
+         // Do not expose the non-mappable eventfd carrier's ESPIPE result.
+         return negative_errno(libc::ENODEV);
+     }
+@@ -14004,12 +14110,37 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
+         return negative_errno(libc::ENOMEM);
+     };
+     let file_bytes = if !is_anonymous {
+-        let Ok(fd) = i32::try_from(args[4]) else {
+-            return negative_errno(libc::EBADF);
+-        };
++        // Linux syscall argument decoding consumes only the low descriptor word.
++        let fd = args[4] as libc::c_int;
+         let Some(file) = state.files.get(&fd) else {
+             return negative_errno(libc::EBADF);
+         };
++        if is_shared && args[2] & libc::PROT_WRITE as u64 != 0 {
++            let status = match file_status_flags(file) {
++                Ok(status) => status,
++                Err(error) => return error,
++            };
++            if status & libc::O_PATH != 0 {
++                return negative_errno(libc::EBADF);
++            }
++            if status & libc::O_ACCMODE != libc::O_RDWR {
++                return negative_errno(libc::EACCES);
++            }
++            // The backend copies file-backed mappings into guest memory rather
++            // than asking host mmap to validate the descriptor. Preserve the
++            // host's write-seal rejection before creating that writable copy.
++            // SAFETY: file owns a live descriptor and F_GET_SEALS has no third argument.
++            let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
++            if seals >= 0 && seals & (libc::F_SEAL_WRITE | libc::F_SEAL_FUTURE_WRITE) != 0 {
++                return negative_errno(libc::EPERM);
++            }
++            if seals < 0 {
++                let error = std::io::Error::last_os_error();
++                if error.raw_os_error() != Some(libc::EINVAL) {
++                    return io_error(error);
++                }
++            }
++        }
+         let mut bytes = vec![0; length];
+         let mut count = 0;
+         while count < length {
+@@ -17488,6 +17619,746 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn synthetic_proc_snapshot_has_required_seals_and_readonly_description() {
++        const PATH: u64 = 0x100;
++        const BUFFER: u64 = 0x200;
++
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
++        write_c_string(&mut memory, PATH, "/proc/uptime");
++        let fd = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_openat,
++            [
++                libc::AT_FDCWD as u64,
++                PATH,
++                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
++                0,
++                0,
++                0,
++            ],
++        );
++        assert_eq!(fd, 3);
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fcntl,
++                [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
++            ) & i64::from(libc::O_ACCMODE),
++            i64::from(libc::O_RDONLY)
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fcntl,
++                [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
++            ),
++            i64::from(libc::FD_CLOEXEC)
++        );
++        let host_fd = state.files[&(fd as libc::c_int)].as_raw_fd();
++        let mut host_stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
++        assert_eq!(unsafe { libc::fstat(host_fd, host_stat.as_mut_ptr()) }, 0);
++        assert_eq!(unsafe { host_stat.assume_init() }.st_mode & 0o777, 0o444);
++        let required =
++            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
++        let observed = unsafe { libc::fcntl(host_fd, libc::F_GET_SEALS) };
++        assert!(
++            observed == required || observed == (required | LINUX_F_SEAL_EXEC),
++            "unexpected synthetic proc seal policy: {observed:#x}"
++        );
++
++        memory.write(BUFFER, b"x").unwrap();
++        for (number, args, expected) in [
++            (
++                libc::SYS_write,
++                [fd as u64, BUFFER, 1, 0, 0, 0],
++                negative_errno(libc::EBADF),
++            ),
++            (
++                libc::SYS_pwrite64,
++                [(1_u64 << 32) | fd as u64, BUFFER, 1, 0, 0, 0],
++                negative_errno(libc::ESPIPE),
++            ),
++            (
++                libc::SYS_ftruncate,
++                [(1_u64 << 32) | fd as u64, 0, 0, 0, 0, 0],
++                negative_errno(libc::EINVAL),
++            ),
++            (
++                libc::SYS_fallocate,
++                [fd as u64, 0, 0, 1, 0, 0],
++                negative_errno(libc::EBADF),
++            ),
++        ] {
++            assert_eq!(
++                syscall_result(&mut memory, &mut state, number, args),
++                expected,
++                "syscall {number} unexpectedly accepted the read-only snapshot"
++            );
++        }
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pwrite64,
++                [fd as u64, u64::MAX, 1, u64::MAX, 0, 0],
++            ),
++            negative_errno(libc::EINVAL),
++            "negative offset validation must precede procfs positioning refusal"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_mmap,
++                [
++                    0,
++                    PAGE_SIZE,
++                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
++                    libc::MAP_SHARED as u64,
++                    fd as u64,
++                    0,
++                ],
++            ),
++            negative_errno(libc::EACCES)
++        );
++
++        let expected = b"0.00 0.00\n";
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pread64,
++                [fd as u64, BUFFER, expected.len() as u64, 0, 0, 0],
++            ),
++            expected.len() as i64
++        );
++        let mut actual = vec![0; expected.len()];
++        memory.read(BUFFER, &mut actual).unwrap();
++        assert_eq!(actual, expected);
++    }
++
++    #[test]
++    fn synthetic_proc_seal_policy_accepts_only_supported_kernel_shapes() {
++        let required =
++            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
++        assert!(supported_synthetic_proc_seals(required));
++        assert!(supported_synthetic_proc_seals(required | LINUX_F_SEAL_EXEC));
++        assert!(!supported_synthetic_proc_seals(
++            required & !libc::F_SEAL_WRITE
++        ));
++        assert!(!supported_synthetic_proc_seals(required | 0x40));
++    }
++
++    #[test]
++    fn synthetic_proc_every_regular_surface_refuses_pwrite_with_espipe() {
++        const PATHS: &[&str] = &[
++            "/proc/uptime",
++            "/proc/loadavg",
++            "/proc/version",
++            "/proc/filesystems",
++            "/proc/mounts",
++            "/proc/self/mounts",
++            "/proc/self/mountinfo",
++            "/proc/stat",
++            "/proc/meminfo",
++            "/proc/cpuinfo",
++            "/proc/locks",
++            "/proc/self/stat",
++            "/proc/self/status",
++            "/proc/self/cmdline",
++            "/proc/vmstat",
++            "/proc/sys/kernel/osrelease",
++            "/proc/self/maps",
++        ];
++
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
++        for path in PATHS {
++            let fd = open_readonly(&mut memory, &mut state, path);
++            assert_eq!(fd, 3, "open {path}");
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_pwrite64,
++                    [fd as u64, u64::MAX, 1, 0, 0, 0],
++                ),
++                negative_errno(libc::ESPIPE),
++                "pwrite {path}"
++            );
++            assert_eq!(close(&mut state, fd as u64), 0);
++        }
++    }
++
++    #[test]
++    fn direct_synthetic_proc_opath_preserves_descriptor_and_error_semantics() {
++        const PATH: u64 = 0x100;
++        const BUFFER: u64 = 0x200;
++
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
++        write_c_string(&mut memory, PATH, "/proc/uptime");
++        let fd = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_openat,
++            [
++                libc::AT_FDCWD as u64,
++                PATH,
++                (libc::O_PATH | libc::O_CLOEXEC) as u64,
++                0,
++                0,
++                0,
++            ],
++        );
++        assert_eq!(fd, 3);
++        assert!(state.proc_files.contains_key(&(fd as libc::c_int)));
++        assert_ne!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fcntl,
++                [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
++            ) & i64::from(libc::O_PATH),
++            0
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fcntl,
++                [fd as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
++            ),
++            i64::from(libc::FD_CLOEXEC)
++        );
++        let high_fd = (1_u64 << 32) | fd as u64;
++        memory.write(BUFFER, b"x").unwrap();
++        for (number, args) in [
++            (libc::SYS_read, [fd as u64, BUFFER, 1, 0, 0, 0]),
++            (libc::SYS_pwrite64, [high_fd, BUFFER, 1, 0, 0, 0]),
++            (libc::SYS_ftruncate, [high_fd, 0, 0, 0, 0, 0]),
++            (libc::SYS_fchmod, [high_fd, 0o666, 0, 0, 0, 0]),
++        ] {
++            assert_eq!(
++                syscall_result(&mut memory, &mut state, number, args),
++                negative_errno(libc::EBADF),
++                "syscall {number} must reject a synthetic proc O_PATH descriptor"
++            );
++        }
++        for (number, args) in [
++            (libc::SYS_pwrite64, [u64::MAX, u64::MAX, 0, u64::MAX, 0, 0]),
++            (libc::SYS_pwrite64, [high_fd, u64::MAX, 0, u64::MAX, 0, 0]),
++            (libc::SYS_ftruncate, [u64::MAX, u64::MAX, 0, 0, 0, 0]),
++            (libc::SYS_ftruncate, [high_fd, u64::MAX, 0, 0, 0, 0]),
++        ] {
++            assert_eq!(
++                syscall_result(&mut memory, &mut state, number, args),
++                negative_errno(libc::EINVAL),
++                "signed range validation must precede descriptor admission for syscall {number}"
++            );
++        }
++        for flags in [libc::MAP_PRIVATE, libc::MAP_SHARED] {
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_mmap,
++                    [
++                        0,
++                        PAGE_SIZE,
++                        (libc::PROT_READ | libc::PROT_WRITE) as u64,
++                        flags as u64,
++                        high_fd,
++                        0,
++                    ],
++                ),
++                negative_errno(libc::EBADF)
++            );
++        }
++    }
++
++    #[test]
++    fn synthetic_proc_dup_and_reopen_preserve_description_semantics_and_seals() {
++        const PATH: u64 = 0x100;
++        const BUFFER: u64 = 0x200;
++
++        let root = TestDir::new();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
++        write_c_string(&mut memory, PATH, "/proc/uptime");
++        let fd = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_openat,
++            [
++                libc::AT_FDCWD as u64,
++                PATH,
++                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
++                0,
++                0,
++                0,
++            ],
++        );
++        assert_eq!(fd, 3);
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [fd as u64, BUFFER, 2, 0, 0, 0],
++            ),
++            2
++        );
++        let duplicate = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_dup,
++            [fd as u64, 0, 0, 0, 0, 0],
++        );
++        assert_eq!(duplicate, 4);
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fcntl,
++                [duplicate as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
++            ),
++            0,
++            "dup must clear the descriptor-local close-on-exec bit"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [duplicate as u64, BUFFER, 3, 0, 0, 0],
++            ),
++            3
++        );
++        let mut shared_offset = [0; 3];
++        memory.read(BUFFER, &mut shared_offset).unwrap();
++        assert_eq!(&shared_offset, b"00 ");
++
++        write_c_string(&mut memory, PATH, &format!("/proc/self/fd/{fd}"));
++        let reopened = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_openat,
++            [
++                libc::AT_FDCWD as u64,
++                PATH,
++                (libc::O_RDONLY | libc::O_CLOEXEC) as u64,
++                0,
++                0,
++                0,
++            ],
++        );
++        assert_eq!(reopened, 5);
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_read,
++                [reopened as u64, BUFFER, 2, 0, 0, 0],
++            ),
++            2
++        );
++        let mut fresh_offset = [0; 2];
++        memory.read(BUFFER, &mut fresh_offset).unwrap();
++        assert_eq!(&fresh_offset, b"0.");
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fcntl,
++                [reopened as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
++            ),
++            i64::from(libc::FD_CLOEXEC)
++        );
++
++        let inode = state.proc_files[&(fd as libc::c_int)];
++        for alias in [duplicate, reopened] {
++            assert_eq!(state.proc_files.get(&(alias as libc::c_int)), Some(&inode));
++            let host_fd = state.files[&(alias as libc::c_int)].as_raw_fd();
++            let required =
++                libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
++            let observed = unsafe { libc::fcntl(host_fd, libc::F_GET_SEALS) };
++            assert!(
++                observed == required || observed == (required | LINUX_F_SEAL_EXEC),
++                "unexpected alias seal policy: {observed:#x}"
++            );
++            assert_eq!(
++                unsafe { libc::fcntl(host_fd, libc::F_GETFL) } & libc::O_ACCMODE,
++                libc::O_RDONLY
++            );
++        }
++
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fchmod,
++                [(1_u64 << 32) | fd as u64, 0o666, 0, 0, 0, 0],
++            ),
++            negative_errno(libc::EPERM)
++        );
++        let host_fd = state.files[&(fd as libc::c_int)].as_raw_fd();
++        let mut host_stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
++        assert_eq!(unsafe { libc::fstat(host_fd, host_stat.as_mut_ptr()) }, 0);
++        assert_eq!(unsafe { host_stat.assume_init() }.st_mode & 0o777, 0o444);
++
++        let path_only = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_openat,
++            [
++                libc::AT_FDCWD as u64,
++                PATH,
++                (libc::O_PATH | libc::O_CLOEXEC) as u64,
++                0,
++                0,
++                0,
++            ],
++        );
++        assert_eq!(path_only, 6);
++        assert_eq!(
++            state.proc_files.get(&(path_only as libc::c_int)),
++            Some(&inode)
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fchmod,
++                [path_only as u64, 0o666, 0, 0, 0, 0],
++            ),
++            negative_errno(libc::EBADF),
++            "O_PATH validation must precede the synthetic procfs guard"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_close,
++                [path_only as u64, 0, 0, 0, 0, 0],
++            ),
++            0
++        );
++
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_openat,
++                [
++                    libc::AT_FDCWD as u64,
++                    PATH,
++                    (libc::O_RDWR | libc::O_CLOEXEC) as u64,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            negative_errno(libc::EACCES),
++            "a proc-fd reopen must preserve the synthetic file's read-only mode"
++        );
++        assert_eq!(
++            state.files.keys().copied().collect::<Vec<_>>(),
++            vec![3, 4, 5],
++            "failed reopen must not allocate a guest descriptor"
++        );
++    }
++
++    #[test]
++    fn synthetic_proc_procfd_access_gate_is_dac_independent_and_directory_specific() {
++        const PATH: u64 = 0x100;
++
++        let root = TestDir::new();
++        let carrier_path = root.0.join("permissive-carrier");
++        std::fs::write(&carrier_path, b"payload").unwrap();
++        std::fs::set_permissions(&carrier_path, std::fs::Permissions::from_mode(0o666)).unwrap();
++        let mut state = test_state(&root.0);
++        state.files.insert(
++            3,
++            std::fs::OpenOptions::new()
++                .read(true)
++                .write(true)
++                .open(&carrier_path)
++                .unwrap(),
++        );
++        state
++            .proc_files
++            .insert(3, synthetic_proc_inode(b"/proc/uptime"));
++        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
++        write_c_string(&mut memory, PATH, "/proc/self/fd/3");
++
++        for access in [libc::O_WRONLY, libc::O_RDWR] {
++            assert_eq!(
++                syscall_result(
++                    &mut memory,
++                    &mut state,
++                    libc::SYS_openat,
++                    [libc::AT_FDCWD as u64, PATH, access as u64, 0, 0, 0],
++                ),
++                negative_errno(libc::EACCES),
++                "classified regular proc carrier accepted access mode {access}"
++            );
++        }
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_openat,
++                [
++                    libc::AT_FDCWD as u64,
++                    PATH,
++                    (libc::O_RDWR | libc::O_DIRECTORY) as u64,
++                    0,
++                    0,
++                    0,
++                ],
++            ),
++            negative_errno(libc::ENOTDIR),
++            "wrong-type validation must remain host-owned"
++        );
++        let path_only = syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_openat,
++            [
++                libc::AT_FDCWD as u64,
++                PATH,
++                (libc::O_PATH | libc::O_CLOEXEC) as u64,
++                0,
++                0,
++                0,
++            ],
++        );
++        assert_eq!(path_only, 4, "O_PATH must bypass access-mode refusal");
++        assert_eq!(close(&mut state, path_only as u64), 0);
++
++        state.files.insert(4, std::fs::File::open("/proc").unwrap());
++        state.proc_files.insert(4, synthetic_proc_inode(b"/proc"));
++        write_c_string(&mut memory, PATH, "/proc/self/fd/4");
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_openat,
++                [libc::AT_FDCWD as u64, PATH, libc::O_RDWR as u64, 0, 0, 0,],
++            ),
++            negative_errno(libc::EISDIR),
++            "synthetic proc directories retain native directory precedence"
++        );
++    }
++
++    #[test]
++    fn file_mutation_guards_preserve_access_mode_and_memfd_seal_results() {
++        let root = TestDir::new();
++        let path = root.0.join("mmap-access");
++        std::fs::write(&path, vec![0xa5; PAGE_SIZE as usize]).unwrap();
++        let mut state = test_state(&root.0);
++        let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
++
++        state.files.insert(3, std::fs::File::open(&path).unwrap());
++        state.files.insert(
++            4,
++            std::fs::OpenOptions::new()
++                .read(true)
++                .write(true)
++                .open(&path)
++                .unwrap(),
++        );
++        let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
++        // SAFETY: c_path is NUL-terminated and names the live fixture file.
++        let path_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
++        assert!(path_fd >= 0, "{}", std::io::Error::last_os_error());
++        // SAFETY: open returned a new descriptor owned by this test.
++        state
++            .files
++            .insert(5, unsafe { std::fs::File::from_raw_fd(path_fd) });
++
++        // SAFETY: the name is a valid NUL-terminated C string.
++        let sealed_fd = unsafe {
++            libc::memfd_create(
++                c"reverie-kvm-sealed-mmap-test".as_ptr(),
++                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
++            )
++        };
++        assert!(sealed_fd >= 0, "{}", std::io::Error::last_os_error());
++        // SAFETY: memfd_create returned a new descriptor owned by this test.
++        let sealed = unsafe { std::fs::File::from_raw_fd(sealed_fd) };
++        // SAFETY: sealed_fd is a live writable memfd and the length is nonnegative.
++        assert_eq!(
++            unsafe { libc::ftruncate(sealed_fd, PAGE_SIZE as libc::off_t) },
++            0
++        );
++        assert_eq!(
++            unsafe {
++                libc::fcntl(
++                    sealed_fd,
++                    libc::F_ADD_SEALS,
++                    libc::F_SEAL_WRITE
++                        | libc::F_SEAL_GROW
++                        | libc::F_SEAL_SHRINK
++                        | libc::F_SEAL_SEAL,
++                )
++            },
++            0
++        );
++        state.files.insert(6, sealed);
++
++        // A FUTURE_WRITE-only seal has the same new-mapping prohibition as
++        // F_SEAL_WRITE while leaving writes through the existing description
++        // available. The KVM mmap admission must honor that distinct shape.
++        let future_write_fd = unsafe {
++            libc::memfd_create(
++                c"reverie-kvm-future-write-mmap-test".as_ptr(),
++                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
++            )
++        };
++        assert!(future_write_fd >= 0, "{}", std::io::Error::last_os_error());
++        // SAFETY: future_write_fd is a live writable memfd and the length is nonnegative.
++        assert_eq!(
++            unsafe { libc::ftruncate(future_write_fd, PAGE_SIZE as libc::off_t) },
++            0
++        );
++        assert_eq!(
++            unsafe {
++                libc::fcntl(
++                    future_write_fd,
++                    libc::F_ADD_SEALS,
++                    libc::F_SEAL_FUTURE_WRITE,
++                )
++            },
++            0
++        );
++        // SAFETY: memfd_create returned a new descriptor owned by this test.
++        state
++            .files
++            .insert(7, unsafe { std::fs::File::from_raw_fd(future_write_fd) });
++
++        memory.write(0x100, b"x").unwrap();
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_pwrite64,
++                [(1_u64 << 32) | 3, 0x100, 1, 0, 0, 0],
++            ),
++            negative_errno(libc::EBADF),
++            "ordinary O_RDONLY files retain their non-proc positioned-write result"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_ftruncate,
++                [3, 0, 0, 0, 0, 0],
++            ),
++            negative_errno(libc::EINVAL),
++            "an O_RDONLY ordinary file follows Linux ftruncate access semantics"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_ftruncate,
++                [(1_u64 << 32) | 5, 0, 0, 0, 0, 0],
++            ),
++            negative_errno(libc::EBADF),
++            "an O_PATH description remains unusable for ftruncate"
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_ftruncate,
++                [(1_u64 << 32) | 4, 2048, 0, 0, 0, 0],
++            ),
++            0,
++            "a writable ordinary file must remain truncatable"
++        );
++        assert_eq!(std::fs::metadata(&path).unwrap().len(), 2048);
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_fchmod,
++                [(1_u64 << 32) | 4, 0o640, 0, 0, 0, 0],
++            ),
++            0,
++            "an ordinary writable file must remain chmod-capable"
++        );
++        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o640);
++
++        let shared_write = |fd| {
++            [
++                0,
++                PAGE_SIZE,
++                (libc::PROT_READ | libc::PROT_WRITE) as u64,
++                libc::MAP_SHARED as u64,
++                fd,
++                0,
++            ]
++        };
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_mmap,
++                shared_write((1_u64 << 32) | 3),
++            ),
++            negative_errno(libc::EACCES)
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_mmap,
++                shared_write((1_u64 << 32) | 5),
++            ),
++            negative_errno(libc::EBADF)
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_mmap,
++                shared_write((1_u64 << 32) | 6),
++            ),
++            negative_errno(libc::EPERM)
++        );
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_mmap,
++                shared_write((1_u64 << 32) | 7),
++            ),
++            negative_errno(libc::EPERM)
++        );
++        let expected_address = state.mmap_next;
++        assert_eq!(
++            syscall_result(
++                &mut memory,
++                &mut state,
++                libc::SYS_mmap,
++                shared_write((1_u64 << 32) | 4),
++            ),
++            expected_address as i64,
++            "an unsealed O_RDWR ordinary file must remain shared-writable"
++        );
++    }
++
+     // AUTONOMOUS-BOT-IMPLEMENTED
+     // TODO-HUMAN-REVIEW(PR-225): regression for the /proc/self/mountinfo
+     // synthetic surface (content bytes, read path, and inode round-trip) added
+diff --git a/reverie-kvm/tests/static_elf.rs b/reverie-kvm/tests/static_elf.rs
+index 5552e440..e32f10ca 100644
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -2109,6 +2109,111 @@ int main(void) {
+ }
+ "#;
+ 
++#[test]
++fn real_kvm_synthetic_proc_snapshot_is_immutable_and_opath_correct() {
++    assert!(kvm_available(
++        "real_kvm_synthetic_proc_snapshot_is_immutable_and_opath_correct"
++    ));
++    let directory = TestDirectory::new();
++    let executable = compile_c_program(
++        &directory.0,
++        "synthetic-proc-snapshot",
++        SYNTHETIC_PROC_SNAPSHOT_PROGRAM,
++    );
++    let (stdout, stderr) = run_host_program_captured(
++        executable.to_str().unwrap(),
++        &[executable.to_str().unwrap()],
++        &directory.0,
++    );
++    assert_eq!(stdout, b"synthetic proc snapshot PASS\n");
++    assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
++}
++
++const SYNTHETIC_PROC_SNAPSHOT_PROGRAM: &str = r#"
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#define CHECK(expression) do { \
++    if (!(expression)) { \
++        dprintf(STDERR_FILENO, "failure line=%d errno=%d\n", __LINE__, errno); \
++        return 93; \
++    } \
++} while (0)
++
++#define EXPECT_ERROR(expression, expected) do { \
++    errno = 0; \
++    long result = (long)(expression); \
++    CHECK(result == -1 && errno == (expected)); \
++} while (0)
++
++static void *failed_mapping(int descriptor, int protection, int flags) {
++    errno = 0;
++    return mmap(NULL, 4096, protection, flags, descriptor, 0);
++}
++
++int main(void) {
++    static const char expected[] = "0.00 0.00\n";
++    char actual[sizeof(expected)] = {0};
++    struct stat metadata;
++
++    int descriptor = open("/proc/uptime", O_RDONLY | O_CLOEXEC);
++    CHECK(descriptor >= 0);
++    CHECK((fcntl(descriptor, F_GETFL) & O_ACCMODE) == O_RDONLY);
++    CHECK((fcntl(descriptor, F_GETFD) & FD_CLOEXEC) != 0);
++    CHECK(fstat(descriptor, &metadata) == 0);
++    CHECK(S_ISREG(metadata.st_mode));
++    CHECK((metadata.st_mode & 0777) == 0444);
++    CHECK(metadata.st_size == (off_t)(sizeof(expected) - 1));
++    CHECK(read(descriptor, actual, sizeof(actual)) == (ssize_t)(sizeof(expected) - 1));
++    CHECK(memcmp(actual, expected, sizeof(expected) - 1) == 0);
++
++    EXPECT_ERROR(write(descriptor, "x", 1), EBADF);
++    EXPECT_ERROR(syscall(SYS_pwrite64, descriptor, "x", 1, 0), ESPIPE);
++    EXPECT_ERROR(ftruncate(descriptor, 0), EINVAL);
++    EXPECT_ERROR(syscall(SYS_fallocate, descriptor, 0, 0, 1), EBADF);
++    EXPECT_ERROR(fchmod(descriptor, 0666), EPERM);
++    CHECK(fstat(descriptor, &metadata) == 0);
++    CHECK((metadata.st_mode & 0777) == 0444);
++
++    void *mapping = failed_mapping(
++        descriptor,
++        PROT_READ | PROT_WRITE,
++        MAP_SHARED
++    );
++    CHECK(mapping == MAP_FAILED && errno == EACCES);
++
++    char procfd[64];
++    CHECK(snprintf(procfd, sizeof(procfd), "/proc/self/fd/%d", descriptor) > 0);
++    EXPECT_ERROR(open(procfd, O_WRONLY), EACCES);
++    EXPECT_ERROR(open(procfd, O_RDWR), EACCES);
++
++    int path = open("/proc/uptime", O_PATH | O_CLOEXEC);
++    CHECK(path >= 0);
++    CHECK((fcntl(path, F_GETFL) & O_PATH) != 0);
++    CHECK((fcntl(path, F_GETFD) & FD_CLOEXEC) != 0);
++    EXPECT_ERROR(read(path, actual, 1), EBADF);
++    EXPECT_ERROR(syscall(SYS_pwrite64, path, "x", 1, 0), EBADF);
++    EXPECT_ERROR(syscall(SYS_pwrite64, path, "x", 0, (off_t)-1), EINVAL);
++    EXPECT_ERROR(ftruncate(path, 0), EBADF);
++    EXPECT_ERROR(ftruncate(path, -1), EINVAL);
++    EXPECT_ERROR(fchmod(path, 0666), EBADF);
++    mapping = failed_mapping(path, PROT_READ, MAP_PRIVATE);
++    CHECK(mapping == MAP_FAILED && errno == EBADF);
++
++    CHECK(close(path) == 0);
++    CHECK(close(descriptor) == 0);
++    CHECK(write(STDOUT_FILENO, "synthetic proc snapshot PASS\n", 29) == 29);
++    return 0;
++}
++"#;
++
+ #[test]
+ fn proc_root_original_mutation_vectors_match_native() {
+     assert!(kvm_available(

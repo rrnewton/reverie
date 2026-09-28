@@ -1,0 +1,5 @@
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.78s
+real 4.84
+user 6.77
+sys 0.77

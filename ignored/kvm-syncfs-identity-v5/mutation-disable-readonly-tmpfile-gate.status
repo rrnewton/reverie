@@ -1,0 +1,4 @@
+command=CARGO_INCREMENTAL=0 timeout 180s cargo test --locked -p reverie-kvm --lib synthetic_proc_ -- --nocapture --test-threads=1
+expected=FAIL rc 101 with both direct all-17 and fdinfo O_TMPFILE matrices detecting ENOTDIR instead of EINVAL
+actual_rc=101
+wall_time_seconds=26.30

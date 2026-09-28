@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.84s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-09c0d8956b925072)
+
+running 1 test
+
+thread 'executor::tests::synthetic_proc_fdinfo_unsupported_targets_use_current_policy_after_existence' (921166) panicked at reverie-kvm/src/executor.rs:29273:13:
+assertion `left == right` failed: live content-unsupported fdinfo pathname must exist: synthetic-proc
+  left: -38
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::tests::synthetic_proc_fdinfo_unsupported_targets_use_current_policy_after_existence ... FAILED
+
+failures:
+
+failures:
+    executor::tests::synthetic_proc_fdinfo_unsupported_targets_use_current_policy_after_existence
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 811 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

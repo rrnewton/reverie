@@ -1,0 +1,4 @@
+command=CARGO_INCREMENTAL=0 timeout 180s cargo test --locked -p reverie-kvm --lib executor::tests::synthetic_proc_direct_combined_open_matrix_matches_native -- --exact --nocapture
+expected=FAIL rc 101 when direct O_CREAT|O_EXCL EEXIST gate is removed
+actual_rc=101
+wall_time_seconds=22.22

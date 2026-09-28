@@ -1,0 +1,10 @@
+real-proc-rdwr-reopen: result=-1 errno=13 (EACCES)
+sealed-reader-flags: 0
+sealed-reader-seals: 15
+sealed-reader-ftruncate: result=-1 errno=22 (EINVAL)
+sealed-reader-shared-read-mmap: result=140475166236672 errno=0 (NONE)
+sealed-reader-shared-mprotect-write: result=-1 errno=13 (EACCES)
+sealed-rdwr-shared-write-mmap: result=18446744073709551615 errno=1 (EPERM)
+real 0.06
+user 0.02
+sys 0.01

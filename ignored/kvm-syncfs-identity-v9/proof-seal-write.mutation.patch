@@ -1,0 +1,11 @@
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -127,7 +127,7 @@
+ // this crate continues to build with libc versions that predate the binding.
+ const LINUX_F_SEAL_EXEC: libc::c_int = 0x0020;
+ const SYNTHETIC_PROC_REQUIRED_SEALS: libc::c_int =
+-    libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
++    libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+ const SYNTHETIC_PROC_PRESERVED_STATUS_FLAGS: libc::c_int = libc::O_APPEND
+     | libc::O_ASYNC
+     | libc::O_DSYNC

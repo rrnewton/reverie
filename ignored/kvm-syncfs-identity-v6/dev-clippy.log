@@ -1,0 +1,20 @@
+    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-syncfs-identity-20260920/reverie-kvm)
+error: this function has too many arguments (8/7)
+    --> reverie-kvm/src/elf.rs:1314:1
+     |
+1314 | / fn load_executable(
+1315 | |     memory: &mut GuestMemory,
+1316 | |     image: &[u8],
+1317 | |     argv: &[&str],
+...    |
+1322 | |     regular_create_directory_policy: RegularCreateDirectoryPolicy,
+1323 | | ) -> Result<LoadedStaticElf> {
+     | |____________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#too_many_arguments
+     = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: could not compile `reverie-kvm` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `reverie-kvm` (lib test) due to 1 previous error
