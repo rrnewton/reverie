@@ -101,11 +101,20 @@ impl Inferior {
     /// Wait for stop event reported by the target.
     pub async fn wait_for_stop(&mut self) -> Result<StopReason, Error> {
         let rx = self.stop_rx.as_mut().ok_or(Error::Detached)?;
-        let stopped = rx.recv().await.ok_or(Error::GdbServerStopEventRecvError)?;
+        let StoppedInferior {
+            reason,
+            request_tx,
+            resume_tx,
+        } = rx.recv().await.ok_or(Error::GdbServerStopEventRecvError)?;
+        // Each stop owns fresh request/resume channels. Adopt both senders
+        // synchronously before exposing the reason to the session so dropping
+        // the session closes the exact channels whose receivers own this stop.
+        self.request_tx = Some(request_tx);
+        self.resume_tx = Some(resume_tx);
         // clear `resume_pending` flag as we got a new stop event, implying
         //  a new resume *is* to be expected.
         self.resume_pending = false;
-        Ok(stopped.reason)
+        Ok(reason)
     }
 }
 
@@ -127,4 +136,170 @@ pub struct ResumeInferior {
     pub action: ResumeAction,
     /// Detach (from gdb) after this resume.
     pub detach: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use reverie::ExitStatus;
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_for_stop_replaces_legacy_channels_with_exact_stop_channels() {
+        let pid = Pid::from_raw(101);
+        let mut inferior = Inferior::new(InferiorThreadId::new(pid, pid));
+        let (legacy_request_tx, mut legacy_request_rx) = mpsc::channel(1);
+        let (legacy_resume_tx, mut legacy_resume_rx) = mpsc::channel(1);
+        let (stop_tx, stop_rx) = mpsc::channel(1);
+        let (fresh_request_tx, mut fresh_request_rx) = mpsc::channel(1);
+        let (fresh_resume_tx, mut fresh_resume_rx) = mpsc::channel(1);
+        inferior.request_tx = Some(legacy_request_tx);
+        inferior.resume_tx = Some(legacy_resume_tx);
+        inferior.stop_rx = Some(stop_rx);
+        inferior.resume_pending = true;
+
+        stop_tx
+            .send(StoppedInferior {
+                reason: StopReason::Exited(pid, ExitStatus::Exited(0)),
+                request_tx: fresh_request_tx,
+                resume_tx: fresh_resume_tx,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            inferior.wait_for_stop().await.unwrap(),
+            StopReason::Exited(observed, ExitStatus::Exited(0)) if observed == pid
+        ));
+        assert!(!inferior.resume_pending);
+        assert!(matches!(
+            legacy_request_rx.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            legacy_resume_rx.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            fresh_request_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            fresh_resume_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        inferior
+            .request_tx
+            .as_ref()
+            .unwrap()
+            .send(GdbRequest::ReadInferiorMemory(0x1234, 17, reply_tx))
+            .await
+            .unwrap();
+        assert!(matches!(
+            fresh_request_rx.try_recv().unwrap(),
+            GdbRequest::ReadInferiorMemory(0x1234, 17, _)
+        ));
+        assert!(matches!(
+            fresh_request_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+
+        let expected = ResumeInferior {
+            action: ResumeAction::Step(None),
+            detach: false,
+        };
+        inferior.notify_resume(expected).await.unwrap();
+        let observed = fresh_resume_rx.try_recv().unwrap();
+        assert_eq!(observed.action, expected.action);
+        assert_eq!(observed.detach, expected.detach);
+        assert!(matches!(
+            fresh_resume_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_detach_survives_inferior_drop_then_fresh_resume_channel_closes() {
+        let pid = Pid::from_raw(102);
+        let mut inferior = Inferior::new(InferiorThreadId::new(pid, pid));
+        let (stop_tx, stop_rx) = mpsc::channel(1);
+        let (fresh_request_tx, mut fresh_request_rx) = mpsc::channel(1);
+        let (fresh_resume_tx, mut fresh_resume_rx) = mpsc::channel(1);
+        inferior.stop_rx = Some(stop_rx);
+        stop_tx
+            .send(StoppedInferior {
+                reason: StopReason::Exited(pid, ExitStatus::Exited(0)),
+                request_tx: fresh_request_tx,
+                resume_tx: fresh_resume_tx,
+            })
+            .await
+            .unwrap();
+        let _ = inferior.wait_for_stop().await.unwrap();
+        assert!(matches!(
+            fresh_request_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            fresh_resume_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+
+        let expected = ResumeInferior {
+            action: ResumeAction::Continue(None),
+            detach: true,
+        };
+        inferior.notify_resume(expected).await.unwrap();
+        drop(inferior);
+
+        let observed = fresh_resume_rx.try_recv().unwrap();
+        assert_eq!(observed.action, expected.action);
+        assert_eq!(observed.detach, expected.detach);
+        assert!(matches!(
+            fresh_resume_rx.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            fresh_request_rx.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_inferior_without_resume_closes_both_fresh_stop_channels() {
+        let pid = Pid::from_raw(103);
+        let mut inferior = Inferior::new(InferiorThreadId::new(pid, pid));
+        let (stop_tx, stop_rx) = mpsc::channel(1);
+        let (fresh_request_tx, mut fresh_request_rx) = mpsc::channel(1);
+        let (fresh_resume_tx, mut fresh_resume_rx) = mpsc::channel(1);
+        inferior.stop_rx = Some(stop_rx);
+        stop_tx
+            .send(StoppedInferior {
+                reason: StopReason::Exited(pid, ExitStatus::Exited(0)),
+                request_tx: fresh_request_tx,
+                resume_tx: fresh_resume_tx,
+            })
+            .await
+            .unwrap();
+        let _ = inferior.wait_for_stop().await.unwrap();
+        assert!(matches!(
+            fresh_request_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            fresh_resume_rx.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        drop(inferior);
+
+        assert!(matches!(
+            fresh_request_rx.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            fresh_resume_rx.try_recv(),
+            Err(TryRecvError::Disconnected)
+        ));
+    }
 }

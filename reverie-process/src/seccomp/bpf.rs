@@ -135,6 +135,15 @@ impl Filter {
         self.filter.is_empty()
     }
 
+    /// Returns the generated seccomp-BPF instructions.
+    ///
+    /// This read-only view permits callers to inspect the exact kernel policy
+    /// before loading it. The returned slice has the same order and jump
+    /// offsets that will be passed to `seccomp`.
+    pub fn instructions(&self) -> &[sock_filter] {
+        &self.filter
+    }
+
     fn install(&self, flags: FilterFlags) -> Result<i32, Errno> {
         let len = self.filter.len();
 
