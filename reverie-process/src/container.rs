@@ -854,7 +854,7 @@ impl Container {
         // NOTE: Must use a dynamically allocated stack here. Programs expect to
         // have at least 2 MB of stack space and if we've already used up some
         // stack space before this is called we could overflow the stack.
-        let mut stack = child_stack();
+        let mut stack = child_stack()?;
 
         // Disable io redirection just before forking. We want the child process to
         // be able to call `println!()` and have that output go to stdout.
@@ -1007,7 +1007,8 @@ impl Container {
         let reader_fd = reader.as_raw_fd();
         let parent_fd = parent_socket.fd.as_raw_fd();
         let child_fd = child_socket.fd.as_raw_fd();
-        let mut stack = child_stack();
+        let mut stack =
+            child_stack().map_err(|error| StartupRunError::BeforeClone(error.into()))?;
         let clone_flags = self.namespace.bits() | libc::SIGCHLD;
         #[cfg(feature = "nightly")]
         let output_capture = std::io::set_output_capture(None);
@@ -1264,7 +1265,7 @@ impl Container {
             writer_fd: writer.as_raw_fd(),
             deadline,
         };
-        let mut stack = child_stack();
+        let mut stack = child_stack().map_err(|error| before(error.into()))?;
         #[cfg(feature = "nightly")]
         let output_capture = std::io::set_output_capture(None);
         let namespace = self.namespace;
@@ -1370,7 +1371,7 @@ impl Container {
         let (reader, writer) = pipe().map_err(|error| before(error.into()))?;
         let reader_fd = reader.as_raw_fd();
         let writer_fd = writer.as_raw_fd();
-        let mut stack = child_stack();
+        let mut stack = child_stack().map_err(|error| before(error.into()))?;
         #[cfg(feature = "nightly")]
         let output_capture = std::io::set_output_capture(None);
         let namespace = self.namespace;
@@ -1460,7 +1461,7 @@ impl Container {
         };
         let (mut reader, writer) = pipe()?;
         let writer_fd = writer.as_raw_fd();
-        let mut stack = child_stack();
+        let mut stack = child_stack()?;
 
         #[cfg(feature = "nightly")]
         let output_capture = std::io::set_output_capture(None);
@@ -3230,7 +3231,7 @@ mod tests {
         let (reader, writer) = pipe().unwrap();
         let reader_fd = reader.as_raw_fd();
         let writer_fd = writer.as_raw_fd();
-        let mut stack = child_stack();
+        let mut stack = child_stack().unwrap();
         let child = super::super::clone::clone_with_stack_owned(
             || {
                 unsafe { libc::close(reader_fd) };
@@ -3320,7 +3321,7 @@ mod tests {
             libc::CLONE_PARENT,
             libc::CLONE_DETACHED,
         ] {
-            let mut stack = child_stack();
+            let mut stack = child_stack().unwrap();
             let result = clone_with_stack_owned(
                 || panic!("invalid flags must not clone"),
                 Namespace::from_bits_retain(flag),
@@ -3336,7 +3337,7 @@ mod tests {
                     if atomic {
                         let _fault =
                             OwnedCloneFaultGuard::install(OwnedCloneTestFault::ExhaustAtClone);
-                        let mut stack = child_stack();
+                        let mut stack = child_stack().unwrap();
                         clone_with_stack_owned(|| 0, Namespace::empty(), &mut stack)
                             .err()
                             .unwrap()
@@ -3346,7 +3347,7 @@ mod tests {
                             rlim_max: 0,
                         };
                         assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
-                        let mut stack = child_stack();
+                        let mut stack = child_stack().unwrap();
                         clone_with_stack_owned(|| 0, Namespace::empty(), &mut stack)
                             .err()
                             .unwrap()
@@ -3438,7 +3439,7 @@ mod tests {
         let rfd = reader.as_raw_fd();
         let wfd = writer.as_raw_fd();
         let (mapping, shared) = new_shared_drop_state();
-        let mut stack = child_stack();
+        let mut stack = child_stack().unwrap();
         let child = super::super::clone::clone_with_stack_owned(
             || {
                 unsafe { libc::close(rfd) };
@@ -3519,7 +3520,7 @@ mod tests {
             .seccomp(filter)
             .run(|| {
                 let (mapping, shared) = new_shared_drop_state();
-                let mut stack = child_stack();
+                let mut stack = child_stack().unwrap();
                 let child = super::super::clone::clone_with_stack_owned(
                     || {
                         while !unsafe { &*shared }.release.load(Ordering::Acquire) {
@@ -3563,7 +3564,7 @@ mod tests {
 
     #[test]
     fn owned_atomic_immediate_exit_has_actual_status_and_reclaims_fd() {
-        let mut stack = child_stack();
+        let mut stack = child_stack().unwrap();
         let child =
             super::super::clone::clone_with_stack_owned(|| 17, Namespace::empty(), &mut stack)
                 .unwrap();
@@ -4079,7 +4080,7 @@ mod tests {
     #[test]
     fn owned_stalled_serializer_requires_outer_process_containment() {
         let (mapping, shared) = new_shared_drop_state();
-        let mut stack = child_stack();
+        let mut stack = child_stack().unwrap();
         // The supervised outer process is PID-namespace init. Its forced death
         // also terminates the intentionally stuck inner serializer; no orphan
         // helper is left behind. This is a native control, not a guest run.
