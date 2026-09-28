@@ -32,7 +32,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
-const CHANNEL_MAGIC: &[u8; 8] = b"RVDBTE2\0";
+const CHANNEL_MAGIC: &[u8; 8] = b"RVDBTE3\0";
 const CHANNEL_HEADER_LEN: usize = 80;
 const CHANNEL_TOKEN_LEN: usize = 32;
 const CHANNEL_NAME_LEN: usize = 16;
@@ -47,6 +47,8 @@ const FRAME_EXEC_CANCEL: u8 = 4;
 const FRAME_FINAL: u8 = 5;
 const FRAME_ERROR: u8 = 6;
 const FRAME_CHILD: u8 = 7;
+const FINAL_GUEST_COMPLETED: u8 = 0;
+const FINAL_BACKEND_FAILURE: u8 = 1;
 
 const FILE_MAGIC: &[u8; 8] = b"RVDBTEF1";
 const FILE_VERSION: u16 = 1;
@@ -61,6 +63,38 @@ const SESSION_NEW: u8 = 0;
 const SESSION_RUNNING: u8 = 1;
 const SESSION_FINISHING: u8 = 2;
 const SESSION_FINISHED: u8 = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FinalOutcome {
+    GuestCompleted,
+    BackendFailure,
+}
+
+impl TryFrom<&[u8]> for FinalOutcome {
+    type Error = io::Error;
+
+    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
+        match payload {
+            [FINAL_GUEST_COMPLETED] => Ok(Self::GuestCompleted),
+            [FINAL_BACKEND_FAILURE] => Ok(Self::BackendFailure),
+            [_] => Err(invalid_data("DBT evidence FINAL frame outcome is unknown")),
+            _ => Err(invalid_data(
+                "DBT evidence FINAL frame outcome has the wrong length",
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DbtBackendFailure;
+
+impl std::fmt::Display for DbtBackendFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DBT backend or Tool reported an internal failure")
+    }
+}
+
+impl std::error::Error for DbtBackendFailure {}
 
 #[derive(Clone, Debug, Default)]
 struct AcknowledgementDropControl {
@@ -448,6 +482,7 @@ struct Collector {
     payload_bytes: u64,
     hash: u64,
     saw_start: bool,
+    backend_failure: bool,
 }
 
 impl Collector {
@@ -462,6 +497,7 @@ impl Collector {
             payload_bytes: 0,
             hash: FNV_OFFSET,
             saw_start: false,
+            backend_failure: false,
         }
     }
 
@@ -554,9 +590,7 @@ impl Collector {
                 image.next_sequence += 1;
             }
             FRAME_FINAL => {
-                if !payload.is_empty() {
-                    return Err(invalid_data("DBT evidence FINAL frame carried payload"));
-                }
+                let outcome = FinalOutcome::try_from(payload)?;
                 self.require_initialized(process)?;
                 let image = self.image_for(process, sequence)?;
                 if image.pending_exec {
@@ -564,6 +598,7 @@ impl Collector {
                 }
                 self.images.remove(&process);
                 self.terminal_processes.insert(process);
+                self.backend_failure |= outcome == FinalOutcome::BackendFailure;
             }
             FRAME_ERROR => {
                 let detail = String::from_utf8_lossy(payload);
@@ -764,6 +799,9 @@ impl Collector {
     fn finish(self) -> io::Result<CollectedEvidence> {
         if !self.saw_start {
             return Err(invalid_data("DBT evidence received no image START"));
+        }
+        if self.backend_failure {
+            return Err(io::Error::other(DbtBackendFailure));
         }
         if self.images.values().any(|image| !image.initialized) {
             return Err(invalid_data(
@@ -1372,7 +1410,7 @@ mod tests {
         child_payload.extend_from_slice(&23_u64.to_le_bytes());
         for (kind, payload) in [
             (FRAME_EXEC_CANCEL, Vec::new()),
-            (FRAME_FINAL, Vec::new()),
+            (FRAME_FINAL, vec![FINAL_GUEST_COMPLETED]),
             (FRAME_CHILD, child_payload),
         ] {
             let mut collector = Collector::new();
@@ -1450,10 +1488,10 @@ mod tests {
             )
             .unwrap();
         collector
-            .absorb(FRAME_FINAL, first_process, 3, &[])
+            .absorb(FRAME_FINAL, first_process, 3, &[FINAL_GUEST_COMPLETED])
             .unwrap();
         collector
-            .absorb(FRAME_FINAL, second_process, 3, &[])
+            .absorb(FRAME_FINAL, second_process, 3, &[FINAL_GUEST_COMPLETED])
             .unwrap();
 
         let collected = collector.finish().unwrap();
@@ -1487,7 +1525,9 @@ mod tests {
                 &encode_records(&[INITIALIZATION_RECORD]),
             )
             .unwrap();
-        collector.absorb(FRAME_FINAL, process, 2, &[]).unwrap();
+        collector
+            .absorb(FRAME_FINAL, process, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
         assert!(collector.absorb(FRAME_START, process, 0, &[]).is_err());
         assert_eq!(collector.finish().unwrap().record_count, 2);
     }
@@ -1500,8 +1540,135 @@ mod tests {
         };
         let mut collector = Collector::new();
         start_and_initialize(&mut collector, process);
-        collector.absorb(FRAME_FINAL, process, 2, &[]).unwrap();
-        assert!(collector.absorb(FRAME_FINAL, process, 3, &[]).is_err());
+        collector
+            .absorb(FRAME_FINAL, process, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+        assert!(
+            collector
+                .absorb(FRAME_FINAL, process, 3, &[FINAL_GUEST_COMPLETED])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn collector_requires_exact_final_outcome() {
+        let process = ProcessKey {
+            pid: 32,
+            start_time: 38,
+        };
+        for (payload, expected) in [
+            (Vec::new(), "wrong length"),
+            (vec![FINAL_GUEST_COMPLETED, 0], "wrong length"),
+            (vec![2], "unknown"),
+        ] {
+            let mut collector = Collector::new();
+            start_and_initialize(&mut collector, process);
+            let error = collector
+                .absorb(FRAME_FINAL, process, 2, &payload)
+                .unwrap_err();
+            assert!(
+                error.to_string().contains(expected),
+                "FINAL payload {payload:?} was refused for the wrong reason: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn collector_refuses_a_backend_failure_from_any_process() {
+        let root = ProcessKey {
+            pid: 33,
+            start_time: 39,
+        };
+        let child = ProcessKey {
+            pid: 34,
+            start_time: 40,
+        };
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, root);
+        start_and_initialize(&mut collector, child);
+        collector
+            .absorb(FRAME_FINAL, child, 2, &[FINAL_BACKEND_FAILURE])
+            .unwrap();
+        collector
+            .absorb(FRAME_FINAL, root, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
+
+        let error = collector.finish().err().unwrap();
+        assert!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<DbtBackendFailure>())
+                .is_some(),
+            "collector returned the wrong error: {error}"
+        );
+    }
+
+    #[test]
+    fn collector_reports_a_child_backend_failure_before_a_missing_root_final() {
+        let root = ProcessKey {
+            pid: 35,
+            start_time: 41,
+        };
+        let child = ProcessKey {
+            pid: 36,
+            start_time: 42,
+        };
+        let mut child_payload = Vec::from(child.pid.to_le_bytes());
+        child_payload.extend_from_slice(&child.start_time.to_le_bytes());
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, root);
+        collector
+            .absorb(FRAME_CHILD, root, 2, &child_payload)
+            .unwrap();
+        start_and_initialize(&mut collector, child);
+        collector
+            .absorb(FRAME_FINAL, child, 2, &[FINAL_BACKEND_FAILURE])
+            .unwrap();
+
+        let error = collector.finish().err().unwrap();
+        assert!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<DbtBackendFailure>())
+                .is_some(),
+            "collector returned the wrong error: {error}"
+        );
+    }
+
+    #[test]
+    fn collector_retains_backend_failure_across_exec_and_exact_retry() {
+        let process = ProcessKey {
+            pid: 35,
+            start_time: 41,
+        };
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, process);
+        collector.absorb(FRAME_EXEC, process, 2, &[]).unwrap();
+        start_and_initialize(&mut collector, process);
+
+        let payload = [FINAL_BACKEND_FAILURE];
+        let digest = frame_digest(FRAME_FINAL, 2, &payload);
+        collector
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, digest, &payload)
+            .unwrap();
+        collector
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, digest, &payload)
+            .unwrap();
+        let changed_payload = [FINAL_GUEST_COMPLETED];
+        let changed_digest = frame_digest(FRAME_FINAL, 2, &changed_payload);
+        let changed = collector
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, changed_digest, &changed_payload)
+            .unwrap_err();
+        assert!(changed.to_string().contains("retry changed"));
+
+        let error = collector.finish().err().unwrap();
+        assert!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<DbtBackendFailure>())
+                .is_some(),
+            "collector returned the wrong error: {error}"
+        );
     }
 
     #[test]
@@ -1540,12 +1707,13 @@ mod tests {
             )
             .unwrap();
 
-        let final_digest = frame_digest(FRAME_FINAL, 2, &[]);
+        let final_payload = [FINAL_GUEST_COMPLETED];
+        let final_digest = frame_digest(FRAME_FINAL, 2, &final_payload);
         collector
-            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, final_digest, &[])
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, final_digest, &final_payload)
             .unwrap();
         collector
-            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, final_digest, &[])
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 2, final_digest, &final_payload)
             .unwrap();
         let collected = collector.finish().unwrap();
         assert_eq!(collected.record_count, 1);
@@ -1564,9 +1732,10 @@ mod tests {
             .absorb_or_acknowledge_retry(FRAME_START, process, 0, start_digest, &[])
             .unwrap();
 
-        let changed_digest = frame_digest(FRAME_FINAL, 0, &[]);
+        let changed_payload = [FINAL_GUEST_COMPLETED];
+        let changed_digest = frame_digest(FRAME_FINAL, 0, &changed_payload);
         let error = collector
-            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 0, changed_digest, &[])
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 0, changed_digest, &changed_payload)
             .unwrap_err();
         assert!(
             error
@@ -1596,7 +1765,9 @@ mod tests {
         collector
             .absorb(FRAME_EXEC_CANCEL, process, 3, &[])
             .unwrap();
-        collector.absorb(FRAME_FINAL, process, 4, &[]).unwrap();
+        collector
+            .absorb(FRAME_FINAL, process, 4, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
         collector.finish().unwrap();
     }
 
@@ -1613,9 +1784,13 @@ mod tests {
         let mut collector = Collector::new();
         start_and_initialize(&mut collector, root);
         start_and_initialize(&mut collector, descendant);
-        collector.absorb(FRAME_FINAL, root, 2, &[]).unwrap();
+        collector
+            .absorb(FRAME_FINAL, root, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
         assert!(collector.has_admitted(descendant));
-        collector.absorb(FRAME_FINAL, descendant, 2, &[]).unwrap();
+        collector
+            .absorb(FRAME_FINAL, descendant, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
         collector.finish().unwrap();
     }
 
@@ -1637,7 +1812,9 @@ mod tests {
         collector
             .absorb(FRAME_CHILD, root, 2, &child_payload)
             .unwrap();
-        collector.absorb(FRAME_FINAL, root, 3, &[]).unwrap();
+        collector
+            .absorb(FRAME_FINAL, root, 3, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
         assert!(collector.finish().is_err());
     }
 
@@ -1657,11 +1834,15 @@ mod tests {
         let mut collector = Collector::new();
         start_and_initialize(&mut collector, root);
         start_and_initialize(&mut collector, child);
-        collector.absorb(FRAME_FINAL, child, 2, &[]).unwrap();
+        collector
+            .absorb(FRAME_FINAL, child, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
         collector
             .absorb(FRAME_CHILD, root, 2, &child_payload)
             .unwrap();
-        collector.absorb(FRAME_FINAL, root, 3, &[]).unwrap();
+        collector
+            .absorb(FRAME_FINAL, root, 3, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
         collector.finish().unwrap();
     }
 
@@ -1716,7 +1897,9 @@ mod tests {
         collector
             .absorb(FRAME_DATA, descendant, 1, &payload)
             .unwrap();
-        collector.absorb(FRAME_FINAL, descendant, 2, &[]).unwrap();
+        collector
+            .absorb(FRAME_FINAL, descendant, 2, &[FINAL_GUEST_COMPLETED])
+            .unwrap();
         collector.finish().unwrap();
 
         unsafe {
@@ -1766,6 +1949,31 @@ mod tests {
             hash: FNV_OFFSET,
         };
         assert!(finalize_output(&mut file, Ok(collected), false).is_err());
+        assert_eq!(file.metadata().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn backend_failure_truncates_without_publishing_an_artifact() {
+        let process = ProcessKey {
+            pid: 107,
+            start_time: 109,
+        };
+        let mut collector = Collector::new();
+        start_and_initialize(&mut collector, process);
+        collector
+            .absorb(FRAME_FINAL, process, 2, &[FINAL_BACKEND_FAILURE])
+            .unwrap();
+
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"guest-controlled bytes").unwrap();
+        let error = finalize_output(&mut file, collector.finish(), true).unwrap_err();
+        assert!(
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<DbtBackendFailure>())
+                .is_some(),
+            "finalization returned the wrong error: {error}"
+        );
         assert_eq!(file.metadata().unwrap().len(), 0);
     }
 
@@ -1990,6 +2198,74 @@ mod tests {
         assert!(version_check < first_runtime_callback);
         assert!(source.contains("reverie_dbt_runtime_thread_created_v2("));
         assert!(source.contains("reverie_dbt_runtime_background_init_v2("));
+    }
+
+    #[test]
+    fn native_internal_exits_mark_the_final_outcome() {
+        let source = include_str!("../native/client.c");
+        let failure_marker = source
+            .split_once("static void mark_backend_failure(void) {")
+            .unwrap()
+            .1
+            .split_once("static bool evidence_flush_locked")
+            .unwrap()
+            .0;
+        assert!(
+            failure_marker
+                .find("atomic_store_explicit(&runtime_backend_failure")
+                .unwrap()
+                < failure_marker.find("evidence_sender_locked();").unwrap()
+        );
+
+        let evidence_flush = source
+            .split_once("static bool evidence_flush_locked(")
+            .unwrap()
+            .1
+            .split_once("static bool evidence_flush(")
+            .unwrap()
+            .0;
+        assert!(evidence_flush.contains(
+            "sender->backend_failure |= atomic_load_explicit(\n          &runtime_backend_failure"
+        ));
+
+        let exit_runtime_tree = source
+            .split_once("static void exit_runtime_tree(int exit_code) {")
+            .unwrap()
+            .1
+            .split_once("#define EVIDENCE_CHANNEL_HEADER_LEN")
+            .unwrap()
+            .0;
+        assert!(
+            exit_runtime_tree.find("mark_backend_failure();").unwrap()
+                < exit_runtime_tree
+                    .find("dr_exit_process(exit_code);")
+                    .unwrap()
+        );
+
+        let background_start = source
+            .split_once("static void ensure_runtime_background(void) {")
+            .unwrap()
+            .1
+            .split_once("DR_EXPORT void dr_client_main")
+            .unwrap()
+            .0;
+        assert!(
+            background_start.contains("exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);")
+        );
+
+        // The other direct call is the ABI refusal before the evidence transport
+        // and exit callback exist. It cannot report a terminal outcome and must
+        // continue to fail as missing evidence.
+        assert_eq!(source.matches("dr_exit_process(").count(), 2);
+        let main = source
+            .split_once("DR_EXPORT void dr_client_main")
+            .unwrap()
+            .1;
+        let abi_refusal = main.find("dr_exit_process(101);").unwrap();
+        let evidence_initialization = main.find("initialize_evidence_transport();").unwrap();
+        let exit_registration = main.find("drmgr_register_exit_event(event_exit);").unwrap();
+        assert!(abi_refusal < evidence_initialization);
+        assert!(abi_refusal < exit_registration);
     }
 
     #[test]
