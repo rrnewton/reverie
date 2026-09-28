@@ -157,6 +157,11 @@ pub(crate) enum RetiredReason {
     /// The guest enabled syscall user dispatch, which must never see an
     /// `int 0x80` entry that plain ptrace would not produce.
     Sud,
+    /// The site carried a number plain ptrace's filter allows without a stop
+    /// (`rt_sigreturn`, or a number the syscall table does not know). The
+    /// tracer ran that call invisibly and then restored the site, so the
+    /// allowed number never costs a stop again (P2 spec O4 rule 3).
+    AllowClass,
 }
 
 /// Whether a site's bytes are currently patched.
@@ -416,14 +421,36 @@ pub enum TrapOnlyFailure {
         /// The reported syscall number.
         orig_rax: i64,
     },
-    /// A patched site carried a number the tool does not subscribe to (or
-    /// `rt_sigreturn`). Running it invisibly is not implemented yet.
-    #[error("TrapOnlyAllowClassUnsupported: site {site:#x} carried unsubscribed syscall {nr}")]
-    AllowClassUnsupported {
+    /// A timer single-step ended at a patched site's `int 0x80` stop that
+    /// carries a number plain ptrace's filter allows without a stop (P2 spec
+    /// O4 rule 4). Under plain ptrace that step runs the syscall and ends
+    /// after it; reproducing that inside the timer's step loop is not
+    /// implemented, so the run fails closed instead of resuming the stop.
+    #[error(
+        "TrapOnlyAllowClassInTimerStep: a timer single-step reached site {site:#x} carrying allowed syscall {nr}"
+    )]
+    AllowClassInTimerStep {
+        /// The patched site.
+        site: u64,
+        /// The (sign-extended 32-bit) syscall number.
+        nr: i64,
+    },
+    /// At the syscall-exit stop of the masked hop the instruction pointer was
+    /// neither the hop target's return address nor, for `rt_sigreturn`, the
+    /// signal frame's saved instruction pointer (P2 spec O4, H4). Rewriting
+    /// the registers would resume the guest at an unknown address.
+    #[error(
+        "TrapOnlyHopExitRip: syscall {nr} for site {site:#x} left rip {rip:#x} at its exit stop, expected {expected}"
+    )]
+    HopExitRip {
         /// The patched site.
         site: u64,
         /// The syscall number.
         nr: i64,
+        /// The instruction pointer found at the exit stop.
+        rip: u64,
+        /// The accepted instruction pointer(s), rendered.
+        expected: String,
     },
     /// A second executing task appeared in an address space that still had
     /// live sites or still accepted new ones: the restore that must precede
@@ -580,6 +607,9 @@ pub(crate) struct TrapOnlyTestHooks {
     /// space, a real thread as not sharing it. The creating stop itself
     /// still acts on the real flags.
     pub(crate) flip_recorded_clone_vm: std::sync::atomic::AtomicBool,
+    /// Make H4 see the slot exit stop's rip one byte past where the kernel
+    /// left it (the tracee is not changed), to exercise `TrapOnlyHopExitRip`.
+    pub(crate) displace_hop_exit_rip: std::sync::atomic::AtomicBool,
     /// Every table the run created after the root one, labelled by how
     /// (`fork`, `share`, `exec`), so a test can inspect non-root tables.
     pub(crate) tables: Mutex<Vec<(String, Arc<Mutex<SiteTable>>)>>,
@@ -628,6 +658,11 @@ pub(crate) struct TrapOnlyTask {
     /// The clone flags of the task-creating syscall this task is parked at,
     /// decoded at its creating stop; consumed by the new-child stop.
     pub(crate) pending_clone_flags: Option<u64>,
+    /// Set when a timer single-step ended at this task's current seccomp
+    /// stop, and consumed by H0, which must then refuse an Allow-class
+    /// number (O4 rule 4). The r11 H0 builds does not depend on it: plain
+    /// ptrace's timer clears the TF that the stepped `syscall` saved in r11.
+    pub(crate) stepped_entry: bool,
 }
 
 impl TrapOnlyTask {
@@ -639,6 +674,7 @@ impl TrapOnlyTask {
             new_child_view: None,
             in_hop: false,
             pending_clone_flags: None,
+            stepped_entry: false,
         }
     }
 
