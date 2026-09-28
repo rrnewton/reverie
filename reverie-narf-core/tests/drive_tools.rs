@@ -810,6 +810,93 @@ fn lifecycle_inject_that_parks_fails_closed() {
     );
 }
 
+/// Injects `kill(getpid(), SIGKILL)` at thread start and at each syscall,
+/// holding a `Forever` (which counts its drop) across the syscall's inject.
+#[derive(Default)]
+struct KillSelf;
+
+fn self_kill_syscall(pid: Pid) -> Syscall {
+    let args = SyscallArgs::new(
+        pid.as_raw() as usize,
+        reverie::Signal::SIGKILL as usize,
+        0,
+        0,
+        0,
+        0,
+    );
+    Syscall::from_raw(Sysno::kill, args)
+}
+
+#[async_trait]
+impl Tool for KillSelf {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        _syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let _held = Forever;
+        Ok(guest.inject(self_kill_syscall(guest.pid())).await?)
+    }
+
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        guest.inject(self_kill_syscall(guest.pid())).await?;
+        Ok(())
+    }
+}
+
+#[test]
+fn inject_that_kills_the_task_ends_a_syscall_callback_where_the_kernel_says_so() {
+    let host = host::<KillSelf>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.answer_killed_everywhere();
+    let getpid = request(Sysno::getpid, NONE);
+
+    // Enter the host directly, so the kill's exit is not reported yet: an
+    // inject taken as parked would keep the future until teardown.
+    let result = {
+        let mut services = kernel.services(root, Some(getpid));
+        host.handle_syscall(&mut services, SyscallEntry::new(getpid))
+    };
+    context_managed(result);
+    assert_eq!(FOREVER.get(), (0, 1), "dropped inside the callback");
+    assert!(kernel.exited(root));
+    assert_eq!(kernel.violations(), []);
+}
+
+#[test]
+fn lifecycle_inject_that_kills_the_task_ends_the_callback_where_the_kernel_says_so() {
+    let host = host::<KillSelf>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+    kernel.answer_killed_everywhere();
+
+    assert_eq!(
+        kernel.thread_start(&host, root).ok(),
+        Some(LifecycleOutcome::ContextManaged)
+    );
+    assert_eq!(kernel.violations(), []);
+    assert_teardowns(&kernel, &[(1000, exited(true))]);
+}
+
+#[test]
+fn lifecycle_inject_that_kills_the_task_fails_closed_where_the_kernel_is_silent() {
+    let host = host::<KillSelf>();
+    let kernel = FakeKernel::new();
+    let root = kernel.spawn_root(&host, BASE);
+
+    // `killed` answers false here, so the core cannot tell the kill from a
+    // park, which thread start cannot survive.
+    let result = kernel.thread_start(&host, root);
+    assert!(
+        matches!(result, Err(NarfFatal::InjectParked { number }) if number == Sysno::kill.id() as u32),
+        "{result:?}"
+    );
+}
+
 /// A suspended Tool whose task exits drops cleanly and releases its Tool.
 #[test]
 fn exit_while_suspended_tears_down_the_process() {
@@ -1583,6 +1670,11 @@ mod rdtsc_events {
         TailRead,
         /// Tail-inject `kill(getpid(), SIGKILL)`.
         TailKill,
+        /// Inject an `execve`, which replaces the image without ending the
+        /// task.
+        InjectExecve,
+        /// Count, and inject each `read` again after it was interrupted.
+        Reinject,
     }
 
     /// The run's counter; each request returns it and counts one.
@@ -1646,10 +1738,16 @@ mod rdtsc_events {
             guest: &mut G,
             syscall: Syscall,
         ) -> Result<i64, Error> {
-            let result = guest.inject(syscall).await;
+            let mut result = guest.inject(syscall).await;
             SEEN.with_borrow_mut(|seen| {
                 seen.push(Seen::Inject(result.map_err(|errno| errno.into_raw())))
             });
+            if matches!(*guest.config(), Plan::Reinject) && result == Err(Errno::ERESTARTSYS) {
+                result = guest.inject(syscall).await;
+                SEEN.with_borrow_mut(|seen| {
+                    seen.push(Seen::Inject(result.map_err(|errno| errno.into_raw())))
+                });
+            }
             Ok(result?)
         }
 
@@ -1669,8 +1767,10 @@ mod rdtsc_events {
                 SyscallArgs::new(PIPE_FD as usize, BASE + 0x100, 1, 0, 0, 0),
             );
             let getpid = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+            let execve =
+                Syscall::from_raw(Sysno::execve, SyscallArgs::new(BASE + 0x100, 0, 0, 0, 0, 0));
             match *guest.config() {
-                Plan::Count => {}
+                Plan::Count | Plan::Reinject => {}
                 Plan::Fail => return Err(Errno::EPERM),
                 Plan::YieldOnce => YieldOnce(false).await,
                 Plan::Wait => {
@@ -1683,6 +1783,9 @@ mod rdtsc_events {
                 }
                 Plan::InjectRead => {
                     guest.inject(read).await?;
+                }
+                Plan::InjectExecve => {
+                    guest.inject(execve).await?;
                 }
                 Plan::TailGetpid => guest.tail_inject(getpid).await,
                 Plan::TailRead => guest.tail_inject(read).await,
@@ -1800,6 +1903,47 @@ mod rdtsc_events {
     }
 
     #[test]
+    fn rdtsc_reaches_only_a_delivering_host_whose_tool_subscribed() {
+        let delivering = FakeHost::<counter1_tool::CounterLocal>::new_delivering_rdtsc(());
+        let delivering = match delivering {
+            Ok(host) => host,
+            Err(fatal) => panic!("host: {fatal:?}"),
+        };
+        // Neither host runs the Tool, whose default handler would execute a
+        // real RDTSC in the kernel. The Tool does not subscribe to RDTSC
+        // events; the first host is built with `new`, as for any such Tool,
+        // and the second with `new_delivering_rdtsc`.
+        for host in [host::<counter1_tool::CounterLocal>(), delivering] {
+            let kernel = FakeKernel::new();
+            let root = kernel.spawn_root(&host, BASE);
+            let result = kernel.rdtsc(&host, root, Rdtsc::Tsc);
+            assert!(
+                matches!(result, Err(NarfFatal::UnexpectedRdtsc)),
+                "{result:?}"
+            );
+            assert!(host.with_thread_state(root, |_| ()).is_some());
+            assert_eq!(kernel.natives(), []);
+            assert_eq!(kernel.violations(), []);
+        }
+    }
+
+    #[test]
+    fn rdtsc_errno_of_a_task_being_killed_ends_the_callback() {
+        let host = rdtsc_host::<TscScript>(Plan::Fail);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // Another task's SIGKILL is pending when the Tool fails. The task
+        // will not run again, so the errno ends the callback instead of the
+        // run, as reverie-ptrace parks an exiting task whose Tool fails.
+        kernel.sigkill(root);
+        ended(kernel.rdtsc(&host, root, Rdtsc::Tsc));
+        assert_eq!(seen(), [Seen::Rdtsc(Rdtsc::Tsc)]);
+        assert_eq!(kernel.violations(), []);
+        assert_teardowns(&kernel, &[(1000, exited(true))]);
+    }
+
+    #[test]
     fn rdtsc_errno_fails_closed_and_checks_the_task_back_in() {
         let host = rdtsc_host::<TscScript>(Plan::Fail);
         let kernel = FakeKernel::new();
@@ -1824,6 +1968,23 @@ mod rdtsc_events {
         assert_eq!(rdtsc, RdtscResult { tsc: 0, aux: None });
         assert_eq!(kernel.repoll_waits(), [1000], "one wait, between the polls");
         assert_eq!(kernel.violations(), []);
+    }
+
+    #[test]
+    fn rdtsc_tool_the_kernel_cannot_wait_for_fails_closed() {
+        let host = rdtsc_host::<TscScript>(Plan::YieldOnce);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // Unscripted, the wait is `Unsupported`: the Tool never answers, and
+        // the instruction must not complete without a value.
+        let result = kernel.rdtsc(&host, root, Rdtsc::Tsc);
+        assert!(
+            matches!(result, Err(NarfFatal::ToolSuspended)),
+            "{result:?}"
+        );
+        assert_eq!(kernel.repoll_waits(), [1000]);
+        assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
     }
 
     #[test]
@@ -1882,6 +2043,23 @@ mod rdtsc_events {
         );
         assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
         assert!(!kernel.exited(root));
+    }
+
+    #[test]
+    fn rdtsc_inject_that_replaces_the_image_fails_closed() {
+        let host = rdtsc_host::<TscScript>(Plan::InjectExecve);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        // The execve ended the task's context but not the task, and only a
+        // task that is ending may leave the instruction without a value.
+        let result = kernel.rdtsc(&host, root, Rdtsc::Tsc);
+        assert!(
+            matches!(result, Err(NarfFatal::RdtscContextManaged)),
+            "{result:?}"
+        );
+        assert!(!kernel.exited(root));
+        assert_eq!(host.global().0.load(Ordering::SeqCst), 0, "never counted");
     }
 
     #[test]
@@ -1957,6 +2135,30 @@ mod rdtsc_events {
         assert_eq!(kernel.peek(root, BASE + 0x100, 1), b"x");
         assert_eq!(kernel.natives().len(), 2, "the parked read and its restart");
         assert_eq!(kernel.violations(), []);
+    }
+
+    #[test]
+    fn rdtsc_fails_closed_when_the_interrupted_tool_injects_again() {
+        let host = rdtsc_host::<TscScript>(Plan::Reinject);
+        let kernel = FakeKernel::new();
+        let root = kernel.spawn_root(&host, BASE);
+
+        context_managed(kernel.syscall(&host, root, pipe_read()));
+        // The interrupted inject returns ERESTARTSYS, and the Tool injects
+        // again in the context the task has left.
+        let result = kernel.rdtsc(&host, root, Rdtsc::Tsc);
+        assert!(
+            matches!(result, Err(NarfFatal::TransitionAfterInterruption)),
+            "{result:?}"
+        );
+        let restart = Errno::ERESTARTSYS.into_raw();
+        assert_eq!(
+            seen(),
+            [Seen::Inject(Err(restart))],
+            "no RDTSC reached the Tool"
+        );
+        assert_eq!(host.with_thread_state(root, |_| ()), Some(()));
+        assert_eq!(kernel.natives().len(), 1, "the late inject did not run");
     }
 
     #[test]

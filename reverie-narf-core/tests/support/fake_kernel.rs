@@ -217,6 +217,8 @@ struct World {
     repoll_waits: Vec<i32>,
     /// The error `daemonize` fails with, if it is to fail.
     daemonize_refusal: Option<Errno>,
+    /// Whether `killed` answers in every callback, not only in RDTSC ones.
+    killed_everywhere: bool,
 }
 
 /// The fake kernel: tasks, address spaces and a log of what ran.
@@ -258,6 +260,7 @@ impl FakeKernel {
                 repoll_script: Vec::new(),
                 repoll_waits: Vec::new(),
                 daemonize_refusal: None,
+                killed_everywhere: false,
             })),
         }
     }
@@ -308,7 +311,7 @@ impl FakeKernel {
             context_managed: false,
             created: None,
             others: None,
-            kill_query: false,
+            kill_query: self.with(|world| world.killed_everywhere),
         }
     }
 
@@ -455,6 +458,24 @@ impl FakeKernel {
         self.with(|world| world.daemonize_refusal = Some(errno));
     }
 
+    /// Makes `killed` report the task's exit in every later callback, as a
+    /// kernel that answers it in syscall and lifecycle callbacks too would.
+    /// By default only RDTSC callbacks answer, as Narf's instruction
+    /// transition does.
+    pub fn answer_killed_everywhere(&self) {
+        self.with(|world| world.killed_everywhere = true);
+    }
+
+    /// Kills `tid`'s process with SIGKILL from outside it, as another task's
+    /// kill or group exit does while `tid` is in the kernel. The exits are
+    /// reported after the next callback returns.
+    pub fn sigkill(&self, tid: Pid) {
+        self.with(|world| {
+            let pid = world.tasks[&tid.as_raw()].pid;
+            exit_process(world, pid, ExitStatus::Signaled(Signal::SIGKILL, false));
+        });
+    }
+
     /// Queues bytes on the pipe that `read(PIPE_FD, ..)` drains.
     pub fn push_pipe(&self, bytes: &[u8]) {
         self.with(|world| world.pipe.extend_from_slice(bytes));
@@ -574,8 +595,9 @@ pub struct FakeServices<'k> {
     created: Option<CreatedTask>,
     /// The other tasks' work, run at each wait answered `Yielded`.
     others: Option<&'k mut (dyn FnMut() + Send + Sync)>,
-    /// Whether `killed` reports the task's exit, as Narf's instruction
-    /// transition does.
+    /// Whether `killed` reports the task's exit: in RDTSC callbacks, as
+    /// Narf's instruction transition does, and in every callback after
+    /// [`FakeKernel::answer_killed_everywhere`].
     kill_query: bool,
 }
 
