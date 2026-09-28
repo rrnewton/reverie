@@ -200,3 +200,62 @@ fn overtaken_precise_event_is_witnessed(branches: u64, offset: u64, witnesses: u
         "a precise event overtaken after its target must be witnessed exactly once"
     );
 }
+
+/// Where the guest goes after a trap that Reverie consumes without a Tool
+/// callback.
+#[derive(Debug, Clone, Copy)]
+enum AfterTrap {
+    /// A syscall the Tool observes, which decides the event.
+    Syscall,
+    /// Straight to `exit_group`, which retires the event with no stop the Tool
+    /// observes.
+    Exit,
+}
+
+// A trap that the Tool does not observe does not decide the event: the event
+// is left as it was, so it is witnessed only by the stop that does cancel it,
+// once, and not at all if nothing observable follows before the guest exits.
+// The trap is a guest `int3`, which Reverie consumes without delivering it.
+#[test_case(AfterTrap::Syscall, 1; "the syscall after the trap is the one witness")]
+#[test_case(AfterTrap::Exit, 0; "an exit after the trap records nothing")]
+fn a_disregarded_trap_past_the_target_is_not_witnessed(after: AfterTrap, witnesses: u64) {
+    ret_without_perf!();
+    let _owner = WITNESS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _ = reverie::take_skid_overshoot_count();
+
+    let log = check_fn_with_config::<PreciseTimerTool, _>(
+        move || {
+            block_timer_signal();
+            unsafe { syscall_no_branches(Sysno::clock_getres) };
+            do_branches(TIMEOUT_RCBS * 2);
+            unsafe { core::arch::asm!("int3") };
+            match after {
+                AfterTrap::Syscall => unsafe { syscall_no_branches(Sysno::getpid) },
+                AfterTrap::Exit => unsafe { syscall_no_branches(Sysno::exit_group) },
+            }
+        },
+        0,
+        true,
+    );
+
+    assert_eq!(
+        log.overtaking_syscalls.load(Ordering::SeqCst),
+        match after {
+            AfterTrap::Syscall => 1,
+            AfterTrap::Exit => 0,
+        },
+        "the guest must reach the syscall stop exactly once, if it makes the syscall"
+    );
+    assert_eq!(
+        log.timer_events.load(Ordering::SeqCst),
+        0,
+        "the blocked notification never delivers the event"
+    );
+    assert_eq!(
+        reverie::take_skid_overshoot_count(),
+        witnesses,
+        "only a stop that retires the event past its target may witness it"
+    );
+}
