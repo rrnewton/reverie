@@ -4711,15 +4711,27 @@ where
 /// (`stack_overflow::thread_info::LOCK`), which every thread start and exit
 /// also takes. The child inherits that lock held whenever another thread of
 /// the multi-threaded parent was starting or exiting at the `fork`, and then
-/// sleeps on it forever at exit. Buffered output is flushed first instead.
+/// sleeps on it forever at exit. Buffered output is flushed first instead,
+/// and a guest that returned normally exits with status 1 if that flush
+/// fails, so lost output is not reported as success.
 fn exit_forked_guest(code: i32) -> ! {
-    let _ = std::io::stdout().flush();
+    let rust_flush = std::io::stdout().flush();
     // SAFETY: flushes every C stdio stream (glibc resets their locks in a fork
-    // child) and exits without running the parent's runtime cleanup.
-    unsafe {
-        libc::fflush(std::ptr::null_mut());
-        libc::_exit(code)
-    }
+    // child); it returns EOF if any stream fails.
+    let c_flush_failed = unsafe { libc::fflush(std::ptr::null_mut()) } != 0;
+    let code = if code == 0 && (rust_flush.is_err() || c_flush_failed) {
+        let message = match rust_flush {
+            Err(error) => format!("Forked Rust process failed to flush stdout: {error}\n"),
+            Ok(()) => "Forked Rust process failed to flush C stdio\n".to_owned(),
+        };
+        // SAFETY: fd 2 stays open for the life of the process.
+        let _ = nix::unistd::write(unsafe { BorrowedFd::borrow_raw(2) }, message.as_bytes());
+        1
+    } else {
+        code
+    };
+    // SAFETY: exits without running the parent's runtime cleanup.
+    unsafe { libc::_exit(code) }
 }
 
 /// Spawn a function with instrumentation rather than a subprocess indicated with
@@ -4728,6 +4740,14 @@ fn exit_forked_guest(code: i32) -> ! {
 /// run the indicated function.
 ///
 /// The main use case for this entrypoint into the library is testing.
+///
+/// The child ends with `_exit` once the function returns (status 0) or panics
+/// (status 1), after flushing Rust's stdout and every C stdio stream; a
+/// failed flush turns status 0 into 1. Because it never runs the process's
+/// exit-time cleanup, `atexit` handlers and destructors registered in the
+/// child or inherited from the parent do not run. In particular, a coverage
+/// build's profile write-out (an `atexit` hook) is skipped, so code executed
+/// only inside the guest function is not counted in coverage reports.
 pub async fn spawn_fn_with_config<L, F>(
     fun: F,
     config: <L::GlobalState as GlobalTool>::Config,
