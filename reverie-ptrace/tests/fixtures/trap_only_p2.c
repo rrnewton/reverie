@@ -66,6 +66,8 @@
 #define SEND_QUEUE 0x400
 /* The tracer leaves SIGUSR1 pending for its final resume of the stop. */
 #define SEND_RESUME 0x800
+/* The Tool requests a precise timer of a5 (r8) branches at this stop. */
+#define ARM_TIMER 0x1000
 
 long tp_site_fn(long nr, long a1, long a2, long a3, long a4, long a5, long a6);
 extern char tp_site[], tp_site_end[];
@@ -144,6 +146,46 @@ __asm__(
     "  popf\n"
     "  ret\n"
     ".size t8_fn, .-t8_fn\n"
+    ".popsection\n");
+
+/* P2d: five more generic sites, `tp_genN_fn(nr)`, one per unknown-number
+ * case: a site that runs an allowed number is restored and never patched
+ * again, so each case needs its own warmed site. */
+long tp_gen_rcx, tp_gen_r11;
+#define GEN_SITE(n)                \
+  ".globl tp_gen" #n               \
+  "_fn\n"                          \
+  ".type tp_gen" #n                \
+  "_fn, @function\n"               \
+  "tp_gen" #n                      \
+  "_fn:\n"                         \
+  "  mov %rdi, %rax\n"             \
+  "  cmp %rax, %rax\n"             \
+  ".globl tp_gen" #n               \
+  "\n"                             \
+  "tp_gen" #n                      \
+  ":\n"                            \
+  "  syscall\n"                    \
+  "  mov %rcx, tp_gen_rcx(%rip)\n" \
+  "  mov %r11, tp_gen_r11(%rip)\n" \
+  "  ret\n"                        \
+  ".size tp_gen" #n "_fn, .-tp_gen" #n "_fn\n"
+long tp_gen0_fn(long nr), tp_gen1_fn(long nr), tp_gen2_fn(long nr),
+    tp_gen3_fn(long nr), tp_gen4_fn(long nr);
+extern char tp_gen0[], tp_gen1[], tp_gen2[], tp_gen3[], tp_gen4[];
+__asm__(".pushsection .text\n" GEN_SITE(0) GEN_SITE(1) GEN_SITE(2) GEN_SITE(3)
+            GEN_SITE(4) ".popsection\n");
+
+/* T4c: a signal restorer that runs rt_sigreturn through the shared site. */
+void tp_restorer(void);
+__asm__(
+    ".pushsection .text\n"
+    ".globl tp_restorer\n"
+    ".type tp_restorer, @function\n"
+    "tp_restorer:\n"
+    "  mov $15, %eax\n"
+    "  jmp tp_site\n"
+    ".size tp_restorer, .-tp_restorer\n"
     ".popsection\n");
 
 #define SITE(nr, a1, a2, a3, a4, a5) \
@@ -1324,6 +1366,262 @@ static void untraced_fork(void) {
   site_bytes("after untraced fork");
 }
 
+/* T1b: a child exits while the parent sleeps in a patched nanosleep. With
+ * SIGCHLD at SIG_DFL the sleep restarts through restart_syscall; with a
+ * handler it returns EINTR. */
+static void sigchld_sleep(const char* tag) {
+  pid_t child = fork();
+  if (child < 0)
+    die("fork");
+  if (child == 0) {
+    struct timespec d = {0, 30 * 1000 * 1000};
+    nanosleep(&d, NULL);
+    _exit(5);
+  }
+  struct timespec req = {0, 300 * 1000 * 1000}, rem = {0, 0}, t0, t1;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  long r = SITE(SYS_nanosleep, &req, &rem, 0, 0, 0);
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  long ms =
+      (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+  report_result(tag, r);
+  /* Coarse buckets: the restarted sleep ends at the full 300 ms; the
+   * interrupted one ends near the child's exit. */
+  say("%s slept-full=%d rem-set=%d\n",
+      tag,
+      ms >= 300,
+      rem.tv_sec != 0 || rem.tv_nsec != 0);
+  dump(tag);
+  int status;
+  if (waitpid(child, &status, 0) != child)
+    die("waitpid");
+  say("%s child exited=%d code=%d\n",
+      tag,
+      WIFEXITED(status),
+      WEXITSTATUS(status));
+}
+
+static void mode_sigchld_nanosleep(void) {
+  warm();
+  sigchld_sleep("sigchld-dfl");
+  install(SIGCHLD, 0, handler);
+  sigchld_sleep("sigchld-handled");
+}
+
+static volatile int tl_a = 1, tl_b = 0, tl_c = 1;
+static volatile long tl_sum;
+/* T4: the number of branch counts k = 1..TL_K a timer covers, which spans
+ * one iteration and the next iteration's arming call. */
+#define TL_K 9
+
+/* T4: a loop of 200 iterations, each with a patched getpid and three
+ * conditional branches, preempted by a precise timer at branch count
+ * k = 1..TL_K after the arming call. */
+static void mode_timer_loop(void) {
+  warm();
+  for (int i = 0; i < 200; i++) {
+    long k = (i % TL_K) + 1;
+    SITEM(SYS_getppid, 0, 0, 0, 0, k, ARM_TIMER);
+    if (tl_a)
+      tl_sum++;
+    long r = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+    if (tl_b)
+      tl_sum++;
+    if (tl_c)
+      tl_sum++;
+    if (tp_nz_r11 != 0x246)
+      say("iter %d k=%ld r11=%#lx rcx=%s\n", i, k, tp_nz_r11, where(tp_nz_rcx));
+    if (r <= 0)
+      die("timer loop getpid");
+  }
+  say("timer loop sum=%ld\n", tl_sum);
+}
+
+/* T1d: a precise timer far enough out that perf's MARKER signal (not an
+ * artificial one) starts the single-steps, targeted at branch counts around
+ * the patched site that follows a long branch loop. */
+#define PM_BRANCHES 3000
+static void mode_perf_marker(void) {
+  warm();
+  for (int c = 0; c < 4; c++) {
+    SITEM(SYS_getppid, 0, 0, 0, 0, PM_BRANCHES + 1 + c, ARM_TIMER);
+    for (volatile int j = 0; j < PM_BRANCHES; j++)
+      ;
+    long r = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+    if (tl_b)
+      tl_sum++;
+    if (tl_c)
+      tl_sum++;
+    say("marker %d getpid=%d r11=%#lx\n", c, r == getpid(), tp_nz_r11);
+  }
+}
+
+/* T4d: a timer single-step that reaches the patched site carrying an
+ * allowed number (500, which no syscall table knows). */
+static void mode_timer_allow(void) {
+  warm();
+  SITEM(SYS_getppid, 0, 0, 0, 0, 2, ARM_TIMER);
+  long r = SITE(500, 0, 0, 0, 0, 0);
+  if (tl_b)
+    tl_sum++;
+  if (tl_c)
+    tl_sum++;
+  report_result("timer allow", r);
+}
+
+/* T4b: under a partial subscription (the Tool does not subscribe to
+ * getuid), the shared site is never patched. */
+static void mode_partial(void) {
+  warm();
+  long r = SITE(SYS_getuid, 0, 0, 0, 0, 0);
+  say("getuid ok=%d\n", r == (long)getuid());
+  r = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  say("getpid after pid=%d\n", r == getpid());
+  site_bytes("partial");
+}
+
+static void sigreturn_handler(int sig, siginfo_t* si, void* uc_) {
+  handler(sig, si, uc_);
+  /* The frame's mask must win over the mask the hop saved. */
+  sigaddset(&((ucontext_t*)uc_)->uc_sigmask, SIGUSR2);
+}
+
+/* T4c: rt_sigreturn through the warmed shared site, from a restorer the
+ * guest installed with the raw rt_sigaction. */
+static void mode_sigreturn(void) {
+  warm();
+  struct {
+    void* handler;
+    unsigned long flags;
+    void* restorer;
+    unsigned long mask;
+  } ksa = {
+      (void*)sigreturn_handler,
+      SA_SIGINFO | 0x04000000 /* SA_RESTORER */,
+      (void*)tp_restorer,
+      0};
+  if (syscall(SYS_rt_sigaction, SIGUSR1, &ksa, NULL, 8) != 0)
+    die("rt_sigaction");
+  raise(SIGUSR1);
+  dump("sigreturn");
+  sigset_t set;
+  if (sigprocmask(SIG_SETMASK, NULL, &set) != 0)
+    die("sigprocmask");
+  say("after sigreturn usr1-blocked=%d usr2-blocked=%d\n",
+      sigismember(&set, SIGUSR1),
+      sigismember(&set, SIGUSR2));
+  long r = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  say("getpid after sigreturn pid=%d rcx=%s r11=%#lx\n",
+      r == getpid(),
+      where(tp_nz_rcx),
+      tp_nz_r11);
+  site_bytes("after sigreturn");
+  raise(SIGUSR1);
+  dump("sigreturn again");
+}
+
+/* The unknown-number cases: each runs through its own warmed site. */
+static void mode_unknown(void) {
+  static const struct {
+    const char* name;
+    long nr;
+    int stays_patched;
+  } cases[] = {
+      {"nr500", 500, 0},
+      {"nr-1", -1, 0},
+      {"gap337", 337, 0},
+      {"high-getpid", 0x100000027L, 1},
+      {"high500", 0x1000001f4L, 0},
+  };
+  long (*fns[])(long) = {
+      tp_gen0_fn, tp_gen1_fn, tp_gen2_fn, tp_gen3_fn, tp_gen4_fn};
+  char* sites[] = {tp_gen0, tp_gen1, tp_gen2, tp_gen3, tp_gen4};
+  long pid = getpid();
+  for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    for (int j = 0; j < 3; j++)
+      if (fns[i](SYS_getpid) != pid)
+        die("warm generic site");
+    long r = fns[i](cases[i].nr);
+    char ret[32];
+    if (r == pid)
+      snprintf(ret, sizeof ret, "<pid>");
+    else
+      snprintf(ret, sizeof ret, "%ld", r);
+    say("%s ret=%s rcx-next=%d r11=%#lx\n",
+        cases[i].name,
+        ret,
+        tp_gen_rcx == (long)sites[i] + 2,
+        tp_gen_r11);
+    say("%s getpid after=%d\n", cases[i].name, fns[i](SYS_getpid) == pid);
+    if (!cases[i].stays_patched) {
+      unsigned char* p = (unsigned char*)sites[i];
+      say("%s bytes after %02x %02x\n", cases[i].name, p[0], p[1]);
+    }
+  }
+}
+
+/* Prints the smaps fields of the mapping holding tp_site that a patched
+ * page can change. */
+static void site_smaps(const char* tag) {
+  FILE* f = fopen("/proc/self/smaps", "r");
+  if (!f)
+    die("open smaps");
+  char line[256];
+  int in = 0;
+  unsigned long site = (unsigned long)tp_site;
+  while (fgets(line, sizeof line, f)) {
+    unsigned long lo, hi;
+    if (sscanf(line, "%lx-%lx ", &lo, &hi) == 2 &&
+        strchr(line, '-') < strchr(line, ' ')) {
+      in = site >= lo && site < hi;
+      continue;
+    }
+    if (!in)
+      continue;
+    static const char* fields[] = {
+        "Rss:",
+        "Shared_Clean:",
+        "Shared_Dirty:",
+        "Private_Clean:",
+        "Private_Dirty:",
+        "Anonymous:",
+        "AnonHugePages:"};
+    for (unsigned i = 0; i < sizeof fields / sizeof fields[0]; i++) {
+      size_t n = strlen(fields[i]);
+      if (!strncmp(line, fields[i], n)) {
+        long kb = strtol(line + n, NULL, 10);
+        say("%s smaps %s %ld\n", tag, fields[i], kb);
+      }
+    }
+  }
+  fclose(f);
+}
+
+static void text_reads(const char* tag) {
+  unsigned char* p = (unsigned char*)tp_site;
+  say("%s direct %02x %02x\n", tag, p[0], p[1]);
+  unsigned char b[2] = {0, 0};
+  int fd = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
+  if (fd < 0 || pread(fd, b, 2, (off_t)(unsigned long)tp_site) != 2)
+    die("read /proc/self/mem");
+  close(fd);
+  say("%s procmem %02x %02x\n", tag, b[0], b[1]);
+  site_smaps(tag);
+}
+
+/* T5: the text residual of a patched site, before and after the guest makes
+ * the page writable. */
+static void mode_text_residual(void) {
+  warm();
+  text_reads("before");
+  void* page = (void*)((unsigned long)tp_site & ~4095UL);
+  if (mprotect(page, 4096, PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
+    die("mprotect rwx");
+  text_reads("after");
+  long r = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  say("getpid after mprotect pid=%d\n", r == getpid());
+}
+
 int main(int argc, char** argv) {
   if (argc != 3) {
     fprintf(stderr, "usage: %s <mode> <report>\n", argv[0]);
@@ -1385,6 +1683,22 @@ int main(int argc, char** argv) {
     untraced_thread("site");
   else if (!strcmp(m, "untraced_fork"))
     untraced_fork();
+  else if (!strcmp(m, "sigchld_nanosleep"))
+    mode_sigchld_nanosleep();
+  else if (!strcmp(m, "timer_loop"))
+    mode_timer_loop();
+  else if (!strcmp(m, "perf_marker"))
+    mode_perf_marker();
+  else if (!strcmp(m, "timer_allow"))
+    mode_timer_allow();
+  else if (!strcmp(m, "partial"))
+    mode_partial();
+  else if (!strcmp(m, "sigreturn"))
+    mode_sigreturn();
+  else if (!strcmp(m, "unknown"))
+    mode_unknown();
+  else if (!strcmp(m, "text_residual"))
+    mode_text_residual();
   else
     return 4;
   say("done\n");
