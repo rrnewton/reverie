@@ -326,12 +326,24 @@ where
         drive_signal_cleanup(
             guest.complete_signal_effects(raw),
             handler_signal,
-            pending_children,
+            pending_children.clone(),
             wait_for_failure(global_state.as_ref(), failure),
         )
         .await
     };
     let outcome = backend.finish_handler_completion(outcome, Ok(()), std::convert::identity)?;
+    // This flush creates a fresh child-start list and calls only dequeue
+    // notifications. Their guard rejects every injected syscall before a
+    // fork/clone action can create a child; Guest has no other spawn operation.
+    // Unlike ordinary callbacks, there are therefore no child starts to release
+    // or cancel here, including when a pending notification is cancelled.
+    assert!(
+        pending_children
+            .lock()
+            .expect("KVM child-start lock poisoned")
+            .is_empty(),
+        "dequeue notification created an unowned child start"
+    );
     match outcome {
         HandlerOutcome::Returned(result) => result.map(|_| ()),
         HandlerOutcome::RuntimeError(error) => Err(executor.with_signal_effects(error, raw)),
