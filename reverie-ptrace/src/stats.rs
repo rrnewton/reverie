@@ -193,9 +193,9 @@ impl PtraceBackendStatsSource {
 
     /// Appends one run-loop wait to the test-only stop sequence.
     ///
-    /// Seccomp stops carry the syscall number, and new-child stops carry the
-    /// child's PID, so that two runs of the same guest can be compared stop by
-    /// stop and task by task.
+    /// Seccomp stops carry the syscall number, vfork-done stops the parent's
+    /// rax, and new-child stops carry the child's PID, so that two runs of
+    /// the same guest can be compared stop by stop and task by task.
     #[cfg(test)]
     fn record_stop_trace(&self, wait: &Wait) {
         let (pid, description) = match wait {
@@ -206,6 +206,16 @@ impl PtraceBackendStatsSource {
                         format!("new-child {operation:?} {}", child.pid())
                     }
                     Event::Exec(_) => "exec".to_owned(),
+                    // A vfork parent is still inside the call at this stop, so
+                    // its rax is whatever the tracer left there (the kernel
+                    // writes the result only when the call returns).
+                    Event::VforkDone => match stopped.getregs() {
+                        #[cfg(target_arch = "x86_64")]
+                        Ok(regs) => format!("VforkDone rax={}", regs.rax as i64),
+                        #[cfg(not(target_arch = "x86_64"))]
+                        Ok(_) => "VforkDone".to_owned(),
+                        Err(error) => format!("VforkDone <getregs failed: {error}>"),
+                    },
                     Event::Seccomp => match stopped.getregs() {
                         #[cfg(target_arch = "x86_64")]
                         Ok(regs) => format!("seccomp {}", regs.orig_rax),
