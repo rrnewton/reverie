@@ -806,7 +806,7 @@ fn wait_group_exit_injection_is_nonreturning_and_failure_still_wins() {
             },
             signal,
             starts,
-            run.subscribe(),
+            wait_for_failure(global.as_ref(), Some(run.subscribe())),
         ));
         drop(guest);
         assert!(!continued);

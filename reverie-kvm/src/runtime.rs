@@ -5263,7 +5263,7 @@ impl KvmBackend {
                                                 )
                                             },
                                             handler_signal,
-                                            pending_child_starts,
+                                            pending_child_starts.clone(),
                                             wait_for_failure(
                                                 global_state.as_ref(),
                                                 failure_subscription.clone(),
@@ -5285,7 +5285,7 @@ impl KvmBackend {
                                                 )
                                             },
                                             handler_signal,
-                                            pending_child_starts,
+                                            pending_child_starts.clone(),
                                             wait_for_failure(
                                                 global_state.as_ref(),
                                                 failure_subscription.clone(),

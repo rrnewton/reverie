@@ -107,7 +107,7 @@ mod blocking_wait_guest_tests {
     impl GlobalTool for WaitLog {
         type Request = (u8, i32, ExitStatus);
         type Response = ();
-        type Config = ();
+        type Config = bool;
         async fn receive_rpc(&self, _: Pid, event: Self::Request) {
             self.0.lock().unwrap().push(event);
         }
@@ -118,9 +118,11 @@ mod blocking_wait_guest_tests {
     impl Tool for WaitTool {
         type GlobalState = WaitLog;
         type ThreadState = bool;
-        fn subscriptions(_: &()) -> Subscription {
+        fn subscriptions(subscribe_waits: &bool) -> Subscription {
             let mut subscriptions = Subscription::none();
-            subscriptions.syscalls([Sysno::wait4, Sysno::waitid]);
+            if *subscribe_waits {
+                subscriptions.syscalls([Sysno::wait4, Sysno::waitid]);
+            }
             subscriptions
         }
         async fn handle_thread_start<G: Guest<Self>>(
@@ -136,8 +138,12 @@ mod blocking_wait_guest_tests {
             guest: &mut G,
             call: Syscall,
         ) -> Result<i64, reverie::Error> {
-            // Exercise actual injected-wait callback cancellation, not only the
-            // unsubscribed checked-syscall path of the existing ExitTool.
+            assert!(
+                *guest.config(),
+                "unsubscribed Tool received a syscall callback"
+            );
+            // Subscribed cases exercise the injected-wait callback; the same
+            // lifecycle Tool with no subscriptions exercises checked dispatch.
             Ok(guest.inject(call).await?)
         }
         async fn on_exit_thread<G: GlobalRPC<WaitLog>>(
@@ -363,6 +369,15 @@ mod blocking_wait_guest_tests {
         }
     }
     fn run(name: &str, worker_creator: bool, cancel: bool, tool: bool) {
+        run_with_subscriptions(name, worker_creator, cancel, tool, true);
+    }
+    fn run_with_subscriptions(
+        name: &str,
+        worker_creator: bool,
+        cancel: bool,
+        tool: bool,
+        subscribe_waits: bool,
+    ) {
         let test = format!("{PREFIX}{name}");
         if !bounded(&test) {
             return;
@@ -420,7 +435,7 @@ mod blocking_wait_guest_tests {
                     std::thread::spawn(move || observe(registry, command, child, cancel));
                 let result = if tool {
                     futures::executor::block_on(
-                        backend.run_static_elf_with_tool::<WaitTool>((), true),
+                        backend.run_static_elf_with_tool::<WaitTool>(subscribe_waits, true),
                     )
                     .map(|(log, code, stdout, stderr)| {
                         (Some(log.0.into_inner().unwrap()), code, stdout, stderr)
@@ -502,6 +517,46 @@ mod blocking_wait_guest_tests {
             true,
             true,
             true,
+        );
+    }
+    #[test]
+    fn blocked_worker_wait_is_published_unsubscribed_tool() {
+        run_with_subscriptions(
+            "blocked_worker_wait_is_published_unsubscribed_tool",
+            false,
+            false,
+            true,
+            false,
+        );
+    }
+    #[test]
+    fn blocked_worker_wait_clean_group_exit_unsubscribed_tool() {
+        run_with_subscriptions(
+            "blocked_worker_wait_clean_group_exit_unsubscribed_tool",
+            false,
+            true,
+            true,
+            false,
+        );
+    }
+    #[test]
+    fn blocked_leader_wait_is_published_unsubscribed_tool() {
+        run_with_subscriptions(
+            "blocked_leader_wait_is_published_unsubscribed_tool",
+            true,
+            false,
+            true,
+            false,
+        );
+    }
+    #[test]
+    fn blocked_leader_wait_clean_group_exit_unsubscribed_tool() {
+        run_with_subscriptions(
+            "blocked_leader_wait_clean_group_exit_unsubscribed_tool",
+            true,
+            true,
+            true,
+            false,
         );
     }
 }
