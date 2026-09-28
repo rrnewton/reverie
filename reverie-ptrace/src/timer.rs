@@ -780,6 +780,60 @@ thread_local! {
     pub(crate) static CONTROLLER_NAMESPACE_PATH: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
     pub(crate) static CONTROLLER_QUERY_EDGE: std::cell::RefCell<Option<ControllerQueryHook>> = const { std::cell::RefCell::new(None) };
     pub(crate) static CONTROLLER_QUERY_LOG: std::cell::RefCell<Option<ControllerQueryLog>> = const { std::cell::RefCell::new(None) };
+    static HOST_TIMED_TIMER_EVENTS: std::cell::Cell<HostTimedTimerEvents> = const {
+        std::cell::Cell::new(HostTimedTimerEvents {
+            overshoot: 0,
+            unstepped_at_target: 0,
+            preempted_overflow: 0,
+        })
+    };
+}
+
+/// Precise-timer outcomes whose place in the guest depends on when the host
+/// delivered the perf overflow signal, not on the guest, counted on the
+/// thread that runs the tracer. A test that compares independent runs can
+/// tell such a run from a divergence the guest or a backend caused.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct HostTimedTimerEvents {
+    /// The signal was handled past the target, which also prints
+    /// [`SKID_OVERSHOOT_MARKER`]: the event fires at the observed counter.
+    pub overshoot: u64,
+    /// The signal was handled exactly at the target count with no
+    /// instruction offset, so no single-step placed the event: it fires
+    /// wherever the guest was stopped between the target branch and the next
+    /// one.
+    pub unstepped_at_target: u64,
+    /// A stop other than the timer's own signal stop ended the timer's one
+    /// allowed stop after the counter had passed the programmed overflow, and
+    /// that overflow's signal was not handled first. The stop cancels a timer
+    /// that an earlier delivery would have fired, or that would have been
+    /// stepped onto the stop.
+    pub preempted_overflow: u64,
+}
+
+#[cfg(test)]
+impl HostTimedTimerEvents {
+    /// The number of host-timed outcomes of every kind.
+    pub fn total(&self) -> u64 {
+        self.overshoot + self.unstepped_at_target + self.preempted_overflow
+    }
+}
+
+/// Takes, and resets to zero, the host-timed timer outcomes counted on this
+/// thread.
+#[cfg(test)]
+pub(crate) fn take_host_timed_timer_events() -> HostTimedTimerEvents {
+    HOST_TIMED_TIMER_EVENTS.with(|events| events.take())
+}
+
+#[cfg(test)]
+fn count_host_timed(update: impl FnOnce(&mut HostTimedTimerEvents)) {
+    HOST_TIMED_TIMER_EVENTS.with(|cell| {
+        let mut events = cell.get();
+        update(&mut events);
+        cell.set(events);
+    });
 }
 
 /// The lazy-initialized part of a `Timer` that holds the functionality.
@@ -825,6 +879,13 @@ struct TimerImpl {
 
     #[cfg(test)]
     fail_next_notification: Option<Errno>,
+
+    /// This request's one allowed stop was counted as a
+    /// [`HostTimedTimerEvents::preempted_overflow`] before its signal
+    /// stop could be told apart from another stop; handling the signal takes
+    /// the count back.
+    #[cfg(test)]
+    preempted_overflow_counted: bool,
 
     /// Pid (tgid) of the monitored thread
     guest_pid: Pid,
@@ -1078,6 +1139,8 @@ impl TimerImpl {
             held_initial_event: None,
             #[cfg(test)]
             fail_next_notification: None,
+            #[cfg(test)]
+            preempted_overflow_counted: false,
             guest_pid,
             guest_tid,
         })
@@ -1092,6 +1155,10 @@ impl TimerImpl {
         };
         if delivery == 0 {
             return Err(Errno::EINVAL); // bail before setting timer
+        }
+        #[cfg(test)]
+        {
+            self.preempted_overflow_counted = false;
         }
         if self.initial_command != InitialCommand::Ordinary {
             self.event = Self::event_at(evt, self.read_clock() + delivery);
@@ -1213,6 +1280,18 @@ impl TimerImpl {
     }
 
     pub fn observe_event(&mut self) {
+        // This stop is the request's one allowed stop. If the counter has
+        // already passed the programmed overflow, either this is the timer's
+        // own signal stop, and `handle_signal` takes the count back, or
+        // another stop came first although the overflow was due.
+        #[cfg(test)]
+        if self.timer_status == EventStatus::Scheduled
+            && self.initial_command == InitialCommand::Ordinary
+            && self.current_overflow().unwrap_or(false)
+        {
+            count_host_timed(|events| events.preempted_overflow += 1);
+            self.preempted_overflow_counted = true;
+        }
         self.timer_status.tick()
     }
 
@@ -1402,7 +1481,15 @@ impl TimerImpl {
                 "Timer event status should tick at least once before the signal \
                 is handled. This is a bug!"
             ),
-            EventStatus::Armed => {}
+            EventStatus::Armed => {
+                // This signal stop was the request's one allowed stop.
+                #[cfg(test)]
+                if std::mem::take(&mut self.preempted_overflow_counted) {
+                    count_host_timed(|events| {
+                        events.preempted_overflow = events.preempted_overflow.saturating_sub(1)
+                    });
+                }
+            }
             EventStatus::Cancelled => {
                 debug!("Delivered timer signal cancelled due to status");
                 self.disable_timer_before_stepping();
@@ -1476,7 +1563,13 @@ impl TimerImpl {
                  delivering timer event at the observed counter",
                 ctr_initial, target_rcb
             );
+            #[cfg(test)]
+            count_host_timed(|events| events.overshoot += 1);
             return Ok(task);
+        }
+        #[cfg(test)]
+        if ctr_initial == target_rcb && target_instr == 0 {
+            count_host_timed(|events| events.unstepped_at_target += 1);
         }
         let mut current = ClockCounter::new(ctr_initial, 0, target_rcb);
         let max_single_step_count = get_pmu_config().max_single_step_count();
@@ -2018,6 +2111,7 @@ mod tests {
                 initial_command: InitialCommand::Ordinary,
                 held_initial_event: Some(event),
                 fail_next_notification: None,
+                preempted_overflow_counted: false,
                 // A terminal close must not try to finalize the pending kick.
                 guest_pid: Pid::from_raw(0),
                 guest_tid: Tid::from_raw(0),
