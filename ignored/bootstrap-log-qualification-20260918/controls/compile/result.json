@@ -1,0 +1,97 @@
+{
+  "plan_sha256": "ac30a8274489645889ae2acf80cfe841c2d8acbe61cda1a640fa739c47f5e74c",
+  "accepted": true,
+  "observer_attempted": true,
+  "terminal_authenticated": true,
+  "raw_status": 0,
+  "transport": {
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/compile",
+      "--cpu-usec",
+      "600000000",
+      "--wall-seconds",
+      "900",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/compile-plan.json",
+      "ac30a8274489645889ae2acf80cfe841c2d8acbe61cda1a640fa739c47f5e74c"
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918",
+    "wall_limit_seconds": 950,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 63.25794437201694,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/controls/compile/observer.stdout",
+      "bytes": 161,
+      "mode": 420,
+      "sha256": "e154bd48563dc92cd8d9cdae292c7130b90643a6986078fb95e1634322aec59b"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/controls/compile/observer.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/ignored/bootstrap-log-qualification-20260918/observer/compile/result.json",
+    "bytes": 31769,
+    "mode": 384,
+    "sha256": "849990516d99159ef04eff091e136879eeafba77800cf4a2986d756c81d3be79"
+  },
+  "readback": {
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/reverie-ptrace#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/reverie-ptrace/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_ptrace",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/reverie-ptrace/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/target/bootstrap-log/debug/deps/reverie_ptrace-884b4a03308bc02f"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/target/bootstrap-log/debug/deps/reverie_ptrace-884b4a03308bc02f",
+      "fresh": false
+    },
+    "file": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-bootstrap-log-20260918/target/bootstrap-log/debug/deps/reverie_ptrace-884b4a03308bc02f",
+      "bytes": 164660176,
+      "mode": 493,
+      "sha256": "258cc9667b311f6658cb840863a372ada1b62f9bde2075b0ddafbb77f06b404e"
+    }
+  },
+  "payload_exit": {
+    "returncode": 0,
+    "reaped": true,
+    "elapsed_seconds": 60.39049703092314
+  },
+  "inputs_unchanged": true
+}

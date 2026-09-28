@@ -1,0 +1,173 @@
+[
+  {
+    "name": "metadata",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 0.634727,
+    "observed_wall_seconds": 1.180336835,
+    "result_sha256": "72cd2da8b5fe6e38dc0462a76e915e138aca2a1b8396b0fb6a0eb36c9501a797"
+  },
+  {
+    "name": "compile",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 113.778046,
+    "observed_wall_seconds": 63.156080715,
+    "result_sha256": "14937e0376887450fe34b2e2c2d2ee8247a901ae27c09caea108829aa961ea9a"
+  },
+  {
+    "name": "list",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 2.192715,
+    "observed_wall_seconds": 2.767449769,
+    "result_sha256": "dc77ea4b33cc41c374554ca66c95bc7378fbcece58b9e9f1d2dbc472e1edf971"
+  },
+  {
+    "name": "test-0",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 2.223539,
+    "observed_wall_seconds": 3.427416007,
+    "result_sha256": "29d7440c70d9cf433282279c606262c0a811128903dc6777dbb665f22489eeaf",
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 180,
+      "exec_time": 0.000361333
+    },
+    "names": [
+      "task::tests::command_bootstrap_arguments_preserve_types_and_raw_tail"
+    ]
+  },
+  {
+    "name": "test-1",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 2.22499,
+    "observed_wall_seconds": 3.179798593,
+    "result_sha256": "e39b7a7dc602b7852c3a86ed5b7bdfe24bc581f07352e74e154070ea0b7e64f9",
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 180,
+      "exec_time": 0.004717323
+    },
+    "names": [
+      "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec"
+    ]
+  },
+  {
+    "name": "test-2",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 2.25198,
+    "observed_wall_seconds": 2.910433366,
+    "result_sha256": "a26df6520a795ca6ca05ccab2e0ecd85dfb708f03e044b0835bba24cf13bcffd",
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 180,
+      "exec_time": 0.003330171
+    },
+    "names": [
+      "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance"
+    ]
+  },
+  {
+    "name": "test-3",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 2.233126,
+    "observed_wall_seconds": 3.295350983,
+    "result_sha256": "df7a1d58f9230eb0f83b304fd9f09a5e449498abbeb1c98b1a454c8072d573d9",
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 180,
+      "exec_time": 0.000354863
+    },
+    "names": [
+      "tracer::tests::resolving_program_preserves_explicit_arg0"
+    ]
+  },
+  {
+    "name": "test-4",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 2.297973,
+    "observed_wall_seconds": 3.103456577,
+    "result_sha256": "769eb6f2df83ac803d2a88dd9208c70750b8befd95d8d5fcc4ccada12b3a88a9",
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 180,
+      "exec_time": 0.00038593
+    },
+    "names": [
+      "task::tests::exec_generation_replaces_image_state_without_changing_old_holders"
+    ]
+  },
+  {
+    "name": "test-5",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 2.225399,
+    "observed_wall_seconds": 2.938671805,
+    "result_sha256": "aa3eadca635545613da46a1673d1a06afe2e144dbae816af5c0d62c6fcda5d4b",
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 180,
+      "exec_time": 0.003274777
+    },
+    "names": [
+      "tracer::tests::subscribed_restart_syscall_reaches_the_tool"
+    ]
+  },
+  {
+    "name": "test-6",
+    "accepted": true,
+    "raw_status": 0,
+    "cpu_seconds": 2.230061,
+    "observed_wall_seconds": 3.39002816,
+    "result_sha256": "c3c8cd31f7506651fa00764f68008c983cd2316960d75d0d5a6b09aae1185ad5",
+    "summary": {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 180,
+      "exec_time": 0.002768167
+    },
+    "names": [
+      "tracer::tests::unsubscribed_restart_syscall_retains_the_linux_result"
+    ]
+  }
+]

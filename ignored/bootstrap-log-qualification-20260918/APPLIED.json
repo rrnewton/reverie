@@ -1,0 +1,39 @@
+{
+  "base": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+  "branch": "codex/kvm-bootstrap-log-20260918",
+  "patch": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-replay-producer-diagnosis-20260918/proposal/reverie.patch",
+  "patch_sha256": "ff385e606cd4cf64f80c834fbd141c386e844df2e159efd06da54935f3e60f92",
+  "files": [
+    {
+      "repo": "reverie",
+      "path": "reverie/src/guest.rs",
+      "origin": "Reverie7d863ab3f02639731713a01467b2548c41e3dbfb:reverie/src/guest.rs",
+      "bytes": 19585,
+      "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a",
+      "git_blob": "fb4de8c2b10dd59031f07623f537528cfc7aecfa",
+      "after_bytes": 20301,
+      "after_sha256": "87698830047e3975c653a059faf6e219dce07a8c38ada3927981d2614ab1ae6a"
+    },
+    {
+      "repo": "reverie",
+      "path": "reverie-ptrace/src/task.rs",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-replay-producer-diagnosis-20260918/inputs/reverie/reverie-ptrace/src/task.rs",
+      "bytes": 254841,
+      "sha256": "a6d3a40633b746df8cccbb1076dd79a779eb6efff44318ba750645a3b7d30b32",
+      "git_blob": "c26bce458120ea9dc9b8543241044969a5cf3c1a",
+      "after_bytes": 258162,
+      "after_sha256": "e1abc168acdbc825547f1cad7fd2cae9fdf97c6786a9181665da3c71d27f48ef"
+    },
+    {
+      "repo": "reverie",
+      "path": "reverie-ptrace/src/tracer.rs",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-replay-producer-diagnosis-20260918/inputs/reverie/reverie-ptrace/src/tracer.rs",
+      "bytes": 169378,
+      "sha256": "15b90976aa20ca6f0c84b375bedbf9917c319d6ccc6a80eb2f887a76ff179459",
+      "git_blob": "4a10817dcba0c25e35f28f26bffbb68b6c3aa420",
+      "after_bytes": 173512,
+      "after_sha256": "1646c0c31c55ca205faaf67b38dd50c4679eb0a03e8cc1e99119e61a840dc371"
+    }
+  ],
+  "state": "Exact frozen three-path proposal applied; no compilation or test execution yet"
+}

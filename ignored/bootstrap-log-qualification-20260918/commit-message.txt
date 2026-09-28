@@ -1,0 +1,15 @@
+Mark Command bootstrap pointers in ptrace logs
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Track the initial Command bootstrap explicitly through Guest and clear it
+before successful-exec callbacks. Mark only execve's typed bootstrap pointer
+arguments as host addresses; preserve nulls, raw tail registers and all
+post-exec or function-guest values.
+
+Add controls for argument formatting, the real two-exec lifetime and the
+spawn_fn negative case. The three new and four existing exact controls pass;
+ptrace libtest compilation and core all-target checking have zero compiler
+diagnostics. These are bounded component results, not Hermit replay parity.
+
+Task: kvm-lane-to-full-determinism-and-parity
