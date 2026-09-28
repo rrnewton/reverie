@@ -1159,7 +1159,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   original; a SIGCONT sent between two deferred SIGSTOPs, which a
     ///   later SIGSTOP discards again, leaves the first SIGSTOP's siginfo or
     ///   an extra queue's SIGSTOP; a privately queued SIGSTOP that is not
-    ///   `SI_TKILL` is raised to the shared queue; and when the signal queue
+    ///   `SI_TKILL` is raised to the shared queue; a re-raised SIGSTOP that
+    ///   is still pending when another hop of the thread starts would be
+    ///   deferred again with the re-raise's own siginfo, losing the original
+    ///   sender's; and when the signal queue
     ///   limit (`RLIMIT_SIGPENDING`) is exhausted the kernel queues the
     ///   SIGSTOP without its siginfo, so its delivery stop keeps a blank
     ///   `SI_USER` one.
