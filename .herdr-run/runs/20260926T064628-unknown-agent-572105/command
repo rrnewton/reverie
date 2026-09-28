@@ -1,0 +1,1 @@
+with-proxy git ls-remote https://github.com/rrnewton/reverie refs/heads/claude/kvm-orphan-reparent-20260926

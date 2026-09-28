@@ -1,0 +1,42 @@
+{
+  "agent": "unknown-agent",
+  "argv": [
+    "with-proxy",
+    "git",
+    "ls-remote",
+    "https://github.com/rrnewton/reverie",
+    "refs/heads/claude/kvm-orphan-reparent-20260926"
+  ],
+  "config_source": null,
+  "created": [],
+  "duration_seconds": 0.755,
+  "exit_code": 0,
+  "from_cache": true,
+  "pane_id": "wF:p1B",
+  "prefix": [
+    "with-proxy"
+  ],
+  "program": "git",
+  "readiness": {
+    "boot_id": "b597126a-0485-436b-b809-4c28c423193d",
+    "foreground_pgid": 844983,
+    "process_idle": true,
+    "process_reason": "shell bash (844983) owns the foreground group",
+    "prompt_reason": "last line ends with prompt tail '$'",
+    "prompt_tail": "$ ",
+    "prompt_verdict": "clean",
+    "shell_pid": 844983,
+    "shell_start_ticks": 246826386
+  },
+  "rendered": "with-proxy git ls-remote https://github.com/rrnewton/reverie refs/heads/claude/kvm-orphan-reparent-20260926",
+  "run_id": "20260926T101532-unknown-agent-545897",
+  "subcommand": "ls-remote",
+  "tab": {
+    "id": "wF:t1B",
+    "label": "unknown-agent"
+  },
+  "workspace": {
+    "id": "wF",
+    "label": "agent-cmds"
+  }
+}
