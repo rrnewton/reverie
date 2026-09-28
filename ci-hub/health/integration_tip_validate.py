@@ -121,6 +121,20 @@ COMMIT_TIME_TIMEOUT_SECONDS = 5.0
 # hook will read it, and refuses before systemd-run if not.
 LAUNCHER_GIT_ENVIRONMENT = re.compile(r"GIT_[A-Za-z0-9_]+|HOME|XDG_CONFIG_HOME")
 
+# The launcher unit carries the file-transport allowance the agent shells on
+# this host already carry, set with its own `systemd-run --setenv` so nothing
+# outside that one unit changes: not the systemd user manager's environment,
+# not ~/.gitconfig, and not the decider or validate units. GIT_ALLOW_PROTOCOL,
+# when set, is git's whole protocol allowlist and overrides every
+# protocol.<name>.allow setting, so the unit's clones no longer depend on
+# whether the manager or a global config happens to admit `file`. It also
+# refuses http:// and git:// in that unit; every recursive submodule URL of
+# Hermit main is https (checked at 10770b2f34, 2026-09-28). The preflight
+# probes with this same mapping laid over the manager environment, so removing
+# the allowance makes the preflight refuse again instead of starting a
+# launcher whose create would fail and leave a journal.
+LAUNCHER_UNIT_GIT_SETENV: Mapping[str, str] = {"GIT_ALLOW_PROTOCOL": "https:file:ssh"}
+
 
 class ObservationUnavailable(RuntimeError):
     """One required authority could not answer within this tick."""
@@ -800,12 +814,17 @@ def launcher_prerequisites(settings: Settings) -> tuple[Path, str]:
 
 
 def launcher_git_environment(
-    settings: Settings, timeout: float, run: Runner
+    settings: Settings,
+    timeout: float,
+    run: Runner,
+    unit_setenv: Mapping[str, str],
 ) -> dict[str, str]:
     """Return the Git-relevant part of the environment a launcher unit inherits.
 
     A `systemd-run --user` service starts from the user manager's environment
-    block plus its own `--setenv` values, not from this process's environment.
+    block plus its own `--setenv` values, not from this process's environment;
+    `unit_setenv` is exactly the Git environment the launch passes as
+    `--setenv`, and it wins over the manager's value, as systemd applies it.
     """
 
     completed = run(["systemctl", "--user", "show-environment"], settings.state_root, timeout)
@@ -838,7 +857,19 @@ def launcher_git_environment(
                 )
             value = words[0]
         environment[name] = value
+    for name, value in unit_setenv.items():
+        if LAUNCHER_GIT_ENVIRONMENT.fullmatch(name) is None:
+            raise CommandNotStarted(
+                f"launcher unit variable {name} is not a Git environment variable this preflight models"
+            )
+        environment[name] = value
     return environment
+
+
+def launcher_setenv_arguments(unit_setenv: Mapping[str, str]) -> list[str]:
+    """Spell the launcher unit's own Git environment as systemd-run arguments."""
+
+    return [f"--setenv={name}={value}" for name, value in sorted(unit_setenv.items())]
 
 
 def launcher_git(environment: Mapping[str, str], *arguments: str) -> list[str]:
@@ -861,16 +892,25 @@ def uses_file_transport(url: str) -> bool:
 
 
 def launcher_provisioning_preflight(
-    settings: Settings, target: str, timeout: float, run: Runner | None = None
+    settings: Settings,
+    target: str,
+    timeout: float,
+    run: Runner | None = None,
+    *,
+    unit_setenv: Mapping[str, str] | None = None,
 ) -> list[dict[str, str]]:
     """Refuse a launch whose checkout hook cannot clone the target's submodules.
 
     Only the target's top-level submodules are probed; a nested submodule is
     reached through them. Every unanswered question refuses: this runs before
     systemd-run, so a refusal starts nothing and leaves no wrkslots journal.
+    `unit_setenv` must be the Git environment the launch passes as `--setenv`;
+    None means the production LAUNCHER_UNIT_GIT_SETENV, read at call time.
     """
 
     run = run or run_bounded
+    if unit_setenv is None:
+        unit_setenv = LAUNCHER_UNIT_GIT_SETENV
     deadline = time.monotonic() + timeout
 
     def query(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -880,7 +920,9 @@ def launcher_provisioning_preflight(
             raise CommandNotStarted(f"launcher provisioning preflight: {error}") from error
 
     try:
-        environment = launcher_git_environment(settings, remaining(deadline, timeout), run)
+        environment = launcher_git_environment(
+            settings, remaining(deadline, timeout), run, unit_setenv
+        )
     except ObservationUnavailable as error:
         if isinstance(error, CommandNotStarted):
             raise
@@ -950,12 +992,18 @@ def launcher_provisioning_preflight(
             sources.append({"submodule": name, "url": url, "source": source})
             continue
         detail = one_line(probe.stderr.strip() or f"exit {probe.returncode}")
+        unit_git = (
+            ", ".join(f"{name}={value}" for name, value in sorted(unit_setenv.items()))
+            or "none"
+        )
         remedy = (
-            "the owner must either allow file transport for the systemd user manager "
-            "(for example `systemctl --user set-environment GIT_ALLOW_PROTOCOL=...` including "
-            "`file`, or protocol.file.allow=always) or remove the url.insteadOf rewrite"
+            "the launcher unit's own --setenv Git environment "
+            f"({unit_git}) does not admit the file transport; restore "
+            "LAUNCHER_UNIT_GIT_SETENV in ci-hub/health/integration_tip_validate.py, which "
+            "scopes the allowance to that one unit, instead of changing the systemd user "
+            "manager's environment or ~/.gitconfig, which every agent on this host shares"
             if "transport 'file' not allowed" in detail else
-            "repair or remove the local source named by the url.insteadOf rewrite"
+            "repair the local source named by the url.insteadOf rewrite"
         )
         raise CommandNotStarted(
             f"the launcher's checkout hook `git submodule update --init --recursive` would fail: "
@@ -1058,8 +1106,13 @@ def spawn_validate(
     run = run or run_bounded
     operational_tool, parent_sha = launcher_prerequisites(settings)
     launch_deadline = time.monotonic() + timeout
+    # One mapping feeds both the preflight and the unit's --setenv arguments,
+    # so the preflight always probes the environment the launcher will get.
+    unit_setenv = dict(LAUNCHER_UNIT_GIT_SETENV)
     # At most half the launch budget, so systemd-run keeps time to answer.
-    launcher_provisioning_preflight(settings, target, timeout / 2, run)
+    launcher_provisioning_preflight(
+        settings, target, timeout / 2, run, unit_setenv=unit_setenv
+    )
     try:
         launcher_log.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(launcher_log, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -1103,6 +1156,7 @@ def spawn_validate(
         f"--working-directory={settings.state_root}",
         f"--setenv=PATH={os.environ.get('PATH', '')}",
         f"--setenv=DEV_HERMIT_PARENT={settings.state_root}",
+        *launcher_setenv_arguments(unit_setenv),
         "--",
         str(operational_tool),
         "--run-current-tool",

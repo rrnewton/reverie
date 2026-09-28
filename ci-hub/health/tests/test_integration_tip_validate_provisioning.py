@@ -6,7 +6,10 @@ and the launcher's `git submodule update --init --recursive` hook refused
 "transport 'file' not allowed". The refused create left a wrkslots CREATE
 journal that blocked every lane's wrkslots commands. These tests pin the
 preflight that refuses such a launch before systemd-run, and prove against real
-git that its verdict matches what the hook itself does.
+git that its verdict matches what the hook itself does. They also pin the fix:
+the launcher unit gets GIT_ALLOW_PROTOCOL through its own `--setenv`, the
+preflight probes that same unit environment, and without the allowance the
+preflight still refuses.
 """
 
 from __future__ import annotations
@@ -167,21 +170,25 @@ def test_a_refused_local_rewrite_refuses_and_names_the_rewrite(tmp_path: Path) -
     assert "transport 'file' not allowed" in message
     assert NETWORK_URL in message and "/mirrors/sub" in message
     assert "CREATE journal" in message and "no launcher started" in message
+    assert "LAUNCHER_UNIT_GIT_SETENV" in message and "GIT_ALLOW_PROTOCOL=https:file:ssh" in message
+    assert "set-environment" not in message, "the remedy must not ask for a manager-wide change"
+    assert "remove the url.insteadOf" not in message, "nor for removing a shared rewrite"
     [(environment, verb)] = fake.probes
     assert environment["GIT_PROTOCOL_FROM_USER"] == "0", "a submodule clone's policy, not a user's"
     assert verb == ["ls-remote", "/mirrors/sub", "HEAD"]
 
 
 def test_the_probe_sees_the_manager_environment_not_this_process(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "https:file:ssh")
+    # A value distinct from the unit's own, so a leak from this process is visible.
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "ext:file")
     monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'protocol.file.allow'='always'")
     fake = FakeGit(
         manager="HOME=/home/fixture\nGIT_ALLOW_PROTOCOL=file\nLANG=C\n",
         expanded={NETWORK_URL: "/mirrors/sub"},
     )
-    assert driver.launcher_provisioning_preflight(settings(tmp_path), SHA, 4.0, fake.run) == [
-        {"submodule": "sub", "url": NETWORK_URL, "source": "/mirrors/sub"}
-    ]
+    assert driver.launcher_provisioning_preflight(
+        settings(tmp_path), SHA, 4.0, fake.run, unit_setenv={}
+    ) == [{"submodule": "sub", "url": NETWORK_URL, "source": "/mirrors/sub"}]
     [(environment, _)] = fake.probes
     assert environment == {
         "GIT_ALLOW_PROTOCOL": "file",
@@ -189,6 +196,53 @@ def test_the_probe_sees_the_manager_environment_not_this_process(tmp_path: Path,
         "HOME": "/home/fixture",
         "PATH": os.environ.get("PATH", ""),
     }
+
+
+def test_the_unit_setenv_wins_over_the_manager_value(tmp_path: Path, monkeypatch) -> None:
+    """systemd applies a unit's --setenv over the manager block; so does the probe."""
+
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "ext:file")
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'protocol.file.allow'='always'")
+    fake = FakeGit(
+        manager="HOME=/home/fixture\nGIT_ALLOW_PROTOCOL=https\nGIT_CONFIG_GLOBAL=/home/fixture/g\n",
+        expanded={NETWORK_URL: "/mirrors/sub"},
+    )
+    driver.launcher_provisioning_preflight(settings(tmp_path), SHA, 4.0, fake.run)
+    [(environment, _)] = fake.probes
+    assert environment == {
+        "GIT_ALLOW_PROTOCOL": "https:file:ssh",
+        "GIT_CONFIG_GLOBAL": "/home/fixture/g",
+        "GIT_PROTOCOL_FROM_USER": "0",
+        "HOME": "/home/fixture",
+        "PATH": os.environ.get("PATH", ""),
+    }
+
+
+def test_the_launcher_unit_carries_exactly_the_probed_git_environment(tmp_path: Path) -> None:
+    configured = settings(tmp_path)
+    fake = FakeGit(expanded={NETWORK_URL: "/mirrors/sub"})
+    driver.spawn_validate(
+        configured, SHA, "attempt", "validate-ops-tick-fixture",
+        tmp_path / "validate.log", tmp_path / "launcher.log", 8.0, run=fake.run,
+    )
+    [launch] = [command for command in fake.commands if command[0] == "systemd-run"]
+    options = launch[: launch.index("--")]
+    git_setenv = [
+        option for option in options
+        if option.startswith("--setenv=GIT_")
+    ]
+    assert git_setenv == ["--setenv=GIT_ALLOW_PROTOCOL=https:file:ssh"]
+    [(environment, _)] = fake.probes
+    assert environment["GIT_ALLOW_PROTOCOL"] == "https:file:ssh"
+    assert driver.LAUNCHER_UNIT_GIT_SETENV == {"GIT_ALLOW_PROTOCOL": "https:file:ssh"}
+
+
+def test_a_non_git_unit_variable_is_refused(tmp_path: Path) -> None:
+    fake = FakeGit()
+    with pytest.raises(driver.CommandNotStarted, match="not a Git environment variable"):
+        driver.launcher_provisioning_preflight(
+            settings(tmp_path), SHA, 4.0, fake.run, unit_setenv={"LANG": "C"}
+        )
 
 
 def test_the_repository_config_url_wins_over_gitmodules(tmp_path: Path) -> None:
@@ -345,17 +399,30 @@ def hook_succeeds(tmp_path: Path, superproject: Path, target: str, env: dict[str
     return hook.returncode == 0
 
 
+PRODUCTION_UNIT = {"GIT_ALLOW_PROTOCOL": "https:file:ssh"}
+
+
 @pytest.mark.parametrize(
-    "manager_extra,gitconfig_extra,expect_ok",
+    "manager_extra,gitconfig_extra,unit_setenv,expect_ok",
     [
-        ({}, "", False),
-        ({"GIT_ALLOW_PROTOCOL": "file"}, "", True),
-        ({}, '[protocol "file"]\n\tallow = always\n', True),
+        ({}, "", {}, False),
+        ({"GIT_ALLOW_PROTOCOL": "file"}, "", {}, True),
+        ({}, '[protocol "file"]\n\tallow = always\n', {}, True),
+        ({}, "", PRODUCTION_UNIT, True),
+        ({"GIT_ALLOW_PROTOCOL": "https"}, "", {}, False),
+        ({"GIT_ALLOW_PROTOCOL": "https"}, "", PRODUCTION_UNIT, True),
     ],
-    ids=["file-transport-denied", "manager-allows-file", "config-allows-file"],
+    ids=[
+        "file-transport-denied-without-unit-allowance",
+        "manager-allows-file",
+        "config-allows-file",
+        "unit-allowance-admits-file",
+        "manager-excludes-file",
+        "unit-allowance-overrides-manager",
+    ],
 )
 def test_the_preflight_verdict_matches_the_real_checkout_hook(
-    mirrored_superproject, manager_extra, gitconfig_extra, expect_ok
+    mirrored_superproject, manager_extra, gitconfig_extra, unit_setenv, expect_ok
 ) -> None:
     tmp_path, home, mirror, superproject, target, base_env = mirrored_superproject
     if gitconfig_extra:
@@ -369,15 +436,71 @@ def test_the_preflight_verdict_matches_the_real_checkout_hook(
         return driver.run_bounded(command, cwd, timeout)
 
     configured = settings(tmp_path, superproject)
-    hook_env = {**base_env, **manager_extra}
+    # The launcher unit's environment: the manager block, then its own --setenv.
+    hook_env = {**base_env, **manager_extra, **unit_setenv}
     assert hook_succeeds(tmp_path, superproject, target, hook_env, "hook") is expect_ok
     if expect_ok:
-        assert driver.launcher_provisioning_preflight(configured, target, 20.0, run) == [
-            {"submodule": "sub", "url": NETWORK_URL, "source": str(mirror)}
-        ]
+        assert driver.launcher_provisioning_preflight(
+            configured, target, 20.0, run, unit_setenv=unit_setenv
+        ) == [{"submodule": "sub", "url": NETWORK_URL, "source": str(mirror)}]
     else:
         with pytest.raises(driver.CommandNotStarted, match="transport 'file' not allowed"):
-            driver.launcher_provisioning_preflight(configured, target, 20.0, run)
+            driver.launcher_provisioning_preflight(
+                configured, target, 20.0, run, unit_setenv=unit_setenv
+            )
+
+
+@pytest.mark.parametrize("allowance", ["production", "removed"])
+def test_the_launch_starts_only_with_the_unit_allowance(
+    mirrored_superproject, monkeypatch, allowance
+) -> None:
+    """End to end over real git: the manager admits no file transport, as measured.
+
+    With the production allowance the launch starts one launcher that carries
+    it, and the real hook in that unit's environment succeeds. With the
+    allowance removed the same launch refuses before systemd-run.
+    """
+
+    tmp_path, home, mirror, superproject, target, base_env = mirrored_superproject
+    if allowance == "removed":
+        monkeypatch.setattr(driver, "LAUNCHER_UNIT_GIT_SETENV", {})
+    commands: list[list[str]] = []
+
+    def run(command, cwd, timeout):
+        commands.append(list(command))
+        if list(command) == ["systemctl", "--user", "show-environment"]:
+            return done(command, 0, f"HOME={home}\nLANG=C\n")
+        if command[0] == "systemd-run":
+            return done(command)
+        return driver.run_bounded(command, cwd, timeout)
+
+    configured = settings(tmp_path, superproject)
+    arguments = (
+        configured, target, "attempt", "validate-ops-tick-fixture",
+        tmp_path / "validate.log", tmp_path / "launcher.log", 40.0,
+    )
+
+    def launches() -> list[list[str]]:
+        return [command for command in commands if command[0] == "systemd-run"]
+
+    if allowance == "removed":
+        with pytest.raises(driver.CommandNotStarted, match="transport 'file' not allowed"):
+            driver.spawn_validate(*arguments, run=run)
+        assert launches() == []
+        assert not (tmp_path / "launcher.log").exists()
+        return
+    assert driver.spawn_validate(*arguments, run=run)["accepted"] is True
+    [launch] = launches()
+    unit_setenv = dict(
+        option.removeprefix("--setenv=").split("=", 1)
+        for option in launch[: launch.index("--")]
+        if option.startswith("--setenv=GIT_")
+    )
+    assert unit_setenv == PRODUCTION_UNIT
+    assert hook_succeeds(tmp_path, superproject, target, {**base_env, **unit_setenv}, "unit")
+    assert not hook_succeeds(tmp_path, superproject, target, base_env, "manager-only"), (
+        "the fixture must reproduce the measured refusal, or this test proves nothing"
+    )
 
 
 def test_without_a_rewrite_the_real_preflight_never_probes_the_network(mirrored_superproject) -> None:
