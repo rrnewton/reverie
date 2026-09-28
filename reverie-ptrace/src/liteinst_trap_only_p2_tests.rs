@@ -59,7 +59,8 @@ const NOTIFY_AGAIN: u64 = 0x4000;
 /// stop, notifies it; the Tool waits until the signal has arrived.
 const TOOL_PARK_SHIFT: u32 = 32;
 /// Bit 38: after the call's inject returned, the Tool notifies the parent,
-/// waits until its SIGCONT has arrived, then sends SIGSTOP to the thread.
+/// waits until its SIGCONT has arrived, then queues SIGSTOP (SI_QUEUE, value 7)
+/// to the thread.
 const TOOL_AFTER_CONT: u64 = 0x40 << TOOL_PARK_SHIFT;
 /// Bits 40-44: the same as the Tool's park signal, from the pre-syscall hook
 /// (immediately before the call runs: plain ptrace's resume, trap-only's
@@ -532,7 +533,9 @@ impl Tool for P2Tool {
                 let result = guest.inject(call).await;
                 if tagged && regs.r9 & TOOL_AFTER_CONT != 0 {
                     park_for(pid, tid, libc::SIGCONT).await;
-                    tgkill(pid, tid, libc::SIGSTOP);
+                    // Shaped like a re-raise (SI_QUEUE), with a value that
+                    // is not a re-raise's tag.
+                    send_queued(pid, tid, libc::SIGSTOP, 7, true);
                 }
                 let rendered = match result {
                     // The guest's parent is not traced, and differs per run.
@@ -3000,9 +3003,10 @@ async fn trap_only_p2_sigcont_after_the_pending_read_is_lost() {
 }
 
 /// A SIGCONT that discards a SIGSTOP the hop re-raised, followed by a new
-/// SIGSTOP (the Tool's tgkill, after an injected write returned and before
-/// the thread returns to user mode): the new SIGSTOP's delivery stop keeps
-/// its own siginfo (SI_TKILL from the tracer), as under plain ptrace. The
+/// SIGSTOP (the Tool's rt_tgsigqueueinfo, after an injected write returned
+/// and before the thread returns to user mode), shaped like a re-raise
+/// (SI_QUEUE) but with another value: the new SIGSTOP's delivery stop keeps
+/// its own siginfo (SI_QUEUE from the tracer), as under plain ptrace. The
 /// re-raise the SIGCONT discarded is still recorded then; it matches only a
 /// delivery stop that carries its own tag.
 #[tokio::test(flavor = "current_thread")]
@@ -3036,7 +3040,7 @@ async fn trap_only_p2_a_discarded_reraise_leaves_a_later_sigstop_alone() {
         "{}",
         ptrace.report
     );
-    let stop = delivery_after_the_call(&ptrace, "SIGSTOP", libc::SI_TKILL, "tracer", "4", 1);
+    let stop = delivery_after_the_call(&ptrace, "SIGSTOP", libc::SI_QUEUE, "tracer", "4", 1);
     assert_eq!(ptrace.signals["task#1"], std::slice::from_ref(&stop));
 }
 
