@@ -1837,16 +1837,34 @@ pub(crate) type FinalResumeSignalForTest =
     Arc<dyn Fn(Pid, &libc::user_regs_struct) -> Option<Signal> + Send + Sync>;
 
 /// Test-only: runs immediately before a Tool-visible syscall's own execution
-/// starts, with the stopped thread and the syscall's registers, and is awaited
-/// before the tracer resumes it. Under plain ptrace that is the final resume
-/// of the seccomp stop (or the exact inject's resume); under trap-only it is
-/// the masked hop's H3, after the slot stop and before the syscall runs. It
+/// starts, with the stopped thread, the syscall's registers and the point,
+/// and is awaited before the tracer goes on. Under plain ptrace both points
+/// are the final resume of the seccomp stop (or the exact inject's resume),
+/// one after the other; under trap-only they are inside the masked hop, after
+/// the slot stop and before the syscall runs (see [`PreSyscallPoint`]). It
 /// parks a thread at the same logical point under both backends, so that a
 /// test can deliver a signal there deterministically.
 #[cfg(test)]
 pub(crate) type PreSyscallForTest = Arc<
-    dyn Fn(Pid, &libc::user_regs_struct) -> futures::future::BoxFuture<'static, ()> + Send + Sync,
+    dyn Fn(Pid, &libc::user_regs_struct, PreSyscallPoint) -> futures::future::BoxFuture<'static, ()>
+        + Send
+        + Sync,
 >;
+
+/// Test-only: where the masked hop calls a [`PreSyscallForTest`] hook.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PreSyscallPoint {
+    /// At the hop's first slot seccomp stop, before the hop reads the
+    /// thread's pending signals to settle any SIGSTOP it deferred. A hook
+    /// that returns without awaiting lets the hop make that read before any
+    /// other task of the tracer runs.
+    Early,
+    /// After that read (and with no await between the two), immediately
+    /// before the hop restores the signal mask, raises the deferred SIGSTOPs
+    /// again and runs the syscall.
+    Late,
+}
 
 impl<G: GlobalTool> Clone for GlobalState<G> {
     fn clone(&self) -> Self {
@@ -5488,7 +5506,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let regs = task
                     .getregs()
                     .tracee_context(tid, "read registers for the pre-syscall test hook")?;
-                self.pre_syscall_for_test(&regs).await;
+                self.pre_syscall_for_test(&regs, PreSyscallPoint::Early)
+                    .await;
+                self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
+                    .await;
             }
             let running = self
                 .resume_stopped(task, sig)
@@ -8124,7 +8145,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.validate_liteinst_mapping_execution(nr, args)?;
                     #[cfg(test)]
                     if self.global_state.pre_syscall_for_test.is_some() {
-                        self.pre_syscall_for_test(&task.getregs()?).await;
+                        let regs = task.getregs()?;
+                        self.pre_syscall_for_test(&regs, PreSyscallPoint::Early)
+                            .await;
+                        self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
+                            .await;
                     }
                     let wait = self.syscall_stopped(task, None)?.next_state().await?;
                     self.arm_liteinst_wait(&wait);
@@ -8207,9 +8232,13 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Awaits the test's pre-syscall hook, if any (see [`PreSyscallForTest`]).
     #[cfg(test)]
-    pub(crate) async fn pre_syscall_for_test(&self, regs: &libc::user_regs_struct) {
+    pub(crate) async fn pre_syscall_for_test(
+        &self,
+        regs: &libc::user_regs_struct,
+        point: PreSyscallPoint,
+    ) {
         if let Some(hook) = self.global_state.pre_syscall_for_test.clone() {
-            hook(self.tid, regs).await;
+            hook(self.tid, regs, point).await;
         }
     }
 
