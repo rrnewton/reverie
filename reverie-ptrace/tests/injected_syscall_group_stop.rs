@@ -843,3 +843,70 @@ fn injected_mask_swapping_syscall_requeues_a_signal_its_mask_blocks() {
         "the still-blocked SIGBUS is never delivered: {signals:?}"
     );
 }
+
+/// Two synchronous-class signals requeued after an injected `rt_sigprocmask`
+/// completes are pending again before the callback's next injected
+/// `syscall` (`getpid`), which is therefore reported as interrupted. Both
+/// handlers still run exactly once and the guest sees EINTR.
+///
+/// This is not native Linux, where both handlers run between the two
+/// syscalls and `getpid` succeeds; untraced the same guest body prints the
+/// pid. The tool list is pinned as it stands: the signal that stops
+/// `getpid` before its `syscall` is delivered through the single
+/// `pending_signal` slot, which bypasses `Tool::handle_signal_event`, so only
+/// SIGSEGV is observed. A fix for that bypass must update this assertion.
+#[test]
+fn requeued_signals_interrupt_the_next_injected_syscall() {
+    let (output, log) = test_fn::<ReplaceMarker, _>(|| unsafe {
+        SIGSYS_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        SIGSEGV_HANDLER_CALLS.store(0, Ordering::Relaxed);
+        install_counter(libc::SIGSYS, count_sigsys);
+        install_counter(libc::SIGSEGV, count_sigsegv);
+        let set = block(&[libc::SIGSYS, libc::SIGSEGV]);
+        queue_to_self(libc::SIGSYS, 1);
+        queue_to_self(libc::SIGSEGV, 1);
+        let ret = libc::syscall(
+            libc::SYS_write,
+            UNBLOCK_THEN_GETPID_FD,
+            &set as *const libc::sigset_t,
+            0usize,
+        );
+        let errno = *libc::__errno_location();
+        println!(
+            "{ret} {errno} {} {}",
+            SIGSYS_HANDLER_CALLS.load(Ordering::Relaxed),
+            SIGSEGV_HANDLER_CALLS.load(Ordering::Relaxed)
+        );
+    })
+    .expect("run requeue-then-interrupt guest");
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let injected = log.injected.lock().unwrap();
+    let signals = log.signals.lock().unwrap();
+    eprintln!(
+        "PROBE requeue-interrupt guest={} injected={:?} signals={:?}",
+        stdout.trim(),
+        *injected,
+        *signals
+    );
+    assert_eq!(
+        *injected,
+        vec![Ok(0), Err(Errno::ERESTARTSYS.into_raw())],
+        "the unblock completes; a requeued signal interrupts getpid before it runs"
+    );
+    assert_eq!(
+        stdout.trim(),
+        format!("-1 {} 1 1", libc::EINTR),
+        "guest sees EINTR and each handler run once"
+    );
+    assert_eq!(
+        *signals,
+        vec![libc::SIGSEGV],
+        "SIGSYS bypasses the tool through pending_signal (known gap)"
+    );
+}
