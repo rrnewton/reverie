@@ -3447,3 +3447,30 @@ def test_finalized_proof_reader_is_captured_and_bound_not_ambient():
     assert proof is modules.export_inputs.finalized_proof
     assert "ci-hub/series/finalized_proof.py" in website.STAGE_1_READER_PATHS
     assert "ci-hub/series/finalized_proof.py" in website.GENERATOR_PATHS
+
+
+def test_website_build_json_bound_admits_the_measured_proof_growth(tmp_path: Path) -> None:
+    # 2026-09-28: a complete Stage 1 build at ledger 7d28c1f0 wrote a
+    # 19,498,083-byte website build.json and the old 16 MiB reader bound then
+    # refused it, so nothing was published. The bound stays under GitHub's
+    # 100 MiB pushed-file limit, because the site is pushed to gh-pages.
+    measured = 19_498_083
+    assert measured < website.MAX_BUILD_JSON_BYTES < 100 << 20
+    build = tmp_path / "build.json"
+    build.write_bytes(b"{" + b" " * (measured - 2) + b"}")
+    build.chmod(0o444)
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        value = website._read_artifact(
+            directory, "build.json", website.MAX_BUILD_JSON_BYTES, "website build.json"
+        )
+        assert len(value) == measured
+        build.chmod(0o644)
+        os.truncate(build, website.MAX_BUILD_JSON_BYTES + 1)
+        build.chmod(0o444)
+        with pytest.raises(Exception, match="not a bounded regular file: build.json"):
+            website._read_artifact(
+                directory, "build.json", website.MAX_BUILD_JSON_BYTES, "website build.json"
+            )
+    finally:
+        os.close(directory)

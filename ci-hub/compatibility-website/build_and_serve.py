@@ -43,7 +43,18 @@ SERVE_PRELUDE_PATH = REPOSITORY / "hermit/scripts/lib/rust_script_prelude.rs"
 DEFAULT_OUTPUT_ROOT = REPOSITORY.parent / f"{REPOSITORY.name}-compatibility-website"
 SCHEMA_VERSION = 1
 STAGE_1_SCHEMA_VERSION = 3
-MAX_BUILD_JSON_BYTES = 16 << 20
+# The website build.json embeds the Stage 1 build record twice (as
+# `inputs.stage_1_build_json` and as `provenance`), and both copies carry the
+# finalized-validation proof, which holds the exact cell-results bytes of every
+# schema-10 terminal the ledger carries. It therefore grows with every finalized
+# run, about 3.2 MB per full run (a 1.6 MB cells object, counted twice).
+# Measured: 8,896,094 bytes in the build published 2026-09-27 (22 proof
+# objects); 19,498,083 bytes on 2026-09-28 at ledger 7d28c1f0 (25 objects),
+# which the old 16 MiB bound refused after a complete Stage 1 build, so no
+# website was published. The bound that matters is external: the site is
+# pushed to the gh-pages branch, and GitHub rejects a pushed file over 100 MiB.
+# Stay under that; removing the doubled proof is the structural fix.
+MAX_BUILD_JSON_BYTES = 96 << 20
 MAX_ARTIFACT_BYTES = 1 << 30
 MAX_GIT_OID_STDOUT_BYTES = 128
 MAX_GIT_OID_STDERR_BYTES = 512
