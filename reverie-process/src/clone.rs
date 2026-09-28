@@ -258,6 +258,9 @@ mod tests {
 
     #[test]
     fn default_child_stack_keeps_the_container_run_minimum() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stack = child_stack().unwrap();
         let size = stack.top() as usize - stack.bottom() as usize;
         assert!(
@@ -271,6 +274,9 @@ mod tests {
 
     #[test]
     fn default_child_stack_is_a_main_thread_stack() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stack = child_stack().unwrap();
         let size = stack.top() as usize - stack.bottom() as usize;
         assert!(
@@ -285,6 +291,9 @@ mod tests {
 
     #[test]
     fn child_keeps_its_stack_after_parent_unmaps() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stack = child_stack().unwrap();
         let bottom = stack.bottom() as usize;
         let top = stack.top() as usize;
@@ -322,6 +331,9 @@ mod tests {
 
     #[test]
     fn stack_is_unmapped_after_clone_failure() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         // Isolate the address space so another test thread cannot reuse the
         // just-unmapped addresses before mincore checks them.
         let pid = unsafe { libc::fork() };
@@ -373,6 +385,9 @@ mod tests {
 
     #[test]
     fn shared_address_space_is_rejected() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         assert_eq!(
             clone(|| 99, libc::SIGCHLD | libc::CLONE_VM),
             Err(Errno::EINVAL)
@@ -415,6 +430,9 @@ mod tests {
 
     #[test]
     fn stack_overflow_faults_in_guard() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
         let mut stack = child_stack().unwrap();
         let guard_start = stack.mapping as usize;
         let bottom = stack.bottom() as usize;
