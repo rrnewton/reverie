@@ -6172,6 +6172,83 @@ mod tests {
                 panic!("exec owner did not Complete within original3s predicate: {description}");
             }
         };
+        verify_exec_owner_completion(
+            fail,
+            timer_mode,
+            completed,
+            started,
+            root_absent,
+            root,
+            &timer_transfers,
+            events,
+            markers,
+        );
+    }
+
+    /// Checks the completed run's result before any side-effect assertion. A
+    /// `Complete(Err)` would otherwise surface only as whichever later timing,
+    /// reaping or timer assertion its failure happens to break, which hides the
+    /// actual error. Nothing here is weaker than the final result checks in
+    /// [`verify_exec_owner_completion`], which still run unchanged.
+    fn assert_exec_owner_completed_result(
+        fail: bool,
+        root: Pid,
+        events: &ExecOwnerEvents,
+        result: &Result<Output, crate::PtraceRunFailure>,
+    ) {
+        if fail {
+            let failure = result
+                .as_ref()
+                .expect_err("displaced leader Tool failure lost");
+            assert!(
+                matches!(failure.primary(), Error::Tool(error) if error.downcast_ref::<NonleaderFailure>().is_some()),
+                "displaced leader failure is not the Tool's NonleaderFailure: {failure:?}"
+            );
+            assert_eq!(
+                failure.origin().phase,
+                "ptrace replaced leader on_exit_thread"
+            );
+            let former = events
+                .iter()
+                .find(|event| event.0 == 0 && event.1 != root)
+                .expect("former leader start missing")
+                .2;
+            assert_eq!(
+                events
+                    .iter()
+                    .find(|event| event.0 == 2 && event.2 == former)
+                    .expect("former leader exit missing")
+                    .3,
+                Some(ExitStatus::Signaled(Signal::SIGKILL, false))
+            );
+        } else {
+            let output = match result {
+                Ok(output) => output,
+                Err(error) => panic!("exec owner completed with error: {error:?}"),
+            };
+            assert_eq!(output.status, ExitStatus::Exited(0));
+            assert_eq!(output.stdout, b"survived");
+            assert_eq!(output.stderr, b"");
+        }
+    }
+
+    /// Every check `ordinary_exec_owner_control` applies to a run that
+    /// Completed, in order. It is a separate function only so that
+    /// `exec_owner_harness_reports_completed_error_first` can drive the same
+    /// sequence with a synthetic `Complete(Err)`.
+    #[allow(clippy::too_many_arguments)]
+    fn verify_exec_owner_completion<G>(
+        fail: bool,
+        timer_mode: u8,
+        completed: crate::ToolRunCompletion<G, Output>,
+        started: Instant,
+        root_absent: bool,
+        root: Pid,
+        timer_transfers: &StdMutex<Vec<crate::task::ExecTimerTransfer>>,
+        events: ExecOwnerEvents,
+        markers: Vec<(i32, i32, i32, i32, u64, bool, bool)>,
+    ) {
+        assert_exec_owner_completed_result(fail, root, &events, &completed.result);
         assert!(started.elapsed() <= Duration::from_secs(3));
         assert!(
             root_absent,
@@ -6357,6 +6434,60 @@ mod tests {
             );
         }
         assert_reaped("exec root", root);
+    }
+
+    /// A synthetic `Complete(Err)` driven through the harness's post-run
+    /// sequence must stop at the result check, with the error in the message.
+    /// Every later check fails on these inputs with its own message: the run
+    /// started 4 s ago, the root is reported present, and no timer handoff was
+    /// recorded. So this fails if the result check runs after any of them.
+    #[test]
+    fn exec_owner_harness_reports_completed_error_first() {
+        let completed = crate::ToolRunCompletion::<(), Output> {
+            global_state: (),
+            result: Err(crate::PtraceRunFailure {
+                primary: Arc::new(Error::Tool(anyhow::anyhow!("synthetic exec owner failure"))),
+                origin: reverie::BackendFailure {
+                    pid: Pid::from_raw(1),
+                    tid: Pid::from_raw(1),
+                    phase: "synthetic exec owner phase",
+                },
+                secondary: Vec::new(),
+                captured_prefix: None,
+            }),
+            callback_diagnostics: Vec::new(),
+        };
+        let started = Instant::now()
+            .checked_sub(Duration::from_secs(4))
+            .expect("monotonic clock is older than 4 s");
+        let timers = StdMutex::new(Vec::new());
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_exec_owner_completion(
+                false,
+                0,
+                completed,
+                started,
+                false,
+                Pid::from_raw(1),
+                &timers,
+                Vec::new(),
+                Vec::new(),
+            )
+        }))
+        .expect_err("synthetic Complete(Err) passed the exec owner harness");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(
+            message.starts_with("exec owner completed with error"),
+            "harness did not report the completed error first: {message:?}"
+        );
+        assert!(
+            message.contains("synthetic exec owner failure"),
+            "harness dropped the completed error: {message:?}"
+        );
     }
     #[tokio::test(flavor = "current_thread")]
     async fn ordinary_exec_old_artificial_signal_preserves_fresh_timer() {
