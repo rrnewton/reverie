@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.001525351
+    }
+  ]
+}

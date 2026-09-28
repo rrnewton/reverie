@@ -1,0 +1,15 @@
+command=CARGO_INCREMENTAL=0 cargo test --offline -j1 -p reverie-kvm child_exit_signal -- --nocapture
+exit_code=0
+head=865023d1a9d2b82320a38e17e5a83bca1c4af3ee
+tree=86314b59b1923a8e52ef7007ece798d369fee2f4
+unit_tests=11 passed; 0 failed; 0 ignored; 765 filtered out
+static_elf_tests=1 passed; 0 failed; 0 ignored; 335 filtered out
+compile_elapsed=2m14s
+static_elf_elapsed=1.15s
+log_sha256=fcab5348e7863d5215cbe3b033648d72c70b46368eec79fddb50557fa528b46c
+start_avail=443811549184
+lowest_observed_avail=443659489280
+end_avail=443659489280
+stop_threshold=438086664192
+floor=429496729600
+guard_tripped=0

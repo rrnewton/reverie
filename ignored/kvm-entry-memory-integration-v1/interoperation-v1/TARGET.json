@@ -1,0 +1,15 @@
+{
+  "scope": "focused interoperation feedback only",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/interoperation-v1/REPORT.md",
+      "bytes": 5081,
+      "sha256": "5f3b86dbbfa8c5c435ecdfb71517811e43ef10886768888e0be945cfbc246062"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1/interoperation-v1/READBACK.json",
+      "bytes": 1738,
+      "sha256": "f786fb642802750b359d2e1fb66a10268e8caeb641bc548214ebd8191fb3f99a"
+    }
+  ]
+}

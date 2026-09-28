@@ -1,0 +1,26 @@
+[evidence begin]
+command cargo test -p reverie-kvm --lib vm::tests::fatal_worker_ro_delayed_waiter_qualifies -- --exact --nocapture 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+expected_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+pre_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+pre_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+disk_before_bytes 443581632512
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:37:48Z
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+test vm::tests::fatal_worker_ro_delayed_waiter_qualifies ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 773 filtered out; finished in 0.22s
+
+
+[evidence end]
+exit_code 0
+post_head c4376212990ae5072a7bcfd0223ec52003cbaac0
+post_tree c59d9ce7d1e77e7622fc3060ab0314da522b44f1
+disk_after_bytes 443581632512
+completed_at 2026-09-20T15:37:48Z

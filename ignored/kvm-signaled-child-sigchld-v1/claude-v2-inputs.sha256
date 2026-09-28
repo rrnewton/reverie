@@ -1,0 +1,11 @@
+0f49a164be50c287d35c658b713a6904713359ac9a8b0711f26a080bfa254737  ignored/kvm-signaled-child-sigchld-v1/exact-afd9ddc.patch
+2b3d6d6fb6de2b0f86a135a6cec7922b716549af096d1b580d236b6a19b73536  reverie-kvm/src/executor.rs
+a19ac775dc7d4b55667bb7fc4e1fde0cda909fc1e56d073ded0a9f329a6c34cd  reverie-kvm/src/child_exit_signal_tests.rs
+98f8aac11fb82dbb8145d94476a3873a458ad8c30e2d3f2b5f4907f56411b1bb  reverie/src/guest.rs
+56f81c00dc46a7ef60ecab157571e4d4088cb5457b309901692d160e351afcaf  reverie-kvm/README.md
+2f4a702b80376d6e6b8fab5b9dbaae4b8e00fe99be5b0e2844392ff0e445ba37  ai_docs/kvm-child-exit-signals.md
+8b5a7a0f988eae3b20d537c45c4927593556495d991aa000e7e82a279763dfff  ignored/kvm-signaled-child-sigchld-v1/exact-afd9ddc-focused.status
+761ddc7cdcac7f4dc634fe7c9dfc11638a864927119ffa1aed6a5c74dc16077e  ignored/kvm-signaled-child-sigchld-v1/exact-afd9ddc-lib-serial.status
+fe34656240bfb2075a26fbb0f623c7c154fb9f25c2b5bfdc6a24fbf47d1fbde8  ignored/kvm-signaled-child-sigchld-v1/exact-afd9ddc-clippy-all-targets.status
+1c8472d279f6d21f1f189504d66c58a91cc17fc6570d5488a569bc81cbea43fa  ignored/kvm-signaled-child-sigchld-v1/exact-afd9ddc-static.status
+01d2480637bf6acbd9cdd684736cfd7359838ef63d4aa1097f7b5719607f53d3  ignored/kvm-signaled-child-sigchld-v1/REMOTE-CI-CLASSIFICATION.md

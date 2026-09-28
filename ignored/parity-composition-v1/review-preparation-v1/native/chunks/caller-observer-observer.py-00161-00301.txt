@@ -1,0 +1,141 @@
+    row = receipt['value']['data'][0]
+    require(row[0] == launch['binary'] and row[1] == [launch['binary'], *launch['arguments']], 'typed service executable or argv differs')
+    require(row[2] is False, 'service command ignores its actual exit status')
+    require(type(row[7]) is int and row[7] == pid, 'ExecStart process identity differs from MainPID')
+    require(type(row[4]) is int and row[4] * 1000 >= launch['monotonic_ns'], 'stale ExecStart process timestamp')
+
+
+def unit_properties(reference, deadline, final=False):
+    path = reference.method('GetUnit', deadline)
+    result = {}
+    for name in ['Id', 'LoadState', 'ActiveState', 'SubState']:
+        result[name] = reference.property(path, 'org.freedesktop.systemd1.Unit', name, deadline)
+    names = ['ControlGroup', 'MainPID', 'ExecMainPID', 'ExecMainCode', 'ExecMainStatus',
+             'ExecMainStartTimestampMonotonic', 'CPUUsageNSec']
+    if not final:
+        names += ['RuntimeMaxUSec', 'MemoryMax', 'MemorySwapMax', 'IgnoreSIGPIPE']
+    for name in names:
+        result[name] = reference.property(path, 'org.freedesktop.systemd1.Service', name, deadline)
+    if not final:
+        result['ExecStart'] = typed_exec_start(reference, deadline)
+    require(time.monotonic() <= deadline, 'unit property receipt deadline expired')
+    return result
+
+
+def authenticate_service(values, unit, launch, memory_bytes=16 * 1024**3):
+    require(memory_bytes in (4 * 1024**3, 16 * 1024**3), 'unsupported memory bound')
+    require(values['Id'] == unit and values['LoadState'] == 'loaded', 'unit identity or load state differs')
+    require(values['ActiveState'] == 'active' and values['SubState'] == 'running', 'service was not observed running')
+    require(values['RuntimeMaxUSec'] == launch['wall_seconds'] * 1000000, 'service wall limit differs from original allowance')
+    require(values['MemoryMax'] == memory_bytes and values['MemorySwapMax'] == 0, 'service memory limit differs from authenticated bound')
+    require(values['IgnoreSIGPIPE'] == 1, 'service SIGPIPE disposition differs from helper exec contract')
+    group = values['ControlGroup']
+    require(isinstance(group, str) and group.startswith('/') and group != '/' and '..' not in group.split('/'),
+            'invalid unit ControlGroup')
+    require(Path(group).name == unit, 'ControlGroup does not name this service')
+    path = CGROUP_ROOT / group.lstrip('/')
+    require(path.resolve() == path and path.is_dir(), 'ControlGroup path absent or redirected')
+    pid = values['MainPID']
+    require(type(pid) is int and pid > 0 and pid == values['ExecMainPID'], 'service main process is missing or contradictory')
+    identity = proc_identity(pid)
+    require(identity['cgroup'] == group, 'main process membership contradicts ControlGroup')
+    require(identity['start_ticks'] >= launch['wrapper_identity']['start_ticks'], 'stale service process generation')
+    require(values['ExecMainStartTimestampMonotonic'] * 1000 >= launch['monotonic_ns'], 'stale service start timestamp')
+    authenticate_exec_start(values['ExecStart'], launch, pid)
+    wrapper_now = proc_identity(launch['pid'])
+    require(wrapper_now['start_ticks'] == launch['wrapper_identity']['start_ticks'], 'wrapper process generation changed')
+    require(wrapper_now['cgroup'] != group, 'outer wrapper cgroup was mistaken for the service')
+    return path, identity
+
+
+def apply_payload_memory(reference, unit, launch, initial, group, identity, deadline, receipt):
+    """Lower only this held service before its waiting helper may exec payload."""
+    requested = launch['payload_memory_bytes']
+    require(requested in (4 * 1024**3, 16 * 1024**3), 'unsupported payload memory bound')
+    require(reference.held, 'memory change requires held service reference')
+    original_group = (group.stat().st_dev, group.stat().st_ino)
+    before = unit_properties(reference, deadline)
+    before_group, before_identity = authenticate_service(before, unit, launch)
+    identity_keys = ['pid', 'start_ticks', 'parent_pid', 'cgroup']
+    require(all(before_identity[key] == identity[key] for key in identity_keys),
+            'service child identity changed before memory lowering')
+    require((before_group.stat().st_dev, before_group.stat().st_ino) == original_group,
+            'service cgroup changed before memory lowering')
+    stable_properties = ['Id', 'MainPID', 'ExecMainPID', 'ExecMainStartTimestampMonotonic', 'ControlGroup']
+    require(all(before[key] == initial[key] for key in stable_properties),
+            'held service identity changed before memory lowering')
+    receipt.update(initial_wrapper_memory_bytes=16 * 1024**3, requested_bytes=requested,
+                   unit=unit, before_properties=before, before_child=before_identity,
+                   cgroup_identity=list(original_group), applied=False)
+    if requested == 16 * 1024**3:
+        receipt.update(applied=True, changed=False, after_properties=before, after_child=before_identity)
+        return before, before_group, before_identity
+    remaining = min(2, deadline - time.monotonic())
+    require(remaining > 0, 'memory lowering startup deadline expired')
+    argv = [str(SYSTEMCTL), '--user', 'set-property', '--runtime', unit,
+            'MemoryMax=' + str(requested)]
+    receipt['argv'] = argv
+    command = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             timeout=remaining, check=False)
+    receipt['command'] = dict(returncode=command.returncode,
+                              stdout=command.stdout.decode(errors='replace'),
+                              stderr=command.stderr.decode(errors='replace'))
+    require(command.returncode == 0, 'owned service memory lowering failed')
+    after = unit_properties(reference, deadline)
+    after_group, after_identity = authenticate_service(after, unit, launch, memory_bytes=requested)
+    require(all(after_identity[key] == before_identity[key] for key in identity_keys),
+            'service child identity changed during memory lowering')
+    require(all(after[key] == before[key] for key in stable_properties),
+            'held service identity changed during memory lowering')
+    require((after_group.stat().st_dev, after_group.stat().st_ino) == original_group,
+            'service cgroup changed during memory lowering')
+    require(time.monotonic() < deadline, 'memory lowering exceeded startup deadline')
+    receipt.update(applied=True, changed=True, after_properties=after, after_child=after_identity)
+    return after, after_group, after_identity
+
+
+def read_cgroup_control(group, name):
+    path = group / name
+    try:
+        return path.read_text()
+    except OSError as error:
+        # Only the two actual cgroup control-file reads can enter the terminal
+        # handoff. An unrelated ENODEV must retain the ordinary refusal path.
+        if error.errno == errno.ENODEV:
+            error._hermit_cgroup_control_path = str(path)
+        raise
+
+
+def retired_cgroup_accounting(error, group, reference, initial, unit, maximum_usage, deadline):
+    path = getattr(error, '_hermit_cgroup_control_path', None)
+    require(isinstance(error, OSError) and error.errno == errno.ENODEV
+            and path in [str(group / 'cpu.stat'), str(group / 'cgroup.procs')],
+            'non-cgroup ENODEV cannot use terminal accounting')
+    require(reference.held, 'cgroup retirement has no held unit reference')
+    require(not group.exists(), 'ENODEV while authenticated cgroup still exists')
+    values = unit_properties(reference, min(deadline, time.monotonic() + FINAL_SECONDS), final=True)
+    final = final_accounting(values, initial, unit, group, maximum_usage)
+    return {'error': repr(error), 'control_path': path, 'terminal_accounting': final}
+
+
+def read_usage(group, previous=None):
+    values = {}
+    for line in read_cgroup_control(group, 'cpu.stat').splitlines():
+        key, value = line.split()
+        require(key not in values and value.isdecimal(), 'malformed or duplicate cgroup CPU accounting')
+        values[key] = int(value)
+    require('usage_usec' in values, 'aggregate service usage missing')
+    usage = values['usage_usec']
+    require(previous is None or usage >= previous, 'aggregate service CPU counter regressed')
+    members = []
+    for word in read_cgroup_control(group, 'cgroup.procs').split():
+        require(word.isdecimal() and int(word) > 0, 'invalid cgroup member PID')
+        try:
+            identity = proc_identity(int(word))
+        except (FileNotFoundError, ProcessLookupError):
+            # A member can exit after enumeration or after opening its proc file.
+            # ENOENT and ESRCH both mean this diagnostic identity disappeared;
+            # the cgroup CPU counter above still includes the exited member.
+            continue
+        require(identity['cgroup'] == '/' + str(group.relative_to(CGROUP_ROOT)), 'member process contradicts service cgroup')
+        members.append(identity)

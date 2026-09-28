@@ -1,0 +1,1479 @@
+diff --git a/reverie-ptrace/src/clock_origin_tests.rs b/reverie-ptrace/src/clock_origin_tests.rs
+new file mode 100644
+index 00000000..a9012bdb
+--- /dev/null
++++ b/reverie-ptrace/src/clock_origin_tests.rs
+@@ -0,0 +1,399 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++use std::os::unix::fs::PermissionsExt;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
++
++use reverie::Guest;
++use reverie::TimerSchedule;
++use reverie::syscalls::Exit;
++use reverie::syscalls::Getpid;
++use reverie::syscalls::Syscall;
++use reverie::syscalls::SyscallInfo;
++use serde::Deserialize;
++use serde::Serialize;
++
++use super::*;
++
++#[derive(Clone, Debug, Default, Deserialize, Serialize)]
++struct Config {
++    injected_exec: bool,
++    startup_request: u8,
++    post_exec_request: bool,
++    initial_failure: bool,
++}
++
++#[derive(Debug, Deserialize, Serialize)]
++enum Observation {
++    Start(u64),
++    ExecCall(u64),
++    PostExec(u64),
++    Timer(u64),
++    Boundary(u64),
++    FailedExec(u64),
++}
++
++#[derive(Default)]
++struct ClockLog(Mutex<Vec<Observation>>);
++
++#[reverie::global_tool]
++impl GlobalTool for ClockLog {
++    type Config = Config;
++    type Request = Observation;
++    type Response = ();
++
++    async fn receive_rpc(&self, _from: Pid, observation: Observation) {
++        self.0.lock().unwrap().push(observation);
++    }
++}
++
++#[derive(Default)]
++struct ClockTool;
++
++fn request_startup_timer<G: Guest<ClockTool>>(guest: &mut G, kind: u8) {
++    match kind {
++        0 => {}
++        1 => guest.set_timer_precise(TimerSchedule::Rcbs(1)).unwrap(),
++        2 => guest.set_timer(TimerSchedule::Rcbs(1)).unwrap(),
++        3 => guest
++            .set_timer_precise(TimerSchedule::RcbsAndInstructions(1, 2))
++            .unwrap(),
++        _ => panic!("unknown control timer kind"),
++    }
++}
++
++#[reverie::tool]
++impl Tool for ClockTool {
++    type GlobalState = ClockLog;
++    type ThreadState = bool;
++
++    fn subscriptions(config: &Config) -> Subscription {
++        let mut events = Subscription::none();
++        events.syscalls([Sysno::getpid]);
++        if config.injected_exec {
++            events.syscalls([Sysno::execve]);
++        }
++        events
++    }
++
++    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
++        assert!(guest.is_command_bootstrap());
++        let clock = guest.read_clock()?;
++        eprintln!("CLOCK_ORIGIN_TEST start={clock}");
++        assert_eq!(clock, 0);
++        guest.send_rpc(Observation::Start(clock)).await;
++        let kind = guest.config().startup_request;
++        request_startup_timer(guest, kind);
++        Ok(())
++    }
++
++    async fn handle_syscall_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        call: Syscall,
++    ) -> Result<i64, Error> {
++        if call.number() == Sysno::execve {
++            assert!(guest.is_command_bootstrap());
++            let clock = guest.read_clock()?;
++            eprintln!("CLOCK_ORIGIN_TEST intercepted_exec={clock}");
++            assert_eq!(clock, 0, "the command launcher is outside guest accounting");
++            guest.send_rpc(Observation::ExecCall(clock)).await;
++            // This request is newer than handle_thread_start and exercises
++            // the injected route's missing ordinary observe_event call.
++            let kind = guest.config().startup_request;
++            request_startup_timer(guest, kind);
++            if guest.config().initial_failure {
++                assert_eq!(guest.inject(call).await, Err(Errno::ENOENT));
++                assert!(guest.is_command_bootstrap());
++                assert!(!*guest.thread_state());
++                let clock = guest.read_clock()?;
++                eprintln!("CLOCK_ORIGIN_TEST failed_exec={clock}");
++                assert_eq!(clock, 0, "failed initial exec did not activate the clock");
++                guest.send_rpc(Observation::FailedExec(clock)).await;
++                guest.tail_inject(Exit::default().with_status(27)).await
++            }
++            guest.tail_inject(call).await
++        } else {
++            assert_eq!(call.number(), Sysno::getpid);
++            assert!(*guest.thread_state());
++            let clock = guest.read_clock()?;
++            eprintln!("CLOCK_ORIGIN_TEST boundary={clock}");
++            guest.send_rpc(Observation::Boundary(clock)).await;
++            Ok(guest.inject(call).await?)
++        }
++    }
++
++    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
++        assert!(!guest.is_command_bootstrap());
++        assert!(!*guest.thread_state());
++        *guest.thread_state_mut() = true;
++        let clock = guest
++            .read_clock()
++            .expect("post-exec clock must be available");
++        eprintln!("CLOCK_ORIGIN_TEST post_exec={clock}");
++        assert_eq!(
++            clock, 0,
++            "post-exec setup must not execute and rewind the entry branch"
++        );
++        assert_eq!(guest.regs().await.rip, 0x401000);
++        guest.send_rpc(Observation::PostExec(clock)).await;
++        // The real Tool callback is live immediately. A returned injected
++        // syscall is not an initial command and does not reopen the hold.
++        assert!(guest.inject(Getpid::default()).await? > 0);
++        assert_eq!(guest.regs().await.rip, 0x401000);
++        assert_eq!(
++            guest.read_clock().expect("clock after post-exec injection"),
++            0,
++            "injection must not retire guest work"
++        );
++        if guest.config().post_exec_request {
++            guest
++                .set_timer_precise(TimerSchedule::Rcbs(1))
++                .expect("new ordinary post-exec timer");
++        }
++        Ok(())
++    }
++
++    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
++        assert!(
++            *guest.thread_state(),
++            "a timer fired in the excluded launcher interval"
++        );
++        assert!(
++            guest.config().post_exec_request,
++            "a retired initial request fired later"
++        );
++        let clock = guest.read_clock().unwrap();
++        eprintln!("CLOCK_ORIGIN_TEST timer={clock}");
++        guest.send_rpc(Observation::Timer(clock)).await;
++    }
++}
++
++struct Fixture(std::path::PathBuf);
++
++impl Fixture {
++    fn new(pre_boundary_loop: bool, initial_failure: bool) -> Self {
++        static NEXT: AtomicU64 = AtomicU64::new(0);
++        let path = std::env::temp_dir().join(format!(
++            "reverie-clock-origin-{}-{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        // The first instruction is itself a conditional branch. Both outcomes
++        // reach the next instruction; its incoming condition does not matter.
++        let mut code = vec![0x75, 0x00]; // jne +0
++        fn loop64(code: &mut Vec<u8>) {
++            code.extend_from_slice(&[0xb9, 64, 0, 0, 0, 0xff, 0xc9, 0x75, 0xfc]);
++        }
++        fn getpid(code: &mut Vec<u8>) {
++            code.extend_from_slice(&[0xb8, 39, 0, 0, 0, 0x0f, 0x05]);
++        }
++        if pre_boundary_loop {
++            loop64(&mut code);
++        }
++        getpid(&mut code);
++        loop64(&mut code);
++        getpid(&mut code);
++        code.extend_from_slice(&[0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
++        let size = 0x1000 + code.len();
++        let mut elf = vec![0u8; size];
++        elf[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
++        elf[16..18].copy_from_slice(&2u16.to_le_bytes());
++        elf[18..20].copy_from_slice(&62u16.to_le_bytes());
++        elf[20..24].copy_from_slice(&1u32.to_le_bytes());
++        elf[24..32].copy_from_slice(&0x401000u64.to_le_bytes());
++        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
++        elf[52..54].copy_from_slice(&64u16.to_le_bytes());
++        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
++        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
++        elf[64..68].copy_from_slice(&1u32.to_le_bytes());
++        elf[68..72].copy_from_slice(&5u32.to_le_bytes());
++        elf[80..88].copy_from_slice(&0x400000u64.to_le_bytes());
++        elf[88..96].copy_from_slice(&0x400000u64.to_le_bytes());
++        elf[96..104].copy_from_slice(&(size as u64).to_le_bytes());
++        elf[104..112].copy_from_slice(&(size as u64).to_le_bytes());
++        elf[112..120].copy_from_slice(&0x1000u64.to_le_bytes());
++        if initial_failure {
++            use std::os::unix::ffi::OsStrExt;
++            let missing_loader = path.with_extension("uncreated-interpreter");
++            assert!(!missing_loader.exists());
++            let mut interpreter = missing_loader.as_os_str().as_bytes().to_vec();
++            interpreter.push(0);
++            assert!(0x200 + interpreter.len() < 0x1000);
++            elf[56..58].copy_from_slice(&2u16.to_le_bytes());
++            elf[120..124].copy_from_slice(&3u32.to_le_bytes()); // PT_INTERP
++            elf[124..128].copy_from_slice(&4u32.to_le_bytes());
++            elf[128..136].copy_from_slice(&0x200u64.to_le_bytes());
++            elf[152..160].copy_from_slice(&(interpreter.len() as u64).to_le_bytes());
++            elf[160..168].copy_from_slice(&(interpreter.len() as u64).to_le_bytes());
++            elf[168..176].copy_from_slice(&1u64.to_le_bytes());
++            elf[0x200..0x200 + interpreter.len()].copy_from_slice(&interpreter);
++        }
++        elf[0x1000..].copy_from_slice(&code);
++        let mut file = std::fs::OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&path)
++            .unwrap();
++        std::io::Write::write_all(&mut file, &elf).unwrap();
++        file.set_permissions(std::fs::Permissions::from_mode(0o700))
++            .unwrap();
++        drop(file);
++        Self(path)
++    }
++}
++
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        std::fs::remove_file(&self.0).unwrap();
++    }
++}
++
++async fn run(config: Config, launcher_branches: u64) {
++    let fixture = Fixture::new(config.post_exec_request, config.initial_failure);
++    let mut builder =
++        TracerBuilder::<ClockTool>::new(Command::new(&fixture.0)).config(config.clone());
++    builder.clock_test_launcher_branches = launcher_branches;
++    let tracer = builder.spawn().await.unwrap();
++    let (status, log) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
++        .await
++        .expect("initial-command control hung")
++        .unwrap();
++    assert_eq!(
++        status,
++        ExitStatus::Exited(if config.initial_failure { 27 } else { 0 })
++    );
++    let observations = log.0.into_inner().unwrap();
++    let mut start = Vec::new();
++    let mut exec = Vec::new();
++    let mut post = Vec::new();
++    let mut timer = Vec::new();
++    let mut boundary = Vec::new();
++    let mut failed_exec = Vec::new();
++    for observation in observations {
++        match observation {
++            Observation::Start(c) => start.push(c),
++            Observation::ExecCall(c) => exec.push(c),
++            Observation::PostExec(c) => post.push(c),
++            Observation::Timer(c) => timer.push(c),
++            Observation::Boundary(c) => boundary.push(c),
++            Observation::FailedExec(c) => failed_exec.push(c),
++        }
++    }
++    assert_eq!(start, vec![0]);
++    assert_eq!(
++        exec,
++        if config.injected_exec {
++            vec![0]
++        } else {
++            vec![]
++        }
++    );
++    if config.initial_failure {
++        assert_eq!(failed_exec, vec![0]);
++        assert_eq!(post, Vec::<u64>::new());
++        assert_eq!(timer, Vec::<u64>::new());
++        assert_eq!(boundary, Vec::<u64>::new());
++        return;
++    }
++    assert_eq!(failed_exec, Vec::<u64>::new());
++    assert_eq!(post, vec![0]);
++    assert_eq!(
++        timer,
++        if config.post_exec_request {
++            // Rcbs(1) from post-exec zero targets the first real guest branch.
++            vec![1]
++        } else {
++            vec![]
++        }
++    );
++    assert_eq!(
++        boundary,
++        if config.post_exec_request {
++            vec![65, 129]
++        } else {
++            vec![1, 65]
++        }
++    );
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn initial_command_clock_counts_first_branch_and_guest_loop() {
++    for injected_exec in [false, true] {
++        run(
++            Config {
++                injected_exec,
++                ..Config::default()
++            },
++            0,
++        )
++        .await;
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn initial_exec_retires_thread_start_and_intercepted_exec_timers() {
++    for injected_exec in [false, true] {
++        for startup_request in [1, 2, 3] {
++            run(
++                Config {
++                    injected_exec,
++                    startup_request,
++                    ..Config::default()
++                },
++                0,
++            )
++            .await;
++        }
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn initial_post_exec_injection_and_new_timer_remain_live() {
++    for injected_exec in [false, true] {
++        run(
++            Config {
++                injected_exec,
++                startup_request: 1,
++                post_exec_request: true,
++                ..Config::default()
++            },
++            0,
++        )
++        .await;
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn initial_command_clock_excludes_added_post_stop_launcher_branches() {
++    for injected_exec in [false, true] {
++        run(
++            Config {
++                injected_exec,
++                ..Config::default()
++            },
++            257,
++        )
++        .await;
++    }
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn failed_initial_exec_keeps_clock_and_notifications_inactive() {
++    run(
++        Config {
++            injected_exec: true,
++            startup_request: 1,
++            initial_failure: true,
++            ..Config::default()
++        },
++        257,
++    )
++    .await;
++}
+diff --git a/reverie-ptrace/src/injection_stop_tests.rs b/reverie-ptrace/src/injection_stop_tests.rs
+new file mode 100644
+index 00000000..60c4cf20
+--- /dev/null
++++ b/reverie-ptrace/src/injection_stop_tests.rs
+@@ -0,0 +1,466 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++use std::os::unix::ffi::OsStrExt;
++use std::os::unix::fs::PermissionsExt;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
++
++use reverie::Guest;
++use reverie::Rdtsc;
++use reverie::RdtscResult;
++use reverie::process::Stdio;
++use reverie::syscalls::Addr;
++use reverie::syscalls::Close;
++use reverie::syscalls::Exit;
++use reverie::syscalls::Getpid;
++use reverie::syscalls::Getppid;
++use reverie::syscalls::MapFlags;
++use reverie::syscalls::MemoryAccess;
++use reverie::syscalls::Mmap;
++use reverie::syscalls::OFlag;
++use reverie::syscalls::Openat;
++use reverie::syscalls::PathPtr;
++use reverie::syscalls::ProtFlags;
++use reverie::syscalls::Syscall;
++use reverie::syscalls::Write as WriteCall;
++use serde::Deserialize;
++use serde::Serialize;
++
++use super::*;
++
++const ENTRY: u64 = 0x401000;
++const WORD: usize = 0x402000;
++const ORIGINAL: usize = WORD + 8;
++const REPLACEMENT: usize = WORD + 9;
++const EMULATED_RESULT: usize = WORD + 16;
++const SHARED_PATH: usize = WORD + 64;
++
++#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
++enum Mode {
++    #[default]
++    PostExec,
++    Replace,
++    SameThenPrivate,
++    TailSame,
++    TailOther,
++    PostExecTail,
++    Emulate,
++    EmulateErrno,
++}
++
++impl Mode {
++    fn emulates(self) -> bool {
++        matches!(self, Self::Emulate | Self::EmulateErrno)
++    }
++}
++
++#[derive(Clone, Debug, Default, Deserialize, Serialize)]
++struct Config {
++    mode: Mode,
++    timestamp_rip: u64,
++}
++
++#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
++enum Observation {
++    PostExec,
++    Write,
++    Emulated,
++    Timestamp,
++    Boundary(u64),
++}
++
++#[derive(Default)]
++struct Log(Mutex<Vec<Observation>>);
++
++#[reverie::global_tool]
++impl GlobalTool for Log {
++    type Config = Config;
++    type Request = Observation;
++    type Response = ();
++
++    async fn receive_rpc(&self, _from: Pid, observation: Observation) {
++        self.0.lock().unwrap().push(observation);
++    }
++}
++
++#[derive(Default)]
++struct StopTool;
++
++fn word<G: Guest<StopTool>>(guest: &G, address: usize) -> u64 {
++    guest
++        .memory()
++        .read_value(Addr::<u64>::from_raw(address).unwrap())
++        .unwrap()
++}
++
++fn replacement() -> WriteCall {
++    WriteCall::default()
++        .with_fd(1)
++        .with_buf(Addr::from_raw(REPLACEMENT))
++        .with_len(1)
++}
++
++#[reverie::tool]
++impl Tool for StopTool {
++    type GlobalState = Log;
++    type ThreadState = u8;
++
++    fn subscriptions(_config: &Config) -> Subscription {
++        let mut events = Subscription::none();
++        events.syscalls([Sysno::getpid, Sysno::write]).rdtsc();
++        events
++    }
++
++    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
++        let mode = guest.config().mode;
++        assert_eq!(guest.regs().await.rip, ENTRY);
++        assert_eq!(word(guest, WORD), 0, "backend preinit executed guest entry");
++        guest.send_rpc(Observation::PostExec).await;
++        if mode == Mode::PostExec {
++            for _ in 0..2 {
++                assert!(guest.inject(Getpid::default()).await? > 0);
++                assert_eq!(guest.regs().await.rip, ENTRY);
++                assert_eq!(word(guest, WORD), 0, "injection replayed guest entry");
++            }
++            assert_eq!(
++                guest.inject(Close::default().with_fd(-1)).await,
++                Err(Errno::EBADF)
++            );
++            assert_eq!(guest.regs().await.rip, ENTRY);
++            assert_eq!(word(guest, WORD), 0, "failed injection replayed entry");
++        } else if mode == Mode::PostExecTail {
++            // Keep the entry's word observable after Exit. Private ELF data
++            // alone would lose an erroneous final step when the guest dies.
++            let fd = guest
++                .inject(
++                    Openat::default()
++                        .with_dirfd(libc::AT_FDCWD)
++                        .with_path(PathPtr::from_ptr(SHARED_PATH as *const libc::c_char))
++                        .with_flags(OFlag::O_RDWR),
++                )
++                .await?;
++            let fd = i32::try_from(fd).unwrap();
++            assert_eq!(
++                guest
++                    .inject(
++                        Mmap::default()
++                            .with_addr(Addr::from_raw(WORD))
++                            .with_len(4096)
++                            .with_prot(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
++                            .with_flags(MapFlags::MAP_SHARED | MapFlags::MAP_FIXED)
++                            .with_fd(fd)
++                            .with_offset(0)
++                    )
++                    .await?,
++                WORD as i64
++            );
++            assert_eq!(guest.inject(Close::default().with_fd(fd)).await?, 0);
++            assert_eq!(guest.inject(replacement()).await?, 1);
++            assert_eq!(guest.regs().await.rip, ENTRY);
++            assert_eq!(word(guest, WORD), 0);
++            guest.tail_inject(Exit::default().with_status(27)).await
++        }
++        Ok(())
++    }
++
++    async fn handle_syscall_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        call: Syscall,
++    ) -> Result<i64, Error> {
++        let mode = guest.config().mode;
++        match call {
++            Syscall::Write(original) => {
++                assert_eq!(original.fd(), 1);
++                assert_eq!(original.buf(), Addr::from_raw(ORIGINAL));
++                assert_eq!(original.len(), 1);
++                assert_eq!(word(guest, WORD), 1);
++                guest.send_rpc(Observation::Write).await;
++                let rip = guest.regs().await.rip;
++                let result = match mode {
++                    Mode::Replace => guest.inject(replacement()).await?,
++                    Mode::SameThenPrivate => {
++                        assert_eq!(guest.inject(original).await?, 1);
++                        assert_eq!(guest.regs().await.rip, rip);
++                        assert_eq!(word(guest, WORD), 1);
++                        assert_eq!(guest.inject(replacement()).await?, 1);
++                        assert_eq!(
++                            guest.inject(Close::default().with_fd(-1)).await,
++                            Err(Errno::EBADF)
++                        );
++                        1
++                    }
++                    Mode::TailSame => guest.tail_inject(original).await,
++                    Mode::TailOther => guest.tail_inject(replacement()).await,
++                    other => panic!("unexpected write in {other:?}"),
++                };
++                assert_eq!(result, 1);
++                assert_eq!(guest.regs().await.rip, rip);
++                assert_eq!(
++                    word(guest, WORD),
++                    1,
++                    "next guest instruction ran in injection"
++                );
++                Ok(result)
++            }
++            Syscall::Getpid(original) => {
++                if mode.emulates() && *guest.thread_state() == 0 {
++                    *guest.thread_state_mut() = 1;
++                    assert_eq!(word(guest, WORD), 1);
++                    guest.send_rpc(Observation::Emulated).await;
++                    // Return without injecting. The ordinary callback epilogue
++                    // must consume the original kernel entry before RDTSC.
++                    return if mode == Mode::EmulateErrno {
++                        Err(Errno::EPERM.into())
++                    } else {
++                        Ok(123)
++                    };
++                }
++                let expected = if mode == Mode::PostExec { 1 } else { 2 };
++                assert_eq!(word(guest, WORD), expected);
++                guest.send_rpc(Observation::Boundary(expected)).await;
++                Ok(guest.inject(original).await?)
++            }
++            other => panic!("unexpected intercepted syscall {other:?}"),
++        }
++    }
++
++    async fn handle_rdtsc_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        request: Rdtsc,
++    ) -> Result<RdtscResult, Errno> {
++        let mode = guest.config().mode;
++        assert!(mode.emulates());
++        assert_eq!(request, Rdtsc::Tsc);
++        assert_eq!(*guest.thread_state(), 1);
++        let rip = guest.regs().await.rip;
++        assert_eq!(rip, guest.config().timestamp_rip);
++        assert_eq!(word(guest, WORD), 1);
++        let expected = if mode == Mode::EmulateErrno {
++            -(libc::EPERM as i64)
++        } else {
++            123
++        };
++        assert_eq!(word(guest, EMULATED_RESULT), expected as u64);
++        // Getppid differs from the previously emulated Getpid. A stale Some
++        // must not send this actual instruction-trap stop through syscall skip.
++        assert!(guest.inject(Getppid::default()).await? > 0);
++        assert_eq!(guest.regs().await.rip, rip);
++        assert_eq!(word(guest, WORD), 1);
++        assert_eq!(word(guest, EMULATED_RESULT), expected as u64);
++        guest.send_rpc(Observation::Timestamp).await;
++        Ok(RdtscResult { tsc: 17, aux: None })
++    }
++}
++
++struct Fixture {
++    path: PathBuf,
++    shared: Option<PathBuf>,
++    timestamp_rip: u64,
++}
++
++impl Fixture {
++    fn new(mode: Mode) -> Self {
++        static NEXT: AtomicU64 = AtomicU64::new(0);
++        let path = std::env::temp_dir().join(format!(
++            "reverie-injection-stop-{}-{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        fn memory_instruction(code: &mut Vec<u8>, opcode: &[u8], address: usize) {
++            let next = ENTRY + code.len() as u64 + opcode.len() as u64 + 4;
++            let displacement = i32::try_from(address as i64 - next as i64).unwrap();
++            code.extend_from_slice(opcode);
++            code.extend_from_slice(&displacement.to_le_bytes());
++        }
++        fn getpid(code: &mut Vec<u8>) {
++            code.extend_from_slice(&[0xb8, 39, 0, 0, 0, 0x0f, 0x05]);
++        }
++        let mut code = Vec::new();
++        memory_instruction(&mut code, &[0x48, 0xff, 0x05], WORD); // inc qword [rip+disp32]
++        let mut timestamp_rip = 0;
++        if mode.emulates() {
++            getpid(&mut code);
++            memory_instruction(&mut code, &[0x48, 0x89, 0x05], EMULATED_RESULT); // mov [rip+disp32],rax
++            timestamp_rip = ENTRY + code.len() as u64;
++            code.extend_from_slice(&[0x0f, 0x31]); // rdtsc, after real emulated-return resume
++            memory_instruction(&mut code, &[0x48, 0xff, 0x05], WORD);
++        } else if mode != Mode::PostExec && mode != Mode::PostExecTail {
++            code.extend_from_slice(&[0xb8, 1, 0, 0, 0, 0xbf, 1, 0, 0, 0, 0xbe]); // write, stdout, buf
++            code.extend_from_slice(&(ORIGINAL as u32).to_le_bytes());
++            code.extend_from_slice(&[0xba, 1, 0, 0, 0, 0x0f, 0x05]);
++            memory_instruction(&mut code, &[0x48, 0xff, 0x05], WORD);
++        }
++        getpid(&mut code);
++        code.extend_from_slice(&[0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
++        let mut elf = vec![0u8; 0x3000];
++        elf[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
++        elf[16..18].copy_from_slice(&2u16.to_le_bytes());
++        elf[18..20].copy_from_slice(&62u16.to_le_bytes());
++        elf[20..24].copy_from_slice(&1u32.to_le_bytes());
++        elf[24..32].copy_from_slice(&ENTRY.to_le_bytes());
++        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
++        elf[52..54].copy_from_slice(&64u16.to_le_bytes());
++        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
++        elf[56..58].copy_from_slice(&2u16.to_le_bytes());
++        for (header, flags, offset, address, length) in [
++            (64, 5u32, 0u64, 0x400000u64, 0x1000 + code.len() as u64),
++            (120, 6u32, 0x2000u64, WORD as u64, 0x1000),
++        ] {
++            elf[header..header + 4].copy_from_slice(&1u32.to_le_bytes());
++            elf[header + 4..header + 8].copy_from_slice(&flags.to_le_bytes());
++            elf[header + 8..header + 16].copy_from_slice(&offset.to_le_bytes());
++            elf[header + 16..header + 24].copy_from_slice(&address.to_le_bytes());
++            elf[header + 24..header + 32].copy_from_slice(&address.to_le_bytes());
++            elf[header + 32..header + 40].copy_from_slice(&length.to_le_bytes());
++            elf[header + 40..header + 48].copy_from_slice(&length.to_le_bytes());
++            elf[header + 48..header + 56].copy_from_slice(&0x1000u64.to_le_bytes());
++        }
++        elf[0x1000..0x1000 + code.len()].copy_from_slice(&code);
++        elf[0x2008..0x200a].copy_from_slice(b"OR");
++        let shared = if mode == Mode::PostExecTail {
++            let shared = path.with_extension("shared-word");
++            let mut data = vec![0u8; 4096];
++            data[8..10].copy_from_slice(b"OR");
++            let mut file = std::fs::OpenOptions::new()
++                .write(true)
++                .create_new(true)
++                .open(&shared)
++                .unwrap();
++            file.write_all(&data).unwrap();
++            drop(file);
++            let name = shared.as_os_str().as_bytes();
++            assert!(name.len() + 65 < 4096);
++            elf[0x2040..0x2040 + name.len()].copy_from_slice(name);
++            Some(shared)
++        } else {
++            None
++        };
++        let mut file = std::fs::OpenOptions::new()
++            .write(true)
++            .create_new(true)
++            .open(&path)
++            .unwrap();
++        file.write_all(&elf).unwrap();
++        file.set_permissions(std::fs::Permissions::from_mode(0o700))
++            .unwrap();
++        drop(file);
++        Self {
++            path,
++            shared,
++            timestamp_rip,
++        }
++    }
++}
++
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        std::fs::remove_file(&self.path).unwrap();
++        if let Some(path) = &self.shared {
++            std::fs::remove_file(path).unwrap();
++        }
++    }
++}
++
++async fn run(mode: Mode) {
++    let fixture = Fixture::new(mode);
++    let mut command = Command::new(&fixture.path);
++    command.stdout(Stdio::piped()).stderr(Stdio::piped());
++    let tracer = TracerBuilder::<StopTool>::new(command)
++        .config(Config {
++            mode,
++            timestamp_rip: fixture.timestamp_rip,
++        })
++        .spawn()
++        .await
++        .unwrap();
++    let (output, log) = tokio::time::timeout(Duration::from_secs(5), tracer.wait_with_output())
++        .await
++        .expect("injection stop control hung")
++        .unwrap();
++    assert_eq!(
++        output.status,
++        ExitStatus::Exited(if mode == Mode::PostExecTail { 27 } else { 0 })
++    );
++    let expected_stdout: &[u8] = match mode {
++        Mode::Replace | Mode::TailOther | Mode::PostExecTail => b"R",
++        Mode::SameThenPrivate => b"OR",
++        Mode::TailSame => b"O",
++        _ => b"",
++    };
++    assert_eq!(output.stdout, expected_stdout);
++    if let Some(path) = &fixture.shared {
++        let bytes = std::fs::read(path).unwrap();
++        assert_eq!(bytes.len(), 4096);
++        assert_eq!(
++            u64::from_le_bytes(bytes[..8].try_into().unwrap()),
++            0,
++            "tail injection executed entry before exiting"
++        );
++        assert_eq!(&bytes[8..10], b"OR");
++    }
++    assert!(
++        output.stderr.is_empty(),
++        "guest stderr: {:?}",
++        output.stderr
++    );
++    let expected = match mode {
++        Mode::PostExec => vec![Observation::PostExec, Observation::Boundary(1)],
++        Mode::PostExecTail => vec![Observation::PostExec],
++        Mode::Emulate | Mode::EmulateErrno => vec![
++            Observation::PostExec,
++            Observation::Emulated,
++            Observation::Timestamp,
++            Observation::Boundary(2),
++        ],
++        _ => vec![
++            Observation::PostExec,
++            Observation::Write,
++            Observation::Boundary(2),
++        ],
++    };
++    assert_eq!(log.0.into_inner().unwrap(), expected);
++    eprintln!("INJECTION_STOP_COMPLETE {mode:?}");
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn post_exec_injections_leave_entry_memory_untouched() {
++    run(Mode::PostExec).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn seccomp_replacement_suppresses_original_write_once() {
++    run(Mode::Replace).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn same_reinjection_then_private_injection_does_not_step_guest() {
++    run(Mode::SameThenPrivate).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn same_tail_injection_preserves_original_kernel_call() {
++    run(Mode::TailSame).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn different_tail_injection_replaces_original_once() {
++    run(Mode::TailOther).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn post_exec_tail_exit_leaves_entry_unexecuted() {
++    run(Mode::PostExecTail).await;
++}
++
++#[tokio::test(flavor = "current_thread")]
++async fn emulated_return_consumes_stop_before_instruction_callback() {
++    run(Mode::Emulate).await;
++    run(Mode::EmulateErrno).await;
++}
+diff --git a/reverie-ptrace/src/perf.rs b/reverie-ptrace/src/perf.rs
+index 56bf62c7..9fbd2ac5 100644
+--- a/reverie-ptrace/src/perf.rs
++++ b/reverie-ptrace/src/perf.rs
+@@ -121,6 +121,7 @@ pub struct Builder {
+     sample_period: u64,
+     precise_ip: u32,
+     fast_reads: bool,
++    enable_on_exec: bool,
+ }
+ 
+ impl Builder {
+@@ -145,6 +146,7 @@ impl Builder {
+             sample_period: 0,
+             precise_ip: 0,
+             fast_reads: false,
++            enable_on_exec: false,
+         }
+     }
+ 
+@@ -195,6 +197,14 @@ impl Builder {
+         self
+     }
+ 
++    /// Start this disabled counter when its task first commits exec. The
++    /// kernel clears the attribute at that transition; later execs keep the
++    /// existing continuous count.
++    pub(crate) fn enable_on_exec(&mut self) -> &mut Self {
++        self.enable_on_exec = true;
++        self
++    }
++
+     /// Render the builder into a `PerfCounter`. Created counters begin in a
+     /// disabled state. Additional initialization steps should be performed,
+     /// followed by a call to [`PerfCounter::enable`].
+@@ -218,7 +228,8 @@ impl Builder {
+         attr.type_ = self.evt.attr_type();
+         attr.config = self.evt.attr_config();
+         attr.__bindgen_anon_1.sample_period = self.sample_period;
+-        attr.set_disabled(1); // user must enable later
++        attr.set_disabled(1); // manual enable, or the initial command exec transition
++        attr.set_enable_on_exec(u64::from(self.enable_on_exec));
+         attr.set_exclude_kernel(1); // we only care about user code
+         attr.set_exclude_guest(1);
+         attr.set_exclude_hv(1); // unlikely this is supported, but it doesn't hurt
+diff --git a/reverie-ptrace/src/task.rs b/reverie-ptrace/src/task.rs
+index 66f46b2f..20fd9fba 100644
+--- a/reverie-ptrace/src/task.rs
++++ b/reverie-ptrace/src/task.rs
+@@ -983,7 +983,11 @@ pub struct TracedTask<L: Tool> {
+     /// True if we can intercept CPUID, false otherwise.
+     has_cpuid_interception: bool,
+ 
+-    /// Set to `Some` if the syscall has not been injected yet. `None` if it has.
++    /// Original call still owned by the current syscall callback. Only an
++    /// ordinary, unconverted seccomp callback owns a kernel entry to skip;
++    /// an injected frame and an already-skipped call are logical operations.
++    /// Taking this record consumes that authority, including fast tail injection
++    /// which transfers the original call to the callback's final resume.
+     pending_syscall: Option<(Sysno, SyscallArgs)>,
+ 
+     /// The pending syscall was converted out of its seccomp stop before Tool dispatch.
+@@ -1172,7 +1176,11 @@ impl<L: Tool> TracedTask<L> {
+             liteinst_failure: None,
+             next_state,
+             next_state_rx: Some(next_state_rx),
+-            timer: Timer::new(tid, tid),
++            timer: if options.command_bootstrap {
++                Timer::for_initial_command(tid, tid)
++            } else {
++                Timer::new(tid, tid)
++            },
+             cancel_handler: Arc::new(AtomicBool::new(false)),
+             pending_signal: None,
+             child_procs: Arc::new(Mutex::new(Children::new())),
+@@ -2871,6 +2879,10 @@ impl<L: Tool + 'static> TracedTask<L> {
+     ) -> Result<Wait, TraceError> {
+         // PTRACE_EVENT_EXEC proves replacement succeeded. Clear before any
+         // post-exec Tool callback; failed exec attempts retain launch provenance.
++        let initial_command = self.command_bootstrap;
++        if initial_command {
++            self.timer.begin_initial_exec();
++        }
+         self.command_bootstrap = false;
+         if self.global_state.liteinst_runtime.is_some() {
+             if former_tid != self.tid() {
+@@ -2916,13 +2928,13 @@ impl<L: Tool + 'static> TracedTask<L> {
+             // or controller-stack address may be reused by the new image.
+             self.liteinst_runtime = Arc::new(StdMutex::new(next));
+             self.liteinst_entry_guard = None;
+-            self.injected_syscall_frame = None;
+-            self.pending_syscall_already_skipped = false;
+         }
+         // execve/execveat are tail injected, however, after exec, the new
+         // program start as a clean slate, hence it is actually ok to do either
+         // inject or tail inject after execve succeeded.
+         self.pending_syscall = None;
++        self.pending_syscall_already_skipped = false;
++        self.injected_syscall_frame = None;
+ 
+         // TODO: Update PID? Need to write a test checking this.
+ 
+@@ -3039,6 +3051,9 @@ impl<L: Tool + 'static> TracedTask<L> {
+             }
+         }
+ 
++        if initial_command {
++            self.timer.finish_initial_exec();
++        }
+         self.process_state.clone().handle_post_exec(self).await?;
+         self.timer.finalize_requests();
+ 
+@@ -4102,15 +4117,15 @@ impl<L: Tool + 'static> TracedTask<L> {
+             })
+             .await;
+ 
+-            let emulate_legacy_vsyscall = is_legacy_vsyscall && self.pending_syscall.is_some();
+-            if emulate_legacy_vsyscall {
+-                // The kernel owns the synthetic `ret` from the fixed
+-                // vsyscall page. Leave the task at its seccomp stop and mark
+-                // the syscall skipped below; resuming then lets the kernel
+-                // return directly to the caller without single-stepping the
+-                // caller's first instruction.
+-                self.pending_syscall = None;
+-            } else if self.pending_syscall.is_some() && !syscall_already_skipped {
++            // A returned emulation must consume its original stop just like an
++            // injection. Keeping Some after skipping would let a later signal
++            // or timer callback mistake an ordinary stop for a seccomp entry.
++            let pending_syscall = self.pending_syscall.take();
++            let emulate_legacy_vsyscall = is_legacy_vsyscall && pending_syscall.is_some();
++            // The kernel owns the synthetic `ret` from the fixed vsyscall
++            // page. That path stays at its seccomp stop and is marked skipped
++            // below, so the kernel returns without stepping the caller.
++            if pending_syscall.is_some() && !syscall_already_skipped && !emulate_legacy_vsyscall {
+                 task = self
+                     .skip_seccomp_syscall(task)
+                     .await
+@@ -5323,7 +5338,9 @@ impl<L: Tool + 'static> TracedTask<L> {
+         Ok(result)
+     }
+ 
+-    // Helper function
++    // Replace an actual, unconverted seccomp entry. The caller must have taken
++    // its pending record; this is not valid for a stopped task with no original
++    // syscall left to consume (for example, a post-exec callback).
+     async fn private_inject(
+         &mut self,
+         task: Stopped,
+@@ -5488,17 +5505,20 @@ impl<L: Tool + 'static> TracedTask<L> {
+         if self.injected_syscall_frame.is_some() || self.pending_syscall_already_skipped {
+             self.pending_syscall = None;
+             self.untraced_syscall(task, nr, args).await
+-        } else if self.pending_syscall.take() == Some((nr, args)) {
+-            // If we're reinjecting the same syscall with the same arguments,
+-            // then we can just let the tracee continue and stop at sysexit.
+-            self.validate_liteinst_mapping_execution(nr, args)?;
+-            let wait = self.syscall_stopped(task, None)?.next_state().await?;
+-            self.arm_liteinst_wait(&wait);
+-            let result = self.status_to_result(wait, None, None).await?;
+-            self.observe_liteinst_mapping_result(nr, args, result);
+-            Ok(result)
+         } else {
+-            self.private_inject(task, nr, args).await
++            match self.pending_syscall.take() {
++                Some(original) if original == (nr, args) => {
++                    // Run the exact pending syscall and stop at its exit.
++                    self.validate_liteinst_mapping_execution(nr, args)?;
++                    let wait = self.syscall_stopped(task, None)?.next_state().await?;
++                    self.arm_liteinst_wait(&wait);
++                    let result = self.status_to_result(wait, None, None).await?;
++                    self.observe_liteinst_mapping_result(nr, args, result);
++                    Ok(result)
++                }
++                Some(_) => self.private_inject(task, nr, args).await,
++                None => self.untraced_syscall(task, nr, args).await,
++            }
+         }
+     }
+ 
+@@ -5558,15 +5578,14 @@ impl<L: Tool + 'static> TracedTask<L> {
+             return Ok(result);
+         }
+ 
+-        if self.pending_syscall.take() == Some((nr, args)) {
+-            // We're reinjecting the same syscall with the same arguments.
+-            // Nothing to actually do but let the tracee resume.
+-
+-            // The return value here doesn't matter.
+-            Ok(Ok(0))
+-        } else {
+-            // Syscall has already been injected. Can't do the optimization.
+-            self.private_inject(task, nr, args).await
++        match self.pending_syscall.take() {
++            Some(original) if original == (nr, args) => {
++                // The callback is cancelled next. Its final resume still owns
++                // execution of this original syscall; no second skip is due.
++                Ok(Ok(0))
++            }
++            Some(_) => self.private_inject(task, nr, args).await,
++            None => self.untraced_syscall(task, nr, args).await,
+         }
+     }
+ 
+diff --git a/reverie-ptrace/src/timer.rs b/reverie-ptrace/src/timer.rs
+index cdda192b..7e57e35a 100644
+--- a/reverie-ptrace/src/timer.rs
++++ b/reverie-ptrace/src/timer.rs
+@@ -397,17 +397,27 @@ pub enum HandleFailure {
+ impl Timer {
+     /// Create a new timer monitoring the specified thread.
+     pub fn new(guest_pid: Pid, guest_tid: Tid) -> Self {
++        Self::with_initial_command(guest_pid, guest_tid, false)
++    }
++
++    pub(crate) fn for_initial_command(guest_pid: Pid, guest_tid: Tid) -> Self {
++        Self::with_initial_command(guest_pid, guest_tid, true)
++    }
++
++    fn with_initial_command(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Self {
+         // No errors are exposed here, as the construction should be
+         // bullet-proof, and if it wasn't, consumers wouldn't be able to
+         // meaningfully handle the error anyway.
+         Self {
+             inner: if is_perf_supported() {
+-                Some(TimerImpl::new(guest_pid, guest_tid).unwrap_or_else(|err| {
+-                    panic!(
+-                        "failed to initialize perf timer for tracee {guest_tid} \
++                Some(
++                    TimerImpl::new(guest_pid, guest_tid, initial_command).unwrap_or_else(|err| {
++                        panic!(
++                            "failed to initialize perf timer for tracee {guest_tid} \
+                          in process {guest_pid}: {err}"
+-                    )
+-                }))
++                        )
++                    }),
++                )
+             } else {
+                 None
+             },
+@@ -426,6 +436,23 @@ impl Timer {
+         self.inner.as_mut()
+     }
+ 
++    /// Both ordinary and injected initial exec stops use this transition.
++    /// The kernel has already started the clock, but notifications remain held
++    /// through the backend's existing post-exec initialization.
++    pub(crate) fn begin_initial_exec(&mut self) {
++        if let Some(timer) = self.inner_mut_noinit() {
++            timer.begin_initial_exec();
++        }
++    }
++
++    /// Release the notification hold before the first Tool post-exec callback.
++    /// No pre-exec request is replayed or physically armed here.
++    pub(crate) fn finish_initial_exec(&mut self) {
++        if let Some(timer) = self.inner_mut_noinit() {
++            timer.finish_initial_exec();
++        }
++    }
++
+     /// Read the thread-local deterministic clock. Represents total elapsed RCBs
+     /// on this thread since the timer was constructed, which should be at or
+     /// near thread creation time.
+@@ -568,6 +595,15 @@ struct TimerImpl {
+     /// Whether or not the active timer event requires an artificial signal
+     send_artificial_signal: bool,
+ 
++    initial_command: InitialCommand,
++
++    /// Requests made before the first post-exec callback have no physical
++    /// notification. Taking this record retires each request once.
++    held_initial_event: Option<ActiveEvent>,
++
++    #[cfg(test)]
++    fail_next_notification: Option<Errno>,
++
+     /// Pid (tgid) of the monitored thread
+     guest_pid: Pid,
+ 
+@@ -575,6 +611,13 @@ struct TimerImpl {
+     guest_tid: Tid,
+ }
+ 
++#[derive(Debug, Copy, Clone, PartialEq, Eq)]
++enum InitialCommand {
++    WaitingForExec,
++    InitializingExec,
++    Ordinary,
++}
++
+ /// Tracks cancellation status of a timer event in response to other reverie
+ /// events.
+ ///
+@@ -719,7 +762,7 @@ impl ClockCounter {
+ }
+ 
+ impl TimerImpl {
+-    pub fn new(guest_pid: Pid, guest_tid: Tid) -> Result<Self, Errno> {
++    pub fn new(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Result<Self, Errno> {
+         let evt = get_pmu_config().rcb_event();
+ 
+         // measure the target tid irrespective of CPU
+@@ -737,14 +780,20 @@ impl TimerImpl {
+         timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
+         timer.reset()?;
+         // measure the target tid irrespective of CPU
+-        let clock = Builder::new(guest_tid.as_raw(), -1)
++        let mut clock_builder = Builder::new(guest_tid.as_raw(), -1);
++        clock_builder
+             // counting event
+             .sample_period(0)
+             .event(evt)
+-            .fast_reads(true)
+-            .create()?;
++            .fast_reads(true);
++        if initial_command {
++            clock_builder.enable_on_exec();
++        }
++        let clock = clock_builder.create()?;
+         clock.reset()?;
+-        clock.enable()?;
++        if !initial_command {
++            clock.enable()?;
++        }
+ 
+         Ok(Self {
+             timer,
+@@ -755,6 +804,14 @@ impl TimerImpl {
+             },
+             timer_status: EventStatus::Cancelled,
+             send_artificial_signal: false,
++            initial_command: if initial_command {
++                InitialCommand::WaitingForExec
++            } else {
++                InitialCommand::Ordinary
++            },
++            held_initial_event: None,
++            #[cfg(test)]
++            fail_next_notification: None,
+             guest_pid,
+             guest_tid,
+         })
+@@ -770,6 +827,24 @@ impl TimerImpl {
+         if delivery == 0 {
+             return Err(Errno::EINVAL); // bail before setting timer
+         }
++        if self.initial_command != InitialCommand::Ordinary {
++            self.event = Self::event_at(evt, self.read_clock() + delivery);
++            self.held_initial_event = Some(self.event);
++            self.timer_status = EventStatus::Scheduled;
++            debug_assert!(!self.send_artificial_signal);
++            return Ok(());
++        }
++        self.prepare_notification(notification)?;
++        self.event = Self::event_at(evt, self.read_clock() + delivery);
++        self.timer_status = EventStatus::Scheduled;
++        Ok(())
++    }
++
++    fn prepare_notification(&mut self, notification: u64) -> Result<(), Errno> {
++        #[cfg(test)]
++        if let Some(error) = self.fail_next_notification.take() {
++            return Err(error);
++        }
+         self.send_artificial_signal = if notification <= SINGLESTEP_TIMEOUT_RCBS {
+             // If there's an existing event making use of the timer counter,
+             // we need to "overwrite" it the same way setting an actual RCB
+@@ -782,8 +857,11 @@ impl TimerImpl {
+             self.timer.enable()?;
+             false
+         };
+-        let clock = self.read_clock() + delivery;
+-        self.event = match evt {
++        Ok(())
++    }
++
++    fn event_at(evt: TimerEventRequest, clock: u64) -> ActiveEvent {
++        match evt {
+             TimerEventRequest::Precise(_) => ActiveEvent::Precise {
+                 clock_target: clock,
+                 offset: 0,
+@@ -793,9 +871,29 @@ impl TimerImpl {
+                 offset: instr_offset,
+             },
+             TimerEventRequest::Imprecise(_) => ActiveEvent::Imprecise { clock_min: clock },
+-        };
+-        self.timer_status = EventStatus::Scheduled;
+-        Ok(())
++        }
++    }
++
++    fn retire_initial_event(&mut self) {
++        let _ = self.held_initial_event.take();
++        self.timer_status = EventStatus::Cancelled;
++        self.send_artificial_signal = false;
++    }
++
++    fn begin_initial_exec(&mut self) {
++        if self.initial_command == InitialCommand::WaitingForExec {
++            self.retire_initial_event();
++            self.initial_command = InitialCommand::InitializingExec;
++        }
++    }
++
++    fn finish_initial_exec(&mut self) {
++        if self.initial_command == InitialCommand::InitializingExec {
++            // Current setup makes no Tool callback in this interval. Retire
++            // any new internal request as well, without revisiting a taken one.
++            self.retire_initial_event();
++            self.initial_command = InitialCommand::Ordinary;
++        }
+     }
+ 
+     pub fn observe_event(&mut self) {
+@@ -807,7 +905,11 @@ impl TimerImpl {
+     }
+ 
+     pub fn cancel(&self) -> Result<(), Errno> {
+-        self.timer.disable()
++        if self.initial_command == InitialCommand::Ordinary {
++            self.timer.disable()
++        } else {
++            Ok(())
++        }
+     }
+ 
+     fn is_timer_generated_signal(signal: &libc::siginfo_t) -> bool {
+@@ -820,7 +922,8 @@ impl TimerImpl {
+     }
+ 
+     fn generated_signal(&self, signal: &libc::siginfo_t) -> bool {
+-        signal.si_signo == MARKER_SIGNAL as i32
++        self.initial_command == InitialCommand::Ordinary
++            && signal.si_signo == MARKER_SIGNAL as i32
+             // If we sent an artificial signal, it doesn't have any siginfo
+             && (self.send_artificial_signal
+             // If not, the fd should match. This could possibly lead to a
+@@ -836,6 +939,10 @@ impl TimerImpl {
+     }
+ 
+     pub fn finalize_requests(&self) {
++        if self.initial_command != InitialCommand::Ordinary {
++            debug_assert!(!self.send_artificial_signal);
++            return;
++        }
+         if self.send_artificial_signal {
+             debug!("Sending artificial timer signal");
+ 
+@@ -1059,6 +1166,86 @@ mod tests {
+     #[cfg(target_arch = "x86_64")]
+     use super::PmuConfig;
+ 
++    #[test]
++    fn initial_command_requests_retire_without_physical_notification() {
++        use reverie::Errno;
++        use reverie::Pid;
++
++        use super::ActiveEvent;
++        use super::EventStatus;
++        use super::InitialCommand;
++        use super::TimerEventRequest;
++        use super::TimerImpl;
++
++        let pid = Pid::from_raw(unsafe { libc::getpid() });
++        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
++        let mut timer = TimerImpl::new(pid, tid, true).expect("control requires a working PMU");
++        timer.fail_next_notification = Some(Errno::EIO);
++        for (request, expected) in [
++            (
++                TimerEventRequest::Precise(1),
++                ActiveEvent::Precise {
++                    clock_target: 1,
++                    offset: 0,
++                },
++            ),
++            (
++                TimerEventRequest::PreciseInstruction(4, 7),
++                ActiveEvent::Precise {
++                    clock_target: 4,
++                    offset: 7,
++                },
++            ),
++            (
++                TimerEventRequest::Imprecise(1_000_000),
++                ActiveEvent::Imprecise {
++                    clock_min: 1_000_000,
++                },
++            ),
++        ] {
++            timer.request_event(request).unwrap();
++            assert_eq!(timer.held_initial_event, Some(expected));
++            assert_eq!(timer.event, expected);
++            assert_eq!(timer.timer_status, EventStatus::Scheduled);
++            timer.finalize_requests();
++            assert!(!timer.send_artificial_signal);
++            assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
++        }
++        let retained = timer.held_initial_event;
++        assert_eq!(
++            timer.request_event(TimerEventRequest::Precise(0)),
++            Err(Errno::EINVAL)
++        );
++        assert_eq!(timer.held_initial_event, retained);
++        assert_eq!(timer.timer_status, EventStatus::Scheduled);
++        timer.observe_event();
++        assert_eq!(timer.timer_status, EventStatus::Armed);
++        timer.begin_initial_exec();
++        assert_eq!(timer.initial_command, InitialCommand::InitializingExec);
++        assert_eq!(timer.held_initial_event, None);
++        assert_eq!(timer.timer_status, EventStatus::Cancelled);
++        timer.begin_initial_exec();
++        assert_eq!(timer.held_initial_event, None);
++        // An internal request in backend initialization is a new held record,
++        // not permission to reactivate the request just retired at exec.
++        timer
++            .request_event(TimerEventRequest::Imprecise(9))
++            .unwrap();
++        timer.finalize_requests();
++        timer.finish_initial_exec();
++        assert_eq!(timer.initial_command, InitialCommand::Ordinary);
++        assert_eq!(timer.held_initial_event, None);
++        assert_eq!(timer.timer_status, EventStatus::Cancelled);
++        assert!(!timer.send_artificial_signal);
++        assert_eq!(timer.fail_next_notification, Some(Errno::EIO));
++        assert_eq!(
++            timer.request_event(TimerEventRequest::Precise(1)),
++            Err(Errno::EIO)
++        );
++        assert_eq!(timer.fail_next_notification, None);
++        assert_eq!(timer.timer_status, EventStatus::Cancelled);
++    }
++
+     #[cfg(target_arch = "x86_64")]
+     #[test]
+     fn amd_epyc_9d85_uses_reduced_skid_margin() {
+diff --git a/reverie-ptrace/src/tracer.rs b/reverie-ptrace/src/tracer.rs
+index efaced98..3c8e468d 100644
+--- a/reverie-ptrace/src/tracer.rs
++++ b/reverie-ptrace/src/tracer.rs
+@@ -1942,6 +1942,9 @@ pub struct TracerBuilder<T: Tool + 'static> {
+ 
+     /// Whether to collect general ptrace activity statistics.
+     backend_stats_request: BackendStatsRequest,
++
++    #[cfg(all(test, target_arch = "x86_64"))]
++    clock_test_launcher_branches: u64,
+ }
+ 
+ impl<T: Tool + 'static> TracerBuilder<T> {
+@@ -1955,6 +1958,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
+             injected_syscall_trap: None,
+             liteinst_runtime: None,
+             backend_stats_request: BackendStatsRequest::DISABLED,
++            #[cfg(all(test, target_arch = "x86_64"))]
++            clock_test_launcher_branches: 0,
+         }
+     }
+ 
+@@ -2386,8 +2391,26 @@ impl<T: Tool + 'static> TracerBuilder<T> {
+         command.env("ASAN_OPTIONS", "detect_leaks=0");
+ 
+         let intercept_rdtsc = events.has_rdtsc();
++        #[cfg(all(test, target_arch = "x86_64"))]
++        let clock_test_launcher_branches = self.clock_test_launcher_branches;
+         unsafe {
+-            command.pre_exec(move || init_tracee(intercept_rdtsc));
++            command.pre_exec(move || {
++                init_tracee(intercept_rdtsc)?;
++                // A caller's earlier pre_exec callback runs before init_tracee
++                // stops. This private test seam instead runs after the parent
++                // has constructed the stopped child's clock and resumed it.
++                #[cfg(all(test, target_arch = "x86_64"))]
++                if clock_test_launcher_branches != 0 {
++                    core::arch::asm!(
++                        "2:",
++                        "dec {count}",
++                        "jnz 2b",
++                        count = inout(reg) clock_test_launcher_branches => _,
++                        options(nomem, nostack),
++                    );
++                }
++                Ok(())
++            });
+         }
+ 
+         command.seccomp(seccomp_filter(&traced_events));
+@@ -2684,6 +2707,14 @@ where
+     }
+ }
+ 
++#[cfg(all(test, target_arch = "x86_64"))]
++#[path = "clock_origin_tests.rs"]
++mod clock_origin_tests;
++
++#[cfg(all(test, target_arch = "x86_64"))]
++#[path = "injection_stop_tests.rs"]
++mod injection_stop_tests;
++
+ #[cfg(test)]
+ mod tests {
+     #[derive(Default)]

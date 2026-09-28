@@ -1,0 +1,87 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "source": {
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 349902,
+      "sha256": "40f4bc0a8705589a8b988fd3251ce80cc532ea5dc61045ef40161e3ebb6f3049"
+    },
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 38135,
+      "sha256": "3eb4ef4f86872afa4682904795238d3a194d6c7d74f5e9b3d8fcd45df0cf233b"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    }
+  },
+  "tests": {
+    "new-tests": {
+      "arguments": [
+        "vm::tests::cancellation_wake_tests::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "declarations": [
+        "vm::tests::cancellation_wake_tests::subscriptions_cover_registration_before_and_after_publication",
+        "vm::tests::cancellation_wake_tests::root_can_resubscribe_after_worker_only_cancellation",
+        "vm::tests::cancellation_wake_tests::subscriptions_survive_exec_rearm_and_wake_on_later_cancellation",
+        "vm::tests::cancellation_wake_tests::wake_callbacks_observe_published_state_outside_group_locks"
+      ]
+    },
+    "exec-rearm": {
+      "arguments": [
+        "--exact",
+        "vm::tests::exec_cancellation_joins_and_rearms_the_thread_group",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "declarations": [
+        "vm::tests::exec_cancellation_joins_and_rearms_the_thread_group"
+      ]
+    },
+    "poisoned-state": {
+      "arguments": [
+        "--exact",
+        "vm::tests::worker_failure_publication_recovers_poisoned_state",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "declarations": [
+        "vm::tests::worker_failure_publication_recovers_poisoned_state"
+      ]
+    },
+    "late-start": {
+      "arguments": [
+        "--exact",
+        "vm::tests::pending_start_registered_after_cancellation_is_drained",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "declarations": [
+        "vm::tests::pending_start_registered_after_cancellation_is_drained"
+      ]
+    }
+  },
+  "bounds": {
+    "compile_wall_seconds": 600,
+    "inventory_and_each_test_wall_seconds": 60,
+    "format_wall_seconds": 30,
+    "cpu_quota": "200%",
+    "memory_max": "12G",
+    "memory_swap_max": 0,
+    "timeout_stop_seconds": 10,
+    "kill_mode": "control-group",
+    "stream_cap_bytes": 16777216,
+    "outer_deadline": "phase wall + 30 seconds"
+  },
+  "source_only_preparation": true
+}

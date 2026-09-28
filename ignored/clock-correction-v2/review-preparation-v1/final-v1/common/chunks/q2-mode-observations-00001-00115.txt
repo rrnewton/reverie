@@ -1,0 +1,115 @@
+[
+  {
+    "phase": "test-10",
+    "selected": [
+      "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched"
+    ],
+    "accepted": true,
+    "markers": [
+      "PostExec"
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-10/stderr",
+      "bytes": 33,
+      "mode": 384,
+      "sha256": "a918ef034fd66d4173e43943e2aa7f74b200bfca4df92d3156e95b722a97a695"
+    }
+  },
+  {
+    "phase": "test-11",
+    "selected": [
+      "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once"
+    ],
+    "accepted": true,
+    "markers": [
+      "Replace"
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-11/stderr",
+      "bytes": 32,
+      "mode": 384,
+      "sha256": "cc8add37e8640196184a31cf8d860aedcfbdb4adb2c028d5406a6854aa4da06b"
+    }
+  },
+  {
+    "phase": "test-12",
+    "selected": [
+      "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest"
+    ],
+    "accepted": true,
+    "markers": [
+      "SameThenPrivate"
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-12/stderr",
+      "bytes": 40,
+      "mode": 384,
+      "sha256": "a0a833fd62f3646b19639ba82e04ecb7849c4d6e1eebeedf55a1767c1078b09f"
+    }
+  },
+  {
+    "phase": "test-13",
+    "selected": [
+      "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call"
+    ],
+    "accepted": true,
+    "markers": [
+      "TailSame"
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-13/stderr",
+      "bytes": 33,
+      "mode": 384,
+      "sha256": "550efeb9adbd5037d82bda7eef951aa2ab1a6c6b5d050012e4207bfeb5e78a1a"
+    }
+  },
+  {
+    "phase": "test-14",
+    "selected": [
+      "tracer::injection_stop_tests::different_tail_injection_replaces_original_once"
+    ],
+    "accepted": true,
+    "markers": [
+      "TailOther"
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-14/stderr",
+      "bytes": 34,
+      "mode": 384,
+      "sha256": "085ea934f9464500b03277af1da9e4c1a097b8bafd431dcd98e8c37ae176b562"
+    }
+  },
+  {
+    "phase": "test-15",
+    "selected": [
+      "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted"
+    ],
+    "accepted": true,
+    "markers": [
+      "PostExecTail"
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-15/stderr",
+      "bytes": 37,
+      "mode": 384,
+      "sha256": "6c6c085b676621394ab714e74b10de74201df110657c0b4ffd26c1b27c264dfd"
+    }
+  },
+  {
+    "phase": "test-16",
+    "selected": [
+      "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback"
+    ],
+    "accepted": true,
+    "markers": [
+      "Emulate",
+      "EmulateErrno"
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-16/stderr",
+      "bytes": 69,
+      "mode": 384,
+      "sha256": "c08266ed628f2936af9f85bebcc11128042ab68961b3995d653f81c82daab8a3"
+    }
+  }
+]

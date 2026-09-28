@@ -1,0 +1,160 @@
+git diff --cached --numstat      # line counts; a '-' column means a binary file
+```
+
+Verify all of the following; a failure is a defect to fix before committing:
+
+- **Right repo, right path.** Every staged file belongs in *this* repo at a
+  sensible path — product code, tests, build config, or curated docs.
+- **No experiments.** Do not add `hermit/experiments/`; experiments live at
+  `~/work/dev-hermit/experiments/`. Reference external code by URL + commit SHA,
+  never by vendoring a checkout.
+- **No `ai_docs` slop.** Any `ai_docs/` change must be minimal, curated, durable
+  reference, not a scratch dump; bulk research goes in the parent `ai_docs/`.
+- **No binaries or large blobs.** No `.o`/`.a`/`.so`, archives, images, VM
+  images, kernels, core dumps, or `*.perf.data`; no text file over 2 MiB without
+  coordinator approval. Inspect anything suspicious with `file` and `du`.
+- **No nested git repos.** `git diff --cached --name-only | grep -E '/\.git(/|$)'`
+  must be empty.
+- **Only your task's paths.** If the tree is dirty with another agent's work,
+  stage your own paths explicitly; never `git add -A` past your ownership.
+
+To unstage a misplaced file: `git restore --staged <path>`, move it to its
+correct home, then commit.
+
+## Contributing And Pull Requests
+
+**Before sweeping the open-pull-request queue to decide what is already landed,
+read [docs/PR_SWEEP_VERDICTS.md](docs/PR_SWEEP_VERDICTS.md).** Merge commits are
+disabled here, so EVERY LANDING REWRITES THE SHA and a comparison by identity,
+ancestry or tree reports landed work as absent. Three sweeps reached a wrong
+verdict first. A wrong "already landed" closes work that is not on main and is
+the only outcome in that drain that loses something.
+
+
+Primary development happens in the `rrnewton/hermit` fork. Configure `origin`
+for that fork and `upstream` for `facebookexperimental/hermit`. Meta's internal
+source uses Buck and is exported upstream; this team develops and runs CI on
+fork `main`, then periodically submits a tested bulk pull request upstream. Do
+not use the upstream repository for routine feature branches or CI iteration.
+
+Typical flow for a change:
+
+- Branch from `origin/main` and make one coherent change per branch. When the
+  `dev-hermit` parent is available, obtain the exact disclosure with
+  `./ci-hub/bin/who-am-i --tag --role ROLE`; paste it on the first line of the
+  commit body and do not reconstruct it. Never put the disclosure in a commit
+  subject or pull-request title. Keep both titles as concise, descriptive prose.
+- Immediately after the disclosure, the first commit-body section is exactly
+  **Plain Language Summary and Project Impact**. Explain what project
+  capability, correctness property, evidence
+  quality, or developer workflow moves forward; connect it to the product
+  vision or owner request; and state the meaningful before/after difference.
+  Administrative history, task bookkeeping, and review mechanics come later.
+  Record `Task: <task-id>` after this opening section when the change implements
+  task work.
+- Run the workspace test, format, and Clippy gates relevant to the change, and
+  report the assurance level reached along with the backend, log level, and any
+  relaxations.
+- Push the branch and open a pull request against fork `main`. Keep fork `main`
+  green; repair a regression before landing more work.
+- The PR author owns the branch through landing: resolve review findings,
+  rebase when needed, rerun validation at the new exact head, and verify the
+  landed commit on freshly fetched `main`.
+
+When this repository is coordinated through the `dev-hermit` parent, **either a
+local validation run or a GitHub CI result is acceptable evidence for landing.**
+Neither is required and neither outranks the other; whichever you have is the one
+you use. A local run is queried through `ci-hub validate-status`. A label or a
+copied status is a cache of evidence rather than evidence itself, so read the
+result it points at.
+
+Do not require both, and do not require the one you happen to have. **Requiring a
+GitHub signal would be unsatisfiable wherever Actions are disabled**, which is the
+same defect as requiring a local receipt when none can be produced — the direction
+differs and the dead end is identical.
+
+**An exact-head receipt is NOT a hard prerequisite for landing, and work must not
+serialise behind one.** Do not restate that rule here in your own words — it is
+stated once, with its reasoning, in the OWNER-APPROVED RULE block that begins at
+`scripts/check-reverie-pin.rs:9` and runs to the end of its clause 3. Read **the
+whole block**, not its first clause: it replaced equality-to-the-tip on
+2026-08-08, and it has three clauses that only work together.
+
+Clause 1 is the one usually quoted, and it is why a soft-green landing on an
+ancestor is permitted rather than a shortcut: tip equality is allowed but not
+required, because "a lagging ancestor is legitimate; requiring the tip made the
+verdict a property of WHEN you looked rather than of the tree."
+
+**Clause 2 is the one that gets dropped, and dropping it is a known defect rather
+than a shortcut.** It says the pin "may only advance," because "ancestry ALONE
+would accept a pin walked backwards, because an ancient commit is also an
+ancestor." So *ancestry alone is not the rule.* The same owner ruling has already
+been applied to a non-pin case elsewhere in this project, reaching the same
+conclusion independently: the `dev-hermit` parent's
+`scripts/check-gitlink-currency.sh` records that "ancestry ALONE is what permitted
+374 commits. So the rule is ancestry PLUS a bounded lag." Anyone citing clause 1
+to justify accepting something arbitrarily stale is citing half a rule.
+
+That block is about a Reverie pin, but the property it names is general.
+
+Two things it does not say, and both are separate questions rather than extra
+conditions on landing. Validation ADMISSION has the opposite answer:
+`scripts/validate.rs` refuses to start a run whose head is behind `origin/main`,
+because a run must measure a commit that includes everything available when it
+starts. And a REVIEW attestation binds an exact sha, so a head move leaves an
+approval bound to the older one. Neither makes an earlier commit's validation
+evidence unusable at the landing boundary.
+
+## A gate nobody can pass is a defect, not a high standard
+
+**Before adding or restating any landing requirement, check that it can actually
+be satisfied from what is written down.** A requirement whose satisfaction depends
+on something unobtainable stops every landing and teaches the next reader that the
+protocol is theatre.
+
+Two shapes to refuse, and they are the same defect facing opposite ways:
+
+- Requiring evidence that cannot be produced — an exact-head local receipt while
+  the validation graph cannot complete, or a GitHub result where Actions are
+  disabled.
+- Requiring a named participant to act before anyone can proceed. Any reader must
+  be able to complete the protocol from this document alone. If a rule only works
+  when a particular reviewer, lane or coordinator shows up, it is unsatisfiable
+  the moment they do not.
+
+If you find such a requirement, the correct response is to fix the requirement
+rather than to route around it quietly, and to fix every place that states it at
+the same time — leaving one copy behind is how the old rule comes back.
+
+Follow `CONTRIBUTING.md`, update documentation for user-visible changes, and
+never publish security vulnerabilities as ordinary issues.
+
+Apply `post-facto-human-review` exactly for: (1) new syscall support, with both
+audit tags above; (2) a Reverie API/core-abstraction change to `Tool`, `Guest`,
+`Backend`, or the syscall-interception model; (3) a new determinization
+strategy; or (4) a core DetCore scheduling change affecting how programs are
+scheduled, especially race search. Trigger 4 is always labeled. Hermit
+[PR #1151](https://github.com/rrnewton/hermit/pull/1151), which moved slowdown
+into virtual-time/epoch scheduling, is the canonical good example. Routine
+backend-parity work toward the golden ptrace reference does not trigger review
+unless it also meets one of these four criteria.
+
+The exact `who-am-i` disclosure belongs on the first line of the PR description,
+never in its title. After that line, every PR description starts with **Plain
+Language Summary and Project Impact**, giving the substantive outcome and its
+connection to the product vision or owner request rather than administrative
+history. It also requires **Determinism** (why the change is
+deterministic plus a logic or informal proof, not only tests), **Linux
+Semantics** (how the change preserves faithful Linux behavior), and
+**Validation**. KVM changes also require **Relationship to gVisor**. A labeled
+PR additionally requires **Human Review Required**, naming the specific
+numbered trigger rather than a vague category such as "backend change". For a
+`post-facto-human-review` PR these sections and the dual-reviewer approval
+labels are checked by `scripts/core-review-protocol-lint.sh` — **which you must
+run by hand. Nothing runs it for you, and nothing blocks a landing that skips
+it.**
+
+This document previously said the script was "enforced by the
+`core-review-protocol` merge-gate job, which blocks landing when any are
+missing". That was false in three independent layers, each measured on
+2026-08-26 against `rrnewton/hermit`:

@@ -1,0 +1,160 @@
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn call_liteinst_install_helper(
+        &mut self,
+        task: Stopped,
+        frame: LiteinstHandshakeFrame,
+        site: u64,
+    ) -> Result<(Stopped, Option<(u64, ActiveHookFootprint)>), Error> {
+        let helper_return_marker = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .ok_or(Errno::EIO)?
+            .helper_return_marker;
+        let saved_regs = task.getregs()?;
+        let saved_xstate = task.getxstate()?;
+        let stack_address = frame.helper_stack_top.saturating_sub(8) as usize;
+        let stack_read_address = Addr::from_raw(stack_address).ok_or(Errno::EFAULT)?;
+        let stack_write_address = AddrMut::from_raw(stack_address).ok_or(Errno::EFAULT)?;
+        let saved_stack: u64 = task.read_value(stack_read_address)?;
+        let mut saved = LiteinstHelperSavedState {
+            cpuid_policy: LiteinstCpuidPolicy::Unsupported,
+            tsc_policy: LiteinstTscPolicy::Unsupported,
+            regs: saved_regs,
+            xstate: saved_xstate,
+            stack_address,
+            stack_value: saved_stack,
+        };
+        let (task, cpuid_policy) = self.prepare_liteinst_helper_cpuid(task).await;
+        saved.cpuid_policy = match cpuid_policy {
+            Ok(policy) => policy,
+            Err(message) => {
+                let original = Error::runtime(
+                    self.tid(),
+                    "prepare LiteInst patch-helper CPUID policy",
+                    message,
+                );
+                let (_, rollback_failures) = self.restore_liteinst_helper_state(task, &saved).await;
+                return Err(self.liteinst_helper_failure(original, rollback_failures));
+            }
+        };
+        let (task, tsc_policy) = self.prepare_liteinst_helper_tsc(task, stack_address).await;
+        saved.tsc_policy = match tsc_policy {
+            Ok(policy) => policy,
+            Err(message) => {
+                let original = Error::runtime(
+                    self.tid(),
+                    "prepare LiteInst patch-helper TSC policy",
+                    message,
+                );
+                let (_, rollback_failures) = self.restore_liteinst_helper_state(task, &saved).await;
+                return Err(self.liteinst_helper_failure(original, rollback_failures));
+            }
+        };
+        let mut task = task;
+        if let Err(error) = task.write_value(stack_write_address, &frame.helper_return) {
+            let original = Error::from(error);
+            return Err(self
+                .rollback_liteinst_helper_error(task, &saved, original)
+                .await);
+        }
+
+        let mut helper_regs = saved.regs;
+        *helper_regs.ip_mut() = frame.install_helper;
+        *helper_regs.stack_ptr_mut() = frame.helper_stack_top - 8;
+        helper_regs.rdi = site;
+        *helper_regs.orig_syscall_mut() = -1_i64 as u64;
+        helper_regs.eflags = liteinst_helper_entry_rflags(saved.regs.eflags);
+        if let Err(error) = task.setregs(&helper_regs) {
+            let original = Error::Internal(error);
+            return Err(self
+                .rollback_liteinst_helper_error(task, &saved, original)
+                .await);
+        }
+
+        let running = match self.resume_stopped(task, None) {
+            Ok(running) => running,
+            Err(error) => {
+                return Err(self
+                    .rollback_liteinst_helper_error(
+                        Stopped::new_unchecked(self.tid()),
+                        &saved,
+                        Error::Internal(error),
+                    )
+                    .await);
+            }
+        };
+        let mut wait = match running.next_state().await {
+            Ok(wait) => wait,
+            Err(error) => {
+                return Err(self
+                    .rollback_liteinst_helper_error(
+                        Stopped::new_unchecked(self.tid()),
+                        &saved,
+                        Error::Internal(error),
+                    )
+                    .await);
+            }
+        };
+        self.arm_liteinst_wait(&wait);
+        loop {
+            match wait {
+                Wait::Stopped(stopped, Event::Seccomp) => {
+                    // Controller-owned helper syscalls execute natively and are
+                    // never delivered to the user Tool.
+                    let running = match self.resume_stopped(stopped, None) {
+                        Ok(running) => running,
+                        Err(error) => {
+                            return Err(self
+                                .rollback_liteinst_helper_error(
+                                    Stopped::new_unchecked(self.tid()),
+                                    &saved,
+                                    Error::Internal(error),
+                                )
+                                .await);
+                        }
+                    };
+                    wait = match running.next_state().await {
+                        Ok(wait) => wait,
+                        Err(error) => {
+                            return Err(self
+                                .rollback_liteinst_helper_error(
+                                    Stopped::new_unchecked(self.tid()),
+                                    &saved,
+                                    Error::Internal(error),
+                                )
+                                .await);
+                        }
+                    };
+                    self.arm_liteinst_wait(&wait);
+                }
+                Wait::Stopped(stopped, Event::Signal(Signal::SIGTRAP)) => {
+                    let regs = match stopped.getregs() {
+                        Ok(regs) => regs,
+                        Err(error) => {
+                            let original = Error::Internal(error);
+                            return Err(self
+                                .rollback_liteinst_helper_error(stopped, &saved, original)
+                                .await);
+                        }
+                    };
+                    if regs.r10 != helper_return_marker || regs.ip() != frame.helper_return_rip {
+                        let original = Error::runtime(
+                            self.tid(),
+                            "validate LiteInst patch-helper return",
+                            "unexpected helper return marker or instruction pointer",
+                        );
+                        return Err(self
+                            .rollback_liteinst_helper_error(stopped, &saved, original)
+                            .await);
+                    }
+                    let result = regs.rax as i64;
+                    let install = if u64::try_from(result).is_ok() {
+                        match self.validate_liteinst_install_result(&stopped, frame, site) {
+                            Some(install) => Some(install),
+                            None => {
+                                let original = Error::runtime(
+                                    self.tid(),
+                                    "validate LiteInst patch-helper result",

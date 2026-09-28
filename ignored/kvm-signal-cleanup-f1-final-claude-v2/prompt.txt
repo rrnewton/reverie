@@ -1,0 +1,28 @@
+You are the independent actual Claude-family adversarial reviewer of the final Reverie KVM signal-cleanup repair. Read-only tools only. Do not edit files, execute commands, delegate, publish comments, or infer test execution from source. Return a complete review report in the final response.
+
+Review target: rrnewton/reverie, base 60f2d369b49e6ffbc2b2d9d0f0e55fead0ba6b09, exact head 33d71aa0b02ca0a3183314e6d8db8696ad117191, tree 1e9fdd2e169655062f88adcac71ce039b24f20fe. Live repository: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918. BASE-TO-HEAD.patch is the complete five-file diff. QUALIFICATION.md records source-bound author evidence and exact paths. The prior actual Claude review at this packet's sibling `../kvm-signal-cleanup-f1-claude-v1/output.jsonl` issued CHANGES REQUESTED against old head 7d1f29f9. Read its final type=result completely. Its verdict is not transitive; determine independently whether every finding is resolved here.
+
+Apply both code-review and deterministic-scheduling-review. Before the proposal/diff, read these primary files completely in this exact order, using bounded reads until every line is covered: /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-signal-cleanup-default-claude-v2/primary/paper.txt (complete Reproducible Containers paper including appendix), then primary/scheduler.rs in that same packet (complete Hermit scheduler at consumer base 5905a449), then primary/PROJECT_VISION.md and primary/hermit-v2-roadmap.md. Dated roadmap measurements are history. Then read the complete patch, current live production/test files, the old refusal, QUALIFICATION.md, the v3 receipt, and enough raw streams to verify its reported counts. If any required file is unavailable/incomplete, stop and state the limitation.
+
+Intended behavior and required re-audit:
+
+- Ordinary default-feature builds must not reach a test/native-only helper. Ready consuming cleanup precedes run failure; pending cleanup terminates inside the owning driver; ordinary callbacks remain BeforeCallback.
+- F1 child starts are unreachable because DequeueNotification refuses injection before execute/complete_injection and Lifecycle independently refuses non-exec process actions. Every production SharedChildStarts publisher must be exhaustively traced.
+- Old head 7d1f29f9 used `assert!` before `finish_handler_completion`; the old review correctly found that unwinding there could drop the selected outcome and panic payloads. This head replaces it with `settle_signal_cleanup_child_starts`: recover vector poison, cancel and join impossible starts without early failure publication, return a typed hidden error, fold it through `finish_handler_completion`, and explicitly apply `with_signal_effects` if the hidden error itself is returned. Audit every Returned/RuntimeError/ParkedCancelled/RunFailed/panic/finalizer combination, error priority, publication order, ledger/raw errno, and double-panic avoidance.
+- `KvmBackend::settle_unstarted_tool_children_after_failure` refactors the existing error cleanup's cancel/join sequence. Prove existing callers remain behaviorally identical and the new signal path does not publish before signal effects are attached.
+- The negative test must prove no hang/leak, `CancelAfterFailure`, drained vector, typed invariant plus retirement diagnostics, selected RunAborted retained behind promoted real panics, and exact payload identities. The poison test must prove recovery becomes a typed error without replacing an owned completion. The real production flush test now exercises `fork`, `vfork`, thread `clone`, and `clone3`; verify its claim is precise.
+- Re-audit deterministic scheduling and Linux/POSIX semantics; do not treat successful tests alone as proof.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation now meets the original requirement or whether the requirement was changed to admit the implementation. Call out either result explicitly, including when no lowering of the bar is present.
+
+Report findings first with exact file/line evidence, impact, and required correction. Explicitly state whether each old finding is resolved. State all four goalpost assessments, then separate conclusions for F1, determinism, Linux semantics, evidence, and residual risks. Bind verdict to the exact full head. Passing Reverie tests is L0 evidence only, not Hermit runtime or cross-backend parity. Full KVM parity remains unresolved and is not a claim of this repair. Use plain project vocabulary and full GitHub URLs.

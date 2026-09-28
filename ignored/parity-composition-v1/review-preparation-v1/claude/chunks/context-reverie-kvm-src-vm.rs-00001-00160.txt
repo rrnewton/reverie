@@ -1,0 +1,160 @@
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 61..85; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+use crate::bootstrap::exception_pushes_error_code;
+use crate::bootstrap::process_syscall_return_registers;
+use crate::bootstrap::set_syscall_return_park;
+use crate::bootstrap::set_user_segment_base;
+use crate::bootstrap::stage_process_syscall_return;
+use crate::bootstrap::syscall_hypercall_address;
+use crate::bootstrap::thread_tool_stack_top;
+use crate::elf::LoadedStaticElf;
+use crate::elf::TaskLifecycleTable;
+use crate::elf::initial_thread_name;
+use crate::elf::load_static_elf;
+use crate::elf::load_static_elf_file;
+use crate::executor::CapturedOutput;
+use crate::executor::ChildCompletion;
+use crate::executor::ChildStartCommand;
+use crate::executor::ChildStartGate;
+use crate::executor::ElfExecutor;
+use crate::executor::ProcessAction;
+use crate::executor::ProcessExit;
+use crate::executor::SignalDisposition;
+use crate::executor::conventional_exit_code;
+use crate::runtime::PendingChildCancellation;
+use crate::runtime::PendingChildKind;
+use crate::runtime::PendingChildStart;
+use crate::runtime::SharedChildStarts;
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 111..165; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+const HLT: u8 = 0xf4;
+const VMWARE_BACKDOOR_MAGIC: u64 = 0x564d_5868;
+const VMWARE_BACKDOOR_PORT: u64 = 0x5658;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StaticElfException {
+    vector: u8,
+    instruction_pointer: u64,
+    stack_pointer: u64,
+    rflags: u64,
+}
+
+pub(crate) struct InstructionBoundary<I> {
+    pub(crate) registers: kvm_regs,
+    pub(crate) instruction: I,
+    special_registers: kvm_bindings::kvm_sregs,
+    code_segment: u16,
+    stack_segment: u16,
+}
+
+pub(crate) type TimestampBoundary = InstructionBoundary<crate::timestamp::TimestampInstruction>;
+pub(crate) type CpuidBoundary = InstructionBoundary<crate::cpuid_instruction::Instruction>;
+
+pub(crate) enum ToolInstructionBoundary {
+    Timestamp(TimestampBoundary),
+    Cpuid(CpuidBoundary),
+}
+
+pub(crate) enum ToolInstructionResult {
+    Timestamp(reverie::RdtscResult),
+    Cpuid(reverie::CpuIdResult),
+}
+
+impl ToolInstructionBoundary {
+    pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
+        match self {
+            Self::Timestamp(boundary) => boundary.user_registers(),
+            Self::Cpuid(boundary) => boundary.user_registers(),
+        }
+    }
+}
+
+impl<I> InstructionBoundary<I> {
+    pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
+        let mut registers = crate::runtime::kvm_registers(self.registers, u64::MAX);
+        registers.cs = self.code_segment.into();
+        registers.ss = self.stack_segment.into();
+        registers.ds = self.special_registers.ds.selector.into();
+        registers.es = self.special_registers.es.selector.into();
+        registers.fs = self.special_registers.fs.selector.into();
+        registers.gs = self.special_registers.gs.selector.into();
+        registers.fs_base = self.special_registers.fs.base;
+        registers.gs_base = self.special_registers.gs.base;
+        registers
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 982..1006; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+    // ownership; when running a tool it is resolved from `thread_ownership_override`
+    // (if set) else the tool's `Tool::thread_ownership` at run entry.
+    pub(crate) thread_ownership: ThreadOwnership,
+    // Explicit caller override for `thread_ownership`. `None` means "follow the
+    // tool" — resolve from `Tool::thread_ownership` at run entry (the safe,
+    // Tool-owned "follow children" default). `Some(_)` forces that ownership
+    // regardless of the tool (set via `set_thread_ownership` /
+    // `unmonitored_threads`), and survives run-entry resolution.
+    thread_ownership_override: Option<ThreadOwnership>,
+    // Set by the active execution consumer, never copied to a new vCPU. A
+    // Host-owned worker has no Tool dispatcher and must retain native TSC.
+    intercept_rdtsc: bool,
+    cpuid_interception: crate::cpuid_instruction::Interception,
+    pub(crate) static_elf: Option<LoadedStaticElf>,
+    stdin: Option<File>,
+    pub(crate) root_pid: i32,
+    // One optional collector is shared by every fork and thread backend in the
+    // guest tree. `None` is the allocation-free, update-free default.
+    pub(crate) exit_collector: Option<Arc<KvmExitCollector>>,
+}
+
+struct KvmProcessSnapshot {
+    memory: GuestMemory,
+    registers: kvm_regs,
+    xsave: kvm_xsave,
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 1130..1181; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+    fn new_with_memory_and_cpuid_policy(
+        memory: GuestMemory,
+        cpuid_policy: CpuidPolicy,
+        stdin: Option<File>,
+    ) -> Result<Self> {
+        install_worker_interrupt_handler()?;
+        const INITIALIZATION_ATTEMPTS: usize = 3;
+        let mut attempts = 0;
+        let InitializedKvmResources {
+            vcpu,
+            vm,
+            kvm,
+            hypercall_instruction,
+        } = loop {
+            attempts += 1;
+            match Self::initialize_resources(&memory, cpuid_policy) {
+                Ok(resources) => break resources,
+                Err(Error::Kvm(error))
+                    if error.errno() == libc::EINTR && attempts < INITIALIZATION_ATTEMPTS => {}
+                Err(error) => return Err(error),
+            }
+        };
+        Ok(Self {
+            vcpu: crate::clock::CountedVcpu::new(vcpu),
+            vm,
+            memory,
+            _kvm: kvm,
+            cpuid_policy,
+            hypercall_instruction,
+            syscall_trampoline_address: SYSCALL_TRAMPOLINE_ADDRESS,
+            syscall_frame_address: SYSCALL_FRAME_ADDRESS,
+            thread_group: Arc::new(GuestThreadGroup::default()),
+            tool_failure: None,
+            thread_slot: None,
+            is_guest_thread: false,
+            // Effective ownership before any tool run resolves it. The direct
+            // (non-tool) personality never dispatches threads through a Tool loop,
+            // so Host is the correct effective value there; when a tool runs,
+            // `run_static_elf_with_tool` resolves this from the override or the
+            // tool's `Tool::thread_ownership` (the Tool-owned "follow children"
+            // default).
+            thread_ownership: ThreadOwnership::Host,
+            // No explicit caller override: follow the tool at run entry.
+            thread_ownership_override: None,
+            intercept_rdtsc: false,
+            cpuid_interception: crate::cpuid_instruction::Interception::default(),
+            static_elf: None,
+            stdin,

@@ -1,0 +1,18 @@
+host feature: count=1, platform_info=0x80000000
+initial: get_msrs count=2, entries=[kvm_msr_entry { index: 206, reserved: 0, data: 2147483648 }, kvm_msr_entry { index: 320, reserved: 0, data: 0 }]
+unarmed CPUID reaches later HLT: vector=13, guest_rip=0x20000c, error=0, rax=0x663, rbx=0x0, rcx=0x1, rdx=0x20100800
+install support: set_msrs index=0xce, value=0x80000000, count=1
+arm: set_msrs index=0x140, value=0x1, count=1
+armed: get_msrs count=2, entries=[kvm_msr_entry { index: 206, reserved: 0, data: 2147483648 }, kvm_msr_entry { index: 320, reserved: 0, data: 1 }]
+armed CPUID: vector=13, guest_rip=0x20000a, error=0, rax=0x80000001, rbx=0x0, rcx=0x0, rdx=0x0
+independent: get_msrs count=2, entries=[kvm_msr_entry { index: 206, reserved: 0, data: 2147483648 }, kvm_msr_entry { index: 320, reserved: 0, data: 0 }]
+independent CPUID reaches HLT: vector=13, guest_rip=0x20000c, error=0, rax=0x663, rbx=0x0, rcx=0x1, rdx=0x20100800
+first remains armed: get_msrs count=2, entries=[kvm_msr_entry { index: 206, reserved: 0, data: 2147483648 }, kvm_msr_entry { index: 320, reserved: 0, data: 1 }]
+disarm: set_msrs index=0x140, value=0x0, count=1
+restore support state: set_msrs index=0xce, value=0x80000000, count=1
+disarmed: get_msrs count=2, entries=[kvm_msr_entry { index: 206, reserved: 0, data: 2147483648 }, kvm_msr_entry { index: 320, reserved: 0, data: 0 }]
+disarmed CPUID reaches HLT: vector=13, guest_rip=0x20000c, error=0, rax=0x663, rbx=0x0, rcx=0x1, rdx=0x20100800
+unrelated initial: get_msrs count=2, entries=[kvm_msr_entry { index: 206, reserved: 0, data: 2147483648 }, kvm_msr_entry { index: 320, reserved: 0, data: 0 }]
+unrelated support: set_msrs index=0xce, value=0x80000000, count=1
+unrelated arm: set_msrs index=0x140, value=0x1, count=1
+unrelated CLI still faults: vector=13, guest_rip=0x200000, error=0, rax=0x0, rbx=0x0, rcx=0x0, rdx=0x0

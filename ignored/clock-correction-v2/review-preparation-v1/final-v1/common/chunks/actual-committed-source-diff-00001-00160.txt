@@ -1,0 +1,160 @@
+diff --git a/reverie-ptrace/src/clock_origin_tests.rs b/reverie-ptrace/src/clock_origin_tests.rs
+new file mode 100644
+index 00000000..a9012bdb
+--- /dev/null
++++ b/reverie-ptrace/src/clock_origin_tests.rs
+@@ -0,0 +1,399 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++use std::os::unix::fs::PermissionsExt;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
++
++use reverie::Guest;
++use reverie::TimerSchedule;
++use reverie::syscalls::Exit;
++use reverie::syscalls::Getpid;
++use reverie::syscalls::Syscall;
++use reverie::syscalls::SyscallInfo;
++use serde::Deserialize;
++use serde::Serialize;
++
++use super::*;
++
++#[derive(Clone, Debug, Default, Deserialize, Serialize)]
++struct Config {
++    injected_exec: bool,
++    startup_request: u8,
++    post_exec_request: bool,
++    initial_failure: bool,
++}
++
++#[derive(Debug, Deserialize, Serialize)]
++enum Observation {
++    Start(u64),
++    ExecCall(u64),
++    PostExec(u64),
++    Timer(u64),
++    Boundary(u64),
++    FailedExec(u64),
++}
++
++#[derive(Default)]
++struct ClockLog(Mutex<Vec<Observation>>);
++
++#[reverie::global_tool]
++impl GlobalTool for ClockLog {
++    type Config = Config;
++    type Request = Observation;
++    type Response = ();
++
++    async fn receive_rpc(&self, _from: Pid, observation: Observation) {
++        self.0.lock().unwrap().push(observation);
++    }
++}
++
++#[derive(Default)]
++struct ClockTool;
++
++fn request_startup_timer<G: Guest<ClockTool>>(guest: &mut G, kind: u8) {
++    match kind {
++        0 => {}
++        1 => guest.set_timer_precise(TimerSchedule::Rcbs(1)).unwrap(),
++        2 => guest.set_timer(TimerSchedule::Rcbs(1)).unwrap(),
++        3 => guest
++            .set_timer_precise(TimerSchedule::RcbsAndInstructions(1, 2))
++            .unwrap(),
++        _ => panic!("unknown control timer kind"),
++    }
++}
++
++#[reverie::tool]
++impl Tool for ClockTool {
++    type GlobalState = ClockLog;
++    type ThreadState = bool;
++
++    fn subscriptions(config: &Config) -> Subscription {
++        let mut events = Subscription::none();
++        events.syscalls([Sysno::getpid]);
++        if config.injected_exec {
++            events.syscalls([Sysno::execve]);
++        }
++        events
++    }
++
++    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
++        assert!(guest.is_command_bootstrap());
++        let clock = guest.read_clock()?;
++        eprintln!("CLOCK_ORIGIN_TEST start={clock}");
++        assert_eq!(clock, 0);
++        guest.send_rpc(Observation::Start(clock)).await;
++        let kind = guest.config().startup_request;
++        request_startup_timer(guest, kind);
++        Ok(())
++    }
++
++    async fn handle_syscall_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        call: Syscall,
++    ) -> Result<i64, Error> {
++        if call.number() == Sysno::execve {
++            assert!(guest.is_command_bootstrap());
++            let clock = guest.read_clock()?;
++            eprintln!("CLOCK_ORIGIN_TEST intercepted_exec={clock}");
++            assert_eq!(clock, 0, "the command launcher is outside guest accounting");
++            guest.send_rpc(Observation::ExecCall(clock)).await;
++            // This request is newer than handle_thread_start and exercises
++            // the injected route's missing ordinary observe_event call.
++            let kind = guest.config().startup_request;
++            request_startup_timer(guest, kind);
++            if guest.config().initial_failure {
++                assert_eq!(guest.inject(call).await, Err(Errno::ENOENT));
++                assert!(guest.is_command_bootstrap());
++                assert!(!*guest.thread_state());
++                let clock = guest.read_clock()?;
++                eprintln!("CLOCK_ORIGIN_TEST failed_exec={clock}");
++                assert_eq!(clock, 0, "failed initial exec did not activate the clock");
++                guest.send_rpc(Observation::FailedExec(clock)).await;
++                guest.tail_inject(Exit::default().with_status(27)).await
++            }
++            guest.tail_inject(call).await
++        } else {
++            assert_eq!(call.number(), Sysno::getpid);
++            assert!(*guest.thread_state());
++            let clock = guest.read_clock()?;
++            eprintln!("CLOCK_ORIGIN_TEST boundary={clock}");
++            guest.send_rpc(Observation::Boundary(clock)).await;
++            Ok(guest.inject(call).await?)
++        }
++    }
++
++    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
++        assert!(!guest.is_command_bootstrap());
++        assert!(!*guest.thread_state());
++        *guest.thread_state_mut() = true;
++        let clock = guest
++            .read_clock()
++            .expect("post-exec clock must be available");
++        eprintln!("CLOCK_ORIGIN_TEST post_exec={clock}");
++        assert_eq!(
++            clock, 0,
++            "post-exec setup must not execute and rewind the entry branch"
++        );
++        assert_eq!(guest.regs().await.rip, 0x401000);
++        guest.send_rpc(Observation::PostExec(clock)).await;
++        // The real Tool callback is live immediately. A returned injected
++        // syscall is not an initial command and does not reopen the hold.
++        assert!(guest.inject(Getpid::default()).await? > 0);
++        assert_eq!(guest.regs().await.rip, 0x401000);
++        assert_eq!(
++            guest.read_clock().expect("clock after post-exec injection"),
++            0,
++            "injection must not retire guest work"
++        );

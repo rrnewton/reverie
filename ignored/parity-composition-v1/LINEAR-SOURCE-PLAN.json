@@ -1,0 +1,61 @@
+{
+  "published_head_unchanged": "68569ed7fd5c3667456d1d3e0d74ba66264242f4",
+  "first_commit_paths": [
+    "reverie-kvm/src/cpuid_instruction.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/terminal_runtime_tests.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/cpuid_dispatch.rs",
+    "reverie-kvm/tests/support/cpuid_terminal.rs"
+  ],
+  "second_commit_paths": [
+    "reverie-kvm/src/capture_identity.rs",
+    "reverie-kvm/src/capture_identity_tests.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/capture_identity.rs"
+  ],
+  "patches": [
+    {
+      "path": "ignored/parity-composition-v1/01-cpuid-on-v7.patch",
+      "sha256": "c1c7add220f014f24079104386908c5aa3d8d964f5224fc67b0fb82379fc423b"
+    },
+    {
+      "path": "ignored/parity-composition-v1/02-capture-after-cpuid.patch",
+      "sha256": "83426cc72e517dee01139891a908c307719b0eb3ee57ca21fd25ac7954e663fc"
+    }
+  ],
+  "checks": [
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/01-cpuid-on-v7.patch"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--reverse",
+        "--check",
+        "--directory=ignored/parity-composition-v1/source",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/02-capture-after-cpuid.patch"
+      ],
+      "returncode": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "compiled": false,
+  "independently_reviewed": false
+}

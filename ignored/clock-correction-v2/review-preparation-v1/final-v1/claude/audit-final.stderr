@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude/audit-final.py", line 53, in <module>
+    assert matches,('mandatory content not completely visible',part['path'])
+           ^^^^^^^
+AssertionError: ('mandatory content not completely visible', '/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00002-00046.txt')

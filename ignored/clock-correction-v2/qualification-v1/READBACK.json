@@ -1,0 +1,193 @@
+{
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/TARGET.json",
+    "bytes": 4536,
+    "mode": 420,
+    "sha256": "7aba945eba3b3b55c9734edfdeaf6a1ee245da7b895a81fe338e9e45619e8f5a"
+  },
+  "caller_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/CALLER-TARGET.json",
+    "bytes": 3328,
+    "mode": 420,
+    "sha256": "8caa2e42366b13fc98acd1a8dc53d47bb69452c56aed745302e68aca6037b098"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/INPUTS.json",
+    "bytes": 5742730,
+    "mode": 420,
+    "sha256": "beeefe07a8c3cbd2c5409159455aad5582df968ee56660778e85ed71a2907cbc"
+  },
+  "file_count": 19939,
+  "symlink_count": 30,
+  "source_manifest_entries": 2630,
+  "historical_registry_files": 11777,
+  "recorded_unexpanded_gitlinks": [
+    {
+      "path": "third-party/dynamorio",
+      "mode": "160000",
+      "type": "gitlink",
+      "commit": "929840ad9190e5086775e8debc0f0b79b4208d59"
+    },
+    {
+      "path": "third-party/e9patch",
+      "mode": "160000",
+      "type": "gitlink",
+      "commit": "6c2c03c1da74b14daf1788a9f8dccfa354ce04a6"
+    },
+    {
+      "path": "third-party/sabre",
+      "mode": "160000",
+      "type": "gitlink",
+      "commit": "41113f849f8799932ed8c7883f5a4de616b9e9fa"
+    }
+  ],
+  "dependency_manifest_continuity": 28,
+  "runtime_helpers_unchanged": 7,
+  "planned_phases": 45,
+  "exact_declarations": 38,
+  "library_declarations": 37,
+  "integration_declarations": 1,
+  "new_declarations": 7,
+  "new_modes": 8,
+  "original_nine_retained": true,
+  "python_syntax_parsed": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/author_format.py",
+      "bytes": 1980,
+      "mode": 420,
+      "sha256": "5113327c61396b9c98903013ccd62637f59da239b42d23ba98b5df3ccfce6616"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/author_format_2.py",
+      "bytes": 1992,
+      "mode": 420,
+      "sha256": "09bc6a68aefef32a5e5bcbd59ef61016639268af13386f765aa59641544af1b9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/author_format_3.py",
+      "bytes": 1992,
+      "mode": 420,
+      "sha256": "4eb6ed61819cd4538e8e8961e7c834760cb8f002c82c85b57d488e65838154e7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/freeze_packet-before-alias-correction.py",
+      "bytes": 15826,
+      "mode": 420,
+      "sha256": "41421cb400f2812eb4afb246e913b45c4bcd4cc770bd25b85082b0ba46594c9c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/freeze_packet.py",
+      "bytes": 16015,
+      "mode": 420,
+      "sha256": "f3ded090cca7f8e7f16e378e86f41019ead3614a111262f9ebf5e84b801b004e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/freeze_source.py",
+      "bytes": 4082,
+      "mode": 420,
+      "sha256": "ab744d8d18eb043671564f12df7375503129efdbcc7a5ca784829dd1aa7e0611"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/prepare_caller.py",
+      "bytes": 12028,
+      "mode": 420,
+      "sha256": "07d6c0279db9c00ead809e15edde948688043eb7657dbf30523ee9af5fcf7afd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/prepare_source.py",
+      "bytes": 3334,
+      "mode": 420,
+      "sha256": "3ac177eedea479547a566d8f2b81a85ada0490c00495efd0bba7a1d2f7a496b2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/bind_dependencies.py",
+      "bytes": 2386,
+      "mode": 420,
+      "sha256": "e9ec7d3b1abe2b9b5100dd3af05d1b2d95eadfa7e25694b3612b0cccc4c06e85"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/cache_lease.py",
+      "bytes": 4603,
+      "mode": 420,
+      "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/common.py",
+      "bytes": 10759,
+      "mode": 420,
+      "sha256": "96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/execute.py",
+      "bytes": 4844,
+      "mode": 420,
+      "sha256": "7064b22d3b3dde44e40d9dd9d107d0a51f7560565b8a119d6f76c3feb5899e88"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/phase.py",
+      "bytes": 12435,
+      "mode": 420,
+      "sha256": "61295bfefa191f2469c01ce51cf9b3470e428f473a9c58fa00948216f94c5980"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/prepare.py",
+      "bytes": 5270,
+      "mode": 420,
+      "sha256": "f3b9f27315ca78d4594d6812f9bde10c46dd453c75d3b17e016e62415016f73d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/retain_artifacts.py",
+      "bytes": 3838,
+      "mode": 420,
+      "sha256": "ccdea52a7adf6ac9b133f33f7784eb0f655deff7d3693f04380f46428ca211a5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/observer/observer.py",
+      "bytes": 44851,
+      "mode": 420,
+      "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    }
+  ],
+  "private_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/private-target",
+    "identity": [
+      48,
+      840732557,
+      212630
+    ]
+  },
+  "pristine_private_lease": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/lane.lease",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+    "identity": [
+      48,
+      840732558,
+      212630
+    ],
+    "state_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/lease-state"
+  },
+  "live_scm_unchanged": {
+    "head": "3d4a401ed8959befad0b2f10db59093725f27432",
+    "branch": "codex/kvm-parity-land-20260918",
+    "index": "d9b45a94cbf7f3d322c89bae323777ee29f46da3a9306e50327073123c1d82bd"
+  },
+  "no_execution": true,
+  "no_lease_admission": true,
+  "prior_unresolved_lease_not_opened": true,
+  "display_limits": [
+    "One combined preparation display truncated; prepare.py and retained/dependency helpers reread completely.",
+    "One verbose input listing truncated; freezer authenticates exact complete records directly."
+  ]
+}

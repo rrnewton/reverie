@@ -1,0 +1,66 @@
+## Findings
+
+No blocking source finding.
+
+- Medium — evidence boundary, not a finite-source defect: the Hermit consumer demonstrates cancellation only after `add_rdtsc` and the shared-clock update, while blocked in `SleepUntil(0)` ([REPORT.md](/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/measured-final-v1/REPORT.md:7)). Cancellation before charging and during the clock RPC remain unmeasured. Those two controls are required before claiming complete Detcore timestamp-cancellation coverage.
+
+## Reverie exact-head verdict
+
+**APPROVE SOURCE** for commit `68569ed7fd5c3667456d1d3e0d74ba66264242f4`, tree `8e9a1d6b22b421992508e26855a568314a12bddf`.
+
+The complete V6→V7 delta SHA256 is `be3d60ca3fd22cc21fd20a646fe7ae2495483c532b9e550f325cb2c96862dc21`. It changes only two test files; production is byte-identical to my previously reviewed V6 source.
+
+The new controls are sound:
+
+- The production predicates admit only timestamp tail `exit`/`exit_group`, preserve returning ordinary calls, and refuse nonreturning process operations before effects ([runtime.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/src/runtime.rs:445), [runtime.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/src/runtime.rs:457)).
+- The KVM-free table tests that exact distinction without weakening production ([terminal_runtime_tests.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/src/terminal_runtime_tests.rs:164)).
+- Mode 10 parks the leader in guest instructions before its unreachable `exit_group(17)` ([timestamp_terminal.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/tests/support/timestamp_terminal.rs:309)). The worker injects `exit_group(29)` ([timestamp_terminal.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/tests/support/timestamp_terminal.rs:154)); the oracle requires status 29, exactly one hook per thread, one process hook, no leader event 11, and exactly seven total events ([timestamp_terminal.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/rdtsc-recovery-source-v7/source/reverie-kvm/tests/support/timestamp_terminal.rs:404)).
+- Existing mode 7 bytes and assertions remain intact.
+
+Finite V7 evidence is 13/13 first-attempt accepted phases and six exact declarations—two library and four static—with zero failures or ignores. The static declarations contain eleven VM modes; they are not eleven declarations. Inventories were 512 library and 321 static. The retained V6 37-control execution was not rerun or misrepresented as V7 execution.
+
+## Hermit consumer verdict
+
+**APPROVE** the finite one-file Hermit patch SHA256 `2360a8bca90e5479e0a505920dd2287ef82f8f4605522ed146aa7085da370224`.
+
+It enables the existing killed-thread RPC cancellation protocol for KVM ([lib.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/composition/hermit/hermit-cli/src/lib.rs:2405)). Logical removal marks the identity and wakes a pending request without double-filling it ([scheduler.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/composition/hermit/detcore/src/scheduler.rs:1911)). The receiver revalidates the identity after wake and returns `ThreadExited` rather than a fabricated grant ([tool_global.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/composition/hermit/detcore/src/tool_global.rs:1475)); the generic caller consumes that outcome through nonreturning exit injection ([tool_global.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rpc-cancellation-h39ac-v1/composition/hermit/detcore/src/tool_global.rs:2718)).
+
+Measured scope:
+
+- Worker wins: status 95, 99/99 INFO records, 64 callbacks.
+- Leader wins: status 17, 293/293 INFO records, 256 callbacks.
+- Timestamp cancellation: status 17, 409/409 INFO records, cancellation after callback 372’s charge and shared-clock update.
+
+The original leader reader’s `accepted=false`, earlier hangs, and preparation/compiler refusals remain failures; none was rewritten as passing.
+
+## Determinism and Linux semantics
+
+The V7 delta changes no clock, scheduler, comparator, production admission, or random selection. Worker-origin `exit_group(29)` correctly terminates the whole thread group before the leader can execute its own status-17 exit. The consumer cancels a logically dead thread’s abandoned RPC without returning an invented syscall result or resuming its timestamp frame.
+
+The 42/42 native cases across 44 phases are useful x86/Linux observations only. They do not establish KVM implementation correctness, repeatability, Detcore integration, clock-origin correction, CPUID policy, or cross-backend parity.
+
+## Goalpost audit
+
+- Assertion weakening: none.
+- Tolerance/exemption/comparator widening: none.
+- Failure relabeling: none; historical refusals remain preserved.
+- Check deletion: none; mode 7 remains and V7 coverage is additive.
+
+## Review-protocol triggers
+
+For the complete timestamp successor:
+
+1. New syscall support: **No**.
+2. Reverie API/core-abstraction change: **Yes**, inherited from V6 timestamp/Guest execution semantics.
+3. New determinization strategy: **Yes**, inherited from V6 timestamp recovery.
+4. Core Detcore scheduling change: **No**.
+
+The V7 test-only delta independently triggers none. The Hermit configuration patch adds no syscall or Reverie API, introduces no new strategy, and changes no scheduler implementation/race-search policy; it enables an existing backend cancellation mechanism. The combined timestamp work nevertheless retains the manual trigger 2+3 route.
+
+## Coverage and limits
+
+I authenticated my own prior complete H39ac scheduler reading: SHA256 `a5da44ec706ad656230cf78aa5742fc40c5339a14aad30410b880dc18b576fa3`, Git blob `20c3c4296223d1aa03ca28e2f45514ad0a72bff6`. I did not claim a new full-primary reading.
+
+The frozen index actually contains 49 documents, 95 chunks, and 7,928 lines, not the larger count in the launch text. All 95 chunks were read completely. One optional broad search truncated and was repaired with focused reads. One focused read initially failed because of a mistyped working directory and was rerun successfully. An exploratory schema query returned null fields; the committed binding was then read directly. No mandatory coverage remains incomplete.
+
+This approval does not cover the separate initial-command clock correction, timer/signal completion, CPUID repair, full parity, or whole-backend activation.

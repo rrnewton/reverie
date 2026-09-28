@@ -1,0 +1,24 @@
+{
+  "scope": "uncompiled callback completion driver and new controls; root owns production caller integration",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "runtime_observed_sha256": "fec1a367197bdb71b6769a2e3ad0b651a9981786a600b04b9d86d4d344011a34",
+  "runtime_observed_bytes": 242632,
+  "driver_sha256": "57929bb40952f94f55f9ab245ec1cd7f6e323583bc2625363a5dd9213f517e51",
+  "driver_bytes": 5247,
+  "driver_line": 1747,
+  "test_sha256": "dbab5d64cf748dd62c8219bc0258dc9652e2d5179c420436cccd6e33667285a9",
+  "test_bytes": 10508,
+  "tests": [
+    "owned_runtime_error_survives_actual_callback_destructor_panic",
+    "owned_runtime_error_survives_normal_callback_destruction",
+    "polling_panic_recovers_owned_error_before_callback_destructor_panic",
+    "owned_runtime_error_survives_failure_future_destructor_panic"
+  ],
+  "owned_future_sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d",
+  "authored_outside_driver_changes": false,
+  "concurrent_outside_region_changes": true,
+  "compiler_invocations": 0,
+  "formatter_invocations": 0,
+  "tests_executed": 0,
+  "module_declaration_added": false
+}

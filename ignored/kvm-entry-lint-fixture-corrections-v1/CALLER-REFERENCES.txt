@@ -1,0 +1,27 @@
+reverie-kvm/src/memory.rs:936: if self.user().user_accessible_prefix_admitted(
+reverie-kvm/src/memory.rs:989: .user_accessible_prefix_admitted(guest_address, source.len(), copy)?
+reverie-kvm/src/memory.rs:1074: .user_accessible_prefix_admitted(guest_address, length, copy)?
+reverie-kvm/src/memory.rs:1207: pub(crate) fn user_accessible_prefix(
+reverie-kvm/src/memory.rs:1212: self.user().user_accessible_prefix(guest_address, length)
+reverie-kvm/src/memory.rs:1320: if self.user_accessible_prefix_admitted(guest_address, destination.len(), copy)?
+reverie-kvm/src/memory.rs:1338: if self.user_accessible_prefix_admitted(guest_address, source.len(), copy)? != source.len()
+reverie-kvm/src/memory.rs:1427: if self.user_accessible_prefix_admitted(guest_address, length, copy)? != length {
+reverie-kvm/src/memory.rs:1440: pub(crate) fn user_accessible_prefix(
+reverie-kvm/src/memory.rs:1446: .with_copy(|copy| self.user_accessible_prefix_admitted(guest_address, length, copy))
+reverie-kvm/src/memory.rs:1449: fn user_accessible_prefix_admitted(
+reverie-kvm/src/memory.rs:1580: .user_accessible_prefix_admitted(address, requested, &copy)
+reverie-kvm/src/memory.rs:1646: .user_accessible_prefix_admitted(address, requested, &copy)
+reverie-kvm/src/memory.rs:1824: .user_accessible_prefix_admitted(address, requested, &copy)
+reverie-kvm/src/memory.rs:1892: .user_accessible_prefix_admitted(address, requested, &copy)
+reverie-kvm/src/memory.rs:2034: assert_cause(user.user_accessible_prefix(BASE, 4), &original);
+reverie-kvm/src/memory.rs:2041: assert_cause(user.user_accessible_prefix(u64::MAX, 0), &original);
+reverie-kvm/src/memory.rs:3456: .user_accessible_prefix(PAGE_SIZE as u64, PAGE_SIZE)
+reverie-kvm/src/elf.rs:1951: .user_accessible_prefix(TEST_LOAD_ADDRESS, 2)
+reverie-kvm/src/executor.rs:5141: let Ok(writable) = memory.user().user_accessible_prefix(address, length) else {
+reverie-kvm/src/executor.rs:5234: let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
+reverie-kvm/src/executor.rs:5931: .user_accessible_prefix(vector.base, vector.length)
+reverie-kvm/src/executor.rs:9378: let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
+reverie-kvm/src/executor.rs:12638: let Ok(writable) = memory.user().user_accessible_prefix(args[1], length) else {
+reverie-kvm/src/executor.rs:15861: .user_accessible_prefix(low + PAGE_SIZE, 16)
+reverie-kvm/src/executor.rs:21715: .user_accessible_prefix(DATA, MAX_HOST_IO)
+reverie-kvm/src/vm.rs:4023: if self.memory.user().user_accessible_prefix(address, 4).ok() != Some(4) {

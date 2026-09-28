@@ -1,0 +1,12 @@
+{
+  "expected": [
+    "vm::tests::exec_cancellation_joins_and_rearms_the_thread_group"
+  ],
+  "succeeded": [
+    "vm::tests::exec_cancellation_joins_and_rearms_the_thread_group"
+  ],
+  "raw_status": 0,
+  "ignored": 0,
+  "failed": 0,
+  "source_unchanged": true
+}

@@ -1,0 +1,10 @@
+--- original/reader-prefix
++++ strict/narrow_reader.py
+@@ -57,6 +57,7 @@
+   records.append(entry)
+  require(offset==len(stdout),'not all bytes classified')
+  require(len(controls)==4,'exactly four libtest lifecycle records required')
++ require(type(controls[0]['value'].get('test_count')) is int,'suite start count must be an integer, not a bool or float')
+  expected=[{'type':'suite','event':'started','test_count':1},{'type':'test','event':'started','name':NAME},{'type':'test','name':NAME,'event':'ok'}]
+  require([x['value'] for x in controls[:3]]==expected,'started/name/outcome lifecycle mismatch')
+  summary=controls[3]['value'];require(set(summary)=={'type','event','passed','failed','ignored','measured','filtered_out','exec_time'},'suite fields differ')

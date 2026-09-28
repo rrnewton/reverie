@@ -1,0 +1,160 @@
+            } else {
+                LiteinstPatchOutcome::PtraceOtherFallback
+            };
+            let process_identity =
+                u64::try_from(self.pid.as_raw()).expect("tracee PID must be positive");
+            let execution_generation = {
+                let mut runtime = self.liteinst_runtime.lock().unwrap();
+                runtime.fallback_sites.insert(site, outcome);
+                runtime.generation
+            };
+            stats.record_process_site(process_identity, execution_generation, site, outcome, shape);
+            match outcome {
+                LiteinstPatchOutcome::PtraceStraddlerBail => {
+                    stats.record_cacheline_straddler_fallback();
+                }
+                LiteinstPatchOutcome::PtraceOtherFallback => {
+                    stats.record_unpatchable_or_other_fallback();
+                }
+                LiteinstPatchOutcome::DirectPunPatched | LiteinstPatchOutcome::RelocatedPatched => {
+                    unreachable!("fallback accounting received a patched outcome")
+                }
+            }
+        });
+    }
+
+    fn record_retained_liteinst_fallback_hit(&self, task: &Stopped) {
+        let Some(stats) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|config| config.instrumentation_stats.as_ref())
+        else {
+            return;
+        };
+        let Some(site) = task
+            .getregs()
+            .ok()
+            .and_then(|regs| regs.ip().checked_sub(2))
+        else {
+            return;
+        };
+        let outcome = self
+            .liteinst_runtime
+            .lock()
+            .unwrap()
+            .fallback_sites
+            .get(&site)
+            .copied();
+        crate::liteinst_stats::with_liteinst_stats(Some(stats), |stats| match outcome {
+            Some(LiteinstPatchOutcome::PtraceStraddlerBail) => {
+                stats.record_cacheline_straddler_fallback();
+            }
+            Some(LiteinstPatchOutcome::PtraceOtherFallback) => {
+                stats.record_unpatchable_or_other_fallback();
+            }
+            Some(
+                LiteinstPatchOutcome::DirectPunPatched | LiteinstPatchOutcome::RelocatedPatched,
+            )
+            | None => {}
+        });
+    }
+
+    fn validate_liteinst_install_result(
+        &self,
+        task: &Stopped,
+        frame: LiteinstHandshakeFrame,
+        site: u64,
+    ) -> Option<(u64, ActiveHookFootprint)> {
+        let address = Addr::from_raw(frame.install_result as usize)?;
+        let result: LiteinstInstallResult = task.read_value(address).ok()?;
+        let instruction_len = usize::try_from(result.instruction_len).ok()?;
+        let straddle_prefix = usize::try_from(result.straddle_prefix).ok()?;
+        if result.version != 2
+            || result.complete != 1
+            || result.site_start != site
+            || result.site_len != 8
+            || !(1..=15).contains(&instruction_len)
+            || straddle_prefix >= instruction_len.min(5)
+        {
+            return None;
+        }
+        let site = GuestRange::new(result.site_start, result.site_len)?;
+        let trampoline = GuestRange::new(result.trampoline_start, result.trampoline_len)?;
+        let arena_writable =
+            GuestRange::new(result.arena_writable_start, result.arena_writable_len)?;
+        let arena_executable =
+            GuestRange::new(result.arena_executable_start, result.arena_executable_len)?;
+        if !arena_executable.contains(trampoline)
+            || !trampoline.contains(GuestRange::new(result.relocated_tail, 1)?)
+        {
+            return None;
+        }
+        let maps = guest_maps(task.pid())?;
+        let site_map = maps.iter().find(|mapping| {
+            mapping.readable
+                && !mapping.writable
+                && mapping.executable
+                && mapping.contains_range(site)
+        })?;
+        let writable_map = maps.iter().find(|mapping| {
+            mapping.start == arena_writable.start
+                && mapping.end == arena_writable.end
+                && mapping.offset == 0
+                && mapping.inode != 0
+                && mapping.shared
+                && mapping.readable
+                && mapping.writable
+                && !mapping.executable
+        })?;
+        let executable_map = maps.iter().find(|mapping| {
+            mapping.start == arena_executable.start
+                && mapping.end == arena_executable.end
+                && mapping.offset == 0
+                && mapping.inode != 0
+                && mapping.shared
+                && mapping.readable
+                && !mapping.writable
+                && mapping.executable
+        })?;
+        if writable_map.device_major != executable_map.device_major
+            || writable_map.device_minor != executable_map.device_minor
+            || writable_map.inode != executable_map.inode
+            || writable_map.end - writable_map.start != executable_map.end - executable_map.start
+            || site_map.start == writable_map.start
+            || site_map.start == executable_map.start
+        {
+            return None;
+        }
+        if let Some(stats) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()?
+            .instrumentation_stats
+            .as_ref()
+        {
+            let mut stats = stats.lock().unwrap();
+            let process_identity =
+                u64::try_from(self.pid.as_raw()).expect("tracee PID must be positive");
+            let execution_generation = self.liteinst_runtime.lock().unwrap().generation;
+            stats.record_process_site(
+                process_identity,
+                execution_generation,
+                result.site_start,
+                LiteinstPatchOutcome::RelocatedPatched,
+                Some((
+                    instruction_len,
+                    (straddle_prefix != 0).then_some(straddle_prefix),
+                )),
+            );
+            stats.record_ptrace_installation();
+        }
+        Some((
+            result.relocated_tail,
+            ActiveHookFootprint {
+                site,
+                trampoline,
+                arena_writable,
+                arena_executable,
+            },
+        ))

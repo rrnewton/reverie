@@ -1,0 +1,11 @@
+--- before/reverie-kvm/src/runtime.rs
++++ after/reverie-kvm/src/runtime.rs
+@@ -953,7 +953,7 @@
+                         let continuation =
+                             ProcessActionContinuation::from_captured(&action, boundary);
+                         self.backend
+-                            .run_process_action_with_tool_at_boundary(
++                            .run_injected_process_action_with_tool_at_boundary(
+                                 self.executor,
+                                 action,
+                                 context,

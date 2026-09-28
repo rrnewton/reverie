@@ -1,0 +1,17 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+error[E0425]: cannot find function `check_reserved_signal_handler` in module `crate::entry`
+  --> reverie-kvm/src/runtime/native_test_support.rs:27:19
+   |
+27 |     crate::entry::check_reserved_signal_handler()
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `crate::entry`
+   |
+note: found an item that was configured out
+  --> reverie-kvm/src/entry.rs:38:15
+   |
+37 | #[cfg(feature = "native-test-support")]
+   |       ------------------------------- the item is gated behind the `native-test-support` feature
+38 | pub(crate) fn check_reserved_signal_handler() -> crate::Result<()> {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `reverie-kvm` (lib test) due to 1 previous error

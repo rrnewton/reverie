@@ -1,0 +1,9 @@
+{
+  "all_existing_runtime_test_names_unchanged": true,
+  "existing_runtime_test_count": 24,
+  "existing_final_test_module_and_external_module_declarations_byte_identical": true,
+  "new_production_callback_driver_calls": 9,
+  "new_callback_scopes": 8,
+  "new_driver_scopes": 2,
+  "executed": false
+}

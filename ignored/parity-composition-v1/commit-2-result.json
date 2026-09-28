@@ -1,0 +1,5 @@
+{
+  "returncode": 0,
+  "stdout": "[codex/kvm-parity-land-20260918 3d4a401e] Preserve native pipe identity for captured KVM output\n 7 files changed, 935 insertions(+), 77 deletions(-)\n create mode 100644 reverie-kvm/src/capture_identity.rs\n create mode 100644 reverie-kvm/src/capture_identity_tests.rs\n create mode 100644 reverie-kvm/tests/support/capture_identity.rs\n",
+  "stderr": ""
+}

@@ -1,0 +1,108 @@
+{
+  "scope": "source-only implementation of synchronous consuming Tool hook construction catches",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "tests_executed": 0,
+  "records": [
+    {
+      "path": "AFTER.json",
+      "sha256": "df00811a9b1d5beb6e875c24e78ff0b31054a1fd10bc9625b019b8e7679221a3",
+      "bytes": 810
+    },
+    {
+      "path": "AUTHOR.patch",
+      "sha256": "f7a7cfb21d7db8984f1026e3508289a49a657a7b976da71b554beabd1515395d",
+      "bytes": 11628
+    },
+    {
+      "path": "BEFORE.json",
+      "sha256": "60e71c8cce05e7798093eac6d123fa29011e18a6625a4ff97f9c433b70dc4297",
+      "bytes": 810
+    },
+    {
+      "path": "CONCURRENT.patch",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "PRESERVATION.json",
+      "sha256": "e1fc8352ced6d48725947355fc14acadf982efa696992598b8efcc516b58bb0c",
+      "bytes": 957
+    },
+    {
+      "path": "REPORT.md",
+      "sha256": "4153ae9b864d197ef4dd861de7d71b81841b50621222d18dcff79e7c013bda7c",
+      "bytes": 4057
+    },
+    {
+      "path": "after/ADDED-HELPER.rs",
+      "sha256": "c00e20d9631fcf4788a0405d53762736589393aac3526bc20a8dab2774ac9b79",
+      "bytes": 759
+    },
+    {
+      "path": "after/ADDED-TESTS.rs",
+      "sha256": "daffdeaa9188a7eec1d7b230871a3fa5ba446987980f68d4b7bb140d6cd3e209",
+      "bytes": 8538
+    },
+    {
+      "path": "after/NOTIFY-REGION.rs",
+      "sha256": "5e508676056634360462ea223fa2d4dbc27053457034c3edf43c3dffd8e8ea13",
+      "bytes": 3146
+    },
+    {
+      "path": "after/reverie-kvm/src/failure/owned_future.rs",
+      "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d",
+      "bytes": 11676
+    },
+    {
+      "path": "after/reverie-kvm/src/failure/tool_panics.rs",
+      "sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c",
+      "bytes": 2098
+    },
+    {
+      "path": "after/reverie-kvm/src/failure.rs",
+      "sha256": "e42a533fe539963128f23cf9655baace4d342ca0afe0e55a2ec622ce7968167e",
+      "bytes": 43973
+    },
+    {
+      "path": "after/reverie-kvm/src/runtime/consuming_panic_tests.rs",
+      "sha256": "50b8a5aa2cd41413f0aa77ddd582b62a6af5e60a6ac7831c549ec4d76344932d",
+      "bytes": 21301
+    },
+    {
+      "path": "after/reverie-kvm/src/runtime.rs",
+      "sha256": "ad1f211f438adc77e6acde84fadd1deb05b6385368d99abbc94096652593400e",
+      "bytes": 249539
+    },
+    {
+      "path": "before/NOTIFY-REGION.rs",
+      "sha256": "86613f56fa86b47fc195af2dd89a75de499471ae5bccb2f3f09c9a292476049a",
+      "bytes": 3179
+    },
+    {
+      "path": "before/reverie-kvm/src/failure/owned_future.rs",
+      "sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d",
+      "bytes": 10917
+    },
+    {
+      "path": "before/reverie-kvm/src/failure/tool_panics.rs",
+      "sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c",
+      "bytes": 2098
+    },
+    {
+      "path": "before/reverie-kvm/src/failure.rs",
+      "sha256": "e42a533fe539963128f23cf9655baace4d342ca0afe0e55a2ec622ce7968167e",
+      "bytes": 43973
+    },
+    {
+      "path": "before/reverie-kvm/src/runtime/consuming_panic_tests.rs",
+      "sha256": "dce0b1ce5c0e848b8b80a09c462eed053a3c7b21184a62dfe4e4103064e25a79",
+      "bytes": 12763
+    },
+    {
+      "path": "before/reverie-kvm/src/runtime.rs",
+      "sha256": "8a72c7fdc9f397b41ba7ac757734b4bf3989eaa01296b6cc7906dfd809c69588",
+      "bytes": 249572
+    }
+  ]
+}

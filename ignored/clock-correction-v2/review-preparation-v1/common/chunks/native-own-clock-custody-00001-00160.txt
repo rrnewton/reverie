@@ -1,0 +1,160 @@
+{
+  "scope": "Actual independent clock design review; this index authenticates execution/coverage, not author agreement or implementation approval",
+  "session_id": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "verdict": "CHANGES REQUESTED",
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final.txt",
+    "bytes": 5602,
+    "sha256": "dfbf05cef850436be4d91bd39a11cae1eec0b74718722a24a67e39a37b528c16",
+    "mode": 420
+  },
+  "raw_exit": 0,
+  "elapsed_seconds": 981.7217543479055,
+  "held_inputs": 526,
+  "inputs_unchanged": true,
+  "mandatory_documents": 38,
+  "mandatory_chunks": 164,
+  "mandatory_lines": 23797,
+  "effective_contexts": [
+    {
+      "line": 11775,
+      "timestamp": "2026-09-18T17:44:43.715Z",
+      "payload": {
+        "turn_id": "01a0b59e-de36-74a1-9900-cb1d6d6ee041",
+        "root_turn_id": "01a0b59e-de36-74a1-9900-cb1d6d6ee041",
+        "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native",
+        "workspace_roots": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native"
+        ],
+        "current_date": "2026-09-18",
+        "timezone": "America/Los_Angeles",
+        "approval_policy": "never",
+        "approvals_reviewer": "auto_review",
+        "sandbox_policy": {
+          "type": "read-only"
+        },
+        "permission_profile": {
+          "type": "managed",
+          "file_system": {
+            "type": "restricted",
+            "entries": [
+              {
+                "path": {
+                  "type": "special",
+                  "value": {
+                    "kind": "root"
+                  }
+                },
+                "access": "read"
+              }
+            ]
+          },
+          "network": "restricted"
+        },
+        "model": "gpt-5.6-sol",
+        "comp_hash": "3000",
+        "personality": "pragmatic",
+        "collaboration_mode": {
+          "mode": "default",
+          "settings": {
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "high",
+            "developer_instructions": null
+          }
+        },
+        "multi_agent_version": "v2",
+        "realtime_active": false,
+        "effort": "high",
+        "summary": "auto"
+      }
+    },
+    {
+      "line": 11811,
+      "timestamp": "2026-09-18T17:46:04.044Z",
+      "payload": {
+        "turn_id": "01a0b59e-de36-74a1-9900-cb1d6d6ee041",
+        "root_turn_id": "01a0b59e-de36-74a1-9900-cb1d6d6ee041",
+        "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native",
+        "workspace_roots": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native"
+        ],
+        "current_date": "2026-09-18",
+        "timezone": "America/Los_Angeles",
+        "approval_policy": "never",
+        "approvals_reviewer": "auto_review",
+        "sandbox_policy": {
+          "type": "read-only"
+        },
+        "permission_profile": {
+          "type": "managed",
+          "file_system": {
+            "type": "restricted",
+            "entries": [
+              {
+                "path": {
+                  "type": "special",
+                  "value": {
+                    "kind": "root"
+                  }
+                },
+                "access": "read"
+              }
+            ]
+          },
+          "network": "restricted"
+        },
+        "model": "gpt-5.6-sol",
+        "comp_hash": "3000",
+        "personality": "pragmatic",
+        "collaboration_mode": {
+          "mode": "default",
+          "settings": {
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "high",
+            "developer_instructions": null
+          }
+        },
+        "multi_agent_version": "v2",
+        "realtime_active": false,
+        "effort": "high",
+        "summary": "auto"
+      }
+    },
+    {
+      "line": 12413,
+      "timestamp": "2026-09-18T17:55:23.225Z",
+      "payload": {
+        "turn_id": "01a0b59e-de36-74a1-9900-cb1d6d6ee041",
+        "root_turn_id": "01a0b59e-de36-74a1-9900-cb1d6d6ee041",
+        "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native",
+        "workspace_roots": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native"
+        ],
+        "current_date": "2026-09-18",
+        "timezone": "America/Los_Angeles",
+        "approval_policy": "never",
+        "approvals_reviewer": "auto_review",
+        "sandbox_policy": {
+          "type": "read-only"
+        },
+        "permission_profile": {
+          "type": "managed",
+          "file_system": {
+            "type": "restricted",
+            "entries": [
+              {
+                "path": {
+                  "type": "special",
+                  "value": {
+                    "kind": "root"
+                  }
+                },
+                "access": "read"
+              }
+            ]
+          },
+          "network": "restricted"
+        },
+        "model": "gpt-5.6-sol",
+        "comp_hash": "3000",
+        "personality": "pragmatic",

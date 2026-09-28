@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/usr/local/fbcode/platform010/bin/python3.12",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/run.py",
+    "inventory"
+  ],
+  "pid": 468442,
+  "unit": "kvm-cancel-wake-inventory-468442.service",
+  "started_utc": "2026-09-19T11:23:44.823741+00:00"
+}

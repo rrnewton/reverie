@@ -1,0 +1,10 @@
+
+running 5 tests
+test runtime::tests::futex_ownership_follows_thread_ownership ... ok
+test executor::entry_host_wait_tests::futex_timeout_copy_accepts_unaligned_readonly_cross_page_input ... ok
+test executor::entry_host_wait_tests::futex_timeout_import_and_word_alignment_follow_linux_fault_order ... ok
+test executor::entry_host_wait_tests::queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes ... ok
+test executor::tests::retained_futex_requeue_preserves_counts_and_allows_owner_mutation_while_waiting ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 783 filtered out; finished in 0.00s
+

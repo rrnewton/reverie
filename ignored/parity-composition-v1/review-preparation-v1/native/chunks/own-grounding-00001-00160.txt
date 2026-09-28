@@ -1,0 +1,160 @@
+{
+  "session_id": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "scope": "Own actual reviewer ordered grounding only; no author or peer grounding/approval borrowed",
+  "all_39_chunks_reauthenticated_from_own_model_visible_reads": true,
+  "stages_in_order": [
+    {
+      "stage": "01-paper",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/replay-terminal-claude-review-v4-20260918/references/paper.txt",
+        "bytes": 84178,
+        "sha256": "3291811fec259586893f8a4b18124aa5dadbc683ca20cf13ff319645c6d6d315",
+        "mode": 420
+      },
+      "complete_lines": 1721,
+      "raw_exit": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-native-cli-review-v1-20260918/01-paper.result.json",
+        "bytes": 1935,
+        "sha256": "8f20ee8d99f3a844cc54da159d254937e34d0b50efc775594182cc9a13d37cb0",
+        "mode": 420
+      },
+      "raw_tool_evidence": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-native-cli-review-v1-20260918/01-paper.model-tool-events.jsonl",
+        "bytes": 189040,
+        "sha256": "5213a6a43eee693f6aa65b5f16ff8c615b49a7fb5c59aba18c4787144af0156e",
+        "mode": 420
+      },
+      "coverage": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-native-cli-review-v1-20260918/01-paper.COVERAGE.json",
+        "bytes": 7312,
+        "sha256": "d32dd7b4f50683b811a48848c614f66ed459be76a97057df3b55cf606ff84499",
+        "mode": 420
+      },
+      "started_at": "2026-09-18T08:07:42.528625+00:00",
+      "ended_at": "2026-09-18T08:09:53.588855+00:00",
+      "literal_matches": [
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/paper-00001-00250.txt",
+            "bytes": 12480,
+            "sha256": "0770ce82dbf436f916ef83fe9843dadcb69fd405a406408525187eaa75ae60a9",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_Di5ZhyrNoMFfKrLxeNqGHAry",
+              "timestamp": "2026-09-18T08:08:28.279Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/paper-00251-00500.txt",
+            "bytes": 12154,
+            "sha256": "bd3e630a272f0b1b0bf3ce92f7e22e3997442dc498603c132af9155e837c89e3",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_d0K1QOeivyMVkSf3Eqkee1qX",
+              "timestamp": "2026-09-18T08:08:32.892Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/paper-00501-00750.txt",
+            "bytes": 11914,
+            "sha256": "528bc9a74dba50083bab4ab8d5d4ba1ac0f3b155bff3fc3ebfdc8759635270b2",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_tN34lrB1cvEf5CCd8rBS8gIQ",
+              "timestamp": "2026-09-18T08:08:37.573Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/paper-00751-01000.txt",
+            "bytes": 13395,
+            "sha256": "d0072e42987ed924311516806ae734baf6f7ae24cb97d6fb555d0cd6a057260c",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_YPJkke6hv4GrXV1RUxqudcxb",
+              "timestamp": "2026-09-18T08:08:44.137Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/paper-01001-01250.txt",
+            "bytes": 10832,
+            "sha256": "149dd5facb785147ef8cde7d120ea9bf256501f2f405b767a8b40308de757747",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_6ZCykXk0u15d4wxlajIY0awG",
+              "timestamp": "2026-09-18T08:08:48.948Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/paper-01251-01500.txt",
+            "bytes": 13084,
+            "sha256": "baa32fc6f9490c67ab1c293583b8bd4e92e46fad7ca95034a67b7934d602ac46",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_k2rFMZKneT8TVcrnraSfcGar",
+              "timestamp": "2026-09-18T08:08:53.764Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/paper-01501-01721.txt",
+            "bytes": 10319,
+            "sha256": "599365d82ee57bd9d33576379fe6ba2d29e1c6e8264205814fd8e722a1772c59",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_QIrTK1SGEiTDpI9j50KY25IE",
+              "timestamp": "2026-09-18T08:08:58.671Z"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "stage": "02-scheduler",
+      "source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/prerequisite-source-v1/source/detcore/src/scheduler.rs",
+        "bytes": 354822,
+        "sha256": "a5da44ec706ad656230cf78aa5742fc40c5339a14aad30410b880dc18b576fa3",
+        "mode": 420
+      },
+      "complete_lines": 8174,
+      "raw_exit": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-native-cli-review-v1-20260918/02-scheduler.result.json",
+        "bytes": 2042,
+        "sha256": "1613d22f415fc367acc1d7b01efd012b7111e42cbea6a955dfbb526332eb9f35",
+        "mode": 420
+      },
+      "raw_tool_evidence": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-native-cli-review-v1-20260918/02-scheduler.model-tool-events.jsonl",
+        "bytes": 413139,
+        "sha256": "ae2291513e1b535b3d91a68022714b65de4c26ca1d453cf79d780055dd83ce5a",
+        "mode": 420
+      },
+      "coverage": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-native-cli-review-v1-20260918/02-scheduler.COVERAGE.json",
+        "bytes": 16348,
+        "sha256": "a47cae04c4255f7c979a5127f1448d8ce9668417aa1227b92c8e1b156636a7a7",

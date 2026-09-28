@@ -1,0 +1,35 @@
+{
+  "scope": "Read-only exact base-to-source composition; no source verdict or runtime claim",
+  "base": "b5e2ab49cd99e5d456fa0238b8cebd75958c529f",
+  "tree_entries": 2630,
+  "source_manifest_entries": 2630,
+  "modified": [
+    "reverie-ptrace/src/perf.rs",
+    "reverie-ptrace/src/task.rs",
+    "reverie-ptrace/src/timer.rs",
+    "reverie-ptrace/src/tracer.rs"
+  ],
+  "new_product_files": [
+    "reverie-ptrace/src/clock_origin_tests.rs",
+    "reverie-ptrace/src/injection_stop_tests.rs"
+  ],
+  "extra_ignored_qualification_input": "Cargo.lock",
+  "empty_gitlink_carriers": [
+    {
+      "path": "third-party/dynamorio",
+      "oid": "929840ad9190e5086775e8debc0f0b79b4208d59"
+    },
+    {
+      "path": "third-party/e9patch",
+      "oid": "6c2c03c1da74b14daf1788a9f8dccfa354ce04a6"
+    },
+    {
+      "path": "third-party/sabre",
+      "oid": "41113f849f8799932ed8c7883f5a4de616b9e9fa"
+    }
+  ],
+  "missing": [],
+  "all_other_modes_and_bytes_equal": true,
+  "python_optimize": 0,
+  "git_batch_raw_status": 0
+}

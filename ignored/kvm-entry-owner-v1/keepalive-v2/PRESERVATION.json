@@ -1,0 +1,21 @@
+{
+  "old_source_sha256": "f498cccf02fc4ea9e2defd853f2862a476b55cefdc0fa368fd51842e632a01e5",
+  "corrected_source_sha256": "5387703dc0ea5cadadddf6a80f104386984506b39d749ad2707b8032fc3612fe",
+  "old_complete_test_suffix_equal": true,
+  "old_complete_test_suffix_bytes": 11411,
+  "old_complete_test_suffix_sha256": "466221617782b904dc4651b264df6570e5c059cc9333224a409b4c5ec46bb10f",
+  "old_test_declarations": [
+    "capture_records_before_deferred_notification_and_retains_arcs",
+    "nested_destruction_keeps_generation_and_parent_dependency",
+    "scope_acknowledgement_follows_owned_future_destruction",
+    "retirement_preserves_both_sides_of_capture_race",
+    "live_callback_retirement_is_abandonment_not_destruction",
+    "unwind_abandons_registration_but_preserves_pending_and_destruction",
+    "origins_are_weak_and_misuse_returns_typed_protocol_errors"
+  ],
+  "new_test_declarations": [
+    "capture_defers_last_owner_drop_after_retirement_and_rejection"
+  ],
+  "total_declarations": 8,
+  "executed_by_author": 0
+}

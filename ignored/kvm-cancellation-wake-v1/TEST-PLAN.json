@@ -1,0 +1,114 @@
+{
+  "status": "PREPARATION ONLY: no compile or product test run; root coordinates the concrete guarded caller after reviewing this source.",
+  "checkout": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "branch": "codex/kvm-parity-land-20260918",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "source_sha256": "40f4bc0a8705589a8b988fd3251ce80cc532ea5dc61045ef40161e3ebb6f3049",
+  "compile": {
+    "reuse": "One root-coordinated fresh reverie-kvm library-test build including the exact source bytes and separately bound root-owned entry component; no duplicate compile proposed.",
+    "required_before_execution": [
+      "Bind actual complete source snapshot and Cargo/tool/dependency context.",
+      "Freeze concrete compile argv, inherited admitted compiler limits, output and retained ELF path/hash.",
+      "Discover retained ELF names; require all seven names below."
+    ],
+    "not_yet_bound": [
+      "actual retained test ELF (produced by the admitted compile phase)"
+    ],
+    "caller": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/run.py",
+    "source_binding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/CALLER-CONTRACT.json",
+    "argv": [
+      "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+      "test",
+      "--offline",
+      "-p",
+      "reverie-kvm",
+      "--lib",
+      "--no-run",
+      "--message-format=json",
+      "-j",
+      "2",
+      "--locked",
+      "--features",
+      "native-test-support"
+    ]
+  },
+  "focused_phases": [
+    {
+      "name": "cancellation-wake-new",
+      "argv": [
+        "<retained-and-bound-library-test-ELF>",
+        "vm::tests::cancellation_wake_tests::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "expected_exact_declarations": [
+        "vm::tests::cancellation_wake_tests::subscriptions_cover_registration_before_and_after_publication",
+        "vm::tests::cancellation_wake_tests::root_can_resubscribe_after_worker_only_cancellation",
+        "vm::tests::cancellation_wake_tests::subscriptions_survive_exec_rearm_and_wake_on_later_cancellation",
+        "vm::tests::cancellation_wake_tests::wake_callbacks_observe_published_state_outside_group_locks"
+      ]
+    },
+    {
+      "name": "cancellation-existing-1",
+      "argv": [
+        "<retained-and-bound-library-test-ELF>",
+        "--exact",
+        "vm::tests::exec_cancellation_joins_and_rearms_the_thread_group",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "expected_exact_declarations": [
+        "vm::tests::exec_cancellation_joins_and_rearms_the_thread_group"
+      ]
+    },
+    {
+      "name": "cancellation-existing-2",
+      "argv": [
+        "<retained-and-bound-library-test-ELF>",
+        "--exact",
+        "vm::tests::worker_failure_publication_recovers_poisoned_state",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "expected_exact_declarations": [
+        "vm::tests::worker_failure_publication_recovers_poisoned_state"
+      ]
+    },
+    {
+      "name": "cancellation-existing-3",
+      "argv": [
+        "<retained-and-bound-library-test-ELF>",
+        "--exact",
+        "vm::tests::pending_start_registered_after_cancellation_is_drained",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "expected_exact_declarations": [
+        "vm::tests::pending_start_registered_after_cancellation_is_drained"
+      ]
+    }
+  ],
+  "acceptance": [
+    "Raw exit zero, exact expected started/succeeded names and counts, zero failed/ignored/skipped.",
+    "Preserve expected controlled-poison panic diagnostics from existing tests; they are not new product failures or a reason to omit the test.",
+    "Unchanged inputs and retained ELF authenticated before/after; owned process/cgroup terminal and streams complete.",
+    "Original assertions remain enabled; no KVM access, guest invocation, network, or comparator involved."
+  ],
+  "limits_note": "Reuse the supplied run-unwind.py compiler/test/service limits and offline locked cache exactly: CPU quota is a rate cap, not a cumulative CPU budget. Caller remains unlaunched pending root source/caller inspection.",
+  "new_declarations": 4,
+  "existing_neighbor_declarations": 3,
+  "new_test_runtime_scope": "host-side futures/atomics/mutexes only; no threads spawned by the four new controls; no KVM ioctl",
+  "product_execution_performed": false,
+  "concrete_limits": {
+    "compile_wall_seconds": 600,
+    "inventory_and_each_test_wall_seconds": 60,
+    "format_wall_seconds": 30,
+    "cpu_quota": "200%",
+    "memory_max": "12G",
+    "memory_swap_max": 0,
+    "timeout_stop_seconds": 10,
+    "kill_mode": "control-group",
+    "stream_cap_bytes": 16777216,
+    "outer_deadline": "phase wall + 30 seconds"
+  }
+}

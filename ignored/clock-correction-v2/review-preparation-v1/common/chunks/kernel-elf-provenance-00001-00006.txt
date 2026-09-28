@@ -1,0 +1,6 @@
+The missing-interpreter failure precedes begin_new_exec in upstream Linux 199c9959d3a9b53f346c221757fc7ac507fbac50. In the complete load_elf_binary function, fs/binfmt_elf.c:907 opens the PT_INTERP path; lines 909-911 preserve PTR_ERR and jump to out_free_ph on failure. That cleanup returns the error without passing the later begin_new_exec call at line 1010. A nonexistent interpreter therefore does not enter the previously bound perf_event_exec activation path in this upstream implementation.
+
+Source URL: https://raw.githubusercontent.com/torvalds/linux/199c9959d3a9b53f346c221757fc7ac507fbac50/fs/binfmt_elf.c
+Source SHA256: ec882e2f70b9f3647a16496f425f9951d6b494516350d1fec168c59e080b9702
+
+Fetch ran through with-proxy, curl --fail, 40-second and 2,000,000-byte limits, and returned status zero. Complete file, raw stdout/stderr and status are retained. Root read the complete load_elf_binary function including all cleanup labels. This is upstream source evidence, not a claim of running vendor-kernel identity, actual failed-exec observation, or design approval. The proposed actual-host control must still assert the real execve error and absence of PTRACE_EVENT_EXEC with the clock remaining disabled; an exit status alone is insufficient.

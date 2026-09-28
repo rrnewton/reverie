@@ -1,0 +1,160 @@
+                        "restore test LiteInst executable-entry guard",
+                        error.to_string(),
+                    ),
+                );
+                return Err(error);
+            }
+            {
+                let mut state = self.liteinst_runtime.lock().unwrap();
+                state.phase = LiteinstRuntimePhase::Ready;
+                state.ready_generation = Some(state.generation);
+            }
+        }
+
+        if initial_command {
+            self.timer.finish_initial_exec();
+        }
+        self.process_state.clone().handle_post_exec(self).await?;
+        self.timer.finalize_requests();
+
+        if self.attached_by_gdb {
+            let request_tx = self.gdb_request_tx.clone();
+            let resume_tx = self.gdb_resume_tx.clone();
+
+            let proc_exe = format!("/proc/{}/exe", task.pid());
+            let exe = std::fs::read_link(&proc_exe).unwrap_or_else(|err| {
+                tracing::warn!(
+                    tid = %self.tid(),
+                    path = %proc_exe,
+                    error = %err,
+                    "failed to resolve executable after exec; reporting procfs path to GDB"
+                );
+                proc_exe.clone().into()
+            });
+
+            let stopped = StoppedInferior {
+                reason: StopReason::stopped(
+                    task.pid(),
+                    self.pid(),
+                    StopEvent::Exec(exe),
+                    task.getregs()?.into(),
+                ),
+                request_tx: request_tx.ok_or(Errno::EIO)?,
+                resume_tx: resume_tx.ok_or(Errno::EIO)?,
+            };
+
+            // NB: notify initial gdb stop, this is the first time we can
+            // tell gdb tracee is ready, because a new memory map has been
+            // loaded (due to execve). Otherwise gdb may try to manipulate
+            // old process' address space.
+            if let Some(attach_tx) = self.gdb_stop_tx.as_ref()
+                && attach_tx.send(stopped).await.is_err()
+            {
+                tracing::warn!(
+                    tid = %self.tid(),
+                    "GDB stop channel closed while reporting exec"
+                );
+                self.attached_by_gdb = false;
+                return self.step_stopped(task, None)?.next_state().await;
+            }
+            let running = self
+                .await_gdb_resume(task, ExpectedGdbResume::Resume)
+                .await?;
+            Ok(running.next_state().await?)
+        } else {
+            let running = if self.global_state.liteinst_runtime.is_some() {
+                self.resume_stopped(task, None)?
+            } else {
+                self.step_stopped(task, None)?
+            };
+            Ok(running.next_state().await?)
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn liteinst_arch_prctl<S: SyscallInfo>(
+        &mut self,
+        task: Stopped,
+        syscall: S,
+    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
+        let (nr, args) = syscall.into_parts();
+        let result = self.untraced_syscall(task, nr, args).await;
+        (Stopped::new_unchecked(self.tid()), result)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn liteinst_prctl(
+        &mut self,
+        task: Stopped,
+        option: libc::c_int,
+        arg2: usize,
+    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
+        let result = self
+            .untraced_syscall(
+                task,
+                Sysno::prctl,
+                SyscallArgs::new(option as usize, arg2, 0, 0, 0, 0),
+            )
+            .await;
+        (Stopped::new_unchecked(self.tid()), result)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn liteinst_get_tsc_state(
+        &mut self,
+        task: Stopped,
+        scratch_address: usize,
+    ) -> (Stopped, Result<Result<libc::c_int, Errno>, String>) {
+        // PR_GET_TSC writes a c_int through a tracee pointer. Reuse the
+        // already-validated helper return slot: its original eight bytes are
+        // saved before this call, the helper return address replaces them
+        // before execution, and every exit path restores them.
+        let (task, result) = self
+            .liteinst_prctl(task, libc::PR_GET_TSC, scratch_address)
+            .await;
+        let result = match result {
+            Ok(Ok(0)) => match Addr::<libc::c_int>::from_raw(scratch_address) {
+                Some(address) => task
+                    .read_value(address)
+                    .map(Ok)
+                    .map_err(|error| format!("read PR_GET_TSC state: {error}")),
+                None => Err("PR_GET_TSC scratch address is null".to_owned()),
+            },
+            Ok(Ok(result)) => Err(format!("PR_GET_TSC returned unexpected value {result}")),
+            Ok(Err(error)) => Ok(Err(error)),
+            Err(error) => Err(format!("inject PR_GET_TSC: {error}")),
+        };
+        (task, result)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn liteinst_set_tsc_state(
+        &mut self,
+        task: Stopped,
+        state: libc::c_int,
+    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
+        self.liteinst_prctl(task, libc::PR_SET_TSC, state as usize)
+            .await
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn liteinst_get_cpuid_state(
+        &mut self,
+        task: Stopped,
+    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {
+        use reverie::syscalls::ArchPrctl;
+        use reverie::syscalls::ArchPrctlCmd;
+
+        self.liteinst_arch_prctl(
+            task,
+            ArchPrctl::new().with_cmd(ArchPrctlCmd::ARCH_GET_CPUID(None)),
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn liteinst_set_cpuid_state(
+        &mut self,
+        task: Stopped,
+        state: u64,
+    ) -> (Stopped, Result<Result<i64, Errno>, TraceError>) {

@@ -1,0 +1,10 @@
+{
+  "source_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/runtime.rs",
+  "before_sha256": "dafcdbde310260492fd0bc9637e863df736fd51e79586560cab19ccf7ef55a5c",
+  "bytes": 224080,
+  "normal_drain_sha256": "be5ab82c250743f2f5e8aa6867e50013e62bb7c2685ebed265bfc91c1c5809e6",
+  "dispatch_base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "dispatch_branch": "codex/kvm-parity-land-20260918",
+  "compiler_invocations": 0,
+  "test_invocations": 0
+}

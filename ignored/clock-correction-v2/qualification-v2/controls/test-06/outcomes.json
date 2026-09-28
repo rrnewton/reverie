@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.003427909
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "files": [
+    {
+      "path": "source-1/reverie-kvm/src/vm/entry_multi_owner_tests.rs",
+      "bytes": 46366,
+      "sha256": "0f5c542bf4ec60073f1038f05957dc7d14001f3f1d1aee1f5b548b535d44c6ae"
+    }
+  ],
+  "snapshot_directory": "source-1",
+  "compiler_formatter_tests_run": false
+}

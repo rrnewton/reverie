@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+
+running 1 test
+test child_waitability_callback_and_auto_reap_are_observed_on_real_kvm ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.17s
+
+
+[evidence exit_code=0 disk_before=448402550784 disk_after=448402550784]

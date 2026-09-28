@@ -1,0 +1,12 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@
+         assert!(nested_cancelled.load(Ordering::Acquire));
+         assert!(group.worker_handles.lock().unwrap().is_empty());
+     }
++
++    include!("vm/public_tool_panic_tests.rs");
+ }
+ 
+ #[cfg(test)]
+ #[path = "terminal_vm_tests.rs"]

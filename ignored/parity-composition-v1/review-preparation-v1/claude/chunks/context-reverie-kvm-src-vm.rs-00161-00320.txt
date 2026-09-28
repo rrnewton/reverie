@@ -1,0 +1,160 @@
+            root_pid: 1,
+            exit_collector: None,
+        })
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 1478..1591; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+    fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
+        let memory = self.memory.snapshot()?;
+        hide_tool_scratch_pages(&memory)?;
+        Ok(KvmProcessSnapshot {
+            memory,
+            registers: self.vcpu.get_regs()?,
+            xsave: self.vcpu.get_xsave()?,
+            stdin: self.stdin.as_ref().map(File::try_clone).transpose()?,
+            cpuid_policy: self.cpuid_policy,
+        })
+    }
+
+    fn from_process_snapshot(snapshot: KvmProcessSnapshot) -> Result<Self> {
+        let mut child = Self::new_with_memory_and_cpuid_policy(
+            snapshot.memory,
+            snapshot.cpuid_policy,
+            snapshot.stdin,
+        )?;
+        configure_long_mode(
+            &mut child.memory,
+            &child.vcpu,
+            0,
+            snapshot.registers.rsp,
+            child.hypercall_instruction,
+        )?;
+        child.vcpu.set_regs(&snapshot.registers)?;
+        // SAFETY: this guest setup does not enable dynamically sized XSTATE features.
+        unsafe { child.vcpu.set_xsave(&snapshot.xsave)? };
+        Ok(child)
+    }
+
+    // TODO-HUMAN-REVIEW(PR-172): Review independent vCPU creation from clone3 state.
+    fn from_thread_state(
+        memory: GuestMemory,
+        registers: kvm_regs,
+        xsave: kvm_xsave,
+        stdin: Option<File>,
+        cpuid_policy: CpuidPolicy,
+        child_tid: i32,
+        thread_group: Arc<GuestThreadGroup>,
+    ) -> Result<Self> {
+        let mut child = Self::new_with_memory_and_cpuid_policy(memory, cpuid_policy, stdin)?;
+        child.thread_group = thread_group;
+        child.is_guest_thread = true;
+        let slot = child.thread_group.reserve_transport_slot(child_tid)?;
+        child.thread_slot = Some(slot);
+        let syscall_trampoline_address =
+            THREAD_SYSCALL_AREA_START + slot as u64 * THREAD_SYSCALL_AREA_STRIDE;
+        let syscall_frame_address = syscall_trampoline_address + PAGE_SIZE;
+        child.syscall_trampoline_address = syscall_trampoline_address;
+        child.syscall_frame_address = syscall_frame_address;
+        configure_long_mode_with_syscall_area(
+            &mut child.memory,
+            &child.vcpu,
+            0,
+            registers.rsp,
+            child.hypercall_instruction,
+            syscall_trampoline_address,
+            syscall_frame_address,
+            false,
+        )?;
+        child.vcpu.set_regs(&registers)?;
+        // SAFETY: this guest setup does not enable dynamically sized XSTATE features.
+        unsafe { child.vcpu.set_xsave(&xsave)? };
+        Ok(child)
+    }
+
+    // TODO-HUMAN-REVIEW(PR-156): Review lifecycle-hook exec image replacement API.
+    pub(crate) fn exec_process(
+        &mut self,
+        executor: &mut ElfExecutor,
+        executable: (&Path, Option<Arc<File>>),
+        image: &[u8],
+        argv: &[String],
+        envp: &[String],
+    ) -> Result<()> {
+        if self.is_guest_thread {
+            return Err(Error::GuestThreadExecUnsupported);
+        }
+        // ElfExecutor preflights the image before scheduling this action. From
+        // this reset onward, any exceptional loader or KVM failure is fatal to
+        // the backend and is never reported back to the old guest image. This
+        // is the same point-of-no-return behavior as the prior zero_raw reset.
+        let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
+            .expect("guest memory length must fit usize");
+        self.memory.discard_pages(BOOT_RESERVED_END, user_length)?;
+
+        let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
+        let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        let (executable_path, executable_file) = executable;
+        loaded.executable_path = executable_file
+            .as_ref()
+            .and_then(|file| std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok())
+            .unwrap_or_else(|| executable_path.to_owned());
+        loaded.executable_file = executable_file;
+        let thread_name = initial_thread_name(executable_path);
+        loaded.thread_name = thread_name;
+        *loaded
+            .thread_group_leader_name
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = thread_name;
+        loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+        configure_long_mode(
+            &mut self.memory,
+            &self.vcpu,
+            loaded.entry_point,
+            loaded.stack_pointer,
+            self.hypercall_instruction,
+        )?;
+        self.memory.enable_user_access();
+        executor.replace_after_exec(loaded);
+        Ok(())
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 2042..2057; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+    fn finish_tool_process_action_at_boundary(
+        &mut self,
+        executor: &mut ElfExecutor,
+        starts: &SharedChildStarts,
+        continuation: ProcessActionContinuation,
+        action_result: Result<ProcessActionOutcome>,
+    ) -> Result<ProcessActionOutcome> {
+        match continuation.finish(self, action_result) {
+            Ok(outcome) => Ok(outcome),
+            Err(action_error) => Err(self.cleanup_unstarted_tool_children_after_error(
+                executor,
+                starts,
+                action_error,
+            )),
+        }
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs lines 2112..2579; full file SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46
+    // TODO-HUMAN-REVIEW(PR-192): Review tool lifecycle for KVM fork children.
+    // TODO-HUMAN-REVIEW(PR-235): Review concurrent fork-child Tool execution.
+    async fn run_process_action_with_tool_inner<T>(
+        &mut self,
+        executor: &mut ElfExecutor,
+        action: ProcessAction,
+        park_syscall_return: bool,
+        context: ToolContext<'_, T>,
+        fault: Option<&PageZeroFault>,
+    ) -> Result<ProcessActionOutcome>
+    where
+        T: Tool + 'static,
+        T::ThreadState: 'static,
+        T::GlobalState: 'static,
+        <T::GlobalState as GlobalTool>::Config: 'static,
+    {
+        match action {
+            ProcessAction::Fork {
+                child_pid,
+                child_stack,

@@ -1,0 +1,162 @@
+{
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-38/stdout",
+    "bytes": 9212,
+    "mode": 384,
+    "sha256": "93f5db94149307a43c43f25c5781140e278f2c71269877c54880874232250356"
+  },
+  "json_records": [
+    {
+      "line": 1,
+      "value": {
+        "type": "suite",
+        "event": "started",
+        "test_count": 1
+      }
+    },
+    {
+      "line": 2,
+      "value": {
+        "type": "test",
+        "event": "started",
+        "name": "suppressed_legacy_vsyscall_returns_to_caller"
+      }
+    },
+    {
+      "line": 29,
+      "value": {
+        "type": "test",
+        "name": "suppressed_legacy_vsyscall_returns_to_caller",
+        "event": "ok"
+      }
+    },
+    {
+      "line": 30,
+      "value": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 0,
+        "exec_time": 0.004833349
+      }
+    }
+  ],
+  "non_json_lines": [
+    {
+      "line": 3,
+      "sha256": "0829d6e54ee28e4f0c0ad0651a10a87a8da4e77cc9f726e2f41d69618e842b46"
+    },
+    {
+      "line": 4,
+      "sha256": "dd074940e0e7eabb4d9dbfcb722205ee425d02c097208866400798fbf78994c1"
+    },
+    {
+      "line": 5,
+      "sha256": "301dccbcead16374a87263bd6b15ce1995a9aa35ef82f6bd1618abb15ad25b59"
+    },
+    {
+      "line": 6,
+      "sha256": "9857a209b486b1bc24aa921dec3d8b7ea3a0ed3b4d5d05a44a664eb30a0c91ce"
+    },
+    {
+      "line": 7,
+      "sha256": "0be06cbe217a0c8eb2063baae74dc8238f0826b8a5c128d26bba3c979f5521c9"
+    },
+    {
+      "line": 8,
+      "sha256": "b0a60000898f978a5df82de262308b29a41bd09cff718e143becf76b9eef9ac2"
+    },
+    {
+      "line": 9,
+      "sha256": "ee55a1a770274224cf2e7103e902510caf7cd722791e00220717ce32653331a9"
+    },
+    {
+      "line": 10,
+      "sha256": "a28e53e57e9ff9444a9dbdb6368581817b7228feb4090474c64709c309e37a64"
+    },
+    {
+      "line": 11,
+      "sha256": "11556142f7c76f73d8cbc046fd5ee89dd0f704fe374dccb9d9c7078a560546a4"
+    },
+    {
+      "line": 12,
+      "sha256": "f8d4dccdc53516c5e7ebcadb5e8cf5fb59345c8e1ef5b20d856f794626acbfb8"
+    },
+    {
+      "line": 13,
+      "sha256": "89af720e0a40afe437b54a79c7479f0a8d48f130a622e4ad6134e8113e515efc"
+    },
+    {
+      "line": 14,
+      "sha256": "7308728496871fd3025005f18a478e29cd545c5593e92513e7c505035be43f84"
+    },
+    {
+      "line": 15,
+      "sha256": "f4f562e94e7e69497ab9c26c3700f41c444b717adfbe4a8424c938180c3fd9ca"
+    },
+    {
+      "line": 16,
+      "sha256": "ed3aa858e3e1833a4bcdb545a437daa7b39f5c9651197fa52f89c72ce81d29bc"
+    },
+    {
+      "line": 17,
+      "sha256": "6b503a3cfc83188b102b21723deddfeab07a4055844bf390549551087c1ac443"
+    },
+    {
+      "line": 18,
+      "sha256": "bfa7226d5a531d16a95f18414ac8ea7c2ff79d3ef079b6d55e2a10512d66ea8d"
+    },
+    {
+      "line": 19,
+      "sha256": "9326f7bf5e86ec7a786992a02d82502f82087756d7732c92533122708c7b719e"
+    },
+    {
+      "line": 20,
+      "sha256": "a5c5c888d53e4dff3a3f177bfa9af5b370db2e9ccecb3e5a6e6c6a083f2296de"
+    },
+    {
+      "line": 21,
+      "sha256": "c95879432a55de7392ca3d2c44c9e83528506ceaaa915fac422231f7f8c1a837"
+    },
+    {
+      "line": 22,
+      "sha256": "0c2f74a6ab5016e48c5a53095da8016e44ea9312f52241d7432af00aca694934"
+    },
+    {
+      "line": 23,
+      "sha256": "059d8ff546b78791649860dc66cd1b6a467fd064f98bc75479a6081c34bf2cf6"
+    },
+    {
+      "line": 24,
+      "sha256": "07915f8839359fe6271a9b9e8f55b5762bb56dfcba7b2421e968c4d9e2ea3bc5"
+    },
+    {
+      "line": 25,
+      "sha256": "378c5bb9ec633b9bf77812dd7c32afc0b9387ae6a0baafe37056dfec3b4036df"
+    },
+    {
+      "line": 26,
+      "sha256": "0d9b491a5cba5711f3397e511d99e4d50462bceb4e3a7f599ce557243126ba90"
+    },
+    {
+      "line": 27,
+      "sha256": "0f2e5fef29993cd2ee4a2d3f48ca29f2bda764bbae436372c0a5b570fe69f5da"
+    },
+    {
+      "line": 28,
+      "sha256": "51d405eae688e1dacbaff3157fc47019a4cc42d3a26bdf8c8c7bfcc9aa7ca5bf"
+    }
+  ],
+  "original_receipt": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-38/result.json",
+    "bytes": 2564,
+    "mode": 420,
+    "sha256": "c4c955311795327c45d9cacc8908c5704004469a67e4ce4492b7b3af8102bd80"
+  },
+  "original_refusal_preserved": true,
+  "not_an_alternative_qualification_receipt": true,
+  "read_error": "Direct cat of controls/test-38/outcomes.json failed: absent, because original parsing stopped before writing that file."
+}

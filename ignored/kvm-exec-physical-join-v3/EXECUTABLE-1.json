@@ -1,0 +1,68 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-exec-physical-join-v3/retained-lib-1",
+  "built_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/reverie_kvm-908667d8759d4789",
+  "executable": {
+    "bytes": 194537632,
+    "sha256": "c2325620b1bc6b0f215f4ffd02affb25aa857c2faafc74c6a924ec6a6199b089"
+  },
+  "mode": "0555",
+  "artifact": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "reverie_kvm",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "0",
+      "debuginfo": 2,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    },
+    "features": [
+      "default",
+      "native-test-support"
+    ],
+    "filenames": [
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/reverie_kvm-908667d8759d4789"
+    ],
+    "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/reverie_kvm-908667d8759d4789",
+    "fresh": false
+  },
+  "source_sha256": "c5e7978581e49fcc2abdffb4efabb0c8a96329376359b616e83ae58fd200d26a",
+  "plan_sha256": "97fea15ca2da44f2ec221584b732ab3cbdf4c6656df501f2c3470d0f9bbbbbb3",
+  "compile_records": {
+    "command.json": {
+      "bytes": 9265,
+      "sha256": "5236fca4cf9bfb3d4b48e4cad1ee8b097d10596b9956d9e9fb439d10f37dd895"
+    },
+    "RAW-RESULT.json": {
+      "bytes": 1155,
+      "sha256": "e08d3d62b988ff850232438744ab3bb17b470fddd7f8357fac25f35fb6718e6f"
+    },
+    "result.json": {
+      "bytes": 8363,
+      "sha256": "cab773df8207c750ab18c77fb23bd08c22fb717c895a31ad969046dae789399c"
+    },
+    "stdout": {
+      "bytes": 128291,
+      "sha256": "4be13c588f5fd94f8f6d17bf33681454d359e21bc1beab32aec5acfa9b2fcfe6"
+    },
+    "stderr": {
+      "bytes": 539,
+      "sha256": "45479d2ed629ee25baef2c4a27b56b50794d5ef1b933e98373e65a563943e97e"
+    }
+  }
+}

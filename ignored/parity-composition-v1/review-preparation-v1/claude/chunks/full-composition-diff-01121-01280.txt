@@ -1,0 +1,160 @@
++                        .length,
++                    2
++                );
++            }
++        }
++    }
++
++    #[derive(Default)]
++    struct NonElfCpuidTool;
++
++    #[reverie::tool]
++    impl reverie::Tool for NonElfCpuidTool {
++        type GlobalState = ();
++        type ThreadState = ();
++        fn subscriptions(_: &()) -> reverie::Subscription {
++            let mut subscriptions = reverie::Subscription::none();
++            subscriptions.cpuid();
++            subscriptions
++        }
++        async fn handle_thread_start<G: reverie::Guest<Self>>(
++            &self,
++            guest: &mut G,
++        ) -> std::result::Result<(), reverie::Error> {
++            assert!(
++                !guest.has_cpuid_interception(),
++                "public non-ELF loop has no CPUID consumer"
++            );
++            Ok(())
++        }
++        async fn handle_cpuid_event<G: reverie::Guest<Self>>(
++            &self,
++            _guest: &mut G,
++            _eax: u32,
++            _ecx: u32,
++        ) -> std::result::Result<reverie::CpuIdResult, reverie::syscalls::Errno> {
++            panic!("public non-ELF loop must preserve ordinary CPUID execution");
++        }
++    }
++
++    fn assert_disarmed(backend: &KvmBackend) {
++        assert!(!backend.has_cpuid_interception());
++        let mut msrs = kvm_bindings::Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
++            index: 0x140,
++            ..Default::default()
++        }])
++        .unwrap();
++        assert_eq!(backend.vcpu.get_msrs(&mut msrs).unwrap(), 1);
++        assert_eq!(msrs.as_slice()[0].data & 1, 0);
++    }
++
++    #[test]
++    fn cpuid_nonconsumer_loops_disarm_actual_prior_owned_msr_state() {
++        for previously_armed in [false, true] {
++            for use_tool in [false, true] {
++                let mut backend =
++                    KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++                backend.set_cpuid_interception(previously_armed).unwrap();
++                let request = SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]);
++                backend.install_syscall(0x1002, 0x2000, request).unwrap();
++                backend.memory.write(0x1000, &[0x0f, 0xa2]).unwrap();
++                let mut registers = backend.vcpu.get_regs().unwrap();
++                registers.rip = 0x1000;
++                backend.vcpu.set_regs(&registers).unwrap();
++                let mut calls = 0;
++                if use_tool {
++                    futures::executor::block_on(backend.run_with_tool::<NonElfCpuidTool, _>(
++                        (),
++                        |actual: &SyscallRequest, _: &GuestMemory| {
++                            assert_eq!(*actual, request);
++                            calls += 1;
++                            41
++                        },
++                    ))
++                    .unwrap();
++                } else {
++                    backend
++                        .run(|call, _| {
++                            assert_eq!(call.number(), reverie::syscalls::Sysno::getpid);
++                            calls += 1;
++                            41
++                        })
++                        .unwrap();
++                }
++                assert_eq!(calls, 1);
++                assert_disarmed(&backend);
++            }
++            let mut backend = KvmBackend::new(16 * 1024 * 1024).unwrap();
++            backend.set_cpuid_interception(previously_armed).unwrap();
++            backend
++                .install_static_elf(
++                    &minimal_test_elf(&[0x0f, 0xa2, 0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]),
++                    "/direct-cpuid",
++                )
++                .unwrap();
++            let (status, stdout, stderr) = backend.run_static_elf_captured().unwrap();
++            assert_eq!(status, 0);
++            assert!(stdout.is_empty());
++            assert!(stderr.is_empty());
++            assert_disarmed(&backend);
++        }
++    }
++}
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -55,6 +55,12 @@
+ #[path = "process_signal_publication.rs"]
+ mod process_signal_publication;
+ 
++#[path = "capture_identity.rs"]
++mod capture_identity;
++
++use capture_identity::CaptureMetadata;
++use capture_identity::CaptureObjectIdentity;
++use capture_identity::CapturedPipeIdentities;
+ use process_signal_publication::ProcessBinding;
+ use process_signal_publication::ProcessSignalRegistry;
+ 
+@@ -186,13 +192,35 @@
+     stderr: Vec<u8>,
+ }
+ 
+-#[derive(Clone, Default)]
++#[derive(Clone)]
+ // TODO-HUMAN-REVIEW(PR-172): Review cross-thread captured-output ownership.
+ pub(crate) struct CapturedOutput {
+     inner: Arc<Mutex<CapturedOutputInner>>,
++    identities: Arc<CapturedPipeIdentities>,
+ }
+ 
++#[cfg(test)]
++impl Default for CapturedOutput {
++    fn default() -> Self {
++        Self::try_new().expect("prepare test capture identities")
++    }
++}
++
+ impl CapturedOutput {
++    pub(crate) fn try_new() -> std::io::Result<Self> {
++        // Root setup calls this before consuming the image or initializing the
++        // Tool. Failure never publishes partial output or a fallback identity.
++        let identities = Arc::new(CapturedPipeIdentities::try_new()?);
++        Ok(Self {
++            inner: Arc::new(Mutex::new(CapturedOutputInner::default())),
++            identities,
++        })
++    }
++
++    fn metadata(&self) -> CaptureMetadata {
++        self.identities.metadata()
++    }
++
+     pub(crate) fn take(&mut self) -> (Vec<u8>, Vec<u8>) {
+         let mut inner = self.inner.lock().expect("captured output lock poisoned");
+         (
+@@ -354,6 +382,7 @@
+     let args = request.args();
+     let number = request.number();
+     let capture_output = output.is_some();
++    let capture_metadata = output.as_ref().map(|output| output.metadata());
+ 

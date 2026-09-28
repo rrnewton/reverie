@@ -1,0 +1,56 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.68s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 11 tests
+test executor::tests::child_exit_signal_signalfd_encodes_every_terminal_status_class ... ok
+test runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects ... ok
+test executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish ... ok
+test executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements ... ok
+test executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info ... ok
+test executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo ... ok
+test executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer ... ok
+test executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec ... ok
+test executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication ... ok
+test executor::tests::child_exit_signal_accepts_every_terminal_status_class ... ok
+test executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 765 filtered out; finished in 0.00s
+
+     Running tests/counter.rs (target/debug/deps/counter-c9efc720d424372b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/erestartsys.rs (target/debug/deps/erestartsys-ba2ce509316be623)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/read_clock.rs (target/debug/deps/read_clock-b6bc167312de69c9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+
+running 1 test
+test child_exit_signals::child_exit_signal_native_and_tool_receiver_contract ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 1.36s
+
+     Running tests/strace.rs (target/debug/deps/strace-08d53ba985d4a4a6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/vmcall.rs (target/debug/deps/vmcall-ca0c251c029e697b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+

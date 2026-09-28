@@ -1,0 +1,37 @@
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+## Plain Language Summary and Project Impact
+
+Ptrace setup and syscall injection were adding work to the guest's branch clock. A retained trace showed setup executing the guest's first branch and restoring its instruction pointer, making that branch run again. An injection at the wrong stop could also repeat guest memory effects.
+
+Distinguish an actual pending syscall from other stopped states, and clear consumed syscall state before subsequent callbacks. Start an initial command's branch counter at successful exec while retaining existing behavior for function guests and later execs. This repairs the ptrace reference used for same-run backend parity without adding an offset or reducing clock precision.
+
+## Determinism
+
+Only a real pending, different syscall takes the syscall-suppression step. Injection at a post-exec or instruction callback uses the private syscall path directly, leaving the guest instruction and memory untouched. Same-call and tail injection retain their existing execution paths. Successful exec clears obsolete syscall state.
+
+The initial-command counter becomes active at the actual exec boundary, before guest execution. Startup notification requests retire at that boundary; new post-exec timers remain active. Exact guest branch trajectories remain 1/65 and 65/129. There is no fixed subtraction, repeated-exec reset, rounding or comparison filtering.
+
+## Linux Semantics
+
+Injecting a syscall must not execute and rewind an unrelated guest instruction. Regressions exercise original and replacement writes, exact return values including EBADF and EPERM, a nonreturning injected exit, and emulated returns followed by an RDTSC callback. The existing legacy-vsyscall test reached actual time interception and its return-value and memory assertions.
+
+## Relationship to gVisor
+
+This change repairs ptrace execution and clock accounting; it does not add a KVM syscall implementation. Hermit's KVM backend needs a faithful ptrace reference for same-run parity. No gVisor API or implementation is introduced.
+
+## Validation
+
+At head a9449f8ee22a17ba87a106c2af957a938fa57c45, the qualified source passed a fresh compile, formatting, actual test inventories, core/ptrace check and strict Clippy. Thirty-seven exact test declarations qualified, including all eight new injection modes. Original failing clock controls pass both ordinary and intercepted initial-exec modes. Total service CPU was 344.439192 seconds; summed observer wall was 289.910501 seconds.
+
+The 38th declaration, the unchanged legacy-vsyscall control, returned zero and emitted matching test/suite success records with one pass and no ignored tests. Its 26 tracing records on stdout caused the strict JSON-lines reader to refuse the phase. That refusal remains recorded: 45 phases attempted, 44 accepted, one reader refusal, no retry. It is not represented as a fully accepted run. The earlier compile failure remains recorded with all tests unrun; the successor changed only two test imports.
+
+Two earlier authored expectations changed explicitly: post-exec count 1 to 0, and a timer set one branch later from 2 to 1. The retained trace showed that the previous initial count came from instruction execution followed by rewind. Actual guest branch assertions were not relaxed; new instruction-pointer and memory-effect assertions check that explanation directly.
+
+Independent exact-head source review and full Hermit same-run backend parity remain pending. Existing precise-timer parent success does not independently authenticate both child modes; positive activated-frame and converted-mapping-tail paths are not claimed as newly measured.
+
+TaskGraph: kvm_virtual_time_accounting. Component evidence: owned slot kvm-reverie-landing-20260918, ignored/clock-correction-v2/qualification-v2/final-v1, TARGET SHA256 0b4ab5639249a24e72c1249d255217552ae0147f1287b2036fb2d24f4de9d624.
+
+## Human Review Required
+
+Trigger 3: initial-command clock and notification eligibility change a determinization strategy. Review must assess determinism and Linux semantics, including the explicitly changed startup expectations. Human review follows landing; both independent implementation reviews remain pending.

@@ -1,0 +1,14 @@
+{
+  "scope": "Grounding/infrastructure and draft prompts only; source/commit/results pending corrected successor",
+  "source_v2_compile": "raw 101; no tests executed",
+  "external_reviewers_launched": 0,
+  "product_source_or_scm_mutated": false,
+  "original_grounding_reader": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/prepare_grounding.py",
+    "sha256": "1405b07f7cd596629172e1a62e69401edcf6b91ef87b63369c800dabeca4fa10"
+  },
+  "new_reader": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/prepare_grounding.py",
+    "sha256": "9778f40411c4813014214e05383538d576735251c80ab39f86305e31c32718fb"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "source3": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/source-3/context.json",
+  "owned_records": [
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "bytes": 359703,
+      "sha256": "1c633337850332d82432864b46ed5f75332031dc34be9e1ee51af305e09bfdfe"
+    },
+    {
+      "path": "reverie-kvm/src/memory.rs",
+      "bytes": 122685,
+      "sha256": "2d8e46a93b20e49707e98a19d749aa7fac5414254f47cd7ab9ab06c4b88e4857"
+    },
+    {
+      "path": "reverie-kvm/src/bootstrap.rs",
+      "bytes": 43765,
+      "sha256": "6bad9d324f954c104ae8b75e5522f446cb2cc2c817a22cd3dad04b11cfb86ffa"
+    }
+  ],
+  "runtime_proposal_base_sha256": "3deaeabdecb157d1f5a4358eb8820bc6c0d41ebb9a8a2655146e270f54f102ed",
+  "product_execution": false
+}

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.004437755
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+1283: 		}
+1284: 	}
+1285: 
+1286: 	kfree(elf_phdata);
+1287: 
+1288: 	set_binfmt(&elf_format);
+1289: 
+1290: #ifdef ARCH_HAS_SETUP_ADDITIONAL_PAGES
+1291: 	retval = ARCH_SETUP_ADDITIONAL_PAGES(bprm, elf_ex, !!interpreter);
+1292: 	if (retval < 0)
+1293: 		goto out;
+1294: #endif /* ARCH_HAS_SETUP_ADDITIONAL_PAGES */
+1295: 
+1296: 	retval = create_elf_tables(bprm, elf_ex, interp_load_addr,
+1297: 				   e_entry, phdr_addr);
+1298: 	if (retval < 0)
+1299: 		goto out;
+1300: 
+1301: 	mm = current->mm;
+1302: 	mm->end_code = end_code;
+1303: 	mm->start_code = start_code;
+1304: 	mm->start_data = start_data;
+1305: 	mm->end_data = end_data;
+1306: 	mm->start_stack = bprm->p;
+1307: 
+1308: 	elf_coredump_set_mm_eflags(mm, elf_ex->e_flags);
+1309: 
+1310: 	/**
+1311: 	 * DOC: "brk" handling
+1312: 	 *
+1313: 	 * For architectures with ELF randomization, when executing a
+1314: 	 * loader directly (i.e. static PIE: ET_DYN without PT_INTERP),
+1315: 	 * move the brk area out of the mmap region and into the unused
+1316: 	 * ELF_ET_DYN_BASE region. Since "brk" grows up it may collide
+1317: 	 * early with the stack growing down or other regions being put
+1318: 	 * into the mmap region by the kernel (e.g. vdso).
+1319: 	 *
+1320: 	 * In the CONFIG_COMPAT_BRK case, though, everything is turned
+1321: 	 * off because we're not allowed to move the brk at all.
+1322: 	 */
+1323: 	if (!IS_ENABLED(CONFIG_COMPAT_BRK) &&
+1324: 	    IS_ENABLED(CONFIG_ARCH_HAS_ELF_RANDOMIZE) &&
+1325: 	    elf_ex->e_type == ET_DYN && !interpreter) {
+1326: 		elf_brk = ELF_ET_DYN_BASE;
+1327: 		/* This counts as moving the brk, so let brk(2) know. */
+1328: 		brk_moved = true;
+1329: 	}
+1330: 	mm->start_brk = mm->brk = ELF_PAGEALIGN(elf_brk);
+1331: 
+1332: 	if ((current->flags & PF_RANDOMIZE) && snapshot_randomize_va_space > 1) {
+1333: 		/*
+1334: 		 * If we didn't move the brk to ELF_ET_DYN_BASE (above),
+1335: 		 * leave a gap between .bss and brk.
+1336: 		 */
+1337: 		if (!brk_moved)
+1338: 			mm->brk = mm->start_brk = mm->brk + PAGE_SIZE;
+1339: 
+1340: 		mm->brk = mm->start_brk = arch_randomize_brk(mm);
+1341: 		brk_moved = true;
+1342: 	}
+1343: 
+1344: #ifdef compat_brk_randomized
+1345: 	if (brk_moved)
+1346: 		current->brk_randomized = 1;
+1347: #endif
+1348: 
+1349: 	if (current->personality & MMAP_PAGE_ZERO) {
+1350: 		/* Why this, you ask???  Well SVr4 maps page 0 as read-only,
+1351: 		   and some applications "depend" upon this behavior.
+1352: 		   Since we do not have the power to recompile these, we
+1353: 		   emulate the SVr4 behavior. Sigh. */
+1354: 		error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,
+1355: 				MAP_FIXED | MAP_PRIVATE, 0);
+1356: 
+1357: 		retval = do_mseal(0, PAGE_SIZE, 0);
+1358: 		if (retval)
+1359: 			pr_warn_ratelimited("pid=%d, couldn't seal address 0, ret=%d.\n",
+1360: 					    task_pid_nr(current), retval);
+1361: 	}
+1362: 
+1363: 	regs = current_pt_regs();
+1364: #ifdef ELF_PLAT_INIT
+1365: 	/*
+1366: 	 * The ABI may specify that certain registers be set up in special
+1367: 	 * ways (on i386 %edx is the address of a DT_FINI function, for
+1368: 	 * example.  In addition, it may also specify (eg, PowerPC64 ELF)
+1369: 	 * that the e_entry field is the address of the function descriptor
+1370: 	 * for the startup routine, rather than the address of the startup
+1371: 	 * routine itself.  This macro performs whatever initialization to
+1372: 	 * the regs structure is required as well as any relocations to the
+1373: 	 * function descriptor entries when executing dynamically links apps.
+1374: 	 */
+1375: 	ELF_PLAT_INIT(regs, reloc_func_desc);
+1376: #endif
+1377: 
+1378: 	finalize_exec(bprm);
+1379: 	START_THREAD(elf_ex, regs, elf_entry, bprm->p);
+1380: 	retval = 0;
+1381: out:
+1382: 	return retval;
+1383: 
+1384: 	/* error cleanup */
+1385: out_free_dentry:
+1386: 	kfree(interp_elf_ex);
+1387: 	kfree(interp_elf_phdata);
+1388: out_free_file:
+1389: 	exe_file_allow_write_access(interpreter);
+1390: 	if (interpreter)
+1391: 		fput(interpreter);
+1392: out_free_ph:
+1393: 	kfree(elf_phdata);
+1394: 	goto out;
+1395: }
+

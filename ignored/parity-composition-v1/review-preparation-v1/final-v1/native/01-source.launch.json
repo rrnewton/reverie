@@ -1,0 +1,30 @@
+{
+  "started_at_utc": "2026-09-18T20:27:43.941906+00:00",
+  "argv": [
+    "/usr/local/bin/codex",
+    "-a",
+    "never",
+    "-s",
+    "read-only",
+    "-C",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native",
+    "exec",
+    "resume",
+    "-c",
+    "approval_policy=\"never\"",
+    "--json",
+    "--output-last-message",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final.txt",
+    "01a0b38e-9e3c-7883-9816-65199c048935",
+    "-"
+  ],
+  "model_override": null,
+  "prompt_sha256": "26a65bed79c79b92766a2377036d4a6c86b6dc1a9f2f0f573ec5fcea606a5ab8",
+  "wall_limit_seconds": 1800,
+  "output_limit_bytes": 67108864,
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native",
+  "session_resume": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "launcher_pid": 1137131,
+  "launcher_pgid": 1137131,
+  "launcher_start_ticks": "192219270"
+}

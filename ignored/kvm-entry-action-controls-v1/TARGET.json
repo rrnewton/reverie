@@ -1,0 +1,50 @@
+{
+  "scope": "Prepared-action test author packet; uncompiled/unformatted/unexecuted; root adds include",
+  "records": [
+    {
+      "path": "AUTHOR.patch",
+      "bytes": 28293,
+      "sha256": "99fc6e5f218e05d13c7474ee82abfd908b41d407276705f4c370786c3e6036d3"
+    },
+    {
+      "path": "BASELINE.json",
+      "bytes": 277,
+      "sha256": "409cc5d304a59bcaca8a247e86d6cc24e469aab965a6f26b7ee190df0eb83e2f"
+    },
+    {
+      "path": "PRESERVATION.json",
+      "bytes": 287,
+      "sha256": "d43b5f7587304eb7490e208fd6966edb285e1b069d9c3eb0cdbc2a95dec82581"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 6940,
+      "sha256": "49b22d198b9c3510c80e7393cb972cf36825052c0b2af6323c326694ae980cc1"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 567,
+      "sha256": "f351ac12ba23a69fd3f8e543769a6546962577390c5b082fdb3dbea74f8ab685"
+    },
+    {
+      "path": "TESTS.json",
+      "bytes": 771,
+      "sha256": "05b862bf8c835cd46243d088441dd0915a542073a8a95dd4b534ea2ee2f93359"
+    },
+    {
+      "path": "baseline/reverie-kvm/src/vm.rs",
+      "bytes": 411449,
+      "sha256": "27a4d4cd81818e3c8d5336e07c725201bd2a41ea6252733193fab18a061e0455"
+    },
+    {
+      "path": "source-1/reverie-kvm/src/vm/entry_action_tests.rs",
+      "bytes": 22555,
+      "sha256": "cc785f6ebb773ce10ab71c538bfcf8e0904212d689b1b1369b743e47cd6bde33"
+    },
+    {
+      "path": "source-1/reverie-kvm/src/vm.rs",
+      "bytes": 412707,
+      "sha256": "aff8fdbdfe2472ab9baf6aae82471d15e8d3f8cc31d04c7833b54034ed730203"
+    }
+  ]
+}

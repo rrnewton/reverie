@@ -1,0 +1,369 @@
+--- before/reverie-kvm/src/vm/entry_multi_owner_tests.rs
++++ source-1/reverie-kvm/src/vm/entry_multi_owner_tests.rs
+@@ -98,8 +98,10 @@
+                 .cv
+                 .wait_timeout_while(open, BOUND, |open| !*open)
+                 .unwrap();
++            let released = *open;
++            drop(open);
+             assert!(
+-                *open,
++                released,
+                 "controller did not release a real worker callback within its bound"
+             );
+         }
+@@ -116,7 +118,7 @@
+         }
+     }
+ 
+-    #[derive(Default)]
++    #[derive(Clone, Default)]
+     struct State {
+         identities: [Option<(i32, i32)>; 4],
+         states: [Option<Weak<u64>>; 4],
+@@ -159,6 +161,12 @@
+                 ))),
+             }
+         }
++        // Assertions and diagnostic formatting use owned observations. A
++        // failed controller assertion must not poison the state that real
++        // callback destruction and finite rescue still need.
++        fn snapshot(&self) -> State {
++            self.state.lock().unwrap().clone()
++        }
+         fn event(&self, event: Event) {
+             self.state.lock().unwrap().events.push(event);
+             self.changed.notify_all();
+@@ -169,17 +177,18 @@
+                 .changed
+                 .wait_timeout_while(state, BOUND, |state| !state.events.contains(&event))
+                 .unwrap();
++            let events = state.events.clone();
++            drop(state);
+             assert!(
+-                state.events.contains(&event),
+-                "missing {event:?}; observed {:?}",
+-                state.events
++                events.contains(&event),
++                "missing {event:?}; observed {events:?}"
+             );
+         }
+         fn has(&self, event: Event) -> bool {
+             self.state.lock().unwrap().events.contains(&event)
+         }
+         fn role(&self, tid: Pid) -> Role {
+-            let state = self.state.lock().unwrap();
++            let state = self.snapshot();
+             *ROLES
+                 .iter()
+                 .find(|role| {
+@@ -188,7 +197,7 @@
+                 .unwrap()
+         }
+         fn origin(&self, role: Role) -> EntryOrigin {
+-            self.state.lock().unwrap().origins[role as usize]
++            self.snapshot().origins[role as usize]
+                 .as_ref()
+                 .unwrap()
+                 .clone()
+@@ -240,19 +249,13 @@
+             }
+         }
+         fn address(&self, name: &'static str) -> usize {
+-            self.state.lock().unwrap().causes[name]
++            self.snapshot().causes[name]
+         }
+         fn error(&self, name: &'static str) -> reverie::Error {
+             let cause = Box::new(IoCause(name));
+             let address = std::ptr::from_ref(cause.as_ref()) as usize;
+-            assert!(
+-                self.state
+-                    .lock()
+-                    .unwrap()
+-                    .causes
+-                    .insert(name, address)
+-                    .is_none()
+-            );
++            let previous = self.state.lock().unwrap().causes.insert(name, address);
++            assert!(previous.is_none());
+             let cause: Box<dyn std::error::Error + Send + Sync> = cause;
+             reverie::Error::Io(std::io::Error::other(cause))
+         }
+@@ -275,15 +278,15 @@
+                     assert!(origin.operation.as_ref().unwrap().callback_id().is_some());
+                     assert!(!origin.operation.as_ref().unwrap().callback_dropped());
+                     assert!(origin.failure.is_some());
+-                    {
++                    let (previous_origin, previous_gate) = {
+                         let mut state = self.state.lock().unwrap();
+-                        assert!(
+-                            state.origins[role as usize]
+-                                .replace(origin.clone())
+-                                .is_none()
+-                        );
+-                        assert!(state.gates[role as usize].replace(gate.clone()).is_none());
+-                    }
++                        (
++                            state.origins[role as usize].replace(origin.clone()),
++                            state.gates[role as usize].replace(gate.clone()),
++                        )
++                    };
++                    assert!(previous_origin.is_none());
++                    assert!(previous_gate.is_none());
+                     if role == Role::A && self.case != Case::Healthy {
+                         gate.poison(origin, Error::SharedFailure(self.cause.clone()));
+                         let pending = gate.pending_failure().unwrap();
+@@ -298,7 +301,7 @@
+                     if role != Role::B {
+                         return;
+                     }
+-                    let expected = self.state.lock().unwrap().pending.as_ref().unwrap().clone();
++                    let expected = self.snapshot().pending.unwrap();
+                     assert!(Arc::ptr_eq(&pending, &expected));
+                     assert!(self.has(Event::Dropped(Role::B)));
+                     assert!(self.origin(Role::B).operation.unwrap().callback_dropped());
+@@ -310,7 +313,7 @@
+                     process,
+                 } => {
+                     assert_eq!(
+-                        self.state.lock().unwrap().hosts[role as usize],
++                        self.snapshot().hosts[role as usize],
+                         Some(target)
+                     );
+                     assert_ne!(target, joiner);
+@@ -326,7 +329,7 @@
+                     process,
+                 } => {
+                     assert_eq!(
+-                        self.state.lock().unwrap().hosts[role as usize],
++                        self.snapshot().hosts[role as usize],
+                         Some(target)
+                     );
+                     self.event(Event::JoinReturn(role, joiner, process));
+@@ -360,7 +363,7 @@
+     impl Drop for CallbackDrop {
+         fn drop(&mut self) {
+             assert!(!self.0.has(Event::Dropped(self.1)));
+-            if let Some(origin) = &self.0.state.lock().unwrap().origins[self.1 as usize] {
++            if let Some(origin) = &self.0.snapshot().origins[self.1 as usize] {
+                 assert!(!origin.operation.as_ref().unwrap().callback_dropped());
+             }
+             self.0.event(Event::Dropped(self.1));
+@@ -426,38 +429,36 @@
+         }
+         fn init_thread_state(&self, tid: Pid, parent: Option<(Pid, &Arc<u64>)>) -> Arc<u64> {
+             let observed = observed();
+-            let mut state = observed.state.lock().unwrap();
+-            let role = match parent {
+-                None => {
+-                    assert_eq!(self.pid, tid.as_raw());
++            let parent_tid = parent.map(|(parent_tid, parent_state)| {
++                assert_eq!(**parent_state, Role::Parent as u64);
++                parent_tid.as_raw()
++            });
++            if parent_tid.is_none() {
++                assert_eq!(self.pid, tid.as_raw());
++            }
++            let (original, previous_identity, previous_state, parent_identity) = {
++                let mut state = observed.state.lock().unwrap();
++                let role = if parent_tid.is_none() {
+                     Role::Parent
+-                }
+-                Some((parent_tid, parent_state)) => {
+-                    assert_eq!(**parent_state, Role::Parent as u64);
+-                    assert_eq!(
+-                        state.identities[Role::Parent as usize].unwrap().1,
+-                        parent_tid.as_raw()
+-                    );
+-                    if self.pid == tid.as_raw() {
+-                        Role::C
+-                    } else if state.identities[Role::A as usize].is_none() {
+-                        Role::A
+-                    } else {
+-                        Role::B
+-                    }
+-                }
++                } else if self.pid == tid.as_raw() {
++                    Role::C
++                } else if state.identities[Role::A as usize].is_none() {
++                    Role::A
++                } else {
++                    Role::B
++                };
++                let parent_identity = state.identities[Role::Parent as usize];
++                let previous_identity =
++                    state.identities[role as usize].replace((self.pid, tid.as_raw()));
++                let original = Arc::new(role as u64);
++                let previous_state = state.states[role as usize].replace(Arc::downgrade(&original));
++                (original, previous_identity, previous_state, parent_identity)
+             };
+-            assert!(
+-                state.identities[role as usize]
+-                    .replace((self.pid, tid.as_raw()))
+-                    .is_none()
+-            );
+-            let original = Arc::new(role as u64);
+-            assert!(
+-                state.states[role as usize]
+-                    .replace(Arc::downgrade(&original))
+-                    .is_none()
+-            );
++            if let Some(parent_tid) = parent_tid {
++                assert_eq!(parent_identity.unwrap().1, parent_tid);
++            }
++            assert!(previous_identity.is_none());
++            assert!(previous_state.is_none());
+             original
+         }
+         async fn handle_thread_start<G: Guest<Self>>(
+@@ -466,11 +467,9 @@
+         ) -> std::result::Result<(), reverie::Error> {
+             let observed = observed();
+             let role = observed.role(guest.tid());
+-            assert!(
+-                observed.state.lock().unwrap().hosts[role as usize]
+-                    .replace(std::thread::current().id())
+-                    .is_none()
+-            );
++            let previous_host = observed.state.lock().unwrap().hosts[role as usize]
++                .replace(std::thread::current().id());
++            assert!(previous_host.is_none());
+             let weak = Arc::downgrade(&observed);
+             let guard = test_observation::Guard::current(Arc::new(move |event| {
+                 if let Some(observed) = weak.upgrade() {
+@@ -498,14 +497,15 @@
+             assert_eq!(dequeue.consumer, reverie::SignalConsumer::SignalTimedWait);
+             assert_eq!(dequeue.domain, reverie::PendingDomain::Thread);
+             assert_eq!(dequeue.event.signal(), libc::SIGUSR1);
+-            let mut state = observed.state.lock().unwrap();
+-            assert!(state.effects[role as usize].is_empty());
+-            assert!(
+-                state.signal_tasks[role as usize]
+-                    .replace(identity)
+-                    .is_none()
+-            );
+-            state.effects[role as usize].push(dequeue);
++            let (effects_were_empty, previous_task) = {
++                let mut state = observed.state.lock().unwrap();
++                let effects_were_empty = state.effects[role as usize].is_empty();
++                let previous_task = state.signal_tasks[role as usize].replace(identity);
++                state.effects[role as usize].push(dequeue);
++                (effects_were_empty, previous_task)
++            };
++            assert!(effects_were_empty);
++            assert!(previous_task.is_none());
+             Ok(())
+         }
+         async fn handle_syscall_event<G: Guest<Self>>(
+@@ -559,7 +559,7 @@
+                 );
+             }
+             assert_eq!(
+-                observed.state.lock().unwrap().effects[role as usize].len(),
++                observed.snapshot().effects[role as usize].len(),
+                 1
+             );
+             observed.event(Event::Effects(role));
+@@ -588,7 +588,7 @@
+                                 .is_none()
+                         );
+                         assert!(
+-                            observed.state.lock().unwrap().gates[role as usize]
++                            observed.snapshot().gates[role as usize]
+                                 .as_ref()
+                                 .unwrap()
+                                 .pending_failure()
+@@ -628,22 +628,22 @@
+                 255
+             };
+             assert_eq!(status, ExitStatus::Exited(expected));
+-            {
++            let (previous_status, original_state) = {
+                 let mut state = observed.state.lock().unwrap();
+-                assert!(state.statuses[role as usize].replace(status).is_none());
+-                assert!(Arc::ptr_eq(
+-                    &original,
+-                    &state.states[role as usize]
+-                        .as_ref()
+-                        .unwrap()
+-                        .upgrade()
+-                        .unwrap()
+-                ));
+-            }
++                (
++                    state.statuses[role as usize].replace(status),
++                    state.states[role as usize].clone(),
++                )
++            };
++            assert!(previous_status.is_none());
++            assert!(Arc::ptr_eq(
++                &original,
++                &original_state.as_ref().unwrap().upgrade().unwrap()
++            ));
+             observed.event(Event::Hook(role));
+             drop(original);
+             assert!(
+-                observed.state.lock().unwrap().states[role as usize]
++                observed.snapshot().states[role as usize]
+                     .as_ref()
+                     .unwrap()
+                     .upgrade()
+@@ -668,7 +668,7 @@
+             assert!(matches!(role, Role::Parent | Role::C));
+             assert_eq!(self.pid, pid.as_raw());
+             assert_eq!(
+-                observed.state.lock().unwrap().statuses[role as usize],
++                observed.snapshot().statuses[role as usize],
+                 Some(status)
+             );
+             assert!(observed.has(Event::Consumed(role)));
+@@ -690,7 +690,7 @@
+         if observed.case != Case::Healthy && matches!(role, Role::A | Role::B) {
+             assert_eq!(result, Err(Errno::EIO));
+             assert_eq!(bytes, [0xa5; 4]);
+-            let state = observed.state.lock().unwrap();
++            let state = observed.snapshot();
+             let pending = state.gates[role as usize]
+                 .as_ref()
+                 .unwrap()
+@@ -779,7 +779,7 @@
+         observed.copy_b.release();
+         observed.wait(Event::Copy(Role::B));
+         {
+-            let state = observed.state.lock().unwrap();
++            let state = observed.snapshot();
+             let a = state.origins[Role::A as usize].as_ref().unwrap();
+             let b = state.origins[Role::B as usize].as_ref().unwrap();
+             let c = state.origins[Role::C as usize].as_ref().unwrap();
+@@ -832,9 +832,7 @@
+             assert!(!observed.has(Event::Hook(Role::B)));
+             assert!(
+                 !observed
+-                    .state
+-                    .lock()
+-                    .unwrap()
++                    .snapshot()
+                     .events
+                     .iter()
+                     .any(|event| matches!(event, Event::Report(..) | Event::JoinStart(..)))
+@@ -848,7 +846,10 @@
+             }
+             Case::CFirst => {
+                 observed.finish[Role::C as usize].release();
+-                observed.wait(Event::Report(Role::C, "execution"));
++                // The real loop publishes callback failure before its later
++                // execution cleanup. The report hook still holds publication:
++                // RunFailure notifies only after this hook returns.
++                observed.wait(Event::Report(Role::C, "Tool callback"));
+                 assert_a_alive(observed);
+                 assert!(!observed.receipt());
+                 assert!(!observed.has(Event::Hook(Role::B)));
+@@ -916,7 +917,7 @@
+         causes
+     }
+     fn verify(observed: &Observed, result: crate::Result<(i32, Vec<u8>, Vec<u8>)>) {
+-        let state = observed.state.lock().unwrap();
++        let state = observed.snapshot();
+         for role in ROLES {
+             for event in [
+                 Event::Started(role),

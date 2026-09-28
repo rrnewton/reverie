@@ -1,0 +1,38 @@
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/observer/new-02/stderr",
+        "bytes": 423,
+        "mode": 384,
+        "sha256": "929628df6d8394e9bca7891ef948d0a2eb69c072cbff2f6aa6878f116993900d"
+      },
+      "readback": null,
+      "readback_error": "RuntimeError('actual selected outcomes differ')",
+      "error": "RuntimeError('actual payload failed')"
+    }
+  ],
+  "retained_artifacts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/retained-binaries/ARTIFACTS.json",
+    "bytes": 1894,
+    "mode": 420,
+    "sha256": "db19aa63fc258c5b8ddec6e1413ef77df4c12086e58b852bd0255b32cc81ef16"
+  },
+  "retention_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/retained-binaries/BINDING.json",
+    "bytes": 15190,
+    "mode": 420,
+    "sha256": "31da6e7180f5f9a55597f4d364f0ca51dc8ccc3d239592dadf93cbca03db6668"
+  },
+  "clock_observations": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/final-v1/CLOCK-OBSERVATIONS.json",
+    "bytes": 1631,
+    "mode": 420,
+    "sha256": "ac89a55f27ac01d6e81a351509c50c776893e24d468cbeb3f146c477382abb42"
+  },
+  "first_assertion": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/final-v1/FIRST-ASSERTION.json",
+    "bytes": 1229,
+    "mode": 420,
+    "sha256": "f7cb5e6d387637d0aeb40b81ed0083a6557b561647f339b7e84b09bdb506a7ee"
+  },
+  "all_component_phases_accepted": false,
+  "old_metadata_refusal_and_baseline_negative_unchanged": true,
+  "hermit_or_parity_execution": false
+}

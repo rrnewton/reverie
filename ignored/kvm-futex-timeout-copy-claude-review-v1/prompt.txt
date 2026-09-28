@@ -1,0 +1,36 @@
+You are the independent actual Claude-family adversarial reviewer of Reverie pull request https://github.com/rrnewton/reverie/pull/608. You have read-only tools only. Do not edit files, execute commands, delegate, or publish comments. Return a complete review report in your final response.
+
+Review target: rrnewton/reverie base 123df7c4c0169006fbfe1f11a1553fe333eac937, exact head 8865eb263cb44530364cb90eda6cdb40826aba7d, tree 077163b7251b650cd88991634fa35041cf8d10b6. The exact head is frozen and must not be altered. BASE-TO-HEAD.patch is the complete binary diff. INPUTS.json binds every immutable packet input. SOURCE.json records the exact live checkout and copied candidate source.
+
+`candidate/reverie-kvm/src/` is a complete exact-head snapshot. `base/` contains the base versions of both changed paths. `qualification/` contains retained focused, Clippy, full-library, failure, and exact-retry output. Treat QUALIFICATION.md as claims to verify, not conclusions to trust.
+
+Apply both code-review and deterministic-scheduling-review. Before reading the proposal, diff, qualification, or candidate code, read these primary files completely in this exact order: primary/paper.txt including its artifact appendix; primary/scheduler.rs including every test; primary/PROJECT_VISION.md; primary/hermit-v2-roadmap.md. The roadmap's dated measurements are history. Then read both context skill files completely. If anything is missing or truncated, state the limitation.
+
+Intended behavior and boundary:
+
+- Copy and validate all five timeout-bearing futex timespec arguments before translating either guest futex word, matching Linux sys_futex/do_futex fault and validation order.
+- Keep the copied timespec in host-owned storage so a blocking host futex wait retains only the futex-word mapping operand, allowing the unchanged-mapping entry fence to close while the wait remains in the host kernel.
+- Preserve early ENOSYS for unsupported futex commands and invalid FUTEX_CLOCK_REALTIME combinations, and preserve the deliberately narrower Linux-alignment precedence only for the reviewed non-PI key-first operations. Do not infer that PI ordering, guest/host PI TID identity, private-futex identity, wakeup scheduling, or full futex parity is solved.
+- Preserve Linux behavior for relative versus absolute timeouts, null timeout pointers, readable unaligned/cross-page timeout structures, malformed timespecs, inaccessible words and timeout memory, requeue count arguments, and second futex-word translation.
+- Ensure no host-timed pointer lifetime, stack pointer lifetime, stale guest mapping, changed errno precedence, or cross-thread alias can make guest-visible results nondeterministic.
+- This is one Reverie prerequisite. Hermit pinning and exact-main real KVM CLI checks remain after landing; do not credit this patch with complete KVM determinism, full backend parity, or record/replay.
+
+Trace the real path from execute_basic_syscall_inner through futex, guest memory imports/operands, entry admission/retention, the host syscall, and completion. Compare Linux kernel/POSIX behavior rather than assuming comments or passing tests establish it. In particular verify the operation/flag allow-set, which commands consume argument four as a timespec versus an integer, timeout validation order, primary/secondary address alignment order, and pointer validity throughout a sleeping host syscall.
+
+Verification evidence must be assessed adversarially. Exact-head claims are: five focused futex tests passed in 8.11 seconds; `cargo clippy -p reverie-kvm --lib --tests -- -D warnings` passed in 11.61 seconds; final `cargo test -p reverie-kvm --lib` passed 788/788, zero failed and zero ignored, in 11.33 seconds; formatting and diff checks passed. A superseded full run had one unrelated positioned-vectored-I/O pipe result of 4 rather than EPIPE, its exact isolated retry passed, and the final exact-head full suite passed. The failure and retries are retained rather than hidden. There are no GitHub CI signals. Decide what this does and does not prove.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation now meets the original requirement or whether the requirement was changed to admit the implementation. Call out either result explicitly, including when no lowering of the bar is present.
+
+State all four categories explicitly.
+
+Report findings first with severity, exact file/line evidence, impact, and required correction. Then give the goalpost-moving assessment, separate conclusions for the determinism guarantee and Linux/POSIX semantics, verification actually inspected with limitations, residual risks, and an exact-head APPROVE or CHANGES REQUESTED verdict. Bind the verdict only to 8865eb263cb44530364cb90eda6cdb40826aba7d.

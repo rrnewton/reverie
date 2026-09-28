@@ -1,0 +1,29 @@
+{
+  "audit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/ROOT-TRANSCRIPT-READBACK.json",
+    "bytes": 123704,
+    "sha256": "b8c890d428f60e694102874e1e30552acea4c01a2605c39eb1a5262a4979e693",
+    "mode": 420
+  },
+  "tools": [
+    "Read"
+  ],
+  "calls": 166,
+  "errors": 0,
+  "unindexed_reads": 0,
+  "assistant_text_events": [
+    {
+      "event": 37,
+      "block": 0,
+      "uuid": "eee4051e-6cfc-4c0c-b170-d11204d8b348",
+      "bytes": 36
+    },
+    {
+      "event": 450,
+      "block": 0,
+      "uuid": "30302203-961b-478b-92c3-15cce7d0d237",
+      "bytes": 30361
+    }
+  ],
+  "elapsed_seconds": 1241.6931944179814
+}

@@ -1,0 +1,26 @@
+{
+  "scope": "bounded parking interoperation source review",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-review-v1/REPORT.md",
+      "bytes": 7894,
+      "sha256": "6c2cb3a448de34c3b28912b20829dbb42bb8fa1737a49b245269398d329b5fbe"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-review-v1/READBACK.json",
+      "bytes": 2377,
+      "sha256": "a514b5acca6b9c6c44fde0674682934f7ced505e88566f13cc9ea67bc11b0d38"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-review-v1/VM.patch",
+      "bytes": 42569,
+      "sha256": "185ec6b2d94abd4deb40ad7d4dc78f8d09e86e8ada386a7f2cbba4861977c177"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-review-v1/RUNTIME.patch",
+      "bytes": 6427,
+      "sha256": "b61f1d8a772263d2224ffaf9056fe36590712b72c607d91476e17989a6727c24"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "at_utc": "2026-09-18T20:28:08.014779+00:00",
+  "session_id": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "exec_handle": 71578,
+  "contexts": [
+    {
+      "timestamp": "2026-09-18T20:27:46.477Z",
+      "ordinal": 13933,
+      "type": "turn_context",
+      "payload": {
+        "turn_id": "01a0b634-24c8-72f2-a9ac-7cddb297e078",
+        "root_turn_id": "01a0b634-24c8-72f2-a9ac-7cddb297e078",
+        "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native",
+        "workspace_roots": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native"
+        ],
+        "current_date": "2026-09-18",
+        "timezone": "America/Los_Angeles",
+        "approval_policy": "never",
+        "approvals_reviewer": "auto_review",
+        "sandbox_policy": {
+          "type": "read-only"
+        },
+        "permission_profile": {
+          "type": "managed",
+          "file_system": {
+            "type": "restricted",
+            "entries": [
+              {
+                "path": {
+                  "type": "special",
+                  "value": {
+                    "kind": "root"
+                  }
+                },
+                "access": "read"
+              }
+            ]
+          },
+          "network": "restricted"
+        },
+        "model": "gpt-5.6-sol",
+        "comp_hash": "3000",
+        "personality": "pragmatic",
+        "collaboration_mode": {
+          "mode": "default",
+          "settings": {
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "high",
+            "developer_instructions": null
+          }
+        },
+        "multi_agent_version": "v2",
+        "realtime_active": false,
+        "effort": "high",
+        "summary": "auto"
+      }
+    }
+  ],
+  "source": "/home/newton/.codex/sessions/2026/09/18/rollout-2026-09-18T01-07-43-01a0b38e-9e3c-7883-9816-65199c048935.jsonl",
+  "source_size": 123957426,
+  "tail_bytes": 2097152,
+  "stage": "actual resumed context only; no coverage or verdict credit"
+}

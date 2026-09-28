@@ -1,0 +1,91 @@
+PHASE control-75 SELECTOR executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-75/stdout SHA256 602c9463407f33440e1bb5afc4dbf376c79f22d995200a61131d7e8856a0bfa3
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup" }
+{ "type": "test", "name": "executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.002360105 }
+END STREAM
+
+PHASE control-75 SELECTOR executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-75/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-76 SELECTOR executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-76/stdout SHA256 b75a4f5d999b50340c53a05eb7c869a4387941b5ad8e7c2f84756c07841ad134
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime" }
+{ "type": "test", "name": "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.001856609 }
+END STREAM
+
+PHASE control-76 SELECTOR executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-76/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-77 SELECTOR executor::tests::descriptor_retirement_close_and_dup_release_both_guards STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-77/stdout SHA256 d59bf899eb3bb4d13aeb3b7231398d6b8bfa9bb41293718503b0b41762d656a5
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::descriptor_retirement_close_and_dup_release_both_guards" }
+{ "type": "test", "name": "executor::tests::descriptor_retirement_close_and_dup_release_both_guards", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.003548161 }
+END STREAM
+
+PHASE control-77 SELECTOR executor::tests::descriptor_retirement_close_and_dup_release_both_guards STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-77/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-78 SELECTOR executor::tests::descriptor_retirement_exec_and_exit_release_both_guards STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-78/stdout SHA256 4ad5060bbe0ea73a949b2c64b20a7a1b085d28f305a35b4e1bfcdba104b5d7cc
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::descriptor_retirement_exec_and_exit_release_both_guards" }
+{ "type": "test", "name": "executor::tests::descriptor_retirement_exec_and_exit_release_both_guards", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.002623471 }
+END STREAM
+
+PHASE control-78 SELECTOR executor::tests::descriptor_retirement_exec_and_exit_release_both_guards STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-78/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-79 SELECTOR executor::tests::descriptor_retirement_install_error_releases_both_guards STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-79/stdout SHA256 714f9fcdce5073333a2a0abfb5995467509717fc7ad3cd4cf14b21b359cd471b
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::descriptor_retirement_install_error_releases_both_guards" }
+{ "type": "test", "name": "executor::tests::descriptor_retirement_install_error_releases_both_guards", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.001911042 }
+END STREAM
+
+PHASE control-79 SELECTOR executor::tests::descriptor_retirement_install_error_releases_both_guards STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-79/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-80 SELECTOR executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-80/stdout SHA256 25d243c80b41aeac93ee74451f465854251234a379bd1f27aa23a61a54e47fc4
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards" }
+{ "type": "test", "name": "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.003848793 }
+END STREAM
+
+PHASE control-80 SELECTOR executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-80/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-81 SELECTOR executor::tests::shared_file_table_install_emfile_preserves_original_descriptions STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-81/stdout SHA256 1687ad5834e26f6ded6b6724ed21b087e0133124f9d86096778c37a83bb4f842
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions" }
+{ "type": "test", "name": "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.052811883 }
+END STREAM
+
+PHASE control-81 SELECTOR executor::tests::shared_file_table_install_emfile_preserves_original_descriptions STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-81/stderr SHA256 0895f1a5be880dc941c686218bf0029eb78f369161745f55eb0540bc75a47098
+isolated file-table control status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::shared_file_table_install_emfile_preserves_original_descriptions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 522 filtered out; finished in 0.05s
+
+
+stderr:
+file-table EMFILE control completed
+
+END STREAM
+
+PHASE control-82 SELECTOR runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-82/stdout SHA256 51cfaf21827e496eb37bb5343615e423601c38e94dfd57b27d31988b0e56de33
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections" }

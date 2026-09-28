@@ -1,0 +1,13 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude/launch-review.py
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/launch-review.py
+@@ -61,8 +61,8 @@
+   rows.append(actual)
+  return rows
+ before=snapshot();write('source-before.json',before)
+-cmd=['timeout','--signal=TERM','--kill-after=10s','1800s','with-proxy','claude','-p','--resume',target['session_id'],'--output-format','stream-json','--verbose','--permission-mode','plan','--tools','Read,Grep,Glob','--allowedTools','Read,Grep,Glob']
+-rec={'command':cmd,'cwd':str(ground),'session_id':target['session_id'],'scope':target['scope'],'head':target['head'],'base':target['base'],'tree':target['tree'],'frozen_source':target['frozen_source'],'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'wall_seconds':1800,'kill_after_seconds':10,'per_output_file_bytes':67108864,'prompt_sha256':digest(P/'prompt.txt'),'packet_sha256':digest(packet),'input_count':len(before)}
++cmd=['timeout','--signal=TERM','--kill-after=10s','600s','with-proxy','claude','-p','--resume',target['session_id'],'--output-format','stream-json','--verbose','--permission-mode','plan','--tools','Read,Grep,Glob','--allowedTools','Read,Grep,Glob']
++rec={'command':cmd,'cwd':str(ground),'session_id':target['session_id'],'scope':target['scope'],'head':target['head'],'base':target['base'],'tree':target['tree'],'frozen_source':target['frozen_source'],'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'wall_seconds':600,'kill_after_seconds':10,'per_output_file_bytes':67108864,'prompt_sha256':digest(P/'prompt.txt'),'packet_sha256':digest(packet),'input_count':len(before)}
+ write('launch.json',rec)
+ def limits():resource.setrlimit(resource.RLIMIT_FSIZE,(67108864,67108864))
+ capacity=census();write('capacity-before.json',capacity)

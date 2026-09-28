@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "git",
+    "apply",
+    "--check",
+    "--directory=ignored/parity-composition-v1/source",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-recovery-source-v1/SOURCE.patch"
+  ],
+  "returncode": 0,
+  "stdout": "",
+  "stderr": "",
+  "patch_sha256": "fad7ca6619d6a65bdf767339d40308c693683d31150ba120c1a2373e2aa74b2b"
+}

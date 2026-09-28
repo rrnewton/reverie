@@ -1,0 +1,85 @@
+All 163 indexed chunks read. Report follows.
+
+---
+
+# Independent design review — "Begin initial command accounting at exec"
+
+**Target:** `kvm-clock-origin-correction-design-v1/TARGET.json`, sha256 `6e302d07efd4feb6e6c9116b964a945467073b09dea158ffc20c5a48227f6f93`
+**Base:** Reverie `44fcb1955f44547f50d724fe8f7d718215fed446`, tree `7620fe83f486d665d9d09d4f09f0e93636b862e4`; Hermit `39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435`
+**Nature:** design only. No candidate, no diff, no execution. Nothing below approves runtime behaviour, parity, or landing.
+
+Line references are to the **landed** files under `source/landed-44fcb195/`, verified by targeted grep. Where I quote the design's own coordinates they are in its stated *measured* (diagnostic-v4) frame, which is landed + the diagnostic patch's insertions; I checked the mapping and it holds (`timer.rs` 722/763/838 landed → 738/779/854 measured, +16; `task.rs` 1226/1284 → 1237/1295, +11; `tracer.rs` 2658 → 2662, +4).
+
+---
+
+## Grounding
+
+`GROUNDING_AUTHENTICATION.json` (sha256 `f2b0b8fd…`) reauthenticates my own four ordered stages from my own tool output: paper (1721 lines, 7 chunks), `detcore/src/scheduler.rs` (8174 lines, 28 chunks), `PROJECT_VISION.md` (119), `hermit-v2-roadmap.md` (504). The current H39ac scheduler is sha256 `a5da44ec706ad656230cf78aa5742fc40c5339a14aad30410b880dc18b576fa3`, git blob `20c3c4296223d1aa03ca28e2f45514ad0a72bff6`, `scheduler_equals_own_original_complete_reading: true`. My grounding is established; I reused that reading and borrowed no author or peer grounding. The authentication's own `policy_limit` note (my initial stages were plan-mode read-only) is preserved, not concealed.
+
+---
+
+# Findings
+
+## F1 — MEDIUM-HIGH. The deferred re-arming in steps 2, 5 and 6 cannot deliver a timer event, and the design does not say so
+
+**Design sections:** REPORT steps 2, 5, 6; PLAN controls 1 and 5.
+**Source:** `timer.rs:801` (`observe_event`), `timer.rs:869-881` (status match), `task.rs:2114-2115`, `task.rs:2867`, `task.rs:2996-2997`, `task.rs:3042-3043`, `task.rs:3092-3093`, `task.rs:4903/4910`.
+
+`Timer::observe_event` has **exactly one** production call site: `task.rs:2115`, the first statement of `handle_stop_event`. Delivery requires the status to be `Armed` at the moment `TimerImpl::handle_signal` runs: `Scheduled` panics (`timer.rs:873`, "Timer event status should tick at least once before the signal is handled"), `Cancelled` returns `HandleFailure::Cancelled` (`timer.rs:880`) which `handle_timer` swallows as `Ok((true, task))` (`task.rs:2086`). So **exactly one** stop may intervene between the request and the signal-delivery stop.
+
+Reachable order on the Command path, confirmed row-by-row by the retained sidecar (`clock-origin-1-0.tsv`, 26 rows, sha256 `9a7ded34…`, identical in both runs):
+
+| row | phase | raw | status |
+|---|---|---|---|
+| 2 | `initial-stop-after-tool-start-before-resume` | 0 | `Scheduled` |
+| 3 | `seccomp-before-tool` syscall 59 (execve) | 223 | `Armed` ← tick 1 |
+| 4-7 | exec event → preinit → before Tool post-exec | 223 | `Armed` (no tick; the injected-exec route reaches `handle_exec_event` from `status_to_result`, not `handle_stop_event` — the design states this and rows 4-7 prove it) |
+| 8-9 | after Tool post-exec / after finalize | 223 | `Scheduled` (Detcore re-requested) |
+| 10 | first guest `seccomp-before-tool` | 223 | `Cancelled` ← two ticks across `task.rs:3093` + the next stop |
+
+A request made at `handle_thread_start` therefore arrives at the proposed activation point already `Armed`, having spent its one permitted tick at the execve seccomp stop. The design forbids reviving a cancelled request (step 3) and forbids adding or suppressing ticks (step 3), so arming must preserve `Armed`. The unavoidable `step_stopped` at `task.rs:3093` then ticks it to `Cancelled` before any notification can be accepted.
+
+For a **short** deferred request this is worse than inert: arming sets `send_artificial_signal`, and the existing `finalize_requests` at `task.rs:3043` — which the design explicitly relies on to own the send — issues a real `tgkill`, producing a guest signal-delivery stop whose only outcome is `HandleFailure::Cancelled`.
+
+This is not hypothetical elsewhere: `tracer::tests::precise_timer_delivery_reaches_tool` requests `Rcbs(100)` at `handle_thread_start` and asserts the callback fires. It passes today because it runs through `spawn_fn_with_config` (`command_bootstrap: false`, `tracer.rs:2658`), where **no exec intervenes** and the single tick is the signal stop itself. The design correctly leaves that path unchanged — which is exactly why it is not a counter-example, and why the Command path's extra tick is the whole difference.
+
+**Impact.** Today a short start-time request *is* delivered, prematurely, in launcher code — the defect PLAN control 5 is designed to expose. After the correction it is silently dropped. That outcome is permitted by the documented rule at `reverie/src/guest.rs:402-404` ("Timer events are cancelled by the delivery of other event types"), but the design never states it, and PLAN control 5 only says to "record whether existing exec events cancel the request". So the most delicate new logic in the design — step 6's absolute-target preservation, remaining-distance notification, due/overshoot handling — is specified in detail for a path with no demonstrated deliverable outcome, and the controls would not notice.
+
+**Required correction.** Either:
+- (i) state in the design that a request pending across the initial exec is cancelled, and reduce steps 2/6 to *validate and record* the request without arming it — dropping the deferred notification arithmetic entirely; or
+- (ii) name the exact stop sequence in which a deferred request survives to delivery, and add a positive control that observes `handle_timer_event` actually firing from a pre-exec request **on the Command path**.
+
+Do not resolve it by adding or removing an `observe_event` tick. That changes documented cancellation semantics for every Tool, and the design rightly forbids it.
+
+## F2 — MEDIUM. `pinned` + `enable_on_exec` moves the scheduling decision into the kernel's exec path, where failure is a tracer panic and a process exit
+
+**Design sections:** REPORT step 1; PLAN control 2.
+**Source:** `perf.rs:117-123` (Builder has `pid, cpu, evt, sample_period, precise_ip, fast_reads` — no `enable_on_exec`), `perf.rs:221` `attr.set_disabled(1)`, `perf.rs:225` `attr.set_pinned(1)`, `perf.rs:444` `panic!("pinned perf event descheduled!")`, `perf.rs:637` `panic!("fast-read perf event was probably descheduled!")`, `task.rs:1481-1490` (`guest_task_panic_is_fatal` → `std::process::exit(101)`); kernel `core.c:4677` `perf_event_set_state(event, PERF_EVENT_STATE_INACTIVE)`, `core.c:4714-4716` `ctx_resched`.
+
+The design's observation that the Builder exposes no `enable_on_exec` and always sets `disabled=1` is exactly right (`perf.rs:221`). What it does not mention is `perf.rs:225`: the event is **pinned**. Today the supervisor enables the clock itself at `timer.rs:747`, with the child stopped and one event in flight. Under the correction the kernel enables it inside `perf_event_exec()` and immediately calls `ctx_resched`. A pinned event that cannot be scheduled enters `PERF_EVENT_STATE_ERROR`; the very next `read_clock()` — which the design's own transition performs inside `handle_exec_event` — then hits the EOF branch at `perf.rs:444` or the `running != enabled` branch at `perf.rs:637`, **both of which panic**, and `guest_task_panic_is_fatal` turns that into `exit(101)` for the whole tracer.
+
+The pre-exec reads the design requires ("clock reads are actual reads of that disabled event, not fabricated zeros") are safe: a never-enabled event has `time_enabled == time_running == 0` and `offset == 0`. The hazard is specifically the activation instant, and PLAN control 2 checks counter *values* without ever asserting the event reached a scheduled, non-ERROR state.
+
+**Required correction.** State the `pinned` interaction in the design, and require the enable-on-exec witness to assert, immediately after the successful exec and before any value comparison, that the event is live rather than in error — a successful read plus `time_enabled == time_running` is sufficient and needs no new API.
+
+## F3 — MEDIUM. Whether deferred arming preserves `timer_status` is unspecified, and the two possible answers contradict two different design clauses
+
+**Design sections:** REPORT steps 3 and 5 ("arm only the current non-canceled request"); PLAN control 1.
+**Source:** `timer.rs:797` (`request_event` unconditionally sets `EventStatus::Scheduled`).
+
+If the deferred arming reuses `request_event`, it resets the status to `Scheduled`, reviving a request the tick rules had already advanced — violating step 3's "a canceled request must never be revived by initial activation" and silently granting an extra tick of life. If it does not, the status stays `Armed` and F1 applies. The design says neither. PLAN control 1 asserts "no revival when activation follows cancellation" but never asserts the resulting `timer_status` for the *non*-cancelled case, so an implementation could take either branch and pass.
+
+**Required correction.** State explicitly that arming preserves the existing `EventStatus` and does not route through `request_event`, and make PLAN control 1 assert the exact status (and `send_artificial_signal`) before and after arming for each of: long, short-precise, short-imprecise, instruction-offset, replaced, and explicitly cancelled.
+
+## F4 — MEDIUM (validation). No proposed control distinguishes "origin at exec" from a constant subtraction tuned to this launcher
+
+**Design sections:** PLAN controls 2, 4, 7.
+
+PLAN control 4 is the design's strongest instrument and I credit it: a static ELF whose first instruction is a conditional branch with converging outcomes, which must contribute exactly one RCB *even though* the post-exec step at `task.rs:2996` executes it, followed by a fixed-count loop. That genuinely rejects enabling after preinit/post-exec and rejects resetting at a sampled point.
+
+It does not reject a fixed subtraction. An implementation that kept counting launcher work and subtracted 223 would also report 1 on this host. Control 2's "No numeric subtraction is allowed" is a *source* constraint, not a runtime discriminator, and control 7's loader fixture varies the *guest*, not the launcher.
+
+**Required correction.** Add one control that varies the **launcher's** pre-exec work — the cheapest form is the same static ELF run twice, once with an extra `pre_exec` callback that executes a known number of conditional branches — and require the guest's first-entry count to be identical across both. That is the property "start at exec" has and "subtract a constant" does not.
+
+## F5 — LOW-MEDIUM. The missing-PT_INTERP fixture's discriminating property is not established by the bound kernel evidence
+

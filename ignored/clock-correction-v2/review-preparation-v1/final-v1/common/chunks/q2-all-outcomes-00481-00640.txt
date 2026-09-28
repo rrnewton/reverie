@@ -1,0 +1,160 @@
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.328367931,
+      "payload_elapsed_seconds": 0.00682523287832737,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-22",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.499642442,
+      "payload_elapsed_seconds": 0.007516741985455155,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-23",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.380597831,
+      "payload_elapsed_seconds": 0.005832331022247672,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-24",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.409602888,
+      "payload_elapsed_seconds": 0.0039620110765099525,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-25",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.385079443,
+      "payload_elapsed_seconds": 0.007822860032320023,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-26",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.414555268,
+      "payload_elapsed_seconds": 0.00711291516199708,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-27",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancellation_at_signal_handler_reaps_root"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.397477165,
+      "payload_elapsed_seconds": 0.006239681970328093,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-28",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::child_death_before_initialization_error_does_not_hang"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.382551215,
+      "payload_elapsed_seconds": 0.00369631196372211,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-29",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.459459056,
+      "payload_elapsed_seconds": 0.010835335124284029,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-30",
+      "kind": "test",
+      "selected": [
+        "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.360588576,
+      "payload_elapsed_seconds": 0.0025918029714375734,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-31",
+      "kind": "test",

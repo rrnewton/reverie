@@ -1,0 +1,31 @@
+{
+  "command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "2400s",
+    "with-proxy",
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "plan",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "Read,Grep,Glob"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-child-exit-publication-claude-review-v3",
+  "review_target": "e1ee50dad596f33903caa80313ff8eb32be34754",
+  "tree": "d21731c768d50d9a4980e3657a4f088424eae6c0",
+  "inputs_sha256": "a67b081a946ed4db9f6a5f630b920bc1c76e5126da3c1687f371bf7e9b55bf29",
+  "prompt_sha256": "7b8f7b48be1d0bed20dfb6aac1d8f3103218ebd369ba33eb7f3383d49496e7aa",
+  "source_entries": 164,
+  "started_at": "2026-09-20T13:25:22.371300+00:00",
+  "wall_seconds": 2400,
+  "kill_after_seconds": 10,
+  "per_output_file_bytes": 67108864
+}

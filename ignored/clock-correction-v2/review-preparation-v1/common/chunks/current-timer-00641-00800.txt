@@ -1,0 +1,160 @@
+        offset: u64,
+    },
+    Imprecise {
+        /// Expected minimum clock value when event fires.
+        clock_min: u64,
+    },
+}
+
+impl ActiveEvent {
+    /// Given the current clock, determine if another event is required to get the
+    /// clock to its expected state
+    fn reschedule_if_spurious_wakeup(&self, curr_clock: u64) -> Option<TimerEventRequest> {
+        match self {
+            ActiveEvent::Precise {
+                clock_target,
+                offset: _,
+            } => {
+                if clock_target.saturating_sub(curr_clock)
+                    > get_pmu_config().max_single_step_count()
+                {
+                    Some(TimerEventRequest::Precise(*clock_target - curr_clock))
+                } else {
+                    None
+                }
+            }
+            ActiveEvent::Imprecise { clock_min } => {
+                if *clock_min > curr_clock {
+                    Some(TimerEventRequest::Imprecise(*clock_min - curr_clock))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+impl EventStatus {
+    pub fn next(self) -> Self {
+        match self {
+            EventStatus::Scheduled => EventStatus::Armed,
+            EventStatus::Armed => EventStatus::Cancelled,
+            EventStatus::Cancelled => EventStatus::Cancelled,
+        }
+    }
+
+    pub fn tick(&mut self) {
+        *self = self.next()
+    }
+}
+
+/// This ClockCounter represents a pair in a form of (rcb, instr) that gets increased
+/// while single-stepping to reach target (target_rcb, target_instr)
+#[derive(Debug, Eq, PartialEq)]
+struct ClockCounter {
+    rcbs: u64,
+    instr: u64,
+    target_rcb: u64,
+}
+
+impl std::fmt::Display for ClockCounter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rcb: {}, instr: {}", self.rcbs, self.instr)
+    }
+}
+
+impl ClockCounter {
+    pub fn new(rcb: u64, instr: u64, target_rcb: u64) -> Self {
+        Self {
+            rcbs: rcb,
+            instr,
+            target_rcb,
+        }
+    }
+
+    /// This method counts instructions & rcbs together in an attempt to reach target_rcb
+    ///
+    /// With each attempt we either increment rcb or instruction counter based on the read clock value.
+    /// If we reach target_rcb we no longer increase rcb counter and allow to meet at the target instruction counter
+    pub fn single_step_with_clock(&mut self, rcbs: u64) {
+        match (self.rcbs.cmp(&self.target_rcb), self.rcbs.cmp(&rcbs)) {
+            (Less, Less) => {
+                self.instr = 0;
+                self.rcbs = rcbs;
+            }
+
+            (Less | Equal, Equal) => {
+                self.instr += 1;
+            }
+
+            (Equal, Less) => {
+                self.instr += 1;
+            }
+
+            (_, Greater) => panic!(
+                "current counter rcb value {} is greater than privided rcb value {}",
+                self.rcbs, rcbs
+            ),
+            (Greater, _) => panic!(
+                "current counter rcb value {} is greater than target rcb value {}",
+                self.rcbs, self.target_rcb
+            ),
+        }
+    }
+
+    /// If a counter behind a given (rcb, instr) pair.
+    ///
+    /// Note: this is not always comparable. [None] will be returned in this case
+    fn is_behind(&self, rcbs: u64, instr: u64) -> Option<bool> {
+        match self.target_rcb.cmp(&rcbs) {
+            Less => None,
+            Greater | Equal => match self.rcbs.cmp(&rcbs) {
+                Less => Some(true),
+                Equal => Some(self.instr < instr),
+                Greater => Some(false),
+            },
+        }
+    }
+
+    fn rcbs(&self) -> u64 {
+        self.rcbs
+    }
+}
+
+impl TimerImpl {
+    pub fn new(guest_pid: Pid, guest_tid: Tid, initial_command: bool) -> Result<Self, Errno> {
+        let evt = get_pmu_config().rcb_event();
+
+        // measure the target tid irrespective of CPU
+        let mut builder = Builder::new(guest_tid.as_raw(), -1);
+        builder
+            .sample_period(PerfCounter::DISABLE_SAMPLE_PERIOD)
+            .event(evt);
+
+        if has_precise_ip() {
+            // set precise_ip to lowest value to enable PEBS (TODO: AMD?)
+            builder.precise_ip(1);
+        }
+
+        let timer = builder.check_for_pmu_bugs().create()?;
+        timer.set_signal_delivery(guest_tid, MARKER_SIGNAL)?;
+        timer.reset()?;
+        // measure the target tid irrespective of CPU
+        let mut clock_builder = Builder::new(guest_tid.as_raw(), -1);
+        clock_builder
+            // counting event
+            .sample_period(0)
+            .event(evt)
+            .fast_reads(true);
+        if initial_command {
+            clock_builder.enable_on_exec();
+        }
+        let clock = clock_builder.create()?;
+        clock.reset()?;
+        if !initial_command {
+            clock.enable()?;
+        }
+
+        Ok(Self {
+            timer,
+            clock,

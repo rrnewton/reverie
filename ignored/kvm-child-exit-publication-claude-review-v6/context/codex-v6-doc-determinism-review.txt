@@ -1,0 +1,13 @@
+Review target: base 6152ee999a41324be36456bb0a9b94a703711068 plus frozen follow-up SHA-256 91758615052dfeb221eab4b793fe7c5a7f85d6c5c5a7d0c7a8c14b681f02745b, 2,756 bytes, two files.
+
+Findings: none.
+
+The lock-order and callback claims are sound: Hermit first-poll admission holds scheduler -> KVM parent transaction -> registry/signal locks; KVM releases those locks before callback continuation or failure forwarding; parent WNOHANG waits release the completion mutex while fenced; KVM publishes waitability before polling the callback continuation; reaping remains a separate injected backend wait.
+
+Goalpost-moving assessment: no assertions, tolerances, cases, labels, or checks changed; documentation only.
+
+Verification: complete paper, Hermit scheduler at 3fe4f5929d07bc8a38e92aa16551c1cf436f60c4, vision documents, KVM publication/fence paths and tests, and intended Hermit two-poll consumer were inspected. No edits, tests, or network.
+
+Residual scope: approval covers this exact docs delta and its consistency with the observed uncommitted consumer, not consumer-code approval.
+
+Verdict: APPROVE.

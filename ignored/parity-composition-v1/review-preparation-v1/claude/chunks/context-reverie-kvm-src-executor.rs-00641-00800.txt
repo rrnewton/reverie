@@ -1,0 +1,160 @@
+        || number == libc::SYS_tgkill as u64
+    {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        return kill_signal(state, number, args);
+    } else if number == libc::SYS_close as u64 {
+        close(state, args[0])
+    } else if number == libc::SYS_close_range as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        close_range(state, args)
+    } else if number == libc::SYS_futex as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        futex(memory, args)
+    } else if number == libc::SYS_rseq as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-172): Review deterministic rseq feature refusal.
+        negative_errno(libc::ENOSYS)
+    } else if number == libc::SYS_get_robust_list as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-232): Review task-local robust-list queries.
+        get_robust_list(memory, state, args)
+    } else if number == libc::SYS_set_robust_list as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-232): Review task-local robust-list registration.
+        set_robust_list(state, args)
+    } else if number == libc::SYS_seccomp as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-344): Review deterministic seccomp unavailability.
+        seccomp(args)
+    } else {
+        negative_errno(libc::ENOSYS)
+    };
+
+    continue_with(result)
+}
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 1650..1780; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    fn try_from_elf(state: &LoadedStaticElf) -> std::io::Result<Self> {
+        Self::prepare_from_elf(state, false)
+    }
+
+    fn same_stdin_entry(&self, state: &LoadedStaticElf) -> bool {
+        self.stdin.is_some() == state.stdin.is_some()
+            && Arc::ptr_eq(&self.stdin_entry_id, &state.stdin_entry_id)
+    }
+
+    fn update_from_elf(&mut self, state: &LoadedStaticElf) -> std::io::Result<()> {
+        let same_stdin = self.same_stdin_entry(state);
+        // Stage every required clone before taking an authoritative handle.
+        // A failed clone leaves the entire previous table intact.
+        let mut next = Self::prepare_from_elf(state, same_stdin)?;
+        if same_stdin {
+            next.stdin = self.stdin.take();
+        }
+        let retired = std::mem::replace(self, next);
+        retired.retire(&state.file_retirement);
+        Ok(())
+    }
+
+    fn prepare_from_elf(state: &LoadedStaticElf, preserve_stdin: bool) -> std::io::Result<Self> {
+        let stdin = if preserve_stdin {
+            None
+        } else {
+            state
+                .stdin
+                .as_ref()
+                .map(|file| state.file_retirement.stage_clone(file))
+                .transpose()?
+        };
+        let files = state
+            .files
+            .iter()
+            .map(|(&fd, file)| Ok((fd, state.file_retirement.stage_clone(file)?)))
+            .collect::<std::io::Result<std::collections::BTreeMap<_, _>>>()?;
+        Ok(Self {
+            stdin: stdin.map(crate::elf::StagedFile::into_file),
+            stdin_entry_id: state.stdin_entry_id.clone(),
+            files: files
+                .into_iter()
+                .map(|(fd, file)| (fd, file.into_file()))
+                .collect(),
+            fd_entry_ids: state.fd_entry_ids.clone(),
+            random_device_fds: state.random_device_fds.clone(),
+            stdout_alias_fds: state.stdout_alias_fds.clone(),
+            stderr_alias_fds: state.stderr_alias_fds.clone(),
+            cloexec_fds: state.cloexec_fds.clone(),
+            closed_standard_fds: state.closed_standard_fds.clone(),
+            proc_files: state.proc_files.clone(),
+            fdinfo_files: state.fdinfo_files.clone(),
+            signalfd_fds: state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .signalfd_masks
+                .keys()
+                .copied()
+                .collect(),
+            fd_object_inodes: state.fd_object_inodes.clone(),
+        })
+    }
+
+    // TODO-HUMAN-REVIEW(PR-235): Review stable host-fd preservation during table sync.
+    fn install(&self, state: &mut LoadedStaticElf) -> std::io::Result<()> {
+        // Finish every required fallible clone before replacing state.
+        // An unchanged entry keeps its actual host fd for epoll MOD/DEL. Inode
+        // equality cannot prove this: closing and reopening a linked file keeps
+        // its filesystem identity but installs a different open description.
+        let same_stdin = self.same_stdin_entry(state);
+        let stdin = if same_stdin {
+            None
+        } else {
+            self.stdin
+                .as_ref()
+                .map(|file| state.file_retirement.stage_clone(file))
+                .transpose()?
+        };
+        let mut installed_files = std::collections::BTreeMap::new();
+        for (&fd, shared_file) in &self.files {
+            let same_entry = state.files.contains_key(&fd)
+                && state
+                    .fd_entry_ids
+                    .get(&fd)
+                    .zip(self.fd_entry_ids.get(&fd))
+                    .is_some_and(|(previous, shared)| Arc::ptr_eq(previous, shared));
+            if !same_entry {
+                installed_files.insert(fd, state.file_retirement.stage_clone(shared_file)?);
+            }
+        }
+        let mut installed_files: std::collections::BTreeMap<_, _> = installed_files
+            .into_iter()
+            .map(|(fd, file)| (fd, file.into_file()))
+            .collect();
+        let mut previous_files = std::mem::take(&mut state.files);
+        for &fd in self.files.keys() {
+            installed_files.entry(fd).or_insert_with(|| {
+                previous_files
+                    .remove(&fd)
+                    .expect("unchanged descriptor entry has its original host fd")
+            });
+        }
+        let retired_stdin = if same_stdin {
+            None
+        } else {
+            std::mem::replace(
+                &mut state.stdin,
+                stdin.map(crate::elf::StagedFile::into_file),
+            )
+        };
+        state.stdin_entry_id.clone_from(&self.stdin_entry_id);
+        state.files = installed_files;
+        state.file_retirement.retire(
+            retired_stdin
+                .into_iter()
+                .chain(previous_files.into_values()),
+        );
+        state.fd_entry_ids.clone_from(&self.fd_entry_ids);
+        state.random_device_fds.clone_from(&self.random_device_fds);
+        state.stdout_alias_fds.clone_from(&self.stdout_alias_fds);
+        state.stderr_alias_fds.clone_from(&self.stderr_alias_fds);
+        state.cloexec_fds.clone_from(&self.cloexec_fds);
+        state

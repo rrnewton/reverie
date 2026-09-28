@@ -1,0 +1,237 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -2394,7 +2394,7 @@
+                     .name(format!("reverie-kvm-guest-{child_tid}"))
+                     .spawn(move || {
+                         let _completion_notice = completion_notice;
+-                        (move || {
++                        let mut run_child = move || {
+                             let driver = child.start_entry_driver();
+                             child_executor.bind_address_space(&child.memory);
+                             let execution =
+@@ -2478,7 +2478,8 @@
+                                     Some(driver),
+                                 ),
+                             }
+-                        })()
++                        };
++                        run_child()
+                     })?;
+                 self.thread_group.add_worker_handle_with_completion(
+                     child_tid,
+@@ -2878,54 +2879,54 @@
+                                 };
+                                 child.backend.restore_entry_origin();
+                                 child.executor.bind_address_space(&child.backend.memory);
+-                                let result =
+-                                    match result {
+-                                        Ok((status, _, _)) => {
+-                                            write_tid_best_effort(
+-                                                &mut child.backend.memory,
+-                                                child.executor.take_clear_child_tid(),
+-                                                0,
+-                                            );
+-                                            // A best-effort clear can have captured a real
+-                                            // gate failure despite its unit return value.
+-                                            futures::executor::block_on(
+-                                                child.backend.route_entry_outcome(Ok(())),
+-                                            )?;
+-                                            let waitable = !auto_reap.load(Ordering::SeqCst);
+-                                            let completion =
+-                                                ChildCompletion::from_waitability(status, waitable);
+-                                            *child_completion
+-                                                .lock()
+-                                                .expect("KVM child completion lock poisoned") =
+-                                                Some(completion);
+-                                            let _ = completion_notifier.send(raw_child_pid);
+-                                            let caught = futures::executor::block_on(
+-                                    crate::failure::owned_future::catch_owned_future_from(|| {
+-                                        lifecycle_state.on_backend_child_wait_event(
+-                                            BackendChildWaitEvent {
+-                                                parent: parent_pid,
+-                                                child: child_pid,
+-                                                state: BackendChildWaitState::Exited {
+-                                                    status,
+-                                                    waitable,
++                                match result {
++                                    Ok((status, _, _)) => {
++                                        write_tid_best_effort(
++                                            &mut child.backend.memory,
++                                            child.executor.take_clear_child_tid(),
++                                            0,
++                                        );
++                                        // A best-effort clear can have captured a real
++                                        // gate failure despite its unit return value.
++                                        futures::executor::block_on(
++                                            child.backend.route_entry_outcome(Ok(())),
++                                        )?;
++                                        let waitable = !auto_reap.load(Ordering::SeqCst);
++                                        let completion =
++                                            ChildCompletion::from_waitability(status, waitable);
++                                        *child_completion
++                                            .lock()
++                                            .expect("KVM child completion lock poisoned") =
++                                            Some(completion);
++                                        let _ = completion_notifier.send(raw_child_pid);
++                                        let caught = futures::executor::block_on(
++                                            crate::failure::owned_future::catch_owned_future_from(
++                                                || {
++                                                    lifecycle_state.on_backend_child_wait_event(
++                                                        BackendChildWaitEvent {
++                                                            parent: parent_pid,
++                                                            child: child_pid,
++                                                            state: BackendChildWaitState::Exited {
++                                                                status,
++                                                                waitable,
++                                                            },
++                                                        },
++                                                    )
+                                                 },
++                                            ),
++                                        );
++                                        child.backend.tool_panic_owner().finish(
++                                            crate::failure::owned_future::CaughtFuture {
++                                                output: caught.output.map(|result| {
++                                                    result.map_err(Error::Reverie)
++                                                }),
++                                                panics: caught.panics,
+                                             },
++                                            "child wait hook",
+                                         )
+-                                    }),
+-                                );
+-                                            child.backend.tool_panic_owner().finish(
+-                                                crate::failure::owned_future::CaughtFuture {
+-                                                    output: caught.output.map(|result| {
+-                                                        result.map_err(Error::Reverie)
+-                                                    }),
+-                                                    panics: caught.panics,
+-                                                },
+-                                                "child wait hook",
+-                                            )
+-                                        }
+-                                        Err(error) => Err(error),
+-                                    };
+-                                result
++                                    }
++                                    Err(error) => Err(error),
++                                }
+                             },
+                         ));
+                         let result = match execution {
+@@ -3188,7 +3189,7 @@
+                         subscriptions,
+                     )| {
+                         let _completion_notice = completion_notice;
+-                        (move || {
++                        let run_child = move || {
+                             let driver = child.start_entry_driver();
+                             child_executor.bind_address_space(&child.memory);
+                             let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+@@ -3279,7 +3280,8 @@
+                                     Some(driver),
+                                 ),
+                             }
+-                        })()
++                        };
++                        run_child()
+                     },
+                 );
+                 let handle = match handle {
+@@ -4575,10 +4577,10 @@
+                     return std::task::Poll::Ready(Ok(false));
+                 }
+                 if interrupted.as_mut().poll(cx).is_ready() {
+-                    return std::task::Poll::Ready(Err(watch
+-                        .check()
+-                        .err()
+-                        .expect("private entry interruption lost its captured cause")));
++                    let Err(error) = watch.check() else {
++                        panic!("private entry interruption lost its captured cause");
++                    };
++                    return std::task::Poll::Ready(Err(error));
+                 }
+                 if returning {
+                     // A real completion notice can precede is_finished by
+@@ -4933,6 +4935,9 @@
+         use std::task::Context;
+         use std::task::Poll;
+ 
++        type CaptureFuture<'a> =
++            Pin<Box<dyn Future<Output = Result<Option<(kvm_regs, Vec<u8>)>>> + 'a>>;
++
+         for boundary_capture in [false, true] {
+             for event in ["failure", "cancellation", "poison", "reopen"] {
+                 let mut backend = KvmBackend::new(0x10000).expect("this control requires /dev/kvm");
+@@ -4979,9 +4984,7 @@
+                 });
+                 // These are the actual two production capture paths. Both
+                 // own their buffers and drop admission before returning.
+-                let mut capture: Pin<
+-                    Box<dyn Future<Output = Result<Option<(kvm_regs, Vec<u8>)>>> + '_>,
+-                > = if boundary_capture {
++                let mut capture: CaptureFuture<'_> = if boundary_capture {
+                     Box::pin(async {
+                         CompletedSyscallBoundary::capture_admitted(
+                             &mut backend,
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -2064,10 +2064,10 @@
+             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(failure))) {
+                 completion.panics.push(payload);
+             }
+-            if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+-                if completion.output.is_none() {
+-                    completion.output = Some(HandlerOutcome::RuntimeError(error));
+-                }
++            if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err())
++                && completion.output.is_none()
++            {
++                completion.output = Some(HandlerOutcome::RuntimeError(error));
+             }
+             completion
+         }
+@@ -2224,10 +2224,10 @@
+     }
+     // Destructors may themselves capture a cause. Do not discard a selected
+     // value before its typed mapping; the production finalizer rechecks it.
+-    if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err()) {
+-        if completion.output.is_none() {
+-            completion.output = Some(HandlerOutcome::RuntimeError(error));
+-        }
++    if let Some(error) = watch.as_ref().and_then(|watch| watch.check().err())
++        && completion.output.is_none()
++    {
++        completion.output = Some(HandlerOutcome::RuntimeError(error));
+     }
+     completion
+ }
+--- a/reverie-kvm/src/entry/driver.rs
++++ b/reverie-kvm/src/entry/driver.rs
+@@ -400,16 +400,16 @@
+             return Err(protocol("entry failure owner abandoned its captured cause")
+                 .with_cleanup(vec![Error::SharedFailure(result), failure.error()]));
+         }
+-        if let Some(terminal) = &terminal {
+-            if let Some(receipt) = terminal.clone().now_or_never() {
+-                return match receipt {
+-                    Ok(()) => Err(Error::SharedFailure(result)),
+-                    Err(_) => Err(
+-                        protocol("failure notification disconnected before publication")
+-                            .with_cleanup(vec![Error::SharedFailure(result), failure.error()]),
+-                    ),
+-                };
+-            }
++        if let Some(terminal) = &terminal
++            && let Some(receipt) = terminal.clone().now_or_never()
++        {
++            return match receipt {
++                Ok(()) => Err(Error::SharedFailure(result)),
++                Err(_) => Err(
++                    protocol("failure notification disconnected before publication")
++                        .with_cleanup(vec![Error::SharedFailure(result), failure.error()]),
++                ),
++            };
+         }
+         if operation.lifecycle() != DriverLifecycle::Active || changed.is_none() {
+             // No obsolete FailureContext is called and no lost owner is

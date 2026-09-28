@@ -1,0 +1,160 @@
+struct EventChildLink {
+    tid: Pid,
+    parent_tid: Pid,
+    op: ChildOp,
+}
+
+pub(crate) struct HeldRootStop {
+    terminal: TerminalCleanup,
+    root_tid: Pid,
+    status: HeldRootStopStatus,
+    armed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HeldRootStopStatus {
+    Signal(Signal),
+    NewChild(EventChildLink),
+    Exec(Pid),
+    VforkDone,
+    Exit,
+    Seccomp,
+    Stop,
+    Syscall,
+}
+
+impl HeldRootStop {
+    pub(crate) fn from_event(task: &Stopped, event: &Event) -> Self {
+        let status = match event {
+            Event::Signal(signal) => HeldRootStopStatus::Signal(*signal),
+            Event::NewChild(op, child) => HeldRootStopStatus::NewChild(EventChildLink {
+                tid: child.pid(),
+                parent_tid: task.pid(),
+                op: *op,
+            }),
+            Event::Exec(pid) => HeldRootStopStatus::Exec(*pid),
+            Event::VforkDone => HeldRootStopStatus::VforkDone,
+            Event::Exit => HeldRootStopStatus::Exit,
+            Event::Seccomp => HeldRootStopStatus::Seccomp,
+            Event::Stop => HeldRootStopStatus::Stop,
+            Event::Syscall => HeldRootStopStatus::Syscall,
+        };
+        Self {
+            terminal: task.terminal_cleanup(),
+            root_tid: task.pid(),
+            status,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn same_root_generation(&self, other: &Self) -> bool {
+        self.root_tid == other.root_tid && self.terminal.same_generation(&other.terminal)
+    }
+
+    pub(crate) fn arm_empty(
+        slot: &Arc<StdMutex<Option<Self>>>,
+        task: &Stopped,
+        event: &Event,
+    ) -> Result<(), TraceError> {
+        let mut held = slot.lock().unwrap();
+        if held.is_some() {
+            return Err(Errno::EINVAL.into());
+        }
+        *held = Some(Self::from_event(task, event));
+        Ok(())
+    }
+
+    pub(crate) fn ensure_current(
+        slot: &Arc<StdMutex<Option<Self>>>,
+        task: &Stopped,
+        event: &Event,
+    ) -> Result<(), TraceError> {
+        let replacement = Self::from_event(task, event);
+        let mut held = slot.lock().unwrap();
+        match held.as_ref() {
+            None => {
+                *held = Some(replacement);
+                Ok(())
+            }
+            Some(current)
+                if current.armed
+                    && current.same_root_generation(&replacement)
+                    && current.status == replacement.status =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(Errno::EINVAL.into()),
+        }
+    }
+
+    pub(crate) fn supersede_with_exit(
+        slot: &Arc<StdMutex<Option<Self>>>,
+        task: &Stopped,
+    ) -> Result<(), TraceError> {
+        let replacement = Self::from_event(task, &Event::Exit);
+        let mut held = slot.lock().unwrap();
+        match held.as_ref() {
+            None => {
+                *held = Some(replacement);
+                Ok(())
+            }
+            Some(current) if current.armed && current.same_root_generation(&replacement) => {
+                *held = Some(replacement);
+                Ok(())
+            }
+            Some(_) => Err(Errno::EINVAL.into()),
+        }
+    }
+}
+
+/// Exclusive transition capability for a stopped LiteInst root generation.
+///
+/// Dropping this value without a transition intentionally leaves the shared
+/// cleanup lease armed. Every transition consumes the value and disarms only
+/// after validating the exact carried Event generation.
+pub(crate) struct RootStopLease {
+    task: Option<Stopped>,
+    held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+}
+
+impl RootStopLease {
+    pub(crate) fn new(
+        task: Stopped,
+        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+    ) -> Self {
+        Self {
+            task: Some(task),
+            held_root_stop,
+        }
+    }
+
+    fn take_for_transition(&mut self) -> Result<Stopped, TraceError> {
+        let task = self.task.take().expect("root stop lease consumed once");
+        if let Some(slot) = self.held_root_stop.as_ref() {
+            let mut held = slot.lock().unwrap().take().ok_or(Errno::EINVAL)?;
+            let current = task.terminal_cleanup();
+            if held.root_tid != task.pid()
+                || !held.armed
+                || !held.terminal.same_generation(&current)
+            {
+                *slot.lock().unwrap() = Some(held);
+                return Err(Errno::EINVAL.into());
+            }
+            held.disarm();
+        }
+        Ok(task)
+    }
+
+    pub(crate) fn resume<T: Into<Option<Signal>>>(
+        mut self,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.take_for_transition()?.resume(signal)
+    }
+
+    pub(crate) fn step<T: Into<Option<Signal>>>(
+        mut self,

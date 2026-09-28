@@ -1,0 +1,40 @@
+{
+  "scope": "Owner keepalive source correction only; compilation and tests not run",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry/owner.rs",
+    "bytes": 34363,
+    "sha256": "5387703dc0ea5cadadddf6a80f104386984506b39d749ad2707b8032fc3612fe"
+  },
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/keepalive-v2/BASE-owner.rs",
+      "bytes": 27187,
+      "sha256": "f498cccf02fc4ea9e2defd853f2862a476b55cefdc0fa368fd51842e632a01e5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/keepalive-v2/START.json",
+      "bytes": 281,
+      "sha256": "deb79f5e4bdd15ec25f2e607d5434425a1e553dfd2516cc03939c11bfc530424"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/keepalive-v2/owner.rs",
+      "bytes": 34363,
+      "sha256": "5387703dc0ea5cadadddf6a80f104386984506b39d749ad2707b8032fc3612fe"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/keepalive-v2/SOURCE.patch",
+      "bytes": 9825,
+      "sha256": "7ea54cf2e30354b8df6292c66d7039b9310c13173320580f7d16729904c8604a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/keepalive-v2/PRESERVATION.json",
+      "bytes": 1023,
+      "sha256": "ed87ddfda8006539e211df78a948d8427d4040c0cf704c2f7dd1cd0d6ed5c327"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/keepalive-v2/REPORT.md",
+      "bytes": 3305,
+      "sha256": "5e64738f2f2f73b46d748b6dde733d76644ad7ede383c10b1833689ada141bdb"
+    }
+  ]
+}

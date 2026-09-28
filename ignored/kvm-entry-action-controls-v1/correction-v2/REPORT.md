@@ -1,0 +1,11 @@
+# Action transport-slot fixture correction v2
+
+The first assembled run returned raw status 101: prepared Host-thread and Tool-thread declarations failed at the exact positive-return slot-vector equality; fork and Exec declarations passed. The measured left vector was 160 false bits and the baseline was empty. The original evidence in `ignored/kvm-entry-remaining-controls-v1/test-action-entry-1` and original author packet are preserved.
+
+`GuestThreadGroup::reserve_transport_slot` lazily resizes empty storage to `MAX_GUEST_THREADS`, marks one bit, and returns its index (`vm.rs:849`). `release_transport_slot` clears a bit without shrinking the initialized vector (`vm.rs:866`). Comparing the returned all-free initialized representation with uninitialized empty storage asserted a lifecycle property that production does not provide. No live slot is shown by the reported failure.
+
+This correction initializes the real pool before observation or measured action admission: require initially empty storage, reserve actual slot zero, require exact `MAX_GUEST_THREADS` length and exactly that one occupied bit, release it through production, then require exactly `vec![false; MAX_GUEST_THREADS]` as baseline. No pool vector is written by the fixture. Existing exact post-positive and final equality checks are byte-for-byte retained. New exact equality checks while parked and after the unchanged notification additionally require the measured action to leave that baseline untouched before reopen/terminal selection. All four declaration names, sixteen subcases, original assertions, stage counters and positive child execution/teardown requirements remain.
+
+The entire source delta is additive and restricted to `vm/entry_action_tests.rs`. This satisfies the original no-live-slot requirement through a valid initialized fixture; it does not replace exact equality with a tolerance, ignore storage changes, remove a check, skip a case or relabel the old failures. First-use slot initialization is fixture setup, outside the measured parking interval. This author correction is not an independent source approval.
+
+Validation: source inspection and byte/hash verification only. No compilation, formatting, product execution, SCM or network operation. Root must freeze and qualify the assembled successor. The correction has no passing execution evidence yet.

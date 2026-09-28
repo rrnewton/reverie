@@ -1,0 +1,160 @@
+    /// is called repeatedly no events will be delivered.
+    pub fn request_event(&mut self, evt: TimerEventRequest) -> Result<(), Errno> {
+        self.inner_mut_noinit()
+            .ok_or(Errno::ENODEV)?
+            .request_event(evt)
+    }
+
+    /// Must be called whenever a Tool-observable reverie event occurs. This
+    /// ensures proper cancellation semantics are observed. See the internal
+    /// `timer::EventStatus` type for details.
+    pub fn observe_event(&mut self) {
+        if let Some(t) = self.inner_mut_noinit() {
+            t.observe_event();
+        }
+    }
+
+    /// Cancel pending timer notifications. This is idempotent.
+    ///
+    /// If there was a previous call to [`Timer::enable_interval'], this
+    /// will prevent the delivery of that notification. This also has the effect
+    /// of reseting the "elapsed ticks." That is, if the current notification
+    /// duration is `N` ticks, then a full `N` ticks must elapse after the next
+    /// call to [`enable_interval`](Timer::enable_interval) before a
+    /// notification is delivered.
+    ///
+    /// While [`Timer::cancel`] actually disables the counting of RCBs, this
+    /// method simply sets a flag to subsequent delivered signals until
+    /// [`Timer::request_event`] is called again. Thus, this method is lighter
+    /// if called multiple times, but still results in a signal delivery, while
+    /// [`Timer::cancel`] must perform a syscall, but will actually cancel the
+    /// signal.
+    #[allow(dead_code)]
+    pub fn schedule_cancellation(&mut self) {
+        if let Some(t) = self.inner_mut_noinit() {
+            t.schedule_cancellation();
+        }
+    }
+
+    /// Cancel pending timer notifications. This is idempotent.
+    ///
+    /// If there was a previous call to [`Timer::enable_interval'], this
+    /// will prevent the delivery of that notification. This also has the effect
+    /// of reseting the "elapsed ticks." That is, if the current notification
+    /// duration is `N` ticks, then a full `N` ticks must elapse after the next
+    /// call to [`enable_interval`](Timer::enable_interval) before a
+    /// notification is delivered.
+    ///
+    /// See [`Timer::schedule_cancellation`] for a comparison with this
+    /// method.
+    #[allow(dead_code)]
+    pub fn cancel(&self) -> Result<(), Errno> {
+        self.inner_noinit().map(|t| t.cancel()).unwrap_or(Ok(()))
+    }
+
+    /// Perform finalization actions on requests for timer events before guest
+    /// resumption. See the module-level documentation for rules about when this can and
+    /// should be called.
+    ///
+    /// Currently, this will, if necessary, `tgkill` a timer signal to the guest
+    /// thread.
+    pub fn finalize_requests(&self) {
+        if let Some(t) = self.inner_noinit() {
+            t.finalize_requests();
+        }
+    }
+
+    /// When a signal is received, this method drives the timer event to
+    /// completion via single stepping, after checking that the signal was meant
+    /// for this specific timer. This *must* be called when a timer signal is
+    /// received for correctness.
+    ///
+    /// Preconditions: task is in signal-delivery-stop.
+    /// Postconditions: if a signal meant for this timer was the cause of the
+    /// stop, the tracee will be at the precise instruction the timer event
+    /// should fire at, unless signal delivery was already past the target. In
+    /// that case the overshoot is recorded and the event fires at the observed
+    /// counter.
+    /// Drives a timer signal using caller-owned stopped-state transitions.
+    ///
+    /// LiteInst uses this hook to keep its exact-generation root-stop lease
+    /// synchronized across the precise timer's internal single steps. The
+    /// non-LiteInst caller supplies the historical raw transition.
+    pub(crate) async fn handle_signal(
+        &mut self,
+        task: Stopped,
+        step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
+    ) -> Result<Stopped, HandleFailure> {
+        match self.inner_mut_noinit() {
+            Some(t) => t.handle_signal(task, step, observe).await,
+            None => {
+                warn!("Stray SIGSTKFLT indicates a bug!");
+                Err(HandleFailure::ImproperSignal(task))
+            }
+        }
+    }
+}
+
+/// The lazy-initialized part of a `Timer` that holds the functionality.
+#[derive(Debug)]
+struct TimerImpl {
+    /// A non-resetting counter functioning as a thread-local clock.
+    clock: PerfCounter,
+
+    /// A separate counter used to generate signals for timer events
+    timer: PerfCounter,
+
+    /// Information about the active timer event, including expected counter
+    /// values.
+    event: ActiveEvent,
+
+    /// The cancellation status of the active timer event.
+    timer_status: EventStatus,
+
+    /// Whether or not the active timer event requires an artificial signal
+    send_artificial_signal: bool,
+
+    initial_command: InitialCommand,
+
+    /// Requests made before the first post-exec callback have no physical
+    /// notification. Taking this record retires each request once.
+    held_initial_event: Option<ActiveEvent>,
+
+    #[cfg(test)]
+    fail_next_notification: Option<Errno>,
+
+    /// Pid (tgid) of the monitored thread
+    guest_pid: Pid,
+
+    /// Tid of the monitored thread
+    guest_tid: Tid,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum InitialCommand {
+    WaitingForExec,
+    InitializingExec,
+    Ordinary,
+}
+
+/// Tracks cancellation status of a timer event in response to other reverie
+/// events.
+///
+/// Whenever a reverie event occurs, this should tick "forward" once. If the
+/// timer signal is first to occur, then the cancellation will be pending, and
+/// the event will fire. If instead some other event occured, the tick will
+/// result in `Cancelled` and the event will not fire.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum EventStatus {
+    Scheduled,
+    Armed,
+    Cancelled,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ActiveEvent {
+    Precise {
+        /// Expected clock value when event fires.
+        clock_target: u64,
+        /// Instruction offset from clock target

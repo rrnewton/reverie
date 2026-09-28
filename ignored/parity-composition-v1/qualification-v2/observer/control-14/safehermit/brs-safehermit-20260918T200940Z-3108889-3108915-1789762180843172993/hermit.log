@@ -1,0 +1,4 @@
+actual refused CPUID tail mode=3: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused CPUID tail mode=4: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused CPUID tail mode=5: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused CPUID tail mode=6: SharedFailure(Reverie(Errno(ENOSYS)))

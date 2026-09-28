@@ -1,0 +1,8 @@
+{
+  "head": "0f09630c3d19fc7c032566ae181cdd10423ee1f5",
+  "source_manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v4/source-1.json",
+  "source_sha256": "600d428e6f8df8cbe7b3ec333ac8c05949e9fd26ee526f6363c46dcc1d023e39",
+  "committed_source_paths": 41,
+  "untracked_Cargo_lock_not_committed": true,
+  "readback_all_source_bytes_match": true
+}

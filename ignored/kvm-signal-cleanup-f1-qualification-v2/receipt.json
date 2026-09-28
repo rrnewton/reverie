@@ -1,0 +1,199 @@
+{
+  "base": "60f2d369b49e6ffbc2b2d9d0f0e55fead0ba6b09",
+  "expected_head": "7d1f29f973978e3ea4bbda8768b855a91fe5c6ed",
+  "expected_tree": "4f66c7d04e92640b3ddb883d703f3da59a79de42",
+  "before": {
+    "head": "7d1f29f973978e3ea4bbda8768b855a91fe5c6ed",
+    "tree": "4f66c7d04e92640b3ddb883d703f3da59a79de42",
+    "tracked_status": "",
+    "paths": {
+      "reverie-kvm/src/executor.rs": "8e2cf2596fb1d9bf9ea2895564ff3da6f77312fe245f61dfb80e474eb0d6d675",
+      "reverie-kvm/src/parked_signal_runtime.rs": "f6ac45a9e4ddde8dbaa270535a9827e6827f577d4caf6281b8e6bc0af7e21ac2",
+      "reverie-kvm/src/runtime.rs": "d63b742730981dc8adb2e1d9f276b24bfda72e8b6f1ae9ef66496c96ef313dd2",
+      "reverie-kvm/src/runtime/signal_cleanup_completion_tests.rs": "bca1a1907b95720db9701fb1afd4980a59dee11348add5465c12be03a2629128"
+    }
+  },
+  "after": {
+    "head": "7d1f29f973978e3ea4bbda8768b855a91fe5c6ed",
+    "tree": "4f66c7d04e92640b3ddb883d703f3da59a79de42",
+    "tracked_status": "",
+    "paths": {
+      "reverie-kvm/src/executor.rs": "8e2cf2596fb1d9bf9ea2895564ff3da6f77312fe245f61dfb80e474eb0d6d675",
+      "reverie-kvm/src/parked_signal_runtime.rs": "f6ac45a9e4ddde8dbaa270535a9827e6827f577d4caf6281b8e6bc0af7e21ac2",
+      "reverie-kvm/src/runtime.rs": "d63b742730981dc8adb2e1d9f276b24bfda72e8b6f1ae9ef66496c96ef313dd2",
+      "reverie-kvm/src/runtime/signal_cleanup_completion_tests.rs": "bca1a1907b95720db9701fb1afd4980a59dee11348add5465c12be03a2629128"
+    }
+  },
+  "source_unchanged": true,
+  "phases": [
+    {
+      "name": "focused",
+      "command": [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=10s",
+        "600s",
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "runtime::signal_cleanup_completion_tests",
+        "--",
+        "--nocapture"
+      ],
+      "environment_additions": {
+        "REVERIE_REQUIRE_KVM": "1"
+      },
+      "started_at": "2026-09-20T05:18:15.229914+00:00",
+      "elapsed_seconds": 0.4007912869565189,
+      "exit_code": 0,
+      "stdout_sha256": "cfe5fca65f74c81239ad580155e56e140c70f0f3ffdc405949dc808f98fa63f3",
+      "stderr_sha256": "1e3b866e4810630707b8c67cb5cc8070b6ae73be45b1e9d14530ea20e9b79c6a"
+    },
+    {
+      "name": "full-parallel",
+      "command": [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=10s",
+        "900s",
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--",
+        "--nocapture"
+      ],
+      "environment_additions": {
+        "REVERIE_REQUIRE_KVM": "1"
+      },
+      "started_at": "2026-09-20T05:18:15.631164+00:00",
+      "elapsed_seconds": 8.478053621016443,
+      "exit_code": 0,
+      "stdout_sha256": "53df43a90d00cae6c3b5dca615ba3c0d5ae8631cbfa57858f062d2d52914a59d",
+      "stderr_sha256": "568bce502706b4c6fe78d551ced0abaa54fc7e0b6063ba6682950eb9abd76d51"
+    },
+    {
+      "name": "full-serial",
+      "command": [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=10s",
+        "900s",
+        "cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "environment_additions": {
+        "REVERIE_REQUIRE_KVM": "1"
+      },
+      "started_at": "2026-09-20T05:18:24.109794+00:00",
+      "elapsed_seconds": 29.25636892206967,
+      "exit_code": 0,
+      "stdout_sha256": "f88e4e7676cf2e6ad300eb4e053ca57c0f5fe9941178b356fd7e4efea10cf7c3",
+      "stderr_sha256": "85b98d123e56c894824336faf466595e8558a8913d29e3b08219017fa9d2d8c7"
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "environment_additions": {},
+      "started_at": "2026-09-20T05:18:53.366846+00:00",
+      "elapsed_seconds": 2.0161986420862377,
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "check-default",
+      "command": [
+        "cargo",
+        "check",
+        "--offline",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "reverie-kvm",
+        "--lib"
+      ],
+      "environment_additions": {},
+      "started_at": "2026-09-20T05:18:55.383516+00:00",
+      "elapsed_seconds": 0.10252720792777836,
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "8c233a54790c4800d3dd585436af679aa838da259bfdb129412e2d51cdb75cdc"
+    },
+    {
+      "name": "clippy-default",
+      "command": [
+        "cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "environment_additions": {},
+      "started_at": "2026-09-20T05:18:55.486492+00:00",
+      "elapsed_seconds": 0.1481523180846125,
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "a5f4c585ee974ca44916ac30a98bbc189e067a7e0a6bc6d2e8d6bc525be724af"
+    },
+    {
+      "name": "check-native-test-support",
+      "command": [
+        "cargo",
+        "check",
+        "--offline",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--features",
+        "native-test-support"
+      ],
+      "environment_additions": {},
+      "started_at": "2026-09-20T05:18:55.635093+00:00",
+      "elapsed_seconds": 0.1293294969946146,
+      "exit_code": 0,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "a5f4c585ee974ca44916ac30a98bbc189e067a7e0a6bc6d2e8d6bc525be724af"
+    }
+  ],
+  "all_passed": true,
+  "completed_at": "2026-09-20T05:18:55.887291+00:00"
+}

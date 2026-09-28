@@ -1,0 +1,31 @@
+{
+  "product_execution": false,
+  "author_formats": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/AUTHOR-FORMAT.json",
+      "bytes": 3809,
+      "mode": 420,
+      "sha256": "6cdf4069718f87fd659d88a44367812ddf782b5d9a09c7c7eafdf44ae4f2b244"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/AUTHOR-FORMAT-2.json",
+      "bytes": 3820,
+      "mode": 420,
+      "sha256": "2834a227120379b0e9fe4d304169060cd3d67cd2cb38054ef05a4c983cb97b41"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/AUTHOR-FORMAT-3.json",
+      "bytes": 3821,
+      "mode": 420,
+      "sha256": "3a582a3fa744d23557e662cc7f2691282736b42aaf5be96aaee2df12b6de8159"
+    }
+  ],
+  "read_errors": [
+    "Initial L/AGENTS.md direct read: absent; parent instructions apply.",
+    "Exploratory reverie-process/src/command.rs search: nonexistent; corrected to builder.rs."
+  ],
+  "edit_refusals": [
+    "One apply_patch expected an unformatted one-line clock assertion after rustfmt had split it; refused without mutation, then exact formatted line corrected."
+  ],
+  "author_review_not_independent_approval": true
+}

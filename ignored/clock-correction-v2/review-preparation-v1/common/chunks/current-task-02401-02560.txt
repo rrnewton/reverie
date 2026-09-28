@@ -1,0 +1,160 @@
+        if restored != guard.saved_instruction {
+            return Err(Errno::EIO.into());
+        }
+        self.liteinst_entry_guard = None;
+        Ok(())
+    }
+
+    fn classify_liteinst_trap(
+        &mut self,
+        task: &Stopped,
+        regs: &libc::user_regs_struct,
+    ) -> Option<LiteinstTrap> {
+        let config = self.global_state.liteinst_runtime.as_ref()?;
+        if regs.rax == config.begin_marker {
+            let frame =
+                self.validate_liteinst_handshake(task, regs.rdi as usize, regs.ip(), false)?;
+            let mut state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::Waiting {
+                return None;
+            }
+            state.phase = LiteinstRuntimePhase::Bootstrap;
+            state.frame = Some(frame);
+            return Some(LiteinstTrap::HandshakeBegin);
+        }
+        if regs.rax == config.ready_marker {
+            let frame =
+                self.validate_liteinst_handshake(task, regs.rdi as usize, regs.ip(), true)?;
+            let state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::Bootstrap || state.frame != Some(frame) {
+                return None;
+            }
+            return Some(LiteinstTrap::HandshakeReady);
+        }
+        if regs.rax != config.syscall_marker {
+            return None;
+        }
+        let handshake = self.liteinst_runtime.lock().unwrap().frame?;
+        if regs.ip() != handshake.syscall_trap_rip {
+            return None;
+        }
+        let stack_address = usize::try_from(regs.rsp).ok()?;
+        let frame_address = usize::try_from(regs.rdi).ok()?;
+        let maps = guest_maps(task.pid())?;
+        let controller_stack = maps.iter().find(|mapping| {
+            mapping.readable
+                && mapping.writable
+                && mapping.contains(regs.rsp)
+                && mapping.contains(
+                    regs.rsp
+                        .saturating_add(core::mem::size_of::<u64>() as u64 - 1),
+                )
+                && mapping.contains(regs.rdi)
+                && mapping.contains(
+                    regs.rdi
+                        .saturating_add(core::mem::size_of::<InjectedSyscallFrame>() as u64 - 1),
+                )
+        });
+        if controller_stack.is_none() || regs.rsp.abs_diff(regs.rdi) > 128 * 1024 {
+            return None;
+        }
+        let return_address: u64 = task.read_value(Addr::from_raw(stack_address)?).ok()?;
+        if return_address != handshake.syscall_trap_return_rip {
+            // A same-process caller can find the raw trap entry, but only the
+            // hidden runtime wrapper produces this exact inner return site.
+            return None;
+        }
+        let frame = match self.read_injected_syscall_frame(task, frame_address) {
+            Ok(frame) => frame,
+            Err(_) => return Some(LiteinstTrap::Invalid),
+        };
+        let state = self.liteinst_runtime.lock().unwrap();
+        if state.phase != LiteinstRuntimePhase::Ready
+            || state.ready_generation != Some(state.generation)
+            || !state
+                .active_hooks
+                .contains_key(&frame.instruction_pointer())
+        {
+            return Some(LiteinstTrap::Invalid);
+        }
+        Some(LiteinstTrap::Syscall(frame_address))
+    }
+
+    async fn handle_sigtrap(
+        &mut self,
+        mut task: Stopped,
+    ) -> Result<HandleSignalResult, TraceError> {
+        let resumed_by_gdb_step = self
+            .resumed_by_gdb
+            .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
+        let mut regs = task.getregs()?;
+        if let Some(guard) = self.liteinst_entry_guard
+            && regs.ip() == guard.address.saturating_add(1)
+        {
+            let address = Addr::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
+            let observed: u64 = task.read_value(address)?;
+            let guarded_instruction = (guard.saved_instruction & !0xff) | 0xcc;
+            if observed != guarded_instruction {
+                return Err(Errno::EPROTO.into());
+            }
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::ExecutableEntryBeforeHandshake,
+                Error::runtime(
+                    self.tid(),
+                    "verify LiteInst runtime before executable entry",
+                    format!(
+                        "tracee reached guarded executable entry {:#x} before the required preload handshake completed",
+                        guard.address
+                    ),
+                ),
+            );
+            return Err(Errno::EPROTO.into());
+        }
+        match self.classify_liteinst_trap(&task, &regs) {
+            Some(LiteinstTrap::HandshakeBegin) => {
+                return Ok(HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                ));
+            }
+            Some(LiteinstTrap::HandshakeReady) => {
+                if let Err(error) = self.restore_liteinst_entry_guard(&mut task) {
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::RestoreExecutableEntryGuard,
+                        Error::runtime(
+                            self.tid(),
+                            "restore LiteInst executable-entry guard",
+                            error.to_string(),
+                        ),
+                    );
+                    return Err(error);
+                }
+                {
+                    let mut state = self.liteinst_runtime.lock().unwrap();
+                    if state.phase != LiteinstRuntimePhase::Bootstrap {
+                        return Err(Errno::EPROTO.into());
+                    }
+                    state.phase = LiteinstRuntimePhase::Ready;
+                    state.ready_generation = Some(state.generation);
+                }
+                return Ok(HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                ));
+            }
+            Some(LiteinstTrap::Syscall(frame_address)) => {
+                if let Some(stats) = self
+                    .global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .and_then(|config| config.instrumentation_stats.as_ref())
+                {
+                    stats.lock().unwrap().record_direct_hook();
+                }
+                let next_state = self
+                    .handle_injected_syscall(task, frame_address, regs.eflags)
+                    .await?;
+                return Ok(HandleSignalResult::SignalSuppressed(next_state));
+            }
+            Some(LiteinstTrap::Invalid) => return Err(Errno::EPROTO.into()),
+            None => {}
+        }
+        let phase = self.liteinst_runtime.lock().unwrap().phase;

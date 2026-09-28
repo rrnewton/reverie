@@ -1,0 +1,242 @@
+{
+  "at_utc": "2026-09-18T22:15:56.015597+00:00",
+  "cap": 15,
+  "method": "All-UID process census: exact comm codex/claude, exclude zombies/help-only probes, collapse direct same-CLI launcher/native child pairs only. Independently launched children via a shell/Python count separately even if an older agent is an ancestor. Code-mode, MCP, gclaude system service are not top-level codex/claude agents.",
+  "top_level_agents": [
+    {
+      "pid": 108175,
+      "ppid": 1649434,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "184090590"
+    },
+    {
+      "pid": 120064,
+      "ppid": 1216596,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "184092357"
+    },
+    {
+      "pid": 144470,
+      "ppid": 88128,
+      "uid": 212630,
+      "state": "Ssl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "184868494"
+    },
+    {
+      "pid": 573386,
+      "ppid": 88128,
+      "uid": 212630,
+      "state": "Ssl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "184386150"
+    },
+    {
+      "pid": 983219,
+      "ppid": 88128,
+      "uid": 212630,
+      "state": "Ssl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "185614733"
+    },
+    {
+      "pid": 1119204,
+      "ppid": 1491337,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "174130720"
+    },
+    {
+      "pid": 1209701,
+      "ppid": 1191445,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "175129793"
+    },
+    {
+      "pid": 3626493,
+      "ppid": 88128,
+      "uid": 212630,
+      "state": "Ssl+",
+      "comm": "claude",
+      "executable": "/usr/local/bin/claude_code/claude",
+      "resumes_target_session": false,
+      "start_ticks": "181309896"
+    },
+    {
+      "pid": 3628715,
+      "ppid": 88128,
+      "uid": 212630,
+      "state": "Ssl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "191337302"
+    },
+    {
+      "pid": 3740755,
+      "ppid": 88128,
+      "uid": 212630,
+      "state": "Ssl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "184301605"
+    },
+    {
+      "pid": 3760632,
+      "ppid": 3760185,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "codex",
+      "resumes_target_session": false,
+      "start_ticks": "184302605"
+    }
+  ],
+  "top_level_count": 11,
+  "native_children_collapsed": [
+    {
+      "pid": 108318,
+      "ppid": 108175,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/ed32440cc8b49bc0e538e37c7955ced64a9093cbdc525fcb51bfbb9a48dac034/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "184090608",
+      "collapsed_into_launcher_pid": 108175
+    },
+    {
+      "pid": 120276,
+      "ppid": 120064,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/ed32440cc8b49bc0e538e37c7955ced64a9093cbdc525fcb51bfbb9a48dac034/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "184092391",
+      "collapsed_into_launcher_pid": 120064
+    },
+    {
+      "pid": 148959,
+      "ppid": 144470,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/ed32440cc8b49bc0e538e37c7955ced64a9093cbdc525fcb51bfbb9a48dac034/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "184868571",
+      "collapsed_into_launcher_pid": 144470
+    },
+    {
+      "pid": 573552,
+      "ppid": 573386,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/ed32440cc8b49bc0e538e37c7955ced64a9093cbdc525fcb51bfbb9a48dac034/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "184386176",
+      "collapsed_into_launcher_pid": 573386
+    },
+    {
+      "pid": 983877,
+      "ppid": 983219,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/ed32440cc8b49bc0e538e37c7955ced64a9093cbdc525fcb51bfbb9a48dac034/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "185614758",
+      "collapsed_into_launcher_pid": 983219
+    },
+    {
+      "pid": 1120336,
+      "ppid": 1119204,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/50852c869006203414db009ee2506c5c7c8ebc5df9e998b8e7c3b972ba659f03/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "174130839",
+      "collapsed_into_launcher_pid": 1119204
+    },
+    {
+      "pid": 1210520,
+      "ppid": 1209701,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/50852c869006203414db009ee2506c5c7c8ebc5df9e998b8e7c3b972ba659f03/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "175129886",
+      "collapsed_into_launcher_pid": 1209701
+    },
+    {
+      "pid": 3627850,
+      "ppid": 3626493,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "claude",
+      "executable": "/usr/local/bin/claude_code/native/claude",
+      "resumes_target_session": false,
+      "start_ticks": "181310102",
+      "collapsed_into_launcher_pid": 3626493
+    },
+    {
+      "pid": 3632527,
+      "ppid": 3628715,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/ac6903f7771639f230aa7a8b2953fa13662ac97dcb2ea1a16c7b40045d41a740/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "191337334",
+      "collapsed_into_launcher_pid": 3628715
+    },
+    {
+      "pid": 3743412,
+      "ppid": 3740755,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/ed32440cc8b49bc0e538e37c7955ced64a9093cbdc525fcb51bfbb9a48dac034/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "184301776",
+      "collapsed_into_launcher_pid": 3740755
+    },
+    {
+      "pid": 3760995,
+      "ppid": 3760632,
+      "uid": 212630,
+      "state": "Sl+",
+      "comm": "codex",
+      "executable": "/home/newton/.codex/packages/meta-dotslash/releases/ed32440cc8b49bc0e538e37c7955ced64a9093cbdc525fcb51bfbb9a48dac034/bin/codex",
+      "resumes_target_session": false,
+      "start_ticks": "184302626",
+      "collapsed_into_launcher_pid": 3760632
+    }
+  ],
+  "excluded": []
+}

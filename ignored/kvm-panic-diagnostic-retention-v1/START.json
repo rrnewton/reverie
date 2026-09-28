@@ -1,0 +1,6 @@
+{
+  "path": "reverie-kvm/src/failure.rs",
+  "bytes": 28216,
+  "sha256": "ea9a46fd17e1517680483375b2320749cd7e924af7981ecf93dae578c73aed1d",
+  "preserve_concurrent_module": "pub(crate) mod tool_panics;"
+}

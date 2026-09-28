@@ -1,0 +1,169 @@
+{
+  "plan_sha256": "725ce5c89fb5116a24aa7d6cf14825773a866aa47b8675562f750a026542e3e0",
+  "runner_sha256": "c4ffed21a6b2d441c9ca45d2cb1b375be44ea216b628945f53a97e759e04af94",
+  "logical_cpus": 316,
+  "command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "900s",
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--",
+    "--nocapture"
+  ],
+  "environment_additions": {
+    "REVERIE_REQUIRE_KVM": "1"
+  },
+  "runs_per_revision": 5,
+  "results": [
+    {
+      "revision": "base",
+      "attempt": 1,
+      "source": {
+        "head": "60f2d369b49e6ffbc2b2d9d0f0e55fead0ba6b09",
+        "tree": "d717b892114ac08da67e4d577cf46c91b441920a",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:04:14.891598+00:00",
+      "elapsed_seconds": 71.34795325784944,
+      "exit_code": 101,
+      "stdout_sha256": "bd8fbe54a1e909d8bd62b8494422eb8f991fbd1421e103f5fd029bcc38ffaae2",
+      "stderr_sha256": "67fe94c4ee4323daa6385e5c929d56d48ff5ac72a81e4b7dd1472d83397536d2"
+    },
+    {
+      "revision": "base",
+      "attempt": 2,
+      "source": {
+        "head": "60f2d369b49e6ffbc2b2d9d0f0e55fead0ba6b09",
+        "tree": "d717b892114ac08da67e4d577cf46c91b441920a",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:05:26.240179+00:00",
+      "elapsed_seconds": 7.958265227964148,
+      "exit_code": 0,
+      "stdout_sha256": "b575402e4e63659d1fd50463b1dddb4dadb8abd1ae7965560326b24e7b983676",
+      "stderr_sha256": "bedb5aab8e37b75da861f924822fbed32b2678ab7731f99bbb17ef46ddf84611"
+    },
+    {
+      "revision": "base",
+      "attempt": 3,
+      "source": {
+        "head": "60f2d369b49e6ffbc2b2d9d0f0e55fead0ba6b09",
+        "tree": "d717b892114ac08da67e4d577cf46c91b441920a",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:05:34.199055+00:00",
+      "elapsed_seconds": 7.647287984844297,
+      "exit_code": 0,
+      "stdout_sha256": "0f51e21756eb497ba2d68290fbe354d0f9ac299fc50516f5e550b53c71d1ce9b",
+      "stderr_sha256": "2beec98688ce2c9153e8e445c2e2b15a4bae3c07664a717ef3e0c7dd1192d33d"
+    },
+    {
+      "revision": "base",
+      "attempt": 4,
+      "source": {
+        "head": "60f2d369b49e6ffbc2b2d9d0f0e55fead0ba6b09",
+        "tree": "d717b892114ac08da67e4d577cf46c91b441920a",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:05:41.846900+00:00",
+      "elapsed_seconds": 7.512149751884863,
+      "exit_code": 0,
+      "stdout_sha256": "c4a767b2a01b2df33f9f20b7268b8ebb0c7b5f5cced3acb817c7f9e742436d27",
+      "stderr_sha256": "07ed98a93817adc651b17e1d858ed5f3fa50b7bf92d06f44eca3025f448b0836"
+    },
+    {
+      "revision": "base",
+      "attempt": 5,
+      "source": {
+        "head": "60f2d369b49e6ffbc2b2d9d0f0e55fead0ba6b09",
+        "tree": "d717b892114ac08da67e4d577cf46c91b441920a",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:05:49.359612+00:00",
+      "elapsed_seconds": 7.5540100338403136,
+      "exit_code": 101,
+      "stdout_sha256": "cb0d25f3f7b66b7dc0a04ecd3b91330d038141ef5f31e0e2f213793beadf160d",
+      "stderr_sha256": "7cf0b4af8a214c8d214950328c028eff14db34e8dd778040ee4f53554896fee8"
+    },
+    {
+      "revision": "head",
+      "attempt": 1,
+      "source": {
+        "head": "ce442fce6b1ee366e0c3a9cff7fa981ff8893ae4",
+        "tree": "a83ef7f9e0645b28d3dbe83ed02a32e461674cc7",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:05:58.236301+00:00",
+      "elapsed_seconds": 72.98241615178995,
+      "exit_code": 101,
+      "stdout_sha256": "5f11ad52477eaaba553df9f05b59c191b791b3eb579f7dbf5ae36e780d18c650",
+      "stderr_sha256": "fcbeab9643c5d4f838b295fde065be448ad3db8d614e3d194d636c4439755fcd"
+    },
+    {
+      "revision": "head",
+      "attempt": 2,
+      "source": {
+        "head": "ce442fce6b1ee366e0c3a9cff7fa981ff8893ae4",
+        "tree": "a83ef7f9e0645b28d3dbe83ed02a32e461674cc7",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:07:11.219278+00:00",
+      "elapsed_seconds": 7.960148002021015,
+      "exit_code": 101,
+      "stdout_sha256": "405614797fe32988d08e5dff5886b3cb473ca209e951b00cd7d892d9844a9dc1",
+      "stderr_sha256": "070d52e2c51c2c360aeac9cfbecd7614f09528f789a74c5308f4c95eafa24fff"
+    },
+    {
+      "revision": "head",
+      "attempt": 3,
+      "source": {
+        "head": "ce442fce6b1ee366e0c3a9cff7fa981ff8893ae4",
+        "tree": "a83ef7f9e0645b28d3dbe83ed02a32e461674cc7",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:07:19.179961+00:00",
+      "elapsed_seconds": 8.020985312992707,
+      "exit_code": 101,
+      "stdout_sha256": "a7b7af7648c6f23d0c87be11e1bad8cac7687d83604dede0ff8aaa77b5b13008",
+      "stderr_sha256": "9e85190c297d278afdf4878c608b0a2d0145cf305ebaf06644eb3d6a18fe688b"
+    },
+    {
+      "revision": "head",
+      "attempt": 4,
+      "source": {
+        "head": "ce442fce6b1ee366e0c3a9cff7fa981ff8893ae4",
+        "tree": "a83ef7f9e0645b28d3dbe83ed02a32e461674cc7",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:07:27.201434+00:00",
+      "elapsed_seconds": 7.690363364992663,
+      "exit_code": 101,
+      "stdout_sha256": "9be908fad340c01597565f7737defa0bf1fc6a9124b4358f815a54fe18620ade",
+      "stderr_sha256": "7ccc1654d10aecf8d82020161de22bce4d5f6c0aab7215c43b6f9ab923bebb21"
+    },
+    {
+      "revision": "head",
+      "attempt": 5,
+      "source": {
+        "head": "ce442fce6b1ee366e0c3a9cff7fa981ff8893ae4",
+        "tree": "a83ef7f9e0645b28d3dbe83ed02a32e461674cc7",
+        "tracked_status": ""
+      },
+      "started_at": "2026-09-20T06:07:34.892385+00:00",
+      "elapsed_seconds": 7.70521499007009,
+      "exit_code": 0,
+      "stdout_sha256": "3cdf41a39872be83904b2ecd180c1828f23d6a379d2236b35754d75144b46264",
+      "stderr_sha256": "c6db557236f1530bcb0f3d8fac0453e333e8a2312fab0318dcf8d2c6654a4f79"
+    }
+  ],
+  "completed_at": "2026-09-20T06:07:42.598063+00:00"
+}

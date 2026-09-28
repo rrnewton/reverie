@@ -1,0 +1,12 @@
+isolated file-table control status=exit status: 0
+stdout:
+
+running 1 test
+test executor::tests::shared_file_table_install_emfile_preserves_original_descriptions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 522 filtered out; finished in 0.05s
+
+
+stderr:
+file-table EMFILE control completed
+

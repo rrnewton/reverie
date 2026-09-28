@@ -1,0 +1,155 @@
+{
+  "scope": "Actual native whole-source review at exact head; evidence custody, not an author approval.",
+  "head": "a9449f8ee22a17ba87a106c2af957a938fa57c45",
+  "session": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "exec_handle": 60083,
+  "handle_collected": true,
+  "raw_exit_code": 0,
+  "elapsed_seconds": 852.0204121859279,
+  "actual_policy": {
+    "model": "gpt-5.6-sol",
+    "approval": "never",
+    "sandbox": "read-only",
+    "contexts": 3
+  },
+  "source_custody": {
+    "files": 3552,
+    "aliases": 7,
+    "all_current_bytes_modes_aliases_equal": true
+  },
+  "verdict_in_actual_report": "APPROVE SOURCE",
+  "coverage": {
+    "complete": true,
+    "documents": 59,
+    "chunks": 238,
+    "exact_stage_order_observed": false
+  },
+  "actual_commands": 412,
+  "actual_nonzero_commands": [
+    {
+      "id": "item_320",
+      "command": "/bin/bash -lc \"jq -r 'to_entries[] | select(.key>=153) | \\\"\\\\(.key)\\\\t\\\\(.value.chunk // .value.path // .value.file // .value)\\\"' COMPLETE_READS.json\"",
+      "exit_code": 5,
+      "aggregated_output": "jq: error (at COMPLETE_READS.json:2678): Cannot index array with string \"chunk\"\n"
+    },
+    {
+      "id": "item_322",
+      "command": "/bin/bash -lc \"jq -r '.mandatory_chunks | to_entries[] | select(.key>=153) | \\\"\\\\(.key)\\\\t\\\\(.value)\\\"' COMPLETE_READS.json\"",
+      "exit_code": 5,
+      "aggregated_output": "jq: error (at COMPLETE_READS.json:2678): number (238) has no keys\n"
+    }
+  ],
+  "diagnostic_candidate_count": 14,
+  "diagnostic_precision": "Diagnostic candidate strings include source text. Only the explicit nonzero command records are command failures.",
+  "truncated_output_candidates": [
+    {
+      "call_id": "call_oWOagMEr0oibGFbAWLMQ7d5s",
+      "line": 14782
+    }
+  ],
+  "order_precision": "All required literal chunks are complete. The first-complete order differs from the source index; no initial strict-order claim. All chunks after index 154 are first-complete in index order. Separate original canonical paper/scheduler/vision grounding and its historical policy limitation remain preserved.",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final.txt",
+      "bytes": 8951,
+      "sha256": "74d01b6ba2dda80fd4ae6d286ac4c0eac7f93d34a14fa1b13fce6b85de9828f7",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.result.json",
+      "bytes": 2146,
+      "sha256": "9629dcb936e3004d0f0f898693cfa9c6a29deb394cf1b86a645a912bbfd3c446",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.jsonl",
+      "bytes": 2206618,
+      "sha256": "4458975bd66dbd6331fb54fc0a6de35aba70f3a160b1c61fc2835fe6c67cef46",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.stderr",
+      "bytes": 149,
+      "sha256": "43df7f007afa289695cb9fd1c0f306d391d12176406046f9c5223046f30cae75",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/guard-result.json",
+      "bytes": 267,
+      "sha256": "7b74af9f15f966dd4ce0b489f62ded7d518c77f572a93c447ec274b78c63c794",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/INITIAL-POLICY-READBACK.json",
+      "bytes": 2361,
+      "sha256": "87207bb51d5a895616a9447be13c3f73c8da9ffc9f1fa37c879126e6ed939727",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/inputs.json",
+      "bytes": 1140645,
+      "sha256": "76a8753e78d249a969297c230edefb1f6b1ddae8115fe69614a3a21751f08b92",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/source-before.json",
+      "bytes": 1096357,
+      "sha256": "b6152b601e705b26f6bb9d1bb2dabf5b418f4a644ce07d1aaf6db77a32a80b8d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/source-after.json",
+      "bytes": 1096357,
+      "sha256": "b6152b601e705b26f6bb9d1bb2dabf5b418f4a644ce07d1aaf6db77a32a80b8d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final-COVERAGE.json",
+      "bytes": 284892,
+      "sha256": "9bb54008137cce6281cab1346cb386985235b6f265aca85e46620a58ecee0bcf",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+      "bytes": 1974404,
+      "sha256": "93dcf2f5c73c4e901e30d38d75cc8a63f2bd3a6f305a1af0a34d0a516fcb2334",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final-COMMANDS.json",
+      "bytes": 2074877,
+      "sha256": "6661667a6ba561ad07bcf091358cd9cff39d9bdd4c8e5424fb8ca2a06d35eb58",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/FIRST-COMPLETE-READ-ORDER.json",
+      "bytes": 81831,
+      "sha256": "fcff253eb556a8513d5725ef8bb52ac7b8f54be312f98db6fca224052fb0adbd",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/audit-source.status.json",
+      "bytes": 316,
+      "sha256": "c84a8a39d6be6fe2b6cdd336552dd528898dd995e0ea9aa578af5dd40b720341",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/audit-source.stdout",
+      "bytes": 1085,
+      "sha256": "110c6072a6204ee5750dc24dd530514d2b6cad86f1a3b3a2df9c245b087da10c",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/audit-source.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/freeze-terminal-custody.py",
+      "bytes": 10189,
+      "sha256": "fc9bcc6916c25b76ca0104fe474a9a9624ea22a976694e1e3318a7dfb77913b4",
+      "mode": 420
+    }
+  ]
+}

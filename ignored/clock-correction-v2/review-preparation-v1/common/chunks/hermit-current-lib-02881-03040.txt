@@ -1,0 +1,160 @@
+            ExitStatus::Signaled(signal, _) => Some(*signal as i32),
+            ExitStatus::Exited(_) => None,
+        };
+        // Publish each owner's final clock under its own RPC identity before
+        // counting that owner in the complete physical-exit barrier. Otherwise
+        // the group's maximum could be charged to whichever callback finishes
+        // last, followed by a backwards update from its real deregistration.
+        let exit_time_accounted = !thread_state.has_matching_robust_list_exit(exit_signal)
+            || acknowledge_robust_list_exit_time(
+                thread_state.thread_logical_time.clone(),
+                global_state,
+                mm_id,
+            )
+            .await;
+        if !exit_time_accounted {
+            // Preserve benign cleanup for a retired incarnation without
+            // acknowledging an unaccounted owner or releasing its staged wakes.
+            thread_state.record_robust_list_head(None);
+        }
+        if exit_time_accounted
+            && let Some((_group_time, ready)) = thread_state.take_robust_list_wakes_after_exit(
+                exit_signal,
+                thread_state.thread_logical_time.clone(),
+            )
+        {
+            let identities: Vec<_> = ready
+                .iter()
+                .map(|(owner, wake)| (*owner, wake.futex))
+                .collect();
+            let counts = robust_list_wakes_after_exit(
+                thread_state.thread_logical_time.clone(),
+                global_state,
+                mm_id,
+                ready,
+            )
+            .await;
+            for ((owner, futex), count) in identities.into_iter().zip(counts) {
+                info!(
+                    "[detcore, dtid {}] robust-list owner death woke {} waiter(s) on futex {:?} after physical exit",
+                    owner, count, futex,
+                );
+            }
+        }
+        let pending_chaos_epochs = thread_state.take_pending_chaos_epochs();
+        deregister_thread(
+            thread_state.thread_logical_time.clone(),
+            &self.cfg,
+            global_state,
+            ThreadDeregistration {
+                dettid,
+                detpid,
+                mm: mm_id,
+                thread_start_entered: thread_state.thread_start_entered,
+                timeslice_stats: thread_state.stats.timeslice_stats,
+                syscall_count: thread_state.stats.syscall_count,
+                chaos_epochs: pending_chaos_epochs,
+            },
+        )
+        .await;
+
+        self.record_or_replay
+            .on_exit_thread(
+                tid,
+                global_state,
+                thread_state.record_or_replay,
+                exit_status,
+            )
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::*;
+
+    fn strict_config(passthru_opt: bool) -> Config {
+        Config {
+            sequentialize_threads: true,
+            deterministic_io: true,
+            passthru_opt,
+            ..Default::default()
+        }
+    }
+
+    /// The last row of the pinned table is the one a `Sysno::iter()` sweep
+    /// drops. `lsm_list_modules` is Determinized AND deterministically refused,
+    /// so before this was fixed it executed natively against the host under
+    /// `--passthru-opt` — which is the default for `hermit record` and
+    /// `hermit replay` — instead of receiving its fixed refusal.
+    #[test]
+    fn passthru_opt_covers_the_final_row_of_the_pinned_table() {
+        let last = Sysno::last();
+        // Guard the premise: if the table endpoint moves, this test must be
+        // re-derived rather than silently passing on a different syscall.
+        assert_eq!(last, Sysno::lsm_list_modules);
+        assert!(crate::is_determinized_syscall(last));
+        assert!(crate::is_deterministically_refused_syscall(last));
+        // The bug this pins: the final row is absent from `Sysno::iter()`.
+        assert!(!Sysno::iter().any(|sysno| sysno == last));
+
+        let subscriptions = <Detcore as Tool>::subscriptions(&strict_config(true));
+        assert!(
+            subscriptions.iter_syscalls().any(|sysno| sysno == last),
+            "{last} must be intercepted under passthru_opt; it is deterministically refused"
+        );
+    }
+
+    #[test]
+    fn passthru_opt_intercepts_every_unsupported_syscall() {
+        let subscriptions = <Detcore as Tool>::subscriptions(&strict_config(true));
+        let unsupported: Vec<Sysno> = crate::all_pinned_syscalls()
+            .filter(|sysno| crate::is_unsupported_syscall(*sysno))
+            .collect();
+
+        assert_eq!(unsupported, [Sysno::restart_syscall]);
+        for syscall in unsupported {
+            assert!(
+                subscriptions
+                    .iter_syscalls()
+                    .any(|subscribed| subscribed == syscall),
+                "passthru_opt allowed unsupported {syscall} to bypass Detcore"
+            );
+        }
+    }
+
+    /// `passthru_opt` is not a niche flag: `record_or_replay_config` turns it on
+    /// for every `hermit record` / `hermit replay`, so this covers the record
+    /// and replay subscription too.
+    #[test]
+    fn passthru_opt_subscribes_every_determinized_syscall() {
+        let determinized: Vec<Sysno> = crate::all_pinned_syscalls()
+            .filter(|sysno| crate::is_determinized_syscall(*sysno))
+            .collect();
+        let subscriptions = <Detcore as Tool>::subscriptions(&strict_config(true));
+        let delivered: Vec<Sysno> = subscriptions.iter_syscalls().collect();
+        let missing = determinized
+            .iter()
+            .filter(|sysno| !delivered.contains(sysno))
+            .copied()
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "passthru_opt let Determinized syscalls bypass Detcore: {}",
+            missing
+                .iter()
+                .map(|sysno| sysno.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert!(
+            delivered.contains(&Sysno::syslog),
+            "syslog must reach its deterministic Detcore handler"
+        );
+    }
+
+    #[test]
+    fn passthru_opt_intercepts_thread_exit_registrations() {

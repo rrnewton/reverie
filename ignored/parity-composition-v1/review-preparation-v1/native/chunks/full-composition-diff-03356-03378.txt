@@ -1,0 +1,23 @@
++            .filter(|(kind, _, _)| *kind == 1)
++            .copied()
++            .collect::<Vec<_>>(),
++        vec![(1, 2, ExitStatus::SUCCESS)]
++    );
++    assert_eq!(events.iter().filter(|(kind, _, _)| *kind == 0).count(), 2);
++    assert_eq!(
++        events
++            .iter()
++            .filter(|(kind, _, _)| *kind == 2)
++            .copied()
++            .collect::<Vec<_>>(),
++        vec![(2, 2, ExitStatus::SUCCESS), (2, 1, ExitStatus::Exited(17))]
++    );
++    assert_eq!(
++        events
++            .iter()
++            .filter(|(kind, _, _)| *kind == 3)
++            .copied()
++            .collect::<Vec<_>>(),
++        vec![(3, 1, ExitStatus::Exited(17))]
++    );
++}

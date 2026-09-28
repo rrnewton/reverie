@@ -1,0 +1,35 @@
+{
+  "prior_source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/TARGET.json",
+    "bytes": 4536,
+    "mode": 420,
+    "sha256": "7aba945eba3b3b55c9734edfdeaf6a1ee245da7b895a81fe338e9e45619e8f5a"
+  },
+  "prior_failure_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/final-v1/TARGET.json",
+    "bytes": 1821,
+    "mode": 420,
+    "sha256": "d5389a9061f62a0d53b153b4a6259476d6e70993feff5450464cc1de9dc09a19"
+  },
+  "prior_failure_readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/final-v1/READBACK.json",
+    "bytes": 1710,
+    "mode": 420,
+    "sha256": "a3054a843b9456faa08e1ad781c519091e5ac4271dfafca48ea1d8c526ec0ab8"
+  },
+  "changed_paths": [
+    "reverie-ptrace/src/injection_stop_tests.rs"
+  ],
+  "only_two_import_corrections": true,
+  "all_other_entries_identical": 2629,
+  "production_and_test_bodies_and_assertions_identical": true,
+  "base": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "landed_identical_base": "b5e2ab49cd99e5d456fa0238b8cebd75958c529f",
+  "tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "public_export": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-syscalls/src/lib.rs",
+    "bytes": 1092,
+    "mode": 420,
+    "sha256": "f3ad56f97e563cdb3af1cb5a267655a6d1dd8ff2d0e9db1d88199820d8f90d12"
+  }
+}

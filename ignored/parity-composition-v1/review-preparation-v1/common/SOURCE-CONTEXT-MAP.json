@@ -1,0 +1,1698 @@
+[
+  {
+    "relative": "reverie-kvm/src/executor.rs",
+    "full_source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs",
+      "bytes": 1494304,
+      "sha256": "6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9",
+      "mode": 420
+    },
+    "context": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--executor.rs",
+      "bytes": 123542,
+      "sha256": "3bc6f37b4d6a6bfe99e7d52bcb2c43732f3590cbc20735eb07273ea5f97f8029",
+      "mode": 420
+    },
+    "ranges": [
+      {
+        "first_line": 46,
+        "last_line": 75
+      },
+      {
+        "first_line": 183,
+        "last_line": 235
+      },
+      {
+        "first_line": 375,
+        "last_line": 960
+      },
+      {
+        "first_line": 1650,
+        "last_line": 1780
+      },
+      {
+        "first_line": 1862,
+        "last_line": 1937
+      },
+      {
+        "first_line": 2272,
+        "last_line": 2467
+      },
+      {
+        "first_line": 2627,
+        "last_line": 2652
+      },
+      {
+        "first_line": 2939,
+        "last_line": 2980
+      },
+      {
+        "first_line": 4268,
+        "last_line": 4281
+      },
+      {
+        "first_line": 4314,
+        "last_line": 4323
+      },
+      {
+        "first_line": 4343,
+        "last_line": 4449
+      },
+      {
+        "first_line": 6452,
+        "last_line": 6468
+      },
+      {
+        "first_line": 6496,
+        "last_line": 6616
+      },
+      {
+        "first_line": 6766,
+        "last_line": 6802
+      },
+      {
+        "first_line": 6896,
+        "last_line": 6928
+      },
+      {
+        "first_line": 7002,
+        "last_line": 7169
+      },
+      {
+        "first_line": 10336,
+        "last_line": 10740
+      },
+      {
+        "first_line": 12189,
+        "last_line": 12192
+      },
+      {
+        "first_line": 12304,
+        "last_line": 12472
+      },
+      {
+        "first_line": 12497,
+        "last_line": 12535
+      },
+      {
+        "first_line": 12587,
+        "last_line": 12630
+      },
+      {
+        "first_line": 13903,
+        "last_line": 14058
+      },
+      {
+        "first_line": 15242,
+        "last_line": 15266
+      },
+      {
+        "first_line": 16569,
+        "last_line": 16608
+      },
+      {
+        "first_line": 25053,
+        "last_line": 25180
+      },
+      {
+        "first_line": 27233,
+        "last_line": 27496
+      },
+      {
+        "first_line": 39588,
+        "last_line": 39634
+      }
+    ],
+    "changed_spans": [
+      {
+        "operation": "insert",
+        "before": [
+          58,
+          57
+        ],
+        "after": [
+          58,
+          63
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          189,
+          189
+        ],
+        "after": [
+          195,
+          195
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          193,
+          192
+        ],
+        "after": [
+          199,
+          206
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          196,
+          195
+        ],
+        "after": [
+          210,
+          223
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          357,
+          356
+        ],
+        "after": [
+          385,
+          385
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          535,
+          535
+        ],
+        "after": [
+          564,
+          564
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          537,
+          537
+        ],
+        "after": [
+          566,
+          566
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          544,
+          544
+        ],
+        "after": [
+          573,
+          573
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          547,
+          547
+        ],
+        "after": [
+          576,
+          576
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          549,
+          549
+        ],
+        "after": [
+          578,
+          578
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          876,
+          876
+        ],
+        "after": [
+          905,
+          905
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          879,
+          879
+        ],
+        "after": [
+          908,
+          908
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          1840,
+          1840
+        ],
+        "after": [
+          1869,
+          1875
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          1886,
+          1886
+        ],
+        "after": [
+          1921,
+          1921
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          6465,
+          6465
+        ],
+        "after": [
+          6500,
+          6500
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          6467,
+          6472
+        ],
+        "after": [
+          6502,
+          6503
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          6503,
+          6503
+        ],
+        "after": [
+          6534,
+          6534
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10309,
+          10309
+        ],
+        "after": [
+          10340,
+          10340
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10314,
+          10314
+        ],
+        "after": [
+          10345,
+          10345
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10323,
+          10323
+        ],
+        "after": [
+          10354,
+          10354
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10325,
+          10326
+        ],
+        "after": [
+          10356,
+          10357
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10343,
+          10343
+        ],
+        "after": [
+          10374,
+          10374
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10349,
+          10350
+        ],
+        "after": [
+          10380,
+          10381
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10360,
+          10361
+        ],
+        "after": [
+          10391,
+          10392
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10384,
+          10384
+        ],
+        "after": [
+          10415,
+          10415
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10393,
+          10393
+        ],
+        "after": [
+          10424,
+          10424
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10401,
+          10401
+        ],
+        "after": [
+          10432,
+          10432
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10410,
+          10410
+        ],
+        "after": [
+          10441,
+          10441
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10421,
+          10421
+        ],
+        "after": [
+          10452,
+          10452
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10439,
+          10439
+        ],
+        "after": [
+          10470,
+          10470
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10473,
+          10474
+        ],
+        "after": [
+          10504,
+          10505
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10479,
+          10479
+        ],
+        "after": [
+          10510,
+          10510
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10563,
+          10563
+        ],
+        "after": [
+          10594,
+          10594
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10590,
+          10590
+        ],
+        "after": [
+          10621,
+          10621
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10642,
+          10643
+        ],
+        "after": [
+          10673,
+          10674
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10646,
+          10646
+        ],
+        "after": [
+          10677,
+          10677
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          10653,
+          10653
+        ],
+        "after": [
+          10684,
+          10688
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          12154,
+          12153
+        ],
+        "after": [
+          12189,
+          12189
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          13872,
+          13872
+        ],
+        "after": [
+          13908,
+          13908
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          13881,
+          13881
+        ],
+        "after": [
+          13917,
+          13917
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          13890,
+          13890
+        ],
+        "after": [
+          13926,
+          13926
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          13899,
+          13899
+        ],
+        "after": [
+          13935,
+          13935
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          13911,
+          13911
+        ],
+        "after": [
+          13947,
+          13947
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          13926,
+          13926
+        ],
+        "after": [
+          13962,
+          13962
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          15218,
+          15217
+        ],
+        "after": [
+          15254,
+          15254
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          16556,
+          16557
+        ],
+        "after": [
+          16593,
+          16599
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          25014,
+          25014
+        ],
+        "after": [
+          25056,
+          25056
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          25018,
+          25019
+        ],
+        "after": [
+          25060,
+          25061
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          25029,
+          25029
+        ],
+        "after": [
+          25071,
+          25071
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          25038,
+          25038
+        ],
+        "after": [
+          25080,
+          25080
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          25062,
+          25062
+        ],
+        "after": [
+          25104,
+          25104
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          25084,
+          25084
+        ],
+        "after": [
+          25126,
+          25126
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          25124,
+          25124
+        ],
+        "after": [
+          25166,
+          25166
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27227,
+          27227
+        ],
+        "after": [
+          27269,
+          27269
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27230,
+          27230
+        ],
+        "after": [
+          27272,
+          27272
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27244,
+          27244
+        ],
+        "after": [
+          27286,
+          27286
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27249,
+          27249
+        ],
+        "after": [
+          27291,
+          27291
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27262,
+          27262
+        ],
+        "after": [
+          27304,
+          27304
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27292,
+          27292
+        ],
+        "after": [
+          27334,
+          27334
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          27315,
+          27314
+        ],
+        "after": [
+          27357,
+          27357
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27327,
+          27327
+        ],
+        "after": [
+          27370,
+          27370
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27330,
+          27330
+        ],
+        "after": [
+          27373,
+          27374
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27333,
+          27334
+        ],
+        "after": [
+          27377,
+          27383
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27340,
+          27340
+        ],
+        "after": [
+          27389,
+          27389
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27352,
+          27352
+        ],
+        "after": [
+          27401,
+          27401
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          27365,
+          27364
+        ],
+        "after": [
+          27414,
+          27414
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27405,
+          27405
+        ],
+        "after": [
+          27455,
+          27455
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          27431,
+          27431
+        ],
+        "after": [
+          27481,
+          27481
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          39551,
+          39551
+        ],
+        "after": [
+          39601,
+          39601
+        ]
+      }
+    ],
+    "complete_function_names": [
+      "default",
+      "try_new",
+      "metadata",
+      "take",
+      "execute_basic_syscall_with_output",
+      "try_from_elf",
+      "same_stdin_entry",
+      "update_from_elf",
+      "prepare_from_elf",
+      "install",
+      "new",
+      "with_output",
+      "fork_child",
+      "thread_child",
+      "thread_child_with_signal_observation",
+      "release_files_on_exit",
+      "replace_after_exec",
+      "append_output",
+      "take_exit",
+      "take_output",
+      "execute",
+      "guest_fd_path",
+      "guest_fd_link_target",
+      "open_guest_fd_path",
+      "output_alias",
+      "output_alias_from_sets",
+      "set_output_alias",
+      "insert_file_with_flags",
+      "duplicate_fd_at_or_above",
+      "duplicate_fd",
+      "fstat",
+      "guest_object_stat",
+      "synthetic_captured_output_stat",
+      "synthetic_captured_output_statx",
+      "path_stat",
+      "newfstatat",
+      "fstatat_impl",
+      "statx",
+      "synthetic_guest_fd_object_inode",
+      "host_fd",
+      "fcntl",
+      "close",
+      "close_range",
+      "readlink",
+      "readlinkat",
+      "readlink_at_impl",
+      "captured_output_fstat_is_synthetic_and_stable",
+      "metadata_call",
+      "assert_descriptor_stat_routes",
+      "ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+      "anonymous_proc_fd_links_match_direct_owned_object_stat",
+      "captured_output_stat_and_link_routes_preserve_the_capture_sink",
+      "proc_fd_statx_preserves_native_masks_and_error_results",
+      "proc_executable_link_marks_unlinked_and_replaced_files_deleted"
+    ]
+  },
+  {
+    "relative": "reverie-kvm/src/lib.rs",
+    "full_source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/lib.rs",
+      "bytes": 1759,
+      "sha256": "f6004c9725e8085056b1ca99dc91fd7c2a5fcdd912f84d32a082a4ed3a3a6262",
+      "mode": 420
+    },
+    "context": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--lib.rs",
+      "bytes": 850,
+      "sha256": "4366df01fdd31b78221214b0f102f44706527ad606b7b51f0a15f78a501cd9f8",
+      "mode": 420
+    },
+    "ranges": [
+      {
+        "first_line": 9,
+        "last_line": 33
+      }
+    ],
+    "changed_spans": [
+      {
+        "operation": "insert",
+        "before": [
+          21,
+          20
+        ],
+        "after": [
+          21,
+          21
+        ]
+      }
+    ],
+    "complete_function_names": []
+  },
+  {
+    "relative": "reverie-kvm/src/runtime.rs",
+    "full_source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs",
+      "bytes": 193221,
+      "sha256": "3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2",
+      "mode": 420
+    },
+    "context": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--runtime.rs",
+      "bytes": 84998,
+      "sha256": "fba283c78bd0ad7ebaf3e7c8e339635a39d0ae1c9fef9d96518720d0ff675e2a",
+      "mode": 420
+    },
+    "ranges": [
+      {
+        "first_line": 212,
+        "last_line": 222
+      },
+      {
+        "first_line": 248,
+        "last_line": 272
+      },
+      {
+        "first_line": 373,
+        "last_line": 379
+      },
+      {
+        "first_line": 394,
+        "last_line": 554
+      },
+      {
+        "first_line": 572,
+        "last_line": 630
+      },
+      {
+        "first_line": 814,
+        "last_line": 822
+      },
+      {
+        "first_line": 832,
+        "last_line": 949
+      },
+      {
+        "first_line": 1091,
+        "last_line": 1115
+      },
+      {
+        "first_line": 1348,
+        "last_line": 1352
+      },
+      {
+        "first_line": 2344,
+        "last_line": 2551
+      },
+      {
+        "first_line": 2590,
+        "last_line": 2671
+      },
+      {
+        "first_line": 2924,
+        "last_line": 3859
+      },
+      {
+        "first_line": 4202,
+        "last_line": 4252
+      },
+      {
+        "first_line": 4261,
+        "last_line": 4295
+      }
+    ],
+    "changed_spans": [
+      {
+        "operation": "insert",
+        "before": [
+          257,
+          256
+        ],
+        "after": [
+          257,
+          260
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          425,
+          425
+        ],
+        "after": [
+          429,
+          429
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          446,
+          446
+        ],
+        "after": [
+          450,
+          450
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          458,
+          458
+        ],
+        "after": [
+          462,
+          462
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          463,
+          463
+        ],
+        "after": [
+          467,
+          467
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          577,
+          576
+        ],
+        "after": [
+          581,
+          584
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          594,
+          594
+        ],
+        "after": [
+          602,
+          602
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          916,
+          917
+        ],
+        "after": [
+          924,
+          925
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          1092,
+          1091
+        ],
+        "after": [
+          1100,
+          1103
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          2347,
+          2347
+        ],
+        "after": [
+          2359,
+          2359
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          2350,
+          2349
+        ],
+        "after": [
+          2362,
+          2362
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          2603,
+          2602
+        ],
+        "after": [
+          2616,
+          2618
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          2618,
+          2618
+        ],
+        "after": [
+          2634,
+          2634
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          2952,
+          2951
+        ],
+        "after": [
+          2968,
+          2968
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3174,
+          3176
+        ],
+        "after": [
+          3191,
+          3192
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3186,
+          3186
+        ],
+        "after": [
+          3202,
+          3202
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3212,
+          3212
+        ],
+        "after": [
+          3228,
+          3249
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3252,
+          3252
+        ],
+        "after": [
+          3289,
+          3290
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3258,
+          3258
+        ],
+        "after": [
+          3296,
+          3296
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3266,
+          3266
+        ],
+        "after": [
+          3304,
+          3304
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3274,
+          3274
+        ],
+        "after": [
+          3312,
+          3312
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3281,
+          3281
+        ],
+        "after": [
+          3319,
+          3319
+        ]
+      }
+    ],
+    "complete_function_names": [
+      "execute",
+      "execute",
+      "read_clock",
+      "has_cpuid_interception",
+      "execute",
+      "prepare_signal_effects",
+      "failure_subscription",
+      "ordinary_injection_allowed",
+      "tail_injection_allowed",
+      "complete_injection",
+      "read_clock",
+      "execute",
+      "has_resumable_signal_boundary",
+      "tail_injection_allowed",
+      "ordinary_injection_allowed",
+      "injected_signal_allowed",
+      "injection_is_explicit_exit",
+      "injection_can_be_nonreturning",
+      "matches_initial_exec",
+      "signal_request_requires_return_frame",
+      "read_clock",
+      "has_cpuid_interception",
+      "failure_subscription",
+      "execute",
+      "ordinary_injection_allowed",
+      "tail_injection_allowed",
+      "complete_injection",
+      "config",
+      "has_cpuid_interception",
+      "tid",
+      "pid",
+      "read_clock",
+      "run_with_tool",
+      "run_static_elf_with_tool_completion",
+      "run_static_elf_process_with_tool",
+      "read_clock",
+      "execute",
+      "ordinary_injection_allowed",
+      "complete_injection",
+      "tail_injection_allowed",
+      "read_clock",
+      "execute",
+      "complete_injection"
+    ]
+  },
+  {
+    "relative": "reverie-kvm/src/terminal_runtime_tests.rs",
+    "full_source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/terminal_runtime_tests.rs",
+      "bytes": 6660,
+      "sha256": "15a483061017a4b13366695a7a507ee70f7ff6aad13ff4d5801b17953894b8a7",
+      "mode": 420
+    },
+    "context": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--terminal_runtime_tests.rs",
+      "bytes": 1248,
+      "sha256": "2e65c54338f7ea84b349d157869d5cb3252f5f7d531c211713ec110ac89d92af",
+      "mode": 420
+    },
+    "ranges": [
+      {
+        "first_line": 164,
+        "last_line": 189
+      }
+    ],
+    "changed_spans": [
+      {
+        "operation": "replace",
+        "before": [
+          169,
+          169
+        ],
+        "after": [
+          169,
+          169
+        ]
+      }
+    ],
+    "complete_function_names": [
+      "timestamp_exit_admission_preserves_returning_ordinary_injections"
+    ]
+  },
+  {
+    "relative": "reverie-kvm/src/vm.rs",
+    "full_source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs",
+      "bytes": 329750,
+      "sha256": "e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46",
+      "mode": 420
+    },
+    "context": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--vm.rs",
+      "bytes": 56620,
+      "sha256": "f4a879ab9306217fca0d6836977caeddeafabd94e1bfcd5c274ec93a7cc01c39",
+      "mode": 420
+    },
+    "ranges": [
+      {
+        "first_line": 61,
+        "last_line": 85
+      },
+      {
+        "first_line": 111,
+        "last_line": 165
+      },
+      {
+        "first_line": 982,
+        "last_line": 1006
+      },
+      {
+        "first_line": 1130,
+        "last_line": 1181
+      },
+      {
+        "first_line": 1478,
+        "last_line": 1591
+      },
+      {
+        "first_line": 2042,
+        "last_line": 2057
+      },
+      {
+        "first_line": 2112,
+        "last_line": 2579
+      },
+      {
+        "first_line": 2659,
+        "last_line": 2759
+      },
+      {
+        "first_line": 2816,
+        "last_line": 2884
+      },
+      {
+        "first_line": 3317,
+        "last_line": 3557
+      },
+      {
+        "first_line": 3714,
+        "last_line": 3737
+      },
+      {
+        "first_line": 3817,
+        "last_line": 3842
+      }
+    ],
+    "changed_spans": [
+      {
+        "operation": "insert",
+        "before": [
+          73,
+          72
+        ],
+        "after": [
+          73,
+          73
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          122,
+          122
+        ],
+        "after": [
+          123,
+          123
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          124,
+          124
+        ],
+        "after": [
+          125,
+          125
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          130,
+          130
+        ],
+        "after": [
+          131,
+          153
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          971,
+          970
+        ],
+        "after": [
+          994,
+          994
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          1151,
+          1150
+        ],
+        "after": [
+          1175,
+          1175
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          2643,
+          2642
+        ],
+        "after": [
+          2668,
+          2747
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          2721,
+          2720
+        ],
+        "after": [
+          2826,
+          2858
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          2736,
+          2736
+        ],
+        "after": [
+          2874,
+          2874
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3182,
+          3182
+        ],
+        "after": [
+          3320,
+          3320
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          3189,
+          3188
+        ],
+        "after": [
+          3327,
+          3329
+        ]
+      },
+      {
+        "operation": "replace",
+        "before": [
+          3190,
+          3190
+        ],
+        "after": [
+          3331,
+          3331
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          3193,
+          3192
+        ],
+        "after": [
+          3334,
+          3346
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          3201,
+          3200
+        ],
+        "after": [
+          3355,
+          3355
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          3565,
+          3564
+        ],
+        "after": [
+          3720,
+          3720
+        ]
+      },
+      {
+        "operation": "insert",
+        "before": [
+          3673,
+          3672
+        ],
+        "after": [
+          3829,
+          3830
+        ]
+      }
+    ],
+    "complete_function_names": [
+      "user_registers",
+      "user_registers",
+      "new_with_memory_and_cpuid_policy",
+      "snapshot_process",
+      "from_process_snapshot",
+      "from_thread_state",
+      "exec_process",
+      "finish_tool_process_action_at_boundary",
+      "run_process_action_with_tool_inner",
+      "set_rdtsc_interception",
+      "set_cpuid_interception",
+      "has_cpuid_interception",
+      "tool_instruction_exception",
+      "cpuid_instruction_exception",
+      "resume_timestamp_counter",
+      "resume_tool_instruction",
+      "resume_instruction_registers",
+      "run_static_elf",
+      "run_static_elf_captured",
+      "prepare_captured_output",
+      "run_static_elf_process",
+      "finish_static_elf_thread",
+      "run"
+    ]
+  },
+  {
+    "relative": "reverie-kvm/tests/static_elf.rs",
+    "full_source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/tests/static_elf.rs",
+      "bytes": 512315,
+      "sha256": "b323b02a5fd334b40c857084e51c272720773e958fad38137aee90dd5c19d9de",
+      "mode": 420
+    },
+    "context": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--tests--static_elf.rs",
+      "bytes": 4205,
+      "sha256": "86bfabcc22fc807d5c9824c7a03d58a4d446e3a2c2012628d95648e2d02236a7",
+      "mode": 420
+    },
+    "ranges": [
+      {
+        "first_line": 3649,
+        "last_line": 3665
+      },
+      {
+        "first_line": 7179,
+        "last_line": 7181
+      },
+      {
+        "first_line": 14008,
+        "last_line": 14040
+      },
+      {
+        "first_line": 14102,
+        "last_line": 14142
+      }
+    ],
+    "changed_spans": [
+      {
+        "operation": "insert",
+        "before": [
+          14020,
+          14019
+        ],
+        "after": [
+          14020,
+          14028
+        ]
+      }
+    ],
+    "complete_function_names": [
+      "kvm_is_unavailable",
+      "kvm_available",
+      "static_elf",
+      "timestamp_assertion_program"
+    ]
+  }
+]

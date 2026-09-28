@@ -1,0 +1,160 @@
+        ] {
+            assert!(
+                subscriptions
+                    .iter_syscalls()
+                    .any(|subscribed| subscribed == sysno),
+                "timer-slack mediation requires {sysno:?}"
+            );
+        }
+        assert!(
+            subscriptions
+                .iter_syscalls()
+                .any(|sysno| sysno == Sysno::pwrite64)
+        );
+        assert!(
+            subscriptions
+                .iter_syscalls()
+                .any(|sysno| sysno == Sysno::pidfd_open)
+        );
+    }
+}
+
+#[cfg(test)]
+mod rcb_overshoot_tests {
+    use std::fmt::Write;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use tracing::Event;
+    use tracing::Id;
+    use tracing::Level;
+    use tracing::Metadata;
+    use tracing::Subscriber;
+    use tracing::field::Field;
+    use tracing::field::Visit;
+    use tracing::span::Attributes;
+    use tracing::span::Record;
+    use tracing::subscriber::with_default;
+
+    use super::rcb_timer_overshot;
+    use super::report_rcb_overshoot;
+
+    struct ErrorSubscriber(Arc<Mutex<Option<String>>>);
+
+    struct EventVisitor(String);
+
+    impl Visit for EventVisitor {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            let _ = write!(self.0, "{}={:?}", field.name(), value);
+        }
+    }
+
+    impl Subscriber for ErrorSubscriber {
+        fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+            *metadata.level() == Level::ERROR
+        }
+
+        fn new_span(&self, _span: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            if *event.metadata().level() == Level::ERROR {
+                let mut visitor = EventVisitor(String::new());
+                event.record(&mut visitor);
+                *self.0.lock().unwrap() = Some(visitor.0);
+            }
+        }
+
+        fn enter(&self, _span: &Id) {}
+
+        fn exit(&self, _span: &Id) {}
+    }
+
+    #[test]
+    fn default_overshoot_policy_emits_error_and_returns() {
+        let _ = reverie::take_skid_overshoot_count();
+        let error = Arc::new(Mutex::new(None));
+        with_default(ErrorSubscriber(error.clone()), || {
+            report_rcb_overshoot(false, 16_249, 139, 100);
+        });
+
+        let error = error.lock().unwrap().take().expect("missing ERROR event");
+        assert!(error.contains(reverie::SKID_OVERSHOOT_MARKER), "{error}");
+        assert!(error.contains("PMU RCB overshoot"), "{error}");
+        assert!(error.contains("16249"), "{error}");
+        assert!(error.contains("139"), "{error}");
+        assert!(error.contains("100"), "{error}");
+        assert_eq!(
+            reverie::take_skid_overshoot_count(),
+            1,
+            "the log-and-continue path must feed the supervisor's structural count"
+        );
+    }
+
+    #[test]
+    fn exact_rcb_timer_hit_is_not_an_overshoot() {
+        assert!(!rcb_timer_overshot(100, 100));
+        assert!(!rcb_timer_overshot(99, 100));
+        assert!(rcb_timer_overshot(101, 100));
+    }
+
+    #[test]
+    #[should_panic(expected = "PMU RCB overshoot")]
+    fn opt_in_overshoot_policy_panics() {
+        report_rcb_overshoot(true, 16_249, 139, 100);
+    }
+}
+
+#[cfg(test)]
+mod timeslice_timer_tests {
+    use super::*;
+
+    #[test]
+    fn manual_interrupts_can_shorten_but_not_extend_maximum() {
+        assert_eq!(choose_rcb_timer(100, 100, Some(150)), (50, false));
+        assert_eq!(choose_rcb_timer(100, 100, Some(250)), (100, true));
+        assert_eq!(choose_rcb_timer(100, 100, None), (100, true));
+    }
+
+    #[test]
+    fn pmu_duration_conversion_applies_clock_multiplier() {
+        let duration = crate::types::LogicalTime::from_nanos(100);
+        assert_eq!(duration.into_rcbs_with_multiplier(2.0), 5);
+        assert_eq!(duration.into_rcbs_with_multiplier(0.5), 20);
+        assert_eq!(
+            crate::types::LogicalTime::from_nanos(101).into_rcbs_with_multiplier(2.0),
+            5
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "max_timeslice must be at least one RCB")]
+    fn detcore_constructor_validates_programmatic_config() {
+        let config = Config {
+            max_timeslice: std::num::NonZeroU64::new(1),
+            ..Default::default()
+        };
+
+        let _ = <Detcore as Tool>::new(Pid::from_raw(1), &config);
+    }
+}
+
+#[cfg(test)]
+mod process_tree_guest_clock_tests {
+    use super::*;
+
+    #[test]
+    fn forked_process_shares_guest_clock_domain() {
+        let config = Config::default();
+        let tool = <Detcore as Tool>::new(Pid::from_raw(1), &config);
+        let mut parent = ThreadState::new(DetPid::from_raw(1), &config, ());
+        parent.clone_flags = Some(CloneFlags::empty());
+
+        let child = <Detcore as Tool>::init_thread_state(
+            &tool,
+            Tid::from_raw(2),

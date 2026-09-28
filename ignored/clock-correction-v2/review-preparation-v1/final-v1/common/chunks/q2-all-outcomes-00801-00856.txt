@@ -1,0 +1,56 @@
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/reverie_ptrace-884b4a03308bc02f"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/reverie_ptrace-884b4a03308bc02f",
+        "fresh": false
+      },
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "bytes": 175556008,
+        "mode": 365,
+        "sha256": "c53579c6199ce038c64acf6114499bb3b17d17951da16a3dd130350d3d311eb7"
+      }
+    },
+    "vsyscall": {
+      "cargo_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+        "target": {
+          "kind": [
+            "test"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "vsyscall",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/tests/vsyscall.rs",
+          "edition": "2024",
+          "doc": false,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/vsyscall-fb351a729e11f350"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/vsyscall-fb351a729e11f350",
+        "fresh": false
+      },
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/vsyscall.elf",
+        "bytes": 113938440,
+        "mode": 365,
+        "sha256": "941407999e1b8c0011ec125f12efc2c7e4e2f7b775412ebd416a1b46bb8b3442"
+      }
+    }
+  },
+  "python_optimize": 0
+}

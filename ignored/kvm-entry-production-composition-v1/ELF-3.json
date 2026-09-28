@@ -1,0 +1,9 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/retained-lib-3",
+  "compiled_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1/debug/deps/reverie_kvm-908667d8759d4789",
+  "bytes": 138393712,
+  "sha256": "988d84ed855c48552125ecd07d96cad2d964eadb2097f416023b9c98cc6d4ce8",
+  "compiler_warnings": [
+    "function `set_syscall_return_park` is never used"
+  ]
+}

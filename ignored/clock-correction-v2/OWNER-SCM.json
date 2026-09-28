@@ -1,0 +1,9 @@
+{
+  "state": {
+    "head": "3d4a401ed8959befad0b2f10db59093725f27432",
+    "branch": "codex/kvm-parity-land-20260918",
+    "index": "d9b45a94cbf7f3d322c89bae323777ee29f46da3a9306e50327073123c1d82bd"
+  },
+  "read_only": true,
+  "tracked_status": ""
+}

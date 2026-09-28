@@ -1,0 +1,245 @@
+All primary sources were present and complete, and I read them in the mandated order before touching the proposal: `primary/paper.txt` (1,736 lines including artifact appendix A.1–A.7), `primary/scheduler.rs` (8,426 lines, every `#[cfg(test)]` module), `primary/PROJECT_VISION.md`, `primary/hermit-v2-roadmap.md`, then both context skills, then the packet. Nothing was truncated.
+
+# Adversarial review — Reverie PR https://github.com/rrnewton/reverie/pull/603
+
+**Review target:** `rrnewton/reverie` base `f7bd85e11dd258112148ed2cba6531501a1a00d9` .. exact head `e1ee50dad596f33903caa80313ff8eb32be34754`, tree `d21731c768d50d9a4980e3657a4f088424eae6c0`.
+
+---
+
+## Findings
+
+### 1. Medium (blocker for this prerequisite) — the Direct and Tool paths do *not* enforce the same frozen result: one hard-checks status agreement, the other only `debug_assert`s it
+
+`candidate/reverie-kvm/src/vm.rs:2254-2263` versus `candidate/reverie-kvm/src/runtime.rs:2955-2961`
+
+Direct path:
+
+```rust
+if snapshot.completion.status != status {
+    return Err(Error::UnexpectedVcpuExit(format!(
+        "KVM fork child {} family status disagrees with its process status", child.pid)));
+}
+let completion = ChildCompletion::from_waitability(snapshot.completion.status, snapshot.completion.waitable);
+```
+
+Tool path:
+
+```rust
+debug_assert_eq!(snapshot.completion.child, context.child);
+debug_assert_eq!(snapshot.completion.status, status);
+let completion = ChildCompletion::from_waitability(snapshot.completion.status, snapshot.completion.waitable);
+```
+
+In a release build both `debug_assert_eq!`s vanish. The two values can legitimately differ: `status` at `runtime.rs:2920-2944` is taken from `cancelled_exit`, or from `outcome`, and only replaced by `executor.process_exit_status()` when `pid == tid && natural_exit`. The `child_wait` arm is gated on `outcome.is_ok() && workers.is_ok() && process_status.is_ok()` (`runtime.rs:2945-2948`), which a **cancelled** child satisfies with `natural_exit == false`. On that path `status` never comes from the lifecycle table that produced the snapshot.
+
+**Impact.** The parent's `waitpid` would report `snapshot.completion.status` (recorded into `state.children` through `record_child_completion`) while the Tool's `on_exit` hook and the returned tuple carry a different `status`. That is a silent, guest-visible inconsistency in release, produced by this change's own new code, in exactly the mechanism the change exists to make authoritative. The `terminal_fork` suite exercises the cancellation path (modes 2 and 6) only under `cargo test`, i.e. debug — so the tests would have caught a divergence, but they do not protect release.
+
+The same asymmetry appears one branch up: the Direct path **refuses** `RunTeardownChild` (`vm.rs:2235-2240`) while the Tool path **accepts and auto-reaps** it (`runtime.rs:3012-3028`). That may be justified — the Direct path's parent is on the caller's own stack and cannot be terminal unless an ancestor is — but it is not stated anywhere, and the prompt's own criterion is "Direct and Tool paths enforce the same frozen result".
+
+**Required correction.** Promote the Tool path's `debug_assert_eq!(snapshot.completion.status, status)` (and the `child` equality) to a hard `Err`, matching `vm.rs:2254-2258`. Either unify the `RunTeardownChild` disposition across the two paths or state, in a comment at `vm.rs:2235`, why the nested Direct fork cannot reach it.
+
+### 2. Medium — the managed wait/ledger mismatch and the ancestry invariant fail closed by production `assert!` panic, not by a typed error, inside guest syscall dispatch
+
+`candidate/reverie-kvm/src/executor.rs:4326-4334`, `:4866-4869`; `candidate/reverie-kvm/src/process_signal_publication.rs:123-126`, `:138-141`
+
+```rust
+fn record_consumed_child_wait(&self, child_pid: i32) {
+    let parent = self.admitted_signal_identity().process;
+    let consumed = self.signal_registry.consume_child_wait(parent, child_pid);
+    assert!(
+        consumed || !self.signal_registry.controlled(),
+        "a Tool-controlled KVM wait reaped child {child_pid} without a waitable exact family entry"
+    );
+}
+```
+
+and, at the top of `SyscallExecutor::execute`:
+
+```rust
+assert!(self.state.consumed_child_wait.is_none(),
+    "a KVM child-wait ledger effect must be consumed by its originating syscall");
+```
+
+and in the ancestry walk:
+
+```rust
+assert!(visited.insert(ancestor), "KVM process-family ancestry must remain acyclic");
+assert!(parents.next().is_none(), "one KVM process generation cannot have multiple family parents");
+```
+
+These are plain `assert!`, live in release. Every *other* fail-closed boundary this change introduces is a typed `crate::Error` a consumer can match: `DescendantReparentingUnsupported`, `ParentGenerationUnavailable`, `ParentChildRelationUnavailable`, `ChildExitPublication` (`error.rs:132-186`). The mismatch case is the one the prompt names as required behavior ("A managed mismatch fails closed"), so it deserves the same typed treatment.
+
+`record_consumed_child_wait` is reached from `SyscallExecutor::execute`, i.e. from inside `Guest::inject`. A panic there unwinds through whichever `catch_unwind` happens to enclose the poll — the Tool-panic machinery for an injected syscall, or the vm worker otherwise — and is reported as a *guest/Tool panic* rather than as a backend family-invariant violation. The consequence is fail-closed in effect, but mislabeled and unmatched.
+
+I could not construct a reachable path for either ancestry `assert!`: `state.task_lifecycle` is one shared `Arc` across the whole process tree (`elf.rs:867`), so `process_generation` is globally unique and a duplicate or second-parent key cannot be produced by `register` (`process_signal_publication.rs:198-210`). They are defensive. They should still be `debug_assert!` or a typed refusal, not a release panic in the exit path.
+
+**Required correction.** Return a typed `crate::Error` (a new `FamilyWaitLedgerMismatch { parent, child }` or similar) from the wait path instead of panicking, and demote the two ancestry `assert!`s to `debug_assert!` or make them yield the existing `ParentChildRelationUnavailable` shape.
+
+### 3. Medium — the terminal-ancestor rule closes the *transitivity* hole but does not close the order-sensitivity; the flip that decides abort-vs-success is the one permutation no test pins
+
+`candidate/reverie-kvm/src/process_signal_publication.rs:333-352`
+
+```rust
+let ancestor_is_terminal =
+    parent_identity.is_some_and(|parent| family.has_terminal_ancestor(process_key(parent)));
+let exit = if is_root { Root }
+    else if ancestor_is_terminal { /* remove edge */ RunTeardownChild { status } }
+    else if let Some(child) = blocking_descendant { DescendantReparentingUnsupported { child } }
+```
+
+**What genuinely improved over `d794a5e3`.** The predicate is now transitive (`has_terminal_ancestor`, `:120-144`) rather than "my immediate parent is terminal", the teardown branch removes its exact edge (`:341-349`), and `terminal_ancestor_consumes_nested_family_in_either_descendant_order` (`:2807-2865`) exercises root→child→grandchild and root→grandchild→child, asserting `direct_children.is_empty()` afterwards. I traced the edge bookkeeping and could not find a way for a *non-terminal* process to lose its incoming edge: every removal site (`record_process_exit` teardown branch, the `waitable == false` auto-reap branch, `record_process_failure` `:249-257`, `consume_child_wait` `:417-434`) coincides with a `terminal` insert or requires an already-terminal `WaitableZombie`. So the walk cannot terminate early and mis-classify. That was a real hole and it is closed.
+
+**What did not change.** The branch order is still ancestor-teardown before descendant refusal, so for root `R` → child `C` → grandchild `G` where `C` never reaps `G`:
+
+- `C` exits while `R` is alive → `blocking_descendant` fires → `Error::DescendantReparentingUnsupported` → **run aborts** (real-KVM matrix modes 0 and 1, `tests/static_elf.rs` grandchild matrix; four diagnostics in `qualification/real-grandchild.log:5-8`).
+- `R` exits first → `terminal[R] = Root` → `C` then `G` are both `RunTeardownChild` → **run succeeds** (`terminal_ancestor_consumes_nested_family_in_either_descendant_order`).
+
+Both halves are tested; no test asserts they *agree*, because they do not. `terminal_ancestor_consumes_nested_family_in_either_descendant_order` retires the root **first in both branches** (`:2812-2818`) and varies only the descendant order after that, so the decisive permutation — middle-exits-first versus root-exits-first — is covered by two separate tests with two opposite verdicts and no cross-reference.
+
+**Is that merely relabelling?** No, and I want to say so precisely, because it is the closest call in this review. The rule now maps onto a real Linux distinction: reparenting `G` to a *live* namespace init is unimplemented and refused, while a dead namespace init means the whole container is tearing down. That is a defensible product rule, not a renamed failure. But two consequences remain and should be recorded rather than left implicit:
+
+1. Under chaos mode or `hermit analyze` schedule search, root-vs-middle exit order is a scheduling choice for a guest that does not synchronize (`sh -c '(cmd &)'`, a daemonizing child, out-of-order `make` reaping). A seed change can turn a passing run into a hard abort. Within one schedule the verdict is a deterministic function of guest-causal state, so this is not a determinism violation — it is a compatibility and schedule-search usability cost against `PROJECT_VISION.md`'s "Fully runs all hermit `--strict --verify` that ptrace can".
+2. In the teardown-absorbed direction the descendants **keep executing to completion** after the container root has exited, where Linux kills every task in the namespace when PID 1 exits. That is pre-existing (base also ran them to completion) but the new rule now silently absorbs their exits instead of reporting them.
+
+**Required correction.** Add the missing permutation as an explicit test (`R` live + `C` exits with unreaped `G` → error; `R` terminal first + same guest → teardown) in one test that names the asymmetry, and state the compatibility cost in the PR description, not only in the code comment at `:337-340`.
+
+### 4. Low — the Tool is handed the SIGCHLD publication point *before* waitability, which Linux makes atomic, and the trait doc does not name the consequence
+
+`candidate/reverie-kvm/src/runtime.rs:2977-2997`, `candidate/reverie/src/tool.rs:206-218`
+
+```rust
+let first_poll = poll_fn(|cx| Poll::Ready(callback.as_mut().poll(cx))).await;
+let waitability = if context.completion.publish(completion) { notify } else { error };
+```
+
+The Tool's synchronous prefix — where it is told to commit its publish/suppress decision — runs before `context.completion.publish(...)` and before the parent's `record_child_completion` inserts the child into `state.children`. So a Tool that calls `publish_child_exit` in that prefix (exactly what the real-KVM fixture does, `tests/static_elf.rs` `on_backend_child_wait_event`) makes SIGCHLD pending while the child is not yet waitable. Linux's `do_notify_parent` sets the zombie waitable and generates SIGCHLD under `tasklist_lock`; a handler that immediately calls `waitpid(WNOHANG)` is guaranteed to find the child.
+
+The real-KVM test passes because its guest is parked in a blocking `waitpid(-1)` with `SA_RESTART`, which retries. A guest whose SIGCHLD handler does a single `waitpid(WNOHANG)` and treats `0`/`ECHILD` as "nothing there" could observe the window. The doc at `tool.rs:206-213` specifies the ordering but does not state that the Tool therefore owns the atomicity fence.
+
+Note the ordering is not gratuitous: `waitable` is already frozen in the snapshot, so the prefix does not decide auto-reap; it exists so a deterministic consumer can order the SIGCHLD relative to its own scheduler state. That is the right delegation — it just needs saying.
+
+### 5. Low — `uid`, `user_ticks`, `system_ticks` are still structurally unable to be nonzero (prior finding 8, unchanged)
+
+`candidate/reverie-kvm/src/process_signal_publication.rs:354-362` hardcodes `uid: 0, user_ticks: 0, system_ticks: 0`, and `publish` requires exact snapshot equality (`:669-678`), so a Tool cannot supply real values. Nonzero encoding is exercised only by the pure encoder test `child_siginfo_encoder_and_coalescing_retain_first_nonzero_metadata`. Internally consistent (`waitid` writes `si_uid = 0`, `si_utime = 0`, `si_stime = 0` at `executor.rs:15448-15452`; `wait4` zeroes `rusage`) and uid 0 matches the paper's container mapping (§5.5). Three newly-public fields that read as live plumbing but cannot be.
+
+### 6. Low — a `SIG_DFL` SIGCHLD is still enqueued, and installing a handler over `SIG_DFL` after child exit still yields a delivery Linux would have discarded (prior finding 9, unchanged)
+
+`process_signal_publication.rs:724-738` short-circuits only on `disposition == PublicationDisposition::Ignored`; `KernelSigaction::is_ignored()` is exactly `handler == SIG_IGN` (`signal.rs:188-190`). `discards_pending` (`executor.rs:14720-14724`) bumps the pending generation for `SIG_IGN` and for `SIG_DFL` on a default-ignored signal — but **not** for installing a handler. So:
+
+- `SIG_DFL` + unblocked at child exit → KVM enqueues; Linux's `sig_ignored()` discards. The guest can see a transient `sigpending()` bit and spurious signalfd readiness.
+- `SIG_DFL` at exit, handler installed before publication → generation unchanged → `Queued` → delivered. Linux discarded that instance at generation time.
+
+Both are unexercised: the grandchild matrix blocks SIGCHLD throughout (`sigprocmask(SIG_BLOCK, SIGCHLD)`), and Linux *does* queue a blocked `SIG_DFL` SIGCHLD, so that case is faithful.
+
+### 7. Low — remaining untested surfaces and bounds
+
+- The two new trait defaults (`publish_child_exit` → `ENOSYS`, `finish_child_exit_publication_failure` → `ENOSYS`, `process_signal_control.rs:203-207`, `:238-246`) still have no test.
+- `signal_recipients` range check is `(1..=64)`; the test covers only the lower bound (`signal_recipients(parent, 0)` → `EINVAL`), not 65.
+- The child path's `Rejected(Terminal)` → `EIO` after a latched `registry.failure` is still untested; `child_signalfd_failure_retains_exact_receipt_and_is_not_retryable` short-circuits on the ledger before reaching the `Terminal` check.
+- A panic or early `Err` in the callback's **synchronous prefix** is still untested. The new mode-6 test panics *after* the await (`terminal_fork.rs:110-114`), so it exercises the retained-remainder path, not the prefix. `runtime.rs:2981-2993` publishes waitability regardless of what the first poll returned.
+- `BackendChildWaitState::Stopped(i32)` / `Continued` still have no publication route; `CLD_STOPPED`/`CLD_CONTINUED`/`CLD_TRAPPED` are unreachable.
+- `family.terminal` (`:116`) and `child_publications` (`:158`) are never pruned. `child_publications` is documented as run-scoped; `terminal` is not. One entry per process generation for the run.
+- `grandchild_family_transitions_are_causal_on_real_kvm` still asserts only `observed` events and never inspects `global.publications` (it discards `_global`), so a `RejectedBeforeCommit` in any of the twelve runs would pass unnoticed. The narrower `child_waitability_callback_and_auto_reap_are_observed_on_real_kvm` now *does* assert all three receipts and their exact effects, so the gap is halved.
+- `has_terminal_ancestor` scans the whole `direct_children` map once per ancestry level while holding the `family` mutex. Correct, but O(depth · live-processes) per exit for a `make -jN`-scale tree.
+- `runtime/native_test_support.rs:407-414` still resamples `child_exit_policy()` at host-join time rather than using the frozen snapshot — the behaviour this change exists to remove. It is behind `feature = "native-test-support"` and drives no real fork family, but the "frozen waitability" invariant is therefore not uniform across all compiled paths.
+- `consume_child_wait` (`:417-434`) matches by **numeric** pid within the parent's map (`key.0 == child_pid`), and `state.children` is numeric-keyed throughout. The family ledger is generation-exact, but the bridge between them is not. Bounded in practice: `next_pid` is one run-wide monotonic `AtomicI32`, so numeric reuse only occurs in tests that fork the same pid twice on purpose.
+- A non-leader thread's `state.children` is empty (`elf.rs:877-880` clears it for every clone), so a sibling thread cannot reap the process's children — where Linux permits it. Pre-existing, but it now interacts with the fail-closed boundary: a process whose non-leader thread would have reaped a zombie cannot, and the leader's exit then aborts.
+
+### 8. Low — `vm.rs`'s "capture identities" comment still overstates slightly (prior finding 13, residual)
+
+`candidate/reverie-kvm/src/vm.rs:2866-2892`: the comment says "Capture generation-bound process **identities** while both live executors are still registered", but `executor.signal_task_identity()` is called and its result discarded — it is a liveness precheck only. Only the child's identity is captured; the event's `parent` comes from the frozen snapshot and the lifetime from `_parent_binding`. The untyped late-child-registration refusal (`executor.rs:2601-2606`, `Error::UnexpectedVcpuExit(String)`) also remains untyped next to its typed siblings.
+
+---
+
+## Status of the seven items the prompt asked me to scrutinise
+
+| # | Claim | Verdict at `e1ee50da` |
+|---|---|---|
+| 1 | Real-KVM child-wait test now has retained raw passing evidence and no-skip inspection | **Resolved.** `qualification/real-child-wait.log`: `child_waitability_callback_and_auto_reap_are_observed_on_real_kvm ... ok`, 1 passed, 335 filtered, 0.37 s, and **no** `skipping KVM child-lifecycle test` line — the `/dev/kvm` early return at `static_elf.rs:7980-7987` did not fire. The guest at `:7999-8038` installs a real `handler`, returns 16 if `handled != 1`, and the test asserts `code == 0` (`:8060-8065`), so end-to-end SIGCHLD **handler delivery** under `ToolControlled` is now actually proven, not just waitability. `set_root_pid(17)` makes the asserted identities `{18,2} {19,3} {20,4}`, plus an explicit `tgid as u64 != generation` assertion, and all three publication receipts are asserted `Committed` with effects `[Queued, SuppressedExplicitIgnore, Queued]`. |
+| 2 | Terminal-ancestor teardown kept ahead of reparent refusal, now transitive and tested both ways | **Partially resolved.** Transitivity hole closed and edge bookkeeping verified sound; order-sensitivity itself remains by design. See finding 3. |
+| 3 | No Tool consume API; instead trait docs mandate backend wait injection, evidenced by the Hermit sources | **Resolved as specified.** I verified every relevant branch in `consumer/detcore/src/syscalls/threads.rs`: `handle_wait4`'s WNOHANG-managed loop (`:1620-1648`), its blocking managed loop (`:1673-1727`), its legacy `retry_nonblocking_syscall` fallback (`:1735`), and the terminal reap at `:1737-1750`; `handle_waitid`'s WNOHANG loop (`:1879-1928`) and blocking loop (`:1953-2090`). In every one, `guest.inject`/`inject_with_retry` runs **before** `consume_child_wait` (Detcore's scheduler-shadow retirement, a different function from the KVM registry's). `WNOWAIT` never consumes (`:1919-1921`, `:2084`). The `ECHILD` branches (`:1638-1644`, `:1690-1708`, `:1903-1910`, `:2002-2022`) retire the shadow only *after* the backend reported `ECHILD`, i.e. after the backend disclaimed ownership. `HERMIT-WAIT-CONTRACT.md`'s four routing claims check out against the snapshots. The obligation is now stated on `ProcessSignalControl::publish_child_exit` (`process_signal_control.rs:198-207`) and `GlobalTool::on_backend_child_wait_event` (`tool.rs:216-218`). Documented and evidenced rather than enforced — the enforcement is the fail-closed path in finding 2. |
+| 4 | `ParentGenerationUnavailable` / `ParentChildRelationUnavailable` are separate typed states with direct tests | **Resolved.** `error.rs:161-186`, `process_signal_publication.rs:365-373` and `:396-399`, mapped in `executor.rs:4313-4318`, tested by `child_exit_distinguishes_lost_parent_generation_from_lost_family_edge` including that a later generic `record_process_failure` preserves each cause. Neither names the exiting process as its own child; the prior `child: process` self-reference is gone. The concurrent-exit case that could have mis-hit `ParentGenerationUnavailable` is correctly prevented: `take_exit` holds the parent's `signal_transaction` across both the final lifecycle removal and `record_process_exit` (`executor.rs:4715-4757`), and the child re-acquires that same transaction at `process_signal_publication.rs:284-289` before reading the parent's lifecycle — so the child sees `terminal[parent]` and takes `RunTeardownChild`, not the unavailable-generation error. |
+| 5 | `GlobalTool` docs describe callback suppression/auto-reap for a terminal retained ancestor; the fixture assertion explains it | **Resolved.** `tool.rs:213-218` states it in terms; the `terminal_fork` assertion message now reads "a child gets one wait event after a live-parent exit, while parent-terminal teardown suppresses and auto-reaps it" (`terminal_fork.rs:569-576`). Worth stating plainly: in `terminal_fork` modes 0 and 1 — which **succeed** — a child exit now produces *zero* Tool notifications where base produced one. That is a real narrowing of the Tool-visible contract for the ordinary "parent exits before its child finishes" pattern. |
+| 6 | `wait4`/`waitid` record the exact PID only after successful backend removal; outer-executor tests cover two zombies, P_ALL, P_PGID, P_PID, WNOWAIT, wait4, ledger coupling, and managed-mismatch refusal | **Resolved.** `elf.rs:727` adds `consumed_child_wait: Option<i32>`; `executor.rs:15393-15394` (wait4) and `:15469-15472` (waitid) set it only on the same statement pair that removes from `state.children`, after every `EFAULT`/`EINVAL`/`ECHILD` return, and never under `WNOWAIT`. The duplicated selection rule is gone — I grepped: the only remaining `P_ALL | P_PGID` outside tests are the real selector at `:15430` and `synchronize_waitid` at `:3147`, which joins pending host threads and does not decide ledger removal. `child_wait_consumes_the_exact_family_child_selected_by_the_backend` runs all five modes with two zombies and asserts `state.children` and the family ledger change together. `controlled_child_wait_fails_closed_without_an_exact_family_zombie` covers the mismatch (via `catch_unwind` — see finding 2). |
+| 7 | Failure replaces only successful family terminal states, detaches the parent edge, and preserves typed fatal states | **Resolved.** `record_process_failure` (`:229-258`) replaces `None | Root | Child | RunTeardownChild` and returns early otherwise; the parent edge is removed on replacement. `failed_process_family_is_monotonic_across_peer_retirement_orders` exercises `Root`, `Child`, `RunTeardownChild`, and preservation of `DescendantReparentingUnsupported`; `child_exit_distinguishes_lost_parent_generation_from_lost_family_edge` covers preservation of both unavailable variants. I checked the corollary risk — a published, then-failed child whose parent later waits, which would trip the finding-2 assert — and it is unreachable: publication is gated on `workers.is_ok()` (`runtime.rs:2947`), and after that gate no peer of the child remains to call `retire_failed_thread`. |
+
+---
+
+## Goalpost-moving assessment
+
+**Assertions weakened: no.** Every changed assertion is equal or stronger over the pre-existing domain. `terminal_fork`'s `("EIO", 1)` → `("EIO", usize::from((2..=5).contains(&mode)))` is identical for modes 2–5 and only excuses new mode 6, where the callback panics instead of returning `EIO` and is instead required to produce `"child wait hook"` ×1 and `"guest thread panicked during teardown"` ×1 plus exactly one `wait-collected` — a strictly new obligation. The predicate rewrites `mode >= 2` → `(2..=5)` and `mode >= 3` → `(3..=5)` (fixture, `run_case`, and `ForkTool`) are equivalent over the base domain 0..=5; I checked each. `child_count = if mode >= 2 {2}` → `(2..=5)` likewise. The wait-event `Exited` assertion gained three new fields asserted as `0`. The real-KVM assertion moved from `Pid::from_raw(1)`/`(2)` to full `SignalProcessId` with `root_pid = 17`, generations 1–4, an explicit `tgid != generation` inequality, and three publication receipts with exact effects, and the guest moved from a bogus never-invoked handler address to a real handler whose non-delivery fails the guest with code 16.
+
+**Tolerance widened, exemption added, case skipped, or comparator relaxed: no — tightened.** `publish`'s status comparator is whole-`ExitStatus` (`!= Some(completion.status)`), the exit-code range `(0..=255)` and the frozen-snapshot equality `snapshot.completion == *completion` are new constraints, `finish_publication_failure` gained `|| failure.receipt.child_completion.is_some()`, `finish_child_exit_publication_failure` binds to the exact receipt (tested with a `pending_generation + 1` near miss), and `recipients.sort_by_key` is an added determinism guard. `register` gained a refusal for admitting a child under a terminal parent. No skip, allowlist, or exemption was added anywhere; the two `#[cfg]` gates (`child_exit_policy`, `child_completion`) narrow *test-only* accessors because production now reads the frozen snapshot.
+
+**Failure renamed or relabelled as a pass: one item, and it is a documented behaviour change rather than a relabelling.** `expected_wait_event = (2..=6).contains(&mode)` requires **zero** wait events for `terminal_fork` modes 0 and 1, where base fired the callback. Base had no wait-event assertion at all, so nothing was relaxed — a new assertion was added that encodes the new rule, and (unlike at `d794a5e3`) the message and the `GlobalTool` doc now both say why. I am recording it explicitly because it is the one place where the observable Tool contract got smaller in a *successful* run.
+
+**Check deleted instead of satisfied: no.** `ChildCompletion::Failed` was replaced by `ChildCompletionState::Failed` inside `ChildCompletionSlot` with the identical error text, plus `Consumed` and `Poisoned` states that prevent resurrection, and `assert!(fail_if_pending())` at every call site — strictly stronger. The private `CommittedChildExit` was replaced by the public `ChildExitCompletion` with four extra validated fields. `alarm_recipients` became a provided delegation over the new required `signal_recipients`, which removes the mutual-recursion trap rather than a check. The four qualification gates (`git diff --check`, `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`) are all retained and the clippy scope **widened** from `-p reverie-kvm` at `d794a5e3` to `--workspace`.
+
+---
+
+## Conclusion — determinism guarantee
+
+**Sound within a schedule; the one remaining order-dependence is a compatibility cost, not a determinism violation.**
+
+What is now a pure function of deterministic backend state: the family snapshot (parent disposition, waitability, pending generation, full `ExitStatus`) is frozen once at the *logical* exit transition inside the exiting process's own transaction (`executor.rs:4715-4757`), and both the Tool path and the Direct path derive `ChildCompletion` from it rather than from the live `sigchld_auto_reap` atomic at host join. `group_started` (`elf.rs:254-279`) makes an `exit_group` the ordered transition while peer host handles are still being cancelled, and `group_exit_records_family_order_before_peer_host_retirement` exercises both peer-retirement orders against both auto-reap dispositions. The at-most-once ledger keyed on `(child tgid, child generation)` removes the coalesce-then-dequeue duplicate, holding its guard across the whole mutation and readiness phase (`:701-711`, `:825-843`). Recipients are sorted. The `waitid` selection rule now exists in exactly one place and the ledger consumes the pid the backend actually removed.
+
+Lock ordering: I traced it again against the new `family` mutex and found no inversion and no cycle. `register` takes `family` then releases it before `processes`; every reader (`record_process_exit`, `record_process_failure`) calls `lookup` — whose `processes` guard is a statement-scoped temporary — before acquiring `family`. `record_process_exit` releases the parent's lifecycle and signals guards inside its closure before taking `family` (`:290-321`), and `publish` releases `family` (via `process_family_exit`) before taking `failure` → `child_publications` → process `signals`. The ancestry walk is provably acyclic because one shared `TaskLifecycleTable` (`elf.rs:867`) makes `process_generation` globally unique.
+
+Host-timed inputs that remain the consumer's to fence, as `process_signal_control.rs:198-199` states: `set_signalfd_ready` is real host I/O whose failure latches the run terminal; the interval between the frozen snapshot and the publication (disposition and pending generation frozen, so a late ignore yields `DiscardedByDispositionChange` rather than a race — but a late *handler installation* over `SIG_DFL` still gets a delivery Linux would not produce, finding 6); and the SIGCHLD-before-waitability window in finding 4.
+
+This patch must **not** be credited with KVM determinism, backend parity, record/replay, or a complete child-exit repair. Hermit's synthetic plus-one-nanosecond child-exit timer (`primary/scheduler.rs:4202-4216`) and the `should_synthesize_child_exit_signal` / `signal_guest` numeric fallback (`scheduler.rs:1806-1808`, `3023-3089`) are untouched, as they should be. There is still no production `publish_child_exit` caller outside tests and fixtures.
+
+## Conclusion — Linux and POSIX semantics
+
+**Faithful on what it covers; four named divergences, all declared.**
+
+Correct: `si_signo`/`si_code`/`si_pid`/`si_uid`/`si_status`/`si_utime`/`si_stime` at offsets 0/8/16/20/24/32/40 with 8-byte signed `clock_t`, matching the x86-64 SIGCHLD `siginfo_t`; `CLD_EXITED`/`CLD_KILLED`/`CLD_DUMPED` from `Exited`/`Signaled(_,false)`/`Signaled(_,true)` with an out-of-range exit code refused; explicit `SIG_IGN` suppressing generation and auto-reaping while `SA_NOCLDWAIT` auto-reaps but still generates — exactly `do_notify_parent`, and the frozen `waitable` predicate (`:316`) is the negation of `sigchld_auto_reaps` (`executor.rs:15212-15216`), so waitability and signal policy cannot drift; standard-signal coalescing retaining the first complete siginfo; `WNOWAIT` consuming nothing on either side of the boundary; negative ticks refused; recipient selection by exact generation, live tasks only, mask-aware, sorted.
+
+Divergent or absent: the `SIG_DFL` transient-pending and later-handler cases (finding 6); `sigaction(SIGCHLD, SIG_IGN)` not flushing *existing* zombies (base resampled and was also wrong; head is deterministically wrong, which is the right trade at this stage); `uid` and CPU times structurally zero (finding 5); no publication route for `Stopped`/`Continued`; SIGCHLD-before-waitability non-atomicity (finding 4).
+
+Separately, the fail-closed reparenting boundary is not Linux behaviour and is not claimed to be — Linux reparents to the nearest subreaper or init, and namespace PID 1's exit kills the namespace. Converting "silently wrong" into "loudly refused" is right for this stage, but it narrows the envelope against `PROJECT_VISION.md`, and the narrowing is now *asymmetric* (finding 3). That cost belongs in the PR description.
+
+---
+
+## Verification actually inspected, with limitations
+
+| Phase | What I read |
+|---|---|
+| `git diff --check` | `diff-check.log`, 0 bytes |
+| `cargo fmt --all -- --check` | `fmt-check.log`, 0 bytes |
+| tracked status at head | `tracked-status.log`, 0 bytes |
+| `cargo check --workspace --all-targets` | `workspace-check.log`, 4,359 bytes: vendored libelf `-Wimplicit-fallthrough` and SaBRe/e9patch/DynamoRIO build notes only. Retained proof that the breaking `BackendChildWaitEvent` field change and the newly-required `signal_recipients` trait method compile tree-wide. |
+| `cargo clippy --workspace --all-targets -- -D warnings` | `clippy.log`, 5,604 bytes — scope widened from `-p reverie-kvm` at the prior head |
+| `cargo test -p reverie-kvm --lib` | `reverie-kvm-lib-rerun.log:772`: **766 passed, 0 failed, 0 ignored, 7.73 s** (753 at base, 762 at `d794a5e3`) |
+| the disclosed flake | `reverie-kvm-lib-initial-flake.log:776-783`: 765 passed / 1 failed, `descriptor_retirement_accept_cleanup_releases_both_guards` panicking at `executor.rs:26913` on `accept().unwrap()` with host `EAGAIN` (`WouldBlock`). Unrelated to child-exit publication — a host socket-accept race in a descriptor-retirement test. `isolated-flake-retry.log`: that exact test passes alone. Disclosing this rather than hiding it is the correct call, and the failure mode is independently identifiable from the log. |
+| focused family/publication module | `family-focused.log:42`: 34 passed, 732 filtered, 0.12 s — every new family/publication test listed by name |
+| `--test static_elf terminal_fork::` | `terminal-fork.log:217`: 23 passed, 313 filtered, 0.33 s, including the new `cancellation_preserves_status_across_child_wait_callback_panic` and its deliberate panic at `terminal_fork.rs:126:17` |
+| real-KVM child wait | `real-child-wait.log`: 1 passed, 335 filtered, 0.37 s, **no `/dev/kvm` skip line** |
+| real-KVM grandchild matrix | `real-grandchild.log`: 1 passed, 335 filtered, 1.50 s; exactly four expected fail-closed child diagnostics (children 2 and 4 × modes 0 and 1 × root pids 1 and 3), surfaced to the root's `wait4` as `EIO` |
+| `cargo test -p reverie-core` | `reverie-core.log`: 14 + 4 + 1 + 3 doctests, one pre-existing ignored backend doctest |
+
+**Limitations.** I executed nothing — every result above is a retained log read at face value, and I could not independently compute the patch's SHA-256 against `INPUTS.json` (no execution tools). I read all 4,946 lines of `BASE-TO-HEAD.patch` contiguously, plus the full `candidate/reverie-kvm/src/process_signal_publication.rs` non-test body, `executor.rs` at the register/fork/thread/exec/retire/waitid/wait4/execute sites, `runtime.rs:2876-3125`, `vm.rs:2198-2273` and `2860-2990`, `elf.rs:150-400` and `690-900`, `signal.rs` at the disposition predicates, both changed `reverie/src` traits, and the complete `consumer/detcore/src/syscalls/threads.rs` wait4/waitid handlers. No Hermit exact-main `safehermit` run, no record/replay, no ptrace/KVM parity comparison — correctly out of scope for a prerequisite, and `QUALIFICATION.md:24` says so explicitly.
+
+## Residual risks
+
+- **`(None, true) if pid == tid` at `runtime.rs:3052-3055`** calls `process_family_exit()` for a non-fork leader and converts a missing terminal entry into `UnexpectedVcpuExit("lost its terminal family transition")`. The guard admits a *cancelled* root (`natural_exit == false` leaves `process_status = Ok(())`), where `take_exit` may never have recorded a transition. `terminal_fork` modes 2 and 6 cancel and pass, and those runs error for other reasons anyway, so I could not demonstrate it — but a successful cancelling run would be a new spurious fatal.
+- **Scheduler-mutex inversion.** `publish_child_exit` acquires the parent process's transaction while the consumer holds its scheduler mutex. I found no backend path holding a process `signal_transaction` across a call into the Tool (`fork_child`, `thread_child`, `take_exit`, `retire_failed_thread`, `replace_after_exec` and `Drop` all hold it without calling the Tool, and `on_backend_child_wait_event` is invoked with no publication guard held), but I cannot prove it exhaustively over a 1.5 MB `executor.rs`. Pre-dates this change via the alarm path.
+- `finish_child_exit_publication_failure` does not clear `registry.failure`, and `failure_forwarded` is one registry-wide latch (`:997-999`), so a second acknowledgement is a silent `Ok(())`. Bounded: only one failure can be retained, because the first latches the run terminal.
+- `debug_assert!(previous.is_none())` guards every ledger insert and the `register` duplicate check; in release a duplicate would silently overwrite. Consequences are fail-closed (`InvalidCompletion` at `publish`), and the shared lifecycle table makes duplicates unreachable.
+- `ChildExitCompletion` is `Copy + Serialize + Deserialize`, so a receipt is freely clonable; the only binding of an acknowledgement to one operation is exact equality, which is tested including the near miss.
+
+---
+
+## Verdict
+
+**CHANGES REQUESTED** at exact head `e1ee50dad596f33903caa80313ff8eb32be34754`.
+
+This is a substantially stronger head than `d794a5e3`. All three prior blockers are addressed: the real-KVM test now has retained raw passing evidence at the exact tree and additionally proves end-to-end SIGCHLD *handler delivery* under `ToolControlled`; the terminal-ancestor rule is transitive with verified edge bookkeeping and both descendant permutations tested; and the consumer-API objection is answered by a documented obligation that I verified branch-by-branch against the actual Hermit `wait4`/`waitid` sources, including every `ECHILD` path and `WNOWAIT`. Prior findings 4–7 are fully resolved. No goalpost was moved in any of the four categories — where a control changed shape it was replaced by a stronger one, clippy scope widened, and the lib suite grew 753 → 766.
+
+Three things I am asking for before this lands:
+
+1. **Finding 1 (blocks this Reverie prerequisite):** the Tool path guards its frozen-status agreement with a `debug_assert_eq!` while the Direct path hard-checks it 700 lines away. In release, a cancelled child can give the parent a different `waitpid` status than the Tool's reported exit status. Promote it to an `Err`, and state or unify the `RunTeardownChild` divergence between the two paths.
+2. **Finding 2 (blocks this Reverie prerequisite):** the managed wait/ledger mismatch — the behaviour the change is required to provide — fails closed by a production `assert!` panic inside `SyscallExecutor::execute`, mislabeled as a guest/Tool panic and unmatched by any consumer. Give it a typed `crate::Error`, and demote the two defensive ancestry `assert!`s.
+3. **Finding 3 (blocks the PR's description, not its internal correctness):** add the one permutation no test pins — middle-exits-first versus ancestor-exits-first for the same unreaped-descendant guest — in a single test that names the asymmetry, and state the compatibility cost in the PR description.
+
+Findings 4–8 are acceptable to defer with an explicit note; none alone would block. To keep the boundary clear: none of these findings concern the **still-required external Hermit consumer**, which must separately implement the two-stage `Exit` fence and the callback publication protocol. This patch supplies Reverie API and backend ordering only.

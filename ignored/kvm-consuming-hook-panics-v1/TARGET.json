@@ -1,0 +1,70 @@
+{
+  "scope": "uncompiled consuming-hook panic handling and three declarations",
+  "records": [
+    {
+      "path": "BEFORE.json",
+      "bytes": 202,
+      "sha256": "a4999ad95b9157d95cd1371fa5737d0e9b7fb8124246ff17c4b1ff5a3c615bcd"
+    },
+    {
+      "path": "runtime-before.rs",
+      "bytes": 244320,
+      "sha256": "2fe90bdfeed8e7c13b0e8e3c79c6f6e5f0399e81cd018a8d4b45d216e502da17"
+    },
+    {
+      "path": "NOTIFY-BEFORE.rs",
+      "bytes": 2410,
+      "sha256": "ae053f2a488502709712f63859a0ccab972939fed7adf4d7ed6f46435c6ff701"
+    },
+    {
+      "path": "runtime-after.rs",
+      "bytes": 246056,
+      "sha256": "9f16e87600947f8f306770daffca725079d9aef70e6b64363b748b5e3cabef3f"
+    },
+    {
+      "path": "NOTIFY-AFTER.rs",
+      "bytes": 4094,
+      "sha256": "55b4e0643a22504c5f0550a0f8212586cee50c74599a892ddc31f46e4972013f"
+    },
+    {
+      "path": "runtime-author-only-after.rs",
+      "bytes": 246004,
+      "sha256": "85436367126a678606c8a83ad54ef9900e1f2c261354e488c54b3be83d942dd4"
+    },
+    {
+      "path": "consuming_panic_tests.rs",
+      "bytes": 12763,
+      "sha256": "dce0b1ce5c0e848b8b80a09c462eed053a3c7b21184a62dfe4e4103064e25a79"
+    },
+    {
+      "path": "tool_panics-dependency.rs",
+      "bytes": 2098,
+      "sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c"
+    },
+    {
+      "path": "owned_future-dependency.rs",
+      "bytes": 10917,
+      "sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d"
+    },
+    {
+      "path": "AUTHOR.patch",
+      "bytes": 17337,
+      "sha256": "2d9131ca7fbcd71a11a38eaf71a1eee38dbabbc6c95f796b95557df27edae7d7"
+    },
+    {
+      "path": "CONCURRENT.patch",
+      "bytes": 1083,
+      "sha256": "d64750f3990b286532066180b199b662a4cce215ef12acc644f291fc060edd14"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 953,
+      "sha256": "bd2f9dd17c9affe415da1477b5d248f71198dd0a2081eab3f86ce5a9cfed4625"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 5195,
+      "sha256": "2811b2ce44462a1c5508c1e9fd448acb4c86ef4c04fafe92335c8e96847aa071"
+    }
+  ]
+}

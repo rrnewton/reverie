@@ -1,0 +1,15 @@
+
+running 10 tests
+test runtime::signal_cleanup_completion_tests::cleanup_poll_panic_keeps_transferred_error_and_all_destructor_panics ... ok
+test runtime::signal_cleanup_completion_tests::ready_cleanup_error_survives_callback_and_failure_destruction ... ok
+test runtime::signal_cleanup_completion_tests::actual_ready_signal_cleanup_keeps_success_after_run_failure ... ok
+test runtime::signal_cleanup_completion_tests::signal_cleanup_publishes_effects_before_cancelling_and_joining_registered_child ... ok
+test runtime::signal_cleanup_completion_tests::poisoned_signal_cleanup_child_state_becomes_a_typed_invariant_error ... ok
+test runtime::signal_cleanup_completion_tests::pending_cleanup_cancellation_catches_destruction_and_rejects_children ... ok
+test runtime::signal_cleanup_completion_tests::actual_signal_cleanup_pending_drop_panic_retains_effects_errno_and_payload ... ok
+test runtime::signal_cleanup_completion_tests::actual_signal_cleanup_rejects_fork_vfork_clone_and_clone3_injection ... ok
+test runtime::signal_cleanup_completion_tests::actual_signal_cleanup_poll_panic_retains_effects_errno_and_payload ... ok
+test runtime::signal_cleanup_completion_tests::actual_ready_signal_cleanup_keeps_errno_and_removal_after_run_failure ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.12s
+

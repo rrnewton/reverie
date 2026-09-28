@@ -1,0 +1,60 @@
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_8fETvMWfUIm9GPqxhvQmPQmX",
+              "timestamp": "2026-09-18T08:15:35.700Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/roadmap-00201-00400.txt",
+            "bytes": 10846,
+            "sha256": "876581f98d7084138605529442043b721fe777abfc6863f02214284685c0c215",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_5XX3YgqNY52nA9makjixWPNI",
+              "timestamp": "2026-09-18T08:15:39.929Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/roadmap-00401-00504.txt",
+            "bytes": 6091,
+            "sha256": "60623cbe56f022b0487080c50933d84266395912d4ba832cecb3bb8d32dee65a",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_Trd7r3Z5ElO2lXnWzHfZTkMl",
+              "timestamp": "2026-09-18T08:15:45.648Z"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "current_hermit": "97c39b308efd854693038f24962484182d932f27",
+  "scheduler": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/hermit-97c/detcore/src/scheduler.rs",
+    "bytes": 354822,
+    "sha256": "a5da44ec706ad656230cf78aa5742fc40c5339a14aad30410b880dc18b576fa3",
+    "mode": 420
+  },
+  "scheduler_git_blob": "20c3c4296223d1aa03ca28e2f45514ad0a72bff6",
+  "scheduler_equals_own_original_complete_reading": true,
+  "raw_git_command": [
+    "git",
+    "-C",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918",
+    "show",
+    "97c39b308efd854693038f24962484182d932f27:detcore/src/scheduler.rs"
+  ],
+  "raw_git_status": 0,
+  "policy_limit": "Native initial paper/scheduler requested never but effectively on-request/read-only; that historical discrepancy remains preserved. Future actual context must prove never/read-only.",
+  "prior_verdicts": "Separate prior reports remain untouched and are not evidence of approval for this clock implementation."
+}

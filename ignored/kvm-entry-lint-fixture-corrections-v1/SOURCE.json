@@ -1,0 +1,53 @@
+{
+  "allowed_paths_only": true,
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "compiler_formatter_payload_runs": 0,
+  "files": [
+    {
+      "after": {
+        "bytes": 41677,
+        "sha256": "660a5b5b683d65479f9fd990840f91e4e1db06a29c8c3a98dbd1230159d022b3"
+      },
+      "before": {
+        "bytes": 41627,
+        "sha256": "580080890af0ecd661cc8f016b32b25db85f35830aaaaada09296601bf5c4a16"
+      },
+      "path": "reverie-kvm/src/clock.rs"
+    },
+    {
+      "after": {
+        "bytes": 133569,
+        "sha256": "5145578ae74400f31828f87331b92cbc4f15f00d44d0472d239ad6f4616af5a7"
+      },
+      "before": {
+        "bytes": 133558,
+        "sha256": "4f1fc51291e59e2fd1d2ac48d31823a447ab8e9e91ad03f0bde3c68adbdd61f6"
+      },
+      "path": "reverie-kvm/src/memory.rs"
+    },
+    {
+      "after": {
+        "bytes": 27085,
+        "sha256": "8204b5f5a98da876478a31647a30901883e1f8f4ab410535c46c7ac7aebed712"
+      },
+      "before": {
+        "bytes": 27125,
+        "sha256": "82ec6c92233eb0be6ec723d4db79219ae4635523d4d36f813893c58e7d66820c"
+      },
+      "path": "reverie-kvm/src/entry/cleanup_tests.rs"
+    },
+    {
+      "after": {
+        "bytes": 35181,
+        "sha256": "e1faf5a6f1e2d60fd9e572ab3f933e7334d18c21ca2fa23f670b3cd6e50c1ecb"
+      },
+      "before": {
+        "bytes": 35146,
+        "sha256": "ee1062c5c3fd3c3dd56c67edea81c682b77649326611741073dc8860cacf42c2"
+      },
+      "path": "reverie-kvm/src/vm/exec_wait_tests.rs"
+    }
+  ],
+  "kind": "unexecuted-bounded-lint-fixture-corrections",
+  "previous_passed_source": "69cce12356eb02bd7f7b0de7c529347ab3cf5cd6b1340a42551d227effe72ebf"
+}

@@ -1,0 +1,3079 @@
+{
+  "tests": [
+    {
+      "name": "control-01",
+      "selector": "cpuid_instruction::tests::cpuid_decoder_fetches_exact_legal_instruction_and_refuses_invalid_forms",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-01/stdout",
+          "bytes": 485,
+          "sha256": "bc12448b0fcfabd582faede194fe57ebb11e0f37fedb095fd37387fd03c98d31",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-01/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000315012
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_instruction::tests::cpuid_decoder_fetches_exact_legal_instruction_and_refuses_invalid_forms",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-02",
+      "selector": "cpuid_instruction::tests::cpuid_result_zero_extends_all_outputs_and_preserves_other_user_state",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-02/stdout",
+          "bytes": 479,
+          "sha256": "7e0ba0287409112c5a8063d5ba6a5e89caaa0fe90e2981e708352f9a55c15379",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-02/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000253681
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_instruction::tests::cpuid_result_zero_extends_all_outputs_and_preserves_other_user_state",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-03",
+      "selector": "cpuid_instruction::tests::actual_partial_msr_transfers_are_refused_with_exact_counts",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-03/stdout",
+          "bytes": 459,
+          "sha256": "54958ab0f2de0782d5182f745aa68c026c0551bc71e022bbd8f840f9cca4c707",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-03/stderr",
+          "bytes": 51,
+          "sha256": "23c7f6643285f983f616abfede393ee180a916886286b5532cb29dfd3df04705",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.031391851
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_instruction::tests::actual_partial_msr_transfers_are_refused_with_exact_counts",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-04",
+      "selector": "cpuid_instruction::tests::actual_cpuid_interception_is_owned_and_restores_original_msr_state",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-04/stdout",
+          "bytes": 475,
+          "sha256": "26b2ccff4a19f59ce208467eb30d51b473d4677552526fd359f7956555983360",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-04/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.233893931
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_instruction::tests::actual_cpuid_interception_is_owned_and_restores_original_msr_state",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-05",
+      "selector": "vm::tests::cpuid_runtime_controls::cpuid_boundary_respects_actual_fetch_permissions_and_completed_length",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-05/stdout",
+          "bytes": 499,
+          "sha256": "b8ab8468509d5761b159b771ac15673aa9c90c0d013a66168083ac3c676193d8",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-05/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.064737522
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "vm::tests::cpuid_runtime_controls::cpuid_boundary_respects_actual_fetch_permissions_and_completed_length",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-06",
+      "selector": "vm::tests::cpuid_runtime_controls::cpuid_nonconsumer_loops_disarm_actual_prior_owned_msr_state",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-06/stdout",
+          "bytes": 479,
+          "sha256": "33fc50e1abcb1fc4bbc6a9e82a7bbff7133d02d8154bd041a92a009697890d4f",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-06/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.188305291
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "vm::tests::cpuid_runtime_controls::cpuid_nonconsumer_loops_disarm_actual_prior_owned_msr_state",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-07",
+      "selector": "cpuid_dispatch::cpuid_tool_returns_exact_full_registers_flags_stack_and_one_rpc_per_instruction",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-07/stdout",
+          "bytes": 481,
+          "sha256": "7559b09b68fb99285f5a82654088379257cc75e7e2bc04f5a4f3bd532ca4448a",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-07/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.514537972
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_dispatch::cpuid_tool_returns_exact_full_registers_flags_stack_and_one_rpc_per_instruction",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-08",
+      "selector": "cpuid_dispatch::cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-08/stdout",
+          "bytes": 473,
+          "sha256": "712c8890bb10cee5ceb832128867755da926658ae900dcd427973c1b253f5bb5",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-08/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.158364198
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_dispatch::cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-09",
+      "selector": "cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-09/stdout",
+          "bytes": 471,
+          "sha256": "f37e6ac248f27788e6053a9694b14ecba3ddf6ffcc983f1380937d40313ec33b",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-09/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.143992369
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_dispatch::cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-10",
+      "selector": "cpuid_dispatch::unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-10/stdout",
+          "bytes": 463,
+          "sha256": "96a87512a31e3b61b62e20d4d5104743dcc140ae9d4146cd66a9937811d92bc4",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-10/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.165351235
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_dispatch::unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-11",
+      "selector": "cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-11/stdout",
+          "bytes": 424,
+          "sha256": "5aa43f83b32f904bce94d5159bc7da222a1209757903bdf737ce0002cefe0e63",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-11/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.08022993
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_dispatch::cpuid_dispatch_survives_real_fork_and_same_pid_exec",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-12",
+      "selector": "cpuid_dispatch::cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-12/stdout",
+          "bytes": 479,
+          "sha256": "97ba25b1c7d8f7926b5c1aa3db79a1792eede2d377e0ee5f7c12f6b846649a50",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-12/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.041362749
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_dispatch::cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-13",
+      "selector": "cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-13/stdout",
+          "bytes": 427,
+          "sha256": "f6970565afefcaaf5618b0ab4b1a0f33032d76863ffb0328cdbebacdb65affac",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-13/stderr",
+          "bytes": 73,
+          "sha256": "d236d9e7c8fe619ced9113d4b443daca23500285a28c2b25f997656d2c4c61c0",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.476023688
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-14",
+      "selector": "cpuid_terminal::nonterminal_tails_refuse_before_side_effects",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-14/stdout",
+          "bytes": 411,
+          "sha256": "4e8e208cb62ba336f5280084d2d8825517f5b7a32ab318e450f1c35b5462e3d6",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-14/stderr",
+          "bytes": 288,
+          "sha256": "3919f4cc6e6333c87962c8f5f7b90f097da5ad435a73fa18e3d9e51bd8ac31ae",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.550922734
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_terminal::nonterminal_tails_refuse_before_side_effects",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-15",
+      "selector": "cpuid_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-15/stdout",
+          "bytes": 427,
+          "sha256": "96872150969cd2869c86fa9de4a6a0b551fd931045f771fa6ed6fb8b7f8eface",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-15/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.071945514
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-16",
+      "selector": "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-16/stdout",
+          "bytes": 423,
+          "sha256": "25275ddf2211daf86796126a9f0c856cca216f5b6b7261e8fce24d2987a059d7",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-16/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000249686
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-17",
+      "selector": "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-17/stdout",
+          "bytes": 441,
+          "sha256": "2ed043616d0575a69c6f6e92a55cdaecf49d9c81927b4bad80255ff722de199e",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-17/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000276716
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-18",
+      "selector": "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-18/stdout",
+          "bytes": 447,
+          "sha256": "bad9984c7edcdaaae2fad1b6f48a5094aba3080473ff37cc438edbde195bcb6f",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-18/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000265589
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp::tests::timestamp_writeback_preserves_other_registers_and_full_flags",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-19",
+      "selector": "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-19/stdout",
+          "bytes": 477,
+          "sha256": "179166f6cce976df7800d527bd769d0a5ee62c8bdde24f01ba16e8bb2f8d4fb4",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-19/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000391217
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp::tests::timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-20",
+      "selector": "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-20/stdout",
+          "bytes": 451,
+          "sha256": "bf66379b9260fee0783e21f2333c1db985302f56957cee53879401bcbf231c9a",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-20/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.071559882
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "vm::tests::timestamp_boundary_respects_hardware_instruction_fetch_fault_priority",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-21",
+      "selector": "cpuid::tests::deterministic_policy_replaces_host_identity_and_features",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-21/stdout",
+          "bytes": 431,
+          "sha256": "b8b2f358f445bd97d7716b20455487a0b6c6609aa63586900ea89398300433e4",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-21/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000382715
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid::tests::deterministic_policy_replaces_host_identity_and_features",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-22",
+      "selector": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-22/stdout",
+          "bytes": 421,
+          "sha256": "14a4d73d3a038c76a65e142c30fe605560f09baf2324c39d168e1ffd0227d66c",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-22/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.069009391
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-23",
+      "selector": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-23/stdout",
+          "bytes": 419,
+          "sha256": "01f0ae6fdc07d8e5efbcb880989bb2a1d11c6aff79975569b239ed9e64afcdae",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-23/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.426022092
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_dispatch_survives_thread_fork_and_exec_vcpu_lifecycles",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-24",
+      "selector": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-24/stdout",
+          "bytes": 403,
+          "sha256": "4688735734bbd504da2815508b01d65ab5c5b11a457f0bff427b1b573fad6eeb",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-24/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.039097615
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-25",
+      "selector": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-25/stdout",
+          "bytes": 407,
+          "sha256": "318b1acf80711a1b8ca550e06637fda68d6a8cc5f7a88a5841e0d1a518970dcf",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-25/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.070608394
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-26",
+      "selector": "repeated_timestamp_reads_evolve_once_per_instruction",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-26/stdout",
+          "bytes": 395,
+          "sha256": "d56e301d40093c3c2727ca3532b39df4673c70b421c18f59482f13900bf51928",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-26/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.074658957
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "repeated_timestamp_reads_evolve_once_per_instruction",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-27",
+      "selector": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-27/stdout",
+          "bytes": 399,
+          "sha256": "478bbb097c3ae05c11900f010d1e62515dcf3687ad0509dfe76cd009245441fc",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-27/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.120281081
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-28",
+      "selector": "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-28/stdout",
+          "bytes": 430,
+          "sha256": "e8eb4a17eb6c0f7cfef3b801098afe91dc32596ffadcd4f0257eff686175ff48",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-28/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.34960886
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-29",
+      "selector": "host_owned_timestamp_worker_keeps_native_execution",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-29/stdout",
+          "bytes": 391,
+          "sha256": "15d393c01ba44e1ae0a9fef051bd50f355ecb166e74c9ef31f39a25758f4f576",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-29/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.069187129
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "host_owned_timestamp_worker_keeps_native_execution",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-30",
+      "selector": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-30/stdout",
+          "bytes": 423,
+          "sha256": "a6ba912977a7d8ee0376395bac053da88cb4123bb6056fe5306789a4ce12adb3",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-30/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.868524152
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-31",
+      "selector": "locked_and_overlength_timestamp_encodings_remain_faults",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-31/stdout",
+          "bytes": 401,
+          "sha256": "d65f10c5cc3d45a6d3183356109c3d908ae6eddfe387621f3c740cfaf9c520b5",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-31/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.103559831
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "locked_and_overlength_timestamp_encodings_remain_faults",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-32",
+      "selector": "timestamp_tool_preserves_results_with_host_supported_cpuid",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-32/stdout",
+          "bytes": 407,
+          "sha256": "6c42c5b6be575c8add89e85381b57ca2687231803e340b75f463ab9c9f285d64",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-32/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.042202069
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_tool_preserves_results_with_host_supported_cpuid",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-33",
+      "selector": "timestamp_single_step_reports_the_retired_instruction_boundary",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-33/stdout",
+          "bytes": 415,
+          "sha256": "bd05e1a0c90d1312ef914a5116855072bb37289ecdb10d41db84ec206c16ac7c",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-33/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.067717795
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_single_step_reports_the_retired_instruction_boundary",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-34",
+      "selector": "static_elf_faults_are_reported_by_direct_and_tool_runtimes",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-34/stdout",
+          "bytes": 407,
+          "sha256": "85f6b288789ad963935916c71364e88bcd12869980eae7a1afd7accdfbee31c0",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-34/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.144395658
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_faults_are_reported_by_direct_and_tool_runtimes",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-35",
+      "selector": "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-35/stdout",
+          "bytes": 430,
+          "sha256": "09d4138c81fcd32ffbfc50ae254fea5b980de3c86ff0f7e5ccac8a9f2d2c8356",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-35/stderr",
+          "bytes": 25,
+          "sha256": "601bb6cbc9eaf85a77250debd8323eb83913c1c3055cda83de0a56277ff893f5",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.07436539
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-36",
+      "selector": "static_elf_forks_execs_and_waits_for_child",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-36/stdout",
+          "bytes": 375,
+          "sha256": "af33a134b32f0872180575baff77d03c9c42edd93e872046f9c1896c93572aa6",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-36/stderr",
+          "bytes": 187,
+          "sha256": "8eac9465e4b73d68287b99fa36c63fd1daeba5dff85e38a6f6af8a4b41b9216d",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.144624962
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_forks_execs_and_waits_for_child",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-37",
+      "selector": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-37/stdout",
+          "bytes": 413,
+          "sha256": "cd7b923acf3a31a30ef7a125a7de7b590853e8d02c513bf76eb1c2f76c80e1d6",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-37/stderr",
+          "bytes": 1609,
+          "sha256": "7956234c0bab5c11852be0ad2af90e2a2f8abb2597288c8f9d5393da19749e06",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.986468138
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-38",
+      "selector": "static_elf_caught_signal_returns_through_rt_sigreturn",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-38/stdout",
+          "bytes": 397,
+          "sha256": "2f1c8f01ef4b186731e02cd95ecd1fa281ebd74f4907112861199f025fcc59e1",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-38/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.091249481
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "static_elf_caught_signal_returns_through_rt_sigreturn",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-39",
+      "selector": "post_exec_failure_runs_tool_exit_lifecycle",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-39/stdout",
+          "bytes": 375,
+          "sha256": "f9d212917f7b6d885b9f78945fc54c30b1ff66706d4ff751844048582584c78f",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-39/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.035524764
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "post_exec_failure_runs_tool_exit_lifecycle",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-40",
+      "selector": "guest_write_syscall_runs_shared_reverie_tool",
+      "artifact": "vmcall",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-40/stdout",
+          "bytes": 377,
+          "sha256": "6b844a7d2b6d4aa3f022bc307de398ea2d7f65abb7709b92df32eab8fd035db9",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-40/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 5,
+        "exec_time": 0.042996103
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "guest_write_syscall_runs_shared_reverie_tool",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-41",
+      "selector": "default_tool_handler_tail_injects_through_executor",
+      "artifact": "vmcall",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-41/stdout",
+          "bytes": 389,
+          "sha256": "030d9127c7db5929e6ac3816d05b3dc73cec66ea47b72914136443d9bf3b674e",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-41/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 5,
+        "exec_time": 0.032765397
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "default_tool_handler_tail_injects_through_executor",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-42",
+      "selector": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+      "artifact": "read-clock",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-42/stdout",
+          "bytes": 421,
+          "sha256": "9eb125d10367497d36b6284f9ffcd494bf900f62ba9942a3cbca58274a010542",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-42/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 7,
+        "exec_time": 0.643947694
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-43",
+      "selector": "read_clock_follows_a_guest_between_host_threads",
+      "artifact": "read-clock",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-43/stdout",
+          "bytes": 383,
+          "sha256": "9119a33befafcb1e38b99e9d67086f8ee5c83fb86306628757f710cdf9dd38f2",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-43/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 7,
+        "exec_time": 0.050534643
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "read_clock_follows_a_guest_between_host_threads",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-44",
+      "selector": "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+      "artifact": "read-clock",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-44/stdout",
+          "bytes": 401,
+          "sha256": "2ae347b479ae930ab7c8467a7d1fe22761c2490c34ee616c7f83591272fff917",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-44/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 7,
+        "exec_time": 0.286718364
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-45",
+      "selector": "read_clock_survives_successful_and_failed_exec",
+      "artifact": "read-clock",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-45/stdout",
+          "bytes": 381,
+          "sha256": "80e6efe3ea9f63fc43a99ef3fb3c39a623d49f83e12e8e94450bc7e81809eaf2",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-45/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 7,
+        "exec_time": 0.073137619
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "read_clock_survives_successful_and_failed_exec",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-46",
+      "selector": "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-46/stdout",
+          "bytes": 412,
+          "sha256": "041b2a3ced52f15e081b0425aceae3ce355ecddec5c7a200bb3b5f0c27e82d37",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-46/stderr",
+          "bytes": 540,
+          "sha256": "d88ed75c02828937d54da1ed7ede5ab5959a8cc489711427b06a92ced3a76255",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.25609746
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-47",
+      "selector": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-47/stdout",
+          "bytes": 435,
+          "sha256": "35301883b006ef0b69c5d5faca2a7d74c7cfe2ee7657379bb4f9dfd575f31f2a",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-47/stderr",
+          "bytes": 73,
+          "sha256": "d236d9e7c8fe619ced9113d4b443daca23500285a28c2b25f997656d2c4c61c0",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.561931579
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-48",
+      "selector": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-48/stdout",
+          "bytes": 419,
+          "sha256": "5ca7fdad4b9d3dc8941c4f8db4b780bc872da7f79628d66d4f065dd9e388c0f6",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-48/stderr",
+          "bytes": 304,
+          "sha256": "d2820d0f275cc0b16dd7a26b196ed77ba150b150e8ba5ed6ac3b4819a4a89e11",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.453996541
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-49",
+      "selector": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-49/stdout",
+          "bytes": 435,
+          "sha256": "b93fad64e095a0901360aad9774691557cc561cd00d5c822184287d2ec975585",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-49/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.074237109
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-50",
+      "selector": "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-50/stdout",
+          "bytes": 421,
+          "sha256": "85a84ed0f58d6b549b21eef09f66bf265f76993337f7097526959df17a0fb3c4",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-50/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.064095601
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-51",
+      "selector": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-51/stdout",
+          "bytes": 467,
+          "sha256": "8983f92e103935a67602a5a41b70b18d64b98ce296a442858523946e24724e38",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-51/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000538199
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-52",
+      "selector": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-52/stdout",
+          "bytes": 499,
+          "sha256": "37abce859beab3bc53424d2cad07172374a968f30a56bed368aa42465bff4ca1",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-52/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000547673
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-53",
+      "selector": "cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-53/stdout",
+          "bytes": 425,
+          "sha256": "6c491d6339780da294a313085b53781560c4295657a362a27dd6947ff736f3bf",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-53/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000365289
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-54",
+      "selector": "cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-54/stdout",
+          "bytes": 435,
+          "sha256": "064a8177656387f9e9f6f1595bd7521a245250a5f6812468e1a5d030fbff0cba",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-54/stderr",
+          "bytes": 276,
+          "sha256": "a0445fd3a5c01e434f75762046304bd929807f9d3e246109fc9cac82d6dc321a",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000433701
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-55",
+      "selector": "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-55/stdout",
+          "bytes": 415,
+          "sha256": "3ad39094da7bdfe8be6734f61502243e8e728d4db1fe629871122c1b991cad10",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-55/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.074820172
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-56",
+      "selector": "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-56/stdout",
+          "bytes": 459,
+          "sha256": "61c1af839c0c98d69c41fcea5dda44078c2a17d338059280bdca93dcf323d058",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-56/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001525351
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::captured_output_identity_matches_pipefs_and_preserves_proc_symlinks",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-57",
+      "selector": "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-57/stdout",
+          "bytes": 469,
+          "sha256": "db2a2e46d5b431a886c4f10d53eece61db77fa543797da8028c4c94d7b42db59",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-57/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.002085492
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::captured_output_alias_identity_survives_thread_fork_exec_and_replacement",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-58",
+      "selector": "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-58/stdout",
+          "bytes": 438,
+          "sha256": "535f61bdbf7947e4a703d6ecd9b8af5dce7a0760c5c62295a3bede48dcad3014",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-58/stderr",
+          "bytes": 301,
+          "sha256": "35f63777bd44aadbc92fb77aa2b68038ecf0cc0d6d9a603d5ba15119c6bb05d1",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.00312209
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-59",
+      "selector": "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-59/stdout",
+          "bytes": 459,
+          "sha256": "7192c1e77d9a1daf02903b9a870b919972c0b9e7efac08051d0c44fb867bb838",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-59/stderr",
+          "bytes": 583,
+          "sha256": "31bd781951a5092d2def3a3346eec8d60560c2297d731f065b8f34ae946d70b9",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.003636203
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-60",
+      "selector": "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-60/stdout",
+          "bytes": 451,
+          "sha256": "e6fce7e11fc87aa094f51c4722fd5d41f4665d2c32c89b914e8f9a80fd96afa9",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-60/stderr",
+          "bytes": 300,
+          "sha256": "8f3c626ad66ce33f22adfda5af1923d941e2910cc48e939f8ea99aa36a0f20dd",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.238625641
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-61",
+      "selector": "capture_identity::direct_and_tool_capture_share_device_with_anonymous_pipe",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-61/stdout",
+          "bytes": 439,
+          "sha256": "3591bb0abbdcc6753bd3fd4b943a042f3bdd15b19de49054fc5e9df24477ef79",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-61/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.073557428
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "capture_identity::direct_and_tool_capture_share_device_with_anonymous_pipe",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-62",
+      "selector": "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-62/stdout",
+          "bytes": 415,
+          "sha256": "d68c225f8a1ce25467493cce2cedc09d8e0f040da41b0678ffbb6f6a28df5bbb",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-62/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001066722
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-63",
+      "selector": "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-63/stdout",
+          "bytes": 449,
+          "sha256": "a97e395f60cc45d9bf29db106b0345cf2058f8319f72370f362e0efbfe04c450",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-63/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001527445
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-64",
+      "selector": "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-64/stdout",
+          "bytes": 477,
+          "sha256": "073c8b3959c30dffd6d157e651fc1880a071cc2de2466e340dd4ea442a221218",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-64/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001732813
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-65",
+      "selector": "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-65/stdout",
+          "bytes": 433,
+          "sha256": "ea429c23286aae526ef2829510ef66da4b9a7ba27ccbd6e6421df388a112e6a4",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-65/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001568576
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-66",
+      "selector": "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-66/stdout",
+          "bytes": 433,
+          "sha256": "657226c5cc6f3039fc60bda1756a75bfb623b8d5f67f8037b42f4dbf5403e97a",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-66/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001340644
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-67",
+      "selector": "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-67/stdout",
+          "bytes": 437,
+          "sha256": "4c698ebbf984de8b92bde0e520b095ace4220bd765e427a74e1d0093b1c9d7ab",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-67/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001658411
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-68",
+      "selector": "executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-68/stdout",
+          "bytes": 453,
+          "sha256": "5d7707252fa153a5bdb464a68ad1de6ced1cf0102fdf66c554048d36af4d12ef",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-68/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001205992
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::captured_output_lseek_is_pipe_for_seekable_standard_stream_alias",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-69",
+      "selector": "executor::tests::forked_executors_share_captured_output_order",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-69/stdout",
+          "bytes": 413,
+          "sha256": "2123de41a5b9706c2aa7999212878aebfd4a8d8a924d8fa82c7f26d51d0e542d",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-69/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001341996
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::forked_executors_share_captured_output_order",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-70",
+      "selector": "executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-70/stdout",
+          "bytes": 461,
+          "sha256": "1c7bd9f4fc57e2c9d8e45d3befe2933c8821e2580f515b853f0cfd838ab0fff0",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-70/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.011103151
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::ordinary_vectored_io_preserves_limits_faults_replacement_and_capture",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-71",
+      "selector": "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-71/stdout",
+          "bytes": 461,
+          "sha256": "41e05e8a4f30365cfab5476b0bfc377cae6299ba6d4b336775e3c726319b6760",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-71/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.061156913
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::standard_descriptor_vectored_io_preserves_owned_and_captured_routing",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-72",
+      "selector": "executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-72/stdout",
+          "bytes": 467,
+          "sha256": "d78bf7a766528967d255e65031b0ca877d5ae396d0dc07237f534179fd928918",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-72/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001609268
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::positioned_vectored_io_preserves_standard_and_captured_stream_semantics",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-73",
+      "selector": "executor::tests::captured_write_site_uses_current_table_and_full_callback_identity",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-73/stdout",
+          "bytes": 455,
+          "sha256": "a742a045026e66f40e442487abc7071a1996c0d38a5e7a7ee084df27beb7b9cc",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-73/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001626093
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::captured_write_site_uses_current_table_and_full_callback_identity",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-74",
+      "selector": "executor::tests::inherited_stdin_epoll_preserves_local_and_authoritative_handles",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-74/stdout",
+          "bytes": 450,
+          "sha256": "67c894407c4b6b89a302c67476be1480df13e96595d62f2a142072dd0a8d0408",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-74/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.00213696
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::inherited_stdin_epoll_preserves_local_and_authoritative_handles",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-75",
+      "selector": "executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-75/stdout",
+          "bytes": 431,
+          "sha256": "602c9463407f33440e1bb5afc4dbf376c79f22d995200a61131d7e8856a0bfa3",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-75/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.002360105
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::inherited_stdin_sibling_replacement_preserves_old_dup",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-76",
+      "selector": "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-76/stdout",
+          "bytes": 441,
+          "sha256": "b75a4f5d999b50340c53a05eb7c869a4387941b5ad8e7c2f84756c07841ad134",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-76/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001856609
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::inherited_stdin_fork_exec_and_exit_preserve_entry_lifetime",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-77",
+      "selector": "executor::tests::descriptor_retirement_close_and_dup_release_both_guards",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-77/stdout",
+          "bytes": 435,
+          "sha256": "d59bf899eb3bb4d13aeb3b7231398d6b8bfa9bb41293718503b0b41762d656a5",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-77/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.003548161
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::descriptor_retirement_close_and_dup_release_both_guards",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-78",
+      "selector": "executor::tests::descriptor_retirement_exec_and_exit_release_both_guards",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-78/stdout",
+          "bytes": 435,
+          "sha256": "4ad5060bbe0ea73a949b2c64b20a7a1b085d28f305a35b4e1bfcdba104b5d7cc",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-78/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.002623471
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::descriptor_retirement_exec_and_exit_release_both_guards",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-79",
+      "selector": "executor::tests::descriptor_retirement_install_error_releases_both_guards",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-79/stdout",
+          "bytes": 437,
+          "sha256": "714f9fcdce5073333a2a0abfb5995467509717fc7ad3cd4cf14b21b359cd471b",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-79/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.001911042
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::descriptor_retirement_install_error_releases_both_guards",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-80",
+      "selector": "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-80/stdout",
+          "bytes": 439,
+          "sha256": "25d243c80b41aeac93ee74451f465854251234a379bd1f27aa23a61a54e47fc4",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-80/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.003848793
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::descriptor_retirement_accept_cleanup_releases_both_guards",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-81",
+      "selector": "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-81/stdout",
+          "bytes": 453,
+          "sha256": "1687ad5834e26f6ded6b6724ed21b087e0133124f9d86096778c37a83bb4f842",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-81/stderr",
+          "bytes": 312,
+          "sha256": "0895f1a5be880dc941c686218bf0029eb78f369161745f55eb0540bc75a47098",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.052811883
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "executor::tests::shared_file_table_install_emfile_preserves_original_descriptions",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-82",
+      "selector": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections",
+      "artifact": "lib",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-82/stdout",
+          "bytes": 469,
+          "sha256": "51cfaf21827e496eb37bb5343615e423601c38e94dfd57b27d31988b0e56de33",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-82/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 522,
+        "exec_time": 0.000242114
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "runtime::terminal_tests::timestamp_exit_admission_preserves_returning_ordinary_injections",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    },
+    {
+      "name": "control-83",
+      "selector": "timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once",
+      "artifact": "static",
+      "streams": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-83/stdout",
+          "bytes": 459,
+          "sha256": "473b8dfe021a1bf62431357d51c7bd9b5ab7179f21e72c428db123dcddbd8165",
+          "mode": 384
+        },
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-83/stderr",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "mode": 384
+        }
+      ],
+      "raw_suite": {
+        "type": "suite",
+        "event": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered_out": 330,
+        "exec_time": 0.0766556
+      },
+      "outcomes": [
+        {
+          "type": "test",
+          "name": "timestamp_terminal::worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once",
+          "event": "ok"
+        }
+      ],
+      "skip_or_unexecuted_messages": []
+    }
+  ],
+  "attempted": 83,
+  "unattempted": [],
+  "skips_or_unexecuted": [],
+  "claim": "Raw streams inspected separately from libtest and inventory counts; no unattempted test credit"
+}

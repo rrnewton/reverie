@@ -1,0 +1,31 @@
+{
+  "predecessor": "674797c7ec297290a1ef39c07bb924837c679af4b3d3ee6839ce9c85ec15510e",
+  "records": [
+    {
+      "path": "BASELINE-entry.rs",
+      "bytes": 51252,
+      "sha256": "041d94f875a4e91d8b037fd3eac9826c2d463d594e6876003abcceaedb7efea4"
+    },
+    {
+      "path": "entry.rs",
+      "bytes": 52000,
+      "sha256": "eec29b2888a9243fa9d58be91088b2986363147f2f67b3a455cf0bdc0b255bb4"
+    },
+    {
+      "path": "entry_race_tests.rs",
+      "bytes": 8090,
+      "sha256": "7d46787667c90d81d2a6e5914eb10d9f8377f9e83f9ea97ac921ed71f8b9175f"
+    },
+    {
+      "path": "AUTHOR.patch",
+      "bytes": 9831,
+      "sha256": "f16cfe671b9a7ecc555751bf3ece327fe0d1326fe5b91ba3d5d131c2a0b157b4"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 2889,
+      "sha256": "32332396ecd1e5315ab403e6eb4da1fe0e8aab104891a980ba3c9b6bca4092a8"
+    }
+  ],
+  "status": "uncompiled root source contribution only"
+}

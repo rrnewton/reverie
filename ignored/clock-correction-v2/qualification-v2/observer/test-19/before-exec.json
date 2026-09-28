@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-19-plan.json",
+      "5aef873d12a8a173d9c2bf10650fea05c56a46a3221cd9068144fd54175edee3"
+    ]
+  },
+  "token": "9cfde73c09b00b75c71892fa874322b2b14860a0469cecab866bed2e7c0732e8",
+  "observer_pid": 3419315,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 192569185,
+  "deadline_monotonic_ns": 1925716898538892
+}

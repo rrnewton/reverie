@@ -1,0 +1,33 @@
+{
+  "scope": "Observed dependencies while root composes production concurrently. vm.rs identity includes root-owned changes; this author added only the include line. Not a frozen composition or executable binding.",
+  "records": {
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 389641,
+      "sha256": "632c1f2c69f92a9f42a99766d53f275ee1e1b88e036e0682aa69a27b83a5a6b2"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 247975,
+      "sha256": "736f3c7929c3369e75d9445405127fb0ec280d024ff5a7cffde526e0e62b43e2"
+    },
+    "reverie-kvm/src/failure/tool_panics.rs": {
+      "bytes": 2098,
+      "sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 43973,
+      "sha256": "e42a533fe539963128f23cf9655baace4d342ca0afe0e55a2ec622ce7968167e"
+    },
+    "reverie-kvm/src/stats.rs": {
+      "bytes": 7523,
+      "sha256": "bad3f1b9f269a6310536e947afce9c43edbe51d59b112e351cee22b807dde4d3"
+    },
+    "reverie/src/tool.rs": {
+      "bytes": 26835,
+      "sha256": "704e502fd8ae91e104468e79c02fccab05dd5addc26bf1e0122886ba409d8982"
+    },
+    "reverie/src/error.rs": {
+      "bytes": 1172,
+      "sha256": "fbffa7a81d2db19839f638e0eb6b668fd45569c7b6b6158d79ffb248e0595e6d"
+    }
+  }
+}

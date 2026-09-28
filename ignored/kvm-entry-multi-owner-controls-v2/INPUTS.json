@@ -1,0 +1,39 @@
+{
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v1/source-1.json",
+      "bytes": 6930,
+      "sha256": "2fba215af555a69ad6f26c75d154f91b5ea262a40138485de490629dcc2d6aea"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v1/test-multi-owner-entry-1/stdout",
+      "bytes": 128,
+      "sha256": "88eef623665419b32474da51fd1bb231ef4e9f29ec232553f927d67ba8b2ea0f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v1/test-multi-owner-entry-1/stderr",
+      "bytes": 48944,
+      "sha256": "bd0631d93ae863f35c1b68f05fa2947080347508c34f945a0e7d9364e087651f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v1/source-1/reverie-kvm/src/runtime.rs",
+      "bytes": 275611,
+      "sha256": "b79a5cc0839215e4fcc87df89b096768d2c759aee9e9cab9c5ab3d5b7f716629"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v1/source-1/reverie-kvm/src/vm.rs",
+      "bytes": 413994,
+      "sha256": "05ec3e317cf4c02197dac94e54e7041670b57aaefc00aa5832caf5859b55cc0c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v1/source-1/reverie-kvm/src/failure.rs",
+      "bytes": 53064,
+      "sha256": "94995c40bc796cd8b289506d1f15fe0663e721065605144afe5af0a063738fc7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v1/final-1/TARGET.json",
+      "bytes": 64131,
+      "sha256": "6e6cbbf0555275e502498308a19837868cf2a5a57a4cbb2c99fda9ca6780e8ea"
+    }
+  ]
+}

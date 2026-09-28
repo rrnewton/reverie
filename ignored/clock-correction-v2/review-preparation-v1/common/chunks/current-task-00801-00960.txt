@@ -1,0 +1,160 @@
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            Sysno::munmap | Sysno::mprotect | Sysno::pkey_mprotect | Sysno::mremap => {
+                kernel_page_range(args.arg0 as u64, args.arg1 as u64, page_size)
+            }
+            _ => return false,
+        };
+        let requested_protection = match nr {
+            Sysno::mprotect => Some(args.arg2 as i32),
+            Sysno::pkey_mprotect if args.arg3 == 0 => Some(args.arg2 as i32),
+            _ => None,
+        };
+        let source_mutates_active_hook = match operation_range {
+            Ok(Some(operation_range)) => self.active_hooks.values().any(|hook| {
+                hook.protected_ranges()
+                    .into_iter()
+                    .any(|(range, protection)| {
+                        range.overlaps(operation_range) && requested_protection != Some(protection)
+                    })
+            }),
+            Ok(None) => false,
+            Err(()) => !self.active_hooks.is_empty(),
+        };
+        if source_mutates_active_hook {
+            return true;
+        }
+        if nr == Sysno::mremap && args.arg3 as i32 & libc::MREMAP_FIXED != 0 {
+            let destination = match kernel_page_range(args.arg4 as u64, args.arg2 as u64, page_size)
+            {
+                Ok(Some(range)) => range,
+                Ok(None) => return false,
+                Err(()) => return !self.active_hooks.is_empty(),
+            };
+            return self.active_hooks.values().any(|hook| {
+                hook.protected_ranges()
+                    .into_iter()
+                    .any(|(range, _)| range.overlaps(destination))
+            });
+        }
+        false
+    }
+
+    fn invalidate_attempted_pages(&mut self, start: u64, len: u64, page_size: u64) {
+        let range = match kernel_page_range(start, len, page_size) {
+            Ok(Some(range)) => range,
+            Ok(None) => return,
+            Err(()) => {
+                self.attempted_sites.clear();
+                self.fallback_sites.clear();
+                return;
+            }
+        };
+        if range.start >= range.end {
+            self.attempted_sites.clear();
+            self.fallback_sites.clear();
+            return;
+        }
+        self.attempted_sites
+            .retain(|address| !(*address >= range.start && *address < range.end));
+        self.fallback_sites
+            .retain(|address, _| !(*address >= range.start && *address < range.end));
+    }
+}
+
+enum LiteinstTrap {
+    HandshakeBegin,
+    HandshakeReady,
+    Syscall(usize),
+    Invalid,
+}
+
+/// All the info needed to be able to interact with the global state.
+struct GlobalState<G: GlobalTool> {
+    /// The tool's static configuration data.
+    cfg: G::Config,
+
+    /// Reference to the tool's global state. This is used to send it "rpc" messages.
+    gs_ref: Arc<G>,
+
+    /// Events the tool is subscripted (like interception)
+    subscriptions: Arc<Subscription>,
+
+    /// guests are sequentialized already (by detcore for example), gdbserver
+    /// should avoid sequentialize threads.
+    sequentialized_guest: Arc<bool>,
+
+    /// Marker and exact RIP identifying a binary-rewriter syscall trap.
+    injected_syscall_trap: Option<InjectedSyscallTrap>,
+
+    /// Optional dynamic LiteInst runtime configuration.
+    liteinst_runtime: Option<LiteinstRuntimeConfig>,
+
+    /// Optional collector for general ptrace lifecycle activity.
+    backend_stats: Option<PtraceBackendStatsSource>,
+}
+
+impl<G: GlobalTool> Clone for GlobalState<G> {
+    fn clone(&self) -> Self {
+        Self {
+            cfg: self.cfg.clone(),
+            gs_ref: self.gs_ref.clone(),
+            subscriptions: self.subscriptions.clone(),
+            sequentialized_guest: self.sequentialized_guest.clone(),
+            injected_syscall_trap: self.injected_syscall_trap.clone(),
+            liteinst_runtime: self.liteinst_runtime.clone(),
+            backend_stats: self.backend_stats.clone(),
+        }
+    }
+}
+
+/// A raw argument remains exact unless both its type and launch ownership are known.
+struct SyscallArgsForLog {
+    nr: Sysno,
+    args: SyscallArgs,
+    command_bootstrap: bool,
+}
+
+struct CommandBootstrapAddress(usize);
+
+impl fmt::Debug for CommandBootstrapAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == 0 {
+            f.write_str("0")
+        } else {
+            write!(f, "<hostaddr {:#x}>", self.0)
+        }
+    }
+}
+
+impl fmt::Debug for SyscallArgsForLog {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.command_bootstrap || self.nr != Sysno::execve {
+            return fmt::Debug::fmt(&self.args, f);
+        }
+        // Command::do_exec passes pathname, argv and envp pointers from the
+        // inherited launcher image. The ABI-unused registers are still raw.
+        f.debug_struct("SyscallArgs")
+            .field("arg0", &CommandBootstrapAddress(self.args.arg0))
+            .field("arg1", &CommandBootstrapAddress(self.args.arg1))
+            .field("arg2", &CommandBootstrapAddress(self.args.arg2))
+            .field("arg3", &self.args.arg3)
+            .field("arg4", &self.args.arg4)
+            .field("arg5", &self.args.arg5)
+            .finish()
+    }
+}
+
+/// Event configuration supplied when a traced task is created.
+pub(crate) struct TracedTaskOptions<'a> {
+    pub(crate) command_bootstrap: bool,
+    pub(crate) events: &'a Subscription,
+    pub(crate) injected_syscall_trap: Option<InjectedSyscallTrap>,
+    pub(crate) liteinst_runtime: Option<LiteinstRuntimeConfig>,
+    pub(crate) backend_stats: Option<PtraceBackendStatsSource>,
+}
+
+/// Our runtime representation of what Reverie knows about a guest thread. Its
+/// lifetime matches the lifetime of the thread.
+pub struct TracedTask<L: Tool> {
+    /// Thread ID.

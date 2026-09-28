@@ -1,0 +1,8 @@
+{
+  "path": "reverie-kvm/src/memory/entry_snapshot_tests.rs",
+  "before_sha256": "95e4c1d4002c1b33ac7b631e843724f1ffa4045a1763e662915b023bc3e1a215",
+  "after_sha256": "63bd4a84d1f23e9ff2d44f4ff1dfb6d57c30384527e3c119c955816743d00c6b",
+  "source_v5_sha256": "98a223d3e0d5a3569701a817a001723fad7e7cfbbc54e937ed71e423bd14af72",
+  "exact_three_literal_replacement": true,
+  "execution": "not run"
+}

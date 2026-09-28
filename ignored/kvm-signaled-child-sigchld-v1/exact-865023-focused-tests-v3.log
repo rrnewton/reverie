@@ -1,0 +1,94 @@
+   Compiling hashbrown v0.15.5
+   Compiling anyhow v1.0.104
+   Compiling tokio v1.53.1
+   Compiling object v0.36.7
+   Compiling bincode v2.0.1
+   Compiling procfs-core v0.18.0
+   Compiling thiserror v2.0.20
+   Compiling futures v0.3.34
+   Compiling object v0.39.1
+   Compiling derive_more v1.0.0
+   Compiling ruzstd v0.7.3
+   Compiling paste v1.0.15
+   Compiling cpp_demangle v0.5.1
+   Compiling reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-memory)
+   Compiling vmm-sys-util v0.15.0
+   Compiling memmap2 v0.9.11
+   Compiling scroll_derive v0.13.2
+   Compiling rustc-demangle v0.1.28
+   Compiling gimli v0.33.0
+   Compiling typed-arena v2.0.2
+   Compiling fallible-iterator v0.3.0
+   Compiling kvm-ioctls v0.25.0
+   Compiling addr2line v0.26.1
+   Compiling scroll v0.13.0
+   Compiling kvm-bindings v0.14.1
+   Compiling reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-syscalls)
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-process)
+   Compiling procfs v0.18.0
+   Compiling raw-cpuid v10.7.0
+   Compiling linked-hash-map v0.5.6
+   Compiling async-trait v0.1.92
+   Compiling plain v0.2.3
+   Compiling log v0.4.34
+   Compiling byteorder v1.5.0
+   Compiling never-say-never v6.6.666
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie)
+   Compiling goblin v0.10.7
+   Compiling perf-event-open-sys v5.0.0
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 14s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-09c0d8956b925072)
+
+running 11 tests
+test executor::tests::child_exit_signal_signalfd_encodes_every_terminal_status_class ... ok
+test runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects ... ok
+test executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo ... ok
+test executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish ... ok
+test executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements ... ok
+test executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info ... ok
+test executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer ... ok
+test executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication ... ok
+test executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec ... ok
+test executor::tests::child_exit_signal_accepts_every_terminal_status_class ... ok
+test executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 765 filtered out; finished in 0.00s
+
+     Running tests/counter.rs (target/debug/deps/counter-e8d5f42d4277a828)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/erestartsys.rs (target/debug/deps/erestartsys-f3b8099a2b128244)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/read_clock.rs (target/debug/deps/read_clock-c4b40f4a94001cd8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/static_elf.rs (target/debug/deps/static_elf-b2f134c8feedb841)
+
+running 1 test
+test child_exit_signals::child_exit_signal_native_and_tool_receiver_contract ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 1.15s
+
+     Running tests/strace.rs (target/debug/deps/strace-569da3f703135e79)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/vmcall.rs (target/debug/deps/vmcall-74a8903fa699acff)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+

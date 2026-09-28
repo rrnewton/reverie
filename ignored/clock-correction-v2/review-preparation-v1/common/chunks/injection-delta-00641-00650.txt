@@ -1,0 +1,10 @@
+ #[path = "clock_origin_tests.rs"]
+ mod clock_origin_tests;
+ 
++#[cfg(all(test, target_arch = "x86_64"))]
++#[path = "injection_stop_tests.rs"]
++mod injection_stop_tests;
++
+ #[cfg(test)]
+ mod tests {
+     #[derive(Default)]

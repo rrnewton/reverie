@@ -1,0 +1,160 @@
+                Syscall::ClockAdjtime(s) => {
+                    if virtualize_time {
+                        self.handle_clock_adjtime(guest, s).await
+                    } else {
+                        self.handle_unsupported_syscall(
+                            guest,
+                            call,
+                            dettid,
+                            panic_on_unsupported_syscalls,
+                        )
+                        .await
+                    }
+                }
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(PR-857): Empty virtual kernel ring buffer.
+                Syscall::Syslog(s) => self.handle_syslog(guest, s).await,
+                Syscall::ArchPrctl(s) => self.handle_arch_prctl(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                Syscall::Seccomp(s) => self.handle_seccomp(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Prctl(s) => self.handle_prctl(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Getpriority(s) => self.handle_getpriority(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Setpriority(s) => self.handle_setpriority(guest, s).await,
+                Syscall::Uname(s) => self.handle_uname(guest, s).await,
+                Syscall::ExitGroup(s) => self.handle_exit_group(guest, s).await,
+                Syscall::Exit(s) => self.handle_exit(guest, s).await,
+
+                Syscall::Dup(w) => self.handle_dup(guest, w).await.map_err(Into::into),
+                Syscall::Dup2(w) => self.handle_dup2(guest, w).await.map_err(Into::into),
+                Syscall::Dup3(w) => self.handle_dup3(guest, w).await.map_err(Into::into),
+                Syscall::Pipe(w) => self.handle_pipe2(guest, w.into()).await,
+                Syscall::Pipe2(w) => self.handle_pipe2(guest, w).await,
+                Syscall::Getrandom(s) => self.handle_getrandom(guest, s).await,
+                Syscall::Utime(s) => self.handle_utime(guest, s).await.map_err(Into::into),
+                Syscall::Utimes(s) => self.handle_utimes(guest, s).await.map_err(Into::into),
+                // NB: lutimes is a libc function not a syscall
+                Syscall::Utimensat(s) => self.handle_utimensat(guest, s).await.map_err(Into::into),
+                // NB: futimes/futimens are libc functions not a syscall,
+                // futimesat is obsolete, return -ENOSYS for simplicity.
+                Syscall::Futimesat(_s) => Err(Error::Errno(Errno::ENOSYS)),
+                // io_uring completion and memory-sharing semantics are not deterministic.
+                Syscall::IoUringSetup(_)
+                | Syscall::IoUringEnter(_)
+                | Syscall::IoUringRegister(_) => Err(Error::Errno(Errno::ENOSYS)),
+                Syscall::Socket(s) => self.handle_socket(guest, s).await,
+                Syscall::Socketpair(s) => self.handle_socketpair(guest, s).await,
+                Syscall::Connect(s) => self.handle_connect(guest, s).await,
+                Syscall::Bind(s) => self.handle_bind(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Setsockopt(s) => self.handle_setsockopt(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Listen(s) => self.handle_listen(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Getsockname(s) => self.handle_getsockname(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Getpeername(s) => self.handle_getpeername(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Getsockopt(s) => self.handle_getsockopt(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#818): shutdown is the lone remaining
+                // socket-family syscall; half-closes a tracked socket and
+                // forwards via record_or_replay (KVM ratchet round 12).
+                Syscall::Shutdown(s) => self.handle_shutdown(guest, s).await,
+                Syscall::Eventfd(s) => self.handle_eventfd2(guest, s.into()).await,
+                Syscall::Eventfd2(s) => self.handle_eventfd2(guest, s).await,
+                Syscall::Signalfd(s) => self.handle_signalfd4(guest, s.into()).await,
+                Syscall::Signalfd4(s) => self.handle_signalfd4(guest, s).await,
+                Syscall::TimerfdCreate(s) => self.handle_timerfd_create(guest, s).await,
+                Syscall::TimerfdSettime(s) => self.handle_timerfd_settime(guest, s).await,
+                Syscall::TimerfdGettime(s) => self.handle_timerfd_gettime(guest, s).await,
+                Syscall::InotifyInit(s) => {
+                    self.handle_inotify_init1(guest, InotifyInit1::from(s))
+                        .await
+                }
+                Syscall::InotifyInit1(s) => self.handle_inotify_init1(guest, s).await,
+                Syscall::InotifyAddWatch(s) => self.handle_inotify_add_watch(guest, s).await,
+                Syscall::InotifyRmWatch(s) => self.handle_inotify_rm_watch(guest, s).await,
+                Syscall::MemfdCreate(s) => self.handle_memfd_create(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(PR-862): Record/replay and register pidfds.
+                Syscall::PidfdOpen(s) => self.handle_pidfd_open(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(PR-899): Host object handles and mount IDs
+                // are outside Detcore's filesystem identity model.
+                Syscall::NameToHandleAt(_) => Err(Error::Errno(Errno::EOPNOTSUPP)),
+                Syscall::Userfaultfd(s) => self.handle_userfaultfd(guest, s).await,
+                Syscall::Accept(s) => self.handle_accept4(guest, s.into()).await,
+                Syscall::Accept4(s) => self.handle_accept4(guest, s).await,
+
+                Syscall::Nanosleep(s) => self.handle_nanosleep_family(guest, s.into()).await,
+                Syscall::ClockNanosleep(s) => self.handle_nanosleep_family(guest, s.into()).await,
+                Syscall::SchedYield(s) => self.handle_sched_yield(guest, s).await,
+
+                // NB: getdents is not recommended, (g)libc should call getdents64 only
+                // see: sysdeps/unix/sysv/linux/getdents.c.
+                Syscall::Getdents(s) => self.handle_getdents(guest, s).await,
+                Syscall::Getdents64(s) => self.handle_getdents64(guest, s).await,
+
+                Syscall::Poll(s) => self.handle_poll(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#686): Review scratch fd sets and scheduler polling.
+                Syscall::Pselect6(s) => self.handle_pselect6(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#800): select is the timeval sibling of pselect6.
+                Syscall::Select(s) => self.handle_select(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                Syscall::Ppoll(s) => self.handle_ppoll(guest, s).await,
+                Syscall::EpollCreate(s) => {
+                    self.handle_epoll_create1(guest, EpollCreate1::from(s))
+                        .await
+                }
+                Syscall::EpollCreate1(s) => self.handle_epoll_create1(guest, s).await,
+                Syscall::EpollCtl(s) => self.handle_epoll_ctl(guest, s).await,
+                Syscall::EpollPwait(s) => self.handle_epoll_pwait(guest, s).await,
+                Syscall::EpollWait(s) => self.handle_epoll_wait(guest, s).await,
+                Syscall::EpollWaitOld(s) => panic!(
+                    "Not handling deprecated syscall: {}",
+                    s.display(&guest.memory())
+                ),
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#549)
+                // The obsolete x86_64 entry point is absent from modern Linux kernels.
+                Syscall::EpollCtlOld(_) => Err(Error::Errno(Errno::ENOSYS)),
+
+                Syscall::SchedGetaffinity(s) => self.handle_sched_getaffinity(guest, s).await,
+                Syscall::SchedSetaffinity(s) => self.handle_sched_setaffinity(guest, s).await,
+
+                // ===== BATCH 3: NUMA memory-placement and Linux CPU-scheduling
+                // policy. Hermit exposes a single virtual NUMA node and replaces
+                // the Linux scheduler with Detcore, so these are inoperative and
+                // are virtualized to fixed, host-independent results (see the
+                // determinism argument in syscall_classification.rs). Setters and
+                // count-returning calls are no-ops; getters emulate a default
+                // single-node / SCHED_OTHER answer.
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#720)
+                Syscall::Mbind(_) => Ok(0),
+                Syscall::SetMempolicy(_) => Ok(0),
+                Syscall::GetMempolicy(s) => self.handle_get_mempolicy(guest, s).await,
+                Syscall::MigratePages(_) => Ok(0),
+                Syscall::MovePages(s) => self.handle_move_pages(guest, s).await,
+                Syscall::SchedSetscheduler(_) => Ok(0),
+                Syscall::SchedSetparam(_) => Ok(0),
+                // Report the fixed default policy SCHED_OTHER (0).
+                Syscall::SchedGetscheduler(_) => Ok(0),
+                Syscall::SchedGetparam(s) => self.handle_sched_getparam(guest, s).await,
+                Syscall::SchedRrGetInterval(s) => self.handle_sched_rr_get_interval(guest, s).await,
+
+                // ===== BATCH 51: fail-closed utility syscalls, re-enabling chrt,
+                // ionice, and flock under --strict. Detcore replaces the Linux

@@ -1,0 +1,275 @@
+Read every bounded chunk completely in this listed order. Current execution/head facts are appended after source/caller context; historical future-tense preparation notes do not override final results. Your own canonical grounding remains separately authenticated. Full original paths and identities are in COMPLETE_READS.json and common/COMMITTED-BINDING.json.
+
+1. source-scope: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/COVERAGE.md SHA256 e4df5d6639294976de8515739716c676e460763908c45176203f81ab467a7b4c
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/source-scope-00001-00005.txt
+
+2. source-identity: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/SOURCE-AUTHENTICATION.json SHA256 cc29f1ad5a620c3844e661677cd5bf67d5f9f9357c8016511e4e83e479afe926
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/source-identity-00001-00063.txt
+
+3. own-grounding: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/GROUNDING_AUTHENTICATION.json SHA256 f2b0b8fd2e662f67f6510100a7d1eb4856b5314d4398d4ebdfd9afc00e5341b7
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-grounding-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-grounding-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-grounding-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-grounding-00481-00583.txt
+
+4. own-prior-report: /home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-rdtsc-v7-claude-verdict-followup-v1/claude/CLAUDE-REPORT.md SHA256 996efaa5979e5a7881419df315f430f31abaa81bb690380fd2c1e3d09583242b
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-prior-report-00001-00085.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-prior-report-00086-00149.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-prior-report-00150-00215.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/own-prior-report-00216-00222.txt
+
+5. full-composition-diff: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/COMPLETE-COMPOSITION.patch SHA256 6fb658fee86c1d5b2bcfb33177033cda3662fdd6994fb266005caf617ebb6593
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00481-00640.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00641-00800.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00801-00960.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-00961-01120.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01121-01280.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01281-01440.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01441-01600.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01601-01760.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01761-01920.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-01921-02075.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02076-02235.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02236-02395.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02396-02555.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02556-02715.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02716-02875.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-02876-03035.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-03036-03195.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-03196-03355.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/full-composition-diff-03356-03378.txt
+
+6. new-reverie-kvm-src-capture_identity.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/capture_identity.rs SHA256 7dde0222986ce6e86bb8edd9699af622dfc29fbefb60f0e6e8d6fa702a244fbd
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity.rs-00001-00152.txt
+
+7. new-reverie-kvm-src-capture_identity_tests.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/capture_identity_tests.rs SHA256 8c76ac8eef3c3da85462cd5e26f2a39248edbff32bab78324a8f54ba7c72a4bd
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity_tests.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity_tests.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity_tests.rs-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-capture_identity_tests.rs-00481-00533.txt
+
+8. new-reverie-kvm-src-cpuid_instruction.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/cpuid_instruction.rs SHA256 576c890af84158183937b8f86bebdbe0464099816c341edab94b13e30478a111
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-cpuid_instruction.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-cpuid_instruction.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-cpuid_instruction.rs-00321-00379.txt
+
+9. new-reverie-kvm-src-cpuid_runtime_tests.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/cpuid_runtime_tests.rs SHA256 2652698da8546a5d5b76616b673bef99b6db7981fc57c37d7eb1246ad8a0e696
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-src-cpuid_runtime_tests.rs-00001-00146.txt
+
+10. new-reverie-kvm-tests-support-capture_identity.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/tests/support/capture_identity.rs SHA256 9d2cb0854facfc887f17029ccfb7a5edfaaf6305d3a84fc2e2956b7ec1011f48
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-capture_identity.rs-00001-00100.txt
+
+11. new-reverie-kvm-tests-support-cpuid_dispatch.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/tests/support/cpuid_dispatch.rs SHA256 09b70feee10f8a6a67694890c88ce98b87d0687269e6163ff0b504d6901daaee
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_dispatch.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_dispatch.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_dispatch.rs-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_dispatch.rs-00481-00561.txt
+
+12. new-reverie-kvm-tests-support-cpuid_terminal.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/tests/support/cpuid_terminal.rs SHA256 6dd0d85806952559e0c75244a7e354f14e5e1d0e3c36e2c943aaf9c4a77d5ba2
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_terminal.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_terminal.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/new-reverie-kvm-tests-support-cpuid_terminal.rs-00321-00360.txt
+
+13. context-reverie-kvm-src-executor.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--executor.rs SHA256 3bc6f37b4d6a6bfe99e7d52bcb2c43732f3590cbc20735eb07273ea5f97f8029
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00481-00640.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00641-00800.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00801-00960.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-00961-01120.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01121-01280.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01281-01440.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01441-01600.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01601-01760.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01761-01920.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-01921-02080.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02081-02240.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02241-02400.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02401-02560.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02561-02720.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02721-02880.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-executor.rs-02881-03022.txt
+
+14. context-reverie-kvm-src-lib.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--lib.rs SHA256 4366df01fdd31b78221214b0f102f44706527ad606b7b51f0a15f78a501cd9f8
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-lib.rs-00001-00027.txt
+
+15. context-reverie-kvm-src-runtime.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--runtime.rs SHA256 fba283c78bd0ad7ebaf3e7c8e339635a39d0ae1c9fef9d96518720d0ff675e2a
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00481-00640.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00641-00800.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00801-00960.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-00961-01115.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01116-01275.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01276-01425.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01426-01585.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01586-01745.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-runtime.rs-01746-01760.txt
+
+16. context-reverie-kvm-src-terminal_runtime_tests.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--terminal_runtime_tests.rs SHA256 2e65c54338f7ea84b349d157869d5cb3252f5f7d531c211713ec110ac89d92af
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-terminal_runtime_tests.rs-00001-00028.txt
+
+17. context-reverie-kvm-src-vm.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--src--vm.rs SHA256 f4a879ab9306217fca0d6836977caeddeafabd94e1bfcd5c274ec93a7cc01c39
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00481-00640.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00641-00800.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00801-00960.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-00961-01120.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-src-vm.rs-01121-01240.txt
+
+18. context-reverie-kvm-tests-static_elf.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie-kvm--tests--static_elf.rs SHA256 86bfabcc22fc807d5c9824c7a03d58a4d446e3a2c2012628d95648e2d02236a7
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/context-reverie-kvm-tests-static_elf.rs-00001-00102.txt
+
+19. reverie-src-guest.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie--src--guest.rs SHA256 eb7acbeb7d829d272e62c30e9bfa7b105039d31ac8def96b4c6c258bdd34956e
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-src-guest.rs-00001-00017.txt
+
+20. reverie-src-tool.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie--src--tool.rs SHA256 d487588e83b8d33f8926e85e52990d2b43ec04c524ab85220494df55f1422103
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-src-tool.rs-00001-00018.txt
+
+21. reverie-src-subscription.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/reverie--src--subscription.rs SHA256 5b3c0ff7db348cece819d3060904b5bfcbcc6d28a0d451bb9967f8f975257149
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-src-subscription.rs-00001-00015.txt
+
+22. reverie-kvm-src-timestamp.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/timestamp.rs SHA256 0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-timestamp.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-timestamp.rs-00161-00279.txt
+
+23. reverie-kvm-src-cpuid.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/cpuid.rs SHA256 56f7b5a167a7fda07db2fdb44b4801f44564b5450bd6628ca876d2b967f2b73f
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-cpuid.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-cpuid.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-cpuid.rs-00321-00476.txt
+
+24. reverie-kvm-src-parked_signal_runtime.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/parked_signal_runtime.rs SHA256 41082fd8131415d108718eb4e851c657a213d83194b6dda795de7d25cadea037
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00481-00640.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-src-parked_signal_runtime.rs-00641-00652.txt
+
+25. reverie-kvm-tests-support-timestamp_terminal.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/tests/support/timestamp_terminal.rs SHA256 447bf99dbb60c01f64349f213f34e7b6da2f2b4d80bf37e5e5ecc56c68dafa93
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-tests-support-timestamp_terminal.rs-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-tests-support-timestamp_terminal.rs-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/reverie-kvm-tests-support-timestamp_terminal.rs-00321-00447.txt
+
+26. detcore-src-lib.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/hermit--detcore--src--lib.rs SHA256 564c96d9654a21e470ab13f7b2d7faecab419e21c0f0ea173b24b2ee670c3987
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/detcore-src-lib.rs-00001-00053.txt
+
+27. hermit-stat-complete: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/hermit-39ac/detcore/src/stat.rs SHA256 4c6af4f4ad4584eaad424052a758ce931808be56b00d199323f95d4e603b932a
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/hermit-stat-complete-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/hermit-stat-complete-00161-00280.txt
+
+28. detcore-src-syscalls-files.rs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/source-context/hermit--detcore--src--syscalls--files.rs SHA256 1da1511686d5a1098b68d19d7cf2ef7c4ace50cee6c9b5a8ce91741f15171175
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/detcore-src-syscalls-files.rs-00001-00023.txt
+
+29. selected-declarations: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/SELECTED-DECLARATIONS.json SHA256 76e30d6e2a26ec04adc0eb9b21932816b2c639aabf9977c35757090838ae31ce
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/selected-declarations-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/selected-declarations-00161-00320.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/selected-declarations-00321-00480.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/selected-declarations-00481-00593.txt
+
+30. caller-prepare.py: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/prepare.py SHA256 89d3464e8fb5b5cf196faff56421799c6e8f1a332e6c6da602742e376a7542f9
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-prepare.py-00001-00099.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-prepare.py-00100-00125.txt
+
+31. caller-phase.py: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/phase.py SHA256 3c4e1f3d25987ae0e12a1fc7ecc904fa0b028da9a4ca00d0c751000eed65534b
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-phase.py-00001-00152.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-phase.py-00153-00176.txt
+
+32. caller-common.py: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/common.py SHA256 96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-common.py-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-common.py-00161-00227.txt
+
+33. caller-cache_lease.py: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/cache_lease.py SHA256 957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-cache_lease.py-00001-00098.txt
+
+34. caller-bind_dependencies.py: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/bind_dependencies.py SHA256 034a36525743a95cb0114b054c1334b37d0fa817387d8e774630c837b80be55f
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-bind_dependencies.py-00001-00035.txt
+
+35. caller-retain_artifacts.py: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/retain_artifacts.py SHA256 23e508b1a407796897949b08090c1a98238c34c4a01bb3c57ff3217d827f5208
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-retain_artifacts.py-00001-00050.txt
+
+36. caller-execute_continuation.py: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/execute_continuation.py SHA256 a1a8cc3e553a3fa11ca1f9dc6703d1ba2083ef2acee11ad016eab52b090cbd30
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-execute_continuation.py-00001-00031.txt
+
+37. caller-observer-observer.py: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/observer.py SHA256 137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00161-00301.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00302-00442.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00443-00578.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00579-00705.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-observer-observer.py-00706-00743.txt
+
+38. caller-CALLER-DELTA.patch: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/CALLER-DELTA.patch SHA256 67af2d75d1ae53f7ac3ef7bd5f07cd655c26e86bf2fd5e38dee30c117fa2fcbb
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-CALLER-DELTA.patch-00001-00018.txt
+
+39. caller-CONTINUATION.json: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/CONTINUATION.json SHA256 05327083b86d0cdb936e5b649d137f5d3d46d3ec48b64d52d9fb4becb8cdb33e
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-CONTINUATION.json-00001-00120.txt
+
+40. caller-FIRST-REFUSAL.json: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/FIRST-REFUSAL.json SHA256 ab51fa5c0ce49552598870ff5082235798608a751a196afe74144e8faa63b805
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-FIRST-REFUSAL.json-00001-00055.txt
+
+41. caller-SETUP.json: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/SETUP.json SHA256 dbfae7925d27e94b991c98d4df08693ccdceda097c8513050d9c9a5deaff91fa
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-SETUP.json-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-SETUP.json-00161-00175.txt
+
+42. caller-TARGET-ADMISSION.json: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/TARGET-ADMISSION.json SHA256 10427c004e313a60c15fc18ed4598ef7e7d91a8320e37c9448ad297ebae54267
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-TARGET-ADMISSION.json-00001-00012.txt
+
+43. caller-PREDECESSOR-ELFS.json: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/PREDECESSOR-ELFS.json SHA256 18a808f67254e5f0fc131359a8e2a7fc20914f85ddaf24831394f5b7b9da00c7
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-PREDECESSOR-ELFS.json-00001-00011.txt
+
+44. caller-original-caller-delta: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/CALLER-DELTA.patch SHA256 501bc62c737aed6ca62ed783b5e4457509273d8be272109b82a94295714b2f91
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-original-caller-delta-00001-00057.txt
+
+45. caller-result-finalizer: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/finalize_results_v2.py SHA256 7e36ebab6e191791636cd3e8400ed5304d4eddce207029e2d0badd9f533362d2
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/chunks/caller-result-finalizer-00001-00071.txt
+
+46. committed-target: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/common/QUALIFICATION.md SHA256 3013b596b90e496530b6a6c515a5caebef145e827ceb18d40a088cb4e5aeb3d1
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/committed-target-00001-00005.txt
+
+47. kernel-cpuid-semantics: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/common/KERNEL-CPUID-CONTEXT.txt SHA256 d0ffac6ed961bef9838235ea1dd01f759b83608fddfab3f94686f81cf8979850
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/kernel-cpuid-semantics-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/kernel-cpuid-semantics-00161-00233.txt
+
+48. unchanged-timestamp-caller: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/common/TIMESTAMP-CALLER.txt SHA256 05213137641fb1462162a7901f185c9534ecac143edff332f17a34951a5e3008
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/unchanged-timestamp-caller-00001-00070.txt
+
+49. complete-lib-module-registration: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/lib.rs SHA256 f6004c9725e8085056b1ca99dc91fd7c2a5fcdd912f84d32a082a4ed3a3a6262
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/complete-lib-module-registration-00001-00064.txt
+
+50. complete-terminal-admission-tests: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/terminal_runtime_tests.rs SHA256 15a483061017a4b13366695a7a507ee70f7ff6aad13ff4d5801b17953894b8a7
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/complete-terminal-admission-tests-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/complete-terminal-admission-tests-00161-00189.txt
+
+51. compiled-artifact-binding: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/retained-binaries/BINDING.json SHA256 bb2bda2c17f37c77607bdd892db2047c0f8bafc67624f8de76ae20fbc5ad5058
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/compiled-artifact-binding-00001-00143.txt
+
+52. raw-composed-test-outputs: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/common/RAW-TEST-OUTPUTS.txt SHA256 01ad39fce8c9b1807f75a83dede532499820fff3d88d57ec01521c8b7e3d2919
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00001-00079.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00080-00161.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00162-00247.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00248-00336.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00337-00446.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00447-00541.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00542-00625.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00626-00728.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00729-00820.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00821-00904.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00905-00995.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/raw-composed-test-outputs-00996-01014.txt
+
+53. transport-observations: /home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/final-v1/HARDWARE-OBSERVATIONS.json SHA256 c5dca6d34e9ad19aed3a3358c7d9011e12056eff12814179f7cc9579cf4215db
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/transport-observations-00001-00160.txt
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/transport-observations-00161-00267.txt
+
+54. transport-raw-stdout: /home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/observer/probe-01/stdout SHA256 b76e2cecea0baab74011eeeec124dd89b99bbe9e05806cdeb7a7bf8100ebd9c4
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/transport-raw-stdout-00001-00004.txt
+
+55. transport-raw-stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/cpuid-transport-probe-v1/qualification-v1/observer/probe-01/stderr SHA256 ed6fcc9930898f4d425572be0510e98dee5fa363b79485751c282b27300ebfdd
+   /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/chunks/transport-raw-stderr-00001-00018.txt

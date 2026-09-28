@@ -1,0 +1,60 @@
+{
+  "scope": "released uncompiled private callback completion driver and five test declarations",
+  "records": [
+    {
+      "path": "runtime-before.rs",
+      "bytes": 238486,
+      "sha256": "82a5f5a3db806483714b52507eaf0494622e7548edde84f04462f4d0a620bdfc"
+    },
+    {
+      "path": "runtime-after.rs",
+      "bytes": 243035,
+      "sha256": "ba6d7c0246f2e64c920bcbef7b83fcf7f0c3cde3c489f077b23f7b63824d25e9"
+    },
+    {
+      "path": "DRIVER-BEFORE.rs",
+      "bytes": 3700,
+      "sha256": "979e49724ad06c154952f0e03ee1b7239bc40db40aa594e5638b0d7f8e6bf40d"
+    },
+    {
+      "path": "DRIVER-AFTER.rs",
+      "bytes": 5650,
+      "sha256": "929b3f409b33ce2f6e576056b3dd42eae4c6b7f4c88eaf3d09cf161625227769"
+    },
+    {
+      "path": "runtime-author-only-after.rs",
+      "bytes": 240436,
+      "sha256": "3ed356d110d3f1fdb426efe4e08522b3878aa7e98e0774b973a6fa4ca16f6dee"
+    },
+    {
+      "path": "callback_completion_tests.rs",
+      "bytes": 12797,
+      "sha256": "9a007125e7ab351d04a74de6f6c6e91fc77f1bedac9268a42d9d3f8d499777f4"
+    },
+    {
+      "path": "owned_future-dependency.rs",
+      "bytes": 10917,
+      "sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d"
+    },
+    {
+      "path": "AUTHOR.patch",
+      "bytes": 20593,
+      "sha256": "54b5bad4bb91d16ce9a1fb3d3cee69c682d1e5eaac1ef63458e69d29cdba8bf7"
+    },
+    {
+      "path": "CONCURRENT.patch",
+      "bytes": 9182,
+      "sha256": "c3430a6989407b68ec672254bd0cd41b36eb9357e1a059d88da32e530cef91c1"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 914,
+      "sha256": "3290bfee16b8939061bf33fd8ee9bc22e73804b031f1b89f6b9e25bf8279827e"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 5998,
+      "sha256": "ec7fa8a05fe3411d9825cc0ad37c3528e2aa809d009479005788fb87dd71c389"
+    }
+  ]
+}

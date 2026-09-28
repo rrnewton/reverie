@@ -1,0 +1,287 @@
++        let output = capture_output.then(CapturedOutput::default);
++        Self::with_output(state, output)
++    }
++
++    pub(crate) fn with_output(mut state: LoadedStaticElf, output: Option<CapturedOutput>) -> Self {
+         let file_table;
+         let _retirement = state.file_retirement.hold();
+         let transaction = state.signal_transaction.clone();
+@@ -1883,7 +1918,7 @@
+             signal_effect_raw_result: None,
+             address_space,
+             file_table,
+-            output: capture_output.then(CapturedOutput::default),
++            output,
+             owns_output: true,
+             next_pid: Arc::new(AtomicI32::new(next_pid)),
+             sigchld_auto_reap,
+@@ -6462,14 +6497,10 @@
+ fn guest_fd_link_target(
+     state: &LoadedStaticElf,
+     guest_fd: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> Result<Vec<u8>, i64> {
+-    if capture_output && output_alias(state, guest_fd).is_some() {
+-        return Ok(format!(
+-            "pipe:[{}]",
+-            synthetic_captured_output_stat(state, guest_fd).st_ino
+-        )
+-        .into_bytes());
++    if let (Some(capture), Some(alias)) = (capture, output_alias(state, guest_fd)) {
++        return Ok(format!("pipe:[{}]", capture.identity(alias).inode).into_bytes());
+     }
+     let Some(host_fd) = host_fd(state, guest_fd) else {
+         return Err(negative_errno(libc::ENOENT));
+@@ -6500,7 +6531,7 @@
+         if target.starts_with(prefix.as_bytes()) && target.ends_with(b"]") {
+             return Ok(format!(
+                 "{kind}:[{}]",
+-                guest_object_stat(state, guest_fd, capture_output)?.st_ino
++                guest_object_stat(state, guest_fd, capture)?.st_ino
+             )
+             .into_bytes());
+         }
+@@ -10306,12 +10337,12 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let Ok(fd) = i32::try_from(args[0]) else {
+         return negative_errno(libc::EBADF);
+     };
+-    match guest_object_stat(state, fd, capture_output) {
++    match guest_object_stat(state, fd, capture) {
+         Ok(stat) => write_struct(memory, args[1], &stat),
+         Err(error) => error,
+     }
+@@ -10320,10 +10351,10 @@
+ fn guest_object_stat(
+     state: &LoadedStaticElf,
+     fd: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> Result<libc::stat, i64> {
+-    if capture_output && output_alias(state, fd).is_some() {
+-        return Ok(synthetic_captured_output_stat(state, fd));
++    if let (Some(capture), Some(alias)) = (capture, output_alias(state, fd)) {
++        return Ok(synthetic_captured_output_stat(capture.identity(alias)));
+     }
+     let Some(host_fd) = host_fd(state, fd) else {
+         return Err(negative_errno(libc::EBADF));
+@@ -10340,14 +10371,14 @@
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-205): Review synthetic metadata for in-memory captured output.
+-fn synthetic_captured_output_stat(state: &LoadedStaticElf, fd: libc::c_int) -> libc::stat {
++fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat {
+     // Captured writes never reach the host descriptor, so exposing that
+     // descriptor's type, size, or inode leaks the invoking shell into the
+     // guest. Model the capture sink as the pipe used by process-based backends.
+     // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
+     let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+-    stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
+-    stat.st_ino = synthetic_guest_fd_object_inode(state, fd);
++    stat.st_dev = identity.device;
++    stat.st_ino = identity.inode;
+     stat.st_mode = libc::S_IFIFO | 0o600;
+     stat.st_nlink = 1;
+     stat.st_uid = 0;
+@@ -10357,8 +10388,8 @@
+     stat
+ }
+ 
+-fn synthetic_captured_output_statx(state: &LoadedStaticElf, fd: libc::c_int) -> libc::statx {
+-    let stat = synthetic_captured_output_stat(state, fd);
++fn synthetic_captured_output_statx(identity: CaptureObjectIdentity) -> libc::statx {
++    let stat = synthetic_captured_output_stat(identity);
+     // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+     let mut extended = unsafe { std::mem::zeroed::<libc::statx>() };
+     extended.stx_mask = libc::STATX_BASIC_STATS;
+@@ -10381,7 +10412,7 @@
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+     flags: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     fstatat_impl(
+         memory,
+@@ -10390,7 +10421,7 @@
+         args[0],
+         args[1],
+         flags,
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -10398,7 +10429,7 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     fstatat_impl(
+         memory,
+@@ -10407,7 +10438,7 @@
+         args[1],
+         args[2],
+         args[3] as libc::c_int,
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -10418,7 +10449,7 @@
+     path_address: u64,
+     output_address: u64,
+     flags: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let path = match read_c_string(memory, path_address, 4096) {
+         Ok(path) => path,
+@@ -10436,7 +10467,7 @@
+             Ok(target) => target,
+             Err(error) => return error,
+         };
+-        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture_output) {
++        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture.is_some()) {
+             return error;
+         }
+         let path = format!("/proc/{tid}/fdinfo/{fd}");
+@@ -10470,13 +10501,13 @@
+         .map(|metadata| metadata.guest_fd)
+         .or_else(|| (path.is_empty() && guest_dirfd != libc::AT_FDCWD).then_some(guest_dirfd));
+     if let Some(fd) = descriptor
+-        && capture_output
+-        && output_alias(state, fd).is_some()
++        && let Some(capture) = capture
++        && let Some(alias) = output_alias(state, fd)
+     {
+         return write_struct(
+             memory,
+             output_address,
+-            &synthetic_captured_output_stat(state, fd),
++            &synthetic_captured_output_stat(capture.identity(alias)),
+         );
+     }
+     let executable = if flags & libc::AT_SYMLINK_NOFOLLOW == 0 {
+@@ -10560,7 +10591,7 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let path = match read_c_string(memory, args[1], 4096) {
+         Ok(path) => path,
+@@ -10587,7 +10618,7 @@
+             Ok(target) => target,
+             Err(error) => return error,
+         };
+-        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture_output) {
++        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture.is_some()) {
+             return error;
+         }
+         let path = format!("/proc/{tid}/fdinfo/{fd}");
+@@ -10639,18 +10670,22 @@
+             .then_some(args[0] as libc::c_int)
+     });
+     if let Some(fd) = descriptor
+-        && capture_output
+-        && output_alias(state, fd).is_some()
++        && let Some(capture) = capture
++        && let Some(alias) = output_alias(state, fd)
+     {
+         // Ordinary objects continue through the native statx call below. The
+-        // capture sink has no corresponding host object; validate the kernel's
++        // capture sink synthesizes fields beyond its reserved identity; validate the kernel's
+         // reserved mask bit and mutually exclusive synchronization flags here.
+         if args[3] as libc::c_uint & 0x8000_0000 != 0
+             || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE
+         {
+             return negative_errno(libc::EINVAL);
+         }
+-        return write_struct(memory, args[4], &synthetic_captured_output_statx(state, fd));
++        return write_struct(
++            memory,
++            args[4],
++            &synthetic_captured_output_statx(capture.identity(alias)),
++        );
+     }
+     let opened_file;
+     let host_fd = if let Some(metadata) = guest_path {
+@@ -12151,6 +12186,7 @@
+         })
+ }
+ 
++#[cfg(test)]
+ fn synthetic_guest_fd_object_inode(state: &LoadedStaticElf, guest_fd: libc::c_int) -> u64 {
+     guest_fd_object_identity(state, guest_fd).inode
+ }
+@@ -13869,7 +13905,7 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     readlink_at_impl(
+         memory,
+@@ -13878,7 +13914,7 @@
+         args[0],
+         args[1],
+         args[2],
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -13887,7 +13923,7 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     readlink_at_impl(
+         memory,
+@@ -13896,7 +13932,7 @@
+         args[1],
+         args[2],
+         args[3],
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -13908,7 +13944,7 @@
+     path_address: u64,
+     output_address: u64,
+     raw_capacity: u64,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let path = match read_c_string(memory, path_address, 4096) {
+         Ok(path) => path,
+@@ -13923,7 +13959,7 @@
+     let capacity = requested_capacity.min(MAX_HOST_IO);
+ 
+     if let Some(guest_fd) = guest_fd_path(state, &path) {
+-        let target = match guest_fd_link_target(state, guest_fd, capture_output) {
++        let target = match guest_fd_link_target(state, guest_fd, capture) {
+             Ok(target) => target,
+             Err(error) => return error,
+         };
+@@ -15215,6 +15251,7 @@
+ 
+     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
+ 
++    include!("capture_identity_tests.rs");
+     include!("pipe_fionread_tests.rs");
+     include!("child_exit_signal_tests.rs");

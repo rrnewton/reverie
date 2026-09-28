@@ -1,0 +1,160 @@
+
+    // The `syscall` instruction clobbers %rcx/%r11. When we injected a syscall
+    // (or a different syscall variant) from the private trampoline page, %rcx
+    // and %r11 now hold the *trampoline's* return RIP / RFLAGS rather than the
+    // guest's. Although the ABI leaves these "undefined" after a syscall, an
+    // injection should be transparent, and leaving Reverie's private trampoline
+    // address in %rcx would leak a tracer-internal (and potentially
+    // nondeterministic) pointer to the guest. Restore them from the guest's own
+    // pre-syscall snapshot. (No-op on aarch64.)
+    regs.restore_syscall_clobbers(&context);
+
+    task.setregs(&regs)
+}
+
+impl<L: Tool + 'static> TracedTask<L> {
+    #[cfg(target_arch = "x86_64")]
+    async fn cpuid_state(&mut self) -> Result<i64, Errno> {
+        use reverie::syscalls::ArchPrctl;
+        use reverie::syscalls::ArchPrctlCmd;
+
+        self.inject_with_retry(ArchPrctl::new().with_cmd(ArchPrctlCmd::ARCH_GET_CPUID(None)))
+            .await
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn intercept_cpuid(&mut self) -> Result<(), Errno> {
+        use reverie::syscalls::ArchPrctl;
+        use reverie::syscalls::ArchPrctlCmd;
+
+        self.inject_with_retry(ArchPrctl::new().with_cmd(ArchPrctlCmd::ARCH_SET_CPUID(0)))
+            .await
+            .map(|_| ())
+    }
+
+    /// Perform the very first setup of a fresh tracee process:
+    ///
+    /// (1) Set up the special reverie/guest shared page in the tracee.
+    ///
+    /// (2) Also disables vdso within the guest
+    ///
+    /// Warning: this function MUTATES guest code to accomplish the modifications, even though this
+    /// mutation is undone before it returns.  As a result, it  has an extra precondition.
+    ///
+    /// Precondition: all threads in the guest process are stopped. Otherwise a guest state may be
+    /// executing the instructions that are mutated and may crash (due to problems with incoherent
+    /// instruction fetch resulting in non-atomic writes to instructions that straddle cache line
+    /// boundaries).
+    ///
+    /// Precondition: the caller is entitled to execute (blocking, destructive) waitpids against the
+    /// target tracee.  This must not race with concurrent asynchronous tasks operating on the same
+    /// TID.
+    ///
+    /// Postcondition: the guest registers and code memory are restored to their original state,
+    /// including RIP, but the vdso page and special shared page are modified accordingly.
+    #[tracing::instrument(
+        target = "reverie_ptrace::lifecycle",
+        name = "tracee.initialize",
+        level = "debug",
+        skip_all,
+        fields(pid = %task.pid())
+    )]
+    pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        // A forked child can initialize a replacement image too. It must not
+        // consume or overwrite the session root's held-stop cleanup lease.
+        let held_root_stop = self
+            .liteinst_root_runtime(&task)
+            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let reject_activation_signals = self.global_state.liteinst_runtime.is_some();
+        let unexpected_preinit_signal = Arc::new(StdMutex::new(None));
+        #[cfg(test)]
+        let pause_preinit_step = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.pause_preinit_step.clone());
+        #[cfg(test)]
+        let force_preinit_signal_once = (self.liteinst_runtime.lock().unwrap().phase
+            == LiteinstRuntimePhase::Waiting)
+            .then(|| {
+                self.global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.force_preinit_signal_once.clone())
+            })
+            .flatten();
+
+        fn arm_preinit_stop(
+            held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+            task: &Stopped,
+            event: &Event,
+        ) {
+            if let Some(slot) = held_root_stop {
+                let previous = slot
+                    .lock()
+                    .unwrap()
+                    .replace(HeldRootStop::from_event(task, event));
+                debug_assert!(
+                    previous.is_none(),
+                    "rearmed an undisarmed preinit stop lease"
+                );
+            }
+        }
+
+        #[cfg(test)]
+        async fn pause_preinit(
+            pause: &Option<(usize, mpsc::UnboundedSender<Pid>)>,
+            step: usize,
+            task: &Stopped,
+        ) {
+            if let Some((target, sender)) = pause
+                && *target == step
+            {
+                let _ = sender.send(task.pid());
+                future::pending::<()>().await;
+            }
+        }
+
+        #[cfg(test)]
+        if self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.fail_preinit)
+        {
+            return Err(Errno::EPERM.into());
+        }
+
+        type SavedInstructions = [u8; 8];
+
+        /// Helper function for tracee_preinit that does the core work.
+        async fn setup_special_mmap_page(
+            task: Stopped,
+            saved_regs: &libc::user_regs_struct,
+            held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+            reject_activation_signals: bool,
+            unexpected_signal: &Arc<StdMutex<Option<Signal>>>,
+            #[cfg(test)] pause_preinit_step: &Option<(usize, mpsc::UnboundedSender<Pid>)>,
+            #[cfg(test)] force_preinit_signal_once: &Option<Arc<AtomicBool>>,
+        ) -> Result<Stopped, TraceError> {
+            // NOTE: This point in the code assumes that a specific instruction
+            // sequence "SYSCALL; INT3", has been patched into the guest, and
+            // that RIP points to the syscall.
+            let mut regs = *saved_regs;
+
+            let page_addr = cp::PRIVATE_PAGE_OFFSET;
+
+            *regs.syscall_mut() = Sysno::mmap as Reg;
+            *regs.orig_syscall_mut() = regs.syscall();
+            regs.set_args((
+                page_addr as Reg,
+                cp::PRIVATE_PAGE_SIZE as Reg,
+                (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as Reg,
+                (libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_ANONYMOUS) as Reg,
+                -1i64 as Reg,
+                0,
+            ));
+
+            task.setregs(&regs)?;
+            // Execute the injected mmap call.
+            let mut running = RootStopLease::new(task, held_root_stop.clone()).step(None)?;

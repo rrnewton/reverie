@@ -1,0 +1,160 @@
+            blockers.push("CPU affinity");
+        }
+
+        blockers
+    }
+
+    /// Creates a new `Container` that inherits everything from the parent
+    /// process.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts or updates an environment variable mapping.
+    ///
+    /// Note that environment variable names are case-insensitive (but
+    /// case-preserving) on Windows, and case-sensitive on all other platforms.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    ///
+    /// let container = Container::new().env("PATH", "/bin");
+    /// ```
+    pub fn env<K, V>(&mut self, key: K, val: V) -> &mut Self
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.env.set(key.as_ref(), val.as_ref());
+        self
+    }
+
+    /// Adds or updates multiple environment variable mappings.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use std::collections::HashMap;
+    /// use std::env;
+    ///
+    /// use reverie_process::Container;
+    /// use reverie_process::Stdio;
+    ///
+    /// let filtered_env: HashMap<String, String> = env::vars()
+    ///     .filter(|&(ref k, _)| k == "TERM" || k == "TZ" || k == "LANG" || k == "PATH")
+    ///     .collect();
+    ///
+    /// let container = Container::new()
+    ///     .stdin(Stdio::null())
+    ///     .stdout(Stdio::inherit())
+    ///     .env_clear()
+    ///     .envs(&filtered_env);
+    /// ```
+    pub fn envs<I, K, V>(&mut self, vars: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        for (k, v) in vars.into_iter() {
+            self.env(k, v);
+        }
+        self
+    }
+
+    /// Removes an environment variable mapping.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    ///
+    /// let container = Container::new().env_remove("PATH");
+    /// ```
+    pub fn env_remove<K: AsRef<OsStr>>(&mut self, key: K) -> &mut Self {
+        self.env.remove(key.as_ref());
+        self
+    }
+
+    /// Clears the entire environment map for the child process.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    ///
+    /// let container = Container::new().env_clear();
+    /// ```
+    pub fn env_clear(&mut self) -> &mut Self {
+        self.env.clear();
+        self
+    }
+
+    /// Sets the working directory for the child process.
+    ///
+    /// # Interaction with `chroot`
+    ///
+    /// The working directory is set *after* the chroot is performed (if a chroot
+    /// directory is specified). Thus, the path given is relative to the chroot
+    /// directory. Otherwise, if no chroot directory is specified, the working
+    /// directory is relative to the current working directory of the parent
+    /// process at the time the child process is spawned.
+    ///
+    /// # Platform-specific behavior
+    ///
+    /// If the program path is relative (e.g., `"./script.sh"`), it's ambiguous
+    /// whether it should be interpreted relative to the parent's working
+    /// directory or relative to `current_dir`. The behavior in this case is
+    /// platform specific and unstable, and it's recommended to use
+    /// [`canonicalize`] to get an absolute program path instead.
+    ///
+    /// [`canonicalize`]: std::fs::canonicalize()
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    ///
+    /// let container = Container::new().current_dir("/bin");
+    /// ```
+    pub fn current_dir<P: AsRef<Path>>(&mut self, dir: P) -> &mut Self {
+        self.current_dir = Some(to_cstring(dir.as_ref()));
+        self
+    }
+
+    /// Sets configuration for the child process's standard input (stdin) handle.
+    ///
+    /// Defaults to [`Stdio::inherit`] when used with `spawn` or `status`, and
+    /// defaults to [`Stdio::piped`] when used with `output`.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// use reverie_process::Container;
+    /// use reverie_process::Stdio;
+    ///
+    /// let container = Container::new().stdin(Stdio::null());
+    /// ```
+    pub fn stdin<T: Into<Stdio>>(&mut self, cfg: T) -> &mut Self {
+        self.stdin = cfg.into();
+        self
+    }
+
+    /// Sets configuration for the child process's standard output (stdout)
+    /// handle.
+    ///
+    /// Defaults to [`Stdio::inherit`] when used with `spawn` or `status`, and

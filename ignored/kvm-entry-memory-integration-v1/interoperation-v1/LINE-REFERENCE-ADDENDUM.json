@@ -1,0 +1,9 @@
+{
+  "original_target_sha256": "9899c3571e3b840d699621f2f3c7962c3fe56c1720522dd0eccfc5b7c0a6fe4c",
+  "original_report_sha256": "5f3b86dbbfa8c5c435ecdfb71517811e43ef10886768888e0be945cfbc246062",
+  "line_reference_precision": {
+    "entry_closed_admission_check": "entry.rs:499-500 (the report cites nearby line 504, which is the install-result match)",
+    "preserved_kvm_error": "clock.rs:165-167 (the report cites 166-169, which includes the following branch)"
+  },
+  "source_or_semantic_change": false
+}

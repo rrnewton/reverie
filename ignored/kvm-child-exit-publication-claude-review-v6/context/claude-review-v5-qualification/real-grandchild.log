@@ -1,0 +1,30 @@
+[evidence begin]
+command cargo test -p reverie-kvm --test static_elf grandchild_family_transitions_are_causal_on_real_kvm -- --exact --nocapture 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head 6152ee999a41324be36456bb0a9b94a703711068
+expected_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+pre_head 6152ee999a41324be36456bb0a9b94a703711068
+pre_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_before_bytes 448352632832
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:05:41Z
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+
+running 1 test
+reverie-kvm child 2 failed before wait4: unexpected vCPU exit: KVM child process 2 failed before publishing its status
+reverie-kvm child 2 failed before wait4: unexpected vCPU exit: KVM child process 2 failed before publishing its status
+reverie-kvm child 4 failed before wait4: unexpected vCPU exit: KVM child process 4 failed before publishing its status
+reverie-kvm child 4 failed before wait4: unexpected vCPU exit: KVM child process 4 failed before publishing its status
+test grandchild_family_transitions_are_causal_on_real_kvm ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 3.04s
+
+
+[evidence end]
+exit_code 0
+post_head 6152ee999a41324be36456bb0a9b94a703711068
+post_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_after_bytes 448348119040
+completed_at 2026-09-20T15:05:44Z

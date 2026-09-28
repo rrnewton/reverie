@@ -1,0 +1,24 @@
+{
+  "commit": "39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435",
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/hermit-39ac/detcore/src/lib.rs",
+      "bytes": 162820,
+      "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/hermit-39ac/detcore/src/stat.rs",
+      "bytes": 8546,
+      "sha256": "4c6af4f4ad4584eaad424052a758ce931808be56b00d199323f95d4e603b932a",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/hermit-39ac/detcore/src/syscalls/files.rs",
+      "bytes": 196186,
+      "sha256": "b4f56303af3eab51be782582d95b8e368a3be7007157c1d6dcaca50ad6a4729a",
+      "mode": 420
+    }
+  ],
+  "scope": "Existing consumer context only; no new Hermit review or runtime result"
+}

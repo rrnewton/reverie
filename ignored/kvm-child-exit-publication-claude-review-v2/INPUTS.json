@@ -1,0 +1,769 @@
+{
+  "records": [
+    {
+      "path": "BASE-TO-HEAD.patch",
+      "bytes": 182276,
+      "sha256": "109d749cb60a603418be8d9f1ac31b7577e11e7497c8d8734f75946b3f0d79f0"
+    },
+    {
+      "path": "QUALIFICATION.md",
+      "bytes": 1621,
+      "sha256": "6ea387d75dd7a14341e441264b25b7e3eb0858d664cff0a3b7728146da90d47e"
+    },
+    {
+      "path": "SOURCE.json",
+      "bytes": 1254,
+      "sha256": "1152cc8a54039260d936a52692be77485e34bd5507331e719f989df6fc6e794d"
+    },
+    {
+      "path": "before/reverie/src/guest.rs",
+      "bytes": 28052,
+      "sha256": "3875c9b153b20f6ecee39b4a6893b516b037e3c3aed20ab0ee593a33fa31e47c"
+    },
+    {
+      "path": "before/reverie/src/process_signal_control.rs",
+      "bytes": 6447,
+      "sha256": "bee2c765022e8082a85d487a6663c27aa2f2eab6b73a416dc6f204bfa106b59c"
+    },
+    {
+      "path": "before/reverie/src/tool.rs",
+      "bytes": 26835,
+      "sha256": "704e502fd8ae91e104468e79c02fccab05dd5addc26bf1e0122886ba409d8982"
+    },
+    {
+      "path": "before/reverie-kvm/src/child_exit_signal_tests.rs",
+      "bytes": 21653,
+      "sha256": "fe2823c253a31b627187a632fdcebf17e8ae1628f662748e223b7d0c322fd22d"
+    },
+    {
+      "path": "before/reverie-kvm/src/elf.rs",
+      "bytes": 82315,
+      "sha256": "4201b4af34ff43bccdab8ef0d96fd58d6e3aa02b021fe502d590d055b28a5eea"
+    },
+    {
+      "path": "before/reverie-kvm/src/error.rs",
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    {
+      "path": "before/reverie-kvm/src/executor.rs",
+      "bytes": 1530112,
+      "sha256": "8e2cf2596fb1d9bf9ea2895564ff3da6f77312fe245f61dfb80e474eb0d6d675"
+    },
+    {
+      "path": "before/reverie-kvm/src/process_signal_publication.rs",
+      "bytes": 66300,
+      "sha256": "a9a54ff0e5c3525e3681e4b0eae0e37543fa22273daf142dda47cb6509642834"
+    },
+    {
+      "path": "before/reverie-kvm/src/runtime/native_test_support.rs",
+      "bytes": 21538,
+      "sha256": "bc94a250f5ef1970f2a56de2d0877853ac619331871d923fd54122173f716b9a"
+    },
+    {
+      "path": "before/reverie-kvm/src/runtime/signal_cleanup_completion_tests.rs",
+      "bytes": 26274,
+      "sha256": "c738f03c0095b39816e56dc8fd35472b5f2ed9b3a6c74c73a0afbec105c6d8ac"
+    },
+    {
+      "path": "before/reverie-kvm/src/runtime.rs",
+      "bytes": 276446,
+      "sha256": "d63b742730981dc8adb2e1d9f276b24bfda72e8b6f1ae9ef66496c96ef313dd2"
+    },
+    {
+      "path": "before/reverie-kvm/src/vm.rs",
+      "bytes": 415689,
+      "sha256": "67466f8af907b9776ba731a80523d98b91a8e53688e5c4f97c47dcb6d14ff438"
+    },
+    {
+      "path": "before/reverie-kvm/tests/static_elf.rs",
+      "bytes": 512850,
+      "sha256": "3d3f3bbc071adc8aa42b3624de23d8340ea3a5f7e7e0473a31ff7b7a57f44b6f"
+    },
+    {
+      "path": "before/reverie-kvm/tests/support/terminal_fork.rs",
+      "bytes": 61580,
+      "sha256": "9209bdbde5ed8d26ee3f6bee352b34d355c57e190c585720b271e5353c103c6a"
+    },
+    {
+      "path": "candidate/reverie/src/auxv.rs",
+      "bytes": 4384,
+      "sha256": "305a627bc33fd52baa2a73a1c6917696af70a7e4444fec432bb7b05049d9cf39"
+    },
+    {
+      "path": "candidate/reverie/src/backend.rs",
+      "bytes": 14292,
+      "sha256": "636d08dea26591bfa2ab3ecba85bee190f079b6304839bdb3ed5ade6af33d485"
+    },
+    {
+      "path": "candidate/reverie/src/backend_stats.rs",
+      "bytes": 16475,
+      "sha256": "18cc69a07a352dcce755b0631d23a08ca7dd4fdd89f5c8307b7d240bf4c52b2a"
+    },
+    {
+      "path": "candidate/reverie/src/backtrace/cache.rs",
+      "bytes": 2490,
+      "sha256": "ddf7eec9fbbca8cd23abe10f6d267d96935dcd67849c4d8ce544d6f8eb9e2448"
+    },
+    {
+      "path": "candidate/reverie/src/backtrace/library.rs",
+      "bytes": 3020,
+      "sha256": "c36d316defa4e31d2159641514189705abd0ee5cf5fdfa088d2349a229186792"
+    },
+    {
+      "path": "candidate/reverie/src/backtrace/symbols.rs",
+      "bytes": 11196,
+      "sha256": "7c3e45f189e9aa55b22a79aa9e46e2dc5613048b04d0eccd072c3371082ef838"
+    },
+    {
+      "path": "candidate/reverie/src/backtrace.rs",
+      "bytes": 10320,
+      "sha256": "270a46d3343cfb865ddfa8c542ba61e71134e65f6dd18ee0bea062960771bc89"
+    },
+    {
+      "path": "candidate/reverie/src/error.rs",
+      "bytes": 1172,
+      "sha256": "fbffa7a81d2db19839f638e0eb6b668fd45569c7b6b6158d79ffb248e0595e6d"
+    },
+    {
+      "path": "candidate/reverie/src/guest.rs",
+      "bytes": 28366,
+      "sha256": "5a550544bfb8b89d578a899e73dcbf09d7d527a09c008718181a061f4ce99bba"
+    },
+    {
+      "path": "candidate/reverie/src/lib.rs",
+      "bytes": 4713,
+      "sha256": "2bf8c23974df2716529730c9c246dec695412eeb09ea088989cf0c4e20423363"
+    },
+    {
+      "path": "candidate/reverie/src/pmu.rs",
+      "bytes": 3452,
+      "sha256": "23c59199f2ad21e5f12aace32e4158eeb76dfa95c06d25e2098deb7fab971df4"
+    },
+    {
+      "path": "candidate/reverie/src/process_signal_control.rs",
+      "bytes": 10413,
+      "sha256": "66f7535e8643bcb7e16fd46149a77a1eb6a5d5811e0f8d1827942c64a3f14f94"
+    },
+    {
+      "path": "candidate/reverie/src/rdtsc.rs",
+      "bytes": 1641,
+      "sha256": "5556afb1b1b349027fb1cfeba7462a5f7b716b06794389f855b7f296fdb30be2"
+    },
+    {
+      "path": "candidate/reverie/src/regs.rs",
+      "bytes": 5996,
+      "sha256": "7ec0e6d72bc760189d40c344f417288401357461a3f6593360e1b7318bf77eb9"
+    },
+    {
+      "path": "candidate/reverie/src/signal.rs",
+      "bytes": 10358,
+      "sha256": "cb5e56347dd7651e9e10f7ff1a226c0f1fde5da55f901096cac7ee342107d33d"
+    },
+    {
+      "path": "candidate/reverie/src/signal_observation.rs",
+      "bytes": 7632,
+      "sha256": "d089b3d2f18d41364a3ea73dd5ff241ceeec4996bcf71e33bcc08495a4c73dcf"
+    },
+    {
+      "path": "candidate/reverie/src/stack.rs",
+      "bytes": 1968,
+      "sha256": "56cc917826ae170d8ba35d401c5977721eafa1dfe1a8d3b88e8285873b5a2f50"
+    },
+    {
+      "path": "candidate/reverie/src/subscription.rs",
+      "bytes": 5894,
+      "sha256": "638a1482113e9ddc33e94319bbf1d70aa1807ad3336df16f58175719058d7acc"
+    },
+    {
+      "path": "candidate/reverie/src/timer.rs",
+      "bytes": 4518,
+      "sha256": "651b7aa37fb6d5115978c8e42c2e4ed5fd2fdae2e3e743592d762f22f1ee3cfc"
+    },
+    {
+      "path": "candidate/reverie/src/tool.rs",
+      "bytes": 28308,
+      "sha256": "0e3cd78cf32f45882509a992f6649b2f0168f689902868b55f1459b5b62ace1b"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/bootstrap.rs",
+      "bytes": 43344,
+      "sha256": "46e856d87ac8fce52722af3655c4b5dfdb5e4b5ee09e32c0bb3597a010b4a0cc"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/capture_identity.rs",
+      "bytes": 5038,
+      "sha256": "7dde0222986ce6e86bb8edd9699af622dfc29fbefb60f0e6e8d6fa702a244fbd"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/capture_identity_tests.rs",
+      "bytes": 19687,
+      "sha256": "8c76ac8eef3c3da85462cd5e26f2a39248edbff32bab78324a8f54ba7c72a4bd"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/captured_write_runtime_tests.rs",
+      "bytes": 3849,
+      "sha256": "00d5614ece9cd95883f81e8b0a9e847ea3238c9165e09c3db0b5cdffd356eae1"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/child_exit_runtime_tests.rs",
+      "bytes": 5724,
+      "sha256": "f7f729114c502cd1e4b2e4359fd37c89bc0bd6224f8409d6ed2deafec0071115"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/child_exit_signal_tests.rs",
+      "bytes": 22607,
+      "sha256": "36de7ff5a3360123b110fc273a6ab5254d53b3f58aeb32d27045f16ccfa3c8e8"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/clock/entry_interrupt_tests.rs",
+      "bytes": 10629,
+      "sha256": "020056fd4cfb37d41426daf4fade0a51d757f97d5caf26975e938b2dcb5899ff"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/clock.rs",
+      "bytes": 42415,
+      "sha256": "302611f157a58fbe2442edc7c1f635ad028e567802a0a561dabe2dbd87db740c"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/cpuid.rs",
+      "bytes": 16731,
+      "sha256": "56f7b5a167a7fda07db2fdb44b4801f44564b5450bd6628ca876d2b967f2b73f"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/cpuid_instruction.rs",
+      "bytes": 13263,
+      "sha256": "576c890af84158183937b8f86bebdbe0464099816c341edab94b13e30478a111"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/cpuid_runtime_tests.rs",
+      "bytes": 5963,
+      "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/elf.rs",
+      "bytes": 82451,
+      "sha256": "6df2258508581e4ef11f493c1f25606cfd4d57167250dc2440b631b8be4024ed"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/entry/cleanup_tests.rs",
+      "bytes": 27085,
+      "sha256": "8204b5f5a98da876478a31647a30901883e1f8f4ab410535c46c7ac7aebed712"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/entry/driver/tests.rs",
+      "bytes": 20819,
+      "sha256": "50ada60612ce119f51910bbd651734627c730b0ffe15f331f8327333c25769cc"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/entry/driver.rs",
+      "bytes": 19513,
+      "sha256": "3167f23ddb450661710f910d67cbf7138f740f8611ce534816d102e148517718"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/entry/owner.rs",
+      "bytes": 35724,
+      "sha256": "336863c37fcdf4365fab5dd7f29a51e55964cb3f3be931bd81adc2f0e8ac7380"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/entry/signal.rs",
+      "bytes": 17673,
+      "sha256": "a952ee3593deb9b69bd9eba79e377c3c392b2e86d6cad984c42d9f39d11a61e7"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/entry.rs",
+      "bytes": 59527,
+      "sha256": "90fb90cac4aac58debd2c269af3eec8e19bcaa0a0dadd6993982dd0bf482902c"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/error.rs",
+      "bytes": 21407,
+      "sha256": "e5ab40205655a1a8b1204ab849af1c7280f07a8195610889ca3a023dbdaeec27"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/executor/entry_host_wait_tests.rs",
+      "bytes": 10767,
+      "sha256": "9b59b7e69e193c0e08da05456bbcfd0c3ee0b324e7628c7bf52984c4e0ed49b3"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/executor.rs",
+      "bytes": 1538496,
+      "sha256": "59762e74be5768e14c0e57eed83fdbce7751598087abc05d5ddee33b31ab394c"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/failure/owned_future.rs",
+      "bytes": 11676,
+      "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/failure/tool_panics.rs",
+      "bytes": 2129,
+      "sha256": "a0171080ee3e53c9e9b62a166abfc28126098ab080c23f90c25bb8390eb1a204"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/failure/tool_panics_tests.rs",
+      "bytes": 14869,
+      "sha256": "1204b9e0810a436f6dbd6173db74bc98fe8fc2fe5c4a8ac1f6a914e75a2643ea"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/failure.rs",
+      "bytes": 53064,
+      "sha256": "94995c40bc796cd8b289506d1f15fe0663e721065605144afe5af0a063738fc7"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/fdinfo.rs",
+      "bytes": 3629,
+      "sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/lib.rs",
+      "bytes": 2283,
+      "sha256": "6fa59d489a2b28cdec49b63f8c643eadaae6f3264999380fa4b88f7106da5c25"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/memory/entry_snapshot_tests.rs",
+      "bytes": 10786,
+      "sha256": "63bd4a84d1f23e9ff2d44f4ff1dfb6d57c30384527e3c119c955816743d00c6b"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/memory.rs",
+      "bytes": 134566,
+      "sha256": "e5674f5bfc18a4c7c89aefe982943c6e89e5d784f4aeabda762f646b136046a6"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/parked_signal_runtime.rs",
+      "bytes": 32224,
+      "sha256": "d4daf57d298a905aaa2bc10294badb9fc7d17c920a41b9aa24d058e60505fc17"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/pipe_fionread_tests.rs",
+      "bytes": 8432,
+      "sha256": "97447a520862a1734ae7ad307a2c75124864346778c5367da0a93ff2736a424a"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/proc_mounts.rs",
+      "bytes": 2674,
+      "sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/process_alarm_runtime_tests.rs",
+      "bytes": 9206,
+      "sha256": "6a328663e25c8cfe3473b355df1288691f45cc9d3c5dd00a5bd17f1e873cf05e"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/process_alarm_signal_tests.rs",
+      "bytes": 26852,
+      "sha256": "4563f646071424eebaa54bfd0550c227f94671cb7239b24a8501334c91c86a0e"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/process_signal_publication.rs",
+      "bytes": 121387,
+      "sha256": "da453901a5828668e33458126466d42927ab11f000ffb0b2b00845de5e2b8d3a"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/runtime/callback_completion_tests.rs",
+      "bytes": 18488,
+      "sha256": "11e40eadf24aa8a70781f879804d53018d3a89d0cea129fd01bfb2011365b8f2"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/runtime/consuming_panic_tests.rs",
+      "bytes": 23012,
+      "sha256": "990cff878d780b90ec78750dfb8f93bfb9b5b305c165a15742201ba15f4aedbe"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/runtime/entry_operation_tests.rs",
+      "bytes": 31038,
+      "sha256": "485cb594954926124963642cc2a5f9e3ecda7d568be1f5ab4c87e0561166e4d0"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/runtime/entry_owner_tests.rs",
+      "bytes": 8968,
+      "sha256": "f4f8a479230a0b3103cbc92fbbde7712cf3cd8c1e4e3cc905f243d72d283806c"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/runtime/failure_tests.rs",
+      "bytes": 66140,
+      "sha256": "08869cf95f055dbc86d4a406d6e448bc42396904517aba9d6971d78c03715e79"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/runtime/native_test_support.rs",
+      "bytes": 21609,
+      "sha256": "80c51f5909a7bc866d22467c237a821421ac28178dc686198d046e0b9baa9c6d"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/runtime/signal_cleanup_completion_tests.rs",
+      "bytes": 26305,
+      "sha256": "417bdada73e0f6f5d035c4e225d6831000fd22dbbfda8d2355ab21bfeda4f29d"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/runtime.rs",
+      "bytes": 282249,
+      "sha256": "9e4c57ebd9518d14430220c7042cecb9694574bae6e553656ee37d7d46b0ee34"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/signal.rs",
+      "bytes": 63942,
+      "sha256": "72aa5183b3be3392dd27fb657fc1f82dc684874012e1d4c792eaf939c5c1c133"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/signal_dequeue_tests.rs",
+      "bytes": 29233,
+      "sha256": "74b5873bc0a102f57ca25b8792179f88ec197dc15c8a2b09d20296906f622505"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/stats.rs",
+      "bytes": 7523,
+      "sha256": "bad3f1b9f269a6310536e947afce9c43edbe51d59b112e351cee22b807dde4d3"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/syscall.rs",
+      "bytes": 6194,
+      "sha256": "df03079cd2b9fc2612e03d173b2fa6a7fcb75894d42d0656d12bb1289bc46627"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/terminal_runtime_tests.rs",
+      "bytes": 19327,
+      "sha256": "cec50de10977db929d7db97022858c47c37de9b0c1e026207f5895a7f07e2e56"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/terminal_vm_tests.rs",
+      "bytes": 2452,
+      "sha256": "19d9ca3d647c068309e51cb4c7ed086de04e3986e5f441873b76f14042ec5b7c"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/timestamp.rs",
+      "bytes": 9696,
+      "sha256": "0c1337632277a9a4dd67d679c33125193d3bbabdb4e4947d6f50b109fec3d700"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/tools.rs",
+      "bytes": 11329,
+      "sha256": "949bcd86fbf6c60641d9b6b27716fa84092d55ae2003e01967c681aaa0ff86c9"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_action_tests.rs",
+      "bytes": 26953,
+      "sha256": "ad356db5e63c4ccc5bf40a6611a62c83d29545bfeebbbd05214bb628dc13245c"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_construction_tests.rs",
+      "bytes": 13447,
+      "sha256": "0cb55b9a4a491e5a99852abc044cf27de6bdbff069d9fb7f40a28e53e3e54346"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_eintr_tests.rs",
+      "bytes": 10930,
+      "sha256": "a92cae9e1dd1ab1fb7659e2a493966407ec872a6bf10d105d4e86931ebafde3d"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_hypercall_tests.rs",
+      "bytes": 29288,
+      "sha256": "90749f756e3fcb71a0fe6602c023cd16c78dca319f23dac418baa197afc54cc2"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_main_tests.rs",
+      "bytes": 25322,
+      "sha256": "d0827d2e2e92c4b239782cceabf97e5eab4c3649b1aab7669ecabb088cb03fcd"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_multi_owner_tests.rs",
+      "bytes": 46478,
+      "sha256": "85210db4eb2e479129353297d6193f7e6f5aa1f3d573406508b38808da5ece91"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_owner_tests.rs",
+      "bytes": 7382,
+      "sha256": "6fbeaa54086ee4e4aa1540ce069a0705aea3d24f6c78cc81af6e9c9b09a70079"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_public_tests.rs",
+      "bytes": 22643,
+      "sha256": "c4def9041a16e7a8a3f396907babd384bf89b6c16afdd97d0a4f0d47d3bda68a"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_race_tests.rs",
+      "bytes": 8078,
+      "sha256": "3b2cba4611c33924b50e952efc42bb8f0087e59ce6bb60711235c26eb294cdb2"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_spawn_tests.rs",
+      "bytes": 23630,
+      "sha256": "a6cd0978a295041e7585aa98c3cac4f91b22b34b29e6b41b7c4e0d29f79b3ad8"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/entry_wait_tests.rs",
+      "bytes": 30732,
+      "sha256": "8982707cea0a05bf9ddd03f27b7d4d4d10a57e7a82f5b9627ad2c4e244cd2973"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/exec_wait_tests.rs",
+      "bytes": 35181,
+      "sha256": "e1faf5a6f1e2d60fd9e572ab3f933e7334d18c21ca2fa23f670b3cd6e50c1ecb"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/instruction_callback_panic_tests.rs",
+      "bytes": 12101,
+      "sha256": "1f6dfa5f7f9dc8a1053bb6b0a4763a429fff3287975c1215a9c0bdd59a1759c7"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/public_tool_panic_tests.rs",
+      "bytes": 13792,
+      "sha256": "bc345ba5c5feb931f58fb6e9a82cda8aac3d2a93acc65e6bc9001473929b050a"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/worker_join.rs",
+      "bytes": 21492,
+      "sha256": "c779ccabcf60ba95900566265470371e02ae679799e2a104a4dfe2b4be04a1be"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm/worker_panic_tests.rs",
+      "bytes": 27282,
+      "sha256": "7d9c5f8cde4eb7b732486066e80824baf53f85751a9de628a55ae624903e926f"
+    },
+    {
+      "path": "candidate/reverie-kvm/src/vm.rs",
+      "bytes": 418537,
+      "sha256": "8e8220860d381448f83fb2f7affb0d17628b35123429ebc7e32eed6a2d8c4be6"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/counter.rs",
+      "bytes": 4868,
+      "sha256": "1ae91bc03e9d6ff383f14e78405e7a91282433ccf241746f6d7dd17e20369750"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/erestartsys.rs",
+      "bytes": 5074,
+      "sha256": "c86dbd7ab8354bfb71b033f5138ac6b2be43359c03eba5eaa7ca6550cd5c0c58"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/captured_write_signal.c",
+      "bytes": 2726,
+      "sha256": "396007188d9bc8411158b1ede2061791292a9fd2b096519e9c00670a6f0ce8f5"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/child_exit_signals.c",
+      "bytes": 7639,
+      "sha256": "efe715e0499e998df3ecdc863d14cb3ec10930eb56a9454a152c639360662a26"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/leader_exit.s",
+      "bytes": 952,
+      "sha256": "d37f0877f74cbaf56586a84b097ec77b4eae40ea2846650fc543ed289af531ac"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/leader_pthread_exit.c",
+      "bytes": 2694,
+      "sha256": "1173207275a01ad5841c64f1eed9dc426bac607b9a29697f4dfdc4d6ffb93b61"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/leader_wait_status.c",
+      "bytes": 2311,
+      "sha256": "ce674db82847c6a72bad1a029dac289f47f1efc7bfcb86a39cbf00d753ca3fe0"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/parked_signal.c",
+      "bytes": 4189,
+      "sha256": "a1b572f925d17a66dc20bffc982e25366391051db9d0ad574aa6dca7fbe89648"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/pipe_fionread.c",
+      "bytes": 12187,
+      "sha256": "857d6b46358025a92bb0404bb161a230f00594495f57990449f992be003daaf2"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/process_alarm_signal.c",
+      "bytes": 3445,
+      "sha256": "7b1752852e14371a52e23b709237a645ca7b2a4a53eadf07f843dfbf27b5cec8"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/rt_sigreturn_fpregs.c",
+      "bytes": 6823,
+      "sha256": "72f15656d66522b4ba1434150feb05589e483e57c66e76ab9feaaab3e44925ef"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/signal_abi_kernel.c",
+      "bytes": 1933,
+      "sha256": "ce25b0794d3a2eaf7bd8bbcfe028b01aefb54bdc0202382d619d1a21d2afa164"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/signal_abi_libc.c",
+      "bytes": 308,
+      "sha256": "f62220056fc5406ca42dbae0d5527224837a1f9b9a2e1dca5a5a61a7b8b977b1"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/terminal_cancellation.c",
+      "bytes": 4641,
+      "sha256": "4498768e8afd154b9618434c0b7449aaa9729dfd075492481ef000ddcb3ab8ac"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/fixtures/vectored_fd_width.c",
+      "bytes": 4420,
+      "sha256": "1276a8761eb0ac169eee03a01fcf4e0c2001ede1fbae3c76af3c41b91fe7f2be"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/read_clock.rs",
+      "bytes": 17362,
+      "sha256": "74e8f34c7e3b6f041ce1f497a66500e9ea9e85beb5bb363139d14661d2ad995e"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/static_elf.rs",
+      "bytes": 527902,
+      "sha256": "8f03bfdab8c32048638a40a1a869d6ff84d376f0c9d3267dbc4dff555f75fd69"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/strace.rs",
+      "bytes": 7200,
+      "sha256": "d3926bbb89766b0a8bfd2ef8899262285effe27b09a8bea52d1d67346f376a4c"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/capture_identity.rs",
+      "bytes": 4343,
+      "sha256": "9d2cb0854facfc887f17029ccfb7a5edfaaf6305d3a84fc2e2956b7ec1011f48"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/captured_write_signals.rs",
+      "bytes": 10299,
+      "sha256": "4330dbf7a954223fa601452f0f4aa4431854ffecd5a78e563e0ba7056e3df228"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/child_exit_signals.rs",
+      "bytes": 14741,
+      "sha256": "39a75cf01157e6489c4357888369c91305c1699586c5fea7f225dfbbe512c01b"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/cpuid_dispatch.rs",
+      "bytes": 21009,
+      "sha256": "09b70feee10f8a6a67694890c88ce98b87d0687269e6163ff0b504d6901daaee"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/cpuid_terminal.rs",
+      "bytes": 12635,
+      "sha256": "6dd0d85806952559e0c75244a7e354f14e5e1d0e3c36e2c943aaf9c4a77d5ba2"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/exec_worker_error_diagnostic.rs",
+      "bytes": 6980,
+      "sha256": "3e1db8b115b9800978a9c6fbc678471189641312fcb553b900046560f2d4f847"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/leader_exit.rs",
+      "bytes": 27042,
+      "sha256": "8f898ccf731b244fc78728c46f91dcab35d6bfdaa1d1491fbc04bdca908a0a59"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/natural_retirement.rs",
+      "bytes": 16032,
+      "sha256": "7b7091f40cae7718e0f9ddf8cefbe3258ac6f6ce4a7126b9b5192c78627b6bcc"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/parked_signals.rs",
+      "bytes": 45714,
+      "sha256": "4e7f9b844691a40d858954c36959dc24f6f98f0c806c19a245d54124c700efe0"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/process_alarm_signals.rs",
+      "bytes": 10952,
+      "sha256": "58493f256af8d476cec69020fc9547b5d93f1209801a89ae018bbdc3470cef3e"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/terminal_cancellation.rs",
+      "bytes": 22592,
+      "sha256": "b311f0ccef1a5e2f5ce19592f9f745225b859ee04b09924b782b440b1d2eee80"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/terminal_fork.rs",
+      "bytes": 64217,
+      "sha256": "b3555df7fdfeb87beaf2c1dde4175ebba1ebd8eaa7ee8bab54b6939913a11e16"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/support/timestamp_terminal.rs",
+      "bytes": 15727,
+      "sha256": "447bf99dbb60c01f64349f213f34e7b6da2f2b4d80bf37e5e5ecc56c68dafa93"
+    },
+    {
+      "path": "candidate/reverie-kvm/tests/vmcall.rs",
+      "bytes": 13663,
+      "sha256": "b72df51e29dd28e4f10b54d202a1faec1fc7a8c56b7662d3a42b160030469d6a"
+    },
+    {
+      "path": "context/code-review-SKILL.md",
+      "bytes": 3617,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    },
+    {
+      "path": "context/deterministic-scheduling-review-SKILL.md",
+      "bytes": 11050,
+      "sha256": "b0f8bec8c6a278b34142c9a8e67a6795706c1ba3d296c037555b666f71c2812e"
+    },
+    {
+      "path": "context/prior-claude-review.txt",
+      "bytes": 25240,
+      "sha256": "7690de47e5e7b6b8ca0a0e6d92d11515be73a113aac43792ac31b9eab433cca3"
+    },
+    {
+      "path": "primary/PROJECT_VISION.md",
+      "bytes": 10684,
+      "sha256": "b0453aa9e05cfe86c0f0d934a40fda4db2ca93f148cc62d57d732566b75b7540"
+    },
+    {
+      "path": "primary/hermit-v2-roadmap.md",
+      "bytes": 27942,
+      "sha256": "c7140f6f6cbdca706ed08b270ff1b2869d1448df49de2c2d9186b4a40eeccde1"
+    },
+    {
+      "path": "primary/paper.txt",
+      "bytes": 84193,
+      "sha256": "7a8d52fa86a659b0ee314a736fc0a3eb7c8b587306a7bf1a4bed2d7df45f532c"
+    },
+    {
+      "path": "primary/scheduler.rs",
+      "bytes": 364818,
+      "sha256": "da842aa91b84c5ee4b8a39b94cb866075f29a327491ab9e3a7ef95893872536b"
+    },
+    {
+      "path": "prompt.txt",
+      "bytes": 5531,
+      "sha256": "ef9cb72f0ac2eb0873d894df5d2ca55ad45991b56280a57f312b930629c9782b"
+    },
+    {
+      "path": "qualification/clippy.log",
+      "bytes": 193,
+      "sha256": "eab82284a454544abbd1f41851ef69c64d031237ed2b6c01870666e50eeba5f1"
+    },
+    {
+      "path": "qualification/diff-check.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "qualification/fmt-check.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "qualification/grandchild-family-matrix.log",
+      "bytes": 809,
+      "sha256": "0e0b177e00bb175ddc7ea49cf9ad7b75d6eecffc91454eb3d1da5f3d9e7f6a83"
+    },
+    {
+      "path": "qualification/reverie-core.log",
+      "bytes": 2592,
+      "sha256": "b03d6660cbe6b32cd7b978254ab047e7d88228a012153f886f02f205e043e76b"
+    },
+    {
+      "path": "qualification/reverie-kvm-lib.log",
+      "bytes": 70709,
+      "sha256": "1e2fad5fca830a23e730fe2da2de2a41a5fa54fe97fab1d07e284ead8756d607"
+    },
+    {
+      "path": "qualification/terminal-fork.log",
+      "bytes": 33956,
+      "sha256": "a3dc889d62e9e3ccdb6270938b08ec1ff709f369df384cb9d36255e90315728b"
+    },
+    {
+      "path": "qualification/workspace-check.log",
+      "bytes": 2924,
+      "sha256": "c15914dd241f3c0f7d215ce94c88f65eecdaec998fae771b1c478f239bf8ef88"
+    }
+  ]
+}

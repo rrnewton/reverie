@@ -1,0 +1,160 @@
+      "selected": [
+        "task::tests::exec_generation_replaces_image_state_without_changing_old_holders"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.375605084,
+      "payload_elapsed_seconds": 0.002746785990893841,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-32",
+      "kind": "test",
+      "selected": [
+        "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.646694512,
+      "payload_elapsed_seconds": 0.002531080972403288,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-33",
+      "kind": "test",
+      "selected": [
+        "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.329411245,
+      "payload_elapsed_seconds": 0.0024738251231610775,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-34",
+      "kind": "test",
+      "selected": [
+        "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.355570053,
+      "payload_elapsed_seconds": 0.0027188430540263653,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-35",
+      "kind": "test",
+      "selected": [
+        "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.376562432,
+      "payload_elapsed_seconds": 0.002683961996808648,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-36",
+      "kind": "test",
+      "selected": [
+        "task::tests::cancellable_returns_a_completed_result"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.550354289,
+      "payload_elapsed_seconds": 0.0034022401086986065,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-37",
+      "kind": "test",
+      "selected": [
+        "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.428458504,
+      "payload_elapsed_seconds": 0.002776749897748232,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-38",
+      "kind": "test",
+      "selected": [
+        "suppressed_legacy_vsyscall_returns_to_caller"
+      ],
+      "raw_status": 0,
+      "accepted": false,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.411545012,
+      "payload_elapsed_seconds": 0.007227826165035367,
+      "error": "RuntimeError('structured readback failed')",
+      "readback_error": "JSONDecodeError('Expecting value: line 1 column 1 (char 0)')"
+    }
+  ],
+  "raw_selected": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/Q2-RAW-SELECTED-OUTCOMES.txt",
+    "bytes": 55804,
+    "sha256": "d15162cb0c476773366e077c84959715f3a48fb69757f27d3c74aafa9ab6c520",
+    "mode": 420
+  },
+  "retained_artifacts": {
+    "ptrace": {
+      "cargo_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+        "target": {
+          "kind": [
+            "lib"
+          ],
+          "crate_types": [
+            "lib"
+          ],
+          "name": "reverie_ptrace",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/lib.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": true,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [],

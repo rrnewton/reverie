@@ -1,0 +1,21 @@
+{
+  "files": [
+    {
+      "source": "reverie-kvm/src/vm.rs",
+      "bytes": 410522,
+      "sha256": "bf042a9c05113b38ad9c2bd939548424234aaecefda2855baa8d765fb1b3fcc0",
+      "baseline_sha256": "42b3df8175f728659dcfc2378646e4bdfb078729fbac8aa4dbda30d44bed5536"
+    },
+    {
+      "source": "reverie-kvm/src/vm/exec_wait_tests.rs",
+      "bytes": 6562,
+      "sha256": "0c1d8de95a14276fb9ac9e7a93a16f23deb6d95df0d3f3bdb59051e45994bd41",
+      "baseline_sha256": null
+    }
+  ],
+  "old_vm_test_module_byte_identical": true,
+  "old_vm_test_module_sha256": "a8c98f5b564d8c4a47e13752a42dd0d847fd9bb66502ce6957ad211dbb5cc918",
+  "old_vm_test_declarations": 75,
+  "new_test_selector": "vm::exec_wait_tests::exec_wait_private_failure_leaves_worker_owned_until_callback_destruction",
+  "execution": "none; no compiler, formatter, tests, guest, network or SCM"
+}

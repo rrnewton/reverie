@@ -1,0 +1,21 @@
+{
+  "narrow_source_verdict": "approve keepalive and measurement correction only",
+  "overall_verdict": "changes requested: retained child panic ownership and earlier callback joins unresolved",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-entry-owner-composition-review-v1/keepalive-v2/REVIEW-source3.md",
+      "bytes": 4670,
+      "sha256": "cd0f35b3f33539b07d004bec877556850f3c7754dee544d42c4f6485ff0de833"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-entry-owner-composition-review-v1/keepalive-v2/EXECUTION-NOTE-source3.md",
+      "bytes": 1407,
+      "sha256": "9379faa10d4ba5baeadf822e1086a0df724bafbe7e20e31bfd56d889f7af938c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-preparation-v1/failed-spawn-v1/panic-successor-proposal/PROPOSAL.md",
+      "bytes": 19275,
+      "sha256": "11a7f77b76a03871dcb505ea438255db03ac5c4620ce045c855d7d45154254cf"
+    }
+  ]
+}

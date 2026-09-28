@@ -1,0 +1,42 @@
+{
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/source-1/reverie-kvm/src/vm.rs",
+      "bytes": 355161,
+      "sha256": "b1e1a6e24ed77129a39b68ef897818ae550c27f238dcb9c08282c1f8d9abc65e",
+      "live_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-production-composition-v1/source-1/reverie-kvm/src/runtime.rs",
+      "bytes": 213900,
+      "sha256": "3deaeabdecb157d1f5a4358eb8820bc6c0d41ebb9a8a2655146e270f54f102ed",
+      "live_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-review-v1/BASE-bootstrap.rs",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/bootstrap.rs",
+      "base_object": "91110d249ffd8957267d71fab8c83d9636105efe:reverie-kvm/src/bootstrap.rs",
+      "bytes": 42817,
+      "sha256": "7c008be09ef0e1bcefff4f8651742276cffaf6fac82526e9dad37e348299e81a",
+      "base_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-review-v1/BASE-executor.rs",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/executor.rs",
+      "base_object": "91110d249ffd8957267d71fab8c83d9636105efe:reverie-kvm/src/executor.rs",
+      "bytes": 1515599,
+      "sha256": "f5acb6f08a9466b5ae27d29e03452f7d15cd495c20de25ff51dccb631e9a4cc8",
+      "base_equal": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-parking-review-v1/BASE-elf.rs",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/elf.rs",
+      "base_object": "91110d249ffd8957267d71fab8c83d9636105efe:reverie-kvm/src/elf.rs",
+      "bytes": 82315,
+      "sha256": "4201b4af34ff43bccdab8ef0d96fd58d6e3aa02b021fe502d590d055b28a5eea",
+      "base_equal": true
+    }
+  ],
+  "product_execution": false,
+  "write_scope": "this review directory only; two unbound working diffs were initially written under the previous owned memory directory and immediately relocated here; prior sealed records unchanged"
+}

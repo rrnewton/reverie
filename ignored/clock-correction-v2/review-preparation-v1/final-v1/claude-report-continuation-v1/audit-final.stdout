@@ -1,0 +1,21 @@
+{
+  "audit": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-report-continuation-v1/ROOT-TRANSCRIPT-READBACK.json",
+    "bytes": 25523,
+    "sha256": "dbcd20aa6f2dec89e111d00ac1433e669c8ef6f3f44017de2041b65d1ac776a3",
+    "mode": 420
+  },
+  "tools": [],
+  "calls": 0,
+  "errors": 0,
+  "unindexed_reads": 0,
+  "assistant_text_events": [
+    {
+      "event": 37,
+      "block": 0,
+      "uuid": "fdafe535-3c93-4b5b-8591-560470996087",
+      "bytes": 7693
+    }
+  ],
+  "elapsed_seconds": 53.51574740000069
+}

@@ -1,0 +1,160 @@
+                        );
+                        self.restore_transferred_newborns(
+                            descendants,
+                            &mut transferred,
+                            &mut absorbed,
+                        );
+                        return Err(error);
+                    }
+                };
+                queue.push_back(child);
+                let terminal = Running::new(child).terminal_cleanup();
+                descendants.insert(
+                    child,
+                    RegisteredTraceeCleanup {
+                        identity,
+                        terminal,
+                        event_link: None,
+                    },
+                );
+            }
+        }
+        #[cfg(test)]
+        if self
+            .fail_after_scan_once
+            .as_ref()
+            .is_some_and(|flag| flag.swap(false, Ordering::SeqCst))
+        {
+            self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
+            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+        }
+        Ok(())
+    }
+
+    fn restore_transferred_newborns(
+        &self,
+        descendants: &mut HashMap<Pid, RegisteredTraceeCleanup>,
+        transferred: &mut Vec<Pid>,
+        absorbed: &mut Vec<(Pid, NewbornTracee)>,
+    ) {
+        let mut newborns = self.newborn_tracees.lock().unwrap();
+        newborns.extend(absorbed.drain(..));
+        for tid in transferred.drain(..) {
+            let registered = descendants
+                .remove(&tid)
+                .expect("transferred newborn must remain in local cleanup map");
+            newborns.insert(
+                tid,
+                NewbornTracee {
+                    link: registered
+                        .event_link
+                        .expect("transferred newborn retains kernel event link"),
+                    identity: Some(registered.identity),
+                    terminal: registered.terminal,
+                },
+            );
+        }
+    }
+}
+
+fn send_identity_sigkill(identity: &TraceeIdentity) -> std::io::Result<()> {
+    if identity.pidfd.is_none() {
+        // Nonleader TIDs are terminated by their TGID leader's pidfd. They are
+        // never signaled numerically; their bound ptrace statuses are drained
+        // separately on the owning tracer thread.
+        return Ok(());
+    }
+    match identity.send_signal(Signal::SIGKILL) {
+        Ok(()) | Err(Errno::ESRCH) => Ok(()),
+        Err(error) => Err(std::io::Error::from_raw_os_error(error.into_raw())),
+    }
+}
+
+impl Drop for LiteinstTraceeCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Cancellation cannot await an orderly drain, so synchronously request
+        // termination and wait for the notifier-owned final reap. Before async
+        // registration, the bounded raw-wait fallback owns cleanup instead.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match self.terminate_and_confirm() {
+                Ok(()) => return,
+                Err(error) if Instant::now() < deadline => {
+                    // Every failed attempt restores all descendant/newborn
+                    // ownership to this guard. Retry transient discovery and
+                    // registration errors without dropping cleanup records.
+                    std::thread::sleep(Duration::from_millis(1));
+                    tracing::debug!(pid = %self.pid(), %error, "retrying LiteInst cancellation cleanup");
+                }
+                Err(error) => {
+                    tracing::error!(pid = %self.pid(), %error, "LiteInst cancellation cleanup failed");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn io_errno(error: std::io::Error) -> Errno {
+    Errno::new(error.raw_os_error().unwrap_or(libc::EIO))
+}
+
+fn process_start_time(tid: Pid) -> std::io::Result<u64> {
+    let stat = fs::read_to_string(format!("/proc/{tid}/stat"))?;
+    let fields = stat
+        .rsplit_once(") ")
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed stat"))?
+        .1;
+    fields
+        .split_ascii_whitespace()
+        .nth(19)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing starttime"))?
+        .parse()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix(name))
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("missing or malformed {name}"),
+            )
+        })?;
+    Ok(Pid::from_raw(value))
+}
+
+fn tracee_snapshot(tid: Pid) -> std::io::Result<TraceeSnapshot> {
+    let start_time = process_start_time(tid)?;
+    let status = fs::read_to_string(format!("/proc/{tid}/status"))?;
+    let snapshot = TraceeSnapshot {
+        tgid: status_pid(&status, "Tgid:")?,
+        ppid: status_pid(&status, "PPid:")?,
+        tracer_pid: status_pid(&status, "TracerPid:")?,
+        start_time,
+    };
+    if process_start_time(tid)? != start_time {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "tracee identity changed while reading procfs",
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn tracer_is_current(tracer_tid: Pid) -> bool {
+    tracer_tid.as_raw() > 0
+        && std::path::Path::new(&format!("/proc/self/task/{tracer_tid}")).exists()
+}
+
+fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
+    fs::metadata(format!("/proc/self/fd/{}", fd.as_raw_fd())).map(|metadata| metadata.ino())
+}
+
+fn tracee_absent_or_replaced(tid: Pid) -> bool {

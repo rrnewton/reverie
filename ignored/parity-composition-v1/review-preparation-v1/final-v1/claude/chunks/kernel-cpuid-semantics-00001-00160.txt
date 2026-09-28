@@ -1,0 +1,160 @@
+Exact upstream Linux 199c9959d3a9b53f346c221757fc7ac507fbac50; distinct from measured vendor kernel. Complete relevant functions/API sections and explicit switch-case context; complete source paths available for follow-up.
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__cpuid.c SHA256 1e3dd6d0cdcdea3b07cc1591e0c1658b5655d2ddc307cb10756d80ad5b2d0cb8 lines 2160..2177
+int kvm_emulate_cpuid(struct kvm_vcpu *vcpu)
+{
+	u32 eax, ebx, ecx, edx;
+
+	if (!is_smm(vcpu) && cpuid_fault_enabled(vcpu) &&
+	    !kvm_require_cpl(vcpu, 0))
+		return 1;
+
+	eax = kvm_rax_read(vcpu);
+	ecx = kvm_rcx_read(vcpu);
+	kvm_cpuid(vcpu, &eax, &ebx, &ecx, &edx, false);
+	kvm_rax_write(vcpu, eax);
+	kvm_rbx_write(vcpu, ebx);
+	kvm_rcx_write(vcpu, ecx);
+	kvm_rdx_write(vcpu, edx);
+	return kvm_skip_emulated_instruction(vcpu);
+}
+EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_emulate_cpuid);
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__cpuid.h SHA256 17a847d448ab62984512afe05e2cc6a99ea6afd2899d396260bf4c8c3a06fa51 lines 184..193
+static inline bool supports_cpuid_fault(struct kvm_vcpu *vcpu)
+{
+	return vcpu->arch.msr_platform_info & MSR_PLATFORM_INFO_CPUID_FAULT;
+}
+
+static inline bool cpuid_fault_enabled(struct kvm_vcpu *vcpu)
+{
+	return vcpu->arch.msr_misc_features_enables &
+		  MSR_MISC_FEATURES_ENABLES_CPUID_FAULT;
+}
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__x86.c SHA256 c793b882532b19da67711b6d3d64e78db75601bb7132f054561d86865563b2bd lines 1028..1037
+bool kvm_require_cpl(struct kvm_vcpu *vcpu, int required_cpl)
+{
+	if (kvm_x86_call(get_cpl)(vcpu) <= required_cpl)
+		return true;
+	kvm_queue_exception_e(vcpu, GP_VECTOR, 0);
+	return false;
+}
+
+bool kvm_require_dr(struct kvm_vcpu *vcpu, int dr)
+{
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__x86.c SHA256 c793b882532b19da67711b6d3d64e78db75601bb7132f054561d86865563b2bd lines 1698..1719
+static int kvm_get_feature_msr(struct kvm_vcpu *vcpu, u32 index, u64 *data,
+			       bool host_initiated)
+{
+	WARN_ON_ONCE(!host_initiated);
+
+	switch (index) {
+	case MSR_IA32_ARCH_CAPABILITIES:
+		*data = kvm_get_arch_capabilities();
+		break;
+	case MSR_IA32_PERF_CAPABILITIES:
+		*data = kvm_caps.supported_perf_cap;
+		break;
+	case MSR_PLATFORM_INFO:
+		*data = MSR_PLATFORM_INFO_CPUID_FAULT;
+		break;
+	case MSR_IA32_UCODE_REV:
+		rdmsrq_safe(index, data);
+		break;
+	default:
+		return kvm_x86_call(get_feature_msr)(index, data);
+	}
+	return 0;
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__x86.c SHA256 c793b882532b19da67711b6d3d64e78db75601bb7132f054561d86865563b2bd lines 4255..4273
+		if (!guest_cpu_cap_has(vcpu, X86_FEATURE_OSVW))
+			return 1;
+		vcpu->arch.osvw.status = data;
+		break;
+	case MSR_PLATFORM_INFO:
+		if (!msr_info->host_initiated)
+			return 1;
+		vcpu->arch.msr_platform_info = data;
+		break;
+	case MSR_MISC_FEATURES_ENABLES:
+		if (data & ~MSR_MISC_FEATURES_ENABLES_CPUID_FAULT ||
+		    (data & MSR_MISC_FEATURES_ENABLES_CPUID_FAULT &&
+		     !supports_cpuid_fault(vcpu)))
+			return 1;
+		vcpu->arch.msr_misc_features_enables = data;
+		break;
+#ifdef CONFIG_X86_64
+	case MSR_IA32_XFD:
+		if (!msr_info->host_initiated &&
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__x86.c SHA256 c793b882532b19da67711b6d3d64e78db75601bb7132f054561d86865563b2bd lines 4614..4631
+		if (!guest_cpu_cap_has(vcpu, X86_FEATURE_OSVW))
+			return 1;
+		msr_info->data = vcpu->arch.osvw.status;
+		break;
+	case MSR_PLATFORM_INFO:
+		if (!msr_info->host_initiated &&
+		    !vcpu->kvm->arch.guest_can_read_msr_platform_info)
+			return 1;
+		msr_info->data = vcpu->arch.msr_platform_info;
+		break;
+	case MSR_MISC_FEATURES_ENABLES:
+		msr_info->data = vcpu->arch.msr_misc_features_enables;
+		break;
+	case MSR_K7_HWCR:
+		msr_info->data = vcpu->arch.msr_hwcr;
+		break;
+#ifdef CONFIG_X86_64
+	case MSR_IA32_XFD:
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/Documentation__virt__kvm__api.rst SHA256 553f0720999e53afe9f4d2f70778a3271017c3be70faf25ac499f8750c17645d lines 218..261
+4.3 KVM_GET_MSR_INDEX_LIST, KVM_GET_MSR_FEATURE_INDEX_LIST
+----------------------------------------------------------
+
+:Capability: basic, KVM_CAP_GET_MSR_FEATURES for KVM_GET_MSR_FEATURE_INDEX_LIST
+:Architectures: x86
+:Type: system ioctl
+:Parameters: struct kvm_msr_list (in/out)
+:Returns: 0 on success; -1 on error
+
+Errors:
+
+  ======     ============================================================
+  EFAULT     the msr index list cannot be read from or written to
+  E2BIG      the msr index list is too big to fit in the array specified by
+             the user.
+  ======     ============================================================
+
+::
+
+  struct kvm_msr_list {
+	__u32 nmsrs; /* number of msrs in entries */
+	__u32 indices[0];
+  };
+
+The user fills in the size of the indices array in nmsrs, and in return
+kvm adjusts nmsrs to reflect the actual number of msrs and fills in the
+indices array with their numbers.
+
+KVM_GET_MSR_INDEX_LIST returns the guest msrs that are supported.  The list
+varies by kvm version and host processor, but does not change otherwise.
+
+Note: if kvm indicates supports MCE (KVM_CAP_MCE), then the MCE bank MSRs are
+not returned in the MSR list, as different vcpus can have a different number
+of banks, as set via the KVM_X86_SETUP_MCE ioctl.
+
+KVM_GET_MSR_FEATURE_INDEX_LIST returns the list of MSRs that can be passed
+to the KVM_GET_MSRS system ioctl.  This lets userspace probe host capabilities
+and processor features that are exposed via MSRs (e.g., VMX capabilities).
+This list also varies by kvm version and host processor, but does not change
+otherwise.
+
+
+.. _KVM_CHECK_EXTENSION:
+
+
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/Documentation__virt__kvm__api.rst SHA256 553f0720999e53afe9f4d2f70778a3271017c3be70faf25ac499f8750c17645d lines 643..704
+4.18 KVM_GET_MSRS
+-----------------

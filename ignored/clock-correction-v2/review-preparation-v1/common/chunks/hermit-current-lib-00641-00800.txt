@@ -1,0 +1,160 @@
+                trace!(
+                    "posthook [dtid {}] less than one RCB remains before PMU maximum {}; ending slice",
+                    dettid, max_timeslice_end
+                );
+                self.end_timeslice(guest).await;
+                max_timeslice_end = guest
+                    .thread_state()
+                    .max_timeslice_end
+                    .expect("ending a PMU-backed timeslice must install a new maximum");
+                current_time = guest.thread_state().thread_logical_time.as_nanos();
+                replay_rcb_end = guest.thread_state().replay_rcb_end;
+            }
+            if replay_rcb_end.is_none() && current_time + epsilon > max_timeslice_end {
+                panic!(
+                    "Ended time slice, but current time {} is still beyond PMU maximum {}",
+                    current_time, max_timeslice_end
+                );
+            }
+
+            let current_rcbs = guest.thread_state().thread_logical_time.rcbs();
+            let current_pmu_rcbs = guest.thread_state().committed_clock_value;
+            let (ns_remaining, max_rcbs_remaining) = if let Some(replay_rcb_end) = replay_rcb_end {
+                assert!(
+                    replay_rcb_end > current_pmu_rcbs,
+                    "recorded PMU RCB deadline {} is not ahead of current {}",
+                    replay_rcb_end,
+                    current_pmu_rcbs
+                );
+                let logical_remaining = if max_timeslice_end > current_time {
+                    max_timeslice_end - current_time
+                } else {
+                    LogicalTime::ZERO
+                };
+                (logical_remaining, replay_rcb_end - current_pmu_rcbs)
+            } else {
+                let logical_remaining = max_timeslice_end - current_time;
+                (
+                    logical_remaining,
+                    logical_remaining.into_rcbs_with_multiplier(clock_multiplier),
+                )
+            };
+            let next_interrupt = self
+                .cfg
+                .use_rcb_time()
+                .then(|| {
+                    guest
+                        .thread_state()
+                        .interrupt_at
+                        .range((current_rcbs + 1)..)
+                        .next()
+                        .copied()
+                })
+                .flatten();
+            let (rcbs_remaining, timer_is_max) =
+                choose_rcb_timer(max_rcbs_remaining, current_rcbs, next_interrupt);
+            if let Some(next_interrupt) = next_interrupt {
+                debug!(
+                    "[dtid: {}] current rcbs: {}, next interrupt_at: {}",
+                    dettid, current_rcbs, next_interrupt
+                )
+            }
+
+            trace!(
+                "posthook [dtid {}] {} remaining before PMU maximum ({} rcbs).",
+                dettid, ns_remaining, rcbs_remaining,
+            );
+
+            if replay_rcb_end.is_none() && ns_remaining.is_zero() {
+                panic!(
+                    "Timer invariant broken: we should not exit a handler with 0 timeslice remaining."
+                );
+            }
+            assert!(rcbs_remaining > 0);
+            trace!(
+                "posthook [dtid {}] Resetting timer to {:?} RCBs in the future (current {})",
+                dettid,
+                rcbs_remaining,
+                guest.thread_state().thread_logical_time.rcbs()
+            );
+            {
+                let thread_state = guest.thread_state_mut();
+                thread_state.last_rcb_timer = Some(rcbs_remaining);
+                thread_state.last_rcb_timer_is_max = timer_is_max;
+            }
+
+            if guest.config().imprecise_timers {
+                guest
+                    .set_timer(TimerSchedule::Rcbs(rcbs_remaining))
+                    .expect("Failed to set timer");
+            } else {
+                guest
+                    .set_timer_precise(TimerSchedule::Rcbs(rcbs_remaining))
+                    .expect("Failed to set timer");
+            }
+        } else {
+            assert!(guest.config().max_timeslice.is_none());
+            guest.thread_state_mut().last_rcb_timer = None;
+            guest.thread_state_mut().last_rcb_timer_is_max = false;
+        }
+
+        if guest.thread_state().guest_past_first_execve() {
+            detlog_debug!(
+                "(post) registers [dtid {}][rcbs {}]. {}",
+                dettid,
+                guest.thread_state().thread_logical_time.rcbs(),
+                guest.regs().await.display(),
+            );
+        }
+    }
+
+    /// End this logical timeslice and talk to the scheduler before continuing.
+    ///
+    /// Effects
+    ///  - ends timeslice (mutating thread stats and both deadlines)
+    ///  - priority change / yield RPC
+    async fn end_timeslice<G: Guest<Self>>(&self, guest: &mut G) {
+        self.end_timeslice_with_sched_yield(guest, false).await;
+    }
+
+    async fn end_timeslice_for_sched_yield<G: Guest<Self>>(&self, guest: &mut G) {
+        self.end_timeslice_with_sched_yield(guest, true).await;
+    }
+
+    async fn end_timeslice_with_sched_yield<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        mut explicit_sched_yield: bool,
+    ) {
+        let chaos = guest.config().chaos;
+        loop {
+            let thread_state = guest.thread_state();
+            let dettid = thread_state.dettid;
+            let end_time = thread_state.thread_logical_time.as_nanos();
+            info!(
+                "[detcore, dtid {}] ending timeslice T{}. {} syscalls and {} signals this timeslice.",
+                dettid,
+                thread_state.stats.timeslice_count,
+                thread_state.stats.timeslice_syscall_count,
+                thread_state.stats.timeslice_signal_count,
+            );
+            let maybe_prio = guest.thread_state_mut().next_timeslice(&self.cfg);
+
+            // Depending on chaos mode, a received timer event is either a preemption or a changepoint
+            let req = if let Some(prio) = maybe_prio {
+                Self::priority_changepoint_request(guest, end_time, prio)
+            } else if chaos {
+                Self::random_priority_changepoint_request(guest, end_time)
+            } else if explicit_sched_yield && self.cfg.replay_schedule_from.is_none() {
+                Self::sched_yield_request(guest)
+            } else {
+                Self::yield_request(guest)
+            };
+            resource_request(guest, req).await;
+
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-1151)
+            // Multiple scheduler commits can occur without an intervening
+            // conditional branch. Exact-RCB replay represents those as
+            // adjacent zero-RCB slices, which must be consumed before the
+            // guest resumes.

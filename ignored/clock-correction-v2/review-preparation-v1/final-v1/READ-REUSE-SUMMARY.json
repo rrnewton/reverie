@@ -1,0 +1,26 @@
+{
+  "claude": {
+    "reused_documents": 26,
+    "reused_lines": 8913,
+    "new_source_documents": 46,
+    "new_source_chunks": 212,
+    "proof": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude/REUSED-READS.json",
+      "bytes": 117042,
+      "sha256": "66f88141b2c5763bfbf806647a20e8a4eef6883eca3fdea9dd7eb47ffa474d9a",
+      "mode": 420
+    }
+  },
+  "native": {
+    "reused_documents": 26,
+    "reused_lines": 8913,
+    "new_source_documents": 45,
+    "new_source_chunks": 210,
+    "proof": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/REUSED-READS.json",
+      "bytes": 127645,
+      "sha256": "5a6021088642b6c47d825c82900aa14aa67b9c45cc0df03a8e6ba40c7f0e1470",
+      "mode": 420
+    }
+  }
+}

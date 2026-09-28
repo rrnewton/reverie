@@ -1,0 +1,160 @@
+
+            // loop until second breakpoint hit after injected syscall.
+            #[cfg(test)]
+            let mut step = 0;
+            let task = loop {
+                let (task, event) = running.next_state().await?.assume_stopped();
+                arm_preinit_stop(held_root_stop, &task, &event);
+                #[cfg(test)]
+                let forced_external_sigtrap = event == Event::Signal(Signal::SIGTRAP)
+                    && force_preinit_signal_once
+                        .as_ref()
+                        .is_some_and(|force_once| force_once.load(Ordering::SeqCst));
+                #[cfg(not(test))]
+                let forced_external_sigtrap = false;
+                #[cfg(test)]
+                if let Some((target, sender)) = pause_preinit_step
+                    && *target == step
+                {
+                    let _ = sender.send(task.pid());
+                    future::pending::<()>().await;
+                }
+                #[cfg(test)]
+                {
+                    step += 1;
+                }
+                match event {
+                    Event::Signal(Signal::SIGTRAP) => {
+                        let expected_rip = saved_regs
+                            .ip()
+                            .checked_add(cp::SYSCALL_INSTR_SIZE as u64)
+                            .ok_or(Errno::EOVERFLOW)?;
+                        if reject_activation_signals
+                            && !is_expected_breakpoint_trap(
+                                &task,
+                                expected_rip,
+                                forced_external_sigtrap,
+                            )?
+                        {
+                            #[cfg(test)]
+                            if forced_external_sigtrap
+                                && let Some(force_once) = force_preinit_signal_once.as_ref()
+                            {
+                                force_once.store(false, Ordering::SeqCst);
+                            }
+                            *unexpected_signal.lock().unwrap() = Some(Signal::SIGTRAP);
+                            return Err(Errno::EPROTO.into());
+                        }
+                        break task;
+                    }
+                    Event::Signal(sig) => {
+                        if reject_activation_signals {
+                            *unexpected_signal.lock().unwrap() = Some(sig);
+                            return Err(Errno::EPROTO.into());
+                        }
+                        // We can catch spurious signals here, such as SIGWINCH.
+                        // All we can do is skip over them.
+                        tracing::debug!(
+                            "[{}] Skipping {:?} during initialization",
+                            task.pid(),
+                            event
+                        );
+                        running = RootStopLease::new(task, held_root_stop.clone()).resume(sig)?;
+                    }
+                    Event::Seccomp => {
+                        // Injected mmap trapped. We may not necessarily
+                        // intercept a seccomp event here if the tool hasn't
+                        // subscribed to the mmap syscall.
+                        running = RootStopLease::new(task, held_root_stop.clone()).resume(None)?;
+                    }
+                    unknown => {
+                        panic!("task {} returned unknown event {:?}", task.pid(), unknown);
+                    }
+                }
+            };
+
+            // Make sure we got our desired address.
+            assert_eq!(
+                Errno::from_ret(task.getregs()?.ret() as usize)?,
+                page_addr,
+                "Could not mmap address {}",
+                page_addr
+            );
+
+            cp::populate_mmap_page(task.pid().into(), page_addr)?;
+
+            // Restore our saved registers, including our instruction pointer.
+            task.setregs(saved_regs)?;
+            Ok(task)
+        }
+
+        /// Put the guest into the weird state where it has an
+        /// "INT3;SYSCALL;INT3" patched into the code wherever RIP happens to be
+        /// pointing. It leaves RIP pointing at the syscall instruction. This
+        /// allows forcible injection of syscalls into the guest.
+        async fn establish_injection_state(
+            mut task: Stopped,
+        ) -> Result<(Stopped, libc::user_regs_struct, SavedInstructions), TraceError> {
+            #[cfg(target_arch = "x86_64")]
+            const SYSCALL_BP: SavedInstructions = [
+                0x0f, 0x05, // syscall
+                0xcc, // int3
+                0xcc, 0xcc, 0xcc, 0xcc, 0xcc, // padding
+            ];
+
+            #[cfg(target_arch = "aarch64")]
+            const SYSCALL_BP: SavedInstructions = [
+                0x01, 0x00, 0x00, 0xd4, // svc 0
+                0x20, 0x00, 0x20, 0xd4, // brk 1
+            ];
+
+            // Save the original registers so we can restore them later.
+            let regs = task.getregs()?;
+
+            // Saved instruction memory
+            let ip = AddrMut::from_raw(regs.ip() as usize).ok_or(Errno::EFAULT)?;
+            let saved: SavedInstructions = task.read_value(ip)?;
+
+            // Patch the tracee at the current instruction pointer.
+            //
+            // NOTE: `process_vm_writev` cannot write to write-protected pages,
+            // but `PTRACE_POKEDATA` can! Thus, we need to make sure we only
+            // write one word-sized chunk at a time. Luckily, the instructions
+            // we want to inject fit inside of just one 64-bit word.
+            task.write_value(ip.cast(), &SYSCALL_BP)?;
+
+            Ok((task, regs, saved))
+        }
+
+        /// Undo the effects of `establish_injection_state` and put the program
+        /// code memory and instruction pointer back to normal.
+        fn remove_injection_state(
+            task: &mut Stopped,
+            regs: libc::user_regs_struct,
+            saved: SavedInstructions,
+        ) -> Result<(), TraceError> {
+            // NOTE: Again, because `process_vm_writev` cannot write to
+            // write-protected pages, we must write in word-sized chunks with
+            // PTRACE_POKEDATA.
+            let ip = AddrMut::from_raw(regs.ip() as usize).ok_or(Errno::EFAULT)?;
+            task.write_value(ip, &saved)?;
+            task.setregs(&regs)?;
+            Ok(())
+        }
+
+        let (task, regs, prev_state) = establish_injection_state(task).await?;
+        let task = setup_special_mmap_page(
+            task,
+            &regs,
+            &held_root_stop,
+            reject_activation_signals,
+            &unexpected_preinit_signal,
+            #[cfg(test)]
+            &pause_preinit_step,
+            #[cfg(test)]
+            &force_preinit_signal_once,
+        )
+        .await;
+        if let Some(sig) = unexpected_preinit_signal.lock().unwrap().take() {
+            self.record_liteinst_failure(
+                LiteinstActivationFailureReason::UnexpectedPreinitSignal,

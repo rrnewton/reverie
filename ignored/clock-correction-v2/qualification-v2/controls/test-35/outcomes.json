@@ -1,0 +1,24 @@
+{
+  "started": [
+    "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.000317096
+    }
+  ]
+}

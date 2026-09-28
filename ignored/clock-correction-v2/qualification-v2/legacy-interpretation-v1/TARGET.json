@@ -1,0 +1,45 @@
+{
+  "scope": "Offline legacy transcript interpretation; original refusal unchanged; no execution or independent approval",
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/REPORT.md",
+    "bytes": 4027,
+    "mode": 420,
+    "sha256": "b5edfe4085bf1de091716419e9c34726fb0c1b856080af0f2a912cf2613f21c3"
+  },
+  "interpretation": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/INTERPRETATION.json",
+    "bytes": 21549,
+    "mode": 420,
+    "sha256": "ad83673aa51746e54c0e033975e9e83c8c2f84c8ec3847721dc86c2b586bfabb"
+  },
+  "negative_controls": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/NEGATIVE-CONTROLS.json",
+    "bytes": 12747,
+    "mode": 420,
+    "sha256": "44563e1f13e98570f0e929ebcd64d6e8c1575a8d5d591142fd728c77198bb8f9"
+  },
+  "source_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/SOURCE-BINDING.json",
+    "bytes": 2133,
+    "mode": 420,
+    "sha256": "91443df2fd677d960c05e55ae54f210ef9e79c126a6e25edd8805b0139603142"
+  },
+  "liveness": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/LIVENESS.json",
+    "bytes": 360,
+    "mode": 420,
+    "sha256": "e057058a34c4d601b1b7f564fa603f5f46a6f8d8acae77fac7d29a79d3ab7977"
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/legacy-interpretation-v1/INPUTS.json",
+    "bytes": 7151187,
+    "mode": 420,
+    "sha256": "20168f3945486f7a67868ff640f50c7b537dece3cc10c72ae2e000fdb095d5ce"
+  },
+  "original_receipt": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-38/result.json",
+    "bytes": 2564,
+    "mode": 420,
+    "sha256": "c4c955311795327c45d9cacc8908c5704004469a67e4ce4492b7b3af8102bd80"
+  }
+}

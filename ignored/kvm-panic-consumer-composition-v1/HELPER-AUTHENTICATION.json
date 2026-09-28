@@ -1,0 +1,17 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-owned-future-v1/TARGET.json",
+    "sha256": "8d78f9b6dcea9519ac55364490004a7b84400433ffadd5deb8577b57b2cad076",
+    "records_checked": 5
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-injected-child-cleanup-v1/TARGET.json",
+    "sha256": "1a84d6593af822eb159021fe0e6030d9d8478d911b1623ab54bd389f0837a3c7",
+    "records_checked": 7
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-panic-consumer-drain-v1/TARGET.json",
+    "sha256": "d3501483402a9446dc3d7cf50bb4845b5c660bbcf708e76dd5bc94d62e2a4988",
+    "records_checked": 11
+  }
+]

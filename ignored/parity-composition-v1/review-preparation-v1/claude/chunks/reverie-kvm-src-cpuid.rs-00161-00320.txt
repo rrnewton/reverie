@@ -1,0 +1,160 @@
+}
+
+#[derive(Clone, Copy)]
+enum FeatureRegister {
+    Eax,
+    Ebx,
+    Ecx,
+    Edx,
+}
+
+impl FeatureRegister {
+    fn value(self, entry: &kvm_cpuid_entry2) -> u32 {
+        match self {
+            Self::Eax => entry.eax,
+            Self::Ebx => entry.ebx,
+            Self::Ecx => entry.ecx,
+            Self::Edx => entry.edx,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Eax => "eax",
+            Self::Ebx => "ebx",
+            Self::Ecx => "ecx",
+            Self::Edx => "edx",
+        }
+    }
+}
+
+fn validate_required_features(host: &CpuId, fixed: &CpuId) -> Result<()> {
+    for (function, index, register) in [
+        (1, 0, FeatureRegister::Ecx),
+        (1, 0, FeatureRegister::Edx),
+        (7, 0, FeatureRegister::Ebx),
+        (7, 0, FeatureRegister::Ecx),
+        (7, 0, FeatureRegister::Edx),
+        (0xd, 0, FeatureRegister::Eax),
+        (0x8000_0001, 0, FeatureRegister::Ecx),
+        (0x8000_0001, 0, FeatureRegister::Edx),
+    ] {
+        let mut required = fixed
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == function && entry.index == index)
+            .map_or(0, |entry| register.value(entry));
+        if function == 1 && matches!(register, FeatureRegister::Ecx) {
+            // KVM reports OSXSAVE dynamically from the guest's CR4.OSXSAVE
+            // rather than including it in KVM_GET_SUPPORTED_CPUID.
+            required &= !bit(27);
+        }
+        if required == 0 {
+            continue;
+        }
+        let supported = host
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == function && entry.index == index)
+            .map_or(0, |entry| register.value(entry));
+        let missing = required & !supported;
+        if missing != 0 {
+            return Err(Error::UnsupportedCpuidProfile(format!(
+                "leaf {function:#x}, {}, missing bits {missing:#010x}",
+                register.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn cpuid_entry(function: u32, [eax, ebx, ecx, edx]: [u32; 4]) -> kvm_cpuid_entry2 {
+    kvm_cpuid_entry2 {
+        function,
+        eax,
+        ebx,
+        ecx,
+        edx,
+        ..Default::default()
+    }
+}
+
+fn indexed_cpuid_entry(
+    function: u32,
+    index: u32,
+    [eax, ebx, ecx, edx]: [u32; 4],
+) -> kvm_cpuid_entry2 {
+    kvm_cpuid_entry2 {
+        function,
+        index,
+        flags: KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
+        eax,
+        ebx,
+        ecx,
+        edx,
+        ..Default::default()
+    }
+}
+
+// This starts from Detcore's fixed profile and narrows it to backend-safe
+// features. AVX remains enabled because the userspace-only guest must provide
+// the extended register state expected by host executables and dynamic
+// linkers. KVM additionally applies the selected masks after installing the
+// table.
+const DETERMINISTIC_STANDARD_CPUIDS: &[[u32; 4]] = &[
+    [0x0000_000d, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
+    [
+        0x0000_0663,
+        0x0000_0800,
+        bit(0) | bit(9) | bit(13) | bit(19) | bit(20) | bit(23) | bit(26) | bit(27) | bit(28),
+        0x078b_fbfd,
+    ],
+    [0x0000_0001, 0x0000_0000, 0x0000_004d, 0x002c_307d],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0120, 0x01c0_003f, 0x0000_003f, 0x0000_0001],
+    [0x0000_0000, 0x0000_0000, 0x0000_0003, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0001, 0x0000_0100, 0x0000_0001],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+];
+
+// CPUID leaf 0xd uses ECX as a subleaf selector. KVM only consults `index`
+// when KVM_CPUID_FLAG_SIGNIFCANT_INDEX is set, and it returns the first
+// matching row. Keep every populated subleaf in one table and reject duplicate
+// keys so a later row cannot become silently unreachable. If no indexed row
+// matches, KVM returns zeroed registers; the in-VM tests exercise that path for
+// subleaves 1, 17, 18, and 19. KVM ignores the supplied EBX for subleaf 0 and
+// recomputes the guest-visible value from the enabled XCR0 state and the
+// host-supported component layout, so keep that dead field zero instead of
+// presenting it as part of the fixed profile.
+const DETERMINISTIC_XSTATE_CPUIDS: &[(u32, [u32; 4])] = &[
+    (0, [0x0000_0007, 0x0000_0000, 0x0000_0340, 0x0000_0000]),
+    (2, [0x0000_0100, 0x0000_0240, 0x0000_0000, 0x0000_0000]),
+];
+
+const DETERMINISTIC_EXTENDED_CPUIDS: &[[u32; 4]] = &[
+    [0x8000_000a, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
+    [0x0000_0663, 0x0000_0000, 0x0000_0001, 0x2010_0800],
+    [0x554d_4551, 0x7269_5620, 0x6c61_7574, 0x5543_5020],
+    [0x7265_7620, 0x6e6f_6973, 0x352e_3220, 0x0000_002b],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x01ff_01ff, 0x01ff_01ff, 0x4002_0140, 0x4002_0140],
+    [0x0000_0000, 0x4200_4200, 0x0200_8140, 0x0080_8140],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_3028, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+];
+#[cfg(test)]

@@ -1,0 +1,9 @@
+{
+  "raw_status": 0,
+  "elapsed_seconds": 4.823395035928115,
+  "stream_bytes": {
+    "stdout": 128291,
+    "stderr": 523
+  },
+  "refusal": null
+}

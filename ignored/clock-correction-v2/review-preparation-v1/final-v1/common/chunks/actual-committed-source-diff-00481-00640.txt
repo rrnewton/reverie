@@ -1,0 +1,160 @@
++    PostExec,
++    Write,
++    Emulated,
++    Timestamp,
++    Boundary(u64),
++}
++
++#[derive(Default)]
++struct Log(Mutex<Vec<Observation>>);
++
++#[reverie::global_tool]
++impl GlobalTool for Log {
++    type Config = Config;
++    type Request = Observation;
++    type Response = ();
++
++    async fn receive_rpc(&self, _from: Pid, observation: Observation) {
++        self.0.lock().unwrap().push(observation);
++    }
++}
++
++#[derive(Default)]
++struct StopTool;
++
++fn word<G: Guest<StopTool>>(guest: &G, address: usize) -> u64 {
++    guest
++        .memory()
++        .read_value(Addr::<u64>::from_raw(address).unwrap())
++        .unwrap()
++}
++
++fn replacement() -> WriteCall {
++    WriteCall::default()
++        .with_fd(1)
++        .with_buf(Addr::from_raw(REPLACEMENT))
++        .with_len(1)
++}
++
++#[reverie::tool]
++impl Tool for StopTool {
++    type GlobalState = Log;
++    type ThreadState = u8;
++
++    fn subscriptions(_config: &Config) -> Subscription {
++        let mut events = Subscription::none();
++        events.syscalls([Sysno::getpid, Sysno::write]).rdtsc();
++        events
++    }
++
++    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
++        let mode = guest.config().mode;
++        assert_eq!(guest.regs().await.rip, ENTRY);
++        assert_eq!(word(guest, WORD), 0, "backend preinit executed guest entry");
++        guest.send_rpc(Observation::PostExec).await;
++        if mode == Mode::PostExec {
++            for _ in 0..2 {
++                assert!(guest.inject(Getpid::default()).await? > 0);
++                assert_eq!(guest.regs().await.rip, ENTRY);
++                assert_eq!(word(guest, WORD), 0, "injection replayed guest entry");
++            }
++            assert_eq!(
++                guest.inject(Close::default().with_fd(-1)).await,
++                Err(Errno::EBADF)
++            );
++            assert_eq!(guest.regs().await.rip, ENTRY);
++            assert_eq!(word(guest, WORD), 0, "failed injection replayed entry");
++        } else if mode == Mode::PostExecTail {
++            // Keep the entry's word observable after Exit. Private ELF data
++            // alone would lose an erroneous final step when the guest dies.
++            let fd = guest
++                .inject(
++                    Openat::default()
++                        .with_dirfd(libc::AT_FDCWD)
++                        .with_path(PathPtr::from_ptr(SHARED_PATH as *const libc::c_char))
++                        .with_flags(OFlag::O_RDWR),
++                )
++                .await?;
++            let fd = i32::try_from(fd).unwrap();
++            assert_eq!(
++                guest
++                    .inject(
++                        Mmap::default()
++                            .with_addr(Addr::from_raw(WORD))
++                            .with_len(4096)
++                            .with_prot(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
++                            .with_flags(MapFlags::MAP_SHARED | MapFlags::MAP_FIXED)
++                            .with_fd(fd)
++                            .with_offset(0)
++                    )
++                    .await?,
++                WORD as i64
++            );
++            assert_eq!(guest.inject(Close::default().with_fd(fd)).await?, 0);
++            assert_eq!(guest.inject(replacement()).await?, 1);
++            assert_eq!(guest.regs().await.rip, ENTRY);
++            assert_eq!(word(guest, WORD), 0);
++            guest.tail_inject(Exit::default().with_status(27)).await
++        }
++        Ok(())
++    }
++
++    async fn handle_syscall_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        call: Syscall,
++    ) -> Result<i64, Error> {
++        let mode = guest.config().mode;
++        match call {
++            Syscall::Write(original) => {
++                assert_eq!(original.fd(), 1);
++                assert_eq!(original.buf(), Addr::from_raw(ORIGINAL));
++                assert_eq!(original.len(), 1);
++                assert_eq!(word(guest, WORD), 1);
++                guest.send_rpc(Observation::Write).await;
++                let rip = guest.regs().await.rip;
++                let result = match mode {
++                    Mode::Replace => guest.inject(replacement()).await?,
++                    Mode::SameThenPrivate => {
++                        assert_eq!(guest.inject(original).await?, 1);
++                        assert_eq!(guest.regs().await.rip, rip);
++                        assert_eq!(word(guest, WORD), 1);
++                        assert_eq!(guest.inject(replacement()).await?, 1);
++                        assert_eq!(
++                            guest.inject(Close::default().with_fd(-1)).await,
++                            Err(Errno::EBADF)
++                        );
++                        1
++                    }
++                    Mode::TailSame => guest.tail_inject(original).await,
++                    Mode::TailOther => guest.tail_inject(replacement()).await,
++                    other => panic!("unexpected write in {other:?}"),
++                };
++                assert_eq!(result, 1);
++                assert_eq!(guest.regs().await.rip, rip);
++                assert_eq!(
++                    word(guest, WORD),
++                    1,
++                    "next guest instruction ran in injection"
++                );
++                Ok(result)
++            }
++            Syscall::Getpid(original) => {
++                if mode.emulates() && *guest.thread_state() == 0 {
++                    *guest.thread_state_mut() = 1;
++                    assert_eq!(word(guest, WORD), 1);
++                    guest.send_rpc(Observation::Emulated).await;
++                    // Return without injecting. The ordinary callback epilogue
++                    // must consume the original kernel entry before RDTSC.
++                    return if mode == Mode::EmulateErrno {
++                        Err(Errno::EPERM.into())
++                    } else {
++                        Ok(123)
++                    };
++                }
++                let expected = if mode == Mode::PostExec { 1 } else { 2 };
++                assert_eq!(word(guest, WORD), expected);
++                guest.send_rpc(Observation::Boundary(expected)).await;
++                Ok(guest.inject(original).await?)
++            }
++            other => panic!("unexpected intercepted syscall {other:?}"),

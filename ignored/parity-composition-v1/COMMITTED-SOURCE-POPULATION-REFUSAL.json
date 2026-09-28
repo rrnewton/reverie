@@ -1,0 +1,13 @@
+{
+  "manifest_only": {
+    "Cargo.lock": {
+      "path": "Cargo.lock",
+      "mode": "100644",
+      "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856"
+    }
+  },
+  "tree_only": {},
+  "manifest_count": 2631,
+  "tree_count": 2630,
+  "head": "3d4a401ed8959befad0b2f10db59093725f27432"
+}

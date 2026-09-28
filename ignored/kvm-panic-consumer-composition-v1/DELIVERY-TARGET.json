@@ -1,0 +1,60 @@
+{
+  "scope": "terminal private host-control execution; not independent source approval",
+  "records": [
+    {
+      "path": "PLAN-1.json",
+      "bytes": 9072,
+      "sha256": "ef78867c4acb0276504c55d1be3d34940a6a7dbe83dd3a1c9d4e249fc6bc5973"
+    },
+    {
+      "path": "before-format-1.json",
+      "bytes": 2879,
+      "sha256": "eac34f47b69a4c3ff61c1b4fd436c79a97ef06918f210571748ddb8ec7a7b66b"
+    },
+    {
+      "path": "source-1.json",
+      "bytes": 2878,
+      "sha256": "b15981b925b6bf1bac0ddd49660c570512ed39d82bebb1831ab455af255c17b1"
+    },
+    {
+      "path": "RESULT-AUTHENTICATION.json",
+      "bytes": 17485,
+      "sha256": "7113b25810d0eef30180f4aa2a5dee1e1c2f64aa5daa58b847ae3a16e637def2"
+    },
+    {
+      "path": "EXECUTION-SUPPLEMENT.json",
+      "bytes": 4223,
+      "sha256": "b1d8d42abf926a87d9167aa54d649e7440a84ccdb1a1f3a490448308dd05d3b4"
+    },
+    {
+      "path": "OUTER-TEST-COMMANDS.json",
+      "bytes": 7143,
+      "sha256": "bb719cda276d778aaa7f6fd3ba910f3d20eedc80819745a95a052f4d67858802"
+    },
+    {
+      "path": "final-1/TARGET.json",
+      "bytes": 22620,
+      "sha256": "ce98207bba88bc66788cbf44498ce0e40b52dbdca91226d773e29ca3a7099850"
+    },
+    {
+      "path": "final-1/REPORT.md",
+      "bytes": 3093,
+      "sha256": "149e6ecf963e76e1c576630567891118b9250d872e6a83086ed807fa87094d8a"
+    },
+    {
+      "path": "BASE-failure.rs",
+      "bytes": 28158,
+      "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"
+    },
+    {
+      "path": "BASE-runtime.rs",
+      "bytes": 224080,
+      "sha256": "dafcdbde310260492fd0bc9637e863df736fd51e79586560cab19ccf7ef55a5c"
+    },
+    {
+      "path": "BASE-vm.rs",
+      "bytes": 380752,
+      "sha256": "1301e31879ac21073c8a7d00f7dea2d382734f66f99097b0f00bbeccc74575ef"
+    }
+  ]
+}

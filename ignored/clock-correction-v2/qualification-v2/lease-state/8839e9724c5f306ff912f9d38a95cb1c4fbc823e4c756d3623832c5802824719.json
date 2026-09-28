@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "8839e9724c5f306ff912f9d38a95cb1c4fbc823e4c756d3623832c5802824719",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-38/result.json",
+    "bytes": 2564,
+    "mode": 420,
+    "sha256": "c4c955311795327c45d9cacc8908c5704004469a67e4ce4492b7b3af8102bd80"
+  }
+}

@@ -1,0 +1,1 @@
+cargo check -p reverie-kvm --lib --features native-test-support 

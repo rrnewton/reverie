@@ -1,0 +1,160 @@
+        let result = match completed {
+            Some(result) => result,
+            None => tokio::time::timeout(Duration::from_secs(3), &mut wait)
+                .await
+                .expect("CLONE_THREAD fail-closed cleanup hung"),
+        };
+        let error = result.expect_err("CLONE_THREAD LiteInst tracee unexpectedly succeeded");
+        assert!(
+            error.to_string().contains("ENOTSUPP"),
+            "fail-closed error omitted unsupported-thread cause: {error}"
+        );
+        assert_reaped("root", root_pid);
+        assert_reaped("thread", child_tid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_at_clone_thread_event_reaps_group() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .pause_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn CLONE_THREAD cancellation tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let child_tid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("CLONE_THREAD tracee completed before cancellation: {result:?}"),
+                child = child_rx.recv() => child.expect("new-thread hook closed"),
+            }
+        })
+        .await
+        .expect("tracee did not reach CLONE_THREAD cancellation window");
+        assert_ne!(root_pid, child_tid, "thread event reused root TID");
+
+        drop(wait);
+        assert_reaped("root", root_pid);
+        assert_reaped("thread", child_tid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_before_clone_thread_handler_reaps_group() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .pause_before_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn pre-handler CLONE_THREAD cancellation tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let child_tid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("CLONE_THREAD tracee completed before pre-handler cancellation: {result:?}"),
+                child = child_rx.recv() => child.expect("pre-handler new-thread hook closed"),
+            }
+        })
+        .await
+        .expect("tracee did not reach pre-handler CLONE_THREAD window");
+
+        drop(wait);
+        assert_reaped("root", root_pid);
+        assert_reaped("thread", child_tid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn discovery_error_restores_newborn_for_cleanup_retry() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let fail_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
+            .observe_liteinst_new_task_for_test(child_tx)
+            .fail_liteinst_discovery_once_for_test(Arc::clone(&fail_once))
+            .spawn()
+            .await
+            .expect("spawn discovery-retry tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let first = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => Either::Left(result),
+                child = child_rx.recv() => Either::Right(child.expect("new-thread observer closed")),
+            }
+        })
+        .await
+        .expect("tracee did not reach discovery-retry event");
+        let (child_tid, completed) = match first {
+            Either::Left(result) => (
+                child_rx
+                    .recv()
+                    .await
+                    .expect("completed tracee omitted retry child identity"),
+                Some(result),
+            ),
+            Either::Right(child_tid) => (child_tid, None),
+        };
+        let result = match completed {
+            Some(result) => result,
+            None => tokio::time::timeout(Duration::from_secs(3), &mut wait)
+                .await
+                .expect("discovery cleanup retry hung"),
+        };
+        let error = result.expect_err("unsupported CLONE_THREAD unexpectedly succeeded");
+        assert!(
+            error.to_string().contains("Input/output error"),
+            "injected discovery failure was not reported: {error}"
+        );
+        assert!(!fail_once.load(Ordering::SeqCst));
+        assert_reaped("root", root_pid);
+        assert_reaped("thread", child_tid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn post_task_scan_error_retains_exact_cleanup_for_retry() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let fail_once = Arc::new(AtomicBool::new(true));
+        let force_scan_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
+            .observe_liteinst_new_task_for_test(child_tx)
+            .fail_liteinst_after_task_scan_once_for_test(
+                Arc::clone(&fail_once),
+                Arc::clone(&force_scan_once),
+            )
+            .spawn()
+            .await
+            .expect("spawn post-task-scan retry tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let first = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => Either::Left(result),
+                child = child_rx.recv() => Either::Right(child.expect("task-scan observer closed")),
+            }
+        })
+        .await
+        .expect("tracee did not reach post-task-scan event");
+        let (child_tid, completed) = match first {
+            Either::Left(result) => (
+                child_rx
+                    .recv()
+                    .await
+                    .expect("completed tracee omitted task-scan TID"),
+                Some(result),
+            ),
+            Either::Right(child_tid) => (child_tid, None),
+        };
+        let result = match completed {
+            Some(result) => result,
+            None => tokio::time::timeout(Duration::from_secs(3), &mut wait)
+                .await
+                .expect("post-task-scan cleanup retry hung"),
+        };

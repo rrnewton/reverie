@@ -1,0 +1,160 @@
+    ) -> Result<Wait, TraceError> {
+        #[cfg(test)]
+        if let Some(sender) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.pause_before_new_task.as_ref())
+        {
+            let _ = sender.send(child.pid());
+            future::pending::<()>().await;
+        }
+        self.handle_new_task(op, parent, child, context, child_context)
+            .await
+    }
+
+    async fn handle_new_task(
+        &mut self,
+        op: ChildOp,
+        parent: Stopped,
+        child: Running,
+        context: Option<libc::user_regs_struct>,
+        child_context: Option<libc::user_regs_struct>,
+    ) -> Result<Wait, TraceError> {
+        if let Some(runtime) = self.global_state.liteinst_runtime.clone() {
+            runtime.multi_task.store(true, Ordering::Release);
+            let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
+            let child_pid = child.pid();
+            let registration_error = {
+                let newborns = newborn_tracees.lock().unwrap();
+                let Some(newborn) = newborns.get(&child_pid) else {
+                    drop(newborns);
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::NewbornRegistration,
+                        Error::runtime(
+                            self.tid(),
+                            "register LiteInst newborn tracee",
+                            format!("newborn {child_pid} event ownership is absent"),
+                        ),
+                    );
+                    return Err(Errno::ESRCH.into());
+                };
+                newborn.registration_error()
+            };
+            if let Some(error) = registration_error {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::NewbornRegistration,
+                    Error::runtime(
+                        self.tid(),
+                        "register LiteInst newborn tracee",
+                        format!("newborn {child_pid} registration failed: {error}"),
+                    ),
+                );
+                return Err(error.into());
+            }
+            let child_identity =
+                match TraceeIdentity::capture_event_child(child_pid, parent.pid(), op) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        self.record_liteinst_failure(
+                            LiteinstActivationFailureReason::NewbornIdentity,
+                            Error::runtime(
+                                self.tid(),
+                                "capture LiteInst newborn identity",
+                                format!("newborn {child_pid} identity capture failed: {error}"),
+                            ),
+                        );
+                        return Err(error.into());
+                    }
+                };
+            if op == ChildOp::Vfork {
+                // A vfork child borrows the parent's memory and suspends it
+                // until the child execs or exits. Bind and terminate this exact
+                // child generation before returning the refusal; otherwise the
+                // parent remains kernel-frozen and orderly task cleanup cannot
+                // reach the session-level guard.
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::VforkUnsupported,
+                    Error::runtime(
+                        self.tid(),
+                        "refuse vfork under the LiteInst hybrid",
+                        format!(
+                            "vfork child of {} refused: exec cannot preserve the preload runtime",
+                            parent.pid()
+                        ),
+                    ),
+                );
+            }
+            {
+                let mut newborns = newborn_tracees.lock().unwrap();
+                let Some(newborn) = newborns.get_mut(&child_pid) else {
+                    drop(newborns);
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::NewbornRegistration,
+                        Error::runtime(
+                            self.tid(),
+                            "store LiteInst newborn identity",
+                            format!(
+                                "newborn {child_pid} event ownership disappeared before identity storage"
+                            ),
+                        ),
+                    );
+                    return Err(Errno::ESRCH.into());
+                };
+                newborn.set_identity(child_identity);
+            }
+            #[cfg(test)]
+            if let Some(sender) = self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.pause_new_task.as_ref())
+            {
+                let _ = sender.send(child.pid());
+                if self
+                    .global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.pause_after_new_task)
+                {
+                    future::pending::<()>().await;
+                }
+            }
+            #[cfg(test)]
+            if runtime.fail_new_task {
+                return Err(Errno::ENOTSUPP.into());
+            }
+            if op == ChildOp::Vfork {
+                let termination = newborn_tracees
+                    .lock()
+                    .unwrap()
+                    .get(&child_pid)
+                    .ok_or(Errno::ESRCH)?
+                    .terminate_vfork_child();
+                termination?;
+                return Err(Errno::ENOTSUPP.into());
+            }
+            // Any other new task proceeds under the ordinary ptrace lifecycle.
+            // Root cleanup still owns every process child and CLONE_THREAD TID
+            // if a later LiteInst failure does fail closed: it signals only
+            // group-leader pidfds and drains every bound notifier generation on
+            // the ptracer thread.
+        }
+        tracing::debug!(
+            "[scheduler] handling fork from parent {} to child {}: {:?}",
+            parent.pid(),
+            child.pid(),
+            op
+        );
+
+        let mut child_task = match op {
+            ChildOp::Clone => self.cloned(child.pid()),
+            ChildOp::Fork => self.forked(child.pid()),
+            ChildOp::Vfork => self.forked(child.pid()),
+        };
+
+        let (child_stop_tx, child_stop_rx) = mpsc::channel(1);
+        child_task.gdb_stop_tx = Some(child_stop_tx);
+
+        let daemonizer_rx = child_task.daemonizer_rx.take();
+        let child_resume_tx = child_task.gdb_resume_tx.clone();

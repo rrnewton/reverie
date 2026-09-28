@@ -1,0 +1,51 @@
+    }
+    fn signal_observation_lease(&self) -> Option<crate::ParkedObservationLease> {
+        self.inner.signal_observation_lease()
+    }
+    async fn observe_parked_signal(
+        &mut self,
+        site: crate::CallbackSignalSite,
+        lease: crate::ParkedObservationLease,
+    ) -> Result<crate::ParkedSignalObservation, crate::SignalObservationFailure> {
+        self.inner.observe_parked_signal(site, lease).await
+    }
+    async fn terminate_from_parked_signal(
+        &mut self,
+        selection: crate::PreparedSignalToken,
+    ) -> Result<Never, crate::SignalObservationFailure> {
+        self.inner.terminate_from_parked_signal(selection).await
+    }
+    fn parked_signal_failure_context(&self) -> Option<crate::ParkedSignalFailureContext> {
+        self.inner.parked_signal_failure_context()
+    }
+    async fn cancel_parked_signal(
+        &mut self,
+        context: crate::ParkedSignalFailureContext,
+    ) -> Result<Never, crate::SignalObservationFailure> {
+        self.inner.cancel_parked_signal(context).await
+    }
+
+    fn set_timer(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        self.inner.set_timer(sched)
+    }
+
+    fn set_timer_precise(&mut self, sched: TimerSchedule) -> Result<(), Error> {
+        self.inner.set_timer_precise(sched)
+    }
+
+    fn read_clock(&mut self) -> Result<u64, Error> {
+        self.inner.read_clock()
+    }
+
+    fn backtrace(&mut self) -> Option<Backtrace> {
+        self.inner.backtrace()
+    }
+
+    fn has_cpuid_interception(&self) -> bool {
+        self.inner.has_cpuid_interception()
+    }
+
+    fn detlog_memory_regions(&self) -> Option<Vec<DetlogMemoryRegion>> {
+        self.inner.detlog_memory_regions()
+    }
+}

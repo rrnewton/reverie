@@ -1,0 +1,25 @@
+{
+  "proof": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final-COVERAGE.json",
+    "bytes": 284892,
+    "sha256": "9bb54008137cce6281cab1346cb386985235b6f265aca85e46620a58ecee0bcf",
+    "mode": 420
+  },
+  "model_tools": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+    "bytes": 1974404,
+    "sha256": "93dcf2f5c73c4e901e30d38d75cc8a63f2bd3a6f305a1af0a34d0a516fcb2334",
+    "mode": 420
+  },
+  "commands": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/native/01-source.final-COMMANDS.json",
+    "bytes": 2074877,
+    "sha256": "6661667a6ba561ad07bcf091358cd9cff39d9bdd4c8e5424fb8ca2a06d35eb58",
+    "mode": 420
+  },
+  "covered": 238,
+  "complete": true,
+  "order": false,
+  "errors": 14,
+  "truncation_candidates": 1
+}

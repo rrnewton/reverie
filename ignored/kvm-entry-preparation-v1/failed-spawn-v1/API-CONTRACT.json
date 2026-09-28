@@ -1,0 +1,11 @@
+{
+  "future": "pub(crate) type UnstartedToolCleanup = Pin<Box<dyn Future<Output = crate::Result<()>> + Send + 'static>>",
+  "retain": "ElfExecutor::retain_unstarted_tool_cleanup(&mut self, cleanup: UnstartedToolCleanup)",
+  "take": "ElfExecutor::take_unstarted_tool_cleanup(&mut self) -> Vec<UnstartedToolCleanup>",
+  "parent_error": "Original Error::HostIo returned directly; no new SharedFailure wrapper",
+  "child_failure": "Some(Error::RunAborted), polled only after parent failure publication outside parent callback",
+  "aggregation": "Only bare RunAborted is a derived marker; preserve every real error and cleanup aggregate",
+  "drain": "Take all futures and consume all even if an earlier cleanup fails; no queue or registry guard across polling",
+  "copying": "Initial/fork/thread constructors initialize their own empty queues",
+  "integration_owner": "Root owns runtime.rs and must bind its consuming drain separately"
+}

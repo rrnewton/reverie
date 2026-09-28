@@ -1,0 +1,4 @@
+branch=codex/kvm-signal-cleanup-default-20260919
+head=a65990b3c263c42f09762b3a0a63a42a4cc88c52
+origin_topic=c4376212990ae5072a7bcfd0223ec52003cbaac0
+origin_main=78203cd45751cba5f86f1e7ad5c545aceb29c017

@@ -1,0 +1,31 @@
+{
+  "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source",
+  "composed_sources": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source"
+  ],
+  "reverie_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source",
+  "reverie_packages": [
+    "nostd-print",
+    "reverie-core",
+    "reverie-dbt",
+    "reverie-kvm",
+    "reverie-liteinst",
+    "reverie-memory",
+    "reverie-preload",
+    "reverie-process",
+    "reverie-ptrace",
+    "reverie-rpc",
+    "reverie-rpc-macros",
+    "reverie-rpc-transport",
+    "reverie-sabre",
+    "reverie-sabre-macros",
+    "reverie-sabre-stats",
+    "reverie-syscalls",
+    "safeptrace"
+  ],
+  "source_bases": {
+    "reverie": "3d4a401ed8959befad0b2f10db59093725f27432"
+  },
+  "status": "Fresh isolated clock/injection successor; no execution"
+}

@@ -1,0 +1,1914 @@
+{
+  "scope": "First complete literal appearance in actual reviewer outputs. Canonical prior grounding is authenticated separately.",
+  "index_order": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190,
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209,
+    210,
+    211,
+    212,
+    213,
+    214,
+    215,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    222,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    229,
+    230,
+    231,
+    232,
+    233,
+    234,
+    235,
+    236,
+    237
+  ],
+  "actual_permutation": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    33,
+    32,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    144,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190,
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209,
+    210,
+    211,
+    212,
+    213,
+    214,
+    215,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    222,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    229,
+    230,
+    231,
+    232,
+    233,
+    234,
+    235,
+    236,
+    237
+  ],
+  "exact_index_order": false,
+  "reads": [
+    {
+      "index_position": 0,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/native-reuse-summary-00001-00024.txt",
+      "first_complete_output_line": 14827,
+      "call_id": "call_aGO7MiIHuASHRdUg8vIRjExA"
+    },
+    {
+      "index_position": 1,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/native-reuse-summary-00025-00028.txt",
+      "first_complete_output_line": 14827,
+      "call_id": "call_aGO7MiIHuASHRdUg8vIRjExA"
+    },
+    {
+      "index_position": 2,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-grounding-00001-00160.txt",
+      "first_complete_output_line": 14827,
+      "call_id": "call_aGO7MiIHuASHRdUg8vIRjExA"
+    },
+    {
+      "index_position": 3,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-grounding-00161-00320.txt",
+      "first_complete_output_line": 14827,
+      "call_id": "call_aGO7MiIHuASHRdUg8vIRjExA"
+    },
+    {
+      "index_position": 4,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-grounding-00321-00480.txt",
+      "first_complete_output_line": 14841,
+      "call_id": "call_XtEbQnJ05Nie4zqb5Pzu8kkZ"
+    },
+    {
+      "index_position": 5,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-grounding-00481-00640.txt",
+      "first_complete_output_line": 14841,
+      "call_id": "call_XtEbQnJ05Nie4zqb5Pzu8kkZ"
+    },
+    {
+      "index_position": 6,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-grounding-00641-00700.txt",
+      "first_complete_output_line": 14841,
+      "call_id": "call_XtEbQnJ05Nie4zqb5Pzu8kkZ"
+    },
+    {
+      "index_position": 7,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-clock-report-00001-00047.txt",
+      "first_complete_output_line": 14841,
+      "call_id": "call_XtEbQnJ05Nie4zqb5Pzu8kkZ"
+    },
+    {
+      "index_position": 8,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-clock-custody-00001-00160.txt",
+      "first_complete_output_line": 14855,
+      "call_id": "call_uqdcoUquOu113qq85v3iI3Gw"
+    },
+    {
+      "index_position": 9,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-clock-custody-00161-00320.txt",
+      "first_complete_output_line": 14855,
+      "call_id": "call_uqdcoUquOu113qq85v3iI3Gw"
+    },
+    {
+      "index_position": 10,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/native-own-clock-custody-00321-00334.txt",
+      "first_complete_output_line": 14855,
+      "call_id": "call_uqdcoUquOu113qq85v3iI3Gw"
+    },
+    {
+      "index_position": 11,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/hermit-instructions-00001-00160.txt",
+      "first_complete_output_line": 14855,
+      "call_id": "call_uqdcoUquOu113qq85v3iI3Gw"
+    },
+    {
+      "index_position": 12,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/hermit-instructions-00161-00320.txt",
+      "first_complete_output_line": 14869,
+      "call_id": "call_B9xPQHCj2rHHJIo83UToqjYk"
+    },
+    {
+      "index_position": 13,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/hermit-instructions-00321-00480.txt",
+      "first_complete_output_line": 14869,
+      "call_id": "call_B9xPQHCj2rHHJIo83UToqjYk"
+    },
+    {
+      "index_position": 14,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/hermit-instructions-00481-00640.txt",
+      "first_complete_output_line": 14869,
+      "call_id": "call_B9xPQHCj2rHHJIo83UToqjYk"
+    },
+    {
+      "index_position": 15,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/hermit-instructions-00641-00651.txt",
+      "first_complete_output_line": 14869,
+      "call_id": "call_B9xPQHCj2rHHJIo83UToqjYk"
+    },
+    {
+      "index_position": 16,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/author-report-00001-00043.txt",
+      "first_complete_output_line": 14883,
+      "call_id": "call_m29WrEkuK1ElWIRNeaV8IAvJ"
+    },
+    {
+      "index_position": 17,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/two-import-successor-00001-00009.txt",
+      "first_complete_output_line": 14883,
+      "call_id": "call_m29WrEkuK1ElWIRNeaV8IAvJ"
+    },
+    {
+      "index_position": 18,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-00001-00160.txt",
+      "first_complete_output_line": 14883,
+      "call_id": "call_m29WrEkuK1ElWIRNeaV8IAvJ"
+    },
+    {
+      "index_position": 19,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-00161-00320.txt",
+      "first_complete_output_line": 14883,
+      "call_id": "call_m29WrEkuK1ElWIRNeaV8IAvJ"
+    },
+    {
+      "index_position": 20,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-00321-00480.txt",
+      "first_complete_output_line": 14897,
+      "call_id": "call_74LjLSY7jo3GkdeNKV0hMRWA"
+    },
+    {
+      "index_position": 21,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-00481-00640.txt",
+      "first_complete_output_line": 14897,
+      "call_id": "call_74LjLSY7jo3GkdeNKV0hMRWA"
+    },
+    {
+      "index_position": 22,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-00641-00800.txt",
+      "first_complete_output_line": 14897,
+      "call_id": "call_74LjLSY7jo3GkdeNKV0hMRWA"
+    },
+    {
+      "index_position": 23,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-00801-00960.txt",
+      "first_complete_output_line": 14897,
+      "call_id": "call_74LjLSY7jo3GkdeNKV0hMRWA"
+    },
+    {
+      "index_position": 24,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-00961-01120.txt",
+      "first_complete_output_line": 14911,
+      "call_id": "call_8aDkAtG5WakWpvdPon0R9BYG"
+    },
+    {
+      "index_position": 25,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-01121-01280.txt",
+      "first_complete_output_line": 14911,
+      "call_id": "call_8aDkAtG5WakWpvdPon0R9BYG"
+    },
+    {
+      "index_position": 26,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-01281-01440.txt",
+      "first_complete_output_line": 14911,
+      "call_id": "call_8aDkAtG5WakWpvdPon0R9BYG"
+    },
+    {
+      "index_position": 27,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-committed-source-diff-01441-01479.txt",
+      "first_complete_output_line": 14911,
+      "call_id": "call_8aDkAtG5WakWpvdPon0R9BYG"
+    },
+    {
+      "index_position": 28,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/injection-delta-00001-00160.txt",
+      "first_complete_output_line": 14925,
+      "call_id": "call_TvH7LqhM8SFvD3vLLsnDRLaH"
+    },
+    {
+      "index_position": 29,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/injection-delta-00161-00320.txt",
+      "first_complete_output_line": 14925,
+      "call_id": "call_TvH7LqhM8SFvD3vLLsnDRLaH"
+    },
+    {
+      "index_position": 30,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/injection-delta-00321-00480.txt",
+      "first_complete_output_line": 14925,
+      "call_id": "call_TvH7LqhM8SFvD3vLLsnDRLaH"
+    },
+    {
+      "index_position": 31,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/injection-delta-00481-00640.txt",
+      "first_complete_output_line": 14925,
+      "call_id": "call_TvH7LqhM8SFvD3vLLsnDRLaH"
+    },
+    {
+      "index_position": 33,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/oracle-delta-00001-00041.txt",
+      "first_complete_output_line": 14925,
+      "call_id": "call_TvH7LqhM8SFvD3vLLsnDRLaH"
+    },
+    {
+      "index_position": 32,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/injection-delta-00641-00650.txt",
+      "first_complete_output_line": 14939,
+      "call_id": "call_7MJ1UvP36l9LQPjo9lHGKl3t"
+    },
+    {
+      "index_position": 34,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/compile-import-delta-00001-00023.txt",
+      "first_complete_output_line": 14939,
+      "call_id": "call_7MJ1UvP36l9LQPjo9lHGKl3t"
+    },
+    {
+      "index_position": 35,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-clock_origin_tests-00001-00160.txt",
+      "first_complete_output_line": 14939,
+      "call_id": "call_7MJ1UvP36l9LQPjo9lHGKl3t"
+    },
+    {
+      "index_position": 36,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-clock_origin_tests-00161-00320.txt",
+      "first_complete_output_line": 14953,
+      "call_id": "call_hKbMrPO5oDT3N8yIsV05tUQ1"
+    },
+    {
+      "index_position": 37,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-clock_origin_tests-00321-00399.txt",
+      "first_complete_output_line": 14953,
+      "call_id": "call_hKbMrPO5oDT3N8yIsV05tUQ1"
+    },
+    {
+      "index_position": 38,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-injection_stop_tests-00001-00160.txt",
+      "first_complete_output_line": 14953,
+      "call_id": "call_hKbMrPO5oDT3N8yIsV05tUQ1"
+    },
+    {
+      "index_position": 39,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-injection_stop_tests-00161-00320.txt",
+      "first_complete_output_line": 14953,
+      "call_id": "call_hKbMrPO5oDT3N8yIsV05tUQ1"
+    },
+    {
+      "index_position": 144,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/prior-clock-tests-00321-00391.txt",
+      "first_complete_output_line": 14953,
+      "call_id": "call_hKbMrPO5oDT3N8yIsV05tUQ1"
+    },
+    {
+      "index_position": 40,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-injection_stop_tests-00321-00466.txt",
+      "first_complete_output_line": 14967,
+      "call_id": "call_gPSdrlHdRCI7wTXtu21DgQg5"
+    },
+    {
+      "index_position": 41,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-perf-00001-00160.txt",
+      "first_complete_output_line": 14967,
+      "call_id": "call_gPSdrlHdRCI7wTXtu21DgQg5"
+    },
+    {
+      "index_position": 42,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-perf-00161-00320.txt",
+      "first_complete_output_line": 14967,
+      "call_id": "call_gPSdrlHdRCI7wTXtu21DgQg5"
+    },
+    {
+      "index_position": 43,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-perf-00321-00480.txt",
+      "first_complete_output_line": 14967,
+      "call_id": "call_gPSdrlHdRCI7wTXtu21DgQg5"
+    },
+    {
+      "index_position": 44,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-perf-00481-00640.txt",
+      "first_complete_output_line": 14985,
+      "call_id": "call_lrNVJgq2ZtMuICQ2aaQNPip6"
+    },
+    {
+      "index_position": 45,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-perf-00641-00800.txt",
+      "first_complete_output_line": 14985,
+      "call_id": "call_lrNVJgq2ZtMuICQ2aaQNPip6"
+    },
+    {
+      "index_position": 46,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-perf-00801-00960.txt",
+      "first_complete_output_line": 14985,
+      "call_id": "call_lrNVJgq2ZtMuICQ2aaQNPip6"
+    },
+    {
+      "index_position": 47,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-perf-00961-01120.txt",
+      "first_complete_output_line": 14985,
+      "call_id": "call_lrNVJgq2ZtMuICQ2aaQNPip6"
+    },
+    {
+      "index_position": 48,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-perf-01121-01220.txt",
+      "first_complete_output_line": 14985,
+      "call_id": "call_lrNVJgq2ZtMuICQ2aaQNPip6"
+    },
+    {
+      "index_position": 49,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-00001-00160.txt",
+      "first_complete_output_line": 14985,
+      "call_id": "call_lrNVJgq2ZtMuICQ2aaQNPip6"
+    },
+    {
+      "index_position": 50,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-00161-00320.txt",
+      "first_complete_output_line": 15005,
+      "call_id": "call_zDbVXRBHSHlRmIKu2Qifxh1A"
+    },
+    {
+      "index_position": 51,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-00321-00480.txt",
+      "first_complete_output_line": 15005,
+      "call_id": "call_zDbVXRBHSHlRmIKu2Qifxh1A"
+    },
+    {
+      "index_position": 52,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-00481-00640.txt",
+      "first_complete_output_line": 15005,
+      "call_id": "call_zDbVXRBHSHlRmIKu2Qifxh1A"
+    },
+    {
+      "index_position": 53,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-00641-00800.txt",
+      "first_complete_output_line": 15005,
+      "call_id": "call_zDbVXRBHSHlRmIKu2Qifxh1A"
+    },
+    {
+      "index_position": 54,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-00801-00960.txt",
+      "first_complete_output_line": 15005,
+      "call_id": "call_zDbVXRBHSHlRmIKu2Qifxh1A"
+    },
+    {
+      "index_position": 55,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-00961-01120.txt",
+      "first_complete_output_line": 15005,
+      "call_id": "call_zDbVXRBHSHlRmIKu2Qifxh1A"
+    },
+    {
+      "index_position": 56,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-01121-01280.txt",
+      "first_complete_output_line": 15023,
+      "call_id": "call_7U5B1IOfDUrv05IcdeCKtKcQ"
+    },
+    {
+      "index_position": 57,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-01281-01440.txt",
+      "first_complete_output_line": 15023,
+      "call_id": "call_7U5B1IOfDUrv05IcdeCKtKcQ"
+    },
+    {
+      "index_position": 58,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-01441-01600.txt",
+      "first_complete_output_line": 15023,
+      "call_id": "call_7U5B1IOfDUrv05IcdeCKtKcQ"
+    },
+    {
+      "index_position": 59,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-01601-01760.txt",
+      "first_complete_output_line": 15023,
+      "call_id": "call_7U5B1IOfDUrv05IcdeCKtKcQ"
+    },
+    {
+      "index_position": 60,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-01761-01920.txt",
+      "first_complete_output_line": 15023,
+      "call_id": "call_7U5B1IOfDUrv05IcdeCKtKcQ"
+    },
+    {
+      "index_position": 61,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-01921-02080.txt",
+      "first_complete_output_line": 15023,
+      "call_id": "call_7U5B1IOfDUrv05IcdeCKtKcQ"
+    },
+    {
+      "index_position": 62,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-02081-02240.txt",
+      "first_complete_output_line": 15041,
+      "call_id": "call_2LJQ35tNqEZAKSdg39cV7dz6"
+    },
+    {
+      "index_position": 63,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-02241-02400.txt",
+      "first_complete_output_line": 15041,
+      "call_id": "call_2LJQ35tNqEZAKSdg39cV7dz6"
+    },
+    {
+      "index_position": 64,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-02401-02560.txt",
+      "first_complete_output_line": 15041,
+      "call_id": "call_2LJQ35tNqEZAKSdg39cV7dz6"
+    },
+    {
+      "index_position": 65,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-02561-02720.txt",
+      "first_complete_output_line": 15041,
+      "call_id": "call_2LJQ35tNqEZAKSdg39cV7dz6"
+    },
+    {
+      "index_position": 66,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-02721-02880.txt",
+      "first_complete_output_line": 15041,
+      "call_id": "call_2LJQ35tNqEZAKSdg39cV7dz6"
+    },
+    {
+      "index_position": 67,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-02881-03040.txt",
+      "first_complete_output_line": 15041,
+      "call_id": "call_2LJQ35tNqEZAKSdg39cV7dz6"
+    },
+    {
+      "index_position": 68,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-03041-03200.txt",
+      "first_complete_output_line": 15059,
+      "call_id": "call_VjfoxRiNE0h03aXmDkLYN9g8"
+    },
+    {
+      "index_position": 69,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-03201-03360.txt",
+      "first_complete_output_line": 15059,
+      "call_id": "call_VjfoxRiNE0h03aXmDkLYN9g8"
+    },
+    {
+      "index_position": 70,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-03361-03520.txt",
+      "first_complete_output_line": 15059,
+      "call_id": "call_VjfoxRiNE0h03aXmDkLYN9g8"
+    },
+    {
+      "index_position": 71,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-03521-03680.txt",
+      "first_complete_output_line": 15059,
+      "call_id": "call_VjfoxRiNE0h03aXmDkLYN9g8"
+    },
+    {
+      "index_position": 72,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-03681-03840.txt",
+      "first_complete_output_line": 15059,
+      "call_id": "call_VjfoxRiNE0h03aXmDkLYN9g8"
+    },
+    {
+      "index_position": 73,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-03841-04000.txt",
+      "first_complete_output_line": 15059,
+      "call_id": "call_VjfoxRiNE0h03aXmDkLYN9g8"
+    },
+    {
+      "index_position": 74,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-04001-04160.txt",
+      "first_complete_output_line": 15077,
+      "call_id": "call_Nk5KY4qm4lPQZdmVj83nzGD1"
+    },
+    {
+      "index_position": 75,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-04161-04320.txt",
+      "first_complete_output_line": 15077,
+      "call_id": "call_Nk5KY4qm4lPQZdmVj83nzGD1"
+    },
+    {
+      "index_position": 76,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-04321-04480.txt",
+      "first_complete_output_line": 15077,
+      "call_id": "call_Nk5KY4qm4lPQZdmVj83nzGD1"
+    },
+    {
+      "index_position": 77,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-04481-04640.txt",
+      "first_complete_output_line": 15077,
+      "call_id": "call_Nk5KY4qm4lPQZdmVj83nzGD1"
+    },
+    {
+      "index_position": 78,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-04641-04800.txt",
+      "first_complete_output_line": 15077,
+      "call_id": "call_Nk5KY4qm4lPQZdmVj83nzGD1"
+    },
+    {
+      "index_position": 79,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-04801-04960.txt",
+      "first_complete_output_line": 15077,
+      "call_id": "call_Nk5KY4qm4lPQZdmVj83nzGD1"
+    },
+    {
+      "index_position": 80,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-04961-05120.txt",
+      "first_complete_output_line": 15095,
+      "call_id": "call_3VYXqJnenlWYtlzWo81ZmMqd"
+    },
+    {
+      "index_position": 81,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-05121-05280.txt",
+      "first_complete_output_line": 15095,
+      "call_id": "call_3VYXqJnenlWYtlzWo81ZmMqd"
+    },
+    {
+      "index_position": 82,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-05281-05440.txt",
+      "first_complete_output_line": 15095,
+      "call_id": "call_3VYXqJnenlWYtlzWo81ZmMqd"
+    },
+    {
+      "index_position": 83,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-05441-05600.txt",
+      "first_complete_output_line": 15095,
+      "call_id": "call_3VYXqJnenlWYtlzWo81ZmMqd"
+    },
+    {
+      "index_position": 84,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-05601-05760.txt",
+      "first_complete_output_line": 15095,
+      "call_id": "call_3VYXqJnenlWYtlzWo81ZmMqd"
+    },
+    {
+      "index_position": 85,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-05761-05920.txt",
+      "first_complete_output_line": 15095,
+      "call_id": "call_3VYXqJnenlWYtlzWo81ZmMqd"
+    },
+    {
+      "index_position": 86,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-05921-06080.txt",
+      "first_complete_output_line": 15113,
+      "call_id": "call_qNcAVbrzYj1iEssD4KUWUwIt"
+    },
+    {
+      "index_position": 87,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-06081-06240.txt",
+      "first_complete_output_line": 15113,
+      "call_id": "call_qNcAVbrzYj1iEssD4KUWUwIt"
+    },
+    {
+      "index_position": 88,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-06241-06400.txt",
+      "first_complete_output_line": 15113,
+      "call_id": "call_qNcAVbrzYj1iEssD4KUWUwIt"
+    },
+    {
+      "index_position": 89,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-06401-06560.txt",
+      "first_complete_output_line": 15113,
+      "call_id": "call_qNcAVbrzYj1iEssD4KUWUwIt"
+    },
+    {
+      "index_position": 90,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-task-06561-06602.txt",
+      "first_complete_output_line": 15113,
+      "call_id": "call_qNcAVbrzYj1iEssD4KUWUwIt"
+    },
+    {
+      "index_position": 91,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-00001-00160.txt",
+      "first_complete_output_line": 15113,
+      "call_id": "call_qNcAVbrzYj1iEssD4KUWUwIt"
+    },
+    {
+      "index_position": 92,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-00161-00320.txt",
+      "first_complete_output_line": 15131,
+      "call_id": "call_QwKifbMyPzVExaFYXZjoDUh3"
+    },
+    {
+      "index_position": 93,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-00321-00480.txt",
+      "first_complete_output_line": 15131,
+      "call_id": "call_QwKifbMyPzVExaFYXZjoDUh3"
+    },
+    {
+      "index_position": 94,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-00481-00640.txt",
+      "first_complete_output_line": 15131,
+      "call_id": "call_QwKifbMyPzVExaFYXZjoDUh3"
+    },
+    {
+      "index_position": 95,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-00641-00800.txt",
+      "first_complete_output_line": 15131,
+      "call_id": "call_QwKifbMyPzVExaFYXZjoDUh3"
+    },
+    {
+      "index_position": 96,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-00801-00960.txt",
+      "first_complete_output_line": 15131,
+      "call_id": "call_QwKifbMyPzVExaFYXZjoDUh3"
+    },
+    {
+      "index_position": 97,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-00961-01120.txt",
+      "first_complete_output_line": 15131,
+      "call_id": "call_QwKifbMyPzVExaFYXZjoDUh3"
+    },
+    {
+      "index_position": 98,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-01121-01280.txt",
+      "first_complete_output_line": 15145,
+      "call_id": "call_piafZUpa6T7ftcFYqVTY9XJ4"
+    },
+    {
+      "index_position": 99,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-timer-01281-01428.txt",
+      "first_complete_output_line": 15145,
+      "call_id": "call_piafZUpa6T7ftcFYqVTY9XJ4"
+    },
+    {
+      "index_position": 100,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-00001-00160.txt",
+      "first_complete_output_line": 15145,
+      "call_id": "call_piafZUpa6T7ftcFYqVTY9XJ4"
+    },
+    {
+      "index_position": 101,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-00161-00320.txt",
+      "first_complete_output_line": 15145,
+      "call_id": "call_piafZUpa6T7ftcFYqVTY9XJ4"
+    },
+    {
+      "index_position": 102,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-00321-00480.txt",
+      "first_complete_output_line": 15163,
+      "call_id": "call_KUfWH1BxDgk75RbSybjJxKb4"
+    },
+    {
+      "index_position": 103,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-00481-00640.txt",
+      "first_complete_output_line": 15163,
+      "call_id": "call_KUfWH1BxDgk75RbSybjJxKb4"
+    },
+    {
+      "index_position": 104,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-00641-00800.txt",
+      "first_complete_output_line": 15163,
+      "call_id": "call_KUfWH1BxDgk75RbSybjJxKb4"
+    },
+    {
+      "index_position": 105,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-00801-00960.txt",
+      "first_complete_output_line": 15163,
+      "call_id": "call_KUfWH1BxDgk75RbSybjJxKb4"
+    },
+    {
+      "index_position": 106,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-00961-01120.txt",
+      "first_complete_output_line": 15163,
+      "call_id": "call_KUfWH1BxDgk75RbSybjJxKb4"
+    },
+    {
+      "index_position": 107,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-01121-01280.txt",
+      "first_complete_output_line": 15163,
+      "call_id": "call_KUfWH1BxDgk75RbSybjJxKb4"
+    },
+    {
+      "index_position": 108,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-01281-01440.txt",
+      "first_complete_output_line": 15181,
+      "call_id": "call_OAtzfNHXuoAOTnfJvZT5TOKx"
+    },
+    {
+      "index_position": 109,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-01441-01600.txt",
+      "first_complete_output_line": 15181,
+      "call_id": "call_OAtzfNHXuoAOTnfJvZT5TOKx"
+    },
+    {
+      "index_position": 110,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-01601-01760.txt",
+      "first_complete_output_line": 15181,
+      "call_id": "call_OAtzfNHXuoAOTnfJvZT5TOKx"
+    },
+    {
+      "index_position": 111,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-01761-01920.txt",
+      "first_complete_output_line": 15181,
+      "call_id": "call_OAtzfNHXuoAOTnfJvZT5TOKx"
+    },
+    {
+      "index_position": 112,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-01921-02080.txt",
+      "first_complete_output_line": 15181,
+      "call_id": "call_OAtzfNHXuoAOTnfJvZT5TOKx"
+    },
+    {
+      "index_position": 113,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-02081-02240.txt",
+      "first_complete_output_line": 15181,
+      "call_id": "call_OAtzfNHXuoAOTnfJvZT5TOKx"
+    },
+    {
+      "index_position": 114,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-02241-02400.txt",
+      "first_complete_output_line": 15199,
+      "call_id": "call_eoOGLRN4BlC1CxMjTvyT0G3o"
+    },
+    {
+      "index_position": 115,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-02401-02560.txt",
+      "first_complete_output_line": 15199,
+      "call_id": "call_eoOGLRN4BlC1CxMjTvyT0G3o"
+    },
+    {
+      "index_position": 116,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-02561-02720.txt",
+      "first_complete_output_line": 15199,
+      "call_id": "call_eoOGLRN4BlC1CxMjTvyT0G3o"
+    },
+    {
+      "index_position": 117,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-02721-02880.txt",
+      "first_complete_output_line": 15199,
+      "call_id": "call_eoOGLRN4BlC1CxMjTvyT0G3o"
+    },
+    {
+      "index_position": 118,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-02881-03040.txt",
+      "first_complete_output_line": 15199,
+      "call_id": "call_eoOGLRN4BlC1CxMjTvyT0G3o"
+    },
+    {
+      "index_position": 119,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-03041-03200.txt",
+      "first_complete_output_line": 15199,
+      "call_id": "call_eoOGLRN4BlC1CxMjTvyT0G3o"
+    },
+    {
+      "index_position": 120,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-03201-03360.txt",
+      "first_complete_output_line": 15217,
+      "call_id": "call_c8ppW1KrJ4Pcg4cRA3DF0CFt"
+    },
+    {
+      "index_position": 121,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-03361-03520.txt",
+      "first_complete_output_line": 15217,
+      "call_id": "call_c8ppW1KrJ4Pcg4cRA3DF0CFt"
+    },
+    {
+      "index_position": 122,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-03521-03680.txt",
+      "first_complete_output_line": 15217,
+      "call_id": "call_c8ppW1KrJ4Pcg4cRA3DF0CFt"
+    },
+    {
+      "index_position": 123,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-03681-03840.txt",
+      "first_complete_output_line": 15217,
+      "call_id": "call_c8ppW1KrJ4Pcg4cRA3DF0CFt"
+    },
+    {
+      "index_position": 124,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-03841-04000.txt",
+      "first_complete_output_line": 15217,
+      "call_id": "call_c8ppW1KrJ4Pcg4cRA3DF0CFt"
+    },
+    {
+      "index_position": 125,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-04001-04160.txt",
+      "first_complete_output_line": 15217,
+      "call_id": "call_c8ppW1KrJ4Pcg4cRA3DF0CFt"
+    },
+    {
+      "index_position": 126,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-04161-04320.txt",
+      "first_complete_output_line": 15235,
+      "call_id": "call_RPsQInYWnT1ZSOZzrV8ZvW0d"
+    },
+    {
+      "index_position": 127,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-04321-04480.txt",
+      "first_complete_output_line": 15235,
+      "call_id": "call_RPsQInYWnT1ZSOZzrV8ZvW0d"
+    },
+    {
+      "index_position": 128,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/current-tracer-04481-04583.txt",
+      "first_complete_output_line": 15235,
+      "call_id": "call_RPsQInYWnT1ZSOZzrV8ZvW0d"
+    },
+    {
+      "index_position": 129,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/context-reverie-src-tool-rs-00001-00160.txt",
+      "first_complete_output_line": 15235,
+      "call_id": "call_RPsQInYWnT1ZSOZzrV8ZvW0d"
+    },
+    {
+      "index_position": 130,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/context-reverie-src-tool-rs-00161-00320.txt",
+      "first_complete_output_line": 15235,
+      "call_id": "call_RPsQInYWnT1ZSOZzrV8ZvW0d"
+    },
+    {
+      "index_position": 131,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/context-reverie-src-tool-rs-00321-00480.txt",
+      "first_complete_output_line": 15235,
+      "call_id": "call_RPsQInYWnT1ZSOZzrV8ZvW0d"
+    },
+    {
+      "index_position": 132,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/context-reverie-src-tool-rs-00481-00594.txt",
+      "first_complete_output_line": 15253,
+      "call_id": "call_LXGbGI890x9bxzljgSVdEcOD"
+    },
+    {
+      "index_position": 133,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/context-reverie-ptrace-src-lib-rs-00001-00074.txt",
+      "first_complete_output_line": 15253,
+      "call_id": "call_LXGbGI890x9bxzljgSVdEcOD"
+    },
+    {
+      "index_position": 134,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/context-reverie-ptrace-tests-vsyscall-rs-00001-00066.txt",
+      "first_complete_output_line": 15253,
+      "call_id": "call_LXGbGI890x9bxzljgSVdEcOD"
+    },
+    {
+      "index_position": 135,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/kernel-functions-00001-00160.txt",
+      "first_complete_output_line": 15253,
+      "call_id": "call_LXGbGI890x9bxzljgSVdEcOD"
+    },
+    {
+      "index_position": 136,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/kernel-functions-00161-00320.txt",
+      "first_complete_output_line": 15253,
+      "call_id": "call_LXGbGI890x9bxzljgSVdEcOD"
+    },
+    {
+      "index_position": 137,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/kernel-functions-00321-00480.txt",
+      "first_complete_output_line": 15253,
+      "call_id": "call_LXGbGI890x9bxzljgSVdEcOD"
+    },
+    {
+      "index_position": 138,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/kernel-functions-00481-00640.txt",
+      "first_complete_output_line": 15271,
+      "call_id": "call_rR8v7M9fLsOVmOcDDbAPtWrG"
+    },
+    {
+      "index_position": 139,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/kernel-functions-00641-00800.txt",
+      "first_complete_output_line": 15271,
+      "call_id": "call_rR8v7M9fLsOVmOcDDbAPtWrG"
+    },
+    {
+      "index_position": 140,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/kernel-functions-00801-00914.txt",
+      "first_complete_output_line": 15271,
+      "call_id": "call_rR8v7M9fLsOVmOcDDbAPtWrG"
+    },
+    {
+      "index_position": 141,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/kernel-elf-provenance-00001-00006.txt",
+      "first_complete_output_line": 15271,
+      "call_id": "call_rR8v7M9fLsOVmOcDDbAPtWrG"
+    },
+    {
+      "index_position": 142,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/prior-clock-tests-00001-00160.txt",
+      "first_complete_output_line": 15271,
+      "call_id": "call_rR8v7M9fLsOVmOcDDbAPtWrG"
+    },
+    {
+      "index_position": 143,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/prior-clock-tests-00161-00320.txt",
+      "first_complete_output_line": 15271,
+      "call_id": "call_rR8v7M9fLsOVmOcDDbAPtWrG"
+    },
+    {
+      "index_position": 145,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/observation-report-00001-00053.txt",
+      "first_complete_output_line": 15289,
+      "call_id": "call_r91GdX74lxcGclVQXNiHpV9X"
+    },
+    {
+      "index_position": 146,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/observation-result-00001-00160.txt",
+      "first_complete_output_line": 15289,
+      "call_id": "call_r91GdX74lxcGclVQXNiHpV9X"
+    },
+    {
+      "index_position": 147,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/observation-result-00161-00191.txt",
+      "first_complete_output_line": 15289,
+      "call_id": "call_r91GdX74lxcGclVQXNiHpV9X"
+    },
+    {
+      "index_position": 148,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-trace-analysis-00001-00160.txt",
+      "first_complete_output_line": 15289,
+      "call_id": "call_r91GdX74lxcGclVQXNiHpV9X"
+    },
+    {
+      "index_position": 149,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-trace-analysis-00161-00218.txt",
+      "first_complete_output_line": 15289,
+      "call_id": "call_r91GdX74lxcGclVQXNiHpV9X"
+    },
+    {
+      "index_position": 150,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00001-00001.txt",
+      "first_complete_output_line": 15305,
+      "call_id": "call_uY8EFqwboCAuI1WMIZlmpOtz"
+    },
+    {
+      "index_position": 151,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00002-00046.txt",
+      "first_complete_output_line": 15305,
+      "call_id": "call_uY8EFqwboCAuI1WMIZlmpOtz"
+    },
+    {
+      "index_position": 152,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00047-00090.txt",
+      "first_complete_output_line": 15305,
+      "call_id": "call_uY8EFqwboCAuI1WMIZlmpOtz"
+    },
+    {
+      "index_position": 153,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00091-00108.txt",
+      "first_complete_output_line": 15305,
+      "call_id": "call_uY8EFqwboCAuI1WMIZlmpOtz"
+    },
+    {
+      "index_position": 154,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00109-00122.txt",
+      "first_complete_output_line": 15305,
+      "call_id": "call_uY8EFqwboCAuI1WMIZlmpOtz"
+    },
+    {
+      "index_position": 155,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00123-00150.txt",
+      "first_complete_output_line": 15371,
+      "call_id": "call_i1Dfl8oaaCxFSEAZZWC2Iaqk"
+    },
+    {
+      "index_position": 156,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00151-00166.txt",
+      "first_complete_output_line": 15378,
+      "call_id": "call_bjnPfyJCMEWENDE2yCk6jKI4"
+    },
+    {
+      "index_position": 157,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00167-00182.txt",
+      "first_complete_output_line": 15385,
+      "call_id": "call_BIaYsLa3P2CANz0aGzzee9LC"
+    },
+    {
+      "index_position": 158,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00183-00196.txt",
+      "first_complete_output_line": 15394,
+      "call_id": "call_oDQBRgWMqB0MFtTSUeFH12Yo"
+    },
+    {
+      "index_position": 159,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00197-00216.txt",
+      "first_complete_output_line": 15394,
+      "call_id": "call_oDQBRgWMqB0MFtTSUeFH12Yo"
+    },
+    {
+      "index_position": 160,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00217-00232.txt",
+      "first_complete_output_line": 15394,
+      "call_id": "call_oDQBRgWMqB0MFtTSUeFH12Yo"
+    },
+    {
+      "index_position": 161,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00233-00247.txt",
+      "first_complete_output_line": 15403,
+      "call_id": "call_WOGlCB53YCcQXK1W3Flp9UJV"
+    },
+    {
+      "index_position": 162,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00248-00264.txt",
+      "first_complete_output_line": 15403,
+      "call_id": "call_WOGlCB53YCcQXK1W3Flp9UJV"
+    },
+    {
+      "index_position": 163,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00265-00280.txt",
+      "first_complete_output_line": 15403,
+      "call_id": "call_WOGlCB53YCcQXK1W3Flp9UJV"
+    },
+    {
+      "index_position": 164,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00281-00296.txt",
+      "first_complete_output_line": 15412,
+      "call_id": "call_yZYoAsyhTcQ7zlNg6e4vpqkS"
+    },
+    {
+      "index_position": 165,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00297-00312.txt",
+      "first_complete_output_line": 15412,
+      "call_id": "call_yZYoAsyhTcQ7zlNg6e4vpqkS"
+    },
+    {
+      "index_position": 166,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00313-00327.txt",
+      "first_complete_output_line": 15412,
+      "call_id": "call_yZYoAsyhTcQ7zlNg6e4vpqkS"
+    },
+    {
+      "index_position": 167,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00328-00342.txt",
+      "first_complete_output_line": 15421,
+      "call_id": "call_iOn6gkMhGRmokRhz7SpsmGJ2"
+    },
+    {
+      "index_position": 168,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00343-00357.txt",
+      "first_complete_output_line": 15421,
+      "call_id": "call_iOn6gkMhGRmokRhz7SpsmGJ2"
+    },
+    {
+      "index_position": 169,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00358-00374.txt",
+      "first_complete_output_line": 15421,
+      "call_id": "call_iOn6gkMhGRmokRhz7SpsmGJ2"
+    },
+    {
+      "index_position": 170,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00375-00392.txt",
+      "first_complete_output_line": 15430,
+      "call_id": "call_zIPovKRr2TAcFPMdm0ukwy5z"
+    },
+    {
+      "index_position": 171,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00393-00407.txt",
+      "first_complete_output_line": 15430,
+      "call_id": "call_zIPovKRr2TAcFPMdm0ukwy5z"
+    },
+    {
+      "index_position": 172,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00408-00425.txt",
+      "first_complete_output_line": 15430,
+      "call_id": "call_zIPovKRr2TAcFPMdm0ukwy5z"
+    },
+    {
+      "index_position": 173,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00426-00442.txt",
+      "first_complete_output_line": 15438,
+      "call_id": "call_ib3yLgGAiJctg5Pq4CggDDJS"
+    },
+    {
+      "index_position": 174,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/entry-replay-raw-events-00443-00447.txt",
+      "first_complete_output_line": 15438,
+      "call_id": "call_ib3yLgGAiJctg5Pq4CggDDJS"
+    },
+    {
+      "index_position": 175,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/old-clock-raw-failure-00001-00059.txt",
+      "first_complete_output_line": 15445,
+      "call_id": "call_Az5RajwyfUO4Ee4Keq6IcNEc"
+    },
+    {
+      "index_position": 176,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/old-baseline-results-00001-00160.txt",
+      "first_complete_output_line": 15452,
+      "call_id": "call_uEs5bjN5IbdWfM0iBuqf1YkO"
+    },
+    {
+      "index_position": 177,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/old-baseline-results-00161-00265.txt",
+      "first_complete_output_line": 15459,
+      "call_id": "call_q3N57vOnuf7rvf7AWfyH0U3Y"
+    },
+    {
+      "index_position": 178,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/old-corrected-results-00001-00160.txt",
+      "first_complete_output_line": 15466,
+      "call_id": "call_uuKi335sBVJgFyc2MbLFLjHm"
+    },
+    {
+      "index_position": 179,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/old-corrected-results-00161-00320.txt",
+      "first_complete_output_line": 15473,
+      "call_id": "call_1YAnQUCALmuhtKI6CdjleFjO"
+    },
+    {
+      "index_position": 180,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/old-corrected-results-00321-00477.txt",
+      "first_complete_output_line": 15480,
+      "call_id": "call_hOT4Fo2WjMSYh7FsHBAvalx1"
+    },
+    {
+      "index_position": 181,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/old-corrected-results-00478-00637.txt",
+      "first_complete_output_line": 15487,
+      "call_id": "call_gqQ21BC8kzkpD0TmciJcH9sT"
+    },
+    {
+      "index_position": 182,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/old-corrected-results-00638-00675.txt",
+      "first_complete_output_line": 15494,
+      "call_id": "call_a3OsWNXmZA1u8wui6RSfy8id"
+    },
+    {
+      "index_position": 183,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/first-compile-REPORT-md-00001-00011.txt",
+      "first_complete_output_line": 15502,
+      "call_id": "call_up5LgXsKqR2exvI6rcR86f6k"
+    },
+    {
+      "index_position": 184,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/first-compile-RESULTS-json-00001-00160.txt",
+      "first_complete_output_line": 15502,
+      "call_id": "call_up5LgXsKqR2exvI6rcR86f6k"
+    },
+    {
+      "index_position": 185,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/first-compile-RESULTS-json-00161-00204.txt",
+      "first_complete_output_line": 15509,
+      "call_id": "call_6fLqUOIR0u0afb9Qp4pa3ZzA"
+    },
+    {
+      "index_position": 186,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/first-compile-READBACK-json-00001-00041.txt",
+      "first_complete_output_line": 15518,
+      "call_id": "call_ZthxXqe95X06XVcLFuNTY3Vz"
+    },
+    {
+      "index_position": 187,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-README-md-00001-00009.txt",
+      "first_complete_output_line": 15518,
+      "call_id": "call_ZthxXqe95X06XVcLFuNTY3Vz"
+    },
+    {
+      "index_position": 188,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-EXECUTION-md-00001-00007.txt",
+      "first_complete_output_line": 15518,
+      "call_id": "call_ZthxXqe95X06XVcLFuNTY3Vz"
+    },
+    {
+      "index_position": 189,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-SELECTORS-json-00001-00049.txt",
+      "first_complete_output_line": 15526,
+      "call_id": "call_Xm4c9GslMNRq7J6P08VNOELm"
+    },
+    {
+      "index_position": 190,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-phase-py-00001-00160.txt",
+      "first_complete_output_line": 15526,
+      "call_id": "call_Xm4c9GslMNRq7J6P08VNOELm"
+    },
+    {
+      "index_position": 191,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-phase-py-00161-00203.txt",
+      "first_complete_output_line": 15535,
+      "call_id": "call_uTVLMlAETplSxTQ4MEGURwtc"
+    },
+    {
+      "index_position": 192,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-bind_dependencies-py-00001-00035.txt",
+      "first_complete_output_line": 15535,
+      "call_id": "call_uTVLMlAETplSxTQ4MEGURwtc"
+    },
+    {
+      "index_position": 193,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-retain_artifacts-py-00001-00043.txt",
+      "first_complete_output_line": 15535,
+      "call_id": "call_uTVLMlAETplSxTQ4MEGURwtc"
+    },
+    {
+      "index_position": 194,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-prepare-py-00001-00071.txt",
+      "first_complete_output_line": 15544,
+      "call_id": "call_t8hJ63Q6uo7zH6t9i1VuTdli"
+    },
+    {
+      "index_position": 195,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-execute-py-00001-00059.txt",
+      "first_complete_output_line": 15544,
+      "call_id": "call_t8hJ63Q6uo7zH6t9i1VuTdli"
+    },
+    {
+      "index_position": 196,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-observer-before_exec-py-00001-00160.txt",
+      "first_complete_output_line": 15544,
+      "call_id": "call_t8hJ63Q6uo7zH6t9i1VuTdli"
+    },
+    {
+      "index_position": 197,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-observer-before_exec-py-00161-00162.txt",
+      "first_complete_output_line": 15553,
+      "call_id": "call_sthxVLb9ijVN07055Ue5UBnA"
+    },
+    {
+      "index_position": 198,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-observer-unit_reference-py-00001-00160.txt",
+      "first_complete_output_line": 15553,
+      "call_id": "call_sthxVLb9ijVN07055Ue5UBnA"
+    },
+    {
+      "index_position": 199,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-observer-unit_reference-py-00161-00204.txt",
+      "first_complete_output_line": 15553,
+      "call_id": "call_sthxVLb9ijVN07055Ue5UBnA"
+    },
+    {
+      "index_position": 200,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-observer-source-inputs-json-00001-00054.txt",
+      "first_complete_output_line": 15560,
+      "call_id": "call_PpWOAPfuiYS4zhDZzdOcSZsf"
+    },
+    {
+      "index_position": 201,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-00001-00160.txt",
+      "first_complete_output_line": 15567,
+      "call_id": "call_0A5aRAor264oFnL2osBR4e3j"
+    },
+    {
+      "index_position": 202,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-00161-00320.txt",
+      "first_complete_output_line": 15574,
+      "call_id": "call_PjaCPe9hPck7wkvdTjc6VcAi"
+    },
+    {
+      "index_position": 203,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-00321-00480.txt",
+      "first_complete_output_line": 15581,
+      "call_id": "call_kHxAXJpHZiRm2CvM7DVbKIRu"
+    },
+    {
+      "index_position": 204,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-00481-00640.txt",
+      "first_complete_output_line": 15589,
+      "call_id": "call_RCk8JwSjdrose5xYyGWF9LXQ"
+    },
+    {
+      "index_position": 205,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-00641-00800.txt",
+      "first_complete_output_line": 15589,
+      "call_id": "call_RCk8JwSjdrose5xYyGWF9LXQ"
+    },
+    {
+      "index_position": 206,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-00801-00960.txt",
+      "first_complete_output_line": 15597,
+      "call_id": "call_3IIZaYneHskPy57eay2BXFEI"
+    },
+    {
+      "index_position": 207,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-00961-01120.txt",
+      "first_complete_output_line": 15597,
+      "call_id": "call_3IIZaYneHskPy57eay2BXFEI"
+    },
+    {
+      "index_position": 208,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-01121-01280.txt",
+      "first_complete_output_line": 15605,
+      "call_id": "call_FBeqbqZz0i5bA7TQorIZQ7ab"
+    },
+    {
+      "index_position": 209,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-PHASES-json-01281-01409.txt",
+      "first_complete_output_line": 15605,
+      "call_id": "call_FBeqbqZz0i5bA7TQorIZQ7ab"
+    },
+    {
+      "index_position": 210,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-HELPER-CONTINUITY-json-00001-00160.txt",
+      "first_complete_output_line": 15614,
+      "call_id": "call_K973rAIBIO9tWdXsmY4RLrvL"
+    },
+    {
+      "index_position": 211,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/chunks/caller-complete-HELPER-CONTINUITY-json-00161-00171.txt",
+      "first_complete_output_line": 15614,
+      "call_id": "call_K973rAIBIO9tWdXsmY4RLrvL"
+    },
+    {
+      "index_position": 212,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/source-evidence-00001-00011.txt",
+      "first_complete_output_line": 15614,
+      "call_id": "call_K973rAIBIO9tWdXsmY4RLrvL"
+    },
+    {
+      "index_position": 213,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/actual-pr-body-00001-00037.txt",
+      "first_complete_output_line": 15622,
+      "call_id": "call_V2SpLeo4QE3wJxTb5zjBrJ6M"
+    },
+    {
+      "index_position": 214,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-report-00001-00021.txt",
+      "first_complete_output_line": 15622,
+      "call_id": "call_V2SpLeo4QE3wJxTb5zjBrJ6M"
+    },
+    {
+      "index_position": 215,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-outcomes-00001-00160.txt",
+      "first_complete_output_line": 15629,
+      "call_id": "call_QJ9OFIBMBbF99sBApRiJbJaf"
+    },
+    {
+      "index_position": 216,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-outcomes-00161-00320.txt",
+      "first_complete_output_line": 15636,
+      "call_id": "call_mVwlyCl6VQEwl1RkCiMMowzu"
+    },
+    {
+      "index_position": 217,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-outcomes-00321-00480.txt",
+      "first_complete_output_line": 15643,
+      "call_id": "call_SDvhAmlWOTirGLAylbJ8F1K7"
+    },
+    {
+      "index_position": 218,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-outcomes-00481-00640.txt",
+      "first_complete_output_line": 15650,
+      "call_id": "call_CzeGzXLTkiFIfFQ9HtJM8ItI"
+    },
+    {
+      "index_position": 219,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-outcomes-00641-00800.txt",
+      "first_complete_output_line": 15657,
+      "call_id": "call_UUQ1ZgIdRctpOkkcrFJh0fFd"
+    },
+    {
+      "index_position": 220,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-outcomes-00801-00856.txt",
+      "first_complete_output_line": 15664,
+      "call_id": "call_KjPkB32oNX9gBKZwekvhk9Mf"
+    },
+    {
+      "index_position": 221,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-test-raw-00001-00160.txt",
+      "first_complete_output_line": 15671,
+      "call_id": "call_5388ThVgaMWBngS6wXN4QZes"
+    },
+    {
+      "index_position": 222,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-test-raw-00161-00311.txt",
+      "first_complete_output_line": 15678,
+      "call_id": "call_ZtLg9ttJxLgzrhtureq01SFJ"
+    },
+    {
+      "index_position": 223,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-test-raw-00312-00458.txt",
+      "first_complete_output_line": 15685,
+      "call_id": "call_RKY2iUUIgH9tK0jImx1VU3v1"
+    },
+    {
+      "index_position": 224,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-test-raw-00459-00607.txt",
+      "first_complete_output_line": 15692,
+      "call_id": "call_sYHFN8xsqcj7zmTTiYEUiqO4"
+    },
+    {
+      "index_position": 225,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-test-raw-00608-00686.txt",
+      "first_complete_output_line": 15699,
+      "call_id": "call_uKKWNCexM9kOSHZEbOWEk5IS"
+    },
+    {
+      "index_position": 226,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-all-test-raw-00687-00701.txt",
+      "first_complete_output_line": 15706,
+      "call_id": "call_hxLZPSvfdNTBsL3oS9mO6RV8"
+    },
+    {
+      "index_position": 227,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-clock-observations-00001-00160.txt",
+      "first_complete_output_line": 15714,
+      "call_id": "call_ACok05qvqqQ8q5xZNeBSE6BR"
+    },
+    {
+      "index_position": 228,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-clock-observations-00161-00313.txt",
+      "first_complete_output_line": 15714,
+      "call_id": "call_ACok05qvqqQ8q5xZNeBSE6BR"
+    },
+    {
+      "index_position": 229,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-mode-observations-00001-00115.txt",
+      "first_complete_output_line": 15722,
+      "call_id": "call_mZeOW9kn9rKW7sGbjmZr2BcU"
+    },
+    {
+      "index_position": 230,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-artifacts-00001-00082.txt",
+      "first_complete_output_line": 15722,
+      "call_id": "call_mZeOW9kn9rKW7sGbjmZr2BcU"
+    },
+    {
+      "index_position": 231,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-artifact-binding-00001-00160.txt",
+      "first_complete_output_line": 15729,
+      "call_id": "call_gaw12WiPOtCDnPam2Ev7qgEN"
+    },
+    {
+      "index_position": 232,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-artifact-binding-00161-00320.txt",
+      "first_complete_output_line": 15736,
+      "call_id": "call_iM4c23Wq82KR9akQIkQewYyX"
+    },
+    {
+      "index_position": 233,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/q2-artifact-binding-00321-00374.txt",
+      "first_complete_output_line": 15743,
+      "call_id": "call_QevmjPPsdBWyN2e3sejL6seV"
+    },
+    {
+      "index_position": 234,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/legacy-original-refusal-00001-00059.txt",
+      "first_complete_output_line": 15752,
+      "call_id": "call_yJOitwd8d42eKXkU54ibmnFi"
+    },
+    {
+      "index_position": 235,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/legacy-interpretation-report-00001-00017.txt",
+      "first_complete_output_line": 15752,
+      "call_id": "call_yJOitwd8d42eKXkU54ibmnFi"
+    },
+    {
+      "index_position": 236,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/legacy-count-correction-00001-00007.txt",
+      "first_complete_output_line": 15752,
+      "call_id": "call_yJOitwd8d42eKXkU54ibmnFi"
+    },
+    {
+      "index_position": 237,
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/common/chunks/legacy-test-helper-00001-00151.txt",
+      "first_complete_output_line": 15759,
+      "call_id": "call_6dknZ47QZbC0osKZQ5aXx4VG"
+    }
+  ]
+}

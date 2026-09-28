@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/rrnewton/reverie",
+  "branch": "codex/kvm-signal-cleanup-default-20260919",
+  "base": "f7bd85e11dd258112148ed2cba6531501a1a00d9",
+  "head": "0598b5ffbeb737866372f89224d915efaeb29943",
+  "head_tree": "dab8c59a89f490c6143c197afc70ab6e6a3c8ff7",
+  "base_to_head_patch_sha256": "b973675db1aa7125c3fcb62a06026494d7cc9d69955727baeca8f9fb0aad8f53",
+  "pull_request": "https://github.com/rrnewton/reverie/pull/603",
+  "changed_paths": [
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/process_signal_publication.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/terminal_fork.rs",
+    "reverie/src/process_signal_control.rs",
+    "reverie/src/tool.rs"
+  ],
+  "scope_note": "Candidate contains complete reverie-kvm/src, reverie-kvm/tests, and reverie/src snapshots at head. Before contains every changed file at base. BASE-TO-HEAD.patch is the complete binary diff."
+}

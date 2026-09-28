@@ -1,0 +1,28 @@
+[
+  {
+    "file": "executor",
+    "all_original_test_suffix_bytes_preserved": true,
+    "only_insertions": [
+      [
+        "insert",
+        22126,
+        22126,
+        22126,
+        22206
+      ]
+    ],
+    "old_direct_test_declarations": 276,
+    "new_direct_test_declarations": 277,
+    "bytes": 1520775,
+    "sha256": "bad4de60e4016f3e445c6fe484cce433b25f95758c8ca0272fdf72e46b183b9d"
+  },
+  {
+    "file": "vm",
+    "all_original_test_suffix_bytes_preserved": true,
+    "only_insertions": [],
+    "old_direct_test_declarations": 74,
+    "new_direct_test_declarations": 74,
+    "bytes": 371966,
+    "sha256": "b6eb3ffc679ec1044dff9c57711769350734820a77f7ca9267cb518d22189494"
+  }
+]

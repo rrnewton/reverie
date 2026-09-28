@@ -1,0 +1,44 @@
+You are the independent actual Claude-family round-2 adversarial reviewer of Reverie pull request https://github.com/rrnewton/reverie/pull/608. You have read-only tools only. Do not edit files, execute commands, delegate, or publish comments. Return a complete review report in your final response.
+
+Review target: rrnewton/reverie base 123df7c4c0169006fbfe1f11a1553fe333eac937, exact head c4df9b6a646beaa506187058965876e56ebccc7a, tree 635ec6b1e57f529e8bb77b8e02ef9b3180c4a724. Prior refused head: 8865eb263cb44530364cb90eda6cdb40826aba7d. The head is frozen. BASE-TO-HEAD.patch is the complete diff and ROUND2.patch is the exact successor delta. INPUTS.json binds the immutable packet.
+
+`candidate/reverie-kvm/src/` and `candidate/reverie-kvm/tests/static_elf.rs` are complete exact-head snapshots of the relevant repository trees. `base/` contains original-base versions of all three changed paths; `prior/` contains their refused-head versions. `context/PRIOR-CLAUDE-REVIEW.txt` is your round-1 CHANGES REQUESTED report, and `context/canonical-refusal-comment.md` is its public relay. Reconcile every prior finding rather than assuming it was fixed. `PROPOSED-PR-BODY.md` is the live replacement description. Raw v10-v12 qualification artifacts are supplied.
+
+Apply both code-review and deterministic-scheduling-review. Before reading the proposal, diffs, qualification, or candidate code, read these primary files completely in this exact order: primary/paper.txt including its artifact appendix; primary/scheduler.rs including every test; primary/PROJECT_VISION.md; primary/hermit-v2-roadmap.md. The roadmap's dated measurements are history. Then read both context skill files completely. If anything is missing or truncated, state the limitation.
+
+The intended behavior remains the narrow timeout-import correction described in the live pull-request body. Round 2 specifically claims to resolve:
+
+1. The thirteen-command deny-by-default futex allow-set and all three permitted FUTEX_CLOCK_REALTIME combinations now have table-driven allow-side tests using libc constants and an aligned inaccessible word whose exact EFAULT result proves the operation was not locally rejected as ENOSYS.
+2. The unsafe comment now distinguishes retained guest word pointers from the host-stack timeout pointer, and the explicit post-syscall drop keeps the timeout value visibly live.
+3. The pull-request narrative no longer claims the entry fence could not close at base. It names the measured two-to-one retained-operand reduction and the timeout-value TOCTOU benefit.
+4. The WAIT_REQUEUE_PI test comment no longer claims a lookup order its inputs cannot distinguish.
+5. A matching-word finite FUTEX_WAIT must return exact ETIMEDOUT in both a focused adapter unit test and a real direct-KvmBackend static-ELF guest. A deliberate mutation that replaces the copied timeout pointer with null must fail the unit test and hit the real-KVM hard timeout.
+
+Trace the actual guest instruction through KvmBackend, the direct ElfExecutor, futex argument decoding, timeout import, guest-memory operand retention, host syscall, and exact guest exit decision. Verify the machine-code fixture's instruction encoding, embedded addresses/alignment, expected word, timeout layout, syscall ABI registers, signed ETIMEDOUT comparison, and exit status. Confirm it cannot pass through a skip when REVERIE_REQUIRE_KVM=1. Also assess whether the unit timeout rescue path weakens any existing cleanup or can leak a worker on ordinary failure.
+
+Qualification claims at the exact source:
+
+- format check passed;
+- `cargo test --locked -p reverie-kvm --lib futex -- --nocapture`: 7 passed, 0 failed;
+- required real-KVM exact test: 1 passed, 0 failed;
+- strict Clippy with warnings denied passed;
+- the first full-library attempt had one retained unrelated EAGAIN failure in descriptor_retirement_accept_cleanup_releases_both_guards; its exact isolated retry passed and the complete retry passed 790/790 with zero ignored;
+- the deliberate null-pointer mutation made the timeout unit test fail with status 101 and the real-KVM test hit its 30-second timeout with status 124, after which the correct pointer was restored and source hashes were checked.
+
+Inspect the raw artifacts and decide what they establish. Do not relabel either failure, infer project-wide determinism, or credit this with Hermit pinning/full parity/record-replay.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+Compare every changed test, threshold, allowlist, skip, label, classification, and gate with the base revision. Determine whether the implementation now meets the original requirement or whether the requirement was changed to admit the implementation. Call out either result explicitly, including when no lowering of the bar is present.
+
+State all four categories explicitly.
+
+Report findings first with severity, exact file/line evidence, impact, and required correction. Then give the goalpost-moving assessment, separate conclusions for the determinism guarantee and Linux/POSIX semantics, verification actually inspected with limitations, residual risks, and an exact-head APPROVE or CHANGES REQUESTED verdict. Bind the verdict only to c4df9b6a646beaa506187058965876e56ebccc7a.

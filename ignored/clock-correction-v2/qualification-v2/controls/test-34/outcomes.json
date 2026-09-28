@@ -1,0 +1,24 @@
+{
+  "started": [
+    "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.000356846
+    }
+  ]
+}

@@ -1,0 +1,160 @@
+1123: 			 * the loader, the subsequent program that the
+1124: 			 * loader loads must avoid the loader itself, so
+1125: 			 * they cannot share the same load range. Sufficient
+1126: 			 * room for the brk must be allocated with the
+1127: 			 * loader as well, since brk must be available with
+1128: 			 * the loader.
+1129: 			 *
+1130: 			 * Therefore, programs are loaded offset from
+1131: 			 * ELF_ET_DYN_BASE and loaders are loaded into the
+1132: 			 * independently randomized mmap region (0 load_bias
+1133: 			 * without MAP_FIXED nor MAP_FIXED_NOREPLACE).
+1134: 			 *
+1135: 			 * See below for "brk" handling details, which is
+1136: 			 * also affected by program vs loader and ASLR.
+1137: 			 */
+1138: 			if (interpreter) {
+1139: 				/* On ET_DYN with PT_INTERP, we do the ASLR. */
+1140: 				load_bias = ELF_ET_DYN_BASE;
+1141: 				if (current->flags & PF_RANDOMIZE)
+1142: 					load_bias += arch_mmap_rnd();
+1143: 				/* Adjust alignment as requested. */
+1144: 				if (alignment)
+1145: 					load_bias &= ~(alignment - 1);
+1146: 				elf_flags |= MAP_FIXED_NOREPLACE;
+1147: 			} else {
+1148: 				/*
+1149: 				 * For ET_DYN without PT_INTERP, we rely on
+1150: 				 * the architectures's (potentially ASLR) mmap
+1151: 				 * base address (via a load_bias of 0).
+1152: 				 *
+1153: 				 * When a large alignment is requested, we
+1154: 				 * must do the allocation at address "0" right
+1155: 				 * now to discover where things will load so
+1156: 				 * that we can adjust the resulting alignment.
+1157: 				 * In this case (load_bias != 0), we can use
+1158: 				 * MAP_FIXED_NOREPLACE to make sure the mapping
+1159: 				 * doesn't collide with anything.
+1160: 				 */
+1161: 				if (alignment > ELF_MIN_ALIGN) {
+1162: 					load_bias = elf_load(bprm->file, 0, elf_ppnt,
+1163: 							     elf_prot, elf_flags, total_size);
+1164: 					if (BAD_ADDR(load_bias)) {
+1165: 						retval = IS_ERR_VALUE(load_bias) ?
+1166: 							 PTR_ERR((void*)load_bias) : -EINVAL;
+1167: 						goto out_free_dentry;
+1168: 					}
+1169: 					vm_munmap(load_bias, total_size);
+1170: 					/* Adjust alignment as requested. */
+1171: 					if (alignment)
+1172: 						load_bias &= ~(alignment - 1);
+1173: 					elf_flags |= MAP_FIXED_NOREPLACE;
+1174: 				} else
+1175: 					load_bias = 0;
+1176: 			}
+1177: 
+1178: 			/*
+1179: 			 * Since load_bias is used for all subsequent loading
+1180: 			 * calculations, we must lower it by the first vaddr
+1181: 			 * so that the remaining calculations based on the
+1182: 			 * ELF vaddrs will be correctly offset. The result
+1183: 			 * is then page aligned.
+1184: 			 */
+1185: 			load_bias = ELF_PAGESTART(load_bias - vaddr);
+1186: 		}
+1187: 
+1188: 		error = elf_load(bprm->file, load_bias + vaddr, elf_ppnt,
+1189: 				elf_prot, elf_flags, total_size);
+1190: 		if (BAD_ADDR(error)) {
+1191: 			retval = IS_ERR_VALUE(error) ?
+1192: 				PTR_ERR((void*)error) : -EINVAL;
+1193: 			goto out_free_dentry;
+1194: 		}
+1195: 
+1196: 		if (first_pt_load) {
+1197: 			first_pt_load = 0;
+1198: 			if (elf_ex->e_type == ET_DYN) {
+1199: 				load_bias += error -
+1200: 				             ELF_PAGESTART(load_bias + vaddr);
+1201: 				reloc_func_desc = load_bias;
+1202: 			}
+1203: 		}
+1204: 
+1205: 		/*
+1206: 		 * Figure out which segment in the file contains the Program
+1207: 		 * Header table, and map to the associated memory address.
+1208: 		 */
+1209: 		if (elf_ppnt->p_offset <= elf_ex->e_phoff &&
+1210: 		    elf_ex->e_phoff < elf_ppnt->p_offset + elf_ppnt->p_filesz) {
+1211: 			phdr_addr = elf_ex->e_phoff - elf_ppnt->p_offset +
+1212: 				    elf_ppnt->p_vaddr;
+1213: 		}
+1214: 
+1215: 		k = elf_ppnt->p_vaddr;
+1216: 		if ((elf_ppnt->p_flags & PF_X) && k < start_code)
+1217: 			start_code = k;
+1218: 		if (start_data < k)
+1219: 			start_data = k;
+1220: 
+1221: 		/*
+1222: 		 * Check to see if the section's size will overflow the
+1223: 		 * allowed task size. Note that p_filesz must always be
+1224: 		 * <= p_memsz so it is only necessary to check p_memsz.
+1225: 		 */
+1226: 		if (BAD_ADDR(k) || elf_ppnt->p_filesz > elf_ppnt->p_memsz ||
+1227: 		    elf_ppnt->p_memsz > TASK_SIZE ||
+1228: 		    TASK_SIZE - elf_ppnt->p_memsz < k) {
+1229: 			/* set_brk can never work. Avoid overflows. */
+1230: 			retval = -EINVAL;
+1231: 			goto out_free_dentry;
+1232: 		}
+1233: 
+1234: 		k = elf_ppnt->p_vaddr + elf_ppnt->p_filesz;
+1235: 
+1236: 		if ((elf_ppnt->p_flags & PF_X) && end_code < k)
+1237: 			end_code = k;
+1238: 		if (end_data < k)
+1239: 			end_data = k;
+1240: 		k = elf_ppnt->p_vaddr + elf_ppnt->p_memsz;
+1241: 		if (k > elf_brk)
+1242: 			elf_brk = k;
+1243: 	}
+1244: 
+1245: 	e_entry = elf_ex->e_entry + load_bias;
+1246: 	phdr_addr += load_bias;
+1247: 	elf_brk += load_bias;
+1248: 	start_code += load_bias;
+1249: 	end_code += load_bias;
+1250: 	start_data += load_bias;
+1251: 	end_data += load_bias;
+1252: 
+1253: 	if (interpreter) {
+1254: 		elf_entry = load_elf_interp(interp_elf_ex,
+1255: 					    interpreter,
+1256: 					    load_bias, interp_elf_phdata,
+1257: 					    &arch_state);
+1258: 		if (!IS_ERR_VALUE(elf_entry)) {
+1259: 			/*
+1260: 			 * load_elf_interp() returns relocation
+1261: 			 * adjustment
+1262: 			 */
+1263: 			interp_load_addr = elf_entry;
+1264: 			elf_entry += interp_elf_ex->e_entry;
+1265: 		}
+1266: 		if (BAD_ADDR(elf_entry)) {
+1267: 			retval = IS_ERR_VALUE(elf_entry) ?
+1268: 					(int)elf_entry : -EINVAL;
+1269: 			goto out_free_dentry;
+1270: 		}
+1271: 		reloc_func_desc = interp_load_addr;
+1272: 
+1273: 		exe_file_allow_write_access(interpreter);
+1274: 		fput(interpreter);
+1275: 
+1276: 		kfree(interp_elf_ex);
+1277: 		kfree(interp_elf_phdata);
+1278: 	} else {
+1279: 		elf_entry = e_entry;
+1280: 		if (BAD_ADDR(elf_entry)) {
+1281: 			retval = -EINVAL;
+1282: 			goto out_free_dentry;

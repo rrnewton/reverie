@@ -1,0 +1,22 @@
+}
+
+/// Tries to receive an error code from the pipe. If the other end of the
+/// pipe is closed before sending an error, then `Ok(())` is returned.
+pub fn recv_error(mut fd: Fd) -> Result<(), Error> {
+    use std::io::Read;
+    let mut err = [0u8; 8];
+    loop {
+        match fd.read(&mut err) {
+            Ok(0) => return Ok(()),
+            Ok(8) => return Err(Error::from(err)),
+            Ok(n) => {
+                // Sends up to PIPE_BUF (4096) should be atomic.
+                panic!("execve pipe: got unexpected number of bytes {}", n);
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => {
+                panic!("execve pipe: read returned unexpected error {}", err);
+            }
+        }
+    }
+}

@@ -1,0 +1,160 @@
+impl<T: RecordOrReplay> Detcore<T> {
+    /// Registers a child whose native backend executed the clone syscall.
+    ///
+    /// The caller must initialize the child's local thread state from the same
+    /// parent state and clone flags before the child enters its start hook.
+    // TODO-HUMAN-REVIEW(PR-743): Review the backend-neutral native child registration API.
+    pub async fn register_external_child<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        child_tid: Tid,
+        child_tid_addr: usize,
+        flags: CloneFlags,
+        exit_signal: libc::c_int,
+        physical_ids: Option<(i32, i32)>,
+    ) {
+        let child_dettid = DetTid::from_raw(child_tid.into());
+        guest.thread_state_mut().clone_flags = Some(flags);
+        if !flags.contains(CloneFlags::CLONE_THREAD) {
+            guest
+                .thread_state()
+                .prepare_child_process_cpu_time(child_dettid);
+        }
+        let parent_dettid = guest.thread_state().dettid;
+        let parent_pedigree = &mut guest.thread_state_mut().pedigree;
+        let child_pedigree = parent_pedigree.fork_mut();
+        debug!(
+            "[dtid {}] after registering external child (tid {}, pedigree {}) parent's pedigree becomes {}",
+            parent_dettid, child_dettid, child_pedigree, parent_pedigree,
+        );
+        // The kernel clone has already succeeded before an external backend
+        // calls this method, so these parent updates are not speculative. If
+        // registration observes a retired parent, create_child_thread exits
+        // that parent by tail injection; no continuing caller can retry or
+        // roll the successful clone back.
+        tool_global::create_child_thread(
+            guest,
+            child_dettid,
+            tool_global::child_tid_clear_address(flags, child_tid_addr),
+            Some(flags),
+            exit_signal,
+            physical_ids,
+        )
+        .await;
+        guest.thread_state_mut().clone_flags = None;
+    }
+    async fn passthrough<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        call: Syscall,
+    ) -> Result<i64, Error> {
+        self.record_or_replay_preserving_tool_errors(guest, call)
+            .await
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-643): Review unsupported-syscall reporting and fail-fast behavior.
+    /// Applies the legacy policy to an explicitly listed but unsupported syscall.
+    async fn handle_unsupported_syscall<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        call: Syscall,
+        dettid: DetTid,
+        panic_on_unsupported_syscalls: bool,
+    ) -> Result<i64, Error> {
+        if panic_on_unsupported_syscalls {
+            error!(
+                "[detcore, dtid {}] unsupported syscall: {} = ?",
+                dettid,
+                call.display(&guest.memory()),
+            );
+            if guest.config().shutdown_on_unsupported_syscall {
+                // A fail-closed policy decision: the run named a syscall hermit
+                // cannot service and `shutdown_on_unsupported_syscall` says stop.
+                unrecoverable_shutdown(guest, detcore_model::HERMIT_POLICY_REFUSAL_EXIT).await;
+            }
+            if guest.config().exit_on_unsupported_syscall {
+                return Err(Error::Tool(anyhow::Error::new(UnsupportedSyscallError(
+                    call.number(),
+                ))));
+            }
+            panic!("unsupported syscall: {:?}", call);
+        }
+        report_unsupported_syscall(guest, call.number()).await;
+        self.passthrough(guest, call).await
+    }
+
+    /// Defense-in-depth determinism for the registers the syscall instruction
+    /// clobbers.
+    ///
+    /// On x86-64 the `syscall` instruction destroys `%rcx` (which the CPU loads
+    /// with the return instruction pointer) and `%r11` (the saved `RFLAGS`).
+    /// After a syscall these are architecturally "undefined", so hermit must not
+    /// assume a well-behaved guest ignores them: a misbehaving guest that reads
+    /// `%rcx`/`%r11` must still observe deterministic values. Reverie's
+    /// injected-syscall path can otherwise leave its *private trampoline page's*
+    /// RIP/RFLAGS in these registers, which is both nondeterministic and an
+    /// information leak of tracer internals.
+    ///
+    /// This forces both registers to the guest's own (deterministic) RIP and
+    /// RFLAGS, which is exactly what a faithful `SYSRET` would leave there. It is
+    /// a no-op when they already hold the canonical values (the common path), so
+    /// it only writes registers when something diverged. Register-preserved
+    /// arguments (`%rdi`..`%r9`, callee-saved) are deliberately left untouched:
+    /// the Linux ABI preserves them, so zeroing them would break faithful,
+    /// well-behaved programs.
+    #[cfg(target_arch = "x86_64")]
+    async fn canonicalize_syscall_clobbers<G: Guest<Self>>(&self, guest: &mut G) {
+        let mut regs = guest.regs().await;
+        // A faithful SYSRET leaves the return RIP in %rcx and RFLAGS in %r11.
+        if regs.rcx != regs.rip || regs.r11 != regs.eflags {
+            regs.rcx = regs.rip;
+            regs.r11 = regs.eflags;
+            if let Err(err) = guest.set_regs(regs).await {
+                // Best-effort: some backends cannot write registers. Do not fail
+                // the syscall over a defense-in-depth hardening step.
+                debug!(
+                    "canonicalize_syscall_clobbers: set_regs unsupported/failed: {}",
+                    err
+                );
+            }
+        }
+    }
+
+    /// No-op on architectures without the x86-64 `%rcx`/`%r11` syscall clobber.
+    #[cfg(not(target_arch = "x86_64"))]
+    async fn canonicalize_syscall_clobbers<G: Guest<Self>>(&self, _guest: &mut G) {}
+
+    /// Update logical thread time with any outstanding ticks of the Reverie clock.  Returns a list
+    /// of corresponding Branch/OtherInstructions events if schedule recording is enabled.
+    ///
+    /// # Arguments
+    ///
+    /// * `precise_branch`: if true, there were no non-branch instructions since the last recorded branch instruction.
+    async fn update_logical_time_rcbs<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        precise_branch: bool,
+    ) -> Option<Vec<SchedEvent>> {
+        if self.cfg.max_timeslice.is_some() {
+            let precise_timers = !guest.config().imprecise_timers;
+            // TODO(T86591083): we might need to not always increment as a hack fix
+            // for deterministic virtual time without sequentialize threads.
+            let clock_value = guest.read_clock().expect("Couldn't read clock");
+            // N.B. clock_value does not yet include any updates for the inbound
+            // syscall/instruction because this function is the very first thing that
+            // happens in each type of handler.
+            let thread_state = guest.thread_state_mut();
+            let dettid = thread_state.dettid;
+            assert!(thread_state.committed_clock_value <= clock_value);
+            let delta_rcbs: u64 = clock_value - thread_state.committed_clock_value;
+            if self.cfg.use_rcb_time() {
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(PR-1151)
+                if thread_state.chaos_slowdown_active {
+                    let factor = thread_state.rcb_time_multiplier();
+                    thread_state
+                        .thread_logical_time
+                        .add_rcbs_with_multiplier(delta_rcbs, factor);
+                } else {
+                    thread_state.thread_logical_time.add_rcbs(delta_rcbs);

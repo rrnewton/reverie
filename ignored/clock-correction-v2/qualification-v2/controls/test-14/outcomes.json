@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::injection_stop_tests::different_tail_injection_replaces_original_once"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::injection_stop_tests::different_tail_injection_replaces_original_once",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.004103985
+    }
+  ]
+}

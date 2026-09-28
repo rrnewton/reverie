@@ -1,0 +1,160 @@
+                                    "successful helper returned invalid active-hook metadata",
+                                );
+                                return Err(self
+                                    .rollback_liteinst_helper_error(stopped, &saved, original)
+                                    .await);
+                            }
+                        }
+                    } else {
+                        self.record_liteinst_fallback_stats(&stopped, frame, site);
+                        None
+                    };
+                    let (stopped, rollback) =
+                        self.restore_liteinst_helper_state(stopped, &saved).await;
+                    if rollback.is_empty() {
+                        return Ok((stopped, install));
+                    }
+                    let original = Error::runtime(
+                        self.tid(),
+                        "restore LiteInst patch-helper state",
+                        "patch helper completed successfully",
+                    );
+                    return Err(self.liteinst_helper_failure(original, rollback));
+                }
+                Wait::Stopped(stopped, event) => {
+                    let original = Error::runtime(
+                        self.tid(),
+                        "run LiteInst patch helper",
+                        format!("unexpected stopped event: {event:?}"),
+                    );
+                    return Err(self
+                        .rollback_liteinst_helper_error(stopped, &saved, original)
+                        .await);
+                }
+                Wait::Exited(_, exit_status) => self.exit(exit_status).await,
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    async fn call_liteinst_install_helper(
+        &mut self,
+        _task: Stopped,
+        _frame: LiteinstHandshakeFrame,
+        _site: u64,
+    ) -> Result<(Stopped, Option<(u64, ActiveHookFootprint)>), Error> {
+        Err(Error::runtime(
+            self.tid(),
+            "run LiteInst patch helper",
+            "the dynamic LiteInst hybrid requires x86-64 XSTATE support",
+        ))
+    }
+
+    async fn maybe_install_liteinst_site(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+    ) -> Result<(Stopped, bool, Option<u64>), Error> {
+        if self.global_state.liteinst_runtime.is_none() {
+            return Ok((task, false, None));
+        }
+        // A task-creating syscall must not be patched. Patching overwrites the
+        // instruction bytes AT the site, and the new task is resumed with the
+        // register context captured before the injection -- i.e. with `rip`
+        // pointing just past the original two-byte `syscall`. Once the site
+        // holds a longer relocating jump, that address is no longer an
+        // instruction boundary and the child executes rubbish. Leaving these
+        // sites unpatched costs nothing: they are entered once per task.
+        if is_task_creating_syscall(nr) {
+            return Ok((task, false, None));
+        }
+        if self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.multi_task.load(Ordering::Acquire))
+        {
+            return Ok((task, false, None));
+        }
+        let regs = task.getregs()?;
+        let Some(site) = regs.ip().checked_sub(2) else {
+            return Ok((task, false, None));
+        };
+        let site_address = Addr::from_raw(site as usize).ok_or(Errno::EFAULT)?;
+        let instruction: u16 = task.read_value(site_address)?;
+        if instruction != 0x050f {
+            return Ok((task, false, None));
+        }
+        let frame = {
+            let mut state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::Ready
+                || state.ready_generation != Some(state.generation)
+                || !state.attempted_sites.insert(site)
+            {
+                return Ok((task, false, None));
+            }
+            state.frame.ok_or(Errno::EIO)?
+        };
+
+        if let Some(stats) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|config| config.instrumentation_stats.as_ref())
+        {
+            stats.lock().unwrap().record_first_site_seccomp();
+        }
+
+        // Convert the active seccomp stop into an ordinary stopped state before
+        // calling arbitrary tracee code. The original event is still serviced
+        // exactly once by the host Tool below.
+        let task = self.skip_seccomp_syscall(task).await?;
+        let (task, install) = self.call_liteinst_install_helper(task, frame, site).await?;
+        let relocated_tail = install.as_ref().map(|(address, _)| *address);
+        if let Some((_, footprint)) = install {
+            self.liteinst_runtime
+                .lock()
+                .unwrap()
+                .active_hooks
+                .insert(site, footprint);
+        }
+        Ok((task, true, relocated_tail))
+    }
+
+    fn validate_liteinst_mapping_execution(
+        &self,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<(), Errno> {
+        let page_size = host_page_size()?;
+        if self
+            .liteinst_runtime
+            .lock()
+            .unwrap()
+            .mapping_mutates_active_hook(nr, args, page_size)
+        {
+            Err(Errno::ENOTSUPP)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn observe_liteinst_mapping_result(
+        &mut self,
+        nr: Sysno,
+        args: SyscallArgs,
+        result: Result<i64, Errno>,
+    ) {
+        if self.global_state.liteinst_runtime.is_none() {
+            return;
+        }
+        let Ok(result) = result else {
+            return;
+        };
+        let mut state = self.liteinst_runtime.lock().unwrap();
+        let Ok(page_size) = host_page_size() else {
+            state.attempted_sites.clear();
+            state.fallback_sites.clear();
+            return;
+        };
+        match nr {

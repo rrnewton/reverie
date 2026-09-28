@@ -1,0 +1,24 @@
+{
+  "started": [
+    "capture_identity::direct_and_tool_capture_share_device_with_anonymous_pipe"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "capture_identity::direct_and_tool_capture_share_device_with_anonymous_pipe",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.073557428
+    }
+  ]
+}

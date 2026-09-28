@@ -1,0 +1,160 @@
+{
+  "phases": [
+    {
+      "name": "metadata",
+      "kind": "metadata",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "metadata",
+        "--offline",
+        "--locked",
+        "--format-version",
+        "1"
+      ],
+      "selected": [],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      }
+    },
+    {
+      "name": "compile",
+      "kind": "compile",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "test",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-ptrace",
+        "--lib",
+        "--test",
+        "vsyscall",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "selected": [],
+      "artifact_selectors": [
+        {
+          "id": "ptrace",
+          "target": "reverie_ptrace",
+          "kind": [
+            "lib"
+          ],
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+          "manifest_relative": "reverie-ptrace/Cargo.toml",
+          "test_profile": true
+        },
+        {
+          "id": "vsyscall",
+          "target": "vsyscall",
+          "kind": [
+            "test"
+          ],
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+          "manifest_relative": "reverie-ptrace/Cargo.toml",
+          "test_profile": true
+        }
+      ],
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      }
+    },
+    {
+      "name": "format",
+      "kind": "format",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "reverie-ptrace/src/perf.rs",
+        "reverie-ptrace/src/timer.rs",
+        "reverie-ptrace/src/task.rs",
+        "reverie-ptrace/src/tracer.rs",
+        "reverie-ptrace/src/clock_origin_tests.rs",
+        "reverie-ptrace/src/injection_stop_tests.rs"
+      ],
+      "selected": [],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      }
+    },
+    {
+      "name": "list-ptrace",
+      "kind": "list",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "--list",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "timer::tests::initial_command_requests_retire_without_physical_notification",
+        "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop",
+        "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers",
+        "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live",
+        "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches",
+        "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive",
+        "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance",
+        "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec",
+        "tracer::tests::precise_timer_delivery_reaches_tool",
+        "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched",
+        "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once",
+        "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest",
+        "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call",
+        "tracer::injection_stop_tests::different_tail_injection_replaces_original_once",
+        "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted",
+        "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback",
+        "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection",
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step",
+        "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit",
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event",
+        "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease",
+        "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease",
+        "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root",
+        "tracer::tests::cancellation_at_signal_handler_reaps_root",
+        "tracer::tests::child_death_before_initialization_error_does_not_hang",
+        "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child",
+        "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance",
+        "task::tests::exec_generation_replaces_image_state_without_changing_old_holders",
+        "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame",
+        "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags",
+        "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap",
+        "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page",
+        "task::tests::cancellable_returns_a_completed_result",
+        "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,

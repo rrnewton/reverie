@@ -1,0 +1,20 @@
+{
+  "all35_prior_memory_tests_complete_suffix_equal_after_removing_only_new_test": true,
+  "bootstrap_complete_test_suffix_equal": true,
+  "bootstrap_original_pure_calculation_equal": true,
+  "new_memory_test": "memory::tests::entry_copy_tests::try_raw_write_defers_closed_copy_and_retains_poison_and_bounds",
+  "new_memory_count": 36,
+  "product_execution": false,
+  "source": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/memory.rs",
+      "sha256": "2d8e46a93b20e49707e98a19d749aa7fac5414254f47cd7ab9ab06c4b88e4857",
+      "bytes": 122685
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/bootstrap.rs",
+      "sha256": "6bad9d324f954c104ae8b75e5522f446cb2cc2c817a22cd3dad04b11cfb86ffa",
+      "bytes": 43765
+    }
+  ]
+}

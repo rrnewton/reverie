@@ -1,0 +1,35 @@
+{
+  "kind": "unexecuted-author-release",
+  "records": [
+    {
+      "bytes": 10486,
+      "path": "AUTHOR.patch",
+      "sha256": "543e99304d7a8bb27250524f23d06d9766ef53212e4e434bf2034f82e1904eb7"
+    },
+    {
+      "bytes": 910,
+      "path": "CONTEXT.json",
+      "sha256": "6187f6c9b6cb4ccc3bfd3c79ce5ae6228a1be959d37ea2296bcbe2e9906fed9e"
+    },
+    {
+      "bytes": 3512,
+      "path": "REPORT.md",
+      "sha256": "2723f9e24d165d6cd0f88a90df38fecd080361e314982ec0d9f9205ec3a8dc6a"
+    },
+    {
+      "bytes": 589,
+      "path": "SOURCE.json",
+      "sha256": "e0d71000b926c7ea3293994f4537918b870ed22ac72921d1379a2f460b2fa674"
+    },
+    {
+      "bytes": 701,
+      "path": "TESTS.json",
+      "sha256": "099011fe309a378de117bb2c6121db001b95b40bd065550b1110acae24e53717"
+    },
+    {
+      "bytes": 10186,
+      "path": "source-1/reverie-kvm/src/vm/entry_eintr_tests.rs",
+      "sha256": "9232de7a085a148c970ccd8e36aefbfbafa4be28c027341126834388b2b7de10"
+    }
+  ]
+}

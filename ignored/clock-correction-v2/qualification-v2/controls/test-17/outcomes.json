@@ -1,0 +1,24 @@
+{
+  "started": [
+    "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 193,
+      "exec_time": 0.007877404
+    }
+  ]
+}

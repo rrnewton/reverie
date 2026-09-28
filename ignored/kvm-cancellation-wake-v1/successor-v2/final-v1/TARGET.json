@@ -1,0 +1,47 @@
+{
+  "scope": "Actual bounded seven-phase cancellation-wake qualification, no guest/full-gate/parity claim",
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/TARGET.json",
+    "bytes": 5162,
+    "mode": 420,
+    "sha256": "217c4fd4728f039a238b8fd98dca7b19f5013cd6099ecdcf01fa56a967eb0e77"
+  },
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/final-v1/EVIDENCE.json",
+      "bytes": 26669,
+      "mode": 420,
+      "sha256": "02b3547a8a15e619ccf6db09b468ec3d2f27b2a143b86f9f8f2d3036efa10fea"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/final-v1/INPUTS-AFTER.json",
+      "bytes": 3665,
+      "mode": 420,
+      "sha256": "b8ad1eb5aaa730a742869674d964266f098c3d42f1958ec13591a587bd61e1fb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/final-v1/READBACK.json",
+      "bytes": 287,
+      "mode": 420,
+      "sha256": "404c574396ec8582fe0cf4930db65f550dadd094d2fbf8497002e9dbcdfbcad9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/final-v1/REPORT.md",
+      "bytes": 2970,
+      "mode": 420,
+      "sha256": "d5e59da2ba5fe69eb628397c18abdda132cb5e913492f61c517720044c0443b0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/final-v1/RESULTS.json",
+      "bytes": 7489,
+      "mode": 420,
+      "sha256": "91f7b6ecb652d23d363b5834f5655a512b93634fd2761f7aaa20673a2595a160"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/final-v1/TERMINAL.json",
+      "bytes": 5388,
+      "mode": 420,
+      "sha256": "126572ad9e9fed0564ed6e5400f2641090e1a8dc517b823685b9a7f52ab6dd11"
+    }
+  ]
+}

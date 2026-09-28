@@ -1,0 +1,23 @@
+{
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "branch": "codex/kvm-parity-land-20260918",
+  "head": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "qualified_source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v3/source-1.json",
+    "sha256": "69cce12356eb02bd7f7b0de7c529347ab3cf5cd6b1340a42551d227effe72ebf"
+  },
+  "source": {
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 414310,
+      "sha256": "32dd03d5b6a5248c47a625639b8638b242bab6a7635939770c0a1915c6bf51e7"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 275611,
+      "sha256": "b79a5cc0839215e4fcc87df89b096768d2c759aee9e9cab9c5ab3d5b7f716629"
+    },
+    "reverie-kvm/src/entry/driver.rs": {
+      "bytes": 19549,
+      "sha256": "88d3317f108632f8b7145fa600579e31a9af9ffb3401566c6c7e94da498353b7"
+    }
+  }
+}

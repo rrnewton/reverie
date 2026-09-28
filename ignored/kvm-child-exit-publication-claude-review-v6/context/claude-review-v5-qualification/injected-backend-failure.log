@@ -1,0 +1,26 @@
+[evidence begin]
+command cargo test -p reverie-kvm --lib runtime::tests::injected_backend_failure_is_runtime_fatal_not_a_guest_errno -- --exact --nocapture 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head 6152ee999a41324be36456bb0a9b94a703711068
+expected_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+pre_head 6152ee999a41324be36456bb0a9b94a703711068
+pre_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_before_bytes 448348119040
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:05:45Z
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 1 test
+test runtime::tests::injected_backend_failure_is_runtime_fatal_not_a_guest_errno ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 773 filtered out; finished in 0.00s
+
+
+[evidence end]
+exit_code 0
+post_head 6152ee999a41324be36456bb0a9b94a703711068
+post_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_after_bytes 448348119040
+completed_at 2026-09-20T15:05:45Z

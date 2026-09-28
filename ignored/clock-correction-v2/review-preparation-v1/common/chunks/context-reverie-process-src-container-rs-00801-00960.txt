@@ -1,0 +1,160 @@
+    /// Runs a function in a new process with the specified namespaces unshared. This
+    /// blocks until the function itself returns and the process has exited.
+    ///
+    /// # Safety
+    ///
+    ///  - This should be called early on in the life of a process, before any
+    ///    other threads are created. This reduces the chance that any global
+    ///    resources (like the Tokio runtime) have been created yet.
+    ///
+    ///  - Memory allocated in the parent must not be freed in the child,
+    ///    especially if using jemalloc where a separate thread does deallocations.
+    pub fn run<F, T>(&mut self, mut f: F) -> Result<T, RunError>
+    where
+        F: FnMut() -> T,
+        T: Serialize + DeserializeOwned,
+    {
+        let clone_flags = self.namespace.bits() | libc::SIGCHLD;
+
+        let uid_map = &make_id_map(&self.uid_map);
+        let gid_map = &make_id_map(&self.gid_map);
+
+        let context = ChildContext {
+            // TODO: Honor stdio options. For now, always inherit from the
+            // parent process.
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map,
+            gid_map,
+            seccomp_fd: None,
+        };
+
+        // Use a pipe for getting the result of the function out of the child
+        // process.
+        let (mut reader, writer) = pipe()?;
+
+        let writer_fd = writer.as_raw_fd();
+
+        // NOTE: Must use a dynamically allocated stack here. Programs expect to
+        // have at least 2 MB of stack space and if we've already used up some
+        // stack space before this is called we could overflow the stack.
+        let mut stack = child_stack();
+
+        // Disable io redirection just before forking. We want the child process to
+        // be able to call `println!()` and have that output go to stdout.
+        //
+        // See: https://github.com/rust-lang/rust/issues/35136
+        //
+        // Another way around this weirdness is to not use the default
+        // `print!()` and `println!()` macros so that we can completely bypass
+        // this output capturing.
+        #[cfg(feature = "nightly")]
+        let output_capture = std::io::set_output_capture(None);
+
+        let result = clone_with_stack(
+            || {
+                let value = self.setup(&context, &mut []).map(|()| f());
+
+                let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
+
+                // Serialize this result with bincode and send it to the parent
+                // process via a pipe.
+                //
+                // TODO: Handle serialization errors(?)
+                bincode::serde::encode_into_std_write(
+                    &value,
+                    &mut writer,
+                    bincode::config::legacy(),
+                )
+                .expect("Failed to serialize return value");
+
+                0
+            },
+            clone_flags,
+            &mut stack,
+        );
+
+        #[cfg(feature = "nightly")]
+        std::io::set_output_capture(output_capture);
+
+        let child = WaitGuard::new(result?);
+
+        // The writer end must be dropped first so that our reader doesn't block
+        // forever.
+        drop(writer);
+
+        // Read the return value. Note that we do this *before* waiting on the
+        // process to exit. Otherwise, for return values that exceed the pipe
+        // capacity, we would deadlock.
+        let mut buf = Vec::new();
+        match reader.read_to_end(&mut buf) {
+            Ok(0) => {
+                // The writer end was closed before anything could be written.
+                // This indicates that the process exited before the return
+                // value could be serialized. The only thing we can do in this
+                // case is collect the exit status of the process.
+                //
+                // NOTE: Since we always send `Result<T, _>` through the pipe,
+                // we can guarantee that a successful serialization will never
+                // be 0 bytes (since it always takes more than 0 bytes to encode
+                // that type).
+                //
+                // NOTE: Since `WaitGuard` is used, we guarantee that the
+                // process will be waited on in the other cases.
+                Err(RunError::ExitStatus(child.wait()?))
+            }
+            Ok(n) => {
+                let value: Result<T, Error> =
+                    bincode::serde::decode_from_slice(&buf[0..n], bincode::config::legacy())
+                        .unwrap()
+                        .0;
+                value.map_err(RunError::Spawn)
+            }
+            Err(err) => {
+                // FIXME: Handle this error
+                panic!("Got unexpected error: {}", err)
+            }
+        }
+    }
+
+    /// Runs a function in a new process, publishes its result, and only then
+    /// drops a child-owned cleanup value.
+    ///
+    /// The returned handle owns the mandatory wait for the child. Callers may
+    /// inspect the provisional value while doing independent work, but can
+    /// only take ownership of it through
+    /// [`DeferredContainerRun::finalize`], which rejects an unsuccessful child
+    /// exit. Dropping the handle still reaps the child, but yields no value.
+    ///
+    /// A caller therefore cannot accidentally destructure the value away from
+    /// the mandatory cleanup check:
+    ///
+    /// ```compile_fail
+    /// use reverie_process::Container;
+    /// let (value, cleanup) = Container::new()
+    ///     .run_with_deferred_drop(|| (42, ()))
+    ///     .unwrap();
+    /// ```
+    ///
+    /// This has the same fork-safety requirements as [`Container::run`].
+    pub fn run_with_deferred_drop<F, T, D>(
+        &mut self,
+        mut f: F,
+    ) -> Result<DeferredContainerRun<T>, RunError>
+    where
+        F: FnMut() -> (T, D),
+        T: Serialize + DeserializeOwned,
+    {
+        let clone_flags = self.namespace.bits() | libc::SIGCHLD;
+        let uid_map = &make_id_map(&self.uid_map);
+        let gid_map = &make_id_map(&self.gid_map);
+        let context = ChildContext {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map,
+            gid_map,
+            seccomp_fd: None,
+        };
+        let (mut reader, writer) = pipe()?;

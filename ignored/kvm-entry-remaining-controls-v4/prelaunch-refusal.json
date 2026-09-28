@@ -1,0 +1,7 @@
+{
+  "phase": "snapshot before any payload",
+  "refused_plan_sha256": "b3852f2389e7e35d7b3eb8a8cd5c3c875fe4321be167628c246e4356365df1b2",
+  "error": "plan is not finalized for the assigned slot",
+  "reason": "Root used descriptive status text instead of exact ready enum. Guard unchanged; no payload ran.",
+  "corrected_plan_sha256": "147d203fa28162d759908cf72850315afb762bde77bf50d827901659de475d87"
+}

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "timestamp::tests::two_byte_rdtsc_decode_does_not_read_a_third_byte",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.000249686
+    }
+  ]
+}

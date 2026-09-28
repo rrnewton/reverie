@@ -1,0 +1,58 @@
+          "sample_period": 0,
+          "size": 136,
+          "target_tid": 2578706,
+          "type": 4
+        },
+        "target_tid": 2578706
+      },
+      "event": "syscall-return",
+      "name": "read",
+      "number": 0,
+      "pair": 412,
+      "raw_count": 67,
+      "return_value": 8,
+      "sequence": 414,
+      "thread": [
+        2578652,
+        2578695,
+        0
+      ]
+    }
+  ],
+  "restored_entry_word": {
+    "entry": 250,
+    "result": 252,
+    "address": "0x401000",
+    "word_hex": "0xf00000027b80075",
+    "little_endian_hex": "7500b8270000000f",
+    "decode": "JNE +0 followed by MOV EAX,39 and first syscall byte"
+  },
+  "all_page_observations": 160,
+  "valid_page_observations": 0,
+  "page_read_errors": {
+    "MemoryError('Cannot access memory at address 0x7f9967b35000')": 160
+  },
+  "page_observations_target_known_stopped": 142,
+  "diagnostic_complete": false,
+  "diagnostic_refusal_preserved": true,
+  "no_direct_post_skip_rip_samples": [
+    {
+      "step": 266,
+      "trap": 270,
+      "restore": 271
+    },
+    {
+      "step": 318,
+      "trap": 322,
+      "restore": 323
+    }
+  ],
+  "direct_final_branch_rip": {
+    "step": 352,
+    "trap": 356,
+    "getregset": 359,
+    "rip": "0x401002"
+  },
+  "mechanism": "Repeated single-step of restored JNE +0 at entry followed by architectural RIP rewind; individual skip retirement inferred from successful step/trap, instruction bytes and source, with raw cumulative interval counts directly measured.",
+  "no_new_execution": true
+}

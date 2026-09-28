@@ -1,0 +1,37 @@
+Continue ONLY your own existing Claude session 5d98403d-b8e9-42bf-8e2f-da7e7b70809c as the independent reviewer of https://github.com/rrnewton/reverie/pull/588.
+
+Exact whole target remains b5e2ab49cd99e5d456fa0238b8cebd75958c529f..a9449f8ee22a17ba87a106c2af957a938fa57c45, tree da3e0a5c13bbd1b95adca1bc3ac0037b89494544. No product, test, source, oracle, qualification result or comparator changed. This is a bounded repair of missing mandatory evidence reading, not an author instruction to approve. Your full original report and failed audit are preserved unchanged.
+
+First read /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/READ-INDEX.md and read all sixteen listed raw-event chunks in full, then the exact trigger-rule excerpt. A machine audit found 224/240 original chunks completely visible, including every changed source file and all original required material except these sixteen chunks. Your original report correctly disclosed reading only 8/24 raw entry-replay chunks; its opening statement “I have completed the mandatory reading” was therefore false. Explicitly correct that statement. Do not claim the original invocation had complete coverage or strict index ordering. Reading now can complete a distinct supplemental set, not retroactively alter the failed audit.
+
+Your own original full report is /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude/assistant-event-562-block-0.txt (SHA256 5888d24a142e316518fe16cc07ba2e33b8f76f2aab8e30ca3b94f309aed7ce7b). Original refusal is /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude/audit-final.stderr. Exact gap/input derivation is /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/MISSING-CHUNKS.json. Reuse your own authenticated prior paper/full scheduler/product vision/roadmap grounding and your already-complete source reads; do not repeat them unnecessarily. All unchanged inputs remain held, with their identities in /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/inputs.json. No other reviewer’s report or finding is provided or may be consulted.
+
+After every missing raw chunk is read completely, reconsider your causal arithmetic, source findings A1–A5, evidence scope and verdict on the WHOLE exact base-to-head change. The remaining records may corroborate or refute your inference: reason from their actual content. Follow any directly necessary source question only in the bound sources, using read-only tools; identify unread material precisely. Do not execute a program, build, test, network command, delegation or mutation.
+
+Also independently reassess trigger 2 against the actual already-read rule, whose precise text is:
+
+Apply `post-facto-human-review` exactly for: (1) new syscall support, with both
+audit tags above; (2) a Reverie API/core-abstraction change to `Tool`, `Guest`,
+`Backend`, or the syscall-interception model; (3) a new determinization
+strategy; or (4) a core DetCore scheduling change affecting how programs are
+scheduled, especially race search. Trigger 4 is always labeled. Hermit
+[PR #1151](https://github.com/rrnewton/hermit/pull/1151), which moved slowdown
+into virtual-time/epoch scheduling, is the canonical good example. Routine
+backend-parity work toward the golden ptrace reference does not trigger review
+unless it also meets one of these four criteria.
+
+Your report's reasoning based only on public shape and unchanged Tool/Guest files is narrower than that rule. Assess whether the actual pending-original ownership/injection changes alter the syscall-interception model. Give your own conclusion with source justification. This is a classification question; no other reviewer’s answer is supplied.
+
+Preserve the true finite evidence: 45 phases attempted, 44 accepted, 37 declarations qualified; the unchanged legacy declaration had payload raw 0 and real assertions but its original structured-reader receipt remains accepted=false. Preserve the compiler raw 101 predecessor, [3,67] versus unchanged [1,65] failure, raw 125 diagnostic refusal and all unmeasured states. Do not inflate the precise-timer parent's two internally captured child modes. No Hermit integration, full backend parity or whole-scheduler approval follows.
+
+Return a self-contained supplemental report with: exact target; explicit correction of the original reading claim; each required raw chunk actually read and any residual gap; any changed/confirmed source findings with concrete pointers; trigger 2 and 3 classification; and an unambiguous whole-PR APPROVE / CHANGES REQUESTED / UNABLE TO COMPLETE verdict. Keep the first report historically intact. If the 600-second bound or any tool limit prevents complete reading, say so rather than issuing an unqualified completion claim.
+
+GOALPOST-MOVING REVIEW RULE
+
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it

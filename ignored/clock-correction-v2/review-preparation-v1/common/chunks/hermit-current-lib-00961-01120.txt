@@ -1,0 +1,160 @@
+            procmaps::MMapPath::Stack if self.cfg.detlog_stack => true,
+            procmaps::MMapPath::Heap if self.cfg.detlog_heap => true,
+            _ => false,
+        })? {
+            labelled_heap |= matches!(mmap.pathname, procmaps::MMapPath::Heap);
+            let dettid = guest.thread_state().dettid;
+            detlog!(
+                "[memory][dtid {}] {}->{}",
+                dettid,
+                procmaps::display(&mmap),
+                procmaps::compute_hash(guest, &mmap)?
+            )
+        }
+
+        // The kernel labels `[heap]` only for `[mm->start_brk, mm->brk)`. Under a
+        // backend that loads the guest itself (DynamoRIO) that break belongs to
+        // the loader, so the guest's heap is an unlabelled anonymous mapping and
+        // the filter above matches nothing. Emitting no record there is worse
+        // than a wrong one: downstream a zero-record heap comparison reads as
+        // "compared and matched" rather than "never measured". Fall back to the
+        // brk range Detcore observed, which identifies the heap on every backend.
+        if self.cfg.detlog_heap && !labelled_heap {
+            self.detlog_brk_heap(guest)?;
+        }
+        Ok(())
+    }
+
+    /// Emit the `[heap]` record from the observed program break, for backends
+    /// where the kernel does not label the guest's heap.
+    ///
+    /// Reports `[start_brk, brk)` -- the range Detcore observed -- taking the
+    /// non-address columns from the enclosing anonymous mapping, so the record
+    /// is textually comparable with the labelled record another backend
+    /// produces for the same guest.
+    ///
+    /// ⚠️ THE EXTENT IS THE OBSERVED BREAK, NOT THE MAPPING THAT CONTAINS IT,
+    /// and the two are not the same region. The selector below admits any
+    /// anonymous mapping with `address.0 <= start && end <= address.1`, which
+    /// is a SUPERSET by construction. Reporting that mapping instead would make
+    /// the comparability claim above true only when the arena happens to
+    /// coincide with the break, and would fold non-heap bytes into the digest.
+    /// On the backend this path exists for, the premise is that the LOADER owns
+    /// the break, so those extra bytes are loader arena -- the least
+    /// reproducible region in the process. A silently empty record would become
+    /// a loudly divergent one, for a reason that is not the guest's heap.
+    ///
+    /// The labelled path above hashes its mapping directly, which is correct
+    /// there because the kernel defines `[heap]` as exactly `[start_brk, brk)`.
+    /// Both paths therefore report the same quantity.
+    fn detlog_brk_heap<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), reverie::Error> {
+        let Some((start, end)) = guest
+            .thread_state()
+            .memory_metadata
+            .lock()
+            .expect("memory metadata mutex poisoned")
+            .brk_heap_range()
+        else {
+            return Ok(());
+        };
+        let enclosing = procmaps::from_pid(guest.pid(), |map| {
+            matches!(map.pathname, procmaps::MMapPath::Anonymous)
+                && map.address.0 <= start
+                && end <= map.address.1
+        })?;
+        let Some(mmap) = enclosing.into_iter().next() else {
+            return Ok(());
+        };
+        let dettid = guest.thread_state().dettid;
+        detlog!(
+            "[memory][dtid {}] {}->{}",
+            dettid,
+            procmaps::display_range_as(&mmap, start, end, "[heap]"),
+            procmaps::compute_hash_range(guest, start, end)?
+        );
+        Ok(())
+    }
+
+    fn display_syscall_finished<'a, M: MemoryAccess>(
+        syscall: &'a Syscall,
+        memory: &'a M,
+    ) -> reverie::syscalls::Display<'a, M, Syscall> {
+        match syscall {
+            Syscall::Fstat(_) => syscall.display(memory), //FIXME: T136880615 - fstat structure isn't fully deterministic yet
+            _ => syscall.display_with_outputs(memory),
+        }
+    }
+}
+
+#[reverie::tool]
+impl<T: RecordOrReplay> Tool for Detcore<T> {
+    type GlobalState = GlobalState;
+    type ThreadState = ThreadState<T::ThreadState>;
+
+    /// Constructor for Detcore process-local state.
+    fn new(pid: Pid, cfg: &Config) -> Self {
+        let detpid = DetPid::from_raw(pid.into()); // TODO(T78538674): virtualize pid.
+        cfg.validate_invariants();
+        Self {
+            detpid,
+            cfg: cfg.clone(),
+            record_or_replay: T::new(pid, cfg),
+        }
+    }
+
+    /// NOTE: these subscriptions are used ONLY for hermit run mode.  Hermit record has its own
+    /// subscriptions specified in recorder/mod.rs.
+    fn subscriptions(config: &Config) -> Subscription {
+        let do_sched =
+            config.sched_heuristic != SchedHeuristic::None || config.sequentialize_threads;
+
+        if !config.passthru_opt {
+            // Fail closed by default in every build profile. Besides allowing syscall-specific
+            // handlers to run, interception is what charges generic syscall logical time.
+            Subscription::all()
+        } else {
+            // Explicit performance opt-in: unlisted syscalls bypass Detcore entirely. Keep this
+            // path separate so its allow-list can be tightened without weakening the default.
+            let mut subscription = Subscription::none();
+            subscription.syscalls([
+                Sysno::write,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#547)
+                Sysno::writev,
+                // Timer-slack procfs virtualization must see every scalar and
+                // vectored read/write form that Linux accepts for the file.
+                Sysno::readv,
+                Sysno::preadv,
+                Sysno::preadv2,
+                Sysno::pwritev,
+                Sysno::pwritev2,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#683)
+                Sysno::pwrite64,
+                Sysno::openat,
+                Sysno::open,
+                Sysno::creat,
+                Sysno::close,
+                Sysno::read,
+                Sysno::pread64,
+                Sysno::lseek,
+                Sysno::fadvise64,
+                Sysno::mmap,
+                Sysno::madvise,
+                Sysno::munmap,
+                Sysno::mremap,
+                Sysno::fcntl,
+                Sysno::arch_prctl,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(PR-2150): Timer-slack prctl state is
+                // virtual and must not bypass Detcore under passthru_opt.
+                Sysno::prctl,
+                Sysno::ioctl,
+                Sysno::futex,
+                Sysno::clone,
+                Sysno::clone3,
+                Sysno::fork,
+                Sysno::vfork,
+                Sysno::wait4,
+                Sysno::waitid,
+                Sysno::setsid,

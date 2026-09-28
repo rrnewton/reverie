@@ -1,0 +1,26 @@
+{
+  "verdict": "changes requested",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-entry-owner-composition-review-v1/REVIEW.md",
+      "bytes": 11556,
+      "sha256": "ffef697072d826dbbc26e2d123f6b85218f094028797b7c6bbfb1a3456658814"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-entry-owner-composition-review-v1/AUTHENTICATION.json",
+      "bytes": 11047,
+      "sha256": "b91435ed8e64d1772a0320d3181c90e8fb20a5576e5eb431eb9c49ba89890bfa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-entry-owner-composition-review-v1/TEST-PRESERVATION.json",
+      "bytes": 1112,
+      "sha256": "19fb0dfc01ad75ec6763ebc28c7be5a7e73ed61d4351b1bca846e5f3561344d7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-entry-owner-composition-review-v1/failed-spawn/REVIEW.md",
+      "bytes": 10012,
+      "sha256": "72d51470f47a66f2814825ef1fd8e609ee07d2370c24eae2097b8449c18f8fc4"
+    }
+  ],
+  "source_records_authenticated": 14
+}

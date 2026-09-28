@@ -1,0 +1,4 @@
+started_at=2026-09-20T14:11:31-07:00
+command=timeout --signal=TERM --kill-after=10s 1200s with-proxy claude -p --no-session-persistence --output-format stream-json --verbose --permission-mode plan --tools Read,Grep,Glob --allowedTools Read,Grep,Glob
+prompt_sha256=2b41b66ac8bfb858f01badd072fa56a28219d312da63ac94619b25def429e316
+input_manifest_sha256=574edf4a20df1ae0609b632d0fa40e596002612d7ffa6d098b3940c18216ddc7

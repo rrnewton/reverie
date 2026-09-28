@@ -1,0 +1,40 @@
+{
+  "repository": "https://github.com/rrnewton/reverie",
+  "pull_request": "https://github.com/rrnewton/reverie/pull/603",
+  "base": "f7bd85e11dd258112148ed2cba6531501a1a00d9",
+  "head": "a2e414dca1227903a56dcf5bf8a7bc0bf2f6ea06",
+  "tree": "859eb9e457f6a4fc86e17be13d349bdaf7363ade",
+  "patch_sha256": "ed53ad69e5686d017c124faa238636e56f99028544c1ce45c5c0a6863b0f545e",
+  "patch_bytes": 240803,
+  "candidate_files": 120,
+  "changed_files": [
+    "reverie-kvm/src/captured_write_runtime_tests.rs",
+    "reverie-kvm/src/child_exit_runtime_tests.rs",
+    "reverie-kvm/src/child_exit_signal_tests.rs",
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/process_alarm_runtime_tests.rs",
+    "reverie-kvm/src/process_signal_publication.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/runtime/entry_operation_tests.rs",
+    "reverie-kvm/src/runtime/failure_tests.rs",
+    "reverie-kvm/src/runtime/native_test_support.rs",
+    "reverie-kvm/src/runtime/signal_cleanup_completion_tests.rs",
+    "reverie-kvm/src/terminal_runtime_tests.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/terminal_fork.rs",
+    "reverie/src/guest.rs",
+    "reverie/src/process_signal_control.rs",
+    "reverie/src/tool.rs"
+  ],
+  "consumer_repository_head": "3fe4f5929d07bc8a38e92aa16551c1cf436f60c4",
+  "consumer_repository_tree": "11f519db98522ea49a16f5c98f3a294b3a0c37f2",
+  "prior_review": {
+    "head": "e1ee50dad596f33903caa80313ff8eb32be34754",
+    "tree": "d21731c768d50d9a4980e3657a4f088424eae6c0",
+    "verdict": "CHANGES REQUESTED",
+    "packet": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-child-exit-publication-claude-review-v3"
+  }
+}

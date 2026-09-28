@@ -1,0 +1,127 @@
+    let args_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.extend_from_slice(&[
+        0xbe, 88, 0, 0, 0, 0x0f, 0x05, // mov esi, 88; syscall
+        0x85, 0xc0, // test eax, eax
+        0x0f, 0x84, 0, 0, 0, 0, // jz worker
+        0x83, 0xf8, 0x02, // cmp eax, 2
+        0x0f, 0x85, 0, 0, 0, 0, // jne failure
+        0x0f, 0x0b,
+    ]);
+    // Keep the existing mode-7 leader exit bytes exact. For the worker's
+    // ExitGroup control, the leader remains in guest instructions until the
+    // backend's real group-exit request interrupts it. A mere worker Exit
+    // would leave this guest spinning and cannot pass the bounded control.
+    code.truncate(code.len() - 2); // append leader exit before its existing ud2
+    if park_leader {
+        code.extend_from_slice(&[0xeb, 0xfe]); // jmp to itself
+    }
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 17, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+    ]);
+    let child_jump = args_operand + 8 + 11;
+    let failure_jump = child_jump + 4 + 5;
+    let worker = code.len();
+    code.extend_from_slice(&terminal_program()[..18]);
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0, 0, 0, 0xbf, 78, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+    ]);
+    patch_stats_jump(&mut code, child_jump, worker);
+    patch_stats_jump(&mut code, failure_jump, failure);
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let args_address = LOAD_ADDRESS + code.len() as u64;
+    code[args_operand..args_operand + 8].copy_from_slice(&args_address.to_le_bytes());
+    let mut args = [0_u8; 88];
+    args[0..8].copy_from_slice(&flags.to_le_bytes());
+    args[40..48].copy_from_slice(&STACK.to_le_bytes());
+    args[48..56].copy_from_slice(&0x600_u64.to_le_bytes());
+    code.extend_from_slice(&args);
+    code
+}
+
+#[test]
+fn worker_terminal_rpc_precedes_real_sibling_exit_group() {
+    if !kvm_available("timestamp worker cancellation before exit_group") {
+        return;
+    }
+    let code = sibling_terminal_program(false);
+    let (completion, _) = run_terminal(7, &code);
+    let (status, stdout, stderr) = completion.result.unwrap();
+    assert_eq!(status, 17);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    let events = completion.global_state.events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, _, _)| *kind == 1)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(1, 2, ExitStatus::SUCCESS)]
+    );
+    assert_eq!(events.iter().filter(|(kind, _, _)| *kind == 0).count(), 2);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, _, _)| *kind == 2)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(2, 2, ExitStatus::SUCCESS), (2, 1, ExitStatus::Exited(17))]
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(kind, _, _)| *kind == 3)
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![(3, 1, ExitStatus::Exited(17))]
+    );
+}
+
+#[test]
+fn worker_timestamp_exit_group_terminates_leader_and_runs_hooks_once() {
+    if !kvm_available("timestamp worker ExitGroup control") {
+        return;
+    }
+    let (completion, _) = run_terminal(10, &sibling_terminal_program(true));
+    let (status, stdout, stderr) = completion.result.unwrap();
+    assert_eq!(status, 29);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    let events = completion.global_state.events.lock().unwrap();
+    let selected = |kind| {
+        events
+            .iter()
+            .filter(|(k, _, _)| *k == kind)
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let mut starts = selected(0);
+    starts.sort_by_key(|(_, tid, _)| *tid);
+    assert_eq!(
+        starts,
+        vec![(0, 1, ExitStatus::SUCCESS), (0, 2, ExitStatus::SUCCESS)]
+    );
+    assert_eq!(selected(1), vec![(1, 2, ExitStatus::SUCCESS)]);
+    assert_eq!(selected(12), vec![(12, 2, ExitStatus::SUCCESS)]);
+    assert_eq!(
+        selected(2),
+        vec![
+            (2, 2, ExitStatus::Exited(29)),
+            (2, 1, ExitStatus::Exited(29))
+        ]
+    );
+    assert_eq!(selected(3), vec![(3, 1, ExitStatus::Exited(29))]);
+    assert!(
+        selected(11).is_empty(),
+        "the leader's guest exit_group(17) never runs"
+    );
+    assert_eq!(
+        events.len(),
+        7,
+        "no duplicate hooks, resumed timestamp or unexpected RPC"
+    );
+}

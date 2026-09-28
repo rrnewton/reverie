@@ -1,0 +1,123 @@
+{
+  "revision": "199c9959d3a9b53f346c221757fc7ac507fbac50",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/Documentation__virt__kvm__api.rst",
+      "bytes": 342403,
+      "sha256": "553f0720999e53afe9f4d2f70778a3271017c3be70faf25ac499f8750c17645d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/FETCH-FOLLOWUP.json",
+      "bytes": 4379,
+      "sha256": "e2a33d35a459cabfc07b898ee9dac303fc099c7b9b276a6ed6b771ab7166fdb3",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/FETCH.json",
+      "bytes": 4348,
+      "sha256": "ae6599ad9a0bc0433db241391b30bda0d457072580bf18d4db795864e13da266",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/READBACK.json",
+      "bytes": 3388,
+      "sha256": "d2c63b612a3380803d6c84cb24ebdd13d9cb4895fc235f74122722c24269903e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/REPORT.md",
+      "bytes": 4172,
+      "sha256": "c0a84bcad78faabcdbea7c9c4e4f87bd66125a00af04bcc33a2ecac89481e8d7",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__include__asm__msr-index.h",
+      "bytes": 51334,
+      "sha256": "7f35d96e2544f86cd7cbcd5699c39f6930b65741b0719f15078104a1ff2915a3",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__cpuid.c",
+      "bytes": 58116,
+      "sha256": "1e3dd6d0cdcdea3b07cc1591e0c1658b5655d2ddc307cb10756d80ad5b2d0cb8",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__cpuid.h",
+      "bytes": 8991,
+      "sha256": "17a847d448ab62984512afe05e2cc6a99ea6afd2899d396260bf4c8c3a06fa51",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__svm__svm.c",
+      "bytes": 166557,
+      "sha256": "4473e6d73696e0ef34b92f720f7002314228d84158b970719f801b78f62a8d29",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__vmx__vmx.c",
+      "bytes": 261756,
+      "sha256": "733c2232341abd26d81e94956694e0c8cd84253d073a048cfa0cf05df1f7e2cc",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__x86.c",
+      "bytes": 404171,
+      "sha256": "c793b882532b19da67711b6d3d64e78db75601bb7132f054561d86865563b2bd",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-cpuid-transport-research-v1/arch__x86__kvm__x86.h",
+      "bytes": 24606,
+      "sha256": "1f9836c5aa18d51a19f7b10e724baaa34cdbb3591afe9afd1e78661bc070882c",
+      "mode": 420
+    }
+  ],
+  "read_scope": {
+    "arch__x86__kvm__cpuid.c": [
+      [
+        2160,
+        2177
+      ]
+    ],
+    "arch__x86__kvm__cpuid.h": [
+      [
+        184,
+        193
+      ]
+    ],
+    "arch__x86__kvm__x86.c": [
+      [
+        1028,
+        1037
+      ],
+      [
+        1698,
+        1719
+      ],
+      [
+        4255,
+        4273
+      ],
+      [
+        4614,
+        4631
+      ]
+    ],
+    "Documentation__virt__kvm__api.rst": [
+      [
+        218,
+        261
+      ],
+      [
+        643,
+        704
+      ],
+      [
+        8112,
+        8121
+      ]
+    ]
+  }
+}

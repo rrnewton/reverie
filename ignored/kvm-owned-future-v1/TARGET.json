@@ -1,0 +1,31 @@
+{
+  "scope": "new private owned-future catcher; uncompiled source and four unexecuted host test declarations",
+  "source_sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d",
+  "records": [
+    {
+      "path": "owned_future.rs",
+      "sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d",
+      "bytes": 10917
+    },
+    {
+      "path": "SOURCE.json",
+      "sha256": "a88191699fd59d99200e196a23e119bb93e9d4811b07dc0a430ab95db5b8178a",
+      "bytes": 876
+    },
+    {
+      "path": "SOURCE.patch",
+      "sha256": "25120fa3d728a8c9aa477a2bb58211be6f61f7c59086d6e2eed47e475b37ac8c",
+      "bytes": 11285
+    },
+    {
+      "path": "PROPOSAL.md",
+      "sha256": "11a7f77b76a03871dcb505ea438255db03ac5c4620ce045c855d7d45154254cf",
+      "bytes": 19275
+    },
+    {
+      "path": "REPORT.md",
+      "sha256": "7458e6e9758696d9a60731552b39c30129ce4d59875aef5cd5453361d045f3c8",
+      "bytes": 4608
+    }
+  ]
+}

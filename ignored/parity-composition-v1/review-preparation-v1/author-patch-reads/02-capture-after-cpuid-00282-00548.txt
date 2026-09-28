@@ -1,0 +1,267 @@
++    let stat: libc::stat = read_struct(memory, 0x800);
++    (stat.st_dev, stat.st_ino)
++}
++
++#[test]
++fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
++    let root = TestDir::new();
++    let owner = CapturedOutput::try_new().unwrap();
++    let mut state = test_state(&root.0);
++    let regular = std::fs::File::open("/dev/null").unwrap();
++    let raw = capture_native_stat(regular.as_raw_fd());
++    let ordinary = insert_file_with_flags(&mut state, regular, false, None) as i32;
++    assert!(ordinary >= 3);
++    let mut parent = ElfExecutor::with_output(state, Some(owner.clone()));
++    let mut memory = GuestMemory::new(0, 0x4000).unwrap();
++    let stdout = capture_executor_stat(&mut parent, &memory, 1);
++    let stderr = capture_executor_stat(&mut parent, &memory, 2);
++    assert_eq!(stdout.0, stderr.0);
++    assert_ne!(stdout.1, stderr.1);
++    let alias = parent.execute(
++        &SyscallRequest::new(libc::SYS_dup as u64, [1, 0, 0, 0, 0, 0]),
++        &memory,
++    ) as i32;
++    assert!(alias >= 3);
++    let fcntl_alias = parent.execute(
++        &SyscallRequest::new(
++            libc::SYS_fcntl as u64,
++            [alias as u64, libc::F_DUPFD as u64, 20, 0, 0, 0],
++        ),
++        &memory,
++    ) as i32;
++    assert!(fcntl_alias >= 20);
++    write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{alias}"));
++    let reopened = parent.execute(
++        &SyscallRequest::new(
++            libc::SYS_open as u64,
++            [0x100, libc::O_WRONLY as u64, 0, 0, 0, 0],
++        ),
++        &memory,
++    ) as i32;
++    assert!(reopened >= 3);
++    for fd in [alias, fcntl_alias, reopened] {
++        assert_eq!(capture_executor_stat(&mut parent, &memory, fd), stdout);
++    }
++    let mut sibling = parent.thread_child(2).unwrap();
++    assert_eq!(
++        sibling.execute(
++            &SyscallRequest::new(libc::SYS_dup2 as u64, [2, 1, 0, 0, 0, 0]),
++            &memory
++        ),
++        1
++    );
++    assert_eq!(capture_executor_stat(&mut parent, &memory, 1), stderr);
++    assert_eq!(capture_executor_stat(&mut parent, &memory, alias), stdout);
++    let mut child = parent.fork_child(3, false, false).unwrap();
++    child.replace_after_exec(test_state(&root.0));
++    assert_eq!(capture_executor_stat(&mut child, &memory, alias), stdout);
++    assert_eq!(capture_executor_stat(&mut child, &memory, 1), stderr);
++    assert_eq!(
++        parent.execute(
++            &SyscallRequest::new(libc::SYS_close as u64, [alias as u64, 0, 0, 0, 0, 0]),
++            &memory
++        ),
++        0
++    );
++    assert_eq!(
++        parent.execute(
++            &SyscallRequest::new(
++                libc::SYS_dup2 as u64,
++                [ordinary as u64, alias as u64, 0, 0, 0, 0]
++            ),
++            &memory
++        ),
++        i64::from(alias)
++    );
++    assert_eq!(
++        capture_executor_stat(&mut parent, &memory, alias),
++        (raw.st_dev, raw.st_ino)
++    );
++    assert_eq!(
++        capture_executor_stat(&mut sibling, &memory, alias),
++        (raw.st_dev, raw.st_ino)
++    );
++    assert_eq!(
++        capture_executor_stat(&mut child, &memory, alias),
++        stdout,
++        "private fork retains its old capture alias"
++    );
++    memory.write(0x200, b"a").unwrap();
++    assert_eq!(
++        child.execute(
++            &SyscallRequest::new(libc::SYS_write as u64, [alias as u64, 0x200, 1, 0, 0, 0]),
++            &memory
++        ),
++        1
++    );
++    assert_eq!(parent.take_output(), (b"a".to_vec(), Vec::new()));
++    assert_eq!(
++        capture_executor_stat(&mut child, &memory, alias),
++        stdout,
++        "draining output does not retire stream identity"
++    );
++}
++
++fn capture_test_child(test: &str, marker: &str) -> bool {
++    const ENV: &str = "REVERIE_CAPTURE_IDENTITY_CHILD";
++    if std::env::var(ENV).as_deref() == Ok(test) {
++        return true;
++    }
++    assert!(std::env::var_os(ENV).is_none());
++    let output = std::process::Command::new("/usr/bin/timeout")
++        .args(["--kill-after=2s", "10s"])
++        .arg(std::env::current_exe().unwrap())
++        .args(["--exact", test, "--test-threads=1", "--nocapture"])
++        .env(ENV, test)
++        .output()
++        .unwrap();
++    eprintln!(
++        "capture child status={}\nstdout:\n{}\nstderr:\n{}",
++        output.status,
++        String::from_utf8_lossy(&output.stdout),
++        String::from_utf8_lossy(&output.stderr)
++    );
++    assert!(output.status.success());
++    assert_eq!(
++        String::from_utf8_lossy(&output.stderr)
++            .lines()
++            .filter(|line| *line == marker)
++            .count(),
++        1
++    );
++    false
++}
++
++#[test]
++fn capture_identity_keeps_closed_standard_descriptors_closed() {
++    const TEST: &str = "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed";
++    const COMPLETE: &str = "capture closed standard descriptors completed";
++    if !capture_test_child(TEST, COMPLETE) {
++        return;
++    }
++    // Retain the child's real streams outside 0..2, then restore them before
++    // reporting assertions. No parent or parallel libtest descriptor is touched.
++    let saved = [0, 1, 2].map(|fd| {
++        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(duplicate >= 3);
++        unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) }
++    });
++    for fd in [0, 1, 2] {
++        assert_eq!(unsafe { libc::close(fd) }, 0);
++    }
++    let prepared = CapturedOutput::try_new();
++    let closed = [0, 1, 2].map(|fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1
++        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF));
++    for (fd, saved) in [0, 1, 2].into_iter().zip(&saved) {
++        assert_eq!(unsafe { libc::dup2(saved.as_raw_fd(), fd) }, fd);
++    }
++    let owner = prepared.unwrap();
++    assert_eq!(closed, [true; 3]);
++    for fd in owner.identities.descriptors() {
++        assert!(fd >= 3);
++        assert_eq!(
++            capture_native_stat(fd).st_mode & libc::S_IFMT,
++            libc::S_IFIFO
++        );
++        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, libc::FD_CLOEXEC);
++    }
++    eprintln!("{COMPLETE}");
++}
++
++#[test]
++fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
++    const TEST: &str =
++        "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind";
++    const COMPLETE: &str = "capture final owner cleanup completed";
++    if !capture_test_child(TEST, COMPLETE) {
++        return;
++    }
++    for unwind in [false, true] {
++        let root = TestDir::new();
++        let owner = CapturedOutput::try_new().unwrap();
++        let descriptors = owner.identities.descriptors();
++        let metadata = descriptors.map(capture_native_stat);
++        let weak = Arc::downgrade(&owner.identities);
++        let mut parent = ElfExecutor::with_output(test_state(&root.0), Some(owner.clone()));
++        let child = parent.thread_child(2).unwrap();
++        let files = parent.file_table.clone();
++        let transaction = parent.state.signal_transaction.clone();
++        let observed = Arc::new(AtomicBool::new(false));
++        let observed_by_drop = observed.clone();
++        *owner.identities.drop_probe.lock().unwrap() = Some(Box::new(move |actual| {
++            let _files = files
++                .try_lock()
++                .expect("final capture close held the file-table guard");
++            let _transaction = transaction
++                .try_lock()
++                .expect("final capture close held the signal guard");
++            assert_eq!(actual, descriptors);
++            for (fd, expected) in actual.into_iter().zip(metadata) {
++                let live = capture_native_stat(fd);
++                assert_eq!(
++                    (live.st_dev, live.st_ino),
++                    (expected.st_dev, expected.st_ino)
++                );
++            }
++            observed_by_drop.store(true, Ordering::SeqCst);
++        }));
++        assert_eq!(parent.take_output(), (Vec::new(), Vec::new()));
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
++            let _parent = parent;
++            let _child = child;
++            if unwind {
++                panic!("intentional capture cleanup unwind");
++            }
++        }));
++        assert_eq!(result.is_err(), unwind);
++        assert!(!observed.load(Ordering::SeqCst));
++        assert!(weak.upgrade().is_some());
++        for fd in descriptors {
++            assert_eq!(
++                capture_native_stat(fd).st_mode & libc::S_IFMT,
++                libc::S_IFIFO
++            );
++        }
++        drop(owner);
++        assert!(observed.load(Ordering::SeqCst));
++        assert!(weak.upgrade().is_none());
++        for fd in descriptors {
++            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
++            assert_eq!(
++                std::io::Error::last_os_error().raw_os_error(),
++                Some(libc::EBADF)
++            );
++        }
++    }
++    eprintln!("{COMPLETE}");
++}
++
++#[derive(Debug, Default)]
++struct CaptureSetupMustNotInitialize;
++
++#[reverie::global_tool]
++impl reverie::GlobalTool for CaptureSetupMustNotInitialize {
++    type Request = ();
++    type Response = ();
++    type Config = ();
++    async fn init_global_state(_: &()) -> Self {
++        panic!("failed capture setup initialized the Tool");
++    }
++    async fn receive_rpc(&self, _: reverie::Tid, _: ()) {
++        panic!("failed capture setup dispatched an RPC");
++    }
++}
++
++#[derive(Debug, Default)]
++struct CaptureSetupTool;
++
++#[reverie::tool]
++impl reverie::Tool for CaptureSetupTool {
++    type GlobalState = CaptureSetupMustNotInitialize;
++    type ThreadState = ();
++}
++
++#[test]
++fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
++    const TEST: &str =
++        "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams";

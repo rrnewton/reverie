@@ -1,0 +1,9 @@
+This is a prepared linear successor to timestamp head 68569ed7fd5c3667456d1d3e0d74ba66264242f4. The published branch and its index remain unchanged. No build, guest, test or independent review has run on this composition.
+
+01-cpuid-on-v7.patch applies the qualified CPUID V1 implementation after the V7 timestamp tests. Both additive V7 controls survive: the worker terminal fixture is byte-identical, and the admission test changes only its private ProcessExecutionContext variant from Timestamp to Instruction. Every other entry matches the qualified CPUID source. This patch applies cleanly to the current committed V7 tree.
+
+02-capture-after-cpuid.patch applies the qualified capture V2 change next. Its changes to six files apply without alteration; the seventh file only needs capture_identity registered alongside the existing CPUID test modules. The unmodified original whole-patch check refused on that module-registration context and is retained. Every other source entry remains unchanged. Original capture hunks reverse-check successfully against the composition, with only the documented module-registration file excluded from that check.
+
+The CPUID predecessor passed 55 selected declarations, including 15 new controls, plus format, core/ptrace and Clippy. The capture predecessor passed 63 selected declarations across its retained first attempt and explicit continuation, with one infrastructure refusal preserved. These are predecessor results, not tests of this composition. Their test populations overlap and must not be added together as independent coverage.
+
+The qualified V7 source, CPUID V1 source and capture V2 source remain untouched. Preparation initially failed before copying because this new slot had no ignored directory; the directory was then created. All work here is under the registered landing slot. No new pull request will open before https://github.com/rrnewton/reverie/pull/586 is resolved.

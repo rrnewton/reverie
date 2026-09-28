@@ -1,0 +1,488 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -313,7 +313,29 @@
+ struct GuestWorkerHandle {
+     tid: i32,
+     start: Option<ChildStartGate>,
++    returning: Option<Arc<AtomicBool>>,
+     handle: std::thread::JoinHandle<GuestWorkerResult>,
++}
++
++/// The outermost worker wrapper drops this after the actual worker closure
++/// and its owned state have returned or unwound. Physical completion can trail
++/// this notification by the final host-thread bookkeeping interval.
++struct WorkerCompletionNotice {
++    group: Arc<GuestThreadGroup>,
++    returning: Arc<AtomicBool>,
++}
++
++impl WorkerCompletionNotice {
++    fn new(group: Arc<GuestThreadGroup>) -> Self {
++        Self { group, returning: Arc::new(AtomicBool::new(false)) }
++    }
++}
++
++impl Drop for WorkerCompletionNotice {
++    fn drop(&mut self) {
++        self.returning.store(true, Ordering::Release);
++        self.group.notify_worker_completion();
++    }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+@@ -381,6 +403,7 @@
+     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
+     // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
+     worker_handles: Mutex<Vec<GuestWorkerHandle>>,
++    worker_completion_wake: Mutex<CancellationWake>,
+     // Joining moves handles out of the registry. Cancellation must still own
+     // every pending gate while a moved handle is blocking in JoinHandle::join.
+     worker_start_gates: Mutex<std::collections::BTreeMap<i32, ChildStartGate>>,
+@@ -622,6 +645,7 @@
+         self.notify_cancellation();
+     }
+ 
++    #[cfg(test)]
+     pub(crate) fn add_worker_handle(
+         &self,
+         tid: i32,
+@@ -630,6 +654,7 @@
+         self.add_worker_handle_with_gate(tid, None, handle);
+     }
+ 
++    #[cfg(test)]
+     fn add_unstarted_worker(
+         &self,
+         tid: i32,
+@@ -639,10 +664,21 @@
+         self.add_worker_handle_with_gate(tid, Some(start), handle);
+     }
+ 
++    #[cfg(test)]
+     fn add_worker_handle_with_gate(
+         &self,
+         tid: i32,
+         start: Option<ChildStartGate>,
++        handle: std::thread::JoinHandle<GuestWorkerResult>,
++    ) {
++        self.add_worker_handle_with_completion(tid, start, None, handle);
++    }
++
++    fn add_worker_handle_with_completion(
++        &self,
++        tid: i32,
++        start: Option<ChildStartGate>,
++        returning: Option<Arc<AtomicBool>>,
+         handle: std::thread::JoinHandle<GuestWorkerResult>,
+     ) {
+         let mut handles = self
+@@ -660,13 +696,68 @@
+                 .insert(tid, gate.clone());
+         }
+         let gate = start.clone();
+-        handles.push(GuestWorkerHandle { tid, start, handle });
++        handles.push(GuestWorkerHandle { tid, start, returning, handle });
+         drop(handles);
+         if self.cancelled.load(Ordering::Acquire)
+             && let Some(gate) = gate
+         {
+             self.cancel_worker_gate(&gate);
+         }
++        self.notify_worker_completion();
++    }
++
++    fn subscribe_worker_completion(&self) -> GuestCancellationSubscription {
++        self.worker_completion_wake.lock().unwrap().receiver.clone()
++    }
++
++    fn notify_worker_completion(&self) {
++        let previous = {
++            std::mem::take(&mut *self.worker_completion_wake.lock().unwrap())
++        };
++        let _ = previous.sender.send(());
++    }
++
++    fn join_worker(&self, worker: GuestWorkerHandle) {
++        let error = match worker.handle.join() {
++            Ok(Ok(_)) => None,
++            Ok(Err(error)) => Some(Arc::new(error)),
++            Err(payload) => Some(self.retain_joined_worker_panic(worker.tid, payload)),
++        };
++        self.worker_start_gates.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
++            .remove(&worker.tid);
++        if let Some(error) = error {
++            self.worker_errors.lock().expect("KVM worker error lock poisoned")
++                .entry(worker.tid).or_default().push(error);
++        }
++    }
++
++    /// Unfinished workers never leave the registry in this path. An actual
++    /// leader Exec has exclusive production join ownership: guest workers are
++    /// rejected by exec_process and their backends never physically join.
++    fn join_finished_workers_for_exec(&self) -> (bool, bool) {
++        let (finished, returning) = {
++            let mut handles = self.worker_handles.lock().expect("KVM guest worker-handle lock poisoned");
++            let mut finished = Vec::new();
++            let mut index = 0;
++            while index < handles.len() {
++                if handles[index].handle.is_finished() {
++                    finished.push(handles.remove(index));
++                } else {
++                    index += 1;
++                }
++            }
++            // Raw-handle registrations exist only in old internal fixtures.
++            // They can still be observed cooperatively; every production
++            // worker supplies its actual post-closure completion notice.
++            let returning = handles.iter().any(|worker| worker.returning.as_ref()
++                .is_none_or(|returning| returning.load(Ordering::Acquire)));
++            (finished, returning)
++        };
++        for worker in finished {
++            self.join_worker(worker);
++        }
++        let empty = self.worker_handles.lock().expect("KVM guest worker-handle lock poisoned").is_empty();
++        (empty, returning)
+     }
+ 
+     fn discard_unstarted_worker(&self, tid: i32) -> Result<bool> {
+@@ -765,23 +856,7 @@
+                 self.cancel_pending_worker_gates(&handles);
+             }
+             for worker in handles {
+-                let error = match worker.handle.join() {
+-                    Ok(Ok(_)) => None,
+-                    Ok(Err(error)) => Some(Arc::new(error)),
+-                    Err(payload) => Some(self.retain_joined_worker_panic(worker.tid, payload)),
+-                };
+-                self.worker_start_gates
+-                    .lock()
+-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+-                    .remove(&worker.tid);
+-                if let Some(error) = error {
+-                    self.worker_errors
+-                        .lock()
+-                        .expect("KVM worker error lock poisoned")
+-                        .entry(worker.tid)
+-                        .or_default()
+-                        .push(error);
+-                }
++                self.join_worker(worker);
+             }
+         }
+     }
+@@ -2343,9 +2418,13 @@
+                     None,
+                 )?;
+ 
++                let completion_notice = WorkerCompletionNotice::new(self.thread_group.clone());
++                let returning = completion_notice.returning.clone();
+                 let handle = std::thread::Builder::new()
+                     .name(format!("reverie-kvm-guest-{child_tid}"))
+                     .spawn(move || {
++                        let _completion_notice = completion_notice;
++                        (move || {
+                         let driver = child.start_entry_driver();
+                         child_executor.bind_address_space(&child.memory);
+                         let execution =
+@@ -2417,8 +2496,9 @@
+                                 Some(driver),
+                             ),
+                         }
++                        })()
+                     })?;
+-                self.thread_group.add_worker_handle(child_tid, handle);
++                self.thread_group.add_worker_handle_with_completion(child_tid, None, Some(returning), handle);
+             }
+             ProcessAction::Exec {
+                 executable_path,
+@@ -2441,8 +2521,7 @@
+                 // new address space becomes visible. Leaving a sibling vCPU
+                 // alive lets it execute stale instructions in the replacement
+                 // image and can turn an otherwise successful exec into a fault.
+-                self.check_entry_owner()?;
+-                self.cancel_guest_threads();
++                self.cancel_guest_threads_for_exec(stop.as_mut()).await?;
+                 self.guest_worker_teardown_result()
+                     .map_err(|error| Error::ExecWorkerTeardown(Box::new(error)))?;
+                 let result = self.exec_process(
+@@ -3076,6 +3155,8 @@
+                 let pending_child_starts = context.pending_child_starts;
+                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
+                 let start_gate = ChildStartGate::new(start_sender);
++                let completion_notice = WorkerCompletionNotice::new(self.thread_group.clone());
++                let returning = completion_notice.returning.clone();
+                 let handle = crate::failure::spawn_owned(
+                     std::thread::Builder::new().name(format!("reverie-kvm-guest-{child_tid}")),
+                     (
+@@ -3096,6 +3177,8 @@
+                         config,
+                         subscriptions,
+                     )| {
++                        let _completion_notice = completion_notice;
++                        (move || {
+                         let driver = child.start_entry_driver();
+                         child_executor.bind_address_space(&child.memory);
+                         let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+@@ -3176,6 +3259,7 @@
+                                 Some(driver),
+                             ),
+                         }
++                        })()
+                     },
+                 );
+                 let handle = match handle {
+@@ -3228,7 +3312,7 @@
+                     }
+                 };
+                 self.thread_group
+-                    .add_unstarted_worker(child_tid, start_gate.clone(), handle);
++                    .add_worker_handle_with_completion(child_tid, Some(start_gate.clone()), Some(returning), handle);
+                 pending_child_starts
+                     .lock()
+                     .expect("KVM child-start lock poisoned")
+@@ -4402,6 +4486,62 @@
+         self.thread_group.cancel_workers();
+         if !self.is_guest_thread {
+             self.thread_group.join_workers();
++        }
++    }
++
++    async fn cancel_guest_threads_for_exec(
++        &self,
++        mut stop: Pin<&mut (dyn Future<Output = ()> + Send + '_)>,
++    ) -> Result<()> {
++        self.thread_group.cancel_workers();
++        let watch = self.entry_driver_watch();
++        watch.check()?;
++        // Preserve the existing worker-Exec rejection in exec_process; a
++        // guest-thread backend never becomes a physical join owner here.
++        if self.is_guest_thread {
++            return Ok(());
++        }
++        loop {
++            // Subscribe before each registry/entry recheck. Private failure
++            // wakes can interrupt without first publishing through the Tool.
++            let mut changed = Box::pin(self.thread_group.subscribe_worker_completion());
++            let mut interrupted = Box::pin(watch.wait());
++            let complete = std::future::poll_fn(|cx| {
++                if let Err(error) = watch.check() {
++                    return std::task::Poll::Ready(Err(error));
++                }
++                if stop.as_mut().poll(cx).is_ready() {
++                    return std::task::Poll::Ready(Err(watch.check().err().unwrap_or(Error::RunAborted)));
++                }
++                let (empty, returning) = self.thread_group.join_finished_workers_for_exec();
++                if let Err(error) = watch.check() {
++                    return std::task::Poll::Ready(Err(error));
++                }
++                if stop.as_mut().poll(cx).is_ready() {
++                    return std::task::Poll::Ready(Err(watch.check().err().unwrap_or(Error::RunAborted)));
++                }
++                if empty {
++                    return std::task::Poll::Ready(Ok(true));
++                }
++                if changed.as_mut().poll(cx).is_ready() {
++                    return std::task::Poll::Ready(Ok(false));
++                }
++                if interrupted.as_mut().poll(cx).is_ready() {
++                    return std::task::Poll::Ready(Err(watch.check().err().expect(
++                        "private entry interruption lost its captured cause",
++                    )));
++                }
++                if returning {
++                    // A real completion notice can precede is_finished by
++                    // host bookkeeping. One cooperative recheck per poll
++                    // preserves entry/stop interruption through that interval.
++                    cx.waker().wake_by_ref();
++                }
++                std::task::Poll::Pending
++            }).await?;
++            if complete {
++                return Ok(());
++            }
+         }
+     }
+ 
+@@ -9942,3 +10082,7 @@
+ #[cfg(test)]
+ #[path = "vm/entry_owner_tests.rs"]
+ mod entry_owner_tests;
++
++#[cfg(test)]
++#[path = "vm/exec_wait_tests.rs"]
++mod exec_wait_tests;
+--- /dev/null
++++ b/reverie-kvm/src/vm/exec_wait_tests.rs
+@@ -0,0 +1,171 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! Actual Exec wait/group ownership with a constructed callback and host
++//! worker. KVM setup is required; no guest instruction or KVM_RUN is used.
++
++use std::sync::atomic::AtomicUsize;
++use std::sync::mpsc;
++use std::task::{Context, Poll};
++use std::time::Duration;
++
++use super::*;
++
++const WAIT: Duration = Duration::from_secs(5);
++
++struct WakeCount(AtomicUsize);
++
++impl futures::task::ArcWake for WakeCount {
++    fn wake_by_ref(arc_self: &Arc<Self>) {
++        arc_self.0.fetch_add(1, Ordering::SeqCst);
++    }
++}
++
++struct Callback<'a> {
++    wait: Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
++    destroyed: Arc<AtomicBool>,
++}
++
++impl Future for Callback<'_> {
++    type Output = Result<()>;
++    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
++        self.wait.as_mut().poll(cx)
++    }
++}
++
++impl Drop for Callback<'_> {
++    fn drop(&mut self) {
++        self.destroyed.store(true, Ordering::Release);
++    }
++}
++
++struct WorkerDone(mpsc::Sender<()>);
++
++impl Drop for WorkerDone {
++    fn drop(&mut self) {
++        let _ = self.0.send(());
++    }
++}
++
++struct Rescue {
++    group: Arc<GuestThreadGroup>,
++    release: Option<mpsc::Sender<()>>,
++    done: mpsc::Receiver<()>,
++    finished: bool,
++    joined: bool,
++}
++
++impl Drop for Rescue {
++    fn drop(&mut self) {
++        if self.joined {
++            return;
++        }
++        if let Some(release) = self.release.take() {
++            let _ = release.send(());
++        }
++        if self.finished || self.done.recv_timeout(WAIT).is_ok() {
++            self.group.join_workers();
++        }
++    }
++}
++
++#[test]
++fn exec_wait_private_failure_leaves_worker_owned_until_callback_destruction() {
++    let mut backend = KvmBackend::new(0x10000).expect("Exec wait control requires /dev/kvm");
++    let global = Arc::new(());
++    let run = crate::failure::RunFailure::new(&global);
++    backend.set_tool_failure(Some(crate::failure::FailureContext::new(
++        run.clone(), Pid::from_raw(1), Pid::from_raw(1),
++    )));
++    let driver = backend.start_entry_driver();
++    let callback_scope = backend.begin_entry_callback().unwrap().unwrap();
++    let origin = callback_scope.origin();
++    let memory = backend.memory.clone();
++    let group = backend.thread_group.clone();
++    let destroyed = Arc::new(AtomicBool::new(false));
++    let worker_destroyed = destroyed.clone();
++    let worker_run = run.clone();
++    let (start, wait_start) = mpsc::channel();
++    let gate = ChildStartGate::new(start);
++    let (cancelled, wait_cancelled) = mpsc::channel();
++    let (release, wait_release) = mpsc::channel();
++    let (done, wait_done) = mpsc::channel();
++    let notice = WorkerCompletionNotice::new(group.clone());
++    let returning = notice.returning.clone();
++    let handle = std::thread::spawn(move || {
++        let _done = WorkerDone(done);
++        let _notice = notice;
++        (move || -> GuestWorkerResult {
++            assert_eq!(wait_start.recv_timeout(WAIT).unwrap(), ChildStartCommand::Cancel);
++            cancelled.send(()).unwrap();
++            // A regressed blocking join is finite too: this receive times out
++            // and fails the worker rather than stranding the control process.
++            wait_release.recv_timeout(WAIT).unwrap();
++            assert!(worker_destroyed.load(Ordering::Acquire));
++            assert!(worker_run.published_primary().is_some());
++            Err(Error::RunAborted)
++        })()
++    });
++    group.add_worker_handle_with_completion(2, Some(gate.clone()), Some(returning.clone()), handle);
++    let mut rescue = Rescue {
++        group: group.clone(), release: Some(release), done: wait_done,
++        finished: false, joined: false,
++    };
++    let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
++    let waker = futures::task::waker(wakes.clone());
++    let mut cx = Context::from_waker(&waker);
++    let mut stop = Box::pin(std::future::pending());
++    let mut callback = Box::pin(Callback {
++        wait: Box::pin(backend.cancel_guest_threads_for_exec(stop.as_mut())),
++        destroyed: destroyed.clone(),
++    });
++    assert!(callback.as_mut().poll(&mut cx).is_pending());
++    wait_cancelled.recv_timeout(WAIT).expect("Exec did not request worker cancellation");
++    assert!(gate.is_cancelled());
++    assert_eq!(group.worker_handles.lock().unwrap().len(), 1);
++    assert!(!returning.load(Ordering::Acquire));
++    assert!(run.published_primary().is_none());
++
++    let cause = Arc::new(Error::GuestClock("private failure during Exec wait".to_owned()));
++    let before = wakes.0.load(Ordering::SeqCst);
++    memory.entry_gate().poison(memory.entry_origin(), Error::SharedFailure(cause.clone()));
++    assert!(wakes.0.load(Ordering::SeqCst) > before);
++    let error = match callback.as_mut().poll(&mut cx) {
++        Poll::Ready(Err(error)) => error,
++        _ => panic!("private cause must interrupt the pending Exec callback"),
++    };
++    assert!(crate::failure::references_shared_error(&error, &cause));
++    assert!(!destroyed.load(Ordering::Acquire));
++    assert!(!origin.callback_dropped());
++    assert!(run.published_primary().is_none());
++    assert_eq!(group.worker_handles.lock().unwrap().len(), 1);
++    assert!(group.worker_errors.lock().unwrap().is_empty());
++    assert!(!returning.load(Ordering::Acquire));
++
++    drop(callback);
++    drop(callback_scope);
++    backend.restore_entry_origin();
++    assert!(destroyed.load(Ordering::Acquire));
++    assert!(origin.callback_dropped());
++    let error = futures::executor::block_on(backend.route_entry_outcome::<()>(Err(error))).unwrap_err();
++    let error = backend.report_tool_failure("constructed Exec callback", error);
++    assert!(run.published_primary().is_some());
++    let mut completion = Box::pin(group.subscribe_worker_completion());
++    assert!(completion.as_mut().poll(&mut cx).is_pending());
++    rescue.release.take().unwrap().send(()).unwrap();
++    rescue.done.recv_timeout(WAIT).expect("released worker did not finish");
++    rescue.finished = true;
++    assert!(completion.as_mut().poll(&mut cx).is_ready());
++    assert!(returning.load(Ordering::Acquire));
++    group.join_workers();
++    rescue.joined = true;
++    assert!(group.worker_handles.lock().unwrap().is_empty());
++    assert!(group.worker_start_gates.lock().unwrap().is_empty());
++    let completed = backend.finish_entry_driver::<()>(driver, Err(error)).unwrap_err();
++    assert!(crate::failure::references_shared_error(&completed, &cause));
++}

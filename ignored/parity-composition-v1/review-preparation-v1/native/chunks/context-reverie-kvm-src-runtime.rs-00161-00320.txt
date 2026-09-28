@@ -1,0 +1,160 @@
+            if number == libc::SYS_execve as u64
+                || number == libc::SYS_execveat as u64
+                || number == libc::SYS_exit as u64
+                || number == libc::SYS_exit_group as u64 =>
+        {
+            true
+        }
+        number if number == libc::SYS_kill as u64 || number == libc::SYS_tkill as u64 => {
+            request.args()[1] == libc::SIGKILL as u64
+        }
+        number if number == libc::SYS_tgkill as u64 => request.args()[2] == libc::SIGKILL as u64,
+        _ => false,
+    }
+}
+
+/// Returns whether an injected request is the already-installed initial exec.
+///
+/// Tools may forward the synthetic `execve` unchanged, or use Reverie's
+/// canonical `From<Execve> for Execveat` conversion. Only those two exact
+/// requests are equivalent: accepting any other `execveat` would suppress a
+/// real image replacement requested by the tool.
+fn matches_initial_exec(expected: &SyscallRequest, request: &SyscallRequest) -> bool {
+    if expected.number() != libc::SYS_execve as u64 || expected.args()[3..] != [0, 0, 0] {
+        return false;
+    }
+    if expected == request {
+        return true;
+    }
+
+    let [path, argv, envp, _, _, _] = *expected.args();
+    request.number() == libc::SYS_execveat as u64
+        && *request.args() == [libc::AT_FDCWD as u64, path, argv, envp, 0, 0]
+}
+
+fn signal_request_requires_return_frame(request: &SyscallRequest) -> bool {
+    let signal = match request.number() {
+        number if number == libc::SYS_kill as u64 || number == libc::SYS_tkill as u64 => {
+            request.args()[1]
+        }
+        number if number == libc::SYS_tgkill as u64 => request.args()[2],
+        _ => 0,
+    };
+    // Signal zero is an existence/permission probe and cannot create pending
+    // delivery, so it is safe in lifecycle callbacks without a return frame.
+    signal != 0
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SignalGuard {
+    Ordinary,
+    Observation,
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 572..630; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    T: Tool + 'static,
+    T::ThreadState: 'static,
+    T::GlobalState: 'static,
+    <T::GlobalState as GlobalTool>::Config: 'static,
+{
+    fn read_clock(&self) -> Result<u64> {
+        self.backend.vcpu.read_clock()
+    }
+
+    fn has_cpuid_interception(&self) -> bool {
+        self.backend.has_cpuid_interception()
+    }
+
+    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
+        self.backend
+            .tool_failure
+            .as_ref()
+            .map(|failure| failure.run.subscribe())
+    }
+
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        if !self.signal_injection_allowed(request) {
+            // KvmGuest performs the same check before dispatch. Keep the
+            // production executor fail-closed as well: a future Guest caller
+            // must not execute an irreversible transition and only then learn
+            // that SignalBoundary cannot resume its Tool hook.
+            return -(i64::from(Errno::ENOSYS.into_raw()));
+        }
+        if matches!(
+            self.process_context,
+            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Instruction
+        ) && let Some(result) = self
+            .executor
+            .lifecycle_signal_mask_preflight(request, memory)
+        {
+            return result;
+        }
+        if !self.process_context.injected_signal_allowed(request) {
+            // A successful injected self-signal would become pending, but a
+            // lifecycle callback has no transported userspace context in which
+            // to run the structured hook or build a signal frame. Refuse before
+            // mutating pending state instead of delaying it to another syscall.
+            return -(i64::from(Errno::ENOSYS.into_raw()));
+        }
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-233): Review synthetic initial exec completion.
+        if matches!(
+            &self.process_context,
+            ProcessExecutionContext::InitialExec(expected)
+                if matches_initial_exec(expected, request)
+        ) {
+            self.last_result = Some(0);
+            self.process_context = ProcessExecutionContext::InitialExecCompleted;
+            return 0;
+        }
+        let result = self.executor.execute(request, memory);
+        self.last_result = Some(result);
+        result
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 814..822; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        self.signal_injection_allowed(request)
+    }
+
+    fn tail_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        self.signal_guard == SignalGuard::Ordinary
+            && !self.executor.has_prepared_signal()
+            && self.process_context.tail_injection_allowed(request)
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 832..949; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    fn complete_injection<'a>(
+        &'a mut self,
+        context: ToolContext<'a, T>,
+    ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+    where
+        T: 'a,
+    {
+        Box::pin(async move {
+            if matches!(
+                self.process_context,
+                ProcessExecutionContext::InitialExecCompleted
+            ) {
+                *self.process_completed = true;
+                return Ok(InjectionCompletion::DoesNotReturn {
+                    image_replaced: true,
+                    process_exited: false,
+                });
+            }
+            let Some(action) = self.executor.take_process_action() else {
+                return Ok(if self.executor.has_pending_exit() {
+                    InjectionCompletion::DoesNotReturn {
+                        image_replaced: false,
+                        process_exited: true,
+                    }
+                } else {
+                    InjectionCompletion::Returns {
+                        syscall_result: None,
+                    }
+                });
+            };
+            if !action.returns_to_original_image() && self.executor.has_eligible_pending_signal() {
+                return Err(Error::UnexpectedVcpuExit(
+                    "KVM Tool exec with an eligible deferred signal is unsupported; \
+                     delivery requires a syscall return frame"
+                        .to_owned(),

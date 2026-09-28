@@ -1,0 +1,79 @@
+            vec![1, 65]
+        }
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn initial_command_clock_counts_first_branch_and_guest_loop() {
+    for injected_exec in [false, true] {
+        run(
+            Config {
+                injected_exec,
+                ..Config::default()
+            },
+            0,
+        )
+        .await;
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn initial_exec_retires_thread_start_and_intercepted_exec_timers() {
+    for injected_exec in [false, true] {
+        for startup_request in [1, 2, 3] {
+            run(
+                Config {
+                    injected_exec,
+                    startup_request,
+                    ..Config::default()
+                },
+                0,
+            )
+            .await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn initial_post_exec_injection_and_new_timer_remain_live() {
+    for injected_exec in [false, true] {
+        run(
+            Config {
+                injected_exec,
+                startup_request: 1,
+                post_exec_request: true,
+                ..Config::default()
+            },
+            0,
+        )
+        .await;
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn initial_command_clock_excludes_added_post_stop_launcher_branches() {
+    for injected_exec in [false, true] {
+        run(
+            Config {
+                injected_exec,
+                ..Config::default()
+            },
+            257,
+        )
+        .await;
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_initial_exec_keeps_clock_and_notifications_inactive() {
+    run(
+        Config {
+            injected_exec: true,
+            startup_request: 1,
+            initial_failure: true,
+            ..Config::default()
+        },
+        257,
+    )
+    .await;
+}

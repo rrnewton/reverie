@@ -1,0 +1,133 @@
+{
+  "complete": true,
+  "stopped": null,
+  "phases": [
+    {
+      "phase": "compile",
+      "caller_raw_status": 0,
+      "elapsed_seconds": 13.475466635078192,
+      "controller_refusal": null,
+      "terminal_settled": true,
+      "payload_result": {
+        "raw_status": 0,
+        "elapsed_seconds": 12.836110848002136,
+        "stream_bytes": {
+          "stdout": 128291,
+          "stderr": 527
+        },
+        "refusal": null,
+        "source_unchanged": true
+      },
+      "context_unchanged": true
+    },
+    {
+      "phase": "inventory",
+      "caller_raw_status": 0,
+      "elapsed_seconds": 0.4138581568840891,
+      "controller_refusal": null,
+      "terminal_settled": true,
+      "payload_result": {
+        "raw_status": 0,
+        "elapsed_seconds": 0.03693767497316003,
+        "stream_bytes": {
+          "stdout": 46575,
+          "stderr": 280
+        },
+        "refusal": null,
+        "source_unchanged": true
+      },
+      "context_unchanged": true
+    },
+    {
+      "phase": "new-tests",
+      "caller_raw_status": 0,
+      "elapsed_seconds": 0.41280105989426374,
+      "controller_refusal": null,
+      "terminal_settled": true,
+      "payload_result": {
+        "raw_status": 0,
+        "elapsed_seconds": 0.03983020596206188,
+        "stream_bytes": {
+          "stdout": 544,
+          "stderr": 280
+        },
+        "refusal": null,
+        "source_unchanged": true
+      },
+      "context_unchanged": true
+    },
+    {
+      "phase": "exec-rearm",
+      "caller_raw_status": 0,
+      "elapsed_seconds": 0.41350250295363367,
+      "controller_refusal": null,
+      "terminal_settled": true,
+      "payload_result": {
+        "raw_status": 0,
+        "elapsed_seconds": 0.04073582496494055,
+        "stream_bytes": {
+          "stdout": 189,
+          "stderr": 281
+        },
+        "refusal": null,
+        "source_unchanged": true
+      },
+      "context_unchanged": true
+    },
+    {
+      "phase": "poisoned-state",
+      "caller_raw_status": 0,
+      "elapsed_seconds": 0.4135331700090319,
+      "controller_refusal": null,
+      "terminal_settled": true,
+      "payload_result": {
+        "raw_status": 0,
+        "elapsed_seconds": 0.0389162041246891,
+        "stream_bytes": {
+          "stdout": 188,
+          "stderr": 474
+        },
+        "refusal": null,
+        "source_unchanged": true
+      },
+      "context_unchanged": true
+    },
+    {
+      "phase": "late-start",
+      "caller_raw_status": 0,
+      "elapsed_seconds": 0.41347655514255166,
+      "controller_refusal": null,
+      "terminal_settled": true,
+      "payload_result": {
+        "raw_status": 0,
+        "elapsed_seconds": 0.04499337496235967,
+        "stream_bytes": {
+          "stdout": 192,
+          "stderr": 579
+        },
+        "refusal": null,
+        "source_unchanged": true
+      },
+      "context_unchanged": true
+    },
+    {
+      "phase": "format-check",
+      "caller_raw_status": 0,
+      "elapsed_seconds": 0.4132810409646481,
+      "controller_refusal": null,
+      "terminal_settled": true,
+      "payload_result": {
+        "raw_status": 0,
+        "elapsed_seconds": 0.12308944016695023,
+        "stream_bytes": {
+          "stdout": 0,
+          "stderr": 286
+        },
+        "refusal": null,
+        "source_unchanged": true
+      },
+      "context_unchanged": true
+    }
+  ],
+  "ended_utc": "2026-09-19T11:23:47.680879+00:00"
+}

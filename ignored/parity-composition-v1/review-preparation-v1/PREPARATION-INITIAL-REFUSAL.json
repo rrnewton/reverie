@@ -1,0 +1,10 @@
+{
+  "phase": "read-only review packet preparation",
+  "raw_status": 1,
+  "tool_session": 4099,
+  "exception": "KeyError: 'purpose'",
+  "cause": "Not all unchanged selector records have the optional descriptive purpose field. No selector names, assertions, plans or qualification data were changed.",
+  "source_already_written": "common before/after/context copies only, preserved byte for byte",
+  "correction": "optional description is null when absent; existing packet copies must match byte for byte before reuse",
+  "reviewers_launched": 0
+}

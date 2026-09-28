@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use kvm_bindings::CpuId;
+use kvm_bindings::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
+use kvm_bindings::kvm_cpuid_entry2;
+
+use crate::Error;
+use crate::Result;
+
+/// Controls the CPU identity and features exposed to a KVM guest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CpuidPolicy {
+    /// Hide hardware random-number instructions (`RDRAND` and `RDSEED`).
+    pub mask_hardware_random: bool,
+    /// Hide Intel transactional-memory extensions.
+    pub mask_tsx: bool,
+    /// Hide AVX-512 instructions and their extended register state.
+    pub mask_avx512: bool,
+}
+
+impl CpuidPolicy {
+    /// A fixed x86-64-v2 baseline for deterministic execution.
+    // TODO-HUMAN-REVIEW(PR-129): Review the fixed KVM CPUID profile API.
+    pub const fn deterministic() -> Self {
+        Self {
+            mask_hardware_random: true,
+            mask_tsx: true,
+            mask_avx512: true,
+        }
+    }
+
+    /// Exposes KVM's full host-supported CPUID table.
+    pub const fn host_supported() -> Self {
+        Self {
+            mask_hardware_random: false,
+            mask_tsx: false,
+            mask_avx512: false,
+        }
+    }
+
+    pub(crate) fn apply(self, cpuid: &mut CpuId) -> Result<()> {
+        if self == Self::deterministic() {
+            let fixed = deterministic_cpuid_table();
+            validate_required_features(cpuid, &fixed)?;
+            *cpuid = fixed;
+        }
+        for entry in cpuid.as_mut_slice() {
+            match (entry.function, entry.index) {
+                (1, 0) if self.mask_hardware_random => {
+                    entry.ecx &= !bit(30); // RDRAND
+                }
+                (7, 0) => {
+                    if self.mask_hardware_random {
+                        entry.ebx &= !bit(18); // RDSEED
+                    }
+                    if self.mask_tsx {
+                        entry.ebx &= !(bit(4) | bit(11)); // HLE, RTM
+                        entry.edx &= !(bit(11) | bit(13) | bit(16));
+                    }
+                    if self.mask_avx512 {
+                        entry.ebx &= !(bit(16)
+                            | bit(17)
+                            | bit(21)
+                            | bit(26)
+                            | bit(27)
+                            | bit(28)
+                            | bit(30)
+                            | bit(31));
+                        entry.ecx &= !(bit(1) | bit(6) | bit(11) | bit(12) | bit(14));
+                        entry.edx &= !(bit(2) | bit(3) | bit(8) | bit(23));
+                    }
+                }
+                (7, 1) if self.mask_avx512 => {
+                    entry.eax &= !bit(5); // AVX512_BF16
+                }
+                (0xd, 0) if self.mask_avx512 => {
+                    // Opmask, ZMM_Hi256, and Hi16_ZMM user-state components.
+                    entry.eax &= !(bit(5) | bit(6) | bit(7));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for CpuidPolicy {
+    fn default() -> Self {
+        Self::deterministic()
+    }
+}
+
+const fn bit(index: u32) -> u32 {
+    1_u32 << index
+}
+
+fn deterministic_cpuid_table() -> CpuId {
+    build_deterministic_cpuid_table(
+        DETERMINISTIC_STANDARD_CPUIDS,
+        DETERMINISTIC_XSTATE_CPUIDS,
+        DETERMINISTIC_EXTENDED_CPUIDS,
+    )
+}
+
+fn build_deterministic_cpuid_table(
+    standard: &[[u32; 4]],
+    xstate: &[(u32, [u32; 4])],
+    extended: &[[u32; 4]],
+) -> CpuId {
+    let entries = standard
+        .iter()
+        .enumerate()
+        .filter(|(_, registers)| **registers != [0; 4])
+        .map(|(function, registers)| {
+            let function = function as u32;
+            if standard_leaf_uses_subleaf(function) {
+                indexed_cpuid_entry(function, 0, *registers)
+            } else {
+                cpuid_entry(function, *registers)
+            }
+        })
+        .chain(
+            xstate
+                .iter()
+                .map(|(index, registers)| indexed_cpuid_entry(0xd, *index, *registers)),
+        )
+        .chain(
+            extended
+                .iter()
+                .enumerate()
+                .filter(|(_, registers)| **registers != [0; 4])
+                .map(|(offset, registers)| cpuid_entry(0x8000_0000 + offset as u32, *registers)),
+        )
+        .collect::<Vec<_>>();
+    assert_unique_function_indices(&entries);
+    CpuId::from_entries(&entries).expect("fixed CPUID profile must fit in KVM's table")
+}
+
+/// Whether ECX selects a subleaf for a basic leaf in the advertised profile.
+fn standard_leaf_uses_subleaf(function: u32) -> bool {
+    matches!(function, 0x04 | 0x07 | 0x0b | 0x0d)
+}
+
+fn assert_unique_function_indices(entries: &[kvm_cpuid_entry2]) {
+    for (position, entry) in entries.iter().enumerate() {
+        assert!(
+            !entries[..position].iter().any(|previous| {
+                previous.function == entry.function && previous.index == entry.index
+            }),
+            "fixed CPUID profile contains duplicate leaf {:#x}, subleaf {:#x}",
+            entry.function,
+            entry.index,
+        );
+    }

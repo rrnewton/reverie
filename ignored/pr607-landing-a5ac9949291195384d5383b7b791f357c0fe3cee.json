@@ -1,0 +1,25 @@
+{
+  "absent": [],
+  "arrived": [
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/memory.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/vm/memory_publication_tests.rs"
+  ],
+  "corroborated": true,
+  "corroborated_against": "a5ac9949291195384d5383b7b791f357c0fe3cee",
+  "files": [
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/memory.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/vm/memory_publication_tests.rs"
+  ],
+  "main_sha": "123df7c4c0169006fbfe1f11a1553fe333eac937",
+  "moved_on": [],
+  "pr": "607",
+  "repo": "rrnewton/reverie",
+  "resolved_from": "refs/pull/607/head",
+  "resolved_head": "a5ac9949291195384d5383b7b791f357c0fe3cee"
+}

@@ -1,0 +1,190 @@
+{
+  "raw_status": 0,
+  "elapsed_seconds": 0.18916269089095294,
+  "stream_bytes": {
+    "stdout": 196,
+    "stderr": 295
+  },
+  "refusals": [],
+  "control_commands": [],
+  "observed_service": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-panic-consumer-test-exec-cleanup-1-3955084",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=3955396\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-exec-cleanup-1-3955084.service\nCPUUsageNSec=1755000\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "loaded",
+      "ActiveState": "active",
+      "SubState": "running",
+      "MainPID": "3955396",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-exec-cleanup-1-3955084.service",
+      "CPUUsageNSec": "1755000"
+    }
+  },
+  "accepted": true,
+  "terminal_service": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "kvm-panic-consumer-test-exec-cleanup-1-3955084",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,MainPID,Result,ExecMainCode,ExecMainStatus,CPUUsageNSec"
+    ],
+    "raw_status": 0,
+    "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=\nCPUUsageNSec=[not set]\n",
+    "stderr": "",
+    "fields": {
+      "LoadState": "not-found",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainCode": "0",
+      "ExecMainStatus": "0",
+      "ControlGroup": "",
+      "CPUUsageNSec": "[not set]"
+    }
+  },
+  "observed_cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-panic-consumer-test-exec-cleanup-1-3955084.service",
+  "observed_cgroup_absent": true,
+  "source_after": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 46214,
+      "sha256": "8248ec4d8363b9796d4bff9fa20f010558480ccb36dc342755eda561a1bd67d5"
+    },
+    "reverie-kvm/src/entry/owner.rs": {
+      "bytes": 34802,
+      "sha256": "3add39ce0f58205e936dd86f6515d8bee23b840be833fa5b40c8a0a28c116de4"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    },
+    "reverie-kvm/src/clock.rs": {
+      "bytes": 37130,
+      "sha256": "f73f389d1ab1fb44f40a21f2e98f233962d9c74771cd0b937389f7385edac28a"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 383660,
+      "sha256": "1b10e624f4baa7d7f476ef027d0c8c5b583b9e44435a67fedd893702c7f5504a"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 238486,
+      "sha256": "82a5f5a3db806483714b52507eaf0494622e7548edde84f04462f4d0a620bdfc"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "bytes": 131425,
+      "sha256": "b2608e7c76baab2a7b00b61acf44d5080dd2829bc7d6bc26c65d7f62b542bec5"
+    },
+    "reverie-kvm/src/cpuid_runtime_tests.rs": {
+      "bytes": 5963,
+      "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 28188,
+      "sha256": "8427ff69597d12ffc7e6c1e8aa4fff864989a12b6a489cecec1ab36bf011e64d"
+    },
+    "reverie-kvm/src/bootstrap.rs": {
+      "bytes": 43344,
+      "sha256": "46e856d87ac8fce52722af3655c4b5dfdb5e4b5ee09e32c0bb3597a010b4a0cc"
+    },
+    "reverie-kvm/src/executor.rs": {
+      "bytes": 1520775,
+      "sha256": "bad4de60e4016f3e445c6fe484cce433b25f95758c8ca0272fdf72e46b183b9d"
+    },
+    "Cargo.lock": {
+      "bytes": 67056,
+      "sha256": "0a5ecdf9fc94cf7eddad15c0ced7c61ed9f4db08a47f5e1a668d5a7f663c8419"
+    },
+    "reverie-kvm/src/failure/owned_future.rs": {
+      "bytes": 10917,
+      "sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d"
+    },
+    "reverie-kvm/src/vm/worker_panic_tests.rs": {
+      "bytes": 19564,
+      "sha256": "db0618132b60313fe0eef1dda163e28ba7237e7b49fc391172d63cfca95570e4"
+    },
+    "reverie-kvm/src/runtime/failure_tests.rs": {
+      "bytes": 52820,
+      "sha256": "18d7d156bd5ecc3599c100a106698d55ff5aa9229c4b31713fb8312d1b9b7995"
+    }
+  },
+  "changed_source_paths": [],
+  "executable_after": {
+    "bytes": 143223048,
+    "sha256": "261b54d9ed74262b2836f9f919676c6214549e0ec2676df1a9e8d8f3c7a29b0d"
+  },
+  "tools_after": {
+    "cargo": {
+      "bytes": 35930328,
+      "sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+    },
+    "rustc": {
+      "bytes": 647712,
+      "sha256": "9da19b28ed198d7a7e3bd1ba5f6490b3d56c9b324f514bd05a5ed3f4661c95de"
+    },
+    "rustdoc": {
+      "bytes": 12485592,
+      "sha256": "68d9145d164f32d7dbf7b90213f6e07dc1b6e62efb1b329d6507e0471f4c3eed"
+    },
+    "rustfmt": {
+      "bytes": 5255768,
+      "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+    }
+  },
+  "caller_after": {
+    "runner.py": {
+      "bytes": 13065,
+      "sha256": "b0a6f588bec596a6354703b3fbe23c129a18e5763bba19978a9a7a424e802edf"
+    },
+    "support.py": {
+      "bytes": 3590,
+      "sha256": "67b557218812c4a872ad607c63e330f5cfb8091f7918703ca30d30ed9aedfdff"
+    }
+  },
+  "selection": {
+    "expected": {
+      "phase": "test-exec-cleanup-1",
+      "selector": "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup"
+      ]
+    },
+    "summaries": [
+      [
+        "1",
+        "0",
+        "0"
+      ]
+    ]
+  },
+  "stream_records": {
+    "stdout": {
+      "bytes": 196,
+      "sha256": "8b81c16a4e98b3afc9358a6436ba400e683134d9c65c6052835ee80fae44e978"
+    },
+    "stderr": {
+      "bytes": 295,
+      "sha256": "43806a5a6bede1f83ba48f74d1f78947f25fa0ba62f7af53d85a409868805ea1"
+    }
+  }
+}

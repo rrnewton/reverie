@@ -1,0 +1,11 @@
+
+running 1 test
+test static_elf_forks_execs_and_waits_for_child ... FAILED
+
+failures:
+
+failures:
+    static_elf_forks_execs_and_waits_for_child
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.08s
+

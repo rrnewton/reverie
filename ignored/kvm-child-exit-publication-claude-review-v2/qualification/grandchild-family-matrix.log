@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+
+running 1 test
+reverie-kvm child 2 failed before wait4: unexpected vCPU exit: KVM child process 2 failed before publishing its status
+reverie-kvm child 2 failed before wait4: unexpected vCPU exit: KVM child process 2 failed before publishing its status
+reverie-kvm child 4 failed before wait4: unexpected vCPU exit: KVM child process 4 failed before publishing its status
+reverie-kvm child 4 failed before wait4: unexpected vCPU exit: KVM child process 4 failed before publishing its status
+test grandchild_family_transitions_are_causal_on_real_kvm ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 1.46s
+

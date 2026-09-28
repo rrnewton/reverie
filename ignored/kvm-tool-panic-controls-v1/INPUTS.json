@@ -1,0 +1,29 @@
+{
+  "scope": "Observed helper/type source identities; failure.rs and runtime routing owned concurrently by root/other authors; not an exact full composed source qualification.",
+  "inputs": {
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 43973,
+      "sha256": "e42a533fe539963128f23cf9655baace4d342ca0afe0e55a2ec622ce7968167e"
+    },
+    "reverie-kvm/src/failure/owned_future.rs": {
+      "bytes": 10917,
+      "sha256": "043a38bfb7af1138ec66962f892e904c69320dab9c0c672b75ed7f64898b202d"
+    },
+    "reverie/src/signal_observation.rs": {
+      "bytes": 7632,
+      "sha256": "d089b3d2f18d41364a3ea73dd5ff241ceeec4996bcf71e33bcc08495a4c73dcf"
+    },
+    "reverie/src/signal.rs": {
+      "bytes": 10358,
+      "sha256": "cb5e56347dd7651e9e10f7ff1a226c0f1fde5da55f901096cac7ee342107d33d"
+    }
+  },
+  "helper_before_module": {
+    "bytes": 2040,
+    "sha256": "29b500243a675441a631379e359a15a0ad03119580df029aee8350eec6fcf656"
+  }
+}

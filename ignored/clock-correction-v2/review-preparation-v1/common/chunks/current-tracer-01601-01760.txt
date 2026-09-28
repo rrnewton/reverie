@@ -1,0 +1,160 @@
+                Err(reap_error) => {
+                    return anyhow::anyhow!(
+                        "tracee {pid} died during ptrace initialization and its terminal status could not be reaped: {reap_error}"
+                    )
+                    .into();
+                }
+            };
+            tracing::error!(
+                target: "reverie_ptrace::lifecycle",
+                %pid,
+                ?exit_status,
+                "guest exited during ptrace initialization"
+            );
+            anyhow::anyhow!("tracee {pid} exited during ptrace initialization with {exit_status:?}")
+                .into()
+        }
+    }
+}
+
+fn report_pre_exec_capability_error(message: &'static [u8]) -> Errno {
+    let errno = Errno::last();
+    // SAFETY: write is async-signal-safe and message has static storage. This
+    // runs after fork, where tracing and allocation are not safe.
+    let _ = unsafe { libc::write(libc::STDERR_FILENO, message.as_ptr().cast(), message.len()) };
+    errno
+}
+
+/// Sets up the child process for ptracing right before execve is called.
+fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
+    // NOTE: There should be *NO* allocations along the happy path here.
+    // Allocating between a fork() and execve() can cause deadlocks in glibc
+    // when using jemalloc.
+
+    // hardcoded because `libc` does not export these.
+    const PER_LINUX: u64 = 0x0;
+    const ADDR_NO_RANDOMIZE: u64 = 0x0004_0000;
+
+    if intercept_rdtsc {
+        // Intercepting rdtsc is only possible on x86
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            if libc::prctl(libc::PR_SET_TSC, libc::PR_TSC_SIGSEGV, 0, 0, 0) != 0 {
+                return Err(report_pre_exec_capability_error(
+                    b"ERROR: Reverie could not enable RDTSC interception with prctl(PR_SET_TSC)\n",
+                ));
+            }
+        };
+    }
+
+    unsafe {
+        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            return Err(report_pre_exec_capability_error(
+                b"ERROR: Reverie could not enable PR_SET_NO_NEW_PRIVS for seccomp interception\n",
+            ));
+        }
+        if libc::personality(PER_LINUX | ADDR_NO_RANDOMIZE) == -1 {
+            return Err(report_pre_exec_capability_error(
+                b"ERROR: Reverie could not disable address-space randomization with personality(2)\n",
+            ));
+        }
+    }
+
+    // FIXME: This is a hacky workaround for `std::process::Command::spawn`
+    // getting stuck in a deadlock because of the SIGSTOP below.
+    // `Command::spawn` uses a pipe to communicate the error code to the parent
+    // process if the `execve` fails. The idea is that the write end of the pipe
+    // will be closed upon a successful call to `execve` and the parent will
+    // abort the blocking read on the read end of the pipe. We don't know
+    // exactly which file descriptor the pipe uses, so we attempt to close the
+    // first N file descriptors hoping it is among those. Unfortunately, in
+    // doing so, we lose the ability to capture `execve` failures.
+    //
+    // There are a couple options for a better implementation:
+    //  1. Recreate the entire `std::process` module to provide better ptrace
+    //     support. (A lot of work!)
+    //  2. Don't raise a SIGSTOP, but instead let the ptracer stop on the call to
+    //     `execve` and have the parent set the ptrace options at that point.
+    for i in 3..256 {
+        unsafe {
+            libc::close(i);
+        }
+    }
+
+    safeptrace::traceme_and_stop()?;
+
+    unsafe {
+        signal::sigaction(
+            signal::SIGTTIN,
+            &signal::SigAction::new(
+                signal::SigHandler::SigIgn,
+                signal::SaFlags::SA_RESTART,
+                signal::SigSet::empty(),
+            ),
+        )
+        .map_err(from_nix_error)?;
+
+        signal::sigaction(
+            signal::SIGTTOU,
+            &signal::SigAction::new(
+                signal::SigHandler::SigIgn,
+                signal::SaFlags::SA_RESTART,
+                signal::SigSet::empty(),
+            ),
+        )
+        .map_err(from_nix_error)?;
+    }
+
+    Ok(())
+}
+
+async fn run_orphaned(orphans: mpsc::Receiver<Child>) {
+    tokio_stream::wrappers::ReceiverStream::new(orphans)
+        .for_each_concurrent(None, |orphan| async {
+            let pid = orphan.id();
+            let Some(mut daemonizer) = orphan.daemonizer_rx else {
+                tracing::error!(
+                    %pid,
+                    "orphan is missing its daemonization channel; waiting for exit"
+                );
+                let status = orphan.handle.await;
+                tracing::debug!(%pid, ?status, "orphan exited");
+                return;
+            };
+
+            let daemonizer = daemonizer.recv();
+            futures::pin_mut!(daemonizer);
+
+            match future::select(Box::pin(orphan.handle), daemonizer).await {
+                Either::Left((exit_status, _)) => {
+                    tracing::debug!(
+                        "[reverie] Orphan {} exited with status {:?}",
+                        pid,
+                        exit_status
+                    );
+                }
+                Either::Right((kill_switch, handle)) => {
+                    tracing::debug!("[reverie] pid {} daemonized", pid);
+                    if let Some(mut kill_switch) = kill_switch {
+                        let kill_switch = kill_switch.recv();
+                        futures::pin_mut!(kill_switch);
+                        match future::select(Box::pin(handle), kill_switch).await {
+                            Either::Left((exit_status, _)) => {
+                                tracing::debug!(
+                                    "[reverie] Daemon {} exited with status {:?}",
+                                    pid,
+                                    exit_status
+                                );
+                            }
+                            Either::Right((_, handle)) => {
+                                tracing::debug!("sending sigkill {}", pid);
+                                unsafe {
+                                    libc::kill(pid.as_raw(), libc::SIGKILL);
+                                }
+                                let status = handle.await;
+                                tracing::debug!(
+                                    "[reverie] Daemon {} exited with status {:?}",
+                                    pid,
+                                    status
+                                );
+                            }

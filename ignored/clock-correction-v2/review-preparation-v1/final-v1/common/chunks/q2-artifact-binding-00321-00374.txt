@@ -1,0 +1,54 @@
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+        "target": {
+          "kind": [
+            "lib"
+          ],
+          "crate_types": [
+            "lib"
+          ],
+          "name": "reverie_ptrace",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/lib.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": true,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": false
+        },
+        "features": [],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_ptrace-1be83037850ec151.rlib",
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_ptrace-1be83037850ec151.rmeta"
+        ],
+        "executable": null,
+        "fresh": false
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_ptrace-1be83037850ec151.rlib",
+        "bytes": 23651890,
+        "mode": 420,
+        "sha256": "8dd693f93dceb6458bb45c8cf164a7852cc69332e4d1deda6827fb7acf2aaf24"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/library-5-libreverie_ptrace-1be83037850ec151.rlib",
+        "bytes": 23651890,
+        "mode": 292,
+        "sha256": "8dd693f93dceb6458bb45c8cf164a7852cc69332e4d1deda6827fb7acf2aaf24"
+      },
+      "distinct_inode": true
+    }
+  ],
+  "all_selected_harnesses_newly_built": true,
+  "previous_failed_harness": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/corrected-component-continuation-v1/retained-binaries/ptrace.elf",
+    "bytes": 169738536,
+    "mode": 365,
+    "sha256": "afa612aa7bf1ad22864ea37ac84591c51e276f5ca46ac76faa738abb3b93eb91"
+  },
+  "meaning": "Two freshly emitted retained test ELFs and local libraries; no transferred test results."
+}

@@ -1,0 +1,2575 @@
+{
+  "session_id": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "source_reuse_only": true,
+  "canonical_grounding_separate": true,
+  "python_optimize": 0,
+  "reused_documents": 26,
+  "reused_lines": 8913,
+  "documents": [
+    {
+      "name": "code-review",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+        "bytes": 3617,
+        "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+        "bytes": 3617,
+        "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f",
+        "mode": 420
+      },
+      "lines": 81,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+          "bytes": 3617,
+          "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/01-code-review-00001-00081.txt",
+              "bytes": 3617,
+              "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 81
+            },
+            "complete": true,
+            "physical_lines": 81,
+            "matches": [
+              {
+                "call_id": "call_1MXaHhmanIlR3l2BQtZYiWkr",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11824,
+                "timestamp": "2026-09-18T17:46:14.538Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "deterministic-scheduling-review",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/.skills/deterministic-scheduling-review/SKILL.md",
+        "bytes": 11050,
+        "sha256": "b0f8bec8c6a278b34142c9a8e67a6795706c1ba3d296c037555b666f71c2812e",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/.skills/deterministic-scheduling-review/SKILL.md",
+        "bytes": 11050,
+        "sha256": "b0f8bec8c6a278b34142c9a8e67a6795706c1ba3d296c037555b666f71c2812e",
+        "mode": 420
+      },
+      "lines": 206,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/.skills/deterministic-scheduling-review/SKILL.md",
+          "bytes": 11050,
+          "sha256": "b0f8bec8c6a278b34142c9a8e67a6795706c1ba3d296c037555b666f71c2812e",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/02-deterministic-scheduling-review-00001-00172.txt",
+              "bytes": 9460,
+              "sha256": "731e98d34bcfa575cb303356dd9917f265dd1591827f8fbe4ae040ab50db2150",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 172
+            },
+            "complete": true,
+            "physical_lines": 172,
+            "matches": [
+              {
+                "call_id": "call_DTXI3xSmGtLNelWUNzy91F14",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11832,
+                "timestamp": "2026-09-18T17:46:20.929Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/02-deterministic-scheduling-review-00173-00206.txt",
+              "bytes": 1590,
+              "sha256": "87a5a1caeed4d323784f13651fc5b77e9faccdc564fe744631d69e8e78bc6093",
+              "mode": 420,
+              "first_line": 173,
+              "last_line": 206
+            },
+            "complete": true,
+            "physical_lines": 34,
+            "matches": [
+              {
+                "call_id": "call_DTXI3xSmGtLNelWUNzy91F14",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11832,
+                "timestamp": "2026-09-18T17:46:20.929Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "context-reverie-src-guest-rs",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie/src/guest.rs",
+        "bytes": 26285,
+        "sha256": "ab02a3060dc4c249783bbc02c1e6fe587c7fe299aba33442bbd069e1e3002ffd",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie/src/guest.rs",
+        "bytes": 26285,
+        "sha256": "ab02a3060dc4c249783bbc02c1e6fe587c7fe299aba33442bbd069e1e3002ffd",
+        "mode": 420
+      },
+      "lines": 691,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie/src/guest.rs",
+          "bytes": 26285,
+          "sha256": "ab02a3060dc4c249783bbc02c1e6fe587c7fe299aba33442bbd069e1e3002ffd",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/11-guest-contract-00001-00180.txt",
+              "bytes": 7151,
+              "sha256": "c428cf06340f2d6b622418a984e52799eae7e786b53dc0126d46f7286bbef850",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 180
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_9lvlMIx3cUUOC7aMZUKau65K",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12188,
+                "timestamp": "2026-09-18T17:51:13.256Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/11-guest-contract-00181-00360.txt",
+              "bytes": 8186,
+              "sha256": "c26336359939538af165c32c070377bedcf41727369088ec528f22810bf88cfc",
+              "mode": 420,
+              "first_line": 181,
+              "last_line": 360
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_9lvlMIx3cUUOC7aMZUKau65K",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12188,
+                "timestamp": "2026-09-18T17:51:13.256Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/11-guest-contract-00361-00540.txt",
+              "bytes": 6645,
+              "sha256": "c1401ab4e7414f84d3b54d074f471e5cdd786d60cbab31d4b8ed0a96a7c47398",
+              "mode": 420,
+              "first_line": 361,
+              "last_line": 540
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_RphWGGArN1Qt3zMb8h4iLYhk",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12194,
+                "timestamp": "2026-09-18T17:51:18.153Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/11-guest-contract-00541-00691.txt",
+              "bytes": 4303,
+              "sha256": "4461e3c23af9f963e640d4d41c5c45cda383b287ccf7c30db8f946c578fa703d",
+              "mode": 420,
+              "first_line": 541,
+              "last_line": 691
+            },
+            "complete": true,
+            "physical_lines": 151,
+            "matches": [
+              {
+                "call_id": "call_RphWGGArN1Qt3zMb8h4iLYhk",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12194,
+                "timestamp": "2026-09-18T17:51:18.153Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "context-reverie-process-src-spawn-rs",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-process/src/spawn.rs",
+        "bytes": 5928,
+        "sha256": "b3205a28593807263223f9a64cae1ad244994d4673aa7effef807d9eb4112901",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie-process/src/spawn.rs",
+        "bytes": 5928,
+        "sha256": "b3205a28593807263223f9a64cae1ad244994d4673aa7effef807d9eb4112901",
+        "mode": 420
+      },
+      "lines": 182,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie-process/src/spawn.rs",
+          "bytes": 5928,
+          "sha256": "b3205a28593807263223f9a64cae1ad244994d4673aa7effef807d9eb4112901",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/14-launch-spawn-00001-00180.txt",
+              "bytes": 5920,
+              "sha256": "67d18e7ce82d1cc67e9220320f56ff8aa62dfae1e9ac27bba03a59d324352db5",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 180
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_seUPY3i0b26lHaouaRsT5YsG",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12294,
+                "timestamp": "2026-09-18T17:52:53.865Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/14-launch-spawn-00181-00182.txt",
+              "bytes": 8,
+              "sha256": "3794d02a8121944d176d265e9bb9cc59f6ab890bcadf8aefdebdbbb4f2ea8444",
+              "mode": 420,
+              "first_line": 181,
+              "last_line": 182
+            },
+            "complete": true,
+            "physical_lines": 2,
+            "matches": [
+              {
+                "call_id": "call_XCkBwy0L05XZp17ejIWW0Ivs",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11871,
+                "timestamp": "2026-09-18T17:46:55.825Z"
+              },
+              {
+                "call_id": "call_srrvAQCjwmU9Oqqb4sNzyR49",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11879,
+                "timestamp": "2026-09-18T17:47:00.078Z"
+              },
+              {
+                "call_id": "call_We6cFZwHNBVfCe0jbHwsLXSP",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11887,
+                "timestamp": "2026-09-18T17:47:04.829Z"
+              },
+              {
+                "call_id": "call_yPCcnydk3o5LK4YjVHkEcSvC",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11892,
+                "timestamp": "2026-09-18T17:47:10.595Z"
+              },
+              {
+                "call_id": "call_dBVstTdjlQr4Hhk5pGTzFmD3",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11900,
+                "timestamp": "2026-09-18T17:47:15.462Z"
+              },
+              {
+                "call_id": "call_tBiGVHYs5xbiCYo6v9IjaFrY",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11908,
+                "timestamp": "2026-09-18T17:47:23.921Z"
+              },
+              {
+                "call_id": "call_FVC0Gwhe8CMflRKwQKA2eHdJ",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11916,
+                "timestamp": "2026-09-18T17:47:29.230Z"
+              },
+              {
+                "call_id": "call_mDDjPCAjZITeFx9lItFbkvUb",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11924,
+                "timestamp": "2026-09-18T17:47:34.736Z"
+              },
+              {
+                "call_id": "call_wXs2OdpAR09nM7w19gBpZZCw",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 11932,
+                "timestamp": "2026-09-18T17:47:43.543Z"
+              },
+              {
+                "call_id": "call_7mNoMEkmgN6qfhYvP5DgPWFO",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12030,
+                "timestamp": "2026-09-18T17:49:11.844Z"
+              },
+              {
+                "call_id": "call_ilcAPDOH8zzVOENqc6LweP9S",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12038,
+                "timestamp": "2026-09-18T17:49:16.950Z"
+              },
+              {
+                "call_id": "call_RSTmdK7A03C1fbe7Ue979Dio",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12045,
+                "timestamp": "2026-09-18T17:49:20.840Z"
+              },
+              {
+                "call_id": "call_a6c8e9mx95mK76kCJIf5AKZv",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12055,
+                "timestamp": "2026-09-18T17:49:26.905Z"
+              },
+              {
+                "call_id": "call_i3uL7J7zL1DpaLRjz5MopZ8d",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12063,
+                "timestamp": "2026-09-18T17:49:32.098Z"
+              },
+              {
+                "call_id": "call_javNCvgw47XaxC43CdMCJ04N",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12079,
+                "timestamp": "2026-09-18T17:49:45.772Z"
+              },
+              {
+                "call_id": "call_OWKEogw1jAdDC6Qs3I2fYswr",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12087,
+                "timestamp": "2026-09-18T17:49:52.274Z"
+              },
+              {
+                "call_id": "call_4f4zHaOixDjZHZc6TENLXVEs",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12095,
+                "timestamp": "2026-09-18T17:49:56.879Z"
+              },
+              {
+                "call_id": "call_k7hAGjQpherI7YGRcUlEqTTZ",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12111,
+                "timestamp": "2026-09-18T17:50:09.335Z"
+              },
+              {
+                "call_id": "call_tysl3Pernd4rHyt5dBN7t8ci",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12151,
+                "timestamp": "2026-09-18T17:50:44.574Z"
+              },
+              {
+                "call_id": "call_W56etBdoyqZaScsAn7elVOYG",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12159,
+                "timestamp": "2026-09-18T17:50:49.893Z"
+              },
+              {
+                "call_id": "call_YN0LCkv202XXg8w9egXwQBgO",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12175,
+                "timestamp": "2026-09-18T17:51:01.808Z"
+              },
+              {
+                "call_id": "call_Yb9grwXGV2QdjXzZnVuezdXP",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12180,
+                "timestamp": "2026-09-18T17:51:07.948Z"
+              },
+              {
+                "call_id": "call_RphWGGArN1Qt3zMb8h4iLYhk",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12194,
+                "timestamp": "2026-09-18T17:51:18.153Z"
+              },
+              {
+                "call_id": "call_RQpUOPEcgQ7oZxweSFffMhri",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12202,
+                "timestamp": "2026-09-18T17:51:26.841Z"
+              },
+              {
+                "call_id": "call_DXTmlMPBCZVElCHoY8abyL4H",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12218,
+                "timestamp": "2026-09-18T17:51:39.345Z"
+              },
+              {
+                "call_id": "call_OSWqdCW3flPOTxrqSzzeOh0Z",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12266,
+                "timestamp": "2026-09-18T17:52:17.739Z"
+              },
+              {
+                "call_id": "call_MMtbUryQmus5FjhsAfwxiebG",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12274,
+                "timestamp": "2026-09-18T17:52:23.379Z"
+              },
+              {
+                "call_id": "call_oj7Clh1LWLUUjXwUzPOakmla",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12279,
+                "timestamp": "2026-09-18T17:52:28.662Z"
+              },
+              {
+                "call_id": "call_XikuW3GlTd1aXstiIbNcDDxn",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12286,
+                "timestamp": "2026-09-18T17:52:40.161Z"
+              },
+              {
+                "call_id": "call_seUPY3i0b26lHaouaRsT5YsG",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12294,
+                "timestamp": "2026-09-18T17:52:53.865Z"
+              },
+              {
+                "call_id": "call_6DwcKACmmWDtyBhNNWZ1mxGB",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12302,
+                "timestamp": "2026-09-18T17:53:00.341Z"
+              },
+              {
+                "call_id": "call_8tDRzVcHFXYdA5nfzTCUAtkA",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12318,
+                "timestamp": "2026-09-18T17:53:13.421Z"
+              },
+              {
+                "call_id": "call_PxScRGs2JREWbtXXajt6IhCE",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12326,
+                "timestamp": "2026-09-18T17:53:22.818Z"
+              },
+              {
+                "call_id": "call_Urenyrg1gXeLJqJpPPfpX53r",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12331,
+                "timestamp": "2026-09-18T17:53:27.817Z"
+              },
+              {
+                "call_id": "call_dzyNNkMzQXCkXc2gL1E28aMd",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12347,
+                "timestamp": "2026-09-18T17:53:39.498Z"
+              },
+              {
+                "call_id": "call_F0P6qgsZ5zrjjn6urtvzrB3u",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12352,
+                "timestamp": "2026-09-18T17:53:45.850Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "context-reverie-process-src-container-rs",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-process/src/container.rs",
+        "bytes": 56132,
+        "sha256": "2c3868d30e76d70e24ff623e42118d2869dd55a65fa29b6b1315d35289317d66",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie-process/src/container.rs",
+        "bytes": 56132,
+        "sha256": "2c3868d30e76d70e24ff623e42118d2869dd55a65fa29b6b1315d35289317d66",
+        "mode": 420
+      },
+      "lines": 1597,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/landed-44fcb195/reverie-process/src/container.rs",
+          "bytes": 56132,
+          "sha256": "2c3868d30e76d70e24ff623e42118d2869dd55a65fa29b6b1315d35289317d66",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-00001-00180.txt",
+              "bytes": 5103,
+              "sha256": "0d4e82248a6d562b822a653487dbaafc45e51247460db8e72658c632d311f5b3",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 180
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_6DwcKACmmWDtyBhNNWZ1mxGB",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12302,
+                "timestamp": "2026-09-18T17:53:00.341Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-00181-00360.txt",
+              "bytes": 5294,
+              "sha256": "d858f6ca9f9ab28705e32d93cf0137b8f11e01a93c84663d402a64c8b7190a82",
+              "mode": 420,
+              "first_line": 181,
+              "last_line": 360
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_6DwcKACmmWDtyBhNNWZ1mxGB",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12302,
+                "timestamp": "2026-09-18T17:53:00.341Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-00361-00540.txt",
+              "bytes": 6361,
+              "sha256": "fe90dd652e05c3ef5e4b3a9af8f0965666fa8f550b9b8799436ac971af16a06a",
+              "mode": 420,
+              "first_line": 361,
+              "last_line": 540
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_hqklcJvJfJlVTiSt80pzb035",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12310,
+                "timestamp": "2026-09-18T17:53:06.052Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-00541-00720.txt",
+              "bytes": 6650,
+              "sha256": "79c6468f79cea4e9d5447555c4d6db0a0a9943534284587a4757ef88c68ef754",
+              "mode": 420,
+              "first_line": 541,
+              "last_line": 720
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_hqklcJvJfJlVTiSt80pzb035",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12310,
+                "timestamp": "2026-09-18T17:53:06.052Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-00721-00900.txt",
+              "bytes": 7702,
+              "sha256": "c3cc16efcee81e65ba1d2a69a940447ab8ad0dd642211d8729f2223597e5ea6d",
+              "mode": 420,
+              "first_line": 721,
+              "last_line": 900
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_8tDRzVcHFXYdA5nfzTCUAtkA",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12318,
+                "timestamp": "2026-09-18T17:53:13.421Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-00901-01080.txt",
+              "bytes": 6143,
+              "sha256": "36927845e3b51249c4c288790590112904d9148ad77523e2cc71ef44506ceffe",
+              "mode": 420,
+              "first_line": 901,
+              "last_line": 1080
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_8tDRzVcHFXYdA5nfzTCUAtkA",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12318,
+                "timestamp": "2026-09-18T17:53:13.421Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-01081-01260.txt",
+              "bytes": 5411,
+              "sha256": "034def8d76010ef1696c315528f5fef3aa1bc3eb7ea867b0dda46365218ef079",
+              "mode": 420,
+              "first_line": 1081,
+              "last_line": 1260
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_PxScRGs2JREWbtXXajt6IhCE",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12326,
+                "timestamp": "2026-09-18T17:53:22.818Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-01261-01440.txt",
+              "bytes": 6822,
+              "sha256": "92dc3f82afcfa81dba24e95d2ff32a79cc96f358c3e00f313193bfe70d2b6395",
+              "mode": 420,
+              "first_line": 1261,
+              "last_line": 1440
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_PxScRGs2JREWbtXXajt6IhCE",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12326,
+                "timestamp": "2026-09-18T17:53:22.818Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/15-launch-container-01441-01597.txt",
+              "bytes": 6646,
+              "sha256": "c064ea417418cdfbd0f122d3b8c2ba6dece2109b005681b61bec05a508de562d",
+              "mode": 420,
+              "first_line": 1441,
+              "last_line": 1597
+            },
+            "complete": true,
+            "physical_lines": 157,
+            "matches": [
+              {
+                "call_id": "call_Urenyrg1gXeLJqJpPPfpX53r",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12331,
+                "timestamp": "2026-09-18T17:53:27.817Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "hermit-current-lib",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/hermit-97c/detcore/src/lib.rs",
+        "bytes": 162820,
+        "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/measured-hermit/detcore/src/lib.rs",
+        "bytes": 162820,
+        "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+        "mode": 420
+      },
+      "lines": 3578,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/measured-hermit/detcore/src/lib.rs",
+          "bytes": 162820,
+          "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-00001-00180.txt",
+              "bytes": 5965,
+              "sha256": "176e8c81790bb11d6ca80d2f569a6fde9b73713af8e41718dde9f9501ff4d843",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 180
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_RQpUOPEcgQ7oZxweSFffMhri",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12202,
+                "timestamp": "2026-09-18T17:51:26.841Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-00181-00360.txt",
+              "bytes": 7758,
+              "sha256": "0e65087c27666f1172d53dcab067e83aa6b557403cdcef60b2225fab01a7ec58",
+              "mode": 420,
+              "first_line": 181,
+              "last_line": 360
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_RQpUOPEcgQ7oZxweSFffMhri",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12202,
+                "timestamp": "2026-09-18T17:51:26.841Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-00361-00540.txt",
+              "bytes": 8350,
+              "sha256": "fb515eb8d6bf757c84a0965c25731dab287f0f14c2f386bde19cb560ccfc2fcb",
+              "mode": 420,
+              "first_line": 361,
+              "last_line": 540
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_4hIxdLD8WbyxmlggTr31PMK8",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12210,
+                "timestamp": "2026-09-18T17:51:32.724Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-00541-00720.txt",
+              "bytes": 7549,
+              "sha256": "de6f44a47057bd14acf5d4ff6d9a1983029d527a3c551308700c5bca47464c0b",
+              "mode": 420,
+              "first_line": 541,
+              "last_line": 720
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_4hIxdLD8WbyxmlggTr31PMK8",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12210,
+                "timestamp": "2026-09-18T17:51:32.724Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-00721-00900.txt",
+              "bytes": 7892,
+              "sha256": "20fdec2c8dec37bdc800479f1cda659d5cf0c0651a6a0c2e8f0e14e46724def8",
+              "mode": 420,
+              "first_line": 721,
+              "last_line": 900
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_DXTmlMPBCZVElCHoY8abyL4H",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12218,
+                "timestamp": "2026-09-18T17:51:39.345Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-00901-01080.txt",
+              "bytes": 8409,
+              "sha256": "6fd01454ef0fedc0b3e8a4caabd55fb4212709a5e0c1adc87b1d2fa94d6ad25a",
+              "mode": 420,
+              "first_line": 901,
+              "last_line": 1080
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_DXTmlMPBCZVElCHoY8abyL4H",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12218,
+                "timestamp": "2026-09-18T17:51:39.345Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-01081-01260.txt",
+              "bytes": 6659,
+              "sha256": "cb6584181665ed65c4b15d4e04a3c5c427db870d2171eb799eda3ee22d28aff9",
+              "mode": 420,
+              "first_line": 1081,
+              "last_line": 1260
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_pL7NOEEVL4Yw0nxC89MWgSVU",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12226,
+                "timestamp": "2026-09-18T17:51:44.609Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-01261-01440.txt",
+              "bytes": 7640,
+              "sha256": "10d63ae30d66dbfde97059f88a2e0bb752287c3c3ce879979e60ca3d0dee1770",
+              "mode": 420,
+              "first_line": 1261,
+              "last_line": 1440
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_pL7NOEEVL4Yw0nxC89MWgSVU",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12226,
+                "timestamp": "2026-09-18T17:51:44.609Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-01441-01620.txt",
+              "bytes": 8827,
+              "sha256": "ba528842e8b1c1270aa44edfb63fea04c938d4951e49e3f4293667e1ea7e9dc9",
+              "mode": 420,
+              "first_line": 1441,
+              "last_line": 1620
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_Dl5xTJabZwHD4vH3x91K97ys",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12234,
+                "timestamp": "2026-09-18T17:51:52.033Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-01621-01800.txt",
+              "bytes": 7740,
+              "sha256": "64b35350975edd398e6884fce38f11900f5c50cc9a788daea74dbde81e6bd394",
+              "mode": 420,
+              "first_line": 1621,
+              "last_line": 1800
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_Dl5xTJabZwHD4vH3x91K97ys",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12234,
+                "timestamp": "2026-09-18T17:51:52.033Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-01801-01980.txt",
+              "bytes": 8269,
+              "sha256": "d73ec92f39943392964034fe93cfd80003ef85a9fa1261c91fcacf35be05686e",
+              "mode": 420,
+              "first_line": 1801,
+              "last_line": 1980
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_LizXnnAacyoaGJh5TECYFHFB",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12242,
+                "timestamp": "2026-09-18T17:51:57.677Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-01981-02144.txt",
+              "bytes": 9493,
+              "sha256": "0ad47882dad9a64bce5563ecfc6440550ed3119ab990f818876f7eba97c58ea2",
+              "mode": 420,
+              "first_line": 1981,
+              "last_line": 2144
+            },
+            "complete": true,
+            "physical_lines": 164,
+            "matches": [
+              {
+                "call_id": "call_LizXnnAacyoaGJh5TECYFHFB",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12242,
+                "timestamp": "2026-09-18T17:51:57.677Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-02145-02291.txt",
+              "bytes": 9467,
+              "sha256": "6325a4ed03dd8a05db4a2eacede39c34b8591c7559ffb6dc0603b2e501d028c1",
+              "mode": 420,
+              "first_line": 2145,
+              "last_line": 2291
+            },
+            "complete": true,
+            "physical_lines": 147,
+            "matches": [
+              {
+                "call_id": "call_WtkPslkZJXfiS1ixnzaj0v5y",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12250,
+                "timestamp": "2026-09-18T17:52:03.456Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-02292-02471.txt",
+              "bytes": 9424,
+              "sha256": "229f5161ab45d778aecc5179dfca4f2703d3e497812a14ff0ac49205ef6774ae",
+              "mode": 420,
+              "first_line": 2292,
+              "last_line": 2471
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_WtkPslkZJXfiS1ixnzaj0v5y",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12250,
+                "timestamp": "2026-09-18T17:52:03.456Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-02472-02614.txt",
+              "bytes": 9491,
+              "sha256": "fb84ab69daa5780cf122b687f49d160175c8831d94c7c09b4349b4f534ec41f5",
+              "mode": 420,
+              "first_line": 2472,
+              "last_line": 2614
+            },
+            "complete": true,
+            "physical_lines": 143,
+            "matches": [
+              {
+                "call_id": "call_mj371Wn2VnU18FLxf3PuVCbh",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12258,
+                "timestamp": "2026-09-18T17:52:09.946Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-02615-02782.txt",
+              "bytes": 9466,
+              "sha256": "e0a7c54c9596138f7dea7f152c5c75a3301b61abe6eedfd98bbe0366d31e65f8",
+              "mode": 420,
+              "first_line": 2615,
+              "last_line": 2782
+            },
+            "complete": true,
+            "physical_lines": 168,
+            "matches": [
+              {
+                "call_id": "call_mj371Wn2VnU18FLxf3PuVCbh",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12258,
+                "timestamp": "2026-09-18T17:52:09.946Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-02783-02962.txt",
+              "bytes": 7764,
+              "sha256": "d8af432959298dfa6d4d504bb32334aa315918ebea78ec1758b52525cbde35b2",
+              "mode": 420,
+              "first_line": 2783,
+              "last_line": 2962
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_OSWqdCW3flPOTxrqSzzeOh0Z",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12266,
+                "timestamp": "2026-09-18T17:52:17.739Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-02963-03142.txt",
+              "bytes": 7948,
+              "sha256": "70d2b9e841a303ae2695a77a8fa85826a5a834aefa50e6cb238d2a0dbe60a1c4",
+              "mode": 420,
+              "first_line": 2963,
+              "last_line": 3142
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_OSWqdCW3flPOTxrqSzzeOh0Z",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12266,
+                "timestamp": "2026-09-18T17:52:17.739Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-03143-03322.txt",
+              "bytes": 5430,
+              "sha256": "7747b7646bab6808222c4d08b0d12a96cd2691bf36c1c6de1593187e29cc149b",
+              "mode": 420,
+              "first_line": 3143,
+              "last_line": 3322
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_MMtbUryQmus5FjhsAfwxiebG",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12274,
+                "timestamp": "2026-09-18T17:52:23.379Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-03323-03502.txt",
+              "bytes": 6101,
+              "sha256": "f0c98c35948bd64858dfd6f6faadaa13e15cd73cbc58dfd7dd9f3f093e699dc8",
+              "mode": 420,
+              "first_line": 3323,
+              "last_line": 3502
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_MMtbUryQmus5FjhsAfwxiebG",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12274,
+                "timestamp": "2026-09-18T17:52:23.379Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/12-hermit-time-hooks-03503-03578.txt",
+              "bytes": 3178,
+              "sha256": "be8bd30c5a7c959f3585b689c97f3c6f9487e090c4e632a7ff458ba2532aff9a",
+              "mode": 420,
+              "first_line": 3503,
+              "last_line": 3578
+            },
+            "complete": true,
+            "physical_lines": 76,
+            "matches": [
+              {
+                "call_id": "call_oj7Clh1LWLUUjXwUzPOakmla",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12279,
+                "timestamp": "2026-09-18T17:52:28.662Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "hermit-current-time",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/common/hermit-97c/detcore/src/time.rs",
+        "bytes": 3769,
+        "sha256": "5bc794d6255494feae370da27d9efd22873e496e07e76751e2edfa88e0bd1217",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/measured-hermit/detcore/src/time.rs",
+        "bytes": 3769,
+        "sha256": "5bc794d6255494feae370da27d9efd22873e496e07e76751e2edfa88e0bd1217",
+        "mode": 420
+      },
+      "lines": 164,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/source/measured-hermit/detcore/src/time.rs",
+          "bytes": 3769,
+          "sha256": "5bc794d6255494feae370da27d9efd22873e496e07e76751e2edfa88e0bd1217",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/13-hermit-time-00001-00164.txt",
+              "bytes": 3769,
+              "sha256": "5bc794d6255494feae370da27d9efd22873e496e07e76751e2edfa88e0bd1217",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 164
+            },
+            "complete": true,
+            "physical_lines": 164,
+            "matches": [
+              {
+                "call_id": "call_XikuW3GlTd1aXstiIbNcDDxn",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12286,
+                "timestamp": "2026-09-18T17:52:40.161Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-measurement-report",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/original-measurement-results-v2/REPORT.md",
+        "bytes": 4144,
+        "sha256": "223501e16705114effcfc4d3ca64ea6979c914efe34d06835f06f1f1f043b6c4",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/original-measurement-results-v2/REPORT.md",
+        "bytes": 4144,
+        "sha256": "223501e16705114effcfc4d3ca64ea6979c914efe34d06835f06f1f1f043b6c4",
+        "mode": 420
+      },
+      "lines": 15,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/original-measurement-results-v2/REPORT.md",
+          "bytes": 4144,
+          "sha256": "223501e16705114effcfc4d3ca64ea6979c914efe34d06835f06f1f1f043b6c4",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/18-measurement-report-00001-00015.txt",
+              "bytes": 4144,
+              "sha256": "223501e16705114effcfc4d3ca64ea6979c914efe34d06835f06f1f1f043b6c4",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 15
+            },
+            "complete": true,
+            "physical_lines": 15,
+            "matches": [
+              {
+                "call_id": "call_ybVJUSh47XxloarXQq0sibSw",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12360,
+                "timestamp": "2026-09-18T17:53:51.416Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-measurement-results",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/original-measurement-results-v2/RESULTS.json",
+        "bytes": 20473,
+        "sha256": "e2bd52eb43fdfeafae70ace5838494c83f9af43fc836def136cb71160dfe475d",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/original-measurement-results-v2/RESULTS.json",
+        "bytes": 20473,
+        "sha256": "e2bd52eb43fdfeafae70ace5838494c83f9af43fc836def136cb71160dfe475d",
+        "mode": 420
+      },
+      "lines": 495,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/original-measurement-results-v2/RESULTS.json",
+          "bytes": 20473,
+          "sha256": "e2bd52eb43fdfeafae70ace5838494c83f9af43fc836def136cb71160dfe475d",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/19-measurement-results-00001-00180.txt",
+              "bytes": 7398,
+              "sha256": "cdc6e26b5816e1e9038aaedee6eb0a8c6ac3bb57763e53d95fd234e9a9c00628",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 180
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_ybVJUSh47XxloarXQq0sibSw",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12360,
+                "timestamp": "2026-09-18T17:53:51.416Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/19-measurement-results-00181-00360.txt",
+              "bytes": 7319,
+              "sha256": "86804e5c370e9885b171d16a35915ebc3e38bba60457066f9bfb7bd17364d669",
+              "mode": 420,
+              "first_line": 181,
+              "last_line": 360
+            },
+            "complete": true,
+            "physical_lines": 180,
+            "matches": [
+              {
+                "call_id": "call_ArjLmeO8WEpReKrsJyLI952b",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12368,
+                "timestamp": "2026-09-18T17:53:55.984Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/19-measurement-results-00361-00495.txt",
+              "bytes": 5756,
+              "sha256": "f61264136c28324d35a55d5bc598de8aaad5d18306e0cdf6cc5103a96715a08c",
+              "mode": 420,
+              "first_line": 361,
+              "last_line": 495
+            },
+            "complete": true,
+            "physical_lines": 135,
+            "matches": [
+              {
+                "call_id": "call_ArjLmeO8WEpReKrsJyLI952b",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12368,
+                "timestamp": "2026-09-18T17:53:55.984Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-comparison-report",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/comparison-schema-adjudication-v1/REPORT.md",
+        "bytes": 3029,
+        "sha256": "c12b77b466d3690340aa4d06b0923acd2260f04d1169d179c3d4e7fb67ca504d",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/comparison-schema-adjudication-v1/REPORT.md",
+        "bytes": 3029,
+        "sha256": "c12b77b466d3690340aa4d06b0923acd2260f04d1169d179c3d4e7fb67ca504d",
+        "mode": 420
+      },
+      "lines": 11,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/comparison-schema-adjudication-v1/REPORT.md",
+          "bytes": 3029,
+          "sha256": "c12b77b466d3690340aa4d06b0923acd2260f04d1169d179c3d4e7fb67ca504d",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/20-comparison-report-00001-00011.txt",
+              "bytes": 3029,
+              "sha256": "c12b77b466d3690340aa4d06b0923acd2260f04d1169d179c3d4e7fb67ca504d",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 11
+            },
+            "complete": true,
+            "physical_lines": 11,
+            "matches": [
+              {
+                "call_id": "call_xBGD6GmC6oVgQB3c9NeGSJng",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12376,
+                "timestamp": "2026-09-18T17:54:01.641Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-comparison-facts",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/comparison-schema-adjudication-v1/FACTS.json",
+        "bytes": 2026,
+        "sha256": "c4383b58b64c8e41712932eaba8a59d1ec2dbbf1311b6327b90ccd578a57ccd5",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/comparison-schema-adjudication-v1/FACTS.json",
+        "bytes": 2026,
+        "sha256": "c4383b58b64c8e41712932eaba8a59d1ec2dbbf1311b6327b90ccd578a57ccd5",
+        "mode": 420
+      },
+      "lines": 39,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/comparison-schema-adjudication-v1/FACTS.json",
+          "bytes": 2026,
+          "sha256": "c4383b58b64c8e41712932eaba8a59d1ec2dbbf1311b6327b90ccd578a57ccd5",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/21-comparison-facts-00001-00039.txt",
+              "bytes": 2026,
+              "sha256": "c4383b58b64c8e41712932eaba8a59d1ec2dbbf1311b6327b90ccd578a57ccd5",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 39
+            },
+            "complete": true,
+            "physical_lines": 39,
+            "matches": [
+              {
+                "call_id": "call_xBGD6GmC6oVgQB3c9NeGSJng",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12376,
+                "timestamp": "2026-09-18T17:54:01.641Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-kvm-verification",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verification.json",
+        "bytes": 1538,
+        "sha256": "036d6b7ab2bd5219363bf8008239fa0c3b23b2dc4d337c42fe0759fded2471a1",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verification.json",
+        "bytes": 1538,
+        "sha256": "036d6b7ab2bd5219363bf8008239fa0c3b23b2dc4d337c42fe0759fded2471a1",
+        "mode": 384
+      },
+      "lines": 1,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verification.json",
+          "bytes": 1538,
+          "sha256": "036d6b7ab2bd5219363bf8008239fa0c3b23b2dc4d337c42fe0759fded2471a1",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/22-original-kvm-verification-00001-00001.txt",
+              "bytes": 1538,
+              "sha256": "036d6b7ab2bd5219363bf8008239fa0c3b23b2dc4d337c42fe0759fded2471a1",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 1
+            },
+            "complete": true,
+            "physical_lines": 1,
+            "matches": [
+              {
+                "call_id": "call_JR0G3WalPMQW4Fw2fgXnHNam",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12384,
+                "timestamp": "2026-09-18T17:54:07.482Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-kvm-run1_log_JDgoM",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verify-logs/run1_log_JDgoM",
+        "bytes": 17530,
+        "sha256": "210d8cd2eac200f49ac716c91b7c5b13eb9cc0c2cdc230debd61615a88b2eb27",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verify-logs/run1_log_JDgoM",
+        "bytes": 17530,
+        "sha256": "210d8cd2eac200f49ac716c91b7c5b13eb9cc0c2cdc230debd61615a88b2eb27",
+        "mode": 384
+      },
+      "lines": 119,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verify-logs/run1_log_JDgoM",
+          "bytes": 17530,
+          "sha256": "210d8cd2eac200f49ac716c91b7c5b13eb9cc0c2cdc230debd61615a88b2eb27",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/23-original-kvm-run1_log_JDgoM-00001-00061.txt",
+              "bytes": 9493,
+              "sha256": "b533433e526cb027bcfb0d01ed3c658fcbdc2466c2c2b4433f7c45c4a140338c",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 61
+            },
+            "complete": true,
+            "physical_lines": 61,
+            "matches": [
+              {
+                "call_id": "call_JR0G3WalPMQW4Fw2fgXnHNam",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12384,
+                "timestamp": "2026-09-18T17:54:07.482Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/23-original-kvm-run1_log_JDgoM-00062-00119.txt",
+              "bytes": 8037,
+              "sha256": "b446d6d5e35f71ddaea9e5fdb80acf5d5d23babd81fa6d9703770bc8c213a5f7",
+              "mode": 420,
+              "first_line": 62,
+              "last_line": 119
+            },
+            "complete": true,
+            "physical_lines": 58,
+            "matches": [
+              {
+                "call_id": "call_3uNqcwYs9eeKqXvNZdBniWuC",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12392,
+                "timestamp": "2026-09-18T17:54:16.559Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-kvm-run2_log_2xXxY",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verify-logs/run2_log_2xXxY",
+        "bytes": 17530,
+        "sha256": "fd55997d671f2b0846755fc60996931635fc72556b5a572197e036fba092d946",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verify-logs/run2_log_2xXxY",
+        "bytes": 17530,
+        "sha256": "fd55997d671f2b0846755fc60996931635fc72556b5a572197e036fba092d946",
+        "mode": 384
+      },
+      "lines": 119,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verify-logs/run2_log_2xXxY",
+          "bytes": 17530,
+          "sha256": "fd55997d671f2b0846755fc60996931635fc72556b5a572197e036fba092d946",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/24-original-kvm-run2_log_2xXxY-00001-00061.txt",
+              "bytes": 9493,
+              "sha256": "621021fe506a365595ab1ce1241c62c760d9b273ff199a3cc6413b2f3c38fe92",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 61
+            },
+            "complete": true,
+            "physical_lines": 61,
+            "matches": [
+              {
+                "call_id": "call_3uNqcwYs9eeKqXvNZdBniWuC",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12392,
+                "timestamp": "2026-09-18T17:54:16.559Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/24-original-kvm-run2_log_2xXxY-00062-00119.txt",
+              "bytes": 8037,
+              "sha256": "f93a87e54ecbe824f2e05c2e69049eaf04592f49f60467ac3fbd942f8d1758bb",
+              "mode": 420,
+              "first_line": 62,
+              "last_line": 119
+            },
+            "complete": true,
+            "physical_lines": 58,
+            "matches": [
+              {
+                "call_id": "call_rsQOiN9OZsjo7xDUvdg0NdC7",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12400,
+                "timestamp": "2026-09-18T17:54:22.451Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-ptrace-off-verification",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verification.json",
+        "bytes": 1538,
+        "sha256": "f4742e9b0905fc2b45f6f7c6a97f77257663cc65ade17af7feb3fd29de63f081",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verification.json",
+        "bytes": 1538,
+        "sha256": "f4742e9b0905fc2b45f6f7c6a97f77257663cc65ade17af7feb3fd29de63f081",
+        "mode": 384
+      },
+      "lines": 1,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verification.json",
+          "bytes": 1538,
+          "sha256": "f4742e9b0905fc2b45f6f7c6a97f77257663cc65ade17af7feb3fd29de63f081",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/25-original-ptrace-off-verification-00001-00001.txt",
+              "bytes": 1538,
+              "sha256": "f4742e9b0905fc2b45f6f7c6a97f77257663cc65ade17af7feb3fd29de63f081",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 1
+            },
+            "complete": true,
+            "physical_lines": 1,
+            "matches": [
+              {
+                "call_id": "call_rsQOiN9OZsjo7xDUvdg0NdC7",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12400,
+                "timestamp": "2026-09-18T17:54:22.451Z"
+              },
+              {
+                "call_id": "call_pe2N9xQ1iLmbDvKbXPpFlTM7",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12447,
+                "timestamp": "2026-09-18T17:55:56.549Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-ptrace-off-run1_log_S16Oh",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run1_log_S16Oh",
+        "bytes": 17217,
+        "sha256": "c7e849821aef542fea8742c155c6f3c69256722883b0de109d213c6244f49bd9",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run1_log_S16Oh",
+        "bytes": 17217,
+        "sha256": "c7e849821aef542fea8742c155c6f3c69256722883b0de109d213c6244f49bd9",
+        "mode": 384
+      },
+      "lines": 119,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run1_log_S16Oh",
+          "bytes": 17217,
+          "sha256": "c7e849821aef542fea8742c155c6f3c69256722883b0de109d213c6244f49bd9",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/26-original-ptrace-off-run1_log_S16Oh-00001-00062.txt",
+              "bytes": 9434,
+              "sha256": "7fd7fea02db32b78c3894f2fc227f9cbbeac544b2c5390d10ca2cb14da513d1c",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 62
+            },
+            "complete": true,
+            "physical_lines": 62,
+            "matches": [
+              {
+                "call_id": "call_NnQlFkD0bL2AfjcGZp05zDMN",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12408,
+                "timestamp": "2026-09-18T17:54:27.572Z"
+              },
+              {
+                "call_id": "call_6ETeAy4XdosR0yBkIr46yZpm",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12425,
+                "timestamp": "2026-09-18T17:55:34.882Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/26-original-ptrace-off-run1_log_S16Oh-00063-00119.txt",
+              "bytes": 7783,
+              "sha256": "e903da4211c7e11c7bd8bc172055cf24672dab88780368e4b45167c9e57398f5",
+              "mode": 420,
+              "first_line": 63,
+              "last_line": 119
+            },
+            "complete": true,
+            "physical_lines": 57,
+            "matches": [
+              {
+                "call_id": "call_NnQlFkD0bL2AfjcGZp05zDMN",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12408,
+                "timestamp": "2026-09-18T17:54:27.572Z"
+              },
+              {
+                "call_id": "call_pR6qoIzPahvF31FVf9WaluF1",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12430,
+                "timestamp": "2026-09-18T17:55:41.137Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-ptrace-off-run2_log_XSgVX",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run2_log_XSgVX",
+        "bytes": 17217,
+        "sha256": "64ca6294348e168f44dede3f7c7931d5988a3410192209dd798a8024b638a52b",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run2_log_XSgVX",
+        "bytes": 17217,
+        "sha256": "64ca6294348e168f44dede3f7c7931d5988a3410192209dd798a8024b638a52b",
+        "mode": 384
+      },
+      "lines": 119,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verify-logs/run2_log_XSgVX",
+          "bytes": 17217,
+          "sha256": "64ca6294348e168f44dede3f7c7931d5988a3410192209dd798a8024b638a52b",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/27-original-ptrace-off-run2_log_XSgVX-00001-00062.txt",
+              "bytes": 9434,
+              "sha256": "d59cadc79986de4863789ef2dea12f6db3f2aed733f4294d33b6407c10376c13",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 62
+            },
+            "complete": true,
+            "physical_lines": 62,
+            "matches": [
+              {
+                "call_id": "call_ay4lJuD4QgiGLL1L7pwGVyeN",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12437,
+                "timestamp": "2026-09-18T17:55:47.573Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/27-original-ptrace-off-run2_log_XSgVX-00063-00119.txt",
+              "bytes": 7783,
+              "sha256": "8fe9a71bcb88eba72cce4b84dd78e2e5f72766f2aa76bdf8247873210405acf9",
+              "mode": 420,
+              "first_line": 63,
+              "last_line": 119
+            },
+            "complete": true,
+            "physical_lines": 57,
+            "matches": [
+              {
+                "call_id": "call_pinvfBZxv2gWdoCd7BLaRkAb",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12442,
+                "timestamp": "2026-09-18T17:55:53.127Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-ptrace-on-verification",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/verification.json",
+        "bytes": 1538,
+        "sha256": "f4742e9b0905fc2b45f6f7c6a97f77257663cc65ade17af7feb3fd29de63f081",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verification.json",
+        "bytes": 1538,
+        "sha256": "f4742e9b0905fc2b45f6f7c6a97f77257663cc65ade17af7feb3fd29de63f081",
+        "mode": 384
+      },
+      "lines": 1,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/verification.json",
+          "bytes": 1538,
+          "sha256": "f4742e9b0905fc2b45f6f7c6a97f77257663cc65ade17af7feb3fd29de63f081",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/25-original-ptrace-off-verification-00001-00001.txt",
+              "bytes": 1538,
+              "sha256": "f4742e9b0905fc2b45f6f7c6a97f77257663cc65ade17af7feb3fd29de63f081",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 1
+            },
+            "complete": true,
+            "physical_lines": 1,
+            "matches": [
+              {
+                "call_id": "call_rsQOiN9OZsjo7xDUvdg0NdC7",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12400,
+                "timestamp": "2026-09-18T17:54:22.451Z"
+              },
+              {
+                "call_id": "call_pe2N9xQ1iLmbDvKbXPpFlTM7",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12447,
+                "timestamp": "2026-09-18T17:55:56.549Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-ptrace-on-run1_log_H8QM0",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/verify-logs/run1_log_H8QM0",
+        "bytes": 17217,
+        "sha256": "f63a0ae45f3e7dfce7d763ac212f94b55b7f796909be7a45002c65267a147f74",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/verify-logs/run1_log_H8QM0",
+        "bytes": 17217,
+        "sha256": "f63a0ae45f3e7dfce7d763ac212f94b55b7f796909be7a45002c65267a147f74",
+        "mode": 384
+      },
+      "lines": 119,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/verify-logs/run1_log_H8QM0",
+          "bytes": 17217,
+          "sha256": "f63a0ae45f3e7dfce7d763ac212f94b55b7f796909be7a45002c65267a147f74",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/29-original-ptrace-on-run1_log_H8QM0-00001-00062.txt",
+              "bytes": 9434,
+              "sha256": "658d2559f3ee5ace41859f1c9f18b0d1b7fc357b1d47a3a98531daf737ca8a85",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 62
+            },
+            "complete": true,
+            "physical_lines": 62,
+            "matches": [
+              {
+                "call_id": "call_bfkIi5IUqBlngLHrmAssEwvo",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12452,
+                "timestamp": "2026-09-18T17:55:59.629Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/29-original-ptrace-on-run1_log_H8QM0-00063-00119.txt",
+              "bytes": 7783,
+              "sha256": "ce26e992dad13fb6128113e888a2a5cc24b26b3756e08664cb59a05b97ca4f83",
+              "mode": 420,
+              "first_line": 63,
+              "last_line": 119
+            },
+            "complete": true,
+            "physical_lines": 57,
+            "matches": [
+              {
+                "call_id": "call_dgJ19T49l1CbJlLrXKfvZtg1",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12457,
+                "timestamp": "2026-09-18T17:56:03.252Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-original-ptrace-on-run2_log_ffMp3",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/verify-logs/run2_log_ffMp3",
+        "bytes": 17217,
+        "sha256": "55f2ec96c5b43a7abceacc96b18b7c173ff4aaee22de3084519bca1da2ea8cec",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/verify-logs/run2_log_ffMp3",
+        "bytes": 17217,
+        "sha256": "55f2ec96c5b43a7abceacc96b18b7c173ff4aaee22de3084519bca1da2ea8cec",
+        "mode": 384
+      },
+      "lines": 119,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/verify-logs/run2_log_ffMp3",
+          "bytes": 17217,
+          "sha256": "55f2ec96c5b43a7abceacc96b18b7c173ff4aaee22de3084519bca1da2ea8cec",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/30-original-ptrace-on-run2_log_ffMp3-00001-00062.txt",
+              "bytes": 9434,
+              "sha256": "b3d91eddf959cfbe9ec33485de444a83af7735134db9f70c5029aadfaab75434",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 62
+            },
+            "complete": true,
+            "physical_lines": 62,
+            "matches": [
+              {
+                "call_id": "call_Q7ZG2t8JReJGqhmaoCblPCzk",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12462,
+                "timestamp": "2026-09-18T17:56:06.570Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/30-original-ptrace-on-run2_log_ffMp3-00063-00119.txt",
+              "bytes": 7783,
+              "sha256": "5d58c0a51bb46f9d0f7f8f8458d8f95e2cb9493c280fe55123e6fb022f5c519b",
+              "mode": 420,
+              "first_line": 63,
+              "last_line": 119
+            },
+            "complete": true,
+            "physical_lines": 57,
+            "matches": [
+              {
+                "call_id": "call_YH3tTwQHJzzF8vCjIA4XOO2E",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12467,
+                "timestamp": "2026-09-18T17:56:10.067Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-current-kvm-ptrace-comparison",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/current-kvm-ptrace/comparison.json",
+        "bytes": 1268,
+        "sha256": "a1fd452e189df0d10c30ceaf80af391a2d3cf1e5d726a91b3c4cbb5c77353778",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/current-kvm-ptrace/comparison.json",
+        "bytes": 1268,
+        "sha256": "a1fd452e189df0d10c30ceaf80af391a2d3cf1e5d726a91b3c4cbb5c77353778",
+        "mode": 384
+      },
+      "lines": 1,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/current-kvm-ptrace/comparison.json",
+          "bytes": 1268,
+          "sha256": "a1fd452e189df0d10c30ceaf80af391a2d3cf1e5d726a91b3c4cbb5c77353778",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/32-current-kvm-ptrace-comparison-00001-00001.txt",
+              "bytes": 1268,
+              "sha256": "a1fd452e189df0d10c30ceaf80af391a2d3cf1e5d726a91b3c4cbb5c77353778",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 1
+            },
+            "complete": true,
+            "physical_lines": 1,
+            "matches": [
+              {
+                "call_id": "call_sQomcHvZFk1Iplvz74d5PMzr",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12477,
+                "timestamp": "2026-09-18T17:56:19.499Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-clock-origin-1-0",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/diagnostic/clock-origin-1-0.tsv",
+        "bytes": 2991,
+        "sha256": "9a7ded34f6b1d0799682520b0f0fc9c87cc0caff66b13582fe2791260a78f184",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/diagnostic/clock-origin-1-0.tsv",
+        "bytes": 2991,
+        "sha256": "9a7ded34f6b1d0799682520b0f0fc9c87cc0caff66b13582fe2791260a78f184",
+        "mode": 384
+      },
+      "lines": 34,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/diagnostic/clock-origin-1-0.tsv",
+          "bytes": 2991,
+          "sha256": "9a7ded34f6b1d0799682520b0f0fc9c87cc0caff66b13582fe2791260a78f184",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/33-clock-origin-1-0-00001-00034.txt",
+              "bytes": 2991,
+              "sha256": "9a7ded34f6b1d0799682520b0f0fc9c87cc0caff66b13582fe2791260a78f184",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 34
+            },
+            "complete": true,
+            "physical_lines": 34,
+            "matches": [
+              {
+                "call_id": "call_1PcnnzU82yZG4nxHlsYO6mnC",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12482,
+                "timestamp": "2026-09-18T17:56:26.793Z"
+              },
+              {
+                "call_id": "call_ErU49q9J8AMnQx32UdmzfhRv",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12487,
+                "timestamp": "2026-09-18T17:56:30.191Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "historical-clock-origin-1-1",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/diagnostic/clock-origin-1-1.tsv",
+        "bytes": 2991,
+        "sha256": "9a7ded34f6b1d0799682520b0f0fc9c87cc0caff66b13582fe2791260a78f184",
+        "mode": 384
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/diagnostic/clock-origin-1-0.tsv",
+        "bytes": 2991,
+        "sha256": "9a7ded34f6b1d0799682520b0f0fc9c87cc0caff66b13582fe2791260a78f184",
+        "mode": 384
+      },
+      "lines": 34,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-on/diagnostic/clock-origin-1-0.tsv",
+          "bytes": 2991,
+          "sha256": "9a7ded34f6b1d0799682520b0f0fc9c87cc0caff66b13582fe2791260a78f184",
+          "mode": 384
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/COMPLETE_READS.json",
+          "bytes": 83854,
+          "sha256": "92fe10be37c7da9df5ff51c9acd74c218273af7988d7682a7259f8a8f05ed863",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/common/chunks/33-clock-origin-1-0-00001-00034.txt",
+              "bytes": 2991,
+              "sha256": "9a7ded34f6b1d0799682520b0f0fc9c87cc0caff66b13582fe2791260a78f184",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 34
+            },
+            "complete": true,
+            "physical_lines": 34,
+            "matches": [
+              {
+                "call_id": "call_1PcnnzU82yZG4nxHlsYO6mnC",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12482,
+                "timestamp": "2026-09-18T17:56:26.793Z"
+              },
+              {
+                "call_id": "call_ErU49q9J8AMnQx32UdmzfhRv",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-MODEL-TOOLS.json",
+                "persisted_line": 12487,
+                "timestamp": "2026-09-18T17:56:30.191Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "caller-common-py",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/common.py",
+        "bytes": 10759,
+        "sha256": "96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/common.py",
+        "bytes": 10759,
+        "sha256": "96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656",
+        "mode": 420
+      },
+      "lines": 227,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/common.py",
+          "bytes": 10759,
+          "sha256": "96cf2b7b60df32c63a1c0231609f124874d4808fe1814f0fab8bce9088bd8656",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/COMPLETE_READS.json",
+          "bytes": 92080,
+          "sha256": "4b273284ec1083f217caae78df1239014e9793b9cf1b1d0037a7837bf7da2b6b",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-common.py-00001-00160.txt",
+              "bytes": 6495,
+              "sha256": "1427007fb23660fa2d2398a660b5b89c03eec49e8e392e0f641152021f165b73",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 160
+            },
+            "complete": true,
+            "physical_lines": 160,
+            "matches": [
+              {
+                "call_id": "call_etl7xpxWbgP2gDFsTUsHyikv",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14349,
+                "timestamp": "2026-09-18T20:33:24.705Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-common.py-00161-00227.txt",
+              "bytes": 4264,
+              "sha256": "02997899415e5858bdc755e27de324b34f0bf723f54af8889687f863b72667a1",
+              "mode": 420,
+              "first_line": 161,
+              "last_line": 227
+            },
+            "complete": true,
+            "physical_lines": 67,
+            "matches": [
+              {
+                "call_id": "call_etl7xpxWbgP2gDFsTUsHyikv",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14349,
+                "timestamp": "2026-09-18T20:33:24.705Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "caller-cache_lease-py",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/cache_lease.py",
+        "bytes": 4603,
+        "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/cache_lease.py",
+        "bytes": 4603,
+        "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0",
+        "mode": 420
+      },
+      "lines": 98,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/cache_lease.py",
+          "bytes": 4603,
+          "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/COMPLETE_READS.json",
+          "bytes": 92080,
+          "sha256": "4b273284ec1083f217caae78df1239014e9793b9cf1b1d0037a7837bf7da2b6b",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-cache_lease.py-00001-00098.txt",
+              "bytes": 4603,
+              "sha256": "957ce8530e0f5bba7e447a03c06b5d4452430ca1bd0b8187eebb162b55ce19a0",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 98
+            },
+            "complete": true,
+            "physical_lines": 98,
+            "matches": [
+              {
+                "call_id": "call_etl7xpxWbgP2gDFsTUsHyikv",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14349,
+                "timestamp": "2026-09-18T20:33:24.705Z"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "caller-complete-observer/observer.py",
+      "current_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/observer.py",
+        "bytes": 44851,
+        "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179",
+        "mode": 420
+      },
+      "prior_source": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/observer.py",
+        "bytes": 44851,
+        "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179",
+        "mode": 420
+      },
+      "lines": 743,
+      "proof": {
+        "source": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/observer.py",
+          "bytes": 44851,
+          "sha256": "137c9b42c3f9e081db59954e0ef692ed861f488be7c2bb8a15ef595c271b2179",
+          "mode": 420
+        },
+        "prior_index": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/COMPLETE_READS.json",
+          "bytes": 92080,
+          "sha256": "4b273284ec1083f217caae78df1239014e9793b9cf1b1d0037a7837bf7da2b6b",
+          "mode": 420
+        },
+        "complete": true,
+        "chunks": [
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-observer-observer.py-00001-00160.txt",
+              "bytes": 7253,
+              "sha256": "c741e1c6a29dd7a79ad37b7f5e04d4b0c56aec6e4ef79c9bc24999d0760a73a0",
+              "mode": 420,
+              "first_line": 1,
+              "last_line": 160
+            },
+            "complete": true,
+            "physical_lines": 160,
+            "matches": [
+              {
+                "call_id": "call_rDzj7Wa3K79cfPyVrFc9xMUQ",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14369,
+                "timestamp": "2026-09-18T20:33:36.417Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-observer-observer.py-00161-00301.txt",
+              "bytes": 8935,
+              "sha256": "61c8e4be3b4e29f1a72dd5e90c3ffa5deca9b852f0a0069570b41f5354087593",
+              "mode": 420,
+              "first_line": 161,
+              "last_line": 301
+            },
+            "complete": true,
+            "physical_lines": 141,
+            "matches": [
+              {
+                "call_id": "call_rDzj7Wa3K79cfPyVrFc9xMUQ",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14369,
+                "timestamp": "2026-09-18T20:33:36.417Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-observer-observer.py-00302-00442.txt",
+              "bytes": 8977,
+              "sha256": "05b3c585ea11ace074c615bdb5af234934cfe7b5470b538d6b3bb226cb5ed0cb",
+              "mode": 420,
+              "first_line": 302,
+              "last_line": 442
+            },
+            "complete": true,
+            "physical_lines": 141,
+            "matches": [
+              {
+                "call_id": "call_rDzj7Wa3K79cfPyVrFc9xMUQ",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14369,
+                "timestamp": "2026-09-18T20:33:36.417Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-observer-observer.py-00443-00578.txt",
+              "bytes": 8901,
+              "sha256": "c6d9b8644fe73d311fd607cc4405d53f9ba137155876a6e9d74eb0c574502135",
+              "mode": 420,
+              "first_line": 443,
+              "last_line": 578
+            },
+            "complete": true,
+            "physical_lines": 136,
+            "matches": [
+              {
+                "call_id": "call_X706lIkxFVVfzPo2uZPa3fiM",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14387,
+                "timestamp": "2026-09-18T20:33:47.453Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-observer-observer.py-00579-00705.txt",
+              "bytes": 8983,
+              "sha256": "62a86e5550aff14a722006b596c4412010f8013e7e074a447e69fa09f9c07ce6",
+              "mode": 420,
+              "first_line": 579,
+              "last_line": 705
+            },
+            "complete": true,
+            "physical_lines": 127,
+            "matches": [
+              {
+                "call_id": "call_X706lIkxFVVfzPo2uZPa3fiM",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14387,
+                "timestamp": "2026-09-18T20:33:47.453Z"
+              }
+            ]
+          },
+          {
+            "chunk": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/chunks/caller-observer-observer.py-00706-00743.txt",
+              "bytes": 1802,
+              "sha256": "28b4ac8e929bac5bbd62e4d93d60ad49d99053e11351fb157c355c1704d62b61",
+              "mode": 420,
+              "first_line": 706,
+              "last_line": 743
+            },
+            "complete": true,
+            "physical_lines": 38,
+            "matches": [
+              {
+                "call_id": "call_X706lIkxFVVfzPo2uZPa3fiM",
+                "raw_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.final-MODEL-TOOLS.json",
+                "persisted_line": 14387,
+                "timestamp": "2026-09-18T20:33:47.453Z"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "limitations": "Own full literal model-visible reads and exact current bytes only. No peer report or verdict is reused; no claim of new reading, listed source order, or current source approval. Original Claude 155/163 failure and distinct eight-chunk repair remain separate."
+}

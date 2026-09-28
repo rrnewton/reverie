@@ -1,0 +1,76 @@
+{
+  "base_vm_sha256": "271d143ba41ae5cdbf42152de122c048eded2f067140fd7f9ab30ff36f9d6030",
+  "candidate_vm_sha256": "40f4bc0a8705589a8b988fd3251ce80cc532ea5dc61045ef40161e3ebb6f3049",
+  "all_original_lines_and_test_bodies_unchanged": true,
+  "diff_operations": "equal or insert only",
+  "added_lines": 218,
+  "insertions": [
+    {
+      "base_after_line": 18,
+      "source_first_line": 19,
+      "source_last_line": 21,
+      "bytes": 84
+    },
+    {
+      "base_after_line": 335,
+      "source_first_line": 339,
+      "source_last_line": 355,
+      "bytes": 398
+    },
+    {
+      "base_after_line": 340,
+      "source_first_line": 361,
+      "source_last_line": 361,
+      "bytes": 48
+    },
+    {
+      "base_after_line": 415,
+      "source_first_line": 437,
+      "source_last_line": 465,
+      "bytes": 1349
+    },
+    {
+      "base_after_line": 490,
+      "source_first_line": 541,
+      "source_last_line": 542,
+      "bytes": 59
+    },
+    {
+      "base_after_line": 674,
+      "source_first_line": 727,
+      "source_last_line": 728,
+      "bytes": 59
+    },
+    {
+      "base_after_line": 3837,
+      "source_first_line": 3892,
+      "source_last_line": 4055,
+      "bytes": 7440
+    }
+  ],
+  "new_test_declarations": 4,
+  "root_owned_files_unchanged": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry.rs",
+      "sha256": "3eb4ef4f86872afa4682904795238d3a194d6c7d74f5e9b3d8fcd45df0cf233b",
+      "bytes": 38135
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry/signal.rs",
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037",
+      "bytes": 13944
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/error.rs",
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91",
+      "bytes": 20454
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/lib.rs",
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024",
+      "bytes": 1770
+    }
+  ],
+  "base_and_branch_unchanged": true,
+  "product_execution_performed": false
+}

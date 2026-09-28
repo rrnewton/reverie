@@ -1,0 +1,160 @@
+            #[cfg(test)]
+            fail_discovery_once: None,
+            #[cfg(test)]
+            fail_after_scan_once: None,
+            #[cfg(test)]
+            force_task_scan_once: None,
+            #[cfg(test)]
+            pause_root_stop: None,
+            #[cfg(test)]
+            pause_preinit_step: None,
+            #[cfg(test)]
+            pause_precise_timer_step: None,
+            #[cfg(test)]
+            activate_without_handshake: false,
+            #[cfg(test)]
+            queue_pending_signal_once: None,
+            #[cfg(test)]
+            force_skip_signal_once: None,
+            #[cfg(test)]
+            force_context_none_signal_once: None,
+            #[cfg(test)]
+            force_context_signal_once: None,
+            #[cfg(test)]
+            force_preinit_signal_once: None,
+            #[cfg(test)]
+            force_post_exec_signal_once: None,
+            #[cfg(test)]
+            force_private_stub_mutation_once: None,
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_liteinst_preinit_for_test(mut self) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before preinit failure injection")
+            .fail_preinit = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_liteinst_new_task_for_test(mut self) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before new-task failure injection")
+            .fail_new_task = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn pause_liteinst_new_task_for_test(mut self, sender: mpsc::UnboundedSender<Pid>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before child-event pause")
+            .pause_new_task = Some(sender);
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before child-event pause")
+            .pause_after_new_task = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn observe_liteinst_new_task_for_test(mut self, sender: mpsc::UnboundedSender<Pid>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before child-event observation")
+            .pause_new_task = Some(sender);
+        self
+    }
+
+    #[cfg(test)]
+    fn pause_before_liteinst_new_task_for_test(
+        mut self,
+        sender: mpsc::UnboundedSender<Pid>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before pre-handler pause")
+            .pause_before_new_task = Some(sender);
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_liteinst_discovery_once_for_test(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before discovery failure injection")
+            .fail_discovery_once = Some(flag);
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_liteinst_after_task_scan_once_for_test(
+        mut self,
+        fail: Arc<AtomicBool>,
+        force_scan: Arc<AtomicBool>,
+    ) -> Self {
+        let runtime = self
+            .liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before scan failure injection");
+        runtime.fail_after_scan_once = Some(fail);
+        runtime.force_task_scan_once = Some(force_scan);
+        self
+    }
+
+    #[cfg(test)]
+    fn pause_liteinst_root_stop_for_test(
+        mut self,
+        stop: RootStopPause,
+        sender: mpsc::UnboundedSender<Pid>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before root-stop pause")
+            .pause_root_stop = Some((stop, sender));
+        self
+    }
+
+    #[cfg(test)]
+    fn pause_liteinst_preinit_step_for_test(
+        mut self,
+        step: usize,
+        sender: mpsc::UnboundedSender<Pid>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before preinit pause")
+            .pause_preinit_step = Some((step, sender));
+        self
+    }
+
+    #[cfg(test)]
+    fn pause_liteinst_precise_timer_step_for_test(
+        mut self,
+        sender: mpsc::UnboundedSender<Pid>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before precise-timer pause")
+            .pause_precise_timer_step = Some(sender);
+        self
+    }
+
+    #[cfg(test)]
+    fn activate_liteinst_without_handshake_for_test(mut self) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before test-only activation")
+            .activate_without_handshake = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn queue_liteinst_pending_signal_once_for_test(mut self, queue_once: Arc<AtomicBool>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before pending-signal injection")

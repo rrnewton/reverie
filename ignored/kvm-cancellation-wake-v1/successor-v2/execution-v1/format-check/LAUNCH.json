@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/usr/local/fbcode/platform010/bin/python3.12",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/run.py",
+    "format-check"
+  ],
+  "pid": 470051,
+  "unit": "kvm-cancel-wake-format-check-470051.service",
+  "started_utc": "2026-09-19T11:23:47.233255+00:00"
+}

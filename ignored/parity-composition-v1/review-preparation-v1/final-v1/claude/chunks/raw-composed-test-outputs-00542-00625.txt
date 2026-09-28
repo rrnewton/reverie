@@ -1,0 +1,84 @@
+{ "type": "test", "name": "fault_only_assertion_rejects_actual_tool_exit_cleanup_failure", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.25609746 }
+END STREAM
+
+PHASE control-46 SELECTOR fault_only_assertion_rejects_actual_tool_exit_cleanup_failure STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-46/stderr SHA256 d88ed75c02828937d54da1ed7ede5ab5959a8cc489711427b06a92ced3a76255
+actual fault and exit-hook failure: WithCleanup { primary: SharedFailure(GuestException { vector: 6, instruction_pointer: 2097152, fault_address: 0 }), cleanup: [SharedFailure(Reverie(Errno(EIO)))] }
+
+thread 'fault_only_assertion_rejects_actual_tool_exit_cleanup_failure' (3544580) panicked at reverie-kvm/tests/static_elf.rs:3698:18:
+expected invalid-opcode exception, got guest exception vector 6 at 0x200000 (CR2=0x0); Reverie tool failed: -5 EIO (I/O error)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+END STREAM
+
+PHASE control-47 SELECTOR timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-47/stdout SHA256 35301883b006ef0b69c5d5faca2a7d74c7cfe2ee7657379bb4f9dfd575f31f2a
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup" }
+{ "type": "test", "name": "timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.561931579 }
+END STREAM
+
+PHASE control-47 SELECTOR timestamp_terminal::terminal_exit_preserves_status_and_consuming_cleanup STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-47/stderr SHA256 d236d9e7c8fe619ced9113d4b443daca23500285a28c2b25f997656d2c4c61c0
+actual terminal exit cleanup failure: SharedFailure(Reverie(Errno(EIO)))
+END STREAM
+
+PHASE control-48 SELECTOR timestamp_terminal::nonterminal_tails_refuse_before_side_effects STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-48/stdout SHA256 5ca7fdad4b9d3dc8941c4f8db4b780bc872da7f79628d66d4f065dd9e388c0f6
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects" }
+{ "type": "test", "name": "timestamp_terminal::nonterminal_tails_refuse_before_side_effects", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.453996541 }
+END STREAM
+
+PHASE control-48 SELECTOR timestamp_terminal::nonterminal_tails_refuse_before_side_effects STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-48/stderr SHA256 d2820d0f275cc0b16dd7a26b196ed77ba150b150e8ba5ed6ac3b4819a4a89e11
+actual refused timestamp tail mode=3: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused timestamp tail mode=4: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused timestamp tail mode=5: SharedFailure(Reverie(Errno(ENOSYS)))
+actual refused timestamp tail mode=6: SharedFailure(Reverie(Errno(ENOSYS)))
+END STREAM
+
+PHASE control-49 SELECTOR timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-49/stdout SHA256 b93fad64e095a0901360aad9774691557cc561cd00d5c822184287d2ec975585
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group" }
+{ "type": "test", "name": "timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 330, "exec_time": 0.074237109 }
+END STREAM
+
+PHASE control-49 SELECTOR timestamp_terminal::worker_terminal_rpc_precedes_real_sibling_exit_group STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-49/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-50 SELECTOR vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-50/stdout SHA256 85a84ed0f58d6b549b21eef09f66bf265f76993337f7097526959df17a0fb3c4
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception" }
+{ "type": "test", "name": "vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.064095601 }
+END STREAM
+
+PHASE control-50 SELECTOR vm::tests::non_elf_tool_loop_disarms_prior_timestamp_interception STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-50/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-51 SELECTOR runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-51/stdout SHA256 8983f92e103935a67602a5a41b70b18d64b98ce296a442858523946e24724e38
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect" }
+{ "type": "test", "name": "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.000538199 }
+END STREAM
+
+PHASE control-51 SELECTOR runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-51/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-52 SELECTOR runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-52/stdout SHA256 37abce859beab3bc53424d2cad07172374a968f30a56bed368aa42465bff4ca1
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children" }
+{ "type": "test", "name": "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 522, "exec_time": 0.000547673 }
+END STREAM
+
+PHASE control-52 SELECTOR runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children STREAM stderr PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-52/stderr SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+END STREAM
+
+PHASE control-53 SELECTOR cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique STREAM stdout PATH /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/observer/control-53/stdout SHA256 6c491d6339780da294a313085b53781560c4295657a362a27dd6947ff736f3bf
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique" }

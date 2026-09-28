@@ -1,0 +1,24 @@
+{
+  "started": [
+    "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.001732813
+    }
+  ]
+}

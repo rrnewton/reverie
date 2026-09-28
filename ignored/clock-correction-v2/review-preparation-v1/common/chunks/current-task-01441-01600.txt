@@ -1,0 +1,160 @@
+fn format_task_panic_marker(tid: Pid, payload: &(dyn std::any::Any + Send)) -> String {
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&'static str>().copied())
+        .unwrap_or("<non-string panic payload>");
+    // Always exactly one line: a marker that can wrap is a marker a harness
+    // cannot grep. The panic's own (multi-line) output has already reached
+    // stderr through the default hook; this line exists to be machine-read.
+    let message: String = message
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    format!(
+        "{} tid={} exit={} message={}",
+        TASK_PANIC_MARKER,
+        tid,
+        TASK_PANIC_EXIT_CODE,
+        message.trim()
+    )
+}
+
+/// A guest-thread task died of a panic. End the run, loudly.
+///
+/// WHY THE PROCESS EXITS RATHER THAN PROPAGATING AN ERROR. Tokio's task harness
+/// catches a panic in a `spawn_local` task and parks it in the `JoinHandle`,
+/// which nothing polls until `tool_exit`. The run cannot reach `tool_exit`,
+/// because by then the tool's scheduler is parked waiting for a turn request
+/// this task will never post, and detcore's `Ivar` has no way to report that
+/// its writer is gone -- so every other guest thread waits forever and the run
+/// hangs until an external timeout kills it. There is no live party left to
+/// hand an error to. detcore reached the same conclusion about its own
+/// scheduler task and built `immediate_fatal_exit` for exactly this.
+///
+/// Exiting does not leak the guest: `postspawn` sets `PTRACE_O_EXITKILL`, so
+/// the tracees die with the tracer. The terminal-deadlock path already relies
+/// on that.
+fn guest_task_panic_is_fatal(tid: Pid, payload: Box<dyn std::any::Any + Send>) -> ! {
+    // `eprintln!` rather than `tracing::error!` on purpose, matching detcore's
+    // terminal-deadlock report: the tracing writer prefixes a real wall-clock
+    // timestamp, and a marker meant to be compared across runs must not carry
+    // one.
+    eprintln!("{}", format_task_panic_marker(tid, payload.as_ref()));
+    let _ = std::io::stderr().flush();
+    let _ = std::io::stdout().flush();
+    std::process::exit(TASK_PANIC_EXIT_CODE)
+}
+
+fn log_guest_exit(tid: Pid, pid: Pid, exit_status: ExitStatus) {
+    if let ExitStatus::Signaled(signal, core_dumped) = exit_status {
+        tracing::error!(
+            target: "reverie_ptrace::lifecycle",
+            %tid,
+            %pid,
+            %signal,
+            core_dumped,
+            "guest terminated by signal"
+        );
+    }
+}
+
+/// Handles a potentially internal error, converting it to an exit status.
+async fn handle_internal_error(err: Error) -> Result<ExitStatus, reverie::Error> {
+    match err {
+        Error::Internal(TraceError::Died(zombie))
+        | Error::Tracee {
+            source: TraceError::Died(zombie),
+            ..
+        } => zombie
+            .reap()
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to reap dead tracee: {error}").into()),
+        Error::Internal(TraceError::Errno(errno)) => Err(errno.into()),
+        Error::Tracee {
+            operation,
+            pid,
+            source: TraceError::Errno(errno),
+        } => Err(anyhow::anyhow!("{operation} failed for tracee {pid}: {errno}").into()),
+        Error::Runtime {
+            operation,
+            pid,
+            message,
+        } => Err(anyhow::anyhow!("{operation} failed for tracee {pid}: {message}").into()),
+        Error::External(err) => Err(err),
+    }
+}
+
+/// Helper for canceling handlers.
+async fn cancellable<F>(cancel_handler: Arc<AtomicBool>, f: F) -> Option<F::Output>
+where
+    F: Future,
+{
+    futures::pin_mut!(f);
+    future::poll_fn(|cx| {
+        let result = f.as_mut().poll(cx);
+
+        // `tail_inject` sets this while polling `f`, then remains pending. We
+        // can cancel the handler in the same poll instead of waking the Tokio
+        // task solely to make this future observe its own notification.
+        if cancel_handler.swap(false, Ordering::SeqCst) {
+            Poll::Ready(None)
+        } else {
+            result.map(Some)
+        }
+    })
+    .await
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum SegfaultTrapInfo {
+    Cpuid,
+    Rdtscs(Rdtsc),
+}
+
+#[cfg(target_arch = "x86_64")]
+impl SegfaultTrapInfo {
+    /// Check if segfault is called by cpuid/rdtsc trap
+    pub fn decode_segfault(insn_at_rip: u64) -> Option<SegfaultTrapInfo> {
+        if insn_at_rip & 0xffffu64 == 0xa20fu64 {
+            Some(SegfaultTrapInfo::Cpuid)
+        } else if insn_at_rip & 0xffffu64 == 0x310fu64 {
+            Some(SegfaultTrapInfo::Rdtscs(Rdtsc::Tsc))
+        } else if insn_at_rip & 0xffffffu64 == 0xf9010fu64 {
+            Some(SegfaultTrapInfo::Rdtscs(Rdtsc::Tscp))
+        } else {
+            None
+        }
+    }
+}
+
+// restore syscall context when it returns. This is needed because we might
+// have injected a different syscall (or arguments) in handle_seccomp.
+fn restore_context(
+    task: &Stopped,
+    context: libc::user_regs_struct,
+    retval: Option<Reg>,
+    restore_stack: bool,
+) -> Result<(), TraceError> {
+    let mut regs = task.getregs()?;
+
+    if let Some(ret) = retval {
+        *regs.ret_mut() = ret;
+    }
+    // TODO-HUMAN-REVIEW(PR-103): Review injected parent-stack restoration.
+    if restore_stack {
+        *regs.stack_ptr_mut() = context.stack_ptr();
+    }
+
+    // Restore instruction pointer.
+    *regs.ip_mut() = context.ip();
+
+    // Restore syscall arguments.
+    regs.set_args(context.args());
+
+    // This is needed when syscall is interrupted by a signal (ERESTARTSYS)
+    // we need restore the original syscall number as well because it is
+    // possible syscall is reinjected as a different variant, like vfork ->
+    // clone, which accepts different arguments.
+    *regs.orig_syscall_mut() = context.orig_syscall();

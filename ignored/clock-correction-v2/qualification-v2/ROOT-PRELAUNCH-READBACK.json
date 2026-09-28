@@ -1,0 +1,10 @@
+{
+  "target_sha256": "d3d43d3d072b164e6140ca8335dd72ba4c3430d6b33110d228b0858070ab0ed5",
+  "files": 22690,
+  "aliases": 37,
+  "all_11_helpers_identical": true,
+  "all_phases_and_selections_equal_after_path_substitution": true,
+  "metadata_argv_environment_limits_equal_after_path_substitution": true,
+  "optimize": 0,
+  "scope": "Root read complete two-import patch and new README; normalized data comparison plus full byte authentication; not an independent code review"
+}

@@ -1,0 +1,25 @@
+{
+  "kind": "source-only exact u8 fixture correction",
+  "files": {
+    "REPORT.md": {
+      "sha256": "864be15dec2b31130890c1bc93d097dd00f6468830d829236ae579456bef68ad",
+      "bytes": 2155
+    },
+    "SOURCE.json": {
+      "sha256": "82263d9eff4df45626bb416641de7209461dbafbb711c6b69be1efb50447f1fa",
+      "bytes": 395
+    },
+    "SOURCE.patch": {
+      "sha256": "8a0c79992376b8c6cdee6375039fb9f21d44f05742286f470aa9b5838c170c1d",
+      "bytes": 1162
+    },
+    "after.rs": {
+      "sha256": "63bd4a84d1f23e9ff2d44f4ff1dfb6d57c30384527e3c119c955816743d00c6b",
+      "bytes": 10786
+    },
+    "before.rs": {
+      "sha256": "95e4c1d4002c1b33ac7b631e843724f1ffa4045a1763e662915b023bc3e1a215",
+      "bytes": 10777
+    }
+  }
+}

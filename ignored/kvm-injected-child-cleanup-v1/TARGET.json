@@ -1,0 +1,43 @@
+{
+  "kind": "injected captured-boundary pending-child cleanup separation",
+  "owned_source": "reverie-kvm/src/vm.rs action-boundary region and additive control only",
+  "source_ownership_released": true,
+  "product_execution": false,
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-injected-child-cleanup-v1/BASE-vm.rs",
+      "bytes": 371966,
+      "sha256": "b6eb3ffc679ec1044dff9c57711769350734820a77f7ca9267cb518d22189494"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-injected-child-cleanup-v1/PROPOSED-vm.rs",
+      "bytes": 380752,
+      "sha256": "1301e31879ac21073c8a7d00f7dea2d382734f66f99097b0f00bbeccc74575ef"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-injected-child-cleanup-v1/SOURCE.patch",
+      "bytes": 10028,
+      "sha256": "772c2b1f3d09c430193717a615a80fe485dacf90cf5d2923918c6f65ef2b9468"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-injected-child-cleanup-v1/RUNTIME-CALLER.patch",
+      "bytes": 551,
+      "sha256": "746d76b78779cfce69715af2f71d70e0f9c4960bf1b51490152895a3fd9f412f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-injected-child-cleanup-v1/PRESERVATION.json",
+      "bytes": 337,
+      "sha256": "6737da4a7f92acba181bed87a9790b7d4d7ee14a7236c290aead36f6ac157b3b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-injected-child-cleanup-v1/START.json",
+      "bytes": 418,
+      "sha256": "41cf5cbaafde95baf85f7bd717b8c98eae06d54e94b92ed9b8da5a14e3238d30"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-injected-child-cleanup-v1/REPORT.md",
+      "bytes": 6905,
+      "sha256": "96cbad9175bdfbb9243c6d6ffb97bd2926b32d72861b8925f218e9db681c51ad"
+    }
+  ]
+}

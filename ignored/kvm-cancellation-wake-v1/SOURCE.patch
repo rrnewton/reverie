@@ -1,0 +1,269 @@
+diff --git a/reverie-kvm/src/vm.rs b/reverie-kvm/src/vm.rs
+index e84d27bf..9b3cb271 100644
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -16,6 +16,9 @@ use std::sync::OnceLock;
+ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+ 
++use futures::FutureExt;
++use futures::channel::oneshot;
++use futures::future::Shared;
+ use kvm_bindings::CpuId;
+ use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
+ use kvm_bindings::kvm_enable_cap;
+@@ -333,11 +336,29 @@ impl ProcessActionOutcome {
+     }
+ }
+ 
++pub(crate) type GuestCancellationSubscription = Shared<oneshot::Receiver<()>>;
++
++struct CancellationWake {
++    sender: oneshot::Sender<()>,
++    receiver: GuestCancellationSubscription,
++}
++
++impl Default for CancellationWake {
++    fn default() -> Self {
++        let (sender, receiver) = oneshot::channel();
++        Self {
++            sender,
++            receiver: receiver.shared(),
++        }
++    }
++}
++
+ #[derive(Default)]
+ // TODO-HUMAN-REVIEW(PR-172): Review process-wide KVM worker cancellation state.
+ pub(crate) struct GuestThreadGroup {
+     cancelled: AtomicBool,
+     cancelled_after_failure: AtomicBool,
++    cancellation_wake: Mutex<CancellationWake>,
+     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
+     // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
+     exit_status: Mutex<Option<ExitStatus>>,
+@@ -413,6 +434,35 @@ pub(crate) fn finish_caught_worker_panic(
+ }
+ 
+ impl GuestThreadGroup {
++    /// Subscribe before rechecking the caller's existing cancellation and exit
++    /// predicates. Readiness only requests another recheck; it grants no entry
++    /// and does not decide whether worker cancellation applies to the root.
++    /// Take a fresh subscription after every wake, including an irrelevant one.
++    #[allow(dead_code)] // Used by the forthcoming stopped-entry wait adapters.
++    pub(crate) fn subscribe_cancellation(&self) -> GuestCancellationSubscription {
++        self.cancellation_wake
++            .lock()
++            .expect("KVM cancellation wake lock poisoned")
++            .receiver
++            .clone()
++    }
++
++    /// Called after publishing state and releasing every group registry lock.
++    fn notify_cancellation(&self) {
++        let previous = {
++            let mut wake = self
++                .cancellation_wake
++                .lock()
++                .expect("KVM cancellation wake lock poisoned");
++            std::mem::take(&mut *wake)
++        };
++        // Install a pending generation before invoking any wake callback. In
++        // particular, exec rearm and a root ignoring worker-only cancellation
++        // must not inherit a permanently-ready notification. Send outside the
++        // notification lock too: a callback may immediately subscribe again.
++        let _ = previous.sender.send(());
++    }
++
+     #[cfg(test)]
+     pub(crate) fn has_worker_handles(&self) -> bool {
+         !self.worker_handles.lock().unwrap().is_empty()
+@@ -488,6 +538,8 @@ impl GuestThreadGroup {
+                 libc::pthread_kill(worker, worker_interrupt_signal());
+             }
+         }
++        drop(workers);
++        self.notify_cancellation();
+     }
+ 
+     pub(crate) fn add_worker_handle(
+@@ -672,6 +724,8 @@ impl GuestThreadGroup {
+                 libc::pthread_kill(worker, worker_interrupt_signal());
+             }
+         }
++        drop(workers);
++        self.notify_cancellation();
+     }
+ 
+     // TODO-HUMAN-REVIEW(PR-211): Review KVM exec sibling cancellation ordering.
+@@ -3836,6 +3890,170 @@ mod tests {
+ 
+     include!("cpuid_runtime_tests.rs");
+ 
++    mod cancellation_wake_tests {
++        use std::sync::Weak;
++        use std::sync::atomic::AtomicUsize;
++        use std::task::Context;
++
++        use super::*;
++
++        #[test]
++        fn subscriptions_cover_registration_before_and_after_publication() {
++            for exit_group in [false, true] {
++                let group = GuestThreadGroup::default();
++                let first = group.subscribe_cancellation();
++                let second = group.subscribe_cancellation();
++                let unpolled = first.clone();
++                drop(group.subscribe_cancellation());
++                assert!(first.clone().now_or_never().is_none());
++                assert!(second.clone().now_or_never().is_none());
++                assert!(!group.cancelled.load(Ordering::Acquire));
++
++                if exit_group {
++                    group.request_exit_group(ExitStatus::Exited(19));
++                } else {
++                    group.cancel_workers();
++                }
++                assert_eq!(first.now_or_never(), Some(Ok(())));
++                assert_eq!(second.now_or_never(), Some(Ok(())));
++                assert_eq!(unpolled.now_or_never(), Some(Ok(())));
++
++                // A late subscriber must see the published predicate on its
++                // recheck even though its new notification is still pending.
++                let late = group.subscribe_cancellation();
++                assert!(group.cancelled.load(Ordering::Acquire));
++                assert_eq!(
++                    group.exit_status(),
++                    exit_group.then_some(ExitStatus::Exited(19))
++                );
++                assert!(late.clone().now_or_never().is_none());
++                if exit_group {
++                    group.request_exit_group(ExitStatus::Exited(23));
++                } else {
++                    group.cancel_workers();
++                }
++                assert_eq!(late.now_or_never(), Some(Ok(())));
++                assert_eq!(
++                    group.exit_status(),
++                    exit_group.then_some(ExitStatus::Exited(19)),
++                    "notification must preserve the first exit status"
++                );
++            }
++        }
++
++        #[test]
++        fn root_can_resubscribe_after_worker_only_cancellation() {
++            let group = GuestThreadGroup::default();
++            let old = group.subscribe_cancellation();
++            group.cancel_workers();
++            assert_eq!(old.now_or_never(), Some(Ok(())));
++
++            // The root's existing exit predicate ignores worker-only cancel.
++            let next = group.subscribe_cancellation();
++            assert_eq!(group.exit_status(), None);
++            assert!(group.cancelled.load(Ordering::Acquire));
++            assert!(next.clone().now_or_never().is_none());
++
++            group.request_exit_group(ExitStatus::Exited(31));
++            assert_eq!(next.now_or_never(), Some(Ok(())));
++            assert_eq!(group.exit_status(), Some(ExitStatus::Exited(31)));
++            assert!(group.subscribe_cancellation().now_or_never().is_none());
++        }
++
++        #[test]
++        fn subscriptions_survive_exec_rearm_and_wake_on_later_cancellation() {
++            let group = GuestThreadGroup::default();
++            let old = group.subscribe_cancellation();
++            group.record_worker_failure(2);
++            group.request_exit_group(ExitStatus::Exited(41));
++            assert_eq!(old.now_or_never(), Some(Ok(())));
++            assert!(group.cancelled_after_failure.load(Ordering::Acquire));
++
++            let before_rearm = group.subscribe_cancellation();
++            group.join_workers();
++            group.rearm_after_exec();
++            assert!(!group.cancelled.load(Ordering::Acquire));
++            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
++            assert_eq!(group.exit_status(), None);
++            assert!(before_rearm.clone().now_or_never().is_none());
++            let after_rearm = group.subscribe_cancellation();
++            assert!(after_rearm.clone().now_or_never().is_none());
++
++            group.cancel_workers();
++            assert_eq!(before_rearm.now_or_never(), Some(Ok(())));
++            assert_eq!(after_rearm.now_or_never(), Some(Ok(())));
++            assert!(group.cancelled.load(Ordering::Acquire));
++            assert!(!group.cancelled_after_failure.load(Ordering::Acquire));
++            assert_eq!(group.exit_status(), None);
++        }
++
++        struct CancellationWakeProbe {
++            group: Weak<GuestThreadGroup>,
++            expected_status: Option<ExitStatus>,
++            expected_failure: bool,
++            wakes: AtomicUsize,
++        }
++
++        impl futures::task::ArcWake for CancellationWakeProbe {
++            fn wake_by_ref(probe: &Arc<Self>) {
++                let group = probe.group.upgrade().unwrap();
++                assert!(group.cancelled.load(Ordering::Acquire));
++                assert_eq!(
++                    group.cancelled_after_failure.load(Ordering::Acquire),
++                    probe.expected_failure
++                );
++                assert_eq!(
++                    *group.exit_status.try_lock().unwrap(),
++                    probe.expected_status
++                );
++                assert!(group.root.try_lock().is_ok());
++                assert!(group.workers.try_lock().is_ok());
++                assert!(group.worker_handles.try_lock().is_ok());
++                assert!(group.worker_start_gates.try_lock().is_ok());
++                assert!(group.worker_errors.try_lock().is_ok());
++                assert!(group.reported_worker_panics.try_lock().is_ok());
++                assert!(group.failure_state.try_lock().is_ok());
++                assert!(group.transport_slots.try_lock().is_ok());
++                assert!(group.cancellation_wake.try_lock().is_ok());
++                assert!(group.subscribe_cancellation().now_or_never().is_none());
++                probe.wakes.fetch_add(1, Ordering::Relaxed);
++            }
++        }
++
++        #[test]
++        fn wake_callbacks_observe_published_state_outside_group_locks() {
++            for after_failure in [false, true] {
++                for exit_group in [false, true] {
++                    let group = Arc::new(GuestThreadGroup::default());
++                    if after_failure {
++                        group.record_worker_failure(2);
++                    }
++                    let probe = Arc::new(CancellationWakeProbe {
++                        group: Arc::downgrade(&group),
++                        expected_status: exit_group.then_some(ExitStatus::Exited(47)),
++                        expected_failure: after_failure,
++                        wakes: AtomicUsize::new(0),
++                    });
++                    let waker = futures::task::waker(probe.clone());
++                    let mut subscription = group.subscribe_cancellation();
++                    assert!(
++                        subscription
++                            .poll_unpin(&mut Context::from_waker(&waker))
++                            .is_pending()
++                    );
++                    assert_eq!(probe.wakes.load(Ordering::Relaxed), 0);
++                    if exit_group {
++                        group.request_exit_group(ExitStatus::Exited(47));
++                    } else {
++                        group.cancel_workers();
++                    }
++                    assert!(probe.wakes.load(Ordering::Relaxed) > 0);
++                    assert_eq!(subscription.now_or_never(), Some(Ok(())));
++                }
++            }
++        }
++    }
++
+     mod initialization_tests {
+         use std::io::Seek;
+         use std::io::SeekFrom;

@@ -1,0 +1,142 @@
+                0
+            );
+            let link: libc::stat = read_struct(&memory, 0x800);
+            assert_eq!(link.st_mode & libc::S_IFMT, libc::S_IFLNK);
+        }
+    }
+
+    #[test]
+    fn proc_fd_statx_preserves_native_masks_and_error_results() {
+        let mut output = CapturedOutput::default();
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let path = root.0.join("statx-object");
+        std::fs::write(&path, b"object").unwrap();
+        let fd = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(path).unwrap(),
+            false,
+            Some(OutputAlias::Stdout),
+        ) as i32;
+        let host_fd = host_fd(&state, fd).unwrap();
+        write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+        for (flags, mask) in [
+            (0, 0),
+            (0, libc::STATX_INO),
+            (libc::AT_STATX_FORCE_SYNC, libc::STATX_BASIC_STATS),
+            (libc::AT_STATX_SYNC_TYPE, libc::STATX_BASIC_STATS),
+            (0, 0x8000_0000),
+        ] {
+            let mut native = std::mem::MaybeUninit::<libc::statx>::zeroed();
+            // SAFETY: the owned fd is live, the empty path is terminated, and
+            // native is writable; Linux validates the actual flags and mask.
+            let result = unsafe {
+                libc::statx(
+                    host_fd,
+                    c"".as_ptr(),
+                    libc::AT_EMPTY_PATH | flags,
+                    mask,
+                    native.as_mut_ptr(),
+                )
+            };
+            let expected = if result == 0 {
+                0
+            } else {
+                io_error(std::io::Error::last_os_error())
+            };
+            let actual = metadata_call(
+                &mut memory,
+                &mut state,
+                None,
+                libc::SYS_statx,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    flags as u64,
+                    mask as u64,
+                    0x1000,
+                    0,
+                ],
+            );
+            assert_eq!(actual, expected, "flags={flags:#x} mask={mask:#x}");
+            if result == 0 {
+                // SAFETY: the native statx call succeeded and initialized it.
+                let native = unsafe { native.assume_init() };
+                let guest: libc::statx = read_struct(&memory, 0x1000);
+                assert_eq!(guest.stx_mask, native.stx_mask);
+                assert_eq!(
+                    (guest.stx_ino, guest.stx_dev_major, guest.stx_dev_minor),
+                    (native.stx_ino, native.stx_dev_major, native.stx_dev_minor)
+                );
+            } else {
+                assert_eq!(
+                    metadata_call(
+                        &mut memory,
+                        &mut state,
+                        Some(&mut output),
+                        libc::SYS_statx,
+                        [
+                            libc::AT_FDCWD as u64,
+                            0x100,
+                            flags as u64,
+                            mask as u64,
+                            0x1000,
+                            0
+                        ]
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 39588..39634; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    #[test]
+    fn proc_executable_link_marks_unlinked_and_replaced_files_deleted() {
+        let proc_executable_link_target = |state: &LoadedStaticElf| {
+            let mut memory = GuestMemory::new(0, 8192).unwrap();
+            memory.write(0x100, b"/proc/self/exe\0").unwrap();
+            memory.write(0x1000, &[0xa5; 4096]).unwrap();
+            let count = readlink_at_impl(
+                &mut memory,
+                state,
+                libc::AT_FDCWD,
+                0x100,
+                0x1000,
+                4096,
+                None,
+            );
+            assert!((0..4096).contains(&count));
+            let mut output = [0; 4096];
+            memory.read(0x1000, &mut output).unwrap();
+            assert_eq!(&output[count as usize..], &[0xa5; 4096][count as usize..]);
+            output[..count as usize].to_vec()
+        };
+        let dir = TestDir::new();
+        let executable = dir.0.join("program");
+        std::fs::write(&executable, b"first").unwrap();
+        let mut state = test_state(&dir.0);
+        state.executable_path = executable.clone();
+        state.executable_file = Some(Arc::new(std::fs::File::open(&executable).unwrap()));
+        assert_eq!(
+            proc_executable_link_target(&state),
+            executable.as_os_str().as_bytes(),
+        );
+
+        let replacement = dir.0.join("replacement");
+        std::fs::write(&replacement, b"second").unwrap();
+        std::fs::rename(&replacement, &executable).unwrap();
+        let expected = format!("{} (deleted)", executable.display());
+        assert_eq!(proc_executable_link_target(&state), expected.as_bytes());
+
+        std::fs::remove_file(&executable).unwrap();
+        assert_eq!(proc_executable_link_target(&state), expected.as_bytes());
+        state.executable_file = None;
+        assert_eq!(
+            proc_executable_link_target(&state),
+            executable.as_os_str().as_bytes(),
+            "the embedding API's unknown initial identity stays best effort",
+        );
+    }
+

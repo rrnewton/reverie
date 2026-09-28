@@ -1,0 +1,9 @@
+{
+  "names": [
+    "executor::entry_host_wait_tests::queued_host_futex_retains_operands_while_unchanged_mapping_fence_completes",
+    "executor::entry_host_wait_tests::allocation_held_mmap_file_read_does_not_hold_unchanged_mapping_fence"
+  ],
+  "count": 2,
+  "execution": "unexecuted; no compile/format/test launch",
+  "requires": "Linux real futex syscall and regular memfd; no KVM_RUN or KVM setup in these new declarations"
+}

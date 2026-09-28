@@ -1,0 +1,160 @@
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      }
+    },
+    {
+      "name": "list-vsyscall",
+      "kind": "list",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/vsyscall.elf",
+        "--list",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "suppressed_legacy_vsyscall_returns_to_caller"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      }
+    },
+    {
+      "name": "core-check",
+      "kind": "check",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "check",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-core",
+        "-p",
+        "reverie-ptrace",
+        "--message-format=json"
+      ],
+      "selected": [],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      }
+    },
+    {
+      "name": "clippy",
+      "kind": "check",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "clippy",
+        "--offline",
+        "--locked",
+        "-p",
+        "reverie-ptrace",
+        "--lib",
+        "--tests",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "selected": [],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 600000000,
+        "wall_seconds": 900,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      }
+    },
+    {
+      "name": "test-01",
+      "kind": "test",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "timer::tests::initial_command_requests_retire_without_physical_notification",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "timer::tests::initial_command_requests_retire_without_physical_notification"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "harness": "ptrace",
+      "required_markers": []
+    },
+    {
+      "name": "test-02",
+      "kind": "test",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "harness": "ptrace",
+      "required_markers": []
+    },
+    {
+      "name": "test-03",
+      "kind": "test",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",

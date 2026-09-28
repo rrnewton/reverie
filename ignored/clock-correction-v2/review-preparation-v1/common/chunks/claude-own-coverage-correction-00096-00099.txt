@@ -1,0 +1,4 @@
+- **Not read this turn:** my original `CLAUDE-REPORT.md` as a file — I composed against it from my own authored content in this same session rather than re-reading it, and its sha256 `8672b018…` is bound in `claude-coverage-v2/TARGET.json`. I state that plainly rather than implying a re-read.
+- **Not repeated:** the paper, scheduler, vision and roadmap grounding (`GROUNDING_AUTHENTICATION.json`, sha256 `f2b0b8fd…`), which remains authenticated; the 155 chunks of the original turn; the whole review.
+- **Tools used:** `Read` only. No Grep, Glob, Bash, network, MCP, agent, write, build, test, guest, or source/index/SCM/cache/lease operation. No other session, reviewer report, verdict or concurrent work inspected.
+- **Artifacts:** none written. Both the original report and this independent correction stand in history; the original audit's failure is not converted into a pass.

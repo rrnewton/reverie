@@ -1,0 +1,16 @@
+[
+  {
+    "path": "reverie-kvm/src/vm/worker_join.rs",
+    "before_bytes": 19841,
+    "before_sha256": "ff326477247930f1e5098a095801be9d12fc118b010321339492815efc6a805b",
+    "after_bytes": 20480,
+    "after_sha256": "eeeb36521f0ab630ed21f95ac96462608ead0961e23b8da4046fb26be671b9da"
+  },
+  {
+    "path": "reverie-kvm/src/runtime/failure_tests.rs",
+    "before_bytes": 52820,
+    "before_sha256": "18d7d156bd5ecc3599c100a106698d55ff5aa9229c4b31713fb8312d1b9b7995",
+    "after_bytes": 53242,
+    "after_sha256": "efb1f468656f04276111c14f3ac4874251b1e7ba97a3796ccc7f81a42969e762"
+  }
+]

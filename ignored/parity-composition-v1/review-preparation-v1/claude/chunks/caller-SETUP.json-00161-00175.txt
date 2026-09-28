@@ -1,0 +1,15 @@
+  "lock": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/Cargo.lock",
+    "bytes": 67056,
+    "sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+    "mode": 420
+  },
+  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/parity-composition-v1-cold-v1",
+  "purpose": "Combined V7 timestamp, CPUID and captured-pipe identity source: exact 83 declarations; no Hermit cancellation, signal/timer or full backend parity claim from component tests",
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/SOURCE-TARGET.json",
+    "bytes": 1443,
+    "sha256": "81474b37bc3a00849331323b482d4fbef994df91243355c285c572225476e5f2",
+    "mode": 420
+  }
+}

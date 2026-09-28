@@ -1,0 +1,98 @@
+[
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/launch-review.py",
+      "bytes": 5182,
+      "sha256": "2fae51dc92750af09f914b673a2767071c01c0c2058c60b6c1ef1795a8e04245",
+      "mode": 420
+    },
+    "prepared": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/claude/launch-review.py",
+      "bytes": 5182,
+      "sha256": "2fae51dc92750af09f914b673a2767071c01c0c2058c60b6c1ef1795a8e04245",
+      "mode": 420
+    },
+    "byte_identical": true,
+    "change": null
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/audit-final.py",
+      "bytes": 5786,
+      "sha256": "2224fa0b36f89d465cbfc0daba180edae8466b09d5f25207d81645da692017dc",
+      "mode": 420
+    },
+    "prepared": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/claude/audit-final.py",
+      "bytes": 5794,
+      "sha256": "64f999d4d2d767eb5c86c2997806c6edb4efea2cbc36c55fb1fc69615145890c",
+      "mode": 420
+    },
+    "byte_identical": false,
+    "change": "scope text only; predicates unchanged"
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/launch-guard.py",
+      "bytes": 3941,
+      "sha256": "5cf9be275300e7ed9d9bff82f3066e050c4953df94e1499a03117343e635da36",
+      "mode": 420
+    },
+    "prepared": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/native/launch-guard.py",
+      "bytes": 3941,
+      "sha256": "5cf9be275300e7ed9d9bff82f3066e050c4953df94e1499a03117343e635da36",
+      "mode": 420
+    },
+    "byte_identical": true,
+    "change": null
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/run_stage.py",
+      "bytes": 5787,
+      "sha256": "4e096886254d294f6fbc9835bea819fed61bd9bb7909af06cf451e4793c42cfc",
+      "mode": 420
+    },
+    "prepared": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/native/run_stage.py",
+      "bytes": 5787,
+      "sha256": "4e096886254d294f6fbc9835bea819fed61bd9bb7909af06cf451e4793c42cfc",
+      "mode": 420
+    },
+    "byte_identical": true,
+    "change": null
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/audit_source.py",
+      "bytes": 4365,
+      "sha256": "f6e2ba27bb7e6a4a680999bd7f80252ad3c82f3d20df54ee0a28f0599216f139",
+      "mode": 420
+    },
+    "prepared": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/native/audit_source.py",
+      "bytes": 4365,
+      "sha256": "f6e2ba27bb7e6a4a680999bd7f80252ad3c82f3d20df54ee0a28f0599216f139",
+      "mode": 420
+    },
+    "byte_identical": true,
+    "change": null
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/audit_split_reads.py",
+      "bytes": 2867,
+      "sha256": "f6236d2b64c8bf05bcb6f595d8d71423c1653e7acf9bb78db5e8cb7dc8f78459",
+      "mode": 420
+    },
+    "prepared": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/native/audit_split_reads.py",
+      "bytes": 2867,
+      "sha256": "f6236d2b64c8bf05bcb6f595d8d71423c1653e7acf9bb78db5e8cb7dc8f78459",
+      "mode": 420
+    },
+    "byte_identical": true,
+    "change": null
+  }
+]

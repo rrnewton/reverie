@@ -1,0 +1,26 @@
+        inputs += [file_record(HERE/'controls/compile/result.json'),file_record(HERE/'retained-binaries/ARTIFACTS.json'),artifact]
+        extra,symlinks=loader('test-'+artifact_id,artifact,env);inputs+=extra;links+=symlinks
+        if kind=='list':
+            selected=sorted({test for group in selection['groups'].values()if group['artifact']==artifact_id for test in group['names']})
+            argv=[artifact['path'],'--list','-Z','unstable-options','--format=json']
+        else:
+            inventory_path=HERE/'controls'/('list-'+artifact_id)/'result.json';inventory=json_read(inventory_path)
+            require(inventory['accepted']and inventory['terminal_authenticated'],'inventory did not qualify')
+            inputs.append(file_record(inventory_path));selected=selection['groups'][name]['names']
+            require(selected and all(inventory['readback']['names'].count(n)==1 for n in selected),'exact selected name missing or duplicated')
+            argv=[artifact['path'],*selected,'--exact','--test-threads=1','--nocapture','-Z','unstable-options','--format=json']
+    if(HERE/'dependency-symlinks.json').exists():
+        inputs.append(file_record(HERE/'dependency-symlinks.json'));links+=json_read(HERE/'dependency-symlinks.json')
+    target=OWNER/'target/parity-composition-v1-cold-v1';t=target.stat();lease=HERE/'lane.lease';l=lease.stat();large=kind in('metadata','compile','check')
+    require([t.st_dev,t.st_ino,t.st_uid]==admission['identity'], 'fresh target identity changed')
+    plan=dict(path=str(HERE/(name+'-plan.json')),name=name,kind=kind,argv=argv,selected=selected,artifact_selectors=artifact_selectors,
+              environment=env,scm=scm(),source_manifest=file_record(HERE/'source-manifest.json'),inputs=list({r['path']:r for r in inputs}.values()),
+              input_symlinks=list({r['path']:r for r in links}.values()),absent_inputs=sorted(set(absent)),
+              target=dict(path=str(target),identity=[t.st_dev,t.st_ino,t.st_uid]),
+              lease=dict(path=str(lease),owner_slot=str(OWNER),identity=[l.st_dev,l.st_ino,l.st_uid],state_directory=str(HERE/'lease-state')),
+              output=str(HERE/'observer'/name),control=str(HERE/'controls'/name),
+              limits=dict(aggregate_cpu_usec=600000000 if large else 30000000,wall_seconds=900 if large else 60,lethal_stderr_bytes=16777216,live_stdout_samples_bytes=67108864,phase_read_bytes=16777216,memory_bytes=17179869184,swap_bytes=0,free_floor_bytes=107374182400),
+              scope='Combined V7 timestamp, CPUID and captured-pipe identity source: exact 83 declarations; no Hermit cancellation, signal/timer or full backend parity claim from component tests')
+    if(HERE/'dependency-inputs.json').exists():plan['dependencies']=file_record(HERE/'dependency-inputs.json')
+    write_new(Path(plan['path']),plan);print(plan['path'],hashlib.sha256(Path(plan['path']).read_bytes()).hexdigest())
+if __name__=='__main__':main()

@@ -1,0 +1,4 @@
+
+thread 'cpuid::tests::deterministic_cpuid_table_rejects_duplicate_function_index' (3670141) panicked at reverie-kvm/src/cpuid.rs:152:9:
+fixed CPUID profile contains duplicate leaf 0xd, subleaf 0x0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

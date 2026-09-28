@@ -1,0 +1,160 @@
+963: 		/* Verify the interpreter has a valid arch */
+964: 		if (!elf_check_arch(interp_elf_ex) ||
+965: 		    elf_check_fdpic(interp_elf_ex))
+966: 			goto out_free_dentry;
+967: 
+968: 		/* Load the interpreter program headers */
+969: 		interp_elf_phdata = load_elf_phdrs(interp_elf_ex,
+970: 						   interpreter);
+971: 		if (!interp_elf_phdata)
+972: 			goto out_free_dentry;
+973: 
+974: 		/* Pass PT_LOPROC..PT_HIPROC headers to arch code */
+975: 		elf_property_phdata = NULL;
+976: 		elf_ppnt = interp_elf_phdata;
+977: 		for (i = 0; i < interp_elf_ex->e_phnum; i++, elf_ppnt++)
+978: 			switch (elf_ppnt->p_type) {
+979: 			case PT_GNU_PROPERTY:
+980: 				elf_property_phdata = elf_ppnt;
+981: 				break;
+982: 
+983: 			case PT_LOPROC ... PT_HIPROC:
+984: 				retval = arch_elf_pt_proc(interp_elf_ex,
+985: 							  elf_ppnt, interpreter,
+986: 							  true, &arch_state);
+987: 				if (retval)
+988: 					goto out_free_dentry;
+989: 				break;
+990: 			}
+991: 	}
+992: 
+993: 	retval = parse_elf_properties(interpreter ?: bprm->file,
+994: 				      elf_property_phdata, &arch_state);
+995: 	if (retval)
+996: 		goto out_free_dentry;
+997: 
+998: 	/*
+999: 	 * Allow arch code to reject the ELF at this point, whilst it's
+1000: 	 * still possible to return an error to the code that invoked
+1001: 	 * the exec syscall.
+1002: 	 */
+1003: 	retval = arch_check_elf(elf_ex,
+1004: 				!!interpreter, interp_elf_ex,
+1005: 				&arch_state);
+1006: 	if (retval)
+1007: 		goto out_free_dentry;
+1008: 
+1009: 	/* Flush all traces of the currently running executable */
+1010: 	retval = begin_new_exec(bprm);
+1011: 	if (retval)
+1012: 		goto out_free_dentry;
+1013: 
+1014: 	/* Do this immediately, since STACK_TOP as used in setup_arg_pages
+1015: 	   may depend on the personality.  */
+1016: 	SET_PERSONALITY2(*elf_ex, &arch_state);
+1017: 	if (elf_read_implies_exec(*elf_ex, executable_stack))
+1018: 		current->personality |= READ_IMPLIES_EXEC;
+1019: 
+1020: 	const int snapshot_randomize_va_space = READ_ONCE(randomize_va_space);
+1021: 	if (!(current->personality & ADDR_NO_RANDOMIZE) && snapshot_randomize_va_space)
+1022: 		current->flags |= PF_RANDOMIZE;
+1023: 
+1024: 	setup_new_exec(bprm);
+1025: 
+1026: 	/* Do this so that we can load the interpreter, if need be.  We will
+1027: 	   change some of these later */
+1028: 	retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
+1029: 				 executable_stack);
+1030: 	if (retval < 0)
+1031: 		goto out_free_dentry;
+1032: 
+1033: 	elf_brk = 0;
+1034: 
+1035: 	start_code = ~0UL;
+1036: 	end_code = 0;
+1037: 	start_data = 0;
+1038: 	end_data = 0;
+1039: 
+1040: 	/* Now we do a little grungy work by mmapping the ELF image into
+1041: 	   the correct location in memory. */
+1042: 	for(i = 0, elf_ppnt = elf_phdata;
+1043: 	    i < elf_ex->e_phnum; i++, elf_ppnt++) {
+1044: 		int elf_prot, elf_flags;
+1045: 		unsigned long k, vaddr;
+1046: 		unsigned long total_size = 0;
+1047: 		unsigned long alignment;
+1048: 
+1049: 		if (elf_ppnt->p_type != PT_LOAD)
+1050: 			continue;
+1051: 
+1052: 		elf_prot = make_prot(elf_ppnt->p_flags, &arch_state,
+1053: 				     !!interpreter, false);
+1054: 
+1055: 		elf_flags = MAP_PRIVATE;
+1056: 
+1057: 		vaddr = elf_ppnt->p_vaddr;
+1058: 		/*
+1059: 		 * The first time through the loop, first_pt_load is true:
+1060: 		 * layout will be calculated. Once set, use MAP_FIXED since
+1061: 		 * we know we've already safely mapped the entire region with
+1062: 		 * MAP_FIXED_NOREPLACE in the once-per-binary logic following.
+1063: 		 */
+1064: 		if (!first_pt_load) {
+1065: 			elf_flags |= MAP_FIXED;
+1066: 		} else if (elf_ex->e_type == ET_EXEC) {
+1067: 			/*
+1068: 			 * This logic is run once for the first LOAD Program
+1069: 			 * Header for ET_EXEC binaries. No special handling
+1070: 			 * is needed.
+1071: 			 */
+1072: 			elf_flags |= MAP_FIXED_NOREPLACE;
+1073: 		} else if (elf_ex->e_type == ET_DYN) {
+1074: 			/*
+1075: 			 * This logic is run once for the first LOAD Program
+1076: 			 * Header for ET_DYN binaries to calculate the
+1077: 			 * randomization (load_bias) for all the LOAD
+1078: 			 * Program Headers.
+1079: 			 */
+1080: 
+1081: 			/*
+1082: 			 * Calculate the entire size of the ELF mapping
+1083: 			 * (total_size), used for the initial mapping,
+1084: 			 * due to load_addr_set which is set to true later
+1085: 			 * once the initial mapping is performed.
+1086: 			 *
+1087: 			 * Note that this is only sensible when the LOAD
+1088: 			 * segments are contiguous (or overlapping). If
+1089: 			 * used for LOADs that are far apart, this would
+1090: 			 * cause the holes between LOADs to be mapped,
+1091: 			 * running the risk of having the mapping fail,
+1092: 			 * as it would be larger than the ELF file itself.
+1093: 			 *
+1094: 			 * As a result, only ET_DYN does this, since
+1095: 			 * some ET_EXEC (e.g. ia64) may have large virtual
+1096: 			 * memory holes between LOADs.
+1097: 			 *
+1098: 			 */
+1099: 			total_size = total_mapping_size(elf_phdata,
+1100: 							elf_ex->e_phnum);
+1101: 			if (!total_size) {
+1102: 				retval = -EINVAL;
+1103: 				goto out_free_dentry;
+1104: 			}
+1105: 
+1106: 			/* Calculate any requested alignment. */
+1107: 			alignment = maximum_alignment(elf_phdata, elf_ex->e_phnum);
+1108: 
+1109: 			/**
+1110: 			 * DOC: PIE handling
+1111: 			 *
+1112: 			 * There are effectively two types of ET_DYN ELF
+1113: 			 * binaries: programs (i.e. PIE: ET_DYN with
+1114: 			 * PT_INTERP) and loaders (i.e. static PIE: ET_DYN
+1115: 			 * without PT_INTERP, usually the ELF interpreter
+1116: 			 * itself). Loaders must be loaded away from programs
+1117: 			 * since the program may otherwise collide with the
+1118: 			 * loader (especially for ET_EXEC which does not have
+1119: 			 * a randomized position).
+1120: 			 *
+1121: 			 * For example, to handle invocations of
+1122: 			 * "./ld.so someprog" to test out a new version of

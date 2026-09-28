@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/phase.py",
+      "payload",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/control-10-plan.json",
+      "13070e24f2ae0b7f249c15419cd191263756f7f89c45a8a145141aa0eabeb2bc"
+    ]
+  },
+  "token": "4c892f39278935d6a2bbd26e67d3833fdc11ddb2004e32d1f29c5ab29e1c2868",
+  "observer_pid": 3053503,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 192108316,
+  "deadline_monotonic_ns": 1921108211510382
+}

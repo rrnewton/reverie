@@ -1,0 +1,80 @@
+{
+  "scope": "Prepared only; one bounded same-Claude missing-evidence continuation",
+  "head": "a9449f8ee22a17ba87a106c2af957a938fa57c45",
+  "files": 3573,
+  "aliases": 7,
+  "mandatory_raw_chunks": 16,
+  "mandatory_rule_chunks": 1,
+  "source_unchanged": true,
+  "launcher_only_delta": "Two 1800-to-600 guard/record literals; audit unchanged",
+  "command": [
+    "with-proxy",
+    "env",
+    "PYTHONOPTIMIZE=0",
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/launch-review.py"
+  ],
+  "references": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/TARGET.json",
+      "bytes": 3354,
+      "sha256": "48b87603611d6a08d9feef5b83d89f1e1fdd6d92a5bcc7f94cb05d84f7f28d96",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/PLAN.md",
+      "bytes": 2050,
+      "sha256": "7443c4f62b852e4560715dc908817d85067f22d8804cdf13740479facafe753d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/prompt.txt",
+      "bytes": 5694,
+      "sha256": "2b7dd56ae7d36fee996f2b8d75002a5c480b77e4c94899a92fe089ed91fac0b2",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/READ-INDEX.md",
+      "bytes": 4732,
+      "sha256": "8c6a1dd32ba1c2ff5aa2bf8856223b72368f09db525fa48d705a1bc6e2a80e08",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/MISSING-CHUNKS.json",
+      "bytes": 8545,
+      "sha256": "74e76734188a9542137ec5658d893fe0ee7238b03801d407a4d3b0316a668d93",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/COMPLETE_READS.json",
+      "bytes": 7590,
+      "sha256": "71782c9a6f6bd4c42f75853b4d8d39a212824063220e068422bfd753d7ac7f33",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/inputs.json",
+      "bytes": 1147438,
+      "sha256": "387a19e22907bc1690a0e696d7bfd088968e3bb997dd9d1b3e3f8c966b548f40",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/launch-review.py",
+      "bytes": 5180,
+      "sha256": "ef7d25956a60945f4456d7686508ee5853ab07c06bfc5fcdd6fc6bda463a321f",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/LAUNCHER-DELTA.patch",
+      "bytes": 2008,
+      "sha256": "5862de81212053f26dfe453775dc7e154f4887f8aef8db787c722559897422f1",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/claude-coverage-continuation-v1/audit-final.py",
+      "bytes": 5794,
+      "sha256": "64f999d4d2d767eb5c86c2997806c6edb4efea2cbc36c55fb1fc69615145890c",
+      "mode": 420
+    }
+  ]
+}

@@ -1,0 +1,381 @@
+{
+  "at_utc": "2026-09-18T20:50:08.753318+00:00",
+  "scope": "Independent Claude whole-PR source verdict and orchestration custody. No publication, merge, consumer runtime or parity approval.",
+  "head": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "tree": "73024912837cbbeaa70b6d2173f5b596eebedcb3",
+  "base": "6e3915b70a71657a08f0028b3f70d6074116206a",
+  "session": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+  "actual_model": "claude-opus-5[1m]",
+  "actual_permission_mode": "plan",
+  "model_override": null,
+  "verdict": "APPROVE",
+  "report_preserved_unmodified": true,
+  "report_event": 450,
+  "report_matches_terminal_result": true,
+  "raw_exit_code": 0,
+  "elapsed_seconds": 1241.6931944179814,
+  "exec_handle": 99793,
+  "handle_collected": true,
+  "input_files": 5974,
+  "input_aliases": 7,
+  "inputs_unchanged": true,
+  "mandatory_documents": 55,
+  "literal_complete_chunks": 164,
+  "mandatory_lines": 19525,
+  "first_complete_index_order": false,
+  "actual_tool_calls": 166,
+  "actual_tool_names": [
+    "Read"
+  ],
+  "tool_errors": 0,
+  "unindexed_reads": 0,
+  "automatic_compactions": [
+    {
+      "event": 446,
+      "type": "system",
+      "subtype": "compact_boundary",
+      "compact_metadata": {
+        "trigger": "auto",
+        "pre_tokens": 1001712,
+        "post_tokens": 28532,
+        "cumulative_dropped_tokens": 6810541,
+        "duration_ms": 223519,
+        "preserved_segment": {
+          "head_uuid": "3005db49-8e0e-4e23-9f74-687b58405125",
+          "anchor_uuid": "15f06fa6-1e34-430f-ac3d-b42eae2ff25d",
+          "tail_uuid": "b2e24457-7eed-4119-b297-15f0143300c4"
+        },
+        "preserved_messages": {
+          "anchor_uuid": "15f06fa6-1e34-430f-ac3d-b42eae2ff25d",
+          "uuids": [
+            "3005db49-8e0e-4e23-9f74-687b58405125",
+            "41961546-9f72-4ca8-a025-c157029913de",
+            "499c03ef-c3d4-4d8d-9e57-f65dee45ad20",
+            "f2f7ecc1-4a95-4ca3-9775-f1522d4a8465",
+            "8220e248-8f71-4355-8936-19d46137a5eb",
+            "b5872d12-71fb-45fb-9b09-61de0bc6a891",
+            "23b18ef9-d4b8-47a5-89cf-41d150f2294e",
+            "9b749e30-9fef-42c3-a5ea-688980697897",
+            "980eeb3b-f037-4ff6-8f5c-1f44e6676005",
+            "4426a958-685a-4d60-afbb-052ec705d8a5",
+            "5605569b-d71b-4615-af82-eeb0fbf76af9",
+            "05e3d5d1-b3e8-4474-84d7-d301b818c10c",
+            "dbff86f7-441a-4818-bc4a-6c5a4d523f17",
+            "697ac557-086c-4301-93ca-dcc657840256",
+            "d8f4f19e-e12f-42e0-9b84-d85eebb88ee7",
+            "7efc390c-1ff7-424a-b1c2-9f7ba1af89db",
+            "5af11aba-8b65-4bd5-8b29-a14e5128ec02",
+            "aaa4af50-ad44-474c-8c57-1ae15ac2485a",
+            "825da351-92e4-470d-9ff3-5bdfa40693d8",
+            "1909e432-ea7a-43df-9f8b-bea1d0fe7e12",
+            "16a52861-4c5e-45a7-85cc-7b940eaf5cd3",
+            "5ebdb526-bf4b-4c4b-b8aa-f98d593e9642",
+            "84af7b48-2609-40e3-b2a3-872ff53dfec0",
+            "bcb646e6-0b4e-4bf8-af12-d26cd1d3bdc4",
+            "88e349fa-8634-46ec-a2f0-5927a27a9739",
+            "40d41fb3-155d-48fc-a646-4fdf3656fd48",
+            "4f5d4506-73d1-40fb-a586-304fb8a517d5",
+            "53d78933-e3ac-4df9-8fda-2307fd8d5e16",
+            "5ddc0b50-ef68-4bd9-9b2f-91ce0ec3ec0a",
+            "d3e0bfe0-7eb2-4b69-ab65-1463ad925021",
+            "f3c04456-9c63-4ecb-acfd-78ee72fb4166",
+            "64b7f47f-0a28-4f83-848b-6d742e640415",
+            "5898185b-c83e-4bb2-bd24-a4d44b42d8fd",
+            "d4126658-0ce7-48c8-960a-ca306b653756",
+            "2b6d5c4d-b588-4e37-952b-e16b98a1def7",
+            "ee4ea72c-d5c0-4ade-b2c8-c38dfb5b853e",
+            "ef6747bf-7057-4a15-ba16-eb5588ace53e",
+            "15dbee7a-b20e-4a96-8881-ed8391b44a52",
+            "3277ac2e-cf15-4d30-b5f7-29906cc0bfe4",
+            "d1908aaf-bb06-4d53-aaa3-6859460041eb",
+            "010d907e-1a85-4e6a-9e36-9b1b37e4dd1d",
+            "481f1be8-6c75-49a3-8add-a5bab69ed2cc",
+            "c415bc88-1d72-4512-8b0c-7b18b2b4dc38",
+            "3827f672-ff85-4882-9640-bd0a1f7f8f60",
+            "14a4991e-04c7-4c67-a6b1-74550423ada9",
+            "0c757abb-2f9c-4c7c-8d28-78927f8fa437",
+            "8548cd5a-6d7a-4f65-b80a-8cbf88b10542",
+            "50d98193-7d42-4950-b56f-07591971936f",
+            "fde49e42-75d3-48f8-9908-8ee8d26d682e",
+            "b75bfec8-a86a-4a00-af69-330cc4047cbf",
+            "0f595ec4-d64b-41aa-9de5-539ae27bd169",
+            "b2e24457-7eed-4119-b297-15f0143300c4"
+          ],
+          "all_uuids": [
+            "3005db49-8e0e-4e23-9f74-687b58405125",
+            "41961546-9f72-4ca8-a025-c157029913de",
+            "499c03ef-c3d4-4d8d-9e57-f65dee45ad20",
+            "f2f7ecc1-4a95-4ca3-9775-f1522d4a8465",
+            "8220e248-8f71-4355-8936-19d46137a5eb",
+            "b5872d12-71fb-45fb-9b09-61de0bc6a891",
+            "23b18ef9-d4b8-47a5-89cf-41d150f2294e",
+            "9b749e30-9fef-42c3-a5ea-688980697897",
+            "abcbf9df-5c43-4f02-9618-79e5f99129af",
+            "980eeb3b-f037-4ff6-8f5c-1f44e6676005",
+            "5bc1b4a6-e5de-451e-964c-07306c6c86ae",
+            "4426a958-685a-4d60-afbb-052ec705d8a5",
+            "a1eb3e51-d6d2-475e-aa17-924e5d10bf46",
+            "8b2a3312-5ae4-4b8d-83cb-e5f3fdb9e098",
+            "9bedca3e-df4f-48e5-ba01-780025b82d3f",
+            "5605569b-d71b-4615-af82-eeb0fbf76af9",
+            "05e3d5d1-b3e8-4474-84d7-d301b818c10c",
+            "dbff86f7-441a-4818-bc4a-6c5a4d523f17",
+            "120975ef-4e73-4645-862b-ca3ba1be47af",
+            "697ac557-086c-4301-93ca-dcc657840256",
+            "3cb2d03e-1c3b-40d8-9bd7-7ea68ac268c6",
+            "d8f4f19e-e12f-42e0-9b84-d85eebb88ee7",
+            "93cc1994-2284-47c3-86bf-3c6e53503d47",
+            "495d5064-03de-4aea-8881-64976a5b2dcf",
+            "a1c4e2b9-0e23-4486-8499-9039f1f30adb",
+            "7efc390c-1ff7-424a-b1c2-9f7ba1af89db",
+            "5af11aba-8b65-4bd5-8b29-a14e5128ec02",
+            "aaa4af50-ad44-474c-8c57-1ae15ac2485a",
+            "b5b62e2b-8dce-42ce-90dd-166e3df819d5",
+            "825da351-92e4-470d-9ff3-5bdfa40693d8",
+            "7da28d7e-5ec7-4fbe-a3f6-2aa4582ddef2",
+            "1909e432-ea7a-43df-9f8b-bea1d0fe7e12",
+            "8c5100f2-608a-4ace-8175-c47c73173fcd",
+            "e50bd078-e7b8-4e97-8ea1-cc209001754d",
+            "c35799de-dff2-4ad1-8760-3ce13d913d9f",
+            "16a52861-4c5e-45a7-85cc-7b940eaf5cd3",
+            "5ebdb526-bf4b-4c4b-b8aa-f98d593e9642",
+            "84af7b48-2609-40e3-b2a3-872ff53dfec0",
+            "1d041504-2667-439a-95de-7544cf7f75cc",
+            "bcb646e6-0b4e-4bf8-af12-d26cd1d3bdc4",
+            "849f384f-8ee3-43cb-a90f-a1a056adfb34",
+            "88e349fa-8634-46ec-a2f0-5927a27a9739",
+            "ebc53a2d-6ab3-438e-9a1e-4a9460cf1441",
+            "410003a1-eeec-40b2-8beb-41b1006f5532",
+            "b735d603-4188-439e-8978-64c1017f22d2",
+            "40d41fb3-155d-48fc-a646-4fdf3656fd48",
+            "4f5d4506-73d1-40fb-a586-304fb8a517d5",
+            "53d78933-e3ac-4df9-8fda-2307fd8d5e16",
+            "5b0501b0-ba96-4e96-b891-526aca924c86",
+            "85184c12-2674-49e5-8c2d-8608a6465d17",
+            "5ddc0b50-ef68-4bd9-9b2f-91ce0ec3ec0a",
+            "d3e0bfe0-7eb2-4b69-ab65-1463ad925021",
+            "3fff8316-a02a-4ab0-8d41-83037317fa25",
+            "95777f06-d537-44de-91aa-49b6180db007",
+            "a6d69524-3192-486c-b936-ef0c62aff7dc",
+            "f3c04456-9c63-4ecb-acfd-78ee72fb4166",
+            "64b7f47f-0a28-4f83-848b-6d742e640415",
+            "5898185b-c83e-4bb2-bd24-a4d44b42d8fd",
+            "d15e258c-bd88-4b2c-ab89-6a042aece767",
+            "d4126658-0ce7-48c8-960a-ca306b653756",
+            "964828b7-5cd1-44a9-9216-a348edcf687d",
+            "2b6d5c4d-b588-4e37-952b-e16b98a1def7",
+            "dcdc7004-ed10-4bce-8bee-dfb646ebe899",
+            "fe297e20-3fc4-4845-b4e4-51b458b0d032",
+            "3134b952-117d-415a-8f52-bd8945f090c5",
+            "ee4ea72c-d5c0-4ade-b2c8-c38dfb5b853e",
+            "ef6747bf-7057-4a15-ba16-eb5588ace53e",
+            "15dbee7a-b20e-4a96-8881-ed8391b44a52",
+            "3277ac2e-cf15-4d30-b5f7-29906cc0bfe4",
+            "d1908aaf-bb06-4d53-aaa3-6859460041eb",
+            "010d907e-1a85-4e6a-9e36-9b1b37e4dd1d",
+            "481f1be8-6c75-49a3-8add-a5bab69ed2cc",
+            "612a0e13-f596-4d41-aba8-52f14c650570",
+            "47655e81-e275-4955-a1d9-ce4fcdcaaf80",
+            "c415bc88-1d72-4512-8b0c-7b18b2b4dc38",
+            "3827f672-ff85-4882-9640-bd0a1f7f8f60",
+            "acca757d-8e8b-4a71-876d-20fb1ca95baa",
+            "27c0c953-7ec3-4f0f-83a9-e6ec4478df5a",
+            "58e0acf5-0cac-4c73-ad5b-b9d87837df2d",
+            "14a4991e-04c7-4c67-a6b1-74550423ada9",
+            "0c757abb-2f9c-4c7c-8d28-78927f8fa437",
+            "8548cd5a-6d7a-4f65-b80a-8cbf88b10542",
+            "dc2ac73b-054a-4b5b-bcac-c3f671a1489e",
+            "50d98193-7d42-4950-b56f-07591971936f",
+            "6e93e475-e232-4e03-9ea5-6c30012bb21c",
+            "fde49e42-75d3-48f8-9908-8ee8d26d682e",
+            "8186bcc1-5fe6-4813-a7fc-2574d88dbe88",
+            "235e68b6-930e-4893-b4b4-44b8e420fb8c",
+            "39878906-9e4b-4800-81a4-acd7554d457c",
+            "b75bfec8-a86a-4a00-af69-330cc4047cbf",
+            "0f595ec4-d64b-41aa-9de5-539ae27bd169",
+            "b2e24457-7eed-4119-b297-15f0143300c4"
+          ]
+        }
+      }
+    }
+  ],
+  "nonblocking_findings": [
+    "C1 host-assigned capture dev/ino and separate consumer determinization boundary",
+    "C2 stale capture test name",
+    "C3 extra MSR verification cost on timestamp GP when both consumers subscribe",
+    "C4 preexisting compiler diagnostics persistence ordering",
+    "C5 carried stack-segment acceptance looseness",
+    "C6 existing default host CPUID handler becomes reachable on KVM"
+  ],
+  "limitations": [
+    "All 164 mandatory chunks have complete literal model-visible reads, with actual first-complete order deviations retained and disclosed by the reviewer. No prior canonical grounding order is inferred from this continuation.",
+    "Actual current tools were Read only (166 calls); the report says Read and Glob as an allowed subset. No peer report or findings were supplied.",
+    "Reviewer explicitly did not read determinize_stat body, lifecycle_signal_mask_preflight body or the tool-process async epilogue. Its approval is finite changed-source scope, not a consumer/runtime/parity claim.",
+    "The actual automatic compaction and all raw events are preserved. Content coverage is distinct from comprehension.",
+    "The original raw-137 metadata refusal and prior evidence limitations remain unchanged."
+  ],
+  "references": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/CLAUDE-REPORT.md",
+      "bytes": 30361,
+      "sha256": "750e109d502e802ae3640bfa37628825e5aa8069d8b9b5a22b7d5e64e7b44861",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/REPORT-EXTRACTION.json",
+      "bytes": 478,
+      "sha256": "dbe366dac05ab43f47cc9e82a9a754486606752cb563977f354961a4b809a340",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/ROOT-TRANSCRIPT-READBACK.json",
+      "bytes": 123704,
+      "sha256": "b8c890d428f60e694102874e1e30552acea4c01a2605c39eb1a5262a4979e693",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/exit.json",
+      "bytes": 1496,
+      "sha256": "e77c947bca7640b5bcb24f3aa333b9d003c10d03c21e7889b8929c0f20638c51",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/output.jsonl",
+      "bytes": 2779285,
+      "sha256": "dc9d67b381973b66f1b745fdc539a15ea5413d77146355b240cd392cbd08206e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/stderr.log",
+      "bytes": 93,
+      "sha256": "baa73543804294abc0f6c8fc48aeda5ae18986656b5edbc3c7f41677d79ac60e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/source-before.json",
+      "bytes": 1821039,
+      "sha256": "54dcb453426cfafe6edfba84b0755b018fb15839ed912c85a6f73491b6f2fa65",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/source-after.json",
+      "bytes": 1821039,
+      "sha256": "54dcb453426cfafe6edfba84b0755b018fb15839ed912c85a6f73491b6f2fa65",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/inputs.json",
+      "bytes": 1894356,
+      "sha256": "678c27649586aaff4c13f7716cc57e568b98e7c9461a44e36b0000a1120e6787",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/capacity-before.json",
+      "bytes": 7219,
+      "sha256": "5c5dc6601d9b062499d8983b5555fe2950a6bf68bd604ba3730a8c5149182af1",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/EARLY-EFFECTIVE-POLICY.json",
+      "bytes": 18663,
+      "sha256": "eb767fe5634309f6f21c2c4d1d90f3af532be8c2c1df4d95f9c3dccf29cc63de",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/ASSISTANT-TEXT-EVENTS.json",
+      "bytes": 31242,
+      "sha256": "81e87bdd94a0d489759fc4b31e27923609bf2f6759e4f5503bbd6937a78eef59",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/ASSISTANT-TEXT-EVENTS.md",
+      "bytes": 30526,
+      "sha256": "bc783150aa9be13c34e4d24d5551b9830c79d359bbce1cb81253dc08486bdf4d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/TERMINAL-RESULT.json",
+      "bytes": 32945,
+      "sha256": "19fe65a9be184f5a4e2cba5f7331388a25ca4f706e51808b2a61e3cb5db767f4",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/audit-final.py",
+      "bytes": 5786,
+      "sha256": "2224fa0b36f89d465cbfc0daba180edae8466b09d5f25207d81645da692017dc",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/audit-final.stdout",
+      "bytes": 733,
+      "sha256": "c0e028e469ab0a9947f981b7baaca6c756b5e31b9d299f7693cec32db7ebc011",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/audit-final.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/audit-final.status.json",
+      "bytes": 318,
+      "sha256": "762525de34cc6cb30f62a8abc360e9b366a13cfd11188b85294a727e109f0e3a",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/READ-ORDER.json",
+      "bytes": 67592,
+      "sha256": "27a5867eca32038335fe333d0e54ad601c07c708d7d5ce0c0e496fe6c324deb4",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/TARGET.json",
+      "bytes": 2007,
+      "sha256": "bd3feee06c8d00a24077f4b8f2b8e636a65b6ecffb5b2eedf1535743e11b8da4",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/COMPLETE_READS.json",
+      "bytes": 88747,
+      "sha256": "bc7d153a8201d593c85bda9f058e7685137a0f7c70b8c960c8f023deb118c42b",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/READ-INDEX.txt",
+      "bytes": 45786,
+      "sha256": "44720adab855c01809068df5b3c257950696191091e69f0991df2218f29e4a6d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/OWN-PRIOR-CUSTODY.json",
+      "bytes": 1268,
+      "sha256": "ba7798653b06dd96027bfcce9bf3c85d173414ed184ca7a460cea3f4f77cacbd",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/GROUNDING_AUTHENTICATION.json",
+      "bytes": 25163,
+      "sha256": "f2b0b8fd2e662f67f6510100a7d1eb4856b5314d4398d4ebdfd9afc00e5341b7",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/GROUNDING_INPUTS.json",
+      "bytes": 17196,
+      "sha256": "44630a778449ea2fa7f76d90a1638d2fc18da21aeb80dec244418ee7b8df14be",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/prompt.txt",
+      "bytes": 7176,
+      "sha256": "5523fae1345b13c5b32862bd31afe338efdc0602590de2a35b24e1359acaab41",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/freeze_readback.py",
+      "bytes": 6185,
+      "sha256": "dcd786fbedf30f4920fb3f1cc998bb821fd74bb1356dcb2b3bee3f256659c36a",
+      "mode": 420
+    }
+  ]
+}

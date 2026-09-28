@@ -1,0 +1,24 @@
+{
+  "started": [
+    "locked_and_overlength_timestamp_encodings_remain_faults"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "locked_and_overlength_timestamp_encodings_remain_faults",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.103559831
+    }
+  ]
+}

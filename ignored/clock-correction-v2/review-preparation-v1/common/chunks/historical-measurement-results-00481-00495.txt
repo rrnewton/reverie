@@ -1,0 +1,15 @@
+    "sha256": "58effd1d30fe5b7ddef306c8f1901e0ec0d738d5a484fb744d493f4788e56636"
+  },
+  "meaning": {
+    "producers": 3,
+    "guest_instances": 6,
+    "within_backend_verified": 3,
+    "ptrace_off_on_product": "raw 0 matched; original caller accepted=false remains unchanged",
+    "cross_backend_product": "raw 1 diverged; accepted=false",
+    "current_delta_ns": 2230,
+    "current_pre_initial_exec_rcbs": 223,
+    "historical_run1866_delta_ns": 2270,
+    "historical_227_interval_measured": false,
+    "reruns": 0
+  }
+}

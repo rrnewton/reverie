@@ -1,0 +1,26 @@
+[
+  {
+    "file": "entry.rs",
+    "original_test_lines_preserved": true,
+    "before_direct_test_declarations": 11,
+    "after_direct_test_declarations": 12
+  },
+  {
+    "file": "runtime.rs",
+    "original_test_lines_preserved": true,
+    "before_direct_test_declarations": 18,
+    "after_direct_test_declarations": 20
+  },
+  {
+    "file": "memory.rs",
+    "original_test_lines_preserved": true,
+    "before_direct_test_declarations": 37,
+    "after_direct_test_declarations": 39
+  },
+  {
+    "file": "clock.rs",
+    "original_test_lines_preserved": true,
+    "before_direct_test_declarations": 9,
+    "after_direct_test_declarations": 9
+  }
+]

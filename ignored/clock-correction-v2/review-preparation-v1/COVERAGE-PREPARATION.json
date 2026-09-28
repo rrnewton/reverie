@@ -1,0 +1,20 @@
+{
+  "lanes": {
+    "claude": {
+      "mandatory_documents": 66,
+      "mandatory_chunks": 269,
+      "mandatory_lines": 31529
+    },
+    "native": {
+      "mandatory_documents": 65,
+      "mandatory_chunks": 267,
+      "mandatory_lines": 31522
+    }
+  },
+  "source_files": 2623,
+  "symlinks": 7,
+  "final_head_pending": true,
+  "final_qualification_pending": true,
+  "no_external_launch": true,
+  "input_boundaries": "Common authored source/evidence plus each lane own grounding and own prior report only; no peer report supplied."
+}

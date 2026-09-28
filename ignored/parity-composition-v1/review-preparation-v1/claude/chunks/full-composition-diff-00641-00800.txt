@@ -1,0 +1,160 @@
++    // 0/1, its unused end closes, but F_DUPFD_CLOEXEC(min=3) must fail.
++    let saved = [0, 1].map(|fd| {
++        let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(copy >= 3);
++        unsafe { std::os::fd::OwnedFd::from_raw_fd(copy) }
++    });
++    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) }, 0);
++    let mut fillers = Vec::new();
++    let exhausted = loop {
++        match std::fs::File::open("/dev/null") {
++            Ok(file) => fillers.push(file),
++            Err(error) => break error.raw_os_error(),
++        }
++    };
++    for fd in [0, 1] {
++        assert_eq!(unsafe { libc::close(fd) }, 0);
++    }
++    let before_relocation = capture_identity::relocation_failures();
++    let error = futures::executor::block_on(
++        backend.run_static_elf_with_tool_completion::<CaptureSetupTool>((), true),
++    )
++    .err()
++    .expect("private descriptor relocation must fail");
++    let closed = [0, 1].map(|fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1
++        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF));
++    assert_eq!(
++        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
++        0
++    );
++    for (fd, saved) in [0, 1].into_iter().zip(&saved) {
++        assert_eq!(unsafe { libc::dup2(saved.as_raw_fd(), fd) }, fd);
++    }
++    assert_eq!(exhausted, Some(libc::EMFILE));
++    assert_eq!(
++        capture_identity::relocation_failures() - before_relocation,
++        1
++    );
++    assert_eq!(closed, [true; 2]);
++    assert!(
++        matches!(error, crate::Error::HostIo(ref io) if io.raw_os_error() == Some(libc::EMFILE))
++    );
++    assert_eq!(backend.static_elf.as_ref().unwrap().pid, original_pid);
++    assert!(backend.tool_failure.is_none());
++    drop(fillers);
++    drop(saved);
++    let owner = backend.prepare_captured_output(true).unwrap().unwrap();
++    for fd in owner.identities.descriptors() {
++        assert!(fd >= 3);
++    }
++    eprintln!("{COMPLETE}");
++}
+--- /dev/null
++++ b/reverie-kvm/src/cpuid_instruction.rs
+@@ -0,0 +1,379 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! CPL3 CPUID fault admission and instruction retirement. The existing Tool
++//! callback owns the result and any logical-time charge; this module adds none.
++
++use kvm_bindings::Msrs;
++use kvm_bindings::kvm_msr_entry;
++use kvm_bindings::kvm_regs;
++use kvm_ioctls::Kvm;
++use kvm_ioctls::VcpuFd;
++use reverie::CpuIdResult;
++
++use crate::Error;
++use crate::Result;
++
++const PLATFORM_INFO: u32 = 0xce;
++const MISC_FEATURES_ENABLES: u32 = 0x140;
++const SUPPORT: u64 = 1 << 31;
++const ENABLE: u64 = 1;
++
++#[derive(Clone, Copy)]
++struct MsrState {
++    platform: u64,
++    features: u64,
++}
++
++/// State belongs to one real vCPU, never to a process snapshot or a Tool type.
++/// Retain the original before the first write, including after a failed rollback.
++#[derive(Default)]
++pub(crate) struct Interception {
++    original: Option<MsrState>,
++    enabled: bool,
++}
++
++fn entry(index: u32, data: u64) -> kvm_msr_entry {
++    kvm_msr_entry {
++        index,
++        data,
++        ..Default::default()
++    }
++}
++
++fn exact_count(operation: &str, expected: usize, actual: usize) -> Result<()> {
++    if actual != expected {
++        return Err(Error::UnexpectedVcpuExit(format!(
++            "CPUID interception {operation}: transferred {actual} of {expected} MSRs"
++        )));
++    }
++    Ok(())
++}
++
++fn read_state(vcpu: &VcpuFd) -> Result<MsrState> {
++    let mut values =
++        Msrs::from_entries(&[entry(PLATFORM_INFO, 0), entry(MISC_FEATURES_ENABLES, 0)])
++            .expect("fixed CPUID MSR read fits");
++    exact_count("read", 2, vcpu.get_msrs(&mut values)?)?;
++    Ok(MsrState {
++        platform: values.as_slice()[0].data,
++        features: values.as_slice()[1].data,
++    })
++}
++
++fn write_one(vcpu: &VcpuFd, index: u32, value: u64) -> Result<()> {
++    let values = Msrs::from_entries(&[entry(index, value)]).expect("one CPUID MSR write fits");
++    exact_count(&format!("write {index:#x}"), 1, vcpu.set_msrs(&values)?)
++}
++
++impl Interception {
++    pub(crate) fn enabled(&self) -> bool {
++        self.enabled
++    }
++
++    pub(crate) fn configure(&mut self, vcpu: &VcpuFd, enabled: bool) -> Result<()> {
++        if !enabled {
++            // A fresh tool-less backend never requests this optional feature.
++            return self.restore(vcpu);
++        }
++        if self.enabled {
++            return self.verify(vcpu);
++        }
++        if self.original.is_some() {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception has unresolved MSR restoration".to_owned(),
++            ));
++        }
++        let kvm = Kvm::new()?;
++        if !kvm
++            .get_msr_feature_index_list()?
++            .as_slice()
++            .contains(&PLATFORM_INFO)
++        {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception unsupported: PLATFORM_INFO feature MSR absent".to_owned(),
++            ));
++        }
++        let mut feature =
++            Msrs::from_entries(&[entry(PLATFORM_INFO, 0)]).expect("one feature MSR fits");
++        exact_count("feature read", 1, kvm.get_msrs(&mut feature)?)?;
++        if feature.as_slice()[0].data & SUPPORT == 0 {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception unsupported: fault support bit absent".to_owned(),

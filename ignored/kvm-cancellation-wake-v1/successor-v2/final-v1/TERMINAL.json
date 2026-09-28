@@ -1,0 +1,147 @@
+{
+  "units": [
+    {
+      "phase": "compile",
+      "unit": "kvm-cancel-wake-compile-454389.service",
+      "query_raw_status": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "observed_cgroups": [
+        {
+          "path": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-cancel-wake-compile-454389.service",
+          "exists": false,
+          "procs": null
+        }
+      ],
+      "same_slice_expected_cgroup": {
+        "path": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-cancel-wake-compile-454389.service",
+        "exists": false,
+        "basis": "parent directly observed for compile; same default transient service placement, no Slice override"
+      }
+    },
+    {
+      "phase": "inventory",
+      "unit": "kvm-cancel-wake-inventory-468442.service",
+      "query_raw_status": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "observed_cgroups": [],
+      "same_slice_expected_cgroup": {
+        "path": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-cancel-wake-inventory-468442.service",
+        "exists": false,
+        "basis": "parent directly observed for compile; same default transient service placement, no Slice override"
+      }
+    },
+    {
+      "phase": "new-tests",
+      "unit": "kvm-cancel-wake-new-tests-469165.service",
+      "query_raw_status": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "observed_cgroups": [],
+      "same_slice_expected_cgroup": {
+        "path": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-cancel-wake-new-tests-469165.service",
+        "exists": false,
+        "basis": "parent directly observed for compile; same default transient service placement, no Slice override"
+      }
+    },
+    {
+      "phase": "exec-rearm",
+      "unit": "kvm-cancel-wake-exec-rearm-469358.service",
+      "query_raw_status": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "observed_cgroups": [],
+      "same_slice_expected_cgroup": {
+        "path": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-cancel-wake-exec-rearm-469358.service",
+        "exists": false,
+        "basis": "parent directly observed for compile; same default transient service placement, no Slice override"
+      }
+    },
+    {
+      "phase": "poisoned-state",
+      "unit": "kvm-cancel-wake-poisoned-state-469672.service",
+      "query_raw_status": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "observed_cgroups": [],
+      "same_slice_expected_cgroup": {
+        "path": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-cancel-wake-poisoned-state-469672.service",
+        "exists": false,
+        "basis": "parent directly observed for compile; same default transient service placement, no Slice override"
+      }
+    },
+    {
+      "phase": "late-start",
+      "unit": "kvm-cancel-wake-late-start-469885.service",
+      "query_raw_status": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "observed_cgroups": [],
+      "same_slice_expected_cgroup": {
+        "path": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-cancel-wake-late-start-469885.service",
+        "exists": false,
+        "basis": "parent directly observed for compile; same default transient service placement, no Slice override"
+      }
+    },
+    {
+      "phase": "format-check",
+      "unit": "kvm-cancel-wake-format-check-470051.service",
+      "query_raw_status": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "observed_cgroups": [],
+      "same_slice_expected_cgroup": {
+        "path": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/kvm-cancel-wake-format-check-470051.service",
+        "exists": false,
+        "basis": "parent directly observed for compile; same default transient service placement, no Slice override"
+      }
+    }
+  ],
+  "all_seven_units_collected": true,
+  "all_observed_and_same_slice_expected_cgroups_absent": true,
+  "tool_handle": 6853,
+  "tool_handle_collected_raw_status": 0,
+  "tool_completion_chunk": "df1b69",
+  "controller_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/successor-v2/execution-v1/CONTROLLER-RESULT.json",
+    "bytes": 3385,
+    "mode": 420,
+    "sha256": "f5de46887c3bc63d1239e4db1ce5a16e553b5608e9e61465922bccb7a09cf67c"
+  }
+}

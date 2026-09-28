@@ -1,0 +1,33 @@
+{
+  "status": "private implementation in progress, not connected to production drivers or memory copies",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "source": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 30668,
+      "sha256": "d9f03d0dfb9c9bdb67e8fa1b375dc8fc4d329edd30a46050d4b37beef6eb375e"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    }
+  },
+  "component_tests": {
+    "raw_status": 0,
+    "elapsed_seconds": 0.075588472886011,
+    "stream_bytes": {
+      "stdout": 971,
+      "stderr": 274
+    },
+    "refusal": null
+  },
+  "scope": "11 component tests passed, including five isolated signal cases and one isolated running-vCPU interruption test. This is not a Detcore, Hermit, parity, clock or complete entry-control qualification. Independent code reviews and remaining design controls are pending."
+}

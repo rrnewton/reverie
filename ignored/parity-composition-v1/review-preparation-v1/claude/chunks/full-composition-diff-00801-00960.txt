@@ -1,0 +1,160 @@
++            ));
++        }
++        let original = read_state(vcpu)?;
++        if original.features & ENABLE != 0 {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception was armed without an owning Tool consumer".to_owned(),
++            ));
++        }
++        self.original = Some(original);
++        let admission: Result<()> = (|| {
++            write_one(vcpu, PLATFORM_INFO, original.platform | SUPPORT)?;
++            write_one(vcpu, MISC_FEATURES_ENABLES, original.features | ENABLE)?;
++            let actual = read_state(vcpu)?;
++            if actual.platform != (original.platform | SUPPORT)
++                || actual.features != (original.features | ENABLE)
++            {
++                return Err(Error::UnexpectedVcpuExit(
++                    "CPUID interception admission readback differs".to_owned(),
++                ));
++            }
++            Ok(())
++        })();
++        if let Err(error) = admission {
++            let restored = self.restore(vcpu);
++            return Err(error.with_cleanup(restored.err().into_iter().collect()));
++        }
++        self.enabled = true;
++        Ok(())
++    }
++
++    pub(crate) fn verify(&self, vcpu: &VcpuFd) -> Result<()> {
++        let original = self.original.ok_or_else(|| {
++            Error::UnexpectedVcpuExit("CPUID interception has no admitted MSR owner".to_owned())
++        })?;
++        let actual = read_state(vcpu)?;
++        if !self.enabled
++            || actual.platform != (original.platform | SUPPORT)
++            || actual.features != (original.features | ENABLE)
++        {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception state changed after admission".to_owned(),
++            ));
++        }
++        Ok(())
++    }
++
++    fn restore(&mut self, vcpu: &VcpuFd) -> Result<()> {
++        let Some(original) = self.original else {
++            return Ok(());
++        };
++        self.enabled = false;
++        let mut errors = Vec::new();
++        // No guest may resume after any failure. Still attempt both original
++        // values and readback, retaining every error instead of overwriting one.
++        for (index, value) in [
++            (MISC_FEATURES_ENABLES, original.features),
++            (PLATFORM_INFO, original.platform),
++        ] {
++            if let Err(error) = write_one(vcpu, index, value) {
++                errors.push(error);
++            }
++        }
++        match read_state(vcpu) {
++            Ok(actual)
++                if actual.platform == original.platform && actual.features == original.features => {
++            }
++            Ok(_) => errors.push(Error::UnexpectedVcpuExit(
++                "CPUID interception restoration readback differs".to_owned(),
++            )),
++            Err(error) => errors.push(error),
++        }
++        if errors.is_empty() {
++            self.original = None;
++        }
++        Error::combine(errors)
++    }
++}
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub(crate) struct Instruction {
++    pub(crate) length: u8,
++}
++
++/// CPUID ignores ordinary legacy/REX prefixes. LOCK is invalid. Fetch no
++/// sixteenth byte and no byte after the completed two-byte opcode.
++pub(crate) fn decode(mut fetch: impl FnMut(u8) -> Option<u8>) -> Option<Instruction> {
++    let mut length = 0;
++    let mut next = || {
++        if length == 15 {
++            return None;
++        }
++        let byte = fetch(length)?;
++        length += 1;
++        Some(byte)
++    };
++    loop {
++        match next()? {
++            0x66 | 0x67 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x40..=0x4f => {
++                continue;
++            }
++            0x0f if next()? == 0xa2 => break,
++            _ => return None,
++        }
++    }
++    Some(Instruction { length })
++}
++
++pub(crate) fn result_registers(
++    mut original: kvm_regs,
++    instruction: Instruction,
++    result: CpuIdResult,
++) -> Option<kvm_regs> {
++    original.rip = original.rip.checked_add(u64::from(instruction.length))?;
++    original.rflags &= !(1 << 16); // Retirement clears the exception frame's RF.
++    original.rax = u64::from(result.eax);
++    original.rbx = u64::from(result.ebx);
++    original.rcx = u64::from(result.ecx);
++    original.rdx = u64::from(result.edx);
++    Some(original)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn cpuid_decoder_fetches_exact_legal_instruction_and_refuses_invalid_forms() {
++        for prefix in [
++            0x66, 0x67, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x40, 0x4f,
++        ] {
++            let bytes = [prefix, 0x0f, 0xa2];
++            assert_eq!(
++                decode(|i| bytes.get(usize::from(i)).copied()),
++                Some(Instruction { length: 3 })
++            );
++        }
++        let mut visits = Vec::new();
++        assert_eq!(
++            decode(|i| {
++                visits.push(i);
++                [0x0f, 0xa2].get(usize::from(i)).copied()
++            }),
++            Some(Instruction { length: 2 })
++        );
++        assert_eq!(visits, [0, 1]);
++        let mut longest = vec![0x66; 13];
++        longest.extend_from_slice(&[0x0f, 0xa2]);
++        assert_eq!(
++            decode(|i| longest.get(usize::from(i)).copied()),
++            Some(Instruction { length: 15 })
++        );
++        longest.insert(0, 0x66);
++        assert_eq!(decode(|i| longest.get(usize::from(i)).copied()), None);
++        for bytes in [
++            &[0xf0, 0x0f, 0xa2][..],
++            &[0x0f, 0x31],
++            &[0x0f, 0x01, 0xf9],
++            &[0x0f],
++            &[0xed],
++        ] {

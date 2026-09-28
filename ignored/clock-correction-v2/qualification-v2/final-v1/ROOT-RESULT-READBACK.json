@@ -1,0 +1,9 @@
+{
+  "target_sha256": "0b4ab5639249a24e72c1249d255217552ae0147f1287b2036fb2d24f4de9d624",
+  "authenticated_direct_result_artifacts": 286,
+  "attempted_phases": 45,
+  "accepted_phases": 44,
+  "qualified_declarations": 37,
+  "legacy_raw_success_reader_refusal_preserved": true,
+  "scope": "Root full report read; all45 compact phase records inspected; referenced direct artifacts authenticated. Root read complete legacy stdout and test body plus helper context; no new product execution or historical receipt replacement. Large RESULTS initial print truncated; complete structured projection was subsequently inspected."
+}

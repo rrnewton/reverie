@@ -1,0 +1,19 @@
+git-push-verified: intending 3d4a401ed895 -> origin refs/heads/codex/kvm-parity-followup-20260918
+git-push-verified: remote is currently (absent)
+
+git-push-verified: ⚠️  PUSHING FROM A CHECKOUT THAT IS NOT CLEAN
+  1 uncommitted path(s) present, 1 of them NOT part of this push:
+      ignored/
+  If this is the shared parent checkout, ask the coordinator for a clean slot:
+      ci-hub/bin/wrkslots create <slot> --slot-type agent --coordinator-authorized ...
+  then stage only the paths you own. Not blocking; naming it so it is a choice.
+
+git-push-verified: format CHECKED and clean (13 .rs file(s))
+branch 'codex/kvm-parity-land-20260918' set up to track 'origin/codex/kvm-parity-followup-20260918'.
+remote: 
+remote: Create a pull request for 'codex/kvm-parity-followup-20260918' on GitHub by visiting:        
+remote:      https://github.com/rrnewton/reverie/pull/new/codex/kvm-parity-followup-20260918        
+remote: 
+To https://github.com/rrnewton/reverie.git
+ * [new branch]        HEAD -> codex/kvm-parity-followup-20260918
+git-push-verified: VERIFIED origin refs/heads/codex/kvm-parity-followup-20260918 = 3d4a401ed8959befad0b2f10db59093725f27432

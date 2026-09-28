@@ -1,0 +1,160 @@
+        "free_floor_bytes": 107374182400
+      },
+      "harness": "ptrace",
+      "required_markers": [
+        "INJECTION_STOP_COMPLETE TailSame"
+      ]
+    },
+    {
+      "name": "test-14",
+      "kind": "test",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "tracer::injection_stop_tests::different_tail_injection_replaces_original_once",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "tracer::injection_stop_tests::different_tail_injection_replaces_original_once"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "harness": "ptrace",
+      "required_markers": [
+        "INJECTION_STOP_COMPLETE TailOther"
+      ]
+    },
+    {
+      "name": "test-15",
+      "kind": "test",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "harness": "ptrace",
+      "required_markers": [
+        "INJECTION_STOP_COMPLETE PostExecTail"
+      ]
+    },
+    {
+      "name": "test-16",
+      "kind": "test",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "harness": "ptrace",
+      "required_markers": [
+        "INJECTION_STOP_COMPLETE Emulate",
+        "INJECTION_STOP_COMPLETE EmulateErrno"
+      ]
+    },
+    {
+      "name": "test-17",
+      "kind": "test",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400
+      },
+      "harness": "ptrace",
+      "required_markers": []
+    },
+    {
+      "name": "test-18",
+      "kind": "test",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture",
+        "-Z",
+        "unstable-options",
+        "--format=json"
+      ],
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection"
+      ],
+      "artifact_selectors": [],
+      "limits": {
+        "aggregate_cpu_usec": 30000000,
+        "wall_seconds": 60,
+        "lethal_stderr_bytes": 16777216,
+        "live_stdout_samples_bytes": 67108864,
+        "phase_read_bytes": 16777216,
+        "memory_bytes": 17179869184,
+        "swap_bytes": 0,
+        "free_floor_bytes": 107374182400

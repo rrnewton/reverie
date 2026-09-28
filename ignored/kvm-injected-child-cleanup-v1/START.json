@@ -1,0 +1,8 @@
+{
+  "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/vm.rs",
+  "bytes": 371966,
+  "sha256": "b6eb3ffc679ec1044dff9c57711769350734820a77f7ca9267cb518d22189494",
+  "write_scope": "vm.rs action-boundary helpers, injected-action wrapper, additive adjacent control only",
+  "branch": "existing checkout; no branch mutation or SCM calls authorized",
+  "execution": "none"
+}

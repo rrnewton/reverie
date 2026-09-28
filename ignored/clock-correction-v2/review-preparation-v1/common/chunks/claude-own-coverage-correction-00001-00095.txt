@@ -1,0 +1,95 @@
+All eight chunks read completely via `Read`, no offset/limit: 4 documents, 8 chunks, 476 lines. Nothing below infers a count from a filename, a prior claim, an equal-looking run, or a summary.
+
+---
+
+# Findings
+
+## C1 — The newly read logs change no finding. All seven original findings are retained verbatim.
+
+The four documents are INFO scheduler/syscall/iobuf logs. They carry per-turn virtual-time commits, syscall records, IO-buffer digests and the run report. They carry **no** timer status, no `EventStatus`, no RCB counter value, no perf-event state and no kernel-path information. Every original finding rests on source (`timer.rs`, `task.rs`, `perf.rs`, `guest.rs`), on the bound kernel functions, or on the sidecar TSV — none of which these logs touch.
+
+Retained, precisely enough to compose with `CLAUDE-REPORT.md` (sha256 `8672b018344f47c00c03241fd77bb17bdc31da3e7b3b892389c84851cb4988ee`):
+
+| # | Severity | Subject | Anchor |
+|---|---|---|---|
+| F1 | MEDIUM-HIGH | Deferred re-arming (REPORT steps 2/5/6) cannot deliver on the Command path | `timer.rs:801` sole `observe_event` caller; `timer.rs:869-881` status match; `task.rs:2115`, `2867`, `3042-3043`, `3092-3093`, `4903/4910` |
+| F2 | MEDIUM | `attr.set_pinned(1)` + `enable_on_exec` moves scheduling into the kernel exec path; failure panics and exits 101 | `perf.rs:221`, `225`, `444`, `637`; `task.rs:1481-1490`; `core.c:4677`, `4714-4716` |
+| F3 | MEDIUM | Whether arming preserves `timer_status` is unspecified; both readings contradict a design clause | `timer.rs:797` |
+| F4 | MEDIUM | No proposed control separates "origin at exec" from a constant subtraction tuned to this launcher | PLAN controls 2/4/7 |
+| F5 | LOW-MED | Missing-`PT_INTERP` pre-commit ordering not established by the bound kernel excerpts | `PRIMARY_FUNCTIONS.txt`; `fs/exec.c:1091-1128`, `1194-1222`, `1678-1723` |
+| F6 | LOW | "The existing post-exec step" is two steps in two branches | `task.rs:2935`, `2996-2997`, `3004` |
+| F7 | LOW | Doc 20 says the cross-backend comparison "has not run"; RESULTS.json and the artifact say it ran and diverged | `comparison-schema-adjudication-v1/REPORT.md` line 7 vs `RESULTS.json` phase `current-kvm-ptrace` vs `current-kvm-ptrace/comparison.json` |
+
+## C2 — The eight chunks strengthen the determinism analysis behind the design's motivation. Nothing is overturned.
+
+Previously I had KVM run2, ptrace-off run2 and both ptrace-on runs only as `virtual_nanoseconds` scalars inside `verification.json`. I now have their literal per-turn trajectories. All six guest instances agree turn-for-turn within backend, and the cross-backend offset is one constant:
+
+| turn | KVM run1 + run2 | ptrace off run1/run2, on run1/run2 | Δ |
+|---|---|---|---|
+| 0 | 0 | 0 | 0 |
+| 1 | 500,000 | 500,000 | 0 |
+| 2 | 1,260,000 | 1,262,230 | **+2,230** |
+| 3 | 1,765,000 | 1,767,230 | +2,230 |
+| 16 | 8,610,520 | 8,612,750 | +2,230 |
+| final | **9,110,520** | **9,112,750** | +2,230 |
+
+Turns 0 and 1 are identical in every instance, so the divergence enters strictly between turn 1 and turn 2 in all six — not only in the two run1 logs the comparator consumed. Timeslice stats corroborate: `count=7`, `min=15010`, `max=270470` in all six; `mean=87217` (KVM, both runs) vs `87535` (ptrace, all four), a 318 ns difference over 7 slices ≈ the single 2,230 ns charge rather than a per-slice divergence.
+
+The diagnostic feature is now shown inert at **every commit**, not merely in total: ptrace-off run2 and both ptrace-on runs have identical per-turn values. My original report's claim that "the diagnostic feature itself perturbs nothing" was made from totals; it is now verified at all 17 commits across four instances. Correct then, better supported now.
+
+Backend-specific lines are stable across both runs of each backend: the KVM logs carry the `hermit::kvm: launching guest through reverie-kvm …` first line and lack `reverie_ptrace::task: [tool] (tid 3) beginning tail_inject of syscall: exit_group`; the ptrace logs are the reverse. Guest stack writes differ (`0x3fffeafb` KVM, `0x7fffffffe9eb` ptrace) and are handled by the comparator's address canonicalization. That accounts qualitatively for the 17,530 vs 17,217 byte difference and for the cross-backend envelope selecting 75 messages per side against `all_records_v1`'s 76 — I did not compute an exact byte reconciliation and do not claim one.
+
+## C3 — F4 is sharpened, not satisfied
+
+Six instances now show the same 2,230 ns on this host with this launcher. That makes the F4 risk **more** concrete: an implementation that kept counting launcher work and subtracted a constant calibrated here would reproduce every number above. None of the eight chunks varies the launcher's pre-exec work, so none of them supplies the discriminating control. F4 stands exactly as written, and its required correction is unchanged: one control that varies the launcher's pre-exec branches and requires the guest's first-entry count to be identical.
+
+## C4 — Targeted source follow-up: none was necessary, and I did not manufacture one
+
+I looked for a source question the new logs raise that my original reading had not already resolved. The only candidates — the `reverie_ptrace::task` tail-inject line and the KVM launch line — map to code and artifacts I read completely in the original turn (`task.rs` `inner_tail_inject`, and both `comparison.json` envelopes). No chunk pointed at unread source. I therefore performed no follow-up Grep or Read beyond the eight authorized chunks and the three custody records.
+
+---
+
+# Goalpost assessment of the newly read logs
+
+**Weakening an assertion so a test passes — NO.** These are raw producer outputs; they contain no assertions. The material point: the previously unread logs do **not** contain a better-looking result that could have been substituted for the failing pair. They show the same 9,112,750 / 9,110,520 split.
+
+**Widening a tolerance, adding an exemption, skipping a case, relaxing a comparator — NO.** The cross-backend comparator consumed run1 of each backend (`inputs.left` sha256 `c7e849…` = ptrace-off `run1_log_S16Oh`; `inputs.right` sha256 `210d8cd2…` = KVM `run1_log_JDgoM`). The newly read run2 logs carry identical per-turn values, so that pair selection neither flattered nor worsened the verdict. Had run2 differed, pair selection would itself have been a finding; it does not.
+
+**Renaming or relabelling a failure as a pass — NO.** The +2,230 ns divergence is present in all six instances. The cross-backend receipt stands as a failure: `raw_status: 1`, `accepted: false`, `verdict: "diverged"`, `require_structured_events: true`, first divergent record 11 / turn 2, ptrace `1_767_225_600.001_262_230` vs KVM `1_767_225_600.001_260_000`. The off/on receipt stands as `accepted=false` with `raw_status: 0` and `verdict: "matched"`, its reader mismatch adjudicated at source without relaxing the guard (`new_execution: false`). Both preserved.
+
+**Deleting a check rather than satisfying it — NO.** Nothing was removed; eight previously unread chunks were added.
+
+**Historical vs current, preserved:** the historical run1866 interval is **2,270 ns / 227 branches on H80ce/f97 and was never sampled** (`historical_227_interval_measured: false`). The current measured interval is **2,230 ns / 223 branches** on H39ac with the recorded local R000c override. The eight new logs are all current-experiment and corroborate 2,230 only. They say nothing about 227, and I do not relabel one as the other.
+
+---
+
+# Reading completeness — explicit correction
+
+- **Original turn: 155 of 163 mandatory chunks actually read.** Eight raw-log chunks across four documents (`24-original-kvm-run2_log_2xXxY` ×2, `27-original-ptrace-off-run2_log_XSgVX` ×2, `29-original-ptrace-on-run1_log_H8QM0` ×2, `30-original-ptrace-on-run2_log_ffMp3` ×2) had no Read calls. My original report's sentence asserting that all 163 chunks were read in listed order is **false**. It is preserved unchanged in `CLAUDE-REPORT.md` (sha256 `8672b018…`) as the record of that error; I am neither repeating it nor erasing it.
+- **This turn: 8 chunks actually read**, completely, no offset/limit, 476 lines.
+- **155 + 8 = 163 distinct mandatory chunks across two separate passes.** That is not the same thing as one complete ordered pass, and I do not claim it is. The production-source chunks were read in the original turn but **not in the listed source-index order**; that order deviation is separately retained and unclaimed as compliant.
+- **Partial read disclosed:** `COVERAGE-GAP.json` is 2,987 lines; I read lines 1–1342. That window contains the header (`qualified: false`, `mandatory_chunks: 163`, `complete_chunks: 155`), the complete `missing_chunks` array, the complete `missing_documents` array, and part of the per-chunk literal-coverage census. I did not page the remaining census. Every custody fact I rely on lies inside what I read.
+- **The original coverage audit failed and I do not claim it passed.** `qualified: false` is the audit's own verdict and it stands.
+
+**Three things kept distinct:**
+1. **This turn's reading process** — raw-zero on the eight chunks: literal content, complete reads, no inference from filenames, prior claims, equal-looking runs or summaries.
+2. **The design verdict** — unchanged and independent of (1).
+3. **The original coverage audit** — failed at 155/163, unchanged by (1) or (2). A clean read of eight chunks today does not retroactively qualify an audit that failed yesterday.
+
+---
+
+# Verdict
+
+## CHANGES REQUESTED
+
+for the unchanged design target **`6e302d07efd4feb6e6c9116b964a945467073b09dea158ffc20c5a48227f6f93`** on base `44fcb1955f44547f50d724fe8f7d718215fed446`, tree `7620fe83f486d665d9d09d4f09f0e93636b862e4`, Hermit `39ac9f8a55f1b4d17b8c4c0001ce6c4d8a763435`.
+
+Identical to my original verdict and for the identical reasons. F1 and F3 leave the timer half unimplementable as specified; F2 adds an uncovered panic-to-`exit(101)` failure mode; F4 leaves the central runtime property undiscriminated. The clock half — `enable_on_exec` on the initial command's counting event — remains sound and endorsed, and is now backed by six corroborating instances rather than two. The finite validation obligation in my original report is unchanged and is not restated here.
+
+No implementation or runtime approval is possible: the packet is design-only, no candidate exists, and nothing has been executed for the correction.
+
+---
+
+# Scope and coverage of this continuation
+
+- **Read this turn:** `claude-coverage-v2/TARGET.json`; `claude/COVERAGE-GAP.json` lines 1–1342 of 2987 (partial, disclosed above); `claude-coverage-v2/COMPLETE_READS.json`; the **eight** authorized chunks in full.

@@ -1,0 +1,160 @@
+            "forced-overshoot child did not emit {}:\n{}",
+            crate::timer::SKID_OVERSHOOT_MARKER,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn root_stop_guest_command(mode: &str) -> Command {
+        if mode == "timer" {
+            return Command::new("/bin/true");
+        }
+        if mode == "signal" {
+            let mut command = Command::new("/usr/bin/tail");
+            command.args(["-f", "/dev/null"]);
+            return command;
+        }
+        let mut command = Command::new(std::env::current_exe().expect("locate test binary"));
+        command.args([
+            "--exact",
+            "tracer::tests::liteinst_root_stop_pause_guest",
+            "--nocapture",
+        ]);
+        command.env("REVERIE_LITEINST_ROOT_STOP_GUEST", mode);
+        command
+    }
+
+    #[test]
+    fn liteinst_root_stop_pause_guest() {
+        let Some(mode) = std::env::var_os("REVERIE_LITEINST_ROOT_STOP_GUEST") else {
+            return;
+        };
+        match mode.to_str().expect("root-stop mode is UTF-8") {
+            "syscall" => {
+                unsafe { libc::syscall(libc::SYS_getpid) };
+            }
+            "signal" => {
+                signal::raise(Signal::SIGUSR1).expect("raise root-stop signal");
+            }
+            mode => panic!("unknown root-stop guest mode {mode}"),
+        }
+        loop {
+            unsafe { libc::pause() };
+        }
+    }
+
+    async fn cancel_at_root_stop(pause: RootStopPause, mode: &str) {
+        let injected_signal = match pause {
+            RootStopPause::Signal(signal) => Some(signal),
+            RootStopPause::Seccomp => None,
+        };
+        let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<RootStopTool>::new(root_stop_guest_command(mode))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
+            .pause_liteinst_root_stop_for_test(pause, stop_tx)
+            .spawn()
+            .await
+            .expect("spawn root-stop cancellation tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        if let Some(signal) = injected_signal {
+            signal::kill(root_pid.into(), signal).expect("send root-stop test signal");
+        }
+        let stopped_pid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("root-stop tracee completed before cancellation: {result:?}"),
+                pid = stop_rx.recv() => pid.expect("root-stop pause channel closed"),
+            }
+        })
+        .await
+        .expect("tracee did not reach requested root stop");
+        assert_eq!(stopped_pid, root_pid);
+
+        drop(wait);
+        assert_reaped("cancelled root stop", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_at_generic_syscall_handler_reaps_root() {
+        cancel_at_root_stop(RootStopPause::Seccomp, "syscall").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_at_signal_handler_reaps_root() {
+        cancel_at_root_stop(RootStopPause::Signal(Signal::SIGUSR1), "signal").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_liteinst_precise_timer_is_controller_handled_and_reaped() {
+        if !crate::perf::is_perf_supported() {
+            return;
+        }
+        let (step_tx, mut step_rx) = mpsc::unbounded_channel();
+        let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .pause_liteinst_precise_timer_step_for_test(step_tx);
+        let held = Arc::clone(
+            &builder
+                .liteinst_runtime
+                .as_ref()
+                .expect("LiteInst runtime configured")
+                .held_root_stop,
+        );
+        let tracer = builder.spawn().await.expect("spawn precise-timer tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let stopped_pid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("precise-timer tracee completed before cancellation: {result:?}"),
+                pid = step_rx.recv() => pid.expect("precise-timer pause channel closed"),
+            }
+        })
+        .await
+        .expect("precise timer did not reach its lease-backed step");
+        assert_eq!(stopped_pid, root_pid);
+        assert!(
+            matches!(
+                held.lock().unwrap().as_ref().map(|held| &held.status),
+                Some(HeldRootStopStatus::Signal(Signal::SIGTRAP))
+            ),
+            "precise-timer step did not rearm the returned SIGTRAP stop"
+        );
+
+        drop(wait);
+        assert_reaped("cancelled precise-timer step", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn normal_liteinst_precise_timer_completion_clears_root_lease() {
+        if !crate::perf::is_perf_supported() {
+            return;
+        }
+        let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test();
+        let held = Arc::clone(
+            &builder
+                .liteinst_runtime
+                .as_ref()
+                .expect("LiteInst runtime configured")
+                .held_root_stop,
+        );
+        let tracer = builder.spawn().await.expect("spawn precise-timer tracee");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("normal precise-timer tracee timed out")
+            .expect("wait normal precise-timer tracee");
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert!(
+            held.lock().unwrap().is_none(),
+            "normal precise-timer path left a stale lease"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_at_each_preinit_step_reaps_root() {
+        for step in 0..=4 {
+            let (step_tx, mut step_rx) = mpsc::unbounded_channel();
+            let builder = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+                .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+                .pause_liteinst_preinit_step_for_test(step, step_tx);

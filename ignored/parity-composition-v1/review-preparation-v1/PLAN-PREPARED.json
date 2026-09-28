@@ -1,0 +1,142 @@
+{
+  "status": "PREPARED ONLY; final committed head/source proof and immutable qualification records required before root authorizes launch",
+  "base": "6e3915b70a71657a08f0028b3f70d6074116206a",
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/SOURCE-MANIFEST.json",
+    "bytes": 472053,
+    "sha256": "dfd21968df3b73ba28a7388f3504b8891e3f13035dab6f364e69fbe2947d1211",
+    "mode": 420
+  },
+  "lanes": [
+    {
+      "lane": "claude",
+      "session": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+      "target": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/TARGET.template.json",
+        "bytes": 1264,
+        "sha256": "1440967fddd8f23e55796e03704eea450e81213735d400cc964151b8f45c7953",
+        "mode": 420
+      },
+      "prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/prompt.template.txt",
+        "bytes": 6269,
+        "sha256": "026d106f36cc0c6f8e05051eb4faff559b6d113860a6623dfd215281903ce326",
+        "mode": 420
+      },
+      "inputs": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/inputs-PREPARED.json",
+        "bytes": 921820,
+        "sha256": "a45a62b85704809c9ffa9afbfc409f4ce0b7c2c15295ce9661bf5a14bcf1bcb4",
+        "mode": 420
+      },
+      "read_index": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/READ-INDEX-PREPARED.txt",
+        "bytes": 38516,
+        "sha256": "a6c9446c510223229a22659ac4ef4a37230ff10f93d77ab1975231e156b8b6b2",
+        "mode": 420
+      },
+      "complete_reads": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/COMPLETE_READS-PREPARED.json",
+        "bytes": 74925,
+        "sha256": "8529e7f41c28d8cbedcf8ef54c9ac460e7c3ed00265c5424a995721f0f1ffffc",
+        "mode": 420
+      },
+      "helpers": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/HELPER-ORIGINS.json",
+        "bytes": 1334,
+        "sha256": "8a60329d1ad9e173e2e3495ffad4887b9a3beb1b8fbeba83b4e9b4695dcc2d08",
+        "mode": 420
+      },
+      "files": 2902,
+      "aliases": 7,
+      "mandatory_documents": 45,
+      "mandatory_chunks": 140,
+      "mandatory_lines": 17518
+    },
+    {
+      "lane": "native",
+      "session": "01a0b38e-9e3c-7883-9816-65199c048935",
+      "target": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/TARGET.template.json",
+        "bytes": 1243,
+        "sha256": "00728710e645a91ecb2334214926e4ff5d888c5e1634a93c95d3a8b05bc179de",
+        "mode": 420
+      },
+      "prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/prompt.template.txt",
+        "bytes": 6308,
+        "sha256": "47b61f91ca6eac63beda099f25e23e5091213b9bfba74c5649dd83661067c3c3",
+        "mode": 420
+      },
+      "inputs": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/inputs-PREPARED.json",
+        "bytes": 921227,
+        "sha256": "ba4a24cf38d18cff5ec1c6a801c32f144102545f6c66d1ce8d8ec0db62e4c9bd",
+        "mode": 420
+      },
+      "read_index": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/READ-INDEX-PREPARED.txt",
+        "bytes": 38153,
+        "sha256": "8b478d9629b5230fe91a03a26ef6ec11357bcc2d57a35a07d4a32a94c77846c5",
+        "mode": 420
+      },
+      "complete_reads": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/COMPLETE_READS-PREPARED.json",
+        "bytes": 77614,
+        "sha256": "fa8d5c5195cca08a6fc8a719d9e34092285d9cb71db20ee2375885fe80f18752",
+        "mode": 420
+      },
+      "helpers": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/HELPER-ORIGINS.json",
+        "bytes": 2623,
+        "sha256": "755b168b159ee86a06addcf7b3fb1f0760b375ef55130d04fcf5332d898ee22d",
+        "mode": 420
+      },
+      "files": 2900,
+      "aliases": 7,
+      "mandatory_documents": 45,
+      "mandatory_chunks": 138,
+      "mandatory_lines": 17479
+    }
+  ],
+  "qualification_expected": {
+    "phases": 92,
+    "declarations": 83,
+    "artifacts": [
+      "lib",
+      "static",
+      "vmcall",
+      "read-clock"
+    ],
+    "result_directory": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-result-v2",
+    "no_current_result_claim": true
+  },
+  "finalization": "Use a new final-v1 directory; preserve all prepared templates. Append complete final source/head proof, RESULTS, raw execution audit and required raw phase/error outputs to both read indices; bind all final INPUTS. No launch until root checks final prompts/inputs/commands.",
+  "commands": {
+    "claude": [
+      "with-proxy",
+      "env",
+      "PYTHONOPTIMIZE=0",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/launch-review.py"
+    ],
+    "native": [
+      "with-proxy",
+      "env",
+      "PYTHONOPTIMIZE=0",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/launch-guard.py"
+    ]
+  },
+  "bounds": {
+    "wall_seconds": 1800,
+    "claude_per_output_file_bytes": 67108864,
+    "native_combined_raw_bytes": 67108864,
+    "all_uid_cli_cap": 15,
+    "model_override": false
+  },
+  "admission": "Launch one lane only after root authorization, verify actual session/model/effective policy; fresh all-UID census in unchanged caller before the second actual launch. Do not precredit a preparation-time census.",
+  "terminal": "Own both actual handles through termination; preserve raw failures, actual reports, source-before/after, all tool errors/read-order/truncation/coverage and session/policy audits. No peer report supplied or inferred approval."
+}

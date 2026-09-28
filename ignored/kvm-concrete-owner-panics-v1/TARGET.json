@@ -1,0 +1,56 @@
+{
+  "scope": "author implementation only; no execution, compiler, formatter, network or SCM",
+  "files": [
+    {
+      "source": "reverie-kvm/src/vm.rs",
+      "source_sha256": "c98fcbdaea105d91a774ccb7a293ada1bcad434a86139c6aac8274ae412ccb61",
+      "source_bytes": 389713,
+      "base_sha256": "20125556e37755bbf6cc1d85ee4728fab119f466edd489da9fa0bc3020015912",
+      "base_bytes": 386176,
+      "proposed_sha256": "c4777f99e22501648296fa658ae7a6377ff9dcb2fe2e335615b6d963e7495502",
+      "proposed_bytes": 389609
+    },
+    {
+      "source": "reverie-kvm/src/executor.rs",
+      "source_sha256": "499177f2237054de27a417e399ed998f0fceeb6849a64a813f248f93f1d91888",
+      "source_bytes": 1528815,
+      "base_sha256": "bad4de60e4016f3e445c6fe484cce433b25f95758c8ca0272fdf72e46b183b9d",
+      "base_bytes": 1520775,
+      "proposed_sha256": "499177f2237054de27a417e399ed998f0fceeb6849a64a813f248f93f1d91888",
+      "proposed_bytes": 1528815
+    },
+    {
+      "source": "reverie-kvm/src/vm/worker_panic_tests.rs",
+      "source_sha256": "870b89a9b51e20466385a4ca7a0df676dd20b718f2ca7590f0de40efc9bf9cd7",
+      "source_bytes": 27048,
+      "base_sha256": "db0618132b60313fe0eef1dda163e28ba7237e7b49fc391172d63cfca95570e4",
+      "base_bytes": 19564,
+      "proposed_sha256": "870b89a9b51e20466385a4ca7a0df676dd20b718f2ca7590f0de40efc9bf9cd7",
+      "proposed_bytes": 27048
+    }
+  ],
+  "assertion_line_preservation": [
+    {
+      "file": "vm.rs",
+      "old_assertion_macro_start_lines": 510,
+      "new_assertion_macro_start_lines": 510,
+      "all_old_assertion_macro_start_lines_preserved_in_order": true
+    },
+    {
+      "file": "executor.rs",
+      "old_assertion_macro_start_lines": 2944,
+      "new_assertion_macro_start_lines": 2957,
+      "all_old_assertion_macro_start_lines_preserved_in_order": true
+    },
+    {
+      "file": "worker_panic_tests.rs",
+      "old_assertion_macro_start_lines": 61,
+      "new_assertion_macro_start_lines": 84,
+      "all_old_assertion_macro_start_lines_preserved_in_order": true
+    }
+  ],
+  "excluded_concurrent_vm_additions": [
+    "include!(\"vm/public_tool_panic_tests.rs\");",
+    "include!(\"vm/instruction_callback_panic_tests.rs\");"
+  ]
+}

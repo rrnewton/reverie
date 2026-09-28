@@ -1,0 +1,16 @@
+[
+  {
+    "path": "reverie-kvm/src/clock.rs",
+    "existing_test_suffix_identical": true,
+    "suffix_bytes": 16786,
+    "sha256": "be9c3609fed500531f9e8ac0d9acb12b13c949fc45daf899c9ff2e4bb7c4510e",
+    "test_declarations": 9
+  },
+  {
+    "path": "reverie-kvm/src/entry.rs",
+    "existing_test_suffix_identical": true,
+    "suffix_bytes": 21515,
+    "sha256": "791849a9f9f801b56fbe40a98acbf80beb583e7b8fa5f6fdcfbf52af62627219",
+    "test_declarations": 12
+  }
+]

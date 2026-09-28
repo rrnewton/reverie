@@ -1,0 +1,160 @@
+
+impl InjectedSyscallTrap {
+    // TODO-HUMAN-REVIEW(PR-271): Review rewritten-image load-bias and patched-site
+    // collision filtering before Tool dispatch.
+    fn validates_site_provenance(
+        &self,
+        pid: Pid,
+        trap_rip: u64,
+        frame: &InjectedSyscallFrame,
+    ) -> bool {
+        let Some(provenance) = &self.provenance else {
+            return trap_rip == self.rip;
+        };
+        let Some(maps) = guest_maps(pid) else {
+            return false;
+        };
+        let matches_image = |mapping: &&GuestMap| {
+            mapping.inode == provenance.image_inode
+                && mapping.path.as_ref() == Some(&provenance.image)
+        };
+        let Some(load_bias) = guest_auxv_entry(pid, libc::AT_ENTRY)
+            .and_then(|entry| entry.checked_sub(provenance.image_entry_address))
+        else {
+            return false;
+        };
+        self.rip.checked_add(load_bias) == Some(trap_rip)
+            && maps
+                .iter()
+                .filter(matches_image)
+                .any(|mapping| mapping.executable && mapping.contains(trap_rip))
+            && maps
+                .iter()
+                .filter(matches_image)
+                .any(|mapping| mapping.executable && mapping.contains(frame.instruction_pointer()))
+            && frame
+                .instruction_pointer()
+                .checked_sub(load_bias)
+                .is_some_and(|address| {
+                    provenance
+                        .patched_site_addresses
+                        .binary_search(&address)
+                        .is_ok()
+                })
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct LiteinstRuntimeConfig {
+    pub(crate) preload: PathBuf,
+    pub(crate) begin_marker: u64,
+    pub(crate) ready_marker: u64,
+    pub(crate) helper_return_marker: u64,
+    pub(crate) syscall_marker: u64,
+    pub(crate) newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
+    pub(crate) held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    /// Records a fail-closed LiteInst refusal raised by any task.
+    ///
+    /// A non-root task's error cannot reach the root's cleanup guard, so
+    /// without this the session could finish "successfully" after a child was
+    /// released untraced. The root consults it before reporting success.
+    pub(crate) session_failure: Arc<StdMutex<Option<String>>>,
+    /// Wakes the root task as soon as a non-root refusal records the shared
+    /// failure. The root may otherwise remain blocked in a guest wait for the
+    /// refused child and never return control to the session cleanup guard.
+    pub(crate) session_failure_changed: Arc<Notify>,
+    /// Set once the guest has created a second task.
+    ///
+    /// Hook installation is single-task-only (see `maybe_install_liteinst_site`).
+    pub(crate) multi_task: Arc<AtomicBool>,
+    /// TID of the session's root tracee, published once the guest is spawned.
+    ///
+    /// The root-stop lease and its cleanup guard are owned by exactly this
+    /// TID. A forked child is its own thread-group leader, so the
+    /// `tid == pid` shape cannot distinguish it from the root.
+    pub(crate) root_tid: Arc<StdOnceLock<Pid>>,
+    pub(crate) instrumentation_stats: Option<Arc<StdMutex<LiteinstInstrumentationStats>>>,
+    #[cfg(test)]
+    pub(crate) fail_preinit: bool,
+    /// Synthesises a fail-closed error at the new-task boundary.
+    ///
+    /// Production no longer refuses task creation, so the cleanup guard's
+    /// whole-group reaping needs an explicit trigger that still produces a
+    /// multi-task tree at the moment of failure.
+    #[cfg(test)]
+    pub(crate) fail_new_task: bool,
+    #[cfg(test)]
+    pub(crate) pause_new_task: Option<mpsc::UnboundedSender<Pid>>,
+    #[cfg(test)]
+    pub(crate) pause_after_new_task: bool,
+    #[cfg(test)]
+    pub(crate) pause_before_new_task: Option<mpsc::UnboundedSender<Pid>>,
+    #[cfg(test)]
+    pub(crate) fail_discovery_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) fail_after_scan_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_task_scan_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) pause_root_stop: Option<(RootStopPause, mpsc::UnboundedSender<Pid>)>,
+    #[cfg(test)]
+    pub(crate) pause_preinit_step: Option<(usize, mpsc::UnboundedSender<Pid>)>,
+    #[cfg(test)]
+    pub(crate) pause_precise_timer_step: Option<mpsc::UnboundedSender<Pid>>,
+    #[cfg(test)]
+    pub(crate) activate_without_handshake: bool,
+    #[cfg(test)]
+    pub(crate) queue_pending_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_skip_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_context_none_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_context_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_preinit_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_post_exec_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_private_stub_mutation_once: Option<Arc<AtomicBool>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum RootStopPause {
+    Seccomp,
+    Signal(Signal),
+}
+
+#[derive(Clone)]
+struct LiteinstRootStopArmer {
+    root_tid: Pid,
+    held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+}
+
+impl LiteinstRootStopArmer {
+    fn arm(&self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
+        if task.pid() != self.root_tid {
+            return Ok(());
+        }
+        HeldRootStop::arm_empty(&self.held_root_stop, task, event)
+    }
+
+    fn ensure(&self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
+        if task.pid() != self.root_tid {
+            return Ok(());
+        }
+        HeldRootStop::ensure_current(&self.held_root_stop, task, event)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+struct LiteinstHandshakeFrame {
+    version: u64,
+    begin_rip: u64,
+    ready_rip: u64,
+    install_helper: u64,
+    helper_stack_top: u64,
+    helper_return: u64,
+    helper_return_rip: u64,

@@ -1,0 +1,160 @@
+
+    /// inject syscall for given tracee
+    ///
+    /// NB: limitations:
+    /// - tracee must be in stopped state.
+    /// - the tracee must have returned from PTRACE_EXEC_EVENT
+    /// - must be called on the ptracer thread
+    ///
+    /// Side effects:
+    /// - mutates contexts
+    async fn untraced_syscall(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        self.validate_liteinst_mapping_execution(nr, args)?;
+        tracing::trace!(
+            "[scheduler/tool] (pid = {}) untraced syscall: {:?}",
+            task.pid(),
+            nr
+        );
+        // TODO-HUMAN-REVIEW(PR-103): Review original-frame syscall injection.
+        let oldregs = task.getregs()?;
+        let mut regs = if self.injected_syscall_frame.is_some() {
+            self.read_guest_registers(&task)?
+        } else {
+            oldregs
+        };
+
+        *regs.syscall_mut() = nr as Reg;
+        *regs.orig_syscall_mut() = nr as Reg;
+        regs.set_args((
+            args.arg0 as Reg,
+            args.arg1 as Reg,
+            args.arg2 as Reg,
+            args.arg3 as Reg,
+            args.arg4 as Reg,
+            args.arg5 as Reg,
+        ));
+        let child_context = self.injected_syscall_frame.is_some().then_some(regs);
+
+        // Jump to our private page to run the syscall instruction there. See
+        // `populate_mmap_page` for details.
+        *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
+
+        task.setregs(&regs)?;
+
+        // Step to run the syscall instruction.
+        let wait = self.step_stopped(task, None)?.next_state().await?;
+        self.arm_liteinst_wait(&wait);
+
+        // Get the result of the syscall to return to the caller.
+        let result = self
+            .status_to_result(wait, Some(oldregs), child_context)
+            .await?;
+        self.observe_liteinst_mapping_result(nr, args, result);
+        Ok(result)
+    }
+
+    // Replace an actual, unconverted seccomp entry. The caller must have taken
+    // its pending record; this is not valid for a stopped task with no original
+    // syscall left to consume (for example, a post-exec callback).
+    async fn private_inject(
+        &mut self,
+        task: Stopped,
+        nr: Sysno,
+        args: SyscallArgs,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        let task = self.skip_seccomp_syscall(task).await?;
+
+        self.untraced_syscall(task, nr, args).await
+    }
+
+    async fn status_to_result(
+        &mut self,
+        wait_status: Wait,
+        context: Option<libc::user_regs_struct>,
+        child_context: Option<libc::user_regs_struct>,
+    ) -> Result<Result<i64, Errno>, TraceError> {
+        #[cfg(test)]
+        let forced_external_sigtrap = matches!(&wait_status, Wait::Stopped(_, _))
+            && self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
+            && self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .is_some_and(|runtime| {
+                    let force_once = if context.is_none() {
+                        runtime.force_context_none_signal_once.as_ref()
+                    } else {
+                        runtime.force_context_signal_once.as_ref()
+                    };
+                    force_once.is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst))
+                });
+        #[cfg(not(test))]
+        let forced_external_sigtrap = false;
+        #[cfg(test)]
+        let wait_status = if forced_external_sigtrap {
+            match wait_status {
+                Wait::Stopped(task, _) => Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)),
+                other => other,
+            }
+        } else {
+            wait_status
+        };
+        #[cfg(test)]
+        if context.is_some()
+            && self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
+            && let Wait::Stopped(stopped, _) = &wait_status
+            && self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.force_private_stub_mutation_once.as_ref())
+                .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst))
+        {
+            let mut mutated_stub = [0; cp::SYSCALL_INSTR_SIZE * 2];
+            stopped.read_exact(cp::PRIVATE_PAGE_OFFSET, &mut mutated_stub)?;
+            mutated_stub[0] ^= 0xff;
+            let mut stopped_writer = Stopped::new_unchecked(stopped.pid());
+            let address = AddrMut::from_raw(cp::PRIVATE_PAGE_OFFSET).ok_or(Errno::EFAULT)?;
+            stopped_writer.write_value(address, &mutated_stub)?;
+        }
+        match wait_status {
+            Wait::Stopped(stopped, event) => match event {
+                Event::Signal(sig) if context.is_none() => {
+                    self.validate_nested_liteinst_activation_signal(
+                        &stopped,
+                        sig,
+                        LiteinstActivationOperation::FinishReinjectedSyscall,
+                        NestedTrapExpectation::None,
+                        forced_external_sigtrap,
+                    )?;
+                    let regs = stopped.getregs()?;
+                    Ok(Ok(regs.ret() as i64))
+                }
+                Event::Signal(sig) => {
+                    self.validate_nested_liteinst_activation_signal(
+                        &stopped,
+                        sig,
+                        LiteinstActivationOperation::FinishInjectedSyscall,
+                        NestedTrapExpectation::PrivateSyscall(
+                            (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64,
+                        ),
+                        forced_external_sigtrap,
+                    )?;
+                    let mut regs = stopped.getregs()?;
+                    // NB: it is possible to get interrupted by signal (such as
+                    // SIGCHLD) before single step finishes, while RIP still
+                    // points at the private page.
+                    debug_assert!(
+                        regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE
+                            || regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET
+                    );
+                    // interrupted by signal, return -ERESTARTSYS so that tracee can do a
+                    // restart_syscall.
+                    if sig != Signal::SIGTRAP {
+                        *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
+                        self.pending_signal = Some(sig);

@@ -1,0 +1,35 @@
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+## Plain Language Summary and Project Impact
+
+KVM currently executes CPUID without the subscribed Tool callback and synthesizes metadata for captured output pipes. These cause separate disagreements with ptrace. This change dispatches guest CPUID through the existing callback and keeps a native pipe alive for each captured output stream, exposing its actual device and inode. It follows the landed timestamp repair in https://github.com/rrnewton/reverie/pull/586.
+
+## Summary
+
+Two commits form one linear change. The first enables CPUID faulting per vCPU, decodes valid user instructions, applies Tool results and restores prior MSR state on failure or teardown. Host-owned execution remains outside guest dispatch. The second retains native pipe descriptors privately, shares their lifetime across descriptor copies and keeps them above the standard descriptor range with close-on-exec set. No public Tool API, CPUID result table, dependency, scheduler, clock offset or comparison rule changes.
+
+## Determinism
+
+A subscribed guest CPUID instruction causes one existing Tool callback. Its returned registers determine the resumed instruction state. Terminal callbacks consume the pending instruction without resuming it. Per-vCPU faulting state is restored rather than inferred from host timing. Captured pipe metadata comes from the native object retained for that stream; descriptor copies share the same object and its lifetime. This preserves object identity without inventing a new deterministic inode scheme.
+
+## Linux Semantics
+
+Only valid subscribed user-mode CPUID faults enter the callback. Unrelated faults retain their behavior, and register results follow x86-64 zero-extension rules. Exit and exit_group retain their separate effects. Captured output exposes native pipe metadata, while private ownership preserves closed standard descriptors and reports real descriptor-exhaustion errors. Tests cover copying, concurrent setup, closed descriptors, unwind and exhaustion.
+
+## Validation
+
+At head 3d4a401ed8959befad0b2f10db59093725f27432, all 83 selected KVM declarations passed with KVM required: 43 library, 34 static-ELF, two vmcall and four read-clock tests. The 92 accepted phases include fresh compilation and executable retention, formatting, core/ptrace checks and Clippy with warnings denied. No selected declaration failed, was ignored or remained unrun. Accepted service CPU totaled 437.665 seconds; summed phase payload time was 119.064 seconds.
+
+The first metadata launch failed during service setup, before a payload ran, with raw status 137 and incomplete accounting. That refusal remains recorded separately; the accepted continuation used a fresh lease after confirming the original service and processes had ended. Total CPU including that failed setup is unknown.
+
+All 2,630 committed tree entries match the qualified source, including unchanged submodule pins. Qualification additionally used the repository-ignored Cargo.lock with SHA-256 1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856. The exact source and dependency records, 92 phase results and original refusal are retained in the owned worktree.
+
+These are component results. The earlier 75-cell experiment still has 150 failed full comparisons despite 300 matching within-backend repeats. The clock-accounting correction remains failing in separate work, and no new full Hermit parity result is claimed here. MSR restoration after a rollback failure and the Host-owned dynamically linked glibc pthread combination remain unmeasured.
+
+## Relationship to gVisor
+
+This uses Reverie's existing instruction callbacks, KVM exception handling and native Linux pipe metadata. It adds no syscall implementation or imported gVisor mechanism.
+
+## Human Review Required
+
+Post-facto review applies under trigger 2 for the instruction-interception and descriptor-runtime abstractions. Independent Claude-family and Codex-family reviews are being prepared against base 6e3915b70a71657a08f0028b3f70d6074116206a and exact head 3d4a401ed8959befad0b2f10db59093725f27432, tree 73024912837cbbeaa70b6d2173f5b596eebedcb3. This draft does not yet have those approvals. The owner's focused, speculative landing policy applies; no full validation-DAG success is claimed.

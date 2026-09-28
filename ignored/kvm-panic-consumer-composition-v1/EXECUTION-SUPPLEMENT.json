@@ -1,0 +1,127 @@
+{
+  "scope": "terminal private host-control execution; not independent source approval",
+  "all_phases": 22,
+  "test_phases": 18,
+  "passed_declarations": 26,
+  "failed_declarations": 0,
+  "ignored_declarations": 0,
+  "inventory_declarations_not_executions": 610,
+  "sum_phase_wall_seconds": 18.863952378975227,
+  "sum_test_wall_seconds": 4.436858108732849,
+  "sum_reported_systemd_cpu_seconds": "20.525",
+  "cpu_basis": "sum of the 22 per-service stderr CPU time consumed values, parsed with their reported precision",
+  "observed_cgroups": 17,
+  "observed_cgroups_absent": 17,
+  "short_phases_without_observed_cgroup": 5,
+  "short_phase_terminal_scope": "terminal unit state was established; no unobserved cgroup path is invented",
+  "compiler_messages": {
+    "compile-1": [
+      {
+        "level": "warning",
+        "message": "method `set_operation_origin` is never used"
+      }
+    ],
+    "check-1": [
+      {
+        "level": "warning",
+        "message": "method `set_operation_origin` is never used"
+      },
+      {
+        "level": "warning",
+        "message": "field `origin` is never read"
+      },
+      {
+        "level": "warning",
+        "message": "variants `Closing` and `Closed` are never constructed"
+      },
+      {
+        "level": "warning",
+        "message": "field `next_close` is never read"
+      },
+      {
+        "level": "warning",
+        "message": "method `stopped` is never used"
+      },
+      {
+        "level": "warning",
+        "message": "methods `poison`, `try_close`, and `try_close_with` are never used"
+      },
+      {
+        "level": "warning",
+        "message": "struct `Closing` is never constructed"
+      },
+      {
+        "level": "warning",
+        "message": "method `finish` is never used"
+      },
+      {
+        "level": "warning",
+        "message": "struct `Closed` is never constructed"
+      },
+      {
+        "level": "warning",
+        "message": "method `close` is never used"
+      },
+      {
+        "level": "warning",
+        "message": "fields `next_callback` and `callbacks` are never read"
+      },
+      {
+        "level": "warning",
+        "message": "field `witness` is never read"
+      },
+      {
+        "level": "warning",
+        "message": "struct `DriverScope` is never constructed"
+      },
+      {
+        "level": "warning",
+        "message": "struct `DriverOwner` is never constructed"
+      },
+      {
+        "level": "warning",
+        "message": "struct `DriverRetirement` is never constructed"
+      },
+      {
+        "level": "warning",
+        "message": "associated items `new`, `owner`, and `retire` are never used"
+      },
+      {
+        "level": "warning",
+        "message": "methods `lifecycle`, `subscribe`, `pending`, `take_pending`, `origin`, and `begin_callback` are never used"
+      },
+      {
+        "level": "warning",
+        "message": "fields `destroyed`, `destroyed_notification`, and `parent` are never read"
+      },
+      {
+        "level": "warning",
+        "message": "struct `CallbackScope` is never constructed"
+      },
+      {
+        "level": "warning",
+        "message": "method `origin` is never used"
+      },
+      {
+        "level": "warning",
+        "message": "fields `lifecycle` and `owner_available` are never read"
+      },
+      {
+        "level": "warning",
+        "message": "methods `callback_id`, `same_driver`, `same_callback`, `callback_dropped`, and `wait_callback_drop` are never used"
+      },
+      {
+        "level": "warning",
+        "message": "function `protocol` is never used"
+      },
+      {
+        "level": "warning",
+        "message": "methods `set_operation_origin` and `user_accessible_prefix` are never used"
+      }
+    ]
+  },
+  "source_sha256": "b15981b925b6bf1bac0ddd49660c570512ed39d82bebb1831ab455af255c17b1",
+  "plan_sha256": "ef78867c4acb0276504c55d1be3d34940a6a7dbe83dd3a1c9d4e249fc6bc5973",
+  "final_target_sha256": "ce98207bba88bc66788cbf44498ce0e40b52dbdca91226d773e29ca3a7099850",
+  "unresolved": "An unpublished RuntimeError may still be lost if actual callback Drop panics before drive_handler returns. Full root/fork recovery, ordinary consumer panic handling, and actual failed-spawn producer admission are not established."
+}

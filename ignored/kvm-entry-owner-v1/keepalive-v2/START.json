@@ -1,0 +1,6 @@
+{
+  "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/entry/owner.rs",
+  "sha256": "f498cccf02fc4ea9e2defd853f2862a476b55cefdc0fa368fd51842e632a01e5",
+  "bytes": 27187,
+  "scope": "owner keepalive correction only; no execution"
+}

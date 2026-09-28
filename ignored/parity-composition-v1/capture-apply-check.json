@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "git",
+    "apply",
+    "--check",
+    "--directory=ignored/parity-composition-v1/source",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-setitimer-reverie-20260918/ignored/kvm-capture-pipe-identity-source-v2/SOURCE.patch"
+  ],
+  "returncode": 1,
+  "stdout": "",
+  "stderr": "error: patch failed: ignored/parity-composition-v1/source/reverie-kvm/tests/static_elf.rs:14017\nerror: ignored/parity-composition-v1/source/reverie-kvm/tests/static_elf.rs: patch does not apply\n",
+  "patch_sha256": "3e8d5d764f28aa072a42cf1f2b876cc22f085c2929ef229459bad4b632481959"
+}

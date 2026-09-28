@@ -1,0 +1,160 @@
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    {
+      "phase": "control-24",
+      "artifact": "static",
+      "name": "static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    {
+      "phase": "control-25",
+      "artifact": "static",
+      "name": "subscribed_timestamp_dispatch_refuses_unrelated_exceptions",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    {
+      "phase": "control-26",
+      "artifact": "static",
+      "name": "repeated_timestamp_reads_evolve_once_per_instruction",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    {
+      "phase": "control-27",
+      "artifact": "static",
+      "name": "static_elf_unsubscribed_rdtscp_remains_guest_exception",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Exact retained positive/refusal/lifecycle oracles from the three historical timestamp commits; no historical execution credit"
+    },
+    {
+      "phase": "control-28",
+      "artifact": "static",
+      "name": "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Current clock/RPC and exact returning getpid/fork refusal retained; obsolete unlanded exit refusal replaced by exec refusal, with actual ordinary/tail exit coverage in timestamp-32."
+    },
+    {
+      "phase": "control-29",
+      "artifact": "static",
+      "name": "host_owned_timestamp_worker_keeps_native_execution",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Loader-free static clone/CLEARTID: both root RDTSC results exact, actual worker RDTSC followed by its TID/completion marker and real exit, exactly two root callbacks and zero worker callbacks; no count widening or callback filtering."
+    },
+    {
+      "phase": "control-30",
+      "artifact": "static",
+      "name": "prefixed_timestamp_instructions_preserve_registers_flags_and_stack",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+    },
+    {
+      "phase": "control-31",
+      "artifact": "static",
+      "name": "locked_and_overlength_timestamp_encodings_remain_faults",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+    },
+    {
+      "phase": "control-32",
+      "artifact": "static",
+      "name": "timestamp_tool_preserves_results_with_host_supported_cpuid",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+    },
+    {
+      "phase": "control-33",
+      "artifact": "static",
+      "name": "timestamp_single_step_reports_the_retired_instruction_boundary",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Actual guest controls for current clock/injection/Host ownership/prefix/register/fault/debug contracts; raw results still pending"
+    },
+    {
+      "phase": "control-34",
+      "artifact": "static",
+      "name": "static_elf_faults_are_reported_by_direct_and_tool_runtimes",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    {
+      "phase": "control-35",
+      "artifact": "static",
+      "name": "static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    {
+      "phase": "control-36",
+      "artifact": "static",
+      "name": "static_elf_forks_execs_and_waits_for_child",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    {
+      "phase": "control-37",
+      "artifact": "static",
+      "name": "static_elf_runs_glibc_clone3_thread_and_restores_parent_state",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    {
+      "phase": "control-38",
+      "artifact": "static",
+      "name": "static_elf_caught_signal_returns_through_rt_sigreturn",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    {
+      "phase": "control-39",
+      "artifact": "static",
+      "name": "post_exec_failure_runs_tool_exit_lifecycle",
+      "source": "reverie-kvm/tests/static_elf.rs",
+      "purpose": "Existing exception-dispatch neighbors, consumer ownership, exec and supervised error cleanup"
+    },
+    {
+      "phase": "control-40",
+      "artifact": "vmcall",
+      "name": "guest_write_syscall_runs_shared_reverie_tool",
+      "source": "reverie-kvm/tests/vmcall.rs",
+      "purpose": "Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims"
+    },
+    {
+      "phase": "control-41",
+      "artifact": "vmcall",
+      "name": "default_tool_handler_tail_injects_through_executor",
+      "source": "reverie-kvm/tests/vmcall.rs",
+      "purpose": "Existing public real-mode/vmcall Tool entry and default injection remain supported; these are not timestamp interception claims"
+    },
+    {
+      "phase": "control-42",
+      "artifact": "read-clock",
+      "name": "read_clock_counts_userspace_and_excludes_callbacks_and_other_vcpus",
+      "source": "reverie-kvm/tests/read_clock.rs",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+    },
+    {
+      "phase": "control-43",
+      "artifact": "read-clock",
+      "name": "read_clock_follows_a_guest_between_host_threads",
+      "source": "reverie-kvm/tests/read_clock.rs",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+    },
+    {
+      "phase": "control-44",
+      "artifact": "read-clock",
+      "name": "read_clock_starts_fork_vfork_and_thread_children_at_zero",
+      "source": "reverie-kvm/tests/read_clock.rs",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+    },
+    {
+      "phase": "control-45",
+      "artifact": "read-clock",
+      "name": "read_clock_survives_successful_and_failed_exec",
+      "source": "reverie-kvm/tests/read_clock.rs",
+      "purpose": "Existing actual branch clock isolation and lifecycle; original internal 40-second wrapper unchanged, outer 30 CPU/60 wall retained"
+    },
+    {
+      "phase": "control-46",
+      "artifact": "static",

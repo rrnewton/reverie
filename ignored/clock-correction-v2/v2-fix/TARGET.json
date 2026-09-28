@@ -1,0 +1,47 @@
+{
+  "scope": "Unexecuted two-import test-only successor; original compiler failure preserved",
+  "base": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "source_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source",
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/SOURCE-MANIFEST.json",
+    "bytes": 472196,
+    "mode": 420,
+    "sha256": "46e8b45ddc357502ded7470955bde77ed2686109131c157c809940f98079893b"
+  },
+  "full_patch": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/SOURCE.patch",
+    "bytes": 54907,
+    "mode": 420,
+    "sha256": "50580ff2751dad2e24a2fc86aa5ca7274b13ef0ee6761514ea383a8e360e410e"
+  },
+  "delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/V2-FIX.patch",
+    "bytes": 753,
+    "mode": 420,
+    "sha256": "b948c755e55049603752c096d3accd8e8d53c7f97791cfa2f39aa53a99adcd11"
+  },
+  "continuity": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/CONTINUITY.json",
+    "bytes": 1592,
+    "mode": 420,
+    "sha256": "18eb5ed364e55b5715f791f143eea0dd5d6cd3e10e02ba6627dbb3fb7abf8f89"
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/REPORT.md",
+    "bytes": 1798,
+    "mode": 420,
+    "sha256": "39691cbe476040f0b448401cfafa4192372f81a25dd9c396056b9c7cfebc2395"
+  },
+  "prior_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/REPORT.md",
+    "bytes": 8047,
+    "mode": 420,
+    "sha256": "554955db06ebe99b8ddf41c30ef37fdd5532af82fdbd3b48f3b61249ca4a418c"
+  },
+  "format": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/AUTHOR-FORMAT-3.json",
+    "bytes": 3891,
+    "mode": 420,
+    "sha256": "1dc832967e98285864815489edbf9d3725e55a874d827c20f35f76169455c696"
+  }
+}

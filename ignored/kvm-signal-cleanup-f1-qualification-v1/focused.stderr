@@ -1,0 +1,6 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+error: test failed, to rerun pass `-p reverie-kvm --lib`
+
+Caused by:
+  process didn't exit successfully: `/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/target/debug/deps/reverie_kvm-543bfc99885654c3 'runtime::signal_cleanup_completion_tests' --nocapture` (signal: 25)

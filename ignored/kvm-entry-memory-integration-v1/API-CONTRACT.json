@@ -1,0 +1,24 @@
+{
+  "memory_source_sha256": "ab7537c4e07b2466b036066b1b92d9060d6e248f7c17775c2dd1e34a6f16f606",
+  "provided": [
+    "GuestMemory::entry_gate(&self) -> Arc<EntryGate>",
+    "GuestMemory::set_failure_context(&mut self, context: Option<FailureContext>)"
+  ],
+  "required_root_owned": [
+    "EntryGate::new() -> Arc<EntryGate>",
+    "EntryGate::copy_blocking(self: &Arc<Self>, origin: Option<FailureContext>) -> GateResult<CopyAccess>",
+    "EntryGate::pending_failure() -> Option<Arc<PendingFailure>>",
+    "PendingFailure::error() -> Error",
+    "CopyAccess retains origin and captures unwind poison without publication"
+  ],
+  "lock_contract": [
+    "copy_blocking waits before address-state/backing locks",
+    "an existing enclosing allocation lock is permitted for the reviewed snapshot/mmap route",
+    "no admitted helper acquires allocation",
+    "root closer does not acquire allocation",
+    "nested helpers reuse the token",
+    "retained HostMemoryOperand and sparse backing-fd copy do not retain a token"
+  ],
+  "composition_pending": true,
+  "no_root_owned_file_frozen_by_this_packet": true
+}

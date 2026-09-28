@@ -1,0 +1,11 @@
+{
+  "lint_stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-lint-v2/stderr",
+    "bytes": 31560,
+    "sha256": "41e9884b5aeaa874e60ab4a5945b5e77762eba098c09ceb67dcc549e38b51caa"
+  },
+  "qualified_source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-remaining-controls-v3/source-1.json",
+    "sha256": "69cce12356eb02bd7f7b0de7c529347ab3cf5cd6b1340a42551d227effe72ebf"
+  }
+}

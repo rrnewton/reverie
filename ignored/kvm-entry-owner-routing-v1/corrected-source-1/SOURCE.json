@@ -1,0 +1,29 @@
+{
+  "records": [
+    {
+      "path": "entry.rs",
+      "sha256": "3622dddb0b4a3159e5296385929e4b70cb249525eba30a7767cea496e4cdfc30",
+      "bytes": 47647
+    },
+    {
+      "path": "entry/owner.rs",
+      "sha256": "9d0fe66cb871ad3fb606562c4d5737cab8fe0556bd6fa7e6a8b59e02db6d51a8",
+      "bytes": 35145
+    },
+    {
+      "path": "entry/driver.rs",
+      "sha256": "7301298fc489745d81f7c8da543b323e86af54e62a09a066483c8bbbe80b78c3",
+      "bytes": 13942
+    },
+    {
+      "path": "entry/driver/tests.rs",
+      "sha256": "5f8d21e876a4e7f5027855945849aaca5666aca9cac421ea9eea091beedc55dd",
+      "bytes": 17732
+    },
+    {
+      "path": "failure.rs",
+      "sha256": "a3365d92a76bfa1c32b97e42fa2d46ed92c97671252cd605f093c29212b6894a",
+      "bytes": 48783
+    }
+  ]
+}

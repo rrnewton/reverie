@@ -1,0 +1,119 @@
+            &[0xf0, 0x0f, 0x31][..],
+            &[0xf3, 0xf0, 0x0f, 0x01, 0xf9],
+            &[0x0f, 0x0b],
+            &[0xed],
+        ] {
+            assert_eq!(instruction(invalid), None);
+        }
+        let mut fetched = Vec::new();
+        assert_eq!(
+            decode(|index| {
+                fetched.push(index);
+                Some(0x66)
+            }),
+            None
+        );
+        assert_eq!(fetched, (0..15).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn timestamp_writeback_preserves_other_registers_and_full_flags() {
+        let original = kvm_regs {
+            rax: u64::MAX,
+            rbx: 2,
+            rcx: u64::MAX,
+            rdx: u64::MAX,
+            rsi: 5,
+            rdi: 6,
+            rsp: 7,
+            rbp: 8,
+            r8: 9,
+            r9: 10,
+            r10: 11,
+            r11: 12,
+            r12: 13,
+            r13: 14,
+            r14: 15,
+            r15: 16,
+            rip: 0x1234,
+            rflags: 0x1_03d7,
+        };
+        for request in [Rdtsc::Tsc, Rdtsc::Tscp] {
+            let actual = result_registers(
+                original,
+                TimestampInstruction { request, length: 5 },
+                RdtscResult {
+                    tsc: 0xfedc_ba98_7654_3210,
+                    aux: Some(0x8765_4321),
+                },
+            )
+            .unwrap();
+            let mut expected = original;
+            expected.rip += 5;
+            expected.rflags &= !(1 << 16);
+            expected.rax = 0x7654_3210;
+            expected.rdx = 0xfedc_ba98;
+            if request == Rdtsc::Tscp {
+                expected.rcx = 0x8765_4321;
+            }
+            assert_eq!(actual, expected);
+        }
+        assert!(
+            result_registers(
+                kvm_regs {
+                    rip: u64::MAX,
+                    ..original
+                },
+                TimestampInstruction {
+                    request: Rdtsc::Tsc,
+                    length: 2
+                },
+                RdtscResult { tsc: 0, aux: None }
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn timestamp_fetch_checks_each_page_and_does_not_cross_a_completed_instruction() {
+        let memory = GuestMemory::new(0, 0x10_000).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007_u64),
+            (0x2000, 0x3007),
+            (0x3000, 0x4007),
+            (0x4000 + 8 * 8, 0x8007),
+            (0x4000 + 9 * 8, 0x9007),
+        ] {
+            memory.write_raw(address, &value.to_le_bytes()).unwrap();
+        }
+        memory.write_raw(0x8ffe, &[0x0f, 0x31]).unwrap();
+        let read = |memory: &GuestMemory, rip: u64| {
+            decode(|offset| fetch_user_byte(memory, 0x1000, rip + u64::from(offset)))
+        };
+        assert_eq!(read(&memory, 0x8ffe).unwrap().length, 2);
+        memory
+            .write_raw(0x4000 + 9 * 8, &(0x9007_u64 | (1 << 63)).to_le_bytes())
+            .unwrap();
+        assert_eq!(read(&memory, 0x8ffe).unwrap().length, 2);
+        memory.write_raw(0x8ffe, &[0x0f, 0x01, 0xf9]).unwrap();
+        assert_eq!(read(&memory, 0x8ffe), None);
+        memory
+            .write_raw(0x4000 + 9 * 8, &0x9007_u64.to_le_bytes())
+            .unwrap();
+        assert_eq!(read(&memory, 0x8ffe).unwrap().request, Rdtsc::Tscp);
+        for invalid in [0_u64, 0x9003, 0x9007 | (1 << 63)] {
+            memory
+                .write_raw(0x4000 + 9 * 8, &invalid.to_le_bytes())
+                .unwrap();
+            assert_eq!(read(&memory, 0x8ffe), None);
+        }
+        memory
+            .write_raw(0x4000 + 9 * 8, &0x9007_u64.to_le_bytes())
+            .unwrap();
+        memory
+            .write_raw(0x2000, &(0x3007_u64 | (1 << 63)).to_le_bytes())
+            .unwrap();
+        assert_eq!(read(&memory, 0x8ffe), None);
+        assert_eq!(fetch_user_byte(&memory, 0x1000, 1 << 47), None);
+    }
+}

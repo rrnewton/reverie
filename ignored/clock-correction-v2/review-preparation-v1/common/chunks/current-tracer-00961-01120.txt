@@ -1,0 +1,160 @@
+                terminal.wait(Duration::from_millis(1));
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "notifier did not acknowledge terminal cleanup for LiteInst tracee {}",
+                self.pid()
+            ),
+        ))
+    }
+
+    fn discover_descendants(
+        &self,
+        descendants: &mut HashMap<Pid, RegisteredTraceeCleanup>,
+        terminal_descendants: &HashMap<Pid, TraceeIdentity>,
+    ) -> std::io::Result<()> {
+        let mut queue = VecDeque::from([self.pid()]);
+        queue.extend(descendants.keys().copied());
+        let newborn_tids = self
+            .newborn_tracees
+            .lock()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut transferred = Vec::new();
+        let mut absorbed = Vec::new();
+        for tid in newborn_tids {
+            if tid == self.pid() || terminal_descendants.contains_key(&tid) {
+                self.newborn_tracees.lock().unwrap().remove(&tid);
+                continue;
+            }
+            if let Some(existing) = descendants.get_mut(&tid) {
+                let newborn = self
+                    .newborn_tracees
+                    .lock()
+                    .unwrap()
+                    .remove(&tid)
+                    .expect("listed newborn must remain registered");
+                existing.event_link.get_or_insert(newborn.link);
+                absorbed.push((tid, newborn));
+                continue;
+            }
+
+            let mut newborn = self
+                .newborn_tracees
+                .lock()
+                .unwrap()
+                .remove(&tid)
+                .expect("listed newborn must remain registered");
+            let identity = match newborn.identity.take() {
+                Some(identity) => identity,
+                None => match TraceeIdentity::capture_event_child(
+                    newborn.link.tid,
+                    newborn.link.parent_tid,
+                    newborn.link.op,
+                ) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        self.newborn_tracees.lock().unwrap().insert(tid, newborn);
+                        self.restore_transferred_newborns(
+                            descendants,
+                            &mut transferred,
+                            &mut absorbed,
+                        );
+                        return Err(std::io::Error::from_raw_os_error(error.into_raw()));
+                    }
+                },
+            };
+            if identity.snapshot.tgid == tid {
+                queue.push_back(tid);
+            }
+            descendants.insert(
+                tid,
+                RegisteredTraceeCleanup {
+                    identity,
+                    terminal: newborn.terminal,
+                    event_link: Some(newborn.link),
+                },
+            );
+            transferred.push(tid);
+        }
+
+        #[cfg(test)]
+        if self
+            .fail_discovery_once
+            .as_ref()
+            .is_some_and(|flag| flag.swap(false, Ordering::SeqCst))
+        {
+            self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
+            return Err(std::io::Error::from_raw_os_error(libc::EIO));
+        }
+
+        let task_tids = match task_tids(self.pid()) {
+            Ok(tids) => tids,
+            Err(error) => {
+                self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
+                return Err(error);
+            }
+        };
+        for tid in task_tids {
+            if tid == self.pid()
+                || descendants.contains_key(&tid)
+                || terminal_descendants.contains_key(&tid)
+            {
+                continue;
+            }
+            let identity = match TraceeIdentity::open_task_tid(tid, self.identity.snapshot.tgid) {
+                Ok(Some(identity)) => identity,
+                Ok(None) => continue,
+                Err(error) => {
+                    self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
+                    return Err(error);
+                }
+            };
+            let terminal = Stopped::try_new_current_unchecked(tid)
+                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?
+                .terminal_cleanup();
+            descendants.insert(
+                tid,
+                RegisteredTraceeCleanup {
+                    identity,
+                    terminal,
+                    event_link: None,
+                },
+            );
+        }
+
+        let mut visited = HashSet::new();
+        while let Some(parent) = queue.pop_front() {
+            if !visited.insert(parent) {
+                continue;
+            }
+            let children = match direct_children(parent) {
+                Ok(children) => children,
+                Err(error) => {
+                    let error = std::io::Error::new(
+                        error.kind(),
+                        format!("read direct children of bound tracee {parent}: {error}"),
+                    );
+                    self.restore_transferred_newborns(descendants, &mut transferred, &mut absorbed);
+                    return Err(error);
+                }
+            };
+            for child in children {
+                if child == self.pid()
+                    || descendants.contains_key(&child)
+                    || terminal_descendants.contains_key(&child)
+                {
+                    continue;
+                }
+                let identity = match TraceeIdentity::open_discovered(child, parent) {
+                    Ok(Some(identity)) => identity,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        let error = std::io::Error::new(
+                            error.kind(),
+                            format!("bind listed tracee {child} under parent {parent}: {error}"),

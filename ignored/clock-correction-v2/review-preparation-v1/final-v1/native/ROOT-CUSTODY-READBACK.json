@@ -1,0 +1,52 @@
+{
+  "scope": "Actual native whole-source review at exact head; evidence custody, not an author approval.",
+  "head": "a9449f8ee22a17ba87a106c2af957a938fa57c45",
+  "session": "01a0b38e-9e3c-7883-9816-65199c048935",
+  "exec_handle": 60083,
+  "handle_collected": true,
+  "raw_exit_code": 0,
+  "elapsed_seconds": 852.0204121859279,
+  "actual_policy": {
+    "model": "gpt-5.6-sol",
+    "approval": "never",
+    "sandbox": "read-only",
+    "contexts": 3
+  },
+  "source_custody": {
+    "files": 3552,
+    "aliases": 7,
+    "all_current_bytes_modes_aliases_equal": true
+  },
+  "verdict_in_actual_report": "APPROVE SOURCE",
+  "coverage": {
+    "complete": true,
+    "documents": 59,
+    "chunks": 238,
+    "exact_stage_order_observed": false
+  },
+  "actual_commands": 412,
+  "actual_nonzero_commands": [
+    {
+      "id": "item_320",
+      "command": "/bin/bash -lc \"jq -r 'to_entries[] | select(.key>=153) | \\\"\\\\(.key)\\\\t\\\\(.value.chunk // .value.path // .value.file // .value)\\\"' COMPLETE_READS.json\"",
+      "exit_code": 5,
+      "aggregated_output": "jq: error (at COMPLETE_READS.json:2678): Cannot index array with string \"chunk\"\n"
+    },
+    {
+      "id": "item_322",
+      "command": "/bin/bash -lc \"jq -r '.mandatory_chunks | to_entries[] | select(.key>=153) | \\\"\\\\(.key)\\\\t\\\\(.value)\\\"' COMPLETE_READS.json\"",
+      "exit_code": 5,
+      "aggregated_output": "jq: error (at COMPLETE_READS.json:2678): number (238) has no keys\n"
+    }
+  ],
+  "diagnostic_candidate_count": 14,
+  "diagnostic_precision": "Diagnostic candidate strings include source text. Only the explicit nonzero command records are command failures.",
+  "truncated_output_candidates": [
+    {
+      "call_id": "call_oWOagMEr0oibGFbAWLMQ7d5s",
+      "line": 14782
+    }
+  ],
+  "order_precision": "All required literal chunks are complete. The first-complete order differs from the source index; no initial strict-order claim. All chunks after index 154 are first-complete in index order. Separate original canonical paper/scheduler/vision grounding and its historical policy limitation remain preserved.",
+  "all_referenced_artifacts_independently_authenticated": 17
+}

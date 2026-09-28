@@ -1,0 +1,313 @@
+[
+  {
+    "phase": "test-02",
+    "selected": [
+      "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop"
+    ],
+    "accepted": true,
+    "events": [
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      }
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-02/stderr",
+      "bytes": 267,
+      "mode": 384,
+      "sha256": "f02857facd807ad7e27c7340fdcea88cc5bab9176ff088c5e2bf7244bf257d32"
+    }
+  },
+  {
+    "phase": "test-03",
+    "selected": [
+      "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers"
+    ],
+    "accepted": true,
+    "events": [
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      }
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-03/stderr",
+      "bytes": 801,
+      "mode": 384,
+      "sha256": "42e31ae087ba4bed386575350687ffc11096773221cfb5354833dc4dc5bdbe9f"
+    }
+  },
+  {
+    "phase": "test-04",
+    "selected": [
+      "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live"
+    ],
+    "accepted": true,
+    "events": [
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "timer",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "boundary",
+        "value": 129
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "timer",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "boundary",
+        "value": 129
+      }
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-04/stderr",
+      "bytes": 323,
+      "mode": 384,
+      "sha256": "59df2c8e8ae7d078103f533791879820cccb659ff43d757276977b1f338f91bf"
+    }
+  },
+  {
+    "phase": "test-05",
+    "selected": [
+      "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches"
+    ],
+    "accepted": true,
+    "events": [
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      },
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "post_exec",
+        "value": 0
+      },
+      {
+        "kind": "boundary",
+        "value": 1
+      },
+      {
+        "kind": "boundary",
+        "value": 65
+      }
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-05/stderr",
+      "bytes": 267,
+      "mode": 384,
+      "sha256": "f02857facd807ad7e27c7340fdcea88cc5bab9176ff088c5e2bf7244bf257d32"
+    }
+  },
+  {
+    "phase": "test-06",
+    "selected": [
+      "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive"
+    ],
+    "accepted": true,
+    "events": [
+      {
+        "kind": "start",
+        "value": 0
+      },
+      {
+        "kind": "intercepted_exec",
+        "value": 0
+      },
+      {
+        "kind": "failed_exec",
+        "value": 0
+      }
+    ],
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-06/stderr",
+      "bytes": 95,
+      "mode": 384,
+      "sha256": "6e7156fb3f34e233b8290da9417f460f9226b39d2c249e8cdf62bba3f4855747"
+    }
+  }
+]

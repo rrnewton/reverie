@@ -1,0 +1,160 @@
+{
+  "compile_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/compile-plan.json",
+    "bytes": 50893,
+    "mode": 420,
+    "sha256": "b12afbde281b29d8a9306dad329490708127b451f4feffd85c51bf9ffb91267f"
+  },
+  "compile_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/compile/result.json",
+    "bytes": 6369,
+    "mode": 420,
+    "sha256": "79967c7e435d3d001cd4b1b3f3e37886fa20b6d85e9f3ec6c711daab0fdacb8d"
+  },
+  "cargo_output": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/compile/stdout",
+    "bytes": 170851,
+    "mode": 384,
+    "sha256": "388eb1fba72e0904bcae9125b7b544fd436938d09bce38c2d62390b27b65f53e"
+  },
+  "source_manifests": [
+    {
+      "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source",
+      "manifest": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/SOURCE-MANIFEST.json",
+        "bytes": 472196,
+        "mode": 420,
+        "sha256": "46e8b45ddc357502ded7470955bde77ed2686109131c157c809940f98079893b"
+      }
+    }
+  ],
+  "original_artifacts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/compile/artifacts.json",
+    "bytes": 3555,
+    "mode": 420,
+    "sha256": "56ea2d7741feeb842c73416f419da9072d59ee53d23c6fd3c3b592bc538b1703"
+  },
+  "harnesses": {
+    "ptrace": {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/reverie_ptrace-884b4a03308bc02f",
+        "bytes": 175556008,
+        "mode": 493,
+        "sha256": "c53579c6199ce038c64acf6114499bb3b17d17951da16a3dd130350d3d311eb7"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "bytes": 175556008,
+        "mode": 365,
+        "sha256": "c53579c6199ce038c64acf6114499bb3b17d17951da16a3dd130350d3d311eb7"
+      },
+      "distinct_inode": true
+    },
+    "vsyscall": {
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/vsyscall-fb351a729e11f350",
+        "bytes": 113938440,
+        "mode": 493,
+        "sha256": "941407999e1b8c0011ec125f12efc2c7e4e2f7b775412ebd416a1b46bb8b3442"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/vsyscall.elf",
+        "bytes": 113938440,
+        "mode": 365,
+        "sha256": "941407999e1b8c0011ec125f12efc2c7e4e2f7b775412ebd416a1b46bb8b3442"
+      },
+      "distinct_inode": true
+    }
+  },
+  "retained_libraries": [
+    {
+      "cargo_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-memory#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-memory/Cargo.toml",
+        "target": {
+          "kind": [
+            "lib"
+          ],
+          "crate_types": [
+            "lib"
+          ],
+          "name": "reverie_memory",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-memory/src/lib.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": true,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": false
+        },
+        "features": [],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_memory-d8da4b8790695762.rlib",
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_memory-d8da4b8790695762.rmeta"
+        ],
+        "executable": null,
+        "fresh": false
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_memory-d8da4b8790695762.rlib",
+        "bytes": 238910,
+        "mode": 420,
+        "sha256": "43ad0c232b24f4342b3b14acf1bb8c58dcd6000be16fa6943ffce4e13232d421"
+      },
+      "retained": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/library-0-libreverie_memory-d8da4b8790695762.rlib",
+        "bytes": 238910,
+        "mode": 292,
+        "sha256": "43ad0c232b24f4342b3b14acf1bb8c58dcd6000be16fa6943ffce4e13232d421"
+      },
+      "distinct_inode": true
+    },
+    {
+      "cargo_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-process#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-process/Cargo.toml",
+        "target": {
+          "kind": [
+            "lib"
+          ],
+          "crate_types": [
+            "lib"
+          ],
+          "name": "reverie_process",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-process/src/lib.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": true,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": false
+        },
+        "features": [
+          "default"
+        ],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_process-04bf5b7582678442.rlib",
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_process-04bf5b7582678442.rmeta"
+        ],
+        "executable": null,
+        "fresh": false
+      },
+      "original": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/libreverie_process-04bf5b7582678442.rlib",
+        "bytes": 10770086,
+        "mode": 420,
+        "sha256": "05dd752f320d520306d2a1b9ccc9940e41bc23aa8518689a329991a0a2df8672"
+      },
+      "retained": {

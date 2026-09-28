@@ -1,0 +1,111 @@
+{
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/PLAN-PREPARED.json",
+    "bytes": 6866,
+    "sha256": "19d6a5e3c1a884b0199c3a39cb9455f47181f680def36d3b248d35616f4e9cc1",
+    "mode": 420
+  },
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/SOURCE-AUTHENTICATION.json",
+    "bytes": 2371,
+    "sha256": "cc29f1ad5a620c3844e661677cd5bf67d5f9f9357c8016511e4e83e479afe926",
+    "mode": 420
+  },
+  "complete_source_files": 2621,
+  "aliases": 7,
+  "changed_paths": 13,
+  "lanes": [
+    {
+      "lane": "claude",
+      "session": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+      "target": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/TARGET.template.json",
+        "bytes": 1264,
+        "sha256": "1440967fddd8f23e55796e03704eea450e81213735d400cc964151b8f45c7953",
+        "mode": 420
+      },
+      "prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/prompt.template.txt",
+        "bytes": 6269,
+        "sha256": "026d106f36cc0c6f8e05051eb4faff559b6d113860a6623dfd215281903ce326",
+        "mode": 420
+      },
+      "inputs": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/inputs-PREPARED.json",
+        "bytes": 921820,
+        "sha256": "a45a62b85704809c9ffa9afbfc409f4ce0b7c2c15295ce9661bf5a14bcf1bcb4",
+        "mode": 420
+      },
+      "read_index": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/READ-INDEX-PREPARED.txt",
+        "bytes": 38516,
+        "sha256": "a6c9446c510223229a22659ac4ef4a37230ff10f93d77ab1975231e156b8b6b2",
+        "mode": 420
+      },
+      "complete_reads": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/COMPLETE_READS-PREPARED.json",
+        "bytes": 74925,
+        "sha256": "8529e7f41c28d8cbedcf8ef54c9ac460e7c3ed00265c5424a995721f0f1ffffc",
+        "mode": 420
+      },
+      "helpers": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/claude/HELPER-ORIGINS.json",
+        "bytes": 1334,
+        "sha256": "8a60329d1ad9e173e2e3495ffad4887b9a3beb1b8fbeba83b4e9b4695dcc2d08",
+        "mode": 420
+      },
+      "files": 2902,
+      "aliases": 7,
+      "mandatory_documents": 45,
+      "mandatory_chunks": 140,
+      "mandatory_lines": 17518
+    },
+    {
+      "lane": "native",
+      "session": "01a0b38e-9e3c-7883-9816-65199c048935",
+      "target": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/TARGET.template.json",
+        "bytes": 1243,
+        "sha256": "00728710e645a91ecb2334214926e4ff5d888c5e1634a93c95d3a8b05bc179de",
+        "mode": 420
+      },
+      "prompt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/prompt.template.txt",
+        "bytes": 6308,
+        "sha256": "47b61f91ca6eac63beda099f25e23e5091213b9bfba74c5649dd83661067c3c3",
+        "mode": 420
+      },
+      "inputs": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/inputs-PREPARED.json",
+        "bytes": 921227,
+        "sha256": "ba4a24cf38d18cff5ec1c6a801c32f144102545f6c66d1ce8d8ec0db62e4c9bd",
+        "mode": 420
+      },
+      "read_index": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/READ-INDEX-PREPARED.txt",
+        "bytes": 38153,
+        "sha256": "8b478d9629b5230fe91a03a26ef6ec11357bcc2d57a35a07d4a32a94c77846c5",
+        "mode": 420
+      },
+      "complete_reads": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/COMPLETE_READS-PREPARED.json",
+        "bytes": 77614,
+        "sha256": "fa8d5c5195cca08a6fc8a719d9e34092285d9cb71db20ee2375885fe80f18752",
+        "mode": 420
+      },
+      "helpers": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/native/HELPER-ORIGINS.json",
+        "bytes": 2623,
+        "sha256": "755b168b159ee86a06addcf7b3fb1f0760b375ef55130d04fcf5332d898ee22d",
+        "mode": 420
+      },
+      "files": 2900,
+      "aliases": 7,
+      "mandatory_documents": 45,
+      "mandatory_chunks": 138,
+      "mandatory_lines": 17479
+    }
+  ],
+  "executed_reviewers": 0,
+  "qualification_or_product_mutation": false
+}

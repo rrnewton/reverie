@@ -1,0 +1,36 @@
+{
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/SOURCE-TARGET.json",
+    "bytes": 1443,
+    "sha256": "81474b37bc3a00849331323b482d4fbef994df91243355c285c572225476e5f2",
+    "mode": 420
+  },
+  "inputs": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/CALLER-INPUTS.json",
+    "bytes": 869092,
+    "sha256": "3f2e5a01a8d15cab2684fd25411bcc4427a4a0bb5e4cd1c68b32dfc091453c2d",
+    "mode": 420
+  },
+  "delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/CALLER-DELTA.patch",
+    "bytes": 6587,
+    "sha256": "501bc62c737aed6ca62ed783b5e4457509273d8be272109b82a94295714b2f91",
+    "mode": 420
+  },
+  "order": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/RUN-ORDER.json",
+    "bytes": 1804,
+    "sha256": "181410a1beea8a2bc1a33ad0b2990ea8924241fbfc1f28e97d8947d8a4861c46",
+    "mode": 420
+  },
+  "selectors": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/SELECTORS.json",
+    "bytes": 86647,
+    "sha256": "82b1506dbd85bb32b945c67bcb4401659f94b396b2c37fd10a657499c9f7d940",
+    "mode": 420
+  },
+  "scope": "Combined V7 timestamp, CPUID and captured-pipe identity source: exact 83 declarations; no Hermit cancellation, signal/timer or full backend parity claim from component tests",
+  "phases": 92,
+  "declarations": 83,
+  "executed": false
+}

@@ -1,0 +1,160 @@
+    ///
+    /// Because this module always sets `wakeup_events` to 1, this also
+    /// specifies after how many events an overflow notification should be
+    /// raised. If a signal has been setup with
+    /// `PerfCounter::set_signal_delivery`], this corresponds to one sent
+    /// signal. Overflow notifications are sent whenever the counter reaches a
+    /// multiple of `sample_period`.
+    ///
+    /// If you only want accurate counts, pass
+    /// `DISABLE_SAMPLE_PERIOD`. Passing `0` will also work, but will create a
+    /// _counting_ event that cannot become a _sampling event_ via the
+    /// `PERF_EVENT_IOC_PERIOD` ioctl.
+    pub fn sample_period(&mut self, period: u64) -> &mut Self {
+        self.sample_period = period;
+        self
+    }
+
+    /// Set `precise_ip` on the underlying perf attribute structure. Valid
+    /// values are 0-3; the underlying field is 2 bits.
+    ///
+    /// Non-zero values will cause perf to attempt to lower the skid of *samples*
+    /// (but not necessarily notifications), usually via hardware features like
+    /// Intel PEBS.
+    ///
+    /// Use with caution: experiments have shown that counters with non-zero
+    /// `precise_ip` can drop events under certain circumstances. See
+    /// `experiments/test_consistency.c` for more information.
+    pub fn precise_ip(&mut self, precise_ip: u32) -> &mut Self {
+        self.precise_ip = precise_ip;
+        self
+    }
+
+    /// Enable fast reads via shared memory with the kernel for the latest
+    /// counter value.
+    pub fn fast_reads(&mut self, enable: bool) -> &mut Self {
+        self.fast_reads = enable;
+        self
+    }
+
+    /// Start this disabled counter when its task first commits exec. The
+    /// kernel clears the attribute at that transition; later execs keep the
+    /// existing continuous count.
+    pub(crate) fn enable_on_exec(&mut self) -> &mut Self {
+        self.enable_on_exec = true;
+        self
+    }
+
+    /// Render the builder into a `PerfCounter`. Created counters begin in a
+    /// disabled state. Additional initialization steps should be performed,
+    /// followed by a call to [`PerfCounter::enable`].
+    pub fn create(&self) -> Result<PerfCounter, Errno> {
+        self.create_with_optional_raw_syscall(None)
+    }
+
+    pub(crate) fn create_with_raw_syscall(
+        &self,
+        raw_syscall: unsafe fn(i64, [u64; 6]) -> i64,
+    ) -> Result<PerfCounter, Errno> {
+        self.create_with_optional_raw_syscall(Some(raw_syscall))
+    }
+
+    fn create_with_optional_raw_syscall(
+        &self,
+        raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+    ) -> Result<PerfCounter, Errno> {
+        let mut attr = perf::perf_event_attr::default();
+        attr.size = core::mem::size_of_val(&attr) as u32;
+        attr.type_ = self.evt.attr_type();
+        attr.config = self.evt.attr_config();
+        attr.__bindgen_anon_1.sample_period = self.sample_period;
+        attr.set_disabled(1); // manual enable, or the initial command exec transition
+        attr.set_enable_on_exec(u64::from(self.enable_on_exec));
+        attr.set_exclude_kernel(1); // we only care about user code
+        attr.set_exclude_guest(1);
+        attr.set_exclude_hv(1); // unlikely this is supported, but it doesn't hurt
+        attr.set_pinned(1); // error state if we are descheduled from the PMU
+        attr.set_precise_ip(self.precise_ip.into());
+        attr.__bindgen_anon_2.wakeup_events = 1; // generate a wakeup (overflow) after one sample event
+
+        let pid = self.pid;
+        let cpu = self.cpu;
+        let group_fd: libc::c_int = -1; // always create a new group
+        let flags = perf::PERF_FLAG_FD_CLOEXEC; // marginally more safe if we fork+exec
+
+        let fd = if let Some(raw_syscall) = raw_syscall {
+            Errno::from_ret(unsafe {
+                raw_syscall(
+                    libc::SYS_perf_event_open,
+                    [
+                        (&raw const attr) as u64,
+                        pid as i64 as u64,
+                        cpu as i64 as u64,
+                        group_fd as i64 as u64,
+                        flags.into(),
+                        0,
+                    ],
+                ) as usize
+            })?
+        } else {
+            Errno::result(unsafe {
+                libc::syscall(libc::SYS_perf_event_open, &attr, pid, cpu, group_fd, flags)
+            })? as usize
+        };
+        let fd = fd as libc::c_int;
+
+        let mmap = if self.fast_reads {
+            let res = if let Some(raw_syscall) = raw_syscall {
+                Errno::from_ret(unsafe {
+                    raw_syscall(
+                        libc::SYS_mmap,
+                        [
+                            0,
+                            get_mmap_size() as u64,
+                            libc::PROT_READ as u64,
+                            libc::MAP_SHARED as u64,
+                            fd as u64,
+                            0,
+                        ],
+                    ) as usize
+                })
+                .map(|address| address as *mut libc::c_void)
+            } else {
+                Errno::result(unsafe {
+                    libc::mmap(
+                        core::ptr::null_mut(),
+                        get_mmap_size(),
+                        libc::PROT_READ, // leaving PROT_WRITE unset lets us passively read
+                        libc::MAP_SHARED,
+                        fd,
+                        0,
+                    )
+                })
+            };
+            match res {
+                Ok(ptr) => match NonNull::new(ptr as *mut _) {
+                    Some(ptr) => Some(ptr),
+                    None => {
+                        close_perf_fd(fd, raw_syscall);
+                        return Err(Errno::ENOMEM);
+                    }
+                },
+                Err(e) => {
+                    close_perf_fd(fd, raw_syscall);
+                    return Err(e);
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(PerfCounter {
+            fd,
+            mmap,
+            raw_syscall,
+        })
+    }
+
+    pub(crate) fn check_for_pmu_bugs(&mut self) -> &mut Self {
+        if let Err(pmu_error) = &*PMU_BUG {
+            error!(

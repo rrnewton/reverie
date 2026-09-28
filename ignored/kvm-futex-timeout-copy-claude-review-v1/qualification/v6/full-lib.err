@@ -1,0 +1,5 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+error: test failed, to rerun pass `-p reverie-kvm --lib`
+Command exited with non-zero status 101
+elapsed=12.87 maxrss-kb=228568

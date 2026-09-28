@@ -1,0 +1,8 @@
+{
+  "status": "Prepared only; no compile or test execution authorized to this worker",
+  "new_exact_name": "executor::tests::unstarted_tool_cleanup_retains_children_unpolled_and_transfers_once",
+  "population": {"new_declarations": 1, "ignored": 0, "guests": 0, "kvm_run": 0},
+  "proposed_owner_control": "After composed source is bound, force a failed spawn while parent callback ownership is retained; require immediate original typed spawn failure and zero child consuming-hook polls before outer publication, then exactly-once retirement and hook consumption after publication. Include both bare cancellation marker and actual cleanup error, and require every retained child to be consumed after an earlier error.",
+  "constraints": "Coordinator owns bounded offline compile and exact retained-ELF controls after runtime composition; do not repeat already passed controls without new concern",
+  "scope": "New local control checks storage, lifetime, constructor separation, transfer, Send+Sync, and error identity; it does not itself exercise real spawn failure or runtime publication"
+}

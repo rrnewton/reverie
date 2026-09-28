@@ -1,0 +1,25 @@
+{
+  "files": [
+    {
+      "source": "reverie-kvm/src/vm.rs",
+      "bytes": 404441,
+      "sha256": "42b3df8175f728659dcfc2378646e4bdfb078729fbac8aa4dbda30d44bed5536",
+      "baseline_sha256": "30e4287a9bd5b9686862f13800a663bbc02852419ce714fe96f8a9ec1f557e47"
+    },
+    {
+      "source": "reverie-kvm/src/vm/entry_owner_tests.rs",
+      "bytes": 6972,
+      "sha256": "5f0f13738b06b0ae38582daf0b892e57ba1a07f47ed79ae789bb1cc33f2ec827",
+      "baseline_sha256": null
+    }
+  ],
+  "old_vm_test_module_byte_identical": true,
+  "old_vm_test_module_bytes": 213713,
+  "old_vm_test_module_sha256": "a8c98f5b564d8c4a47e13752a42dd0d847fd9bb66502ce6957ad211dbb5cc918",
+  "old_vm_test_declarations": 75,
+  "new_test_selectors": [
+    "vm::entry_owner_tests::child_driver_rebinds_inherited_callback_view_and_preserves_generation",
+    "vm::entry_owner_tests::caught_worker_driver_retires_after_pending_consumer_and_before_payload_resume"
+  ],
+  "execution": "none; no compiler, formatter, tests, guest, network or SCM"
+}

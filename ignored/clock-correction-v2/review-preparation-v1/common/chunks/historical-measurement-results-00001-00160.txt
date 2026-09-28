@@ -1,0 +1,160 @@
+{
+  "schema": 1,
+  "scope": "Diagnostic observation only; no clock repair, comparator change or parity pass.",
+  "source_target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/TARGET.json",
+    "bytes": 3168,
+    "mode": 420,
+    "sha256": "986b47414d0d26bc2c47e2bdd6c9a04f805ec7f4f1c92912811e1fe357f68e18"
+  },
+  "phases": [
+    {
+      "name": "original-kvm",
+      "kind": "guest",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/original-kvm-plan.json",
+        "bytes": 77660,
+        "mode": 420,
+        "sha256": "b190eedf3e55dbaf8df388d13ce8e71c1f819f7b4ca82a90de802ce87836dfca"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/controls/original-kvm/result.json",
+        "bytes": 5675,
+        "mode": 420,
+        "sha256": "ba35032b2e0b63f7029dce942da4c8ce5560577b5640a76d89e5370456dff049"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/result.json",
+        "bytes": 49572,
+        "mode": 384,
+        "sha256": "ab35304af35f52827c36bbdee797725da873bf1c8168a8411cb11a6b3b4fc249"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "payload_seconds": 0.14356047310866416,
+      "observer_seconds": 6.264696981,
+      "cpu_seconds": 5.630208,
+      "readback": {
+        "report": {
+          "verified": true,
+          "bitwise_parity": true,
+          "verdict": "matched",
+          "no_result_reason": null,
+          "infrastructure_error": null,
+          "comparison": {
+            "strictness": "canonical",
+            "display_name": "BitwiseInfoV1",
+            "compare_logs": true,
+            "compare_io_buffers": true,
+            "log_scope": "info",
+            "record_envelope": "all_records_v1",
+            "virtualize_time": true,
+            "strip_lines": false,
+            "canonicalize_addresses": true,
+            "full_trace": true,
+            "exact_remainder": true,
+            "stripped_prefixes": [
+              "real-wall-clock-prefix/v1"
+            ],
+            "canonicalizations": [
+              "host-address-to-first-appearance-ordinal/v1"
+            ],
+            "ignore_lines": false,
+            "skip_commit": false,
+            "skip_detlog": false
+          },
+          "compared_log_messages": {
+            "left": 76,
+            "right": 76
+          },
+          "compared_outputs": {
+            "left": {
+              "exit_code": 0,
+              "signal": null,
+              "stdout_sha256": "80b78babbe3628253630cfe0496bce237525afa7ab538a92b647757d2794fa62",
+              "stdout_bytes": 158,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_bytes": 0
+            },
+            "right": {
+              "exit_code": 0,
+              "signal": null,
+              "stdout_sha256": "80b78babbe3628253630cfe0496bce237525afa7ab538a92b647757d2794fa62",
+              "stdout_bytes": 158,
+              "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "stderr_bytes": 0
+            }
+          },
+          "runtime": {
+            "run1": {
+              "scheduler_turns": 17,
+              "virtual_nanoseconds": 9110520,
+              "syscalls": 17
+            },
+            "run2": {
+              "scheduler_turns": 17,
+              "virtual_nanoseconds": 9110520,
+              "syscalls": 17
+            }
+          },
+          "guest_exit_code": 0,
+          "guest_signal": null,
+          "first_divergent_scheduler_turn": null,
+          "first_divergent_virtual_nanoseconds": null,
+          "first_divergent_record": null,
+          "first_divergent_syscall": null,
+          "first_divergent_left_message": null,
+          "first_divergent_right_message": null
+        },
+        "retained_info_logs": [
+          {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verify-logs/run1_log_JDgoM",
+            "bytes": 17530,
+            "mode": 384,
+            "sha256": "210d8cd2eac200f49ac716c91b7c5b13eb9cc0c2cdc230debd61615a88b2eb27"
+          },
+          {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-kvm/verify-logs/run2_log_2xXxY",
+            "bytes": 17530,
+            "mode": 384,
+            "sha256": "fd55997d671f2b0846755fc60996931635fc72556b5a572197e036fba092d946"
+          }
+        ],
+        "meaning": "One backend repeat only; cross-backend comparison and raw-clock sidecars have separate results."
+      },
+      "error": null
+    },
+    {
+      "name": "original-ptrace-off",
+      "kind": "guest",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/original-ptrace-off-plan.json",
+        "bytes": 77712,
+        "mode": 420,
+        "sha256": "c47f7a1e36356578004f8af6f77f4a14c96e24f418c8a3b92a67b162efd94760"
+      },
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/controls/original-ptrace-off/result.json",
+        "bytes": 5723,
+        "mode": 420,
+        "sha256": "9448ba0d1614b9f061009f5cf350221dc19b4e204fcc0298e5a1fe848fa14fbc"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-diagnostic-source-v4/q-hermit/observer/original-ptrace-off/result.json",
+        "bytes": 46812,
+        "mode": 384,
+        "sha256": "ae8e3288cd6cd43ae1e47625ed23bee9e48c97cabe1e05b25fee421683916e34"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "payload_seconds": 0.07682875287719071,
+      "observer_seconds": 6.237055987,
+      "cpu_seconds": 5.677116,
+      "readback": {
+        "report": {
+          "verified": true,
+          "bitwise_parity": true,

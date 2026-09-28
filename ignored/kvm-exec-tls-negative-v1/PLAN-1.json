@@ -1,0 +1,69 @@
+{
+  "status": "ready for root-authorized execution",
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "dispatch_base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "source_paths": [
+    "reverie-kvm/src/entry.rs",
+    "reverie-kvm/src/entry/owner.rs",
+    "reverie-kvm/src/entry/signal.rs",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/clock.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/memory.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs",
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/bootstrap.rs",
+    "reverie-kvm/src/executor.rs",
+    "Cargo.lock",
+    "reverie-kvm/src/failure/owned_future.rs",
+    "reverie-kvm/src/vm/worker_panic_tests.rs",
+    "reverie-kvm/src/runtime/failure_tests.rs",
+    "reverie-kvm/src/failure/tool_panics.rs",
+    "reverie-kvm/src/failure/tool_panics_tests.rs",
+    "reverie-kvm/src/runtime/callback_completion_tests.rs",
+    "reverie-kvm/src/runtime/consuming_panic_tests.rs",
+    "reverie-kvm/src/vm/public_tool_panic_tests.rs",
+    "reverie-kvm/src/vm/instruction_callback_panic_tests.rs",
+    "reverie-kvm/src/entry/driver.rs",
+    "reverie-kvm/src/entry/driver/tests.rs",
+    "reverie-kvm/src/runtime/entry_owner_tests.rs",
+    "reverie-kvm/src/vm/entry_owner_tests.rs",
+    "reverie-kvm/src/vm/exec_wait_tests.rs"
+  ],
+  "format_paths": [
+    "reverie-kvm/src/vm/exec_wait_tests.rs"
+  ],
+  "tests": [
+    {
+      "phase": "test-exec-tls-negative-1",
+      "selector": "vm::exec_wait_tests::exec_wait_private_failure_interrupts_worker_tls_destructor",
+      "exact": true,
+      "expected_passed": 1,
+      "expected_names": [
+        "vm::exec_wait_tests::exec_wait_private_failure_interrupts_worker_tls_destructor"
+      ]
+    }
+  ],
+  "known_selected_test_count": 1,
+  "phases": [
+    "format-1",
+    "compile-1",
+    "inventory-1",
+    "test-exec-tls-negative-1"
+  ],
+  "limits": {
+    "cpu_quota": "200%",
+    "memory_max": "12G",
+    "memory_swap_max": "0",
+    "core_limit": "0",
+    "compile_wall_seconds": 600,
+    "check_wall_seconds": 600,
+    "test_wall_seconds": 60,
+    "format_inventory_wall_seconds": 30,
+    "stream_cap_bytes": 16777216
+  },
+  "execution_authorization": "Root-authorized bounded compile/check/inventory and named tests after all source authors release, with exact source freeze and selected declaration counts.",
+  "explicit_unresolved_path": "Negative regression probe: production still performs blocking join during active callback; new real TLS control is expected to fail. No pass or parity claim."
+}

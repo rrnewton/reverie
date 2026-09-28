@@ -1,0 +1,160 @@
+                        },
+                        Err(TraceError::Errno(errno)) => {
+                            tracing::error!(
+                                %tid,
+                                %errno,
+                                "failed waiting for detached tracee exit"
+                            );
+                            ExitStatus::Exited(1)
+                        }
+                    }
+                }
+                Ok(exit_status) => exit_status,
+            }
+        };
+        let task = tokio::task::spawn_local(async move {
+            match AssertUnwindSafe(body).catch_unwind().await {
+                Ok(exit_status) => exit_status,
+                Err(payload) => guest_task_panic_is_fatal(panic_tid, payload),
+            }
+        });
+
+        if op == ChildOp::Clone {
+            let mut child_threads = self.child_threads.lock().await;
+            child_threads.push(Child {
+                id,
+                suspended,
+                wait_all_stop_tx: None,
+                daemonizer_rx,
+                handle: task,
+            });
+        } else {
+            let mut child_procs = self.child_procs.lock().await;
+            child_procs.push(Child {
+                id,
+                suspended,
+                wait_all_stop_tx: None,
+                daemonizer_rx,
+                handle: task,
+            });
+        }
+
+        let parent_regs = parent.getregs()?;
+        if self.attached_by_gdb {
+            // NB: We report T05;create event (for clone). However gdbserver
+            // from binutils-gdb doesn't report it, even after toggling
+            // QThreadEvents, as mentioned in https://sourceware.org/gdb/onlinedocs/gdb/General-Query-Packets.html#QThreadEvents
+            // We report `create` event anyway.
+            self.notify_gdb_stop(StopReason::new_task(
+                self.tid(),
+                self.pid(),
+                id,
+                parent_regs.into(),
+                op,
+                child_request_tx,
+                child_resume_tx,
+                Some(child_stop_rx),
+            ))
+            .await?;
+            // We just reported a new event, wait for gdb resume.
+            let running = self
+                .await_gdb_resume(parent, ExpectedGdbResume::StepOnly)
+                .await?;
+            // NB: We could potentially hit a breakpoint after above resume,
+            // make sure we don't miss the breakpoint and await for gdb
+            // resume (once again). This is possible because result of
+            // handle_new_task in status_to_result is ignored, while it could be
+            // a valid state like SIGTRAP, which could be a breakpoint is hit.
+            running
+                .next_state()
+                .and_then(|wait| self.check_swbreak(wait))
+                .await
+        } else {
+            // This nested parent step consumes the root-stop lease, so the
+            // resulting stop has to re-arm it before returning to a caller
+            // that will transition the root again. Every other nested handler
+            // does the same; this one only looks new because the whole
+            // new-task path used to be unreachable under LiteInst.
+            let wait = self.step_stopped(parent, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            Ok(wait)
+        }
+    }
+
+    async fn handle_vfork_done_event(&mut self, stopped: Stopped) -> Result<Wait, TraceError> {
+        self.resume_stopped(stopped, None)?.next_state().await
+    }
+
+    async fn wait_after_exit_event(
+        task: Stopped,
+        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+    ) -> Result<Wait, TraceError> {
+        // de_thread can replace the leader after its PTRACE_EVENT_EXIT, so
+        // this wait may report Exec with the caller's former TID, not death.
+        if let Some(slot) = held_root_stop.as_ref() {
+            HeldRootStop::supersede_with_exit(slot, &task)?;
+        }
+        RootStopLease::new(task, held_root_stop)
+            .resume(None)?
+            .next_state()
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn handle_exit_event(
+        task: Stopped,
+        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+    ) -> Result<ExitStatus, TraceError> {
+        let wait = Self::wait_after_exit_event(task, held_root_stop).await?;
+        let (_pid, exit_status) = wait.assume_exited();
+        Ok(exit_status)
+    }
+
+    /// Aborts the current handler. This just sends a result through a channel to
+    /// the `run_loop`, which should cause the current future to be dropped and
+    /// canceled. Thus, this function will never return so that execution of the
+    /// current future doesn't proceed any further.
+    async fn abort(&mut self, result: Result<Wait, TraceError>) -> ! {
+        if self.next_state.send(result).await.is_err() {
+            panic!(
+                "failed to abort tracee {}: run-loop next-state channel is closed",
+                self.tid()
+            );
+        }
+
+        // Wait on a future that will never complete. This pending future will
+        // be dropped when the channel receives the event just sent.
+        future::pending().await
+    }
+
+    /// Marks the current task as exited via a channel. The receiver end of the
+    /// channel should cause the current future to be dropped and canceled. Thus,
+    /// this function will never return so that execution doesn't proceed any
+    /// further.
+    async fn exit(&mut self, exit_status: ExitStatus) -> ! {
+        self.abort(Ok(Wait::Exited(self.tid(), exit_status))).await
+    }
+
+    /// Marks the current task as having successfully called `execve` and so it
+    /// should never return.
+    async fn execve(&mut self, next_state: Wait) -> ! {
+        self.abort(Ok(next_state)).await
+    }
+
+    /// Triggers the tool exit callbacks.
+    async fn tool_exit(self, exit_status: ExitStatus) -> Result<(), reverie::Error> {
+        if self.is_main_thread() {
+            // Wait for all child threads to fully exit. This *must* happen before
+            // the main thread can exit.
+            // TODO: Use FuturesUnordered instead of `join_all` for better
+            // performance.
+            {
+                let children = self.child_threads.lock().await.take_inner();
+                future::join_all(children).await;
+            }
+
+            // Check if there are any children who's futures are still pending. If
+            // this is the case, then they shall be considered "orphans" and are
+            // "adopted" by the tracer process who shall then wait for them to exit
+            // and get their final exit code. Normally, when not running under
+            // ptrace, orphans are adopted by the init process who should

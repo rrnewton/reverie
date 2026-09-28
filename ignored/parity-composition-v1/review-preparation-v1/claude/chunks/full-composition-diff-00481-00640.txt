@@ -1,0 +1,160 @@
++                );
++            }
++            observed_by_drop.store(true, Ordering::SeqCst);
++        }));
++        assert_eq!(parent.take_output(), (Vec::new(), Vec::new()));
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
++            let _parent = parent;
++            let _child = child;
++            if unwind {
++                panic!("intentional capture cleanup unwind");
++            }
++        }));
++        assert_eq!(result.is_err(), unwind);
++        assert!(!observed.load(Ordering::SeqCst));
++        assert!(weak.upgrade().is_some());
++        for fd in descriptors {
++            assert_eq!(
++                capture_native_stat(fd).st_mode & libc::S_IFMT,
++                libc::S_IFIFO
++            );
++        }
++        drop(owner);
++        assert!(observed.load(Ordering::SeqCst));
++        assert!(weak.upgrade().is_none());
++        for fd in descriptors {
++            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
++            assert_eq!(
++                std::io::Error::last_os_error().raw_os_error(),
++                Some(libc::EBADF)
++            );
++        }
++    }
++    eprintln!("{COMPLETE}");
++}
++
++#[derive(Debug, Default)]
++struct CaptureSetupMustNotInitialize;
++
++#[reverie::global_tool]
++impl reverie::GlobalTool for CaptureSetupMustNotInitialize {
++    type Request = ();
++    type Response = ();
++    type Config = ();
++    async fn init_global_state(_: &()) -> Self {
++        panic!("failed capture setup initialized the Tool");
++    }
++    async fn receive_rpc(&self, _: reverie::Tid, _: ()) {
++        panic!("failed capture setup dispatched an RPC");
++    }
++}
++
++#[derive(Debug, Default)]
++struct CaptureSetupTool;
++
++#[reverie::tool]
++impl reverie::Tool for CaptureSetupTool {
++    type GlobalState = CaptureSetupMustNotInitialize;
++    type ThreadState = ();
++}
++
++#[test]
++fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
++    const TEST: &str =
++        "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams";
++    const COMPLETE: &str = "capture setup EMFILE control completed";
++    let mut backend = match crate::KvmBackend::new(16 * 1024 * 1024) {
++        Ok(backend) => backend,
++        Err(crate::Error::Kvm(error))
++            if matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM) =>
++        {
++            assert!(
++                std::env::var_os("REVERIE_REQUIRE_KVM").is_none(),
++                "capture setup control requires KVM: {error}"
++            );
++            eprintln!("capture setup control not executed: KVM unavailable: {error}");
++            return;
++        }
++        Err(error) => panic!("capture setup failed: {error}"),
++    };
++    if !capture_test_child(TEST, COMPLETE) {
++        return;
++    }
++    let root = TestDir::new();
++    backend.static_elf = Some(test_state(&root.0));
++    let original_pid = backend.static_elf.as_ref().unwrap().pid;
++    let mut original: libc::rlimit = unsafe { std::mem::zeroed() };
++    assert_eq!(
++        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
++        0
++    );
++    let highest = std::fs::read_dir("/proc/self/fd")
++        .unwrap()
++        .map(|entry| {
++            entry
++                .unwrap()
++                .file_name()
++                .to_string_lossy()
++                .parse::<u64>()
++                .unwrap()
++        })
++        .max()
++        .unwrap();
++    let reduced = libc::rlimit {
++        rlim_cur: original.rlim_cur.min(highest + 32),
++        rlim_max: original.rlim_max,
++    };
++    for free_slots in [0, 2] {
++        let mut fillers = Vec::new();
++        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) }, 0);
++        let exhausted = loop {
++            match std::fs::File::open("/dev/null") {
++                Ok(file) => fillers.push(file),
++                Err(error) => break error.raw_os_error(),
++            }
++        };
++        for _ in 0..free_slots {
++            drop(fillers.pop().expect("descriptor budget has enough fillers"));
++        }
++        // Two free slots let the first real pipe succeed; its keeper then
++        // leaves only one free slot, so the SECOND pipe2 fails atomically.
++        let before_prepared = capture_identity::pipes_prepared();
++        let error = futures::executor::block_on(
++            backend.run_static_elf_with_tool_completion::<CaptureSetupTool>((), true),
++        )
++        .err()
++        .expect("capture setup must fail before Tool initialization");
++        let mut recovered = Vec::new();
++        let after_error = loop {
++            match std::fs::File::open("/dev/null") {
++                Ok(file) => recovered.push(file),
++                Err(error) => break error.raw_os_error(),
++            }
++        };
++        assert_eq!(
++            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
++            0
++        );
++        assert_eq!(exhausted, Some(libc::EMFILE));
++        assert_eq!(after_error, Some(libc::EMFILE));
++        assert_eq!(recovered.len(), free_slots);
++        assert_eq!(
++            capture_identity::pipes_prepared() - before_prepared,
++            usize::from(free_slots == 2)
++        );
++        assert!(
++            matches!(error, crate::Error::HostIo(ref io) if io.raw_os_error() == Some(libc::EMFILE))
++        );
++        assert_eq!(backend.static_elf.as_ref().unwrap().pid, original_pid);
++        assert!(backend.tool_failure.is_none());
++        drop(recovered);
++        drop(fillers);
++        let owner = backend.prepare_captured_output(true).unwrap().unwrap();
++        for fd in owner.identities.descriptors() {
++            assert_eq!(
++                capture_native_stat(fd).st_mode & libc::S_IFMT,
++                libc::S_IFIFO
++            );
++        }
++    }
++    // Only closed standard-number slots remain available. pipe2 succeeds in

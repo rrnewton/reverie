@@ -1,0 +1,17 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "preceding_memory_target": "4a9494ab4f1e80216b87eeebccff867a4282aeda2208bcdcfc5ae2f1ebfa7e01",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/memory.rs",
+      "bytes": 118772,
+      "sha256": "ab7537c4e07b2466b036066b1b92d9060d6e248f7c17775c2dd1e34a6f16f606"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/bootstrap.rs",
+      "bytes": 42817,
+      "sha256": "7c008be09ef0e1bcefff4f8651742276cffaf6fac82526e9dad37e348299e81a"
+    }
+  ],
+  "compilation_or_tests": false
+}

@@ -1,0 +1,55 @@
+{
+  "unit_query": {
+    "argv": [
+      "systemctl",
+      "--user",
+      "show",
+      "safehermit-20260918T200250Z-2374808.service",
+      "--property=Id,LoadState,ActiveState,SubState,MainPID,ControlGroup,ExecMainPID,ExecMainStatus,Result,CPUUsageNSec,MemoryCurrent,TasksCurrent"
+    ],
+    "raw_status": 0,
+    "stdout": "Id=safehermit-20260918T200250Z-2374808.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nResult=success\nExecMainPID=0\nExecMainStatus=0\nControlGroup=\nMemoryCurrent=[not set]\nCPUUsageNSec=[not set]\nTasksCurrent=[not set]\n",
+    "stderr": ""
+  },
+  "processes": [
+    {
+      "pid": 2374746,
+      "exists": false
+    },
+    {
+      "pid": 2374808,
+      "exists": false
+    },
+    {
+      "pid": 2374834,
+      "exists": false
+    },
+    {
+      "pid": 2375985,
+      "exists": false
+    }
+  ],
+  "old_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/controls/metadata/result.json",
+    "bytes": 2480,
+    "sha256": "04a1799622108ae42299e74ac079bcdfed67c3b3c8b70da63f77cd72ab54686c",
+    "mode": 420
+  },
+  "observer_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/observer/metadata/result.json",
+    "bytes": 19013,
+    "sha256": "be445f083c3caa7cd7014368467466ef9e18ca3c49df60295805dcf79684c9d7",
+    "mode": 384
+  },
+  "old_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v1/metadata-plan.json",
+    "bytes": 52884,
+    "sha256": "9008b46ffd30b9261eacd1c792959981fa099482739b93f7a488aa3d060d09a5",
+    "mode": 420
+  },
+  "old_lease_token_hex": "7b22706c616e5f736861323536223a202239303038623436666664333062393236316561636431633739323935393938316661303939343832373339623933663761343838616133643036306430396135222c2022736368656d61223a20317d0a",
+  "old_state_records": [],
+  "target_still_empty": true,
+  "accounting_remains_incomplete": true,
+  "old_receipt_repaired": false
+}

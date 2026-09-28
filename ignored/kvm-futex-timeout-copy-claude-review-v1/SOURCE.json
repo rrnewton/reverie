@@ -1,0 +1,13 @@
+{
+  "base": "123df7c4c0169006fbfe1f11a1553fe333eac937",
+  "changed_paths": [
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/executor/entry_host_wait_tests.rs"
+  ],
+  "created_at": "2026-09-21T00:36:17.839373+00:00",
+  "head": "8865eb263cb44530364cb90eda6cdb40826aba7d",
+  "hermit_context_head": "1c164ddce0e8479a66c806d81007a82342dcfdbe",
+  "patch_sha256": "1a31b6f9f9e8fc82ea89fb7ad7fbb0967bfbd2ae4820b750e8c796c75d8ad018",
+  "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "tree": "077163b7251b650cd88991634fa35041cf8d10b6"
+}

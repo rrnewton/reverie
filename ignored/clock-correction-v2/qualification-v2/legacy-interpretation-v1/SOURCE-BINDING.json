@@ -1,0 +1,45 @@
+{
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/tests/vsyscall.rs",
+      "bytes": 2040,
+      "mode": 420,
+      "sha256": "7e34d902f85e767041d185664aa40ce5dc403ed8049a1b1e37e67b47e73faaa2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/testing.rs",
+      "bytes": 4617,
+      "mode": 420,
+      "sha256": "fc4351051801a63d9427b8cfd8402c7a38016860575dea2e7645ed67576e6192"
+    },
+    {
+      "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-subscriber-0.3.23/src/fmt/mod.rs",
+      "bytes": 46768,
+      "mode": 420,
+      "sha256": "e2b5864b8bbfb64aa50845aef91874e3bad89775c789077d2d8e60d99830d7d8"
+    },
+    {
+      "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-subscriber-0.3.23/src/fmt/fmt_layer.rs",
+      "bytes": 61197,
+      "mode": 420,
+      "sha256": "7a47a6c7d2242b377e09221909c141b3f7e9f15c4b106f678b04317f8d4dd2b7"
+    }
+  ],
+  "exact_test": "suppressed_legacy_vsyscall_returns_to_caller",
+  "writer": "fmt_layer.rs:749 default make_writer io::stdout",
+  "forced_filter": "testing.rs:50-52 with_env_filter(\"reverie=trace\")",
+  "guest_success_gate": "testing.rs:132-138 requires ExitStatus::Exited(0)",
+  "test_assertions": "vsyscall.rs:66-68 requires returned and stored FIXED_TIME",
+  "retained_elf": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/vsyscall.elf",
+    "bytes": 113938440,
+    "mode": 365,
+    "sha256": "941407999e1b8c0011ec125f12efc2c7e4e2f7b775412ebd416a1b46bb8b3442"
+  },
+  "compiled_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/BINDING.json",
+    "bytes": 17569,
+    "mode": 420,
+    "sha256": "f202ebc6e46e35bbac1179dda6fc1f6b08ff149ddcf85d47e6480d70a2227690"
+  }
+}

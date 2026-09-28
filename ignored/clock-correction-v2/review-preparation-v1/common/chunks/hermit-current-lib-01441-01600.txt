@@ -1,0 +1,160 @@
+            self.stage_thread_group_robust_list_wakes(
+                guest,
+                tool_local::RobustListExit::Signal(signal as i32),
+            )
+            .await;
+            info!(
+                "[dtid {}] finish delivering signal (#{}) {}",
+                dettid, mycount, signal
+            );
+
+            self.post_handler_hook(guest).await;
+            Ok(Some(signal))
+        }
+    }
+
+    fn init_thread_state(
+        &self,
+        tid: Tid,
+        parent: Option<(Tid, &Self::ThreadState)>,
+    ) -> Self::ThreadState {
+        trace!("[tid {}] detcore init new thread state", tid);
+
+        let record_or_replay = self
+            .record_or_replay
+            .init_thread_state(tid, parent.map(|(ptid, ts)| (ptid, ts.as_ref())));
+
+        // TODO(T78538674): virtualize tid, extend tid<=>dettid mapping here.
+        match parent {
+            None => ThreadState::new(DetPid::from_raw(tid.into()), &self.cfg, record_or_replay),
+            Some(pts) => {
+                let clone_flags = pts
+                    .1
+                    .clone_flags
+                    .expect("clone_flags must be set by parent");
+                let dettid = DetPid::from_raw(tid.into());
+
+                // If we had mutable access to the parent state, we could update it here, but
+                // instead we leave that to the clone/fork handling.
+                let (_next_parent_pedigree, child_pedigree) = pts.1.pedigree.fork();
+                let child_logical_time = pts.1.thread_logical_time.clone_for_child();
+                let last_accounted_user_time = child_logical_time.user_cpu_time();
+                let last_accounted_system_time = child_logical_time.system_cpu_time();
+                if !clone_flags.contains(CloneFlags::CLONE_THREAD) {
+                    pts.1.prepare_child_process_cpu_time(dettid);
+                }
+                let guest_clock = Arc::clone(&pts.1.guest_clock);
+
+                ThreadState {
+                    dettid,
+                    detpid: None, // Initialized later.
+                    thread_start_entered: false,
+                    physical_tid: None,
+                    open_file_creator: None,
+                    mm_id: MmId::for_clone(
+                        pts.1.mm_id,
+                        dettid,
+                        clone_flags.contains(CloneFlags::CLONE_VM),
+                    ),
+                    memory_metadata: if clone_flags.contains(CloneFlags::CLONE_VM) {
+                        Arc::clone(&pts.1.memory_metadata)
+                    } else {
+                        Arc::new(Mutex::new(
+                            pts.1
+                                .memory_metadata
+                                .lock()
+                                .expect("memory metadata mutex poisoned")
+                                .clone(),
+                        ))
+                    },
+                    pedigree: child_pedigree.clone(),
+                    initialized_random_auxv: None,
+                    stats: ThreadStats::new(),
+                    file_metadata: {
+                        debug!(
+                            "[init_thread-state, parent dtid = {}] child thread {}, clone_flags = {:x?}",
+                            pts.0, tid, clone_flags
+                        );
+                        if clone_flags.contains(CloneFlags::CLONE_FILES) {
+                            pts.1.file_metadata.clone()
+                        } else {
+                            Arc::new(Mutex::new(
+                                pts.1.file_metadata.lock().unwrap().fork_for(dettid),
+                            ))
+                        }
+                    },
+                    discover_live_file_metadata: pts.1.discover_live_file_metadata,
+                    // Linux copies the creating thread's current timer slack
+                    // into both fields of every new task (thread or process).
+                    timer_slack_ns: pts.1.timer_slack_ns,
+                    default_timer_slack_ns: pts.1.timer_slack_ns,
+                    // POSIX timers are shared among threads of a process but are
+                    // NOT inherited across fork(2). Share the table for a new
+                    // thread (CLONE_THREAD); give a new process a fresh, empty
+                    // one.
+                    posix_timers: if clone_flags.contains(CloneFlags::CLONE_THREAD) {
+                        Arc::clone(&pts.1.posix_timers)
+                    } else {
+                        Arc::new(Mutex::new(PosixTimers::default()))
+                    },
+                    // Resource limits are process state: threads share them,
+                    // while a forked process inherits a snapshot.
+                    resource_limits: if clone_flags.contains(CloneFlags::CLONE_THREAD) {
+                        Arc::clone(&pts.1.resource_limits)
+                    } else {
+                        Arc::new(Mutex::new(
+                            pts.1
+                                .resource_limits
+                                .lock()
+                                .expect("resource limits mutex poisoned")
+                                .clone(),
+                        ))
+                    },
+                    process_cpu_time: if clone_flags.contains(CloneFlags::CLONE_THREAD) {
+                        Arc::clone(&pts.1.process_cpu_time)
+                    } else {
+                        Arc::new(Mutex::new(ProcessCpuTime::default()))
+                    },
+                    // Wall time belongs to the traced process tree, not to an
+                    // individual process. Forked processes and cloned threads
+                    // therefore retain one monotonic view of raw logical time.
+                    guest_clock,
+                    parent_process_cpu_time: if clone_flags.contains(CloneFlags::CLONE_THREAD) {
+                        pts.1.parent_process_cpu_time.clone()
+                    } else {
+                        Some(Arc::clone(&pts.1.process_cpu_time))
+                    },
+                    last_accounted_user_time,
+                    last_accounted_system_time,
+                    thread_cpu_start_user_time: last_accounted_user_time,
+                    thread_cpu_start_system_time: last_accounted_system_time,
+                    clone_flags: None,
+                    pending_vfork: pts.1.pending_vfork.clone(),
+
+                    // Child RNG identity follows the deterministic creation
+                    // pedigree, never the backend/host Tid. Guest-visible IDs
+                    // and scheduler targeting continue to use `dettid`.
+                    prng: tool_local::thread_rng_from_parent_pedigree(
+                        "USER RAND",
+                        &pts.1.prng,
+                        &child_pedigree,
+                        tool_local::ChildRngStream::User,
+                    ),
+                    chaos_prng: tool_local::thread_rng_from_parent_pedigree(
+                        "CHAOSRAND",
+                        &pts.1.chaos_prng,
+                        &child_pedigree,
+                        tool_local::ChildRngStream::Chaos,
+                    ),
+
+                    // For comparing progress to other threads, it is important that our
+                    // child thread start at a sensible place, rather than starting back
+                    // at zero:
+                    thread_logical_time: child_logical_time,
+                    // A new thread gets a new clock, so we've committed 0 ticks
+                    committed_clock_value: 0,
+
+                    end_of_timeslice: None,
+                    replay_rcb_end: None,
+                    // AUTONOMOUS-BOT-IMPLEMENTED
+                    // TODO-HUMAN-REVIEW(PR-1151)

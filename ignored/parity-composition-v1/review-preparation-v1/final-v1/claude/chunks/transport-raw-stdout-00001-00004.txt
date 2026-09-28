@@ -1,0 +1,4 @@
+{ "type": "suite", "event": "started", "test_count": 1 }
+{ "type": "test", "event": "started", "name": "vm::tests::cpuid_fault_transport_probe::actual_cpuid_faulting_preserves_instruction_and_is_owned_by_one_vcpu" }
+{ "type": "test", "name": "vm::tests::cpuid_fault_transport_probe::actual_cpuid_faulting_preserves_instruction_and_is_owned_by_one_vcpu", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 511, "exec_time": 0.358927273 }

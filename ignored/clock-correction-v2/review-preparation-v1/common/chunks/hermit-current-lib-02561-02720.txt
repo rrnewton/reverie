@@ -1,0 +1,160 @@
+                // scheduler, exposes a single virtual CPU, and serializes guest
+                // threads, so a thread's Linux scheduling attributes (sched_getattr)
+                // and I/O priority (ioprio_set) are inert: those two have no
+                // deterministic effect and are emulated to fixed, host-independent
+                // results (see syscall_classification.rs).
+                //
+                // flock is NOT in that inert group and is not emulated. This comment
+                // used to claim it "is never contended inside the serialized
+                // container"; that was measured false -- two open file descriptions
+                // in ONE process both held the same LOCK_EX under the old no-op,
+                // where native Linux excluded the second -- and the no-op was
+                // removed. Serializing THREADS does not make a whole-file lock
+                // uncontended, because flock conflicts are between OPEN FILE
+                // DESCRIPTIONS. flock is now forwarded to the kernel, like fcntl's
+                // POSIX record locks; handle_flock carries the determinism argument
+                // and the one case Detcore refuses (a contended BLOCKING request,
+                // which it cannot park a thread on deterministically).
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#791)
+                Syscall::SchedGetattr(s) => self.handle_sched_getattr(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(PR-841): Review virtual sched_setattr no-op policy.
+                Syscall::SchedSetattr(s) => self.handle_sched_setattr(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#791)
+                Syscall::IoprioSet(s) => self.handle_ioprio_set(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(PR-881): Review virtual ioprio_get defaults.
+                Syscall::IoprioGet(s) => self.handle_ioprio_get(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#2373)
+                Syscall::Flock(s) => self.handle_flock(guest, s).await,
+
+                // TODO-HUMAN-REVIEW(PR-1064): recvfrom/read/readv/recvmmsg reach
+                // a NETLINK_SOCK_DIAG dump exactly as recvmsg does. Until they
+                // were routed through the same sanitizer, four of the five
+                // usable receive syscalls returned raw host socket inode
+                // numbers, which made the determinization optional from the
+                // guest's point of view: `socket.recv()` alone was enough to
+                // skip it. Non-socket-diag descriptors take the same path as
+                // before; the predicate is checked inside.
+                Syscall::Recvfrom(s) if self.sock_diag_reply_fd(guest, s.fd()) => {
+                    self.handle_sock_diag_recvfrom(guest, s).await
+                }
+                Syscall::Recvfrom(s) => self.handle_socket_receive(guest, s, s.fd(), true).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(PR-901)
+                Syscall::Recvmsg(s) => self.handle_recvmsg(guest, s).await,
+                Syscall::Sendto(s) => self.handle_sendrecv(guest, s).await,
+                Syscall::Sendmsg(s) => self.handle_sendmsg(guest, s).await,
+                Syscall::Sendmmsg(s) => self.handle_sendmmsg(guest, s).await,
+
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#788): recvmmsg is the multi-message form of
+                // recvmsg and shares its NonblockableSyscall impl. The fd is made
+                // temporarily nonblocking, the kernel fills the mmsghdr array
+                // atomically, and the Detcore scheduler owns any blocking, so the
+                // timeout argument (deliberately ignored, see helpers.rs) does not
+                // introduce nondeterminism.
+                // TODO-HUMAN-REVIEW(PR-901): Review batched ancillary timestamp rewriting.
+                Syscall::Recvmmsg(s) if self.sock_diag_reply_fd(guest, s.fd()) => {
+                    self.handle_sock_diag_recvmmsg(guest, s).await
+                }
+                Syscall::Recvmmsg(s) => self.handle_recvmmsg(guest, s).await,
+                Syscall::RtSigtimedwait(s) => self.handle_rt_sigtimedwait(guest, s).await,
+                Syscall::RtSigsuspend(s) => self.handle_rt_sigsuspend(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::RtSigpending(s) => self.handle_rt_sigpending(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Kill(s) => self.handle_kill(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Tgkill(s) => self.handle_tgkill(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#812)
+                Syscall::Tkill(s) => self.handle_tkill(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#812)
+                Syscall::RtSigqueueinfo(s) => self.handle_rt_sigqueueinfo(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#812)
+                Syscall::RtTgsigqueueinfo(s) => self.handle_rt_tgsigqueueinfo(guest, s).await,
+
+                Syscall::Execve(s) => self.handle_execveat(guest, s.into()).await,
+                Syscall::Execveat(s) => self.handle_execveat(guest, s).await,
+
+                Syscall::Getcpu(s) => self.handle_getcpu(guest, s).await,
+
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#1549): Credential-query
+                // family emulated to the fixed virtual-root identity (0). See
+                // syscall_classification.rs for the determinism rationale.
+                // getuid/geteuid/getgid/getegid return the constant directly;
+                // getresuid/getresgid write the constant to each provided result
+                // pointer. Never forwarded to the host, so the answer no longer
+                // depends on whether the backend runs the guest in a
+                // CLONE_NEWUSER namespace.
+                Syscall::Getuid(_)
+                | Syscall::Geteuid(_)
+                | Syscall::Getgid(_)
+                | Syscall::Getegid(_) => Ok(0),
+                Syscall::Getresuid(s) => self.handle_getresuid(guest, s).await,
+                Syscall::Getresgid(s) => self.handle_getresgid(guest, s).await,
+                Syscall::RtSigprocmask(s) => self.handle_rt_sigprocmask(guest, s).await,
+                Syscall::RtSigaction(s) => self.handle_rt_sigaction(guest, s).await,
+                Syscall::Alarm(s) => self.handle_alarm(guest, s).await,
+                Syscall::Pause(s) => self.handle_pause(guest, s).await,
+
+                Syscall::Getrusage(s) => self.handle_getrusage(guest, s).await,
+                Syscall::Sysinfo(s) => self.handle_sysinfo(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                Syscall::Times(s) => self.handle_times(guest, s).await,
+                Syscall::Prlimit64(s) => self.handle_prlimit64(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Getrlimit(s) => self.handle_getrlimit(guest, s).await,
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#663)
+                Syscall::Setrlimit(s) => self.handle_setrlimit(guest, s).await,
+
+                // POSIX per-process timers use the virtual clock and scheduler
+                // for deterministic arming and supported signal delivery.
+                Syscall::TimerCreate(s) => self.handle_timer_create(guest, s).await,
+                Syscall::TimerSettime(s) => self.handle_timer_settime(guest, s).await,
+                Syscall::TimerGettime(s) => self.handle_timer_gettime(guest, s).await,
+                Syscall::TimerGetoverrun(s) => self.handle_timer_getoverrun(guest, s).await,
+                Syscall::TimerDelete(s) => self.handle_timer_delete(guest, s).await,
+
+                // Serialized threads share a total memory order, so process-wide
+                // memory barriers are trivially satisfied and can be no-ops.
+                Syscall::Membarrier(s) => self.handle_membarrier(guest, s).await,
+
+                // Filesystem statistics: passthrough is record/replay-aware so the
+                // (otherwise host-dependent) result is captured and reproduced.
+                // statfs/fstatfs run the real syscall, then canonicalize the
+                // host-varying fields (free blocks/inodes, fsid) so the result is
+                // deterministic under --verify (a bare passthrough diverged, e.g.
+                // for tar).
+                Syscall::Statfs(s) => self.handle_statfs(guest, s).await,
+                Syscall::Fstatfs(s) => self.handle_fstatfs(guest, s).await,
+
+                unexpected => {
+                    self.handle_unsupported_syscall(
+                        guest,
+                        unexpected,
+                        dettid,
+                        panic_on_unsupported_syscalls,
+                    )
+                    .await
+                }
+            },
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-2985): Review scheduler tracking of set_tid_address.
+            // Linux and the backend own the pass-through call. Detcore also
+            // mirrors its successful registration into the scheduler because
+            // the scheduler supplies the logical CHILD_CLEARTID wake.
+            SyscallClassification::PassThrough if call.number() == Sysno::set_tid_address => {
+                match call {

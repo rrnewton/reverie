@@ -1,0 +1,20 @@
+{
+  "files": [
+    {
+      "bytes": 82315,
+      "path": "reverie-kvm/src/elf.rs",
+      "sha256": "4201b4af34ff43bccdab8ef0d96fd58d6e3aa02b021fe502d590d055b28a5eea"
+    },
+    {
+      "bytes": 1529884,
+      "path": "reverie-kvm/src/executor.rs",
+      "sha256": "4609d36452b011e7f1c4b787cae669ee6e6f97f8e85eb4223af319f044626ff7"
+    },
+    {
+      "bytes": 414310,
+      "path": "reverie-kvm/src/vm.rs",
+      "sha256": "32dd03d5b6a5248c47a625639b8638b242bab6a7635939770c0a1915c6bf51e7"
+    }
+  ],
+  "limits": "Read-only identities used to establish caller receiver/module scope; not complete frozen source closure. Other authors may change disjoint files."
+}

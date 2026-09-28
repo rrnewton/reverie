@@ -1,0 +1,24 @@
+{
+  "started": [
+    "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.074820172
+    }
+  ]
+}

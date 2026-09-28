@@ -1,0 +1,24 @@
+{
+  "started": [
+    "timestamp_tool_preserves_results_with_host_supported_cpuid"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "timestamp_tool_preserves_results_with_host_supported_cpuid",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.042202069
+    }
+  ]
+}

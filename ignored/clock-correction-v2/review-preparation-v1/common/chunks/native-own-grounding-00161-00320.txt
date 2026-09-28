@@ -1,0 +1,160 @@
+        "mode": 420
+      },
+      "started_at": "2026-09-18T08:10:13.615961+00:00",
+      "ended_at": "2026-09-18T08:13:42.209791+00:00",
+      "literal_matches": [
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-00001-00300.txt",
+            "bytes": 11378,
+            "sha256": "e51d52e2b1c45d98c9fd0a85c28e4b52939424d6ff0c3b4fc0c581ad87e50010",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_UIfy5IGB1QnkmBnueVsMEEvW",
+              "timestamp": "2026-09-18T08:10:27.005Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-00301-00600.txt",
+            "bytes": 13995,
+            "sha256": "9f5523125f2fd2329ff48221b714aac69241efe946c21d5d4c480aa278f24f71",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_T3pxXkwTfshdDMqrXpcm2ha4",
+              "timestamp": "2026-09-18T08:10:31.168Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-00601-00900.txt",
+            "bytes": 13109,
+            "sha256": "ef320ef439d538ecc983a3d40b2efcba851962d5859bae1372bd27ab19a2ff16",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_4RYbnxo2XNn448XJqmfmkXz2",
+              "timestamp": "2026-09-18T08:10:35.271Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-00901-01200.txt",
+            "bytes": 11412,
+            "sha256": "a9ebde9a79c1ba936ad2cf772106aee83823652ce349bab4100de3c25832fce2",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_dm67LIWstMODaVcI5dFaCZ04",
+              "timestamp": "2026-09-18T08:10:40.053Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-01201-01500.txt",
+            "bytes": 12356,
+            "sha256": "b6816acd41387bfce0756e3b4933e856ce2e123007edac49cc84381be69fbaae",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_vJ2KuUFA8EI6hc5Ag0KWosXc",
+              "timestamp": "2026-09-18T08:10:47.956Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-01501-01800.txt",
+            "bytes": 13150,
+            "sha256": "d716964bf4ecece09fe2b189bda93e4d52375ab9f739b93e3de74b34df909b4a",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_nrGyXnqo5Xbe4BrJVoc9T78z",
+              "timestamp": "2026-09-18T08:10:52.493Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-01801-02100.txt",
+            "bytes": 13727,
+            "sha256": "4e3f780c67808908fd00f6e65005d4902068054aa5d361efb8e5d3a521c125c5",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_bxWrRrClzmw8QWptb4Nbq4je",
+              "timestamp": "2026-09-18T08:10:59.069Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-02101-02400.txt",
+            "bytes": 11769,
+            "sha256": "a390eeabfb57aadaa2c3b1064b3d0ce0733a3cf9c60b975c45c2d277acb359ee",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_xs0LAGWE7HPANPCWhGr34WVi",
+              "timestamp": "2026-09-18T08:11:03.123Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-02401-02700.txt",
+            "bytes": 14399,
+            "sha256": "3eb67434df9fd931afcbe83b73d681e80c7b89fd70e5b3cf5007c498611cb93a",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_0T9j5YLxfafdC9M5uuf8vr29",
+              "timestamp": "2026-09-18T08:11:06.796Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-02701-03000.txt",
+            "bytes": 13316,
+            "sha256": "667740f1e6a223ae84dd4033f81b38786a54945d27dcbed752c16568871eccc4",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_S5o5qdReIGaNj0fP9Po0saV6",
+              "timestamp": "2026-09-18T08:11:13.381Z"
+            }
+          ]
+        },
+        {
+          "chunk": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-timer-review-grounding-20260918/scheduler-03001-03300.txt",
+            "bytes": 14039,
+            "sha256": "fb9cc8b288785f9304c99aaf1bf71d7e572522e591135c1b6ab818383632853e",
+            "mode": 420
+          },
+          "ordinary_outputs": [
+            {
+              "call_id": "call_69IobwVe3jzi9EoycJ0NN8bg",
+              "timestamp": "2026-09-18T08:11:20.740Z"
+            }
+          ]
+        },
+        {

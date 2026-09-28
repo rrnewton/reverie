@@ -1,0 +1,160 @@
+Detcore serializes guest threads so they effectively share one CPU, chooses the
+next runnable thread deterministically, and uses PMU RCB counts for repeatable
+preemption. Its implementation is split between `tool_local`, which handles
+events near each guest task, and `tool_global`, which owns shared deterministic
+state; the two communicate through RPC.
+
+## Backend Definition
+
+In this repository, a **backend** is a complete execution path that loads the
+shared Detcore tool through Reverie as `Detcore<XxxGuest>`, where `XxxGuest` is
+the backend-specific guest implementation. Every real backend runs the same
+copy of the Detcore determinism code; a separate reimplementation or a command
+that merely launches a program is not a backend.
+
+The `ptrace` backend is the default and best-tested path. DBT and KVM are real
+backends only where they execute this full Detcore tool path. Use these terms
+precisely:
+
+- e9patch is **not** a backend. It is binary-rewriting preprocessing used with
+  the ptrace backend. A CLI spelling such as `--backend=e9patch` does not change
+  this architectural classification.
+- A prototype, stub, launch adapter, preprocessing tool, or compatibility shim
+  is **not** a backend. Report it by its actual category and state explicitly
+  whether it ever loads Detcore as a Reverie tool.
+- There is one shared copy of Detcore behavior. Do not describe backend-local
+  syscall emulation or a second determinism engine as Detcore parity.
+
+Never make an unqualified "pass", "deterministic", or "L2" claim. Every result
+must name the exact backend and exact test or guest command, including relevant
+flags. For preprocessing and prototype results, say what executed underneath;
+for example, "e9patch preprocessing with the ptrace backend" rather than
+"e9patch backend".
+
+A feature is **done** only when the exact test meets its declared assurance
+level across **all in-scope backends**. A pass on one backend is evidence for
+that backend only, not a project-wide completion claim. KVM `--verify` compares
+the retained internal logs as well as exit status/stdout/stderr. Claim L2 for a
+KVM cell only when its strict typed report says `bitwise_parity: true` (which
+requires syscall output-buffer hashes) and names nonzero compared INFO-message counts; backend capability is not evidence that a
+particular guest passed.
+
+Start investigations in these locations:
+
+- `detcore/src/syscalls/` for syscall-specific behavior.
+- `detcore/src/scheduler.rs` and `detcore/src/scheduler/` for scheduling.
+- `detcore/src/tool_local.rs` and `detcore/src/tool_global.rs` for event flow
+  and shared state.
+- `detcore/src/cpuid.rs`, `detcore/src/time.rs`, and
+  `detcore/src/record_or_replay.rs` for those subsystems.
+- `hermit-cli/src/bin/hermit/` for CLI subcommands.
+- `hermit-cli/src/recorder/` and `hermit-cli/src/replayer/` for log recording
+  and replay.
+- `docs/Developers/Architecture.md` for the architecture overview and
+  `docs/Users.md` for user-facing behavior.
+
+## Determinism And Assurance Levels
+
+Hermit's whole purpose is reproducible execution, so describe a run by the
+strongest guarantee you actually observed. The ladder is cumulative; each level
+presupposes the ones below it:
+
+| Level | Meaning | How it is established |
+| --- | --- | --- |
+| L0 | Builds and unit/integration tests pass | `cargo test` exits 0 |
+| L1 | Runs deterministically under strict mode | `hermit run --strict` |
+| L2 | Canonical full-observation repeat parity | `hermit run --strict --verify --verify-strict --verify-json <path> -- ...` and require JSON `bitwise_parity: true` with nonzero compared INFO-message counts |
+| L3 | Memory determinism | Add `--detlog-heap --detlog-stack` to the L2 command |
+| L4 | Stress-hardened | L2/L3 repeated 20x with no divergence |
+
+A claim that a run "passes" is meaningless without a level. Write, for example,
+"passes at L2 (ptrace backend)". When reporting a run, also state:
+
+- **Backend**: `ptrace`, `DBT`, or `KVM`.
+- **Log level**: the `--log`/`RUST_LOG` level, or "default" when unset.
+- **Relaxations**: any flag that weakens determinism, for example
+  `--no-strict` or `--no-sequentialize-threads`. State "none" when there are
+  none. A non-strict result is not a determinism guarantee; label the relaxation
+  and do not present it as one.
+
+Default `--verify` uses the lossy `Stripped` comparator and cannot establish
+L2. `--verify-strict` compares exit status/stdout/stderr byte-for-byte and INFO
+events under the repository's `BitwiseInfoV1` policy: it removes only the real
+wall-clock prefix, ordinalizes host addresses while preserving identity/order/
+aliasing, and compares the full remainder exactly. Virtual time,
+retired-branch counts, syscall values, sizes, flags, and other numeric payloads
+must not be stripped. State this canonical envelope rather than calling the raw
+log files literally byte-identical. KVM uses this same retained-log comparison;
+an unreadable or truncated comparison must refuse with `verdict: no_result`
+rather than report a match.
+
+## Debugging
+
+Diagnose determinism problems with Hermit's own logging and comparison tooling
+before reading source:
+
+- Raise the log level to see the event stream and Detcore's decisions:
+  `hermit --log info run -- <program>` (or `debug` / `trace` for more detail).
+  The `DETLOG` lines record syscalls, scheduling, and virtualized time.
+- Reproduce nondeterminism with `hermit run --strict --verify --verify-strict`,
+  which runs the guest twice under the L2 comparison policy and reports the
+  first divergence. **Before triaging what it reports, read
+  [docs/DIVERGENCE_CLASSES.md](docs/DIVERGENCE_CLASSES.md).** There are three
+  classes, they need different fixes, and identical DETLOG counts does NOT mean
+  the difference is a clock — the third class has identical counts and no clock
+  involvement. Classify on what differs AT the divergent record: a time field, a
+  control-flow difference visible in the counts, or payload bytes with
+  everything else identical.
+- For record/replay problems use
+  `hermit record start --verify --verify-strict -- <program>`,
+  which records then replays and diffs the two logs; a divergence names the
+  thread and syscall event where the runs parted.
+- Use `hermit-verify` for stress, trace, schedule, and replay checks, and the
+  CLI's `log-diff`/`analyze` subcommands to compare two runs' logs.
+- Prefer the smallest guest that reproduces the issue; the `tests` and
+  `flaky-tests` members already contain minimal time, futex, pipe, signal, and
+  scheduling programs to start from.
+- Several nested mechanisms can stop a run, and they do not bound the same
+  quantity; [docs/TIMEOUT_LADDER.md](docs/TIMEOUT_LADDER.md) describes each rung,
+  why an exit code cannot say which one fired, and how the stderr class line
+  distinguishes them.
+
+When a symptom depends on PMU access, CPUID interception, or specific CPU
+features, capture the host environment in the report; those are host
+limitations, not necessarily product bugs.
+
+## Change Guidelines
+
+- First reproduce a bug with the smallest applicable test or guest program.
+- Keep syscall fixes local to the relevant Detcore subsystem when possible.
+- Preserve determinism: avoid host wall time, uncontrolled randomness,
+  iteration-order dependencies, and host-specific state in guest-visible
+  results.
+- Add a regression test at the lowest useful layer. A guest program belongs in
+  `tests` or `flaky-tests`; Detcore unit and integration behavior belongs under
+  `detcore`.
+- Run the focused test while iterating, then the workspace test, format, and
+  Clippy checks before finishing. Clearly document checks that the current
+  hardware cannot execute.
+- Keep unrelated changes and generated artifacts out of the patch.
+- Don't break the demos: if a change touches a demo, an adversarial reviewer must
+  confirm the demo still runs GREEN (not just code-review) before it lands — see
+  the demo-touching-commit adversarial-review policy.
+
+## Pre-Commit Cleanliness Protocol
+
+`hermit/` is a clean, focused implementation repository: product source, tests,
+build config, and minimal curated documentation only. Experiments, bulk AI
+research notes, binaries, and vendored clones do **not** belong here — they live
+in the `dev-hermit` parent workspace. The `repo-cleanliness` skill
+(`.claude/skills/repo-cleanliness/SKILL.md`, also surfaced to Claude via
+`.llms/skills` and to stock Codex via
+`.agents/skills/repo-cleanliness/SKILL.md`) is the full standing rule; this
+section is the mandatory pre-commit gate.
+
+Before every commit, audit exactly what you are about to stage and fix any
+misplaced file *before* committing — never "commit now, clean up later":
+
+```bash
+git status --short
+git diff --cached --name-only    # exact staged paths

@@ -1,0 +1,160 @@
+            if let Some(stats) = &self.global_state.backend_stats {
+                stats.record_wait(&task_state);
+            }
+            // A nested handler may forward a stop it already armed before
+            // inspecting the status. Accept only that exact generation/status;
+            // every ordinary returned transition still requires an empty slot.
+            self.ensure_liteinst_wait(&task_state);
+            match task_state {
+                Wait::Stopped(stopped, event) => {
+                    // Allow short-circuiting of the event stream. This makes it
+                    // easier to send exit and execve events directly to the run
+                    // loop from within `inject` or `tail_inject`.
+                    let tid = self.tid();
+                    let fut1 = next_state_rx.recv().fuse();
+                    let fut2 = self.handle_stop_event(stopped, event).fuse();
+
+                    futures::pin_mut!(fut1, fut2);
+
+                    task_state = futures::select_biased! {
+                        next_state = fut1 => {
+                            if let Some(next_state) = next_state {
+                                next_state.map_err(Error::Internal)
+                            } else {
+                                Err(Error::runtime(
+                                    tid,
+                                    "receive injected tracee state",
+                                    "next-state channel closed unexpectedly",
+                                ))
+                            }
+                        }
+                        next_state = fut2 => next_state,
+                    }?;
+                }
+                Wait::Exited(pid, exit_status) => {
+                    self.notify_gdb_stop(StopReason::Exited(pid, exit_status))
+                        .await?;
+                    break Ok(exit_status);
+                }
+            }
+        }
+    }
+
+    /// Drive a single guest thread to completion. Returns the final exit code
+    /// when that guest thread exits.
+    pub async fn run(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
+        // Only the session root owns the shared root-stop lease; a child task
+        // that superseded it would strand the root's cleanup handoff.
+        let exit_held_root_stop = self
+            .liteinst_root_config()
+            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let root_session_failure = self.liteinst_root_config().map(|runtime| {
+            (
+                Arc::clone(&runtime.session_failure),
+                Arc::clone(&runtime.session_failure_changed),
+            )
+        });
+        let completion = {
+            let exit_event = child.exit_event().fuse();
+            let run_loop = self.run_loop(child).fuse();
+            let session_failure = async move {
+                let Some((failure, changed)) = root_session_failure else {
+                    return future::pending::<String>().await;
+                };
+                loop {
+                    let notified = changed.notified();
+                    if let Some(message) = failure.lock().unwrap().clone() {
+                        return message;
+                    }
+                    notified.await;
+                }
+            }
+            .fuse();
+            futures::pin_mut!(exit_event, run_loop, session_failure);
+
+            futures::select_biased! {
+                task = exit_event => match task {
+                    Ok(task) => Either::Left(Self::wait_after_exit_event(task, exit_held_root_stop).await),
+                    Err(err) => Either::Left(Err(err)),
+                },
+                message = session_failure => Either::Right(Err(anyhow::anyhow!(
+                    "LiteInst session failed closed in a non-root task: {message}"
+                ).into())),
+                exit_status = run_loop => Either::Right(exit_status),
+            }
+        };
+        // Drop the old run-loop future before mutating its owner. The stopped
+        // event carries the existing notifier generation; re-arm that exact
+        // stop before publishing failure so session cleanup can consume it.
+        let outcome = match completion {
+            Either::Left(Ok(wait @ Wait::Stopped(_, Event::Exec(former_tid))))
+                if self.global_state.liteinst_runtime.is_some() && former_tid != self.tid() =>
+            {
+                self.arm_liteinst_wait(&wait);
+                let (stopped, _) = wait.assume_stopped();
+                // SAFETY: this branch owns the continuation of the single
+                // ExitFuture-minted Stopped. wait_after_exit_event consumed
+                // that capability through resume, and the old run-loop future
+                // was dropped above. Retire its claimed exit permission before
+                // handing the actual Exec stop to cancellation cleanup.
+                match unsafe { stopped.terminal_cleanup().revoke_owned_exit_stop() } {
+                    Ok(()) => {
+                        let error = self.reject_liteinst_nonleader_exec(former_tid);
+                        handle_internal_error(error.into()).await
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            }
+            Either::Left(Ok(wait)) => Ok(wait.assume_exited().1),
+            Either::Left(Err(error)) => handle_internal_error(error.into()).await,
+            Either::Right(outcome) => outcome,
+        };
+        if outcome.is_ok() && self.global_state.liteinst_runtime.is_some() {
+            let phase = self.liteinst_runtime.lock().unwrap().phase;
+            if phase != LiteinstRuntimePhase::Ready {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::TerminatedBeforeHandshake,
+                    Error::runtime(
+                        self.tid(),
+                        "verify LiteInst runtime activation",
+                        format!(
+                            "tracee terminated before the required preload handshake completed (phase {phase:?})"
+                        ),
+                    ),
+                );
+            }
+        }
+        let local_failure_reason = self
+            .liteinst_failure
+            .as_ref()
+            .map(LiteinstActivationFailure::reason);
+        let (exit_status, failure) = match (outcome, self.liteinst_failure.take()) {
+            (_, Some(original)) => (
+                None,
+                Some(reverie::Error::from(anyhow::Error::new(original))),
+            ),
+            (Ok(exit_status), None) => (Some(exit_status), None),
+            (Err(error), _) => (None, Some(error)),
+        };
+        if let Some(failure) = failure {
+            let vfork_failure =
+                local_failure_reason == Some(LiteinstActivationFailureReason::VforkUnsupported);
+            if self.global_state.liteinst_runtime.is_some()
+                && self.liteinst_root_config().is_none()
+                && !vfork_failure
+            {
+                let tid = self.tid();
+                if let Err(error) = self.tool_exit(ExitStatus::Exited(1)).await {
+                    tracing::warn!(
+                        %tid,
+                        %error,
+                        "tool exit hook failed while releasing a failed LiteInst task"
+                    );
+                }
+            }
+            // A vfork parent returns directly to the session-level cleanup
+            // guard because orderly per-task exit cannot advance while the
+            // kernel has it frozen behind that child. Other non-root failures
+            // complete the existing tool-exit bookkeeping. The root failure
+            // notification allows cleanup to proceed independently if that
+            // bookkeeping blocks on a tracee which has not exited yet.

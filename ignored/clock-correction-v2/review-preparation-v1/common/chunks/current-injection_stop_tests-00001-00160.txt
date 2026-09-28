@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use reverie::Guest;
+use reverie::Rdtsc;
+use reverie::RdtscResult;
+use reverie::process::Stdio;
+use reverie::syscalls::Addr;
+use reverie::syscalls::Close;
+use reverie::syscalls::Exit;
+use reverie::syscalls::Getpid;
+use reverie::syscalls::Getppid;
+use reverie::syscalls::MapFlags;
+use reverie::syscalls::MemoryAccess;
+use reverie::syscalls::Mmap;
+use reverie::syscalls::OFlag;
+use reverie::syscalls::Openat;
+use reverie::syscalls::PathPtr;
+use reverie::syscalls::ProtFlags;
+use reverie::syscalls::Syscall;
+use reverie::syscalls::Write as WriteCall;
+use serde::Deserialize;
+use serde::Serialize;
+
+use super::*;
+
+const ENTRY: u64 = 0x401000;
+const WORD: usize = 0x402000;
+const ORIGINAL: usize = WORD + 8;
+const REPLACEMENT: usize = WORD + 9;
+const EMULATED_RESULT: usize = WORD + 16;
+const SHARED_PATH: usize = WORD + 64;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+enum Mode {
+    #[default]
+    PostExec,
+    Replace,
+    SameThenPrivate,
+    TailSame,
+    TailOther,
+    PostExecTail,
+    Emulate,
+    EmulateErrno,
+}
+
+impl Mode {
+    fn emulates(self) -> bool {
+        matches!(self, Self::Emulate | Self::EmulateErrno)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct Config {
+    mode: Mode,
+    timestamp_rip: u64,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+enum Observation {
+    PostExec,
+    Write,
+    Emulated,
+    Timestamp,
+    Boundary(u64),
+}
+
+#[derive(Default)]
+struct Log(Mutex<Vec<Observation>>);
+
+#[reverie::global_tool]
+impl GlobalTool for Log {
+    type Config = Config;
+    type Request = Observation;
+    type Response = ();
+
+    async fn receive_rpc(&self, _from: Pid, observation: Observation) {
+        self.0.lock().unwrap().push(observation);
+    }
+}
+
+#[derive(Default)]
+struct StopTool;
+
+fn word<G: Guest<StopTool>>(guest: &G, address: usize) -> u64 {
+    guest
+        .memory()
+        .read_value(Addr::<u64>::from_raw(address).unwrap())
+        .unwrap()
+}
+
+fn replacement() -> WriteCall {
+    WriteCall::default()
+        .with_fd(1)
+        .with_buf(Addr::from_raw(REPLACEMENT))
+        .with_len(1)
+}
+
+#[reverie::tool]
+impl Tool for StopTool {
+    type GlobalState = Log;
+    type ThreadState = u8;
+
+    fn subscriptions(_config: &Config) -> Subscription {
+        let mut events = Subscription::none();
+        events.syscalls([Sysno::getpid, Sysno::write]).rdtsc();
+        events
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        let mode = guest.config().mode;
+        assert_eq!(guest.regs().await.rip, ENTRY);
+        assert_eq!(word(guest, WORD), 0, "backend preinit executed guest entry");
+        guest.send_rpc(Observation::PostExec).await;
+        if mode == Mode::PostExec {
+            for _ in 0..2 {
+                assert!(guest.inject(Getpid::default()).await? > 0);
+                assert_eq!(guest.regs().await.rip, ENTRY);
+                assert_eq!(word(guest, WORD), 0, "injection replayed guest entry");
+            }
+            assert_eq!(
+                guest.inject(Close::default().with_fd(-1)).await,
+                Err(Errno::EBADF)
+            );
+            assert_eq!(guest.regs().await.rip, ENTRY);
+            assert_eq!(word(guest, WORD), 0, "failed injection replayed entry");
+        } else if mode == Mode::PostExecTail {
+            // Keep the entry's word observable after Exit. Private ELF data
+            // alone would lose an erroneous final step when the guest dies.
+            let fd = guest
+                .inject(
+                    Openat::default()
+                        .with_dirfd(libc::AT_FDCWD)
+                        .with_path(PathPtr::from_ptr(SHARED_PATH as *const libc::c_char))
+                        .with_flags(OFlag::O_RDWR),
+                )
+                .await?;
+            let fd = i32::try_from(fd).unwrap();
+            assert_eq!(
+                guest
+                    .inject(
+                        Mmap::default()
+                            .with_addr(Addr::from_raw(WORD))
+                            .with_len(4096)
+                            .with_prot(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+                            .with_flags(MapFlags::MAP_SHARED | MapFlags::MAP_FIXED)
+                            .with_fd(fd)
+                            .with_offset(0)
+                    )
+                    .await?,
+                WORD as i64

@@ -1,0 +1,10 @@
+{
+  "python_optimize": 0,
+  "held_files_verified": 3573,
+  "literal_aliases_verified": 7,
+  "no_launch": true,
+  "setup_sha256": "cb589c9c6b6f67c9bae8e04ad8166c979e6b028d848f77a48d6ba8f3161a7163",
+  "missing_raw_paths": 16,
+  "new_rule_chunk": 1,
+  "source_unchanged": true
+}

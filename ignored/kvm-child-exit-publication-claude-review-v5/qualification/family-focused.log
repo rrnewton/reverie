@@ -1,0 +1,79 @@
+[evidence begin]
+command cargo test -p reverie-kvm --lib process_signal_publication::tests:: -- --nocapture 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head 6152ee999a41324be36456bb0a9b94a703711068
+expected_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+pre_head 6152ee999a41324be36456bb0a9b94a703711068
+pre_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_before_bytes 448367681536
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:03:33Z
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 38 tests
+test executor::process_signal_publication::tests::child_siginfo_encoder_and_coalescing_retain_first_nonzero_metadata ... ok
+test executor::process_signal_publication::tests::child_exit_distinguishes_lost_parent_generation_from_lost_family_edge ... ok
+test executor::process_signal_publication::tests::controlled_child_wait_fails_closed_without_an_exact_family_zombie ... ok
+test executor::process_signal_publication::tests::controlled_alarm_selects_unblocked_worker_and_requires_its_permit ... ok
+test executor::process_signal_publication::tests::active_publication_and_dequeue_complete_while_file_table_is_held ... ok
+test executor::process_signal_publication::tests::active_publication_failure_retains_receipt_beside_prior_run_cause ... ok
+
+thread '<unnamed>' (2518789) panicked at reverie-kvm/src/process_signal_publication.rs:1959:17:
+controlled authoritative-table poison
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test executor::process_signal_publication::tests::inactive_publication_refuses_poisoned_file_table_without_effects ... ok
+test executor::process_signal_publication::tests::child_publication_distinguishes_explicit_ignore_from_no_cldwait ... ok
+test executor::process_signal_publication::tests::inactive_publication_preflight_and_postcommit_failure_are_distinct ... ok
+test executor::process_signal_publication::tests::generic_recipients_are_sorted_live_and_mask_aware ... ok
+test executor::process_signal_publication::tests::child_publication_coalesces_and_retains_first_complete_siginfo ... ok
+test executor::process_signal_publication::tests::child_signalfd_failure_retains_exact_receipt_and_is_not_retryable ... ok
+test executor::process_signal_publication::tests::child_publication_requires_exact_generation_parent_status_and_waitability ... ok
+test executor::process_signal_publication::tests::process_binding_guard_retains_exact_generation_until_ack_scope_ends ... ok
+test executor::process_signal_publication::tests::inactive_publication_rejects_bad_event_reused_process_and_closed_run ... ok
+test executor::process_signal_publication::tests::controlled_parked_lease_does_not_borrow_another_permit_or_callback ... ok
+test executor::process_signal_publication::tests::stale_child_wait_effect_refuses_before_another_syscall_dispatch ... ok
+test executor::process_signal_publication::tests::process_registry_keeps_reused_numeric_pids_generation_distinct ... ok
+test executor::process_signal_publication::tests::terminal_direct_parent_tears_down_a_later_child_without_publication ... ok
+test executor::process_signal_publication::tests::controlled_pending_alarm_does_not_reject_or_preselect_a_new_thread ... ok
+test executor::process_signal_publication::tests::concurrent_exact_child_publications_commit_one_effect ... ok
+test executor::process_signal_publication::tests::terminal_root_preserves_a_live_parent_wait_before_direct_parent_teardown ... ok
+test executor::process_signal_publication::tests::child_publication_encodes_exited_killed_and_core_statuses ... ok
+test executor::process_signal_publication::tests::inactive_publication_aliases_all_consumers_and_ignore_update_readiness ... ok
+test executor::process_signal_publication::tests::corrupt_family_ancestry_is_typed_instead_of_panicking_or_choosing_a_parent ... ok
+test executor::process_signal_publication::tests::live_root_refuses_but_terminal_root_consumes_the_same_unreaped_family_shape ... ok
+test executor::process_signal_publication::tests::active_carrier_alias_exec_close_and_process_lifetimes_are_exact ... ok
+test executor::process_signal_publication::tests::controlled_permit_is_bound_to_image_and_old_owner_can_settle_after_exec ... ok
+test executor::process_signal_publication::tests::inactive_publication_resolves_current_exec_image_and_surviving_thread ... ok
+test executor::process_signal_publication::tests::child_publication_uses_exit_time_disposition_after_parent_policy_changes ... ok
+test executor::process_signal_publication::tests::child_publication_uses_independent_carriers_and_refuses_a_missing_one ... ok
+test executor::process_signal_publication::tests::inactive_publication_alarm_preserves_masks_dispositions_and_coalesces ... ok
+test executor::process_signal_publication::tests::process_family_fails_closed_until_direct_children_are_reaped_or_auto_reaped ... ok
+test executor::process_signal_publication::tests::failed_process_family_is_monotonic_across_peer_retirement_orders ... ok
+test executor::process_signal_publication::tests::child_wait_consumes_the_exact_family_child_selected_by_the_backend ... ok
+test executor::process_signal_publication::tests::group_exit_records_family_order_before_peer_host_retirement ... ok
+test executor::process_signal_publication::tests::inactive_publication_concurrent_dequeue_keeps_readiness_equal_to_pending ... ok
+signalfd keeper child status=exit status: 0
+stdout:
+
+running 1 test
+test executor::process_signal_publication::tests::active_carrier_preparation_emfile_has_no_guest_descriptor_effect ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 773 filtered out; finished in 0.16s
+
+
+stderr:
+signalfd keeper EMFILE control completed
+
+test executor::process_signal_publication::tests::active_carrier_preparation_emfile_has_no_guest_descriptor_effect ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.17s
+
+
+[evidence end]
+exit_code 0
+post_head 6152ee999a41324be36456bb0a9b94a703711068
+post_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_after_bytes 448367681536
+completed_at 2026-09-20T15:03:33Z

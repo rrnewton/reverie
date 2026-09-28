@@ -1,0 +1,29 @@
+--- v5/reverie-kvm/src/memory/entry_snapshot_tests.rs
++++ corrected/reverie-kvm/src/memory/entry_snapshot_tests.rs
+@@ -214,7 +214,7 @@
+             held.send(duplicate).unwrap();
+             released.recv_timeout(WAIT).unwrap();
+             let result = if force_fallback {
+-                let dirty = [0xa5; 257];
++                let dirty = [0xa5_u8; 257];
+                 // SAFETY: the actual snapshot helper owns both backing locks;
+                 // this fd write is the injected partial host operation.
+                 assert_eq!(
+@@ -265,7 +265,7 @@
+     }
+     if force_fallback {
+         assert!(!sparse_succeeded);
+-        let mut prefix = [0; 258];
++        let mut prefix = [0_u8; 258];
+         // SAFETY: this owned fd is the actual destination. The observed denied
+         // fallback has not acquired any source copy token or written bytes.
+         assert_eq!(
+@@ -279,7 +279,7 @@
+             },
+             prefix.len() as isize
+         );
+-        assert_eq!(&prefix[..257], &[0xa5; 257]);
++        assert_eq!(&prefix[..257], &[0xa5_u8; 257]);
+         assert_eq!(prefix[257], 0);
+     }
+     assert!(gate.test_state().closed);

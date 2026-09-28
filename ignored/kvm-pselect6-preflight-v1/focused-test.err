@@ -1,0 +1,13 @@
+   Compiling reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-memory)
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-process)
+   Compiling reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-syscalls)
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie)
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.11s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+     Running tests/counter.rs (target/debug/deps/counter-c9efc720d424372b)
+     Running tests/erestartsys.rs (target/debug/deps/erestartsys-ba2ce509316be623)
+     Running tests/read_clock.rs (target/debug/deps/read_clock-b6bc167312de69c9)
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+     Running tests/strace.rs (target/debug/deps/strace-08d53ba985d4a4a6)
+     Running tests/vmcall.rs (target/debug/deps/vmcall-ca0c251c029e697b)

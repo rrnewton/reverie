@@ -1,0 +1,101 @@
+{
+  "source": {
+    "reverie-kvm/src/entry.rs": {
+      "bytes": 46214,
+      "sha256": "8248ec4d8363b9796d4bff9fa20f010558480ccb36dc342755eda561a1bd67d5"
+    },
+    "reverie-kvm/src/entry/owner.rs": {
+      "bytes": 34802,
+      "sha256": "3add39ce0f58205e936dd86f6515d8bee23b840be833fa5b40c8a0a28c116de4"
+    },
+    "reverie-kvm/src/entry/signal.rs": {
+      "bytes": 13944,
+      "sha256": "83065f21cc8eee6b0452556bbe4ae31ecea1695b33060ea7b8d270d8a866f037"
+    },
+    "reverie-kvm/src/error.rs": {
+      "bytes": 20454,
+      "sha256": "36849b773cf93d0096e887d04d356754fa17ff5045733e2811ee545ab9df2c91"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "bytes": 1770,
+      "sha256": "7951608e089869aa4b618f0ef464203b808e456797a1777f2071f9f2bdb1c024"
+    },
+    "reverie-kvm/src/clock.rs": {
+      "bytes": 37130,
+      "sha256": "f73f389d1ab1fb44f40a21f2e98f233962d9c74771cd0b937389f7385edac28a"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 389713,
+      "sha256": "c98fcbdaea105d91a774ccb7a293ada1bcad434a86139c6aac8274ae412ccb61"
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 249539,
+      "sha256": "ad1f211f438adc77e6acde84fadd1deb05b6385368d99abbc94096652593400e"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "bytes": 131425,
+      "sha256": "b2608e7c76baab2a7b00b61acf44d5080dd2829bc7d6bc26c65d7f62b542bec5"
+    },
+    "reverie-kvm/src/cpuid_runtime_tests.rs": {
+      "bytes": 5963,
+      "sha256": "94f5261dd9d34812d9dca4ed6916aedc8e44a89a09677ec270c00f17d3e27552"
+    },
+    "reverie-kvm/src/failure.rs": {
+      "bytes": 43973,
+      "sha256": "e42a533fe539963128f23cf9655baace4d342ca0afe0e55a2ec622ce7968167e"
+    },
+    "reverie-kvm/src/bootstrap.rs": {
+      "bytes": 43344,
+      "sha256": "46e856d87ac8fce52722af3655c4b5dfdb5e4b5ee09e32c0bb3597a010b4a0cc"
+    },
+    "reverie-kvm/src/executor.rs": {
+      "bytes": 1528815,
+      "sha256": "499177f2237054de27a417e399ed998f0fceeb6849a64a813f248f93f1d91888"
+    },
+    "Cargo.lock": {
+      "bytes": 67056,
+      "sha256": "0a5ecdf9fc94cf7eddad15c0ced7c61ed9f4db08a47f5e1a668d5a7f663c8419"
+    },
+    "reverie-kvm/src/failure/owned_future.rs": {
+      "bytes": 11676,
+      "sha256": "7d68b5818a362b91d4bed4f7f51487ed365a099e569f47e097d2e5597f8bd12d"
+    },
+    "reverie-kvm/src/vm/worker_panic_tests.rs": {
+      "bytes": 27048,
+      "sha256": "870b89a9b51e20466385a4ca7a0df676dd20b718f2ca7590f0de40efc9bf9cd7"
+    },
+    "reverie-kvm/src/runtime/failure_tests.rs": {
+      "bytes": 52820,
+      "sha256": "18d7d156bd5ecc3599c100a106698d55ff5aa9229c4b31713fb8312d1b9b7995"
+    },
+    "reverie-kvm/src/failure/tool_panics.rs": {
+      "bytes": 2098,
+      "sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c"
+    },
+    "reverie-kvm/src/failure/tool_panics_tests.rs": {
+      "bytes": 14383,
+      "sha256": "39c895588333a34dbff3809b18d57d10e287513dafd5a1d8799c8917baa6565d"
+    },
+    "reverie-kvm/src/runtime/callback_completion_tests.rs": {
+      "bytes": 12797,
+      "sha256": "9a007125e7ab351d04a74de6f6c6e91fc77f1bedac9268a42d9d3f8d499777f4"
+    },
+    "reverie-kvm/src/runtime/consuming_panic_tests.rs": {
+      "bytes": 21301,
+      "sha256": "50b8a5aa2cd41413f0aa77ddd582b62a6af5e60a6ac7831c549ec4d76344932d"
+    },
+    "reverie-kvm/src/vm/public_tool_panic_tests.rs": {
+      "bytes": 12704,
+      "sha256": "52d4b2bb43f3850d9aedd669823e8ded8414078d86af5352594054e6f4c6e476"
+    },
+    "reverie-kvm/src/vm/instruction_callback_panic_tests.rs": {
+      "bytes": 6138,
+      "sha256": "0d56f0617052bdcd2ed49e3967f43d43a1316f91601bd3a0fe810278e4fb1539"
+    }
+  },
+  "snapshot_directory": "source-0",
+  "plan_sha256": "2464519e12fcf5f2f6be9a39911aea135a2a60ca6c422495b705834e3f3e8bc0",
+  "after_format": null,
+  "dispatched_base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "scope": "Explicitly named source/lock files; not a full transitive input closure"
+}

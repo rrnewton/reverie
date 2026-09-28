@@ -1,0 +1,160 @@
+        use reverie::syscalls::ArchPrctl;
+        use reverie::syscalls::ArchPrctlCmd;
+
+        self.liteinst_arch_prctl(
+            task,
+            ArchPrctl::new().with_cmd(ArchPrctlCmd::ARCH_SET_CPUID(state)),
+        )
+        .await
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn set_and_verify_liteinst_cpuid_state(
+        &mut self,
+        task: Stopped,
+        state: u64,
+    ) -> (Stopped, Vec<String>) {
+        let (task, set_result) = self.liteinst_set_cpuid_state(task, state).await;
+        let mut failures = Vec::new();
+        match set_result {
+            Ok(Ok(0)) => {}
+            Ok(Ok(result)) => failures.push(format!(
+                "ARCH_SET_CPUID({state}) returned unexpected value {result}"
+            )),
+            Ok(Err(error)) => failures.push(format!("ARCH_SET_CPUID({state}): {error}")),
+            Err(error) => failures.push(format!("inject ARCH_SET_CPUID({state}): {error}")),
+        }
+        let (task, verify_failures) = self.verify_liteinst_cpuid_state(task, state).await;
+        failures.extend(verify_failures);
+        (task, failures)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn verify_liteinst_cpuid_state(
+        &mut self,
+        task: Stopped,
+        state: u64,
+    ) -> (Stopped, Vec<String>) {
+        let mut failures = Vec::new();
+        let (task, get_result) = self.liteinst_get_cpuid_state(task).await;
+        match get_result {
+            Ok(Ok(observed)) if observed == state as i64 => {}
+            Ok(Ok(observed)) => failures.push(format!(
+                "ARCH_GET_CPUID returned {observed} after setting {state}"
+            )),
+            Ok(Err(error)) => failures.push(format!("verify ARCH_GET_CPUID({state}): {error}")),
+            Err(error) => failures.push(format!("inject verification ARCH_GET_CPUID: {error}")),
+        }
+        (task, failures)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn prepare_liteinst_helper_cpuid(
+        &mut self,
+        task: Stopped,
+    ) -> (Stopped, Result<LiteinstCpuidPolicy, String>) {
+        let (task, result) = self.liteinst_get_cpuid_state(task).await;
+        match result {
+            Ok(Ok(1)) => (task, Ok(LiteinstCpuidPolicy::UnchangedEnabled)),
+            Ok(Ok(0)) => {
+                let (task, enable_failures) =
+                    self.set_and_verify_liteinst_cpuid_state(task, 1).await;
+                if enable_failures.is_empty() {
+                    (task, Ok(LiteinstCpuidPolicy::RestoreDisabled))
+                } else {
+                    let (task, restore_failures) =
+                        self.set_and_verify_liteinst_cpuid_state(task, 0).await;
+                    let mut message = format!(
+                        "enable native CPUID for patch helper: {}",
+                        enable_failures.join("; ")
+                    );
+                    if !restore_failures.is_empty() {
+                        message.push_str(&format!(
+                            "; restore original CPUID policy after enable failure: {}",
+                            restore_failures.join("; ")
+                        ));
+                    }
+                    (task, Err(message))
+                }
+            }
+            Ok(Ok(state)) => (
+                task,
+                Err(format!("ARCH_GET_CPUID returned unexpected value {state}")),
+            ),
+            Ok(Err(Errno::ENODEV)) => (task, Ok(LiteinstCpuidPolicy::Unsupported)),
+            Ok(Err(error)) => (task, Err(format!("ARCH_GET_CPUID: {error}"))),
+            Err(error) => (task, Err(format!("inject ARCH_GET_CPUID: {error}"))),
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn set_and_verify_liteinst_tsc_state(
+        &mut self,
+        task: Stopped,
+        scratch_address: usize,
+        state: libc::c_int,
+    ) -> (Stopped, Vec<String>) {
+        let (task, set_result) = self.liteinst_set_tsc_state(task, state).await;
+        let mut failures = Vec::new();
+        match set_result {
+            Ok(Ok(0)) => {}
+            Ok(Ok(result)) => {
+                failures.push(format!(
+                    "PR_SET_TSC({state}) returned unexpected value {result}"
+                ));
+            }
+            Ok(Err(error)) => failures.push(format!("PR_SET_TSC({state}): {error}")),
+            Err(error) => failures.push(format!("inject PR_SET_TSC({state}): {error}")),
+        }
+        let (task, verify_failures) = self
+            .verify_liteinst_tsc_state(task, scratch_address, state)
+            .await;
+        failures.extend(verify_failures);
+        (task, failures)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn verify_liteinst_tsc_state(
+        &mut self,
+        task: Stopped,
+        scratch_address: usize,
+        state: libc::c_int,
+    ) -> (Stopped, Vec<String>) {
+        let mut failures = Vec::new();
+        let (task, get_result) = self.liteinst_get_tsc_state(task, scratch_address).await;
+        match get_result {
+            Ok(Ok(observed)) if observed == state => {}
+            Ok(Ok(observed)) => failures.push(format!(
+                "PR_GET_TSC returned {observed} after setting {state}"
+            )),
+            Ok(Err(error)) => failures.push(format!("verify PR_GET_TSC({state}): {error}")),
+            Err(error) => failures.push(format!("verify PR_GET_TSC({state}): {error}")),
+        }
+        (task, failures)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn prepare_liteinst_helper_tsc(
+        &mut self,
+        task: Stopped,
+        scratch_address: usize,
+    ) -> (Stopped, Result<LiteinstTscPolicy, String>) {
+        let (task, result) = self.liteinst_get_tsc_state(task, scratch_address).await;
+        match result {
+            Ok(Ok(libc::PR_TSC_ENABLE)) => (task, Ok(LiteinstTscPolicy::UnchangedEnabled)),
+            Ok(Ok(libc::PR_TSC_SIGSEGV)) => {
+                let (task, enable_failures) = self
+                    .set_and_verify_liteinst_tsc_state(task, scratch_address, libc::PR_TSC_ENABLE)
+                    .await;
+                if enable_failures.is_empty() {
+                    (task, Ok(LiteinstTscPolicy::RestoreFaulting))
+                } else {
+                    let (task, restore_failures) = self
+                        .set_and_verify_liteinst_tsc_state(
+                            task,
+                            scratch_address,
+                            libc::PR_TSC_SIGSEGV,
+                        )
+                        .await;
+                    let mut message = format!(
+                        "enable native TSC for patch helper: {}",

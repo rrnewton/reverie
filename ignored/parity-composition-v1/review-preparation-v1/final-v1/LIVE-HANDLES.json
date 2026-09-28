@@ -1,0 +1,50 @@
+{
+  "at_utc": "2026-09-18T20:29:02.532446+00:00",
+  "lanes": [
+    {
+      "lane": "claude",
+      "exec_handle": 99793,
+      "launch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/launch.json",
+        "bytes": 1355,
+        "sha256": "ab53302a2c22b7ea6e82bce51fa0d7d925548c11a99f93056e994f325919d63d"
+      },
+      "capacity": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/capacity-before.json",
+        "bytes": 7219,
+        "sha256": "5c5dc6601d9b062499d8983b5555fe2950a6bf68bd604ba3730a8c5149182af1"
+      },
+      "top_level_count": 11,
+      "cap": 15,
+      "effective_policy": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/claude/EARLY-EFFECTIVE-POLICY.json",
+        "bytes": 18663,
+        "sha256": "eb767fe5634309f6f21c2c4d1d90f3af532be8c2c1df4d95f9c3dccf29cc63de"
+      }
+    },
+    {
+      "lane": "native",
+      "exec_handle": 71578,
+      "launch": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.launch.json",
+        "bytes": 1131,
+        "sha256": "915e91788463a51b2e213a9daf62167368a05eda59093574cf846c71bc32eef1"
+      },
+      "capacity": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/01-source.capacity-before.json",
+        "bytes": 7778,
+        "sha256": "5fb418a754e542bf6d1301eab0cddaae8ee0eb78033fb995dda43baed2df7a87"
+      },
+      "top_level_count": 12,
+      "cap": 15,
+      "effective_policy": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/final-v1/native/EARLY-EFFECTIVE-POLICY.json",
+        "bytes": 2149,
+        "sha256": "d00ed7d7d36609501691be64a06957d8719013941890bc25ec2ef4a5ed476378"
+      }
+    }
+  ],
+  "source_head": "3d4a401ed8959befad0b2f10db59093725f27432",
+  "sequential_first_policy_verified_before_second_launch": true,
+  "terminal_results_pending": true
+}

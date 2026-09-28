@@ -1,0 +1,24 @@
+{
+  "started": [
+    "read_clock_follows_a_guest_between_host_threads"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "read_clock_follows_a_guest_between_host_threads",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 7,
+      "exec_time": 0.050534643
+    }
+  ]
+}

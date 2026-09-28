@@ -1,0 +1,160 @@
+            false,
+            None,
+        ) as i32;
+        let reopened = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&first).unwrap(),
+            false,
+            None,
+        ) as i32;
+        let distinct = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&other).unwrap(),
+            false,
+            None,
+        ) as i32;
+        let duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [fd as u64, 0, 0, 0, 0, 0],
+        ) as i32;
+        assert!(fd >= 0 && reopened >= 0 && distinct >= 0 && duplicate >= 0);
+        let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
+        for alias in [fd, reopened, duplicate] {
+            let stat = assert_descriptor_stat_routes(&mut memory, &mut state, alias, None);
+            assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
+        }
+        let other_stat = assert_descriptor_stat_routes(&mut memory, &mut state, distinct, None);
+        assert_ne!(
+            (other_stat.st_dev, other_stat.st_ino),
+            (native.st_dev, native.st_ino)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup2,
+                [distinct as u64, fd as u64, 0, 0, 0, 0]
+            ),
+            i64::from(fd)
+        );
+        let replaced = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
+        assert_eq!(
+            (replaced.st_dev, replaced.st_ino),
+            (other_stat.st_dev, other_stat.st_ino)
+        );
+        let retained = assert_descriptor_stat_routes(&mut memory, &mut state, duplicate, None);
+        assert_eq!(
+            (retained.st_dev, retained.st_ino),
+            (native.st_dev, native.st_ino)
+        );
+        assert_eq!(close(&mut state, fd as u64), 0);
+        let reused = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&first).unwrap(),
+            false,
+            None,
+        ) as i32;
+        assert_eq!(reused, fd);
+        let after_close = assert_descriptor_stat_routes(&mut memory, &mut state, reused, None);
+        assert_eq!(
+            (after_close.st_dev, after_close.st_ino),
+            (native.st_dev, native.st_ino)
+        );
+    }
+
+    #[test]
+    fn anonymous_proc_fd_links_match_direct_owned_object_stat() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        for (number, args, kind) in [
+            (libc::SYS_pipe2, [0x1800, 0, 0, 0, 0, 0], "pipe"),
+            (
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_STREAM as u64,
+                    0,
+                    0x1800,
+                    0,
+                    0,
+                ],
+                "socket",
+            ),
+        ] {
+            assert_eq!(syscall_result(&mut memory, &mut state, number, args), 0);
+            let fds: [i32; 2] = read_struct(&memory, 0x1800);
+            for fd in fds {
+                let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
+                let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
+                assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
+                let expected = format!("{kind}:[{}]", native.st_ino).into_bytes();
+                write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+                for capacity in [3, 256] {
+                    let count = syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_readlink,
+                        [0x100, 0x2000, capacity, 0, 0, 0],
+                    );
+                    assert_eq!(count as usize, expected.len().min(capacity as usize));
+                    let mut bytes = vec![0; count as usize];
+                    memory.read(0x2000, &mut bytes).unwrap();
+                    assert_eq!(bytes, expected[..count as usize]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn captured_output_stat_and_link_routes_preserve_the_capture_sink() {
+        let mut output = CapturedOutput::default();
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let path = root.0.join("host-output");
+        std::fs::write(&path, b"this host file is not the captured pipe").unwrap();
+        let alias = insert_file_with_flags(
+            &mut state,
+            std::fs::File::open(&path).unwrap(),
+            false,
+            Some(OutputAlias::Stdout),
+        ) as i32;
+        assert!(alias >= 0);
+        let ordinary = assert_descriptor_stat_routes(&mut memory, &mut state, alias, None);
+        assert_eq!(ordinary.st_mode & libc::S_IFMT, libc::S_IFREG);
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO, alias] {
+            let captured =
+                assert_descriptor_stat_routes(&mut memory, &mut state, fd, Some(&mut output));
+            assert_eq!(captured.st_mode & libc::S_IFMT, libc::S_IFIFO);
+            assert_eq!(captured.st_size, 0);
+            let identity = output
+                .metadata()
+                .identity(output_alias(&state, fd).unwrap());
+            assert_eq!(
+                (captured.st_dev, captured.st_ino),
+                (identity.device, identity.inode)
+            );
+            write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+            let expected = format!("pipe:[{}]", captured.st_ino).into_bytes();
+            let count = metadata_call(
+                &mut memory,
+                &mut state,
+                Some(&mut output),
+                libc::SYS_readlinkat,
+                [libc::AT_FDCWD as u64, 0x100, 0x2000, 256, 0, 0],
+            );
+            assert_eq!(count as usize, expected.len());
+            let mut target = vec![0; count as usize];
+            memory.read(0x2000, &mut target).unwrap();
+            assert_eq!(target, expected);
+            assert_eq!(
+                metadata_call(
+                    &mut memory,
+                    &mut state,
+                    Some(&mut output),
+                    libc::SYS_lstat,
+                    [0x100, 0x800, 0, 0, 0, 0]
+                ),

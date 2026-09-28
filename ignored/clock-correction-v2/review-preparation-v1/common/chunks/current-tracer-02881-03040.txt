@@ -1,0 +1,160 @@
+            std::os::unix::net::UnixStream::pair().expect("create parent control socket");
+        match unsafe { unistd::fork() }.expect("fork recorded parent") {
+            ForkResult::Child => {
+                drop(control);
+                match unsafe { unistd::fork() }.expect("fork retained descendant") {
+                    ForkResult::Child => loop {
+                        unsafe { libc::pause() };
+                    },
+                    ForkResult::Parent { child } => {
+                        child_control
+                            .write_all(&child.as_raw().to_ne_bytes())
+                            .expect("publish retained descendant pid");
+                        let mut release = [0];
+                        std::io::Read::read_exact(&mut child_control, &mut release)
+                            .expect("wait for recorded-parent release");
+                        unsafe { libc::_exit(0) };
+                    }
+                }
+            }
+            ForkResult::Parent { child } => {
+                drop(child_control);
+                let mut raw_pid = [0; std::mem::size_of::<i32>()];
+                std::io::Read::read_exact(&mut control, &mut raw_pid)
+                    .expect("read retained descendant pid");
+                (
+                    Pid::from(child),
+                    Pid::from_raw(i32::from_ne_bytes(raw_pid)),
+                    control,
+                )
+            }
+        }
+    }
+
+    fn untraced_process_identity(pid: Pid) -> TraceeIdentity {
+        let snapshot = tracee_snapshot(pid).expect("read child identity");
+        let proc_dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(format!("/proc/{pid}"))
+            .expect("open child proc identity");
+        let proc_inode = proc_dir.metadata().expect("stat child proc identity").ino();
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) };
+        assert_ne!(fd, -1, "open child pidfd: {}", Errno::last());
+        TraceeIdentity {
+            tid: pid,
+            snapshot,
+            proc_dir: proc_dir.into(),
+            proc_inode,
+            pidfd: Some(unsafe { OwnedFd::from_raw_fd(fd as i32) }),
+            parent: None,
+        }
+    }
+
+    fn assert_reaped(role: &str, pid: Pid) {
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "{role} tracee {pid} remains in procfs"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(Errno::last(), Errno::ECHILD);
+    }
+
+    fn assert_eventually_reaped(role: &str, pid: Pid) {
+        for _ in 0..2_000 {
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_reaped(role, pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn normal_preinit_resume_clears_held_root_stop_lease() {
+        let pid = match unsafe { unistd::fork() }.expect("fork held-stop resume child") {
+            ForkResult::Child => {
+                safeptrace::traceme_and_stop().expect("TRACEME held-stop resume child");
+                unsafe { libc::_exit(0) };
+            }
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        let (stopped, event) = Running::new(pid)
+            .wait()
+            .expect("wait held-stop resume child")
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+
+        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
+            &stopped,
+            &Event::Signal(Signal::SIGSTOP),
+        ))));
+        let running = RootStopLease::new(stopped, Some(Arc::clone(&slot)))
+            .resume(None)
+            .expect("resume held-stop child");
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "normal transition left a stale lease"
+        );
+
+        let exited = running
+            .next_state()
+            .await
+            .expect("wait resumed held-stop child");
+        assert_eq!(exited.assume_exited().1, ExitStatus::Exited(0));
+    }
+
+    fn spawn_held_stop_child(role: &str) -> (Pid, Stopped) {
+        let pid = match unsafe { unistd::fork() }
+            .unwrap_or_else(|error| panic!("fork {role}: {error}"))
+        {
+            ForkResult::Child => {
+                safeptrace::traceme_and_stop()
+                    .unwrap_or_else(|error| panic!("TRACEME {role}: {error}"));
+                unsafe { libc::_exit(0) };
+            }
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        let (stopped, event) = Running::new(pid)
+            .wait()
+            .unwrap_or_else(|error| panic!("wait {role}: {error}"))
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        (pid, stopped)
+    }
+
+    async fn resume_held_stop_child(role: &str, stopped: Stopped) {
+        let wait = stopped
+            .resume(None)
+            .unwrap_or_else(|error| panic!("resume {role}: {error}"))
+            .next_state()
+            .await
+            .unwrap_or_else(|error| panic!("wait resumed {role}: {error}"));
+        assert_eq!(wait.assume_exited().1, ExitStatus::Exited(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_stop_atomically_supersedes_same_generation_lease() {
+        let (_pid, stopped) = spawn_held_stop_child("exit supersession child");
+        let generation = stopped.terminal_cleanup();
+        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
+            &stopped,
+            &Event::Signal(Signal::SIGSTOP),
+        ))));
+
+        HeldRootStop::supersede_with_exit(&slot, &stopped)
+            .expect("same-generation exit stop must supersede existing lease");
+        {
+            let held = slot.lock().unwrap();
+            let held = held.as_ref().expect("exit supersession cleared the lease");
+            assert!(held.armed);
+            assert!(held.terminal.same_generation(&generation));
+            assert!(matches!(held.status, HeldRootStopStatus::Exit));
+        }
+
+        slot.lock().unwrap().take();
+        resume_held_stop_child("exit supersession child", stopped).await;

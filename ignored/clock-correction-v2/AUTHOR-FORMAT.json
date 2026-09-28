@@ -1,0 +1,90 @@
+{
+  "argv": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "reverie-ptrace/src/task.rs",
+    "reverie-ptrace/src/clock_origin_tests.rs",
+    "reverie-ptrace/src/injection_stop_tests.rs",
+    "reverie-ptrace/src/tracer.rs"
+  ],
+  "tool": {
+    "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+    "bytes": 5255768,
+    "mode": 493,
+    "sha256": "774703f5ead5e4a869556d414a48ecc1b272548c64fa3bd3776fb28e2af48e05"
+  },
+  "cpu_limit_seconds": 30,
+  "wall_limit_seconds": 60,
+  "stream_limit_bytes": 16777216,
+  "returncode": 0,
+  "forced": false,
+  "elapsed_seconds": 0.12162590003572404,
+  "before": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/author-format-before/reverie-ptrace/src/task.rs",
+      "bytes": 259258,
+      "mode": 420,
+      "sha256": "21647cd38dc517de1db9c1247a31883007a7362d4f028e76807d921d8eed5414"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/author-format-before/reverie-ptrace/src/clock_origin_tests.rs",
+      "bytes": 13481,
+      "mode": 420,
+      "sha256": "45b7d62fd4c3d7506724e5d0a9b0f7c0fc9f550983ea79ee72e2f745ae65cf0a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/author-format-before/reverie-ptrace/src/injection_stop_tests.rs",
+      "bytes": 13607,
+      "mode": 420,
+      "sha256": "745d935d40fe8e8731765b85a2b685d6982435df5cf303e52079165ee910bd3f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/author-format-before/reverie-ptrace/src/tracer.rs",
+      "bytes": 174746,
+      "mode": 420,
+      "sha256": "75d3f34aafcce4763fb2cce294f5df7266a92ad18bd3afc47db9fead0df2b2e4"
+    }
+  ],
+  "after": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/src/task.rs",
+      "bytes": 259258,
+      "mode": 420,
+      "sha256": "21647cd38dc517de1db9c1247a31883007a7362d4f028e76807d921d8eed5414"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/src/clock_origin_tests.rs",
+      "bytes": 13527,
+      "mode": 420,
+      "sha256": "794ecb759738385d84548728dd01ea6c31be0501a757475bb056bd55b4e0ec24"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/src/injection_stop_tests.rs",
+      "bytes": 14267,
+      "mode": 420,
+      "sha256": "48d9ae697494a9305c0f2d74116476e91f737c8fcd19c896d72210bd073979b6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/source/reverie-ptrace/src/tracer.rs",
+      "bytes": 174746,
+      "mode": 420,
+      "sha256": "75d3f34aafcce4763fb2cce294f5df7266a92ad18bd3afc47db9fead0df2b2e4"
+    }
+  ],
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/AUTHOR-FORMAT.stdout",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/AUTHOR-FORMAT.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "qualification": false
+}

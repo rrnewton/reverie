@@ -1,0 +1,20 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.25s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+
+running 1 test
+
+running 1 test
+
+thread 'reverie-kvm-process-2' (905285) panicked at reverie-kvm/tests/support/terminal_fork.rs:126:17:
+controlled child wait callback panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+terminal fork mode=6 early=false result=Err(SharedFailure(Cleanup { phase: "child wait hook", error: GuestWorkerPanic })) at_return=[Event { kind: "start", pid: 1, value: 905281 }, Event { kind: "start", pid: 2, value: 905285 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "wait-event", pid: 2, value: 0 }, Event { kind: "wait-collected", pid: 2, value: 0 }, Event { kind: "parent-ready", pid: 1, value: 6 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }] global_dropped=true
+test terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.08s
+
+test terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.08s
+

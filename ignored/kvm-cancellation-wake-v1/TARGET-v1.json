@@ -1,0 +1,67 @@
+{
+  "scope": "Preserved initial source/caller preparation, never executed. Root requested removal of the new dead-code allowance before the successor is admitted.",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "source_sha256": "40f4bc0a8705589a8b988fd3251ce80cc532ea5dc61045ef40161e3ebb6f3049",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/BASE-vm.rs",
+      "bytes": 340465,
+      "sha256": "271d143ba41ae5cdbf42152de122c048eded2f067140fd7f9ab30ff36f9d6030"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/CALLER-CONTRACT.json",
+      "bytes": 2793,
+      "sha256": "14cd69c1417d511402254bbf8792328add0770102ba612788929b69c7ba91c14"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/CALLER-DELTA.patch",
+      "bytes": 7468,
+      "sha256": "02cf0feb21cce74e203920f19fe888b60ac37eb2896fcf2fc27fe7c8126eb8be"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/FORMAT.json",
+      "bytes": 413,
+      "sha256": "a0adde809fba479d94e98863bdb6f81f30928451d6c3fba8d0a2f2ae07a576de"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/RUN-COMMANDS.txt",
+      "bytes": 1009,
+      "sha256": "990abf0923e641e300ef4db4056309cbdbe67ce73ce5c03a7765b6dde623aa6a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/SOURCE-READBACK.json",
+      "bytes": 2287,
+      "sha256": "9a9c598818414cedd9f7856c9d7b5aedb1469340461fdb7ac938728db46cd0f4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/SOURCE.patch",
+      "bytes": 11311,
+      "sha256": "78c436655f38f067fa0dd8623aedeb9588de9ff1628b3935f79eded93c0dc6f2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/START.json",
+      "bytes": 1185,
+      "sha256": "52823eb5b119193174b8051a1736faf31d9bfa70674d9b3e8782c9831256ec27"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/TEST-PLAN.json",
+      "bytes": 4880,
+      "sha256": "f2f24c081e9ffcc89851cffaf4f063f29fd4dbc9cf0c7964be5a2be56b5d44df"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/prepare-caller.py",
+      "bytes": 7503,
+      "sha256": "ffb49f33ec600f98758e24eb0bad1e5f3f04f2cb794548a43c0fc4598b98df38"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/run.py",
+      "bytes": 6386,
+      "sha256": "5bc6c4848e4f72a7624a5aa20195b48d70b2dfdd954498782cc59bdab55e8b92"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-cancellation-wake-v1/vm.rs",
+      "bytes": 349902,
+      "sha256": "40f4bc0a8705589a8b988fd3251ce80cc532ea5dc61045ef40161e3ebb6f3049"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+- **Empty-vs-empty.** `verification_report` (`verify.rs:634-690`) makes `bitwise_parity` a three-way conjunction whose third conjunct is `compared_log_messages.is_some_and(|c| c.is_nonzero())`, with the comment naming exactly this hazard. `log_diff_summary_from_strs_with_filter` also emits a distinct "ZERO … messages were selected … (no-result, not a match)" line rather than letting "no differences" stand in.
+- **Unequal lengths passing.** `diff_vecs` zips pairwise *and* compares `v1.len().cmp(&v2.len())`, incrementing `diff_count` on either inequality. 99|99, 293|293, 409|409 are equal counts with zero pairwise differences.
+- **Hidden filters.** `bitwise_info_v1_options` is a fixed policy: `ignore_lines: Vec::new()`, `skip_commit: false`, `skip_detlog: false`, `require_structured_events: true`, `include_detlogs: [Syscall, SyscallResult, Other]`, and the record predicate passed is `|_| true`. Truncation is a **refusal** (`diff_found: true` *and* counts forced to 0, in both directions).
+
+The measured `comparison` blocks match every one of `is_bitwise_parity()`'s eleven clauses, and the corrected reader asserts `verification['bitwise_parity']` on all three cases. So the three KVM pairs are genuine canonical `BitwiseInfoV1` INFO parity.
+
+**Scope, stated so this is not over-read:** these are KVM-vs-KVM *self-determinism* comparisons of one command run twice. They are not cross-backend parity and not a claim about other programs. The protocol document at `88ceb86d…` is unedited and correctly so — skills are not this PR's to change — but its sentence is now **stale relative to the code**, and that drift is worth an owner report in its own right. I am not treating it as a defect in this PR.
+
+### E1 — adjudicated, and the correction is better than what I asked for
+
+The original reader's `assert not any('inbound syscall exit_group(95)' in l …)` was vacuous; the real format carries a colon. I am **not relabelling that check**: it was vacuous, the original reader and its results remain immutable at `da038b24…` / `60ef0927…`, and the new artifact is separate.
+
+The append-only correction (`READER-DELTA.patch`) does three things I credit:
+1. fixes the literal to `'inbound syscall: exit_group(95)'`;
+2. adds a **positive control first** — in both retained worker-wins-v2 traces it requires exactly one hit, at line 794, on `[detcore, dtid 4]`, and records `original_colonless_needle_matches_neither_positive: true`. That is a direct demonstration that the old needle failed on a trace where the event is unambiguously present;
+3. binds the positive inputs by `assert actual == trace['file']` — same path, bytes and sha256 as the original results, so this is the same evidence, not a substituted trace.
+
+It also adds `assert __debug__` so `PYTHONOPTIMIZE` cannot strip the assertions, and was executed under `PYTHONOPTIMIZE=0 python3 -B`, raw 0. Every prior assertion is preserved. **E1 is resolved.** No verdict moved, as I said it would not.
+
+### §13.4 — `kvm_is_unavailable`: **my skip concern is fully closed, not merely narrowed**
+
+```rust
+fn kvm_is_unavailable(error: &kvm_ioctls::Error) -> bool {
+    matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM)
+}
+```
+
+Three errnos route to the skip arm; **every other errno panics unconditionally**; and with `REVERIE_REQUIRE_KVM` present all three of those also panic. The retained V7 plans set `REVERIE_REQUIRE_KVM=1`. So under the qualification environment no silent skip is reachable by any error value. This does **not** block the qualification, and I withdraw the residual I left in V3 as the narrow remainder of my V6 N3.
+
+### §13.5 — reverse group status: **refuted as a hazard, on source I read myself**
+
+The author's argument is supplied as an argument. I tested it rather than accepting it, and I reach the same conclusion by a route that is immune to the omitted-caller objection.
+
+`TaskLifecycleTable::exit` (`elf.rs:252-275`) is the whole answer:
+
+```rust
+let Some(task) = self.tasks.get(&tid).copied() else { return status; };
+if task.generation != generation { return status; }
+let exit = self.process_exits.entry((task.tgid, task.process_generation)).or_default();
+if group { exit.group.get_or_insert(status); }
+exit.last_thread = Some(status);
+let status = exit.group.unwrap_or(status);
+```
+
+For a live current-generation task this is **first-group-status-wins, and the return is the group value**. `ElfExecutor::take_exit` (`executor.rs:4234-4246`) holds the shared `signal_transaction` mutex, locks `task_lifecycle`, and **returns that table value**, not the raw staged status. CLONE_THREAD workers share the table (`task_lifecycle: self.task_lifecycle.clone()`, `elf.rs:840`) and the same key: `state.pid = self.state.pid` (`executor.rs:2372`) and `register` reuses an existing same-`tgid` task's `process_generation` (`elf.rs:167-174`). `GuestThreadGroup::request_exit_group` (`vm.rs:448-452`) is a second `get_or_insert` — first published value wins.
+
+So there are two independent first-wins collapses in series, and the arm's `exit.status` at `runtime.rs:3250` is already the collapsed value before it is either published or returned. **Because the guarantee lives in `exit()`'s own semantics, no unread caller can produce a second raw status for a live current-generation task.**
+
+One thing the author does not say, which I will, because it resolves my V6 N1 sub-question rather than merely deflecting it: the arm's failure to consult `guest_thread_group_exit_status()` — the asymmetry with `cancelled_tool_thread_status` (`runtime.rs:2155-2168`) that I flagged — is not an omission but the **better** of the two routes. `cancelled_tool_thread_status` is entered when the thread has no exit of its own and must obtain a status from somewhere, so it reads the group cell. The timestamp arm is entered only when the thread *has* staged its own exit, so `take_exit` is available — and the group cell is published *after* the lifecycle commit, so it can lag. The arm reads the earlier and authoritative source.
+
+**Residual, which I state and do not claim proved either way:** the missing/mismatched-generation branch returns the raw status. I found no timestamp path that removes its own generation and then reaches `take_exit` again, and the arm takes the pending exit exactly once. Decisively for this verdict, that branch is **shared by every caller of `take_exit`**, including `finish_static_elf_thread` (`vm.rs:3358`, `:3366`) and `retire_current_thread` on every ordinary exit. A defect there is pre-existing backend behaviour that this PR inherits, not one it introduces. The reverse publication interval remains unmeasured; mode 10 pins worker-first only.
+
+### Before-charge and clock-RPC cancellation: **unmeasured, and they cannot bear on this PR's source**
+
+I am not claiming them measured. They remain exactly as open as I left them: `pre_handler_hook` (`detcore/src/lib.rs:1347`) and `guest_clock_time` (`:1380`) are two of the three blocking points in `handle_rdtsc_event`, and only the third (`post_handler_hook`) is measured.
+
+The reason this does not block *this* PR is a source fact, not a concession: whichever blocking point produces `GlobalResponse::ThreadExited`, Detcore's response is the same `guest.tail_inject(Exit::default())`, and the reverie-kvm side sees the identical `(ProcessExecutionContext::Timestamp, SYS_exit)` pair, takes the identical admission branch at `runtime.rs:449`, and runs the identical terminal arm. The admission predicate does not read the interval. What the two unmeasured intervals bound is **Detcore's clock accounting** — whether the 25 ns `NANOS_PER_NONDET_INSTR` charge was applied before the thread retired — which is a property of the separate Hermit consumer patch, not of this source. They stay on that patch's ledger.
+
+---
+
+## 5. Goalpost audit — whole PR, both directions
+
+**The one substantive widening, adjudicated.** `unwrap_shared_guest_exception` makes three fault-only helpers accept `SharedFailure(GuestException{..})` in addition to bare `GuestException{..}`. It is necessary (the Tool completion API now wraps a lone fault in a shared ownership envelope), it unwraps **exactly one layer of exactly one shape** — every other `SharedFailure` payload is returned unchanged and still fails the match — and it does **not** unwrap `WithCleanup`. That last property is not asserted in prose; it is proved by a dedicated test, `fault_only_assertion_rejects_actual_tool_exit_cleanup_failure`, which builds a real fault-plus-failing-exit-hook run and `catch_unwind`s to require `rejected.is_err()`. **This is the correct way to adapt an assertion to a changed envelope**, and it is the strongest example of it in the PR.
+

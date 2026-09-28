@@ -1,0 +1,160 @@
+        self.notifier_owner = Some(std::thread::current().id());
+        self.terminal = Some(task.terminal_cleanup());
+    }
+
+    fn capture_pending_children(&self, terminal: &TerminalCleanup) -> std::io::Result<()> {
+        while let Some(reservation) = terminal.reserve_pending_for_cleanup(Duration::ZERO) {
+            let state = reservation.decode().map_err(|error| {
+                std::io::Error::other(format!("decode queued cancellation state: {error}"))
+            })?;
+            if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
+                let child_pid = child.pid();
+                let mut newborns = self.newborn_tracees.lock().unwrap();
+                newborns
+                    .entry(child_pid)
+                    .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), op, &child));
+            }
+            // The raw FIFO front remains present until any child cleanup
+            // ownership above is durably stored.
+            reservation.commit();
+        }
+        Ok(())
+    }
+
+    fn freeze_root_generation(&mut self) -> std::io::Result<()> {
+        let terminal = self
+            .terminal
+            .as_ref()
+            .expect("registered LiteInst cleanup has a root terminal handle");
+        terminal
+            .ensure_registered()
+            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+        if self.root_frozen {
+            return self.capture_pending_children(terminal);
+        }
+        if let Some(mut held) = self.held_root_stop.lock().unwrap().take() {
+            let owns_claimed_exit = matches!(held.status, HeldRootStopStatus::Exit);
+            let matching_status = match held.status {
+                HeldRootStopStatus::Signal(signal) => {
+                    let _exact_signal = signal;
+                    true
+                }
+                HeldRootStopStatus::NewChild(link) => self
+                    .newborn_tracees
+                    .lock()
+                    .unwrap()
+                    .get(&link.tid)
+                    .is_some_and(|newborn| {
+                        newborn.link.parent_tid == link.parent_tid && newborn.link.op == link.op
+                    }),
+                HeldRootStopStatus::Exec(replaced_tid) => {
+                    let _exact_replaced_tid = replaced_tid;
+                    true
+                }
+                HeldRootStopStatus::VforkDone
+                | HeldRootStopStatus::Exit
+                | HeldRootStopStatus::Seccomp
+                | HeldRootStopStatus::Stop
+                | HeldRootStopStatus::Syscall => true,
+            };
+            if !held.armed
+                || held.root_tid != self.pid()
+                || !terminal.same_generation(&held.terminal)
+                || !matching_status
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "held root stop lease did not match the exact event generation/status",
+                ));
+            }
+            if owns_claimed_exit {
+                // SAFETY: taking the exact-generation held lease is the
+                // cancellation handoff for the ExitFuture-minted Stopped. The
+                // handler future has been dropped, so no independent Stopped
+                // capability survives this exclusive slot transfer.
+                unsafe { terminal.revoke_owned_exit_stop() }
+            } else {
+                terminal.revoke_unclaimed_exit_stop()
+            }
+            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+            held.disarm();
+            self.root_frozen = true;
+            return self.capture_pending_children(terminal);
+        }
+
+        match self.identity.send_signal(Signal::SIGSTOP) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if let Some(reservation) = terminal.reserve_pending_for_cleanup(remaining) {
+                let state = reservation.decode().map_err(|error| {
+                    std::io::Error::other(format!(
+                        "decode exact root freeze state for {}: {error}",
+                        self.pid()
+                    ))
+                })?;
+                if let Wait::Stopped(stopped, Event::NewChild(op, child)) = state {
+                    let child_pid = child.pid();
+                    self.newborn_tracees
+                        .lock()
+                        .unwrap()
+                        .entry(child_pid)
+                        .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), op, &child));
+                }
+                terminal
+                    .revoke_unclaimed_exit_stop()
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                reservation.commit();
+                // Any exact-generation nonterminal wait status means the root
+                // is kernel-stopped. Drain the remaining FIFO while it cannot
+                // execute and create another child.
+                self.capture_pending_children(terminal)?;
+                self.root_frozen = true;
+                return Ok(());
+            }
+            if terminal.exit_stop_observed() {
+                terminal
+                    .revoke_unclaimed_exit_stop()
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                self.root_frozen = true;
+                return Ok(());
+            }
+            if terminal.wait(Duration::ZERO) && terminal.pending_is_empty() {
+                self.root_frozen = true;
+                return Ok(());
+            }
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("root {} did not enter an exact notifier stop", self.pid()),
+                ));
+            }
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn confirm_reaped(&mut self) -> std::io::Result<()> {
+        if !self.armed {
+            return Ok(());
+        }
+        let notifier_finished = self
+            .terminal
+            .as_ref()
+            .is_some_and(|terminal| terminal.wait(Duration::ZERO) && terminal.pending_is_empty());
+        let identity_absent = !self.identity.same_process();
+        let unregistered_absent = self.terminal.is_none() && identity_absent;
+        let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
+        let retained_empty =
+            self.retained_descendants.is_empty() && self.retained_terminal_descendants.is_empty();
+        if newborns_empty
+            && retained_empty
+            && ((notifier_finished && identity_absent) || unregistered_absent)
+        {
+            self.armed = false;

@@ -1,0 +1,12 @@
+{
+  "executed": false,
+  "first_run": "Actual public raw loop with real busy-mode guest and real foreign SIGURG; require direct Error::Kvm(EINTR), exactly one RUN and no exit.",
+  "limits": "No compilation, formatting or execution by author. No timer/perf/RCB or ELF/Tool retry-policy coverage.",
+  "planned_count": 1,
+  "planned_success_path_public_run_invocations": 2,
+  "rescue": "Failure-only real reserved64 gate-close kick plus poison; rescue must fail the test.",
+  "second_run": "Fresh finite HLT invocation using the same backend after physical worker join.",
+  "test_declarations": [
+    "vm::tests::entry_eintr_tests::raw_public_foreign_sigurg_preserves_eintr_and_allows_fresh_entry"
+  ]
+}

@@ -1,0 +1,160 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+//! Timers monitor a specified thread using the PMU and deliver a signal
+//! after a specified number of events occur. The signal is then identified
+//! and transformed into a reverie timer event. This is intended to allow
+//! tools to break busywaits or other spins in a reliable manner. Timers
+//! are ideally deterministic so that `detcore` can use them.
+//!
+//! Due to PMU skid, precise timer events normally must be driven to completion
+//! via single stepping. This means the PMI is scheduled early, and events with
+//! very short timeouts require immediate single stepping. Immediate stepping is
+//! acheived by artificially generating a signal that will then be delivered
+//! immediately upon resumption of the guest. If delivery is already past the
+//! target, the overshoot is recorded and the event is delivered at the observed
+//! counter because single stepping cannot move the guest backward.
+//!
+//! Proper use of timers requires that all delivered signals of type
+//! `Timer::signal_type()` be passed through `Timer::handle_signal`, and that
+//! `Timer::observe_event()` be called whenever a Tool-observable reverie event
+//! occurs. Additionally, `Timer::finalize_requests()` must be called
+//!  - after the end of the tool callback in which the user could have
+//!    requested a timer event, i.e. those with `&mut guest` access.
+//!  - after any reverie-critical single-stepping occurs (e.g. in syscall
+//!    injections),
+//!  - before resumption of the guest,
+//!    which _usually_ means immediately after the tool callback returns.
+
+use std::cmp::Ordering::Equal;
+use std::cmp::Ordering::Greater;
+use std::cmp::Ordering::Less;
+use std::sync::OnceLock;
+
+use reverie::Errno;
+use reverie::Pid;
+use reverie::RegDisplay;
+use reverie::RegDisplayOptions;
+use reverie::Signal;
+use reverie::Tid;
+use safeptrace::Error as TraceError;
+use safeptrace::Event as TraceEvent;
+use safeptrace::Running;
+use safeptrace::Stopped;
+use safeptrace::Wait;
+use thiserror::Error;
+use tracing::debug;
+use tracing::trace;
+use tracing::warn;
+
+use crate::perf::*;
+
+// This signal is unused, in that the kernel will never send it to a process.
+const MARKER_SIGNAL: Signal = reverie::PERF_EVENT_SIGNAL;
+
+/// We refuse to schedule a "perf timeout" for this or fewer RCBs, instead
+/// choosing to directly single step. This is because I am somewhat paranoid
+/// about perf event throttling, which isn't well-documented.
+const SINGLESTEP_TIMEOUT_RCBS: u64 = 5;
+
+/// The single, greppable marker emitted to stderr whenever this backend detects
+/// the RCB fallback overshooting its target. Re-exported from the
+/// backend-agnostic `reverie` crate so that this precise single-step guard and
+/// hermit's detcore log-and-continue path emit the *same* token — one marker,
+/// one source. See [`reverie::SKID_OVERSHOOT_MARKER`] for the full contract and
+/// the retry-harness safety property.
+pub use reverie::SKID_OVERSHOOT_MARKER;
+
+/// Fault-injection knob: when set to a parseable `u64`, this env var overrides
+/// the processor-detected skid margin for the whole process. Setting it to `0`
+/// programs the precise timer's overflow interrupt *at* the target RCB instead
+/// of `skid_margin` RCBs early, so any natural positive skid pushes the fallback
+/// single-step past the target and deterministically triggers the
+/// [`SKID_OVERSHOOT_MARKER`] path. This exists to exercise the skid overshoot +
+/// retry harness on demand; it is not a tuning knob for normal runs. A value
+/// that does not parse as `u64` is ignored (processor default retained).
+pub const SKID_MARGIN_OVERRIDE_ENV: &str = "REVERIE_SKID_MARGIN_OVERRIDE";
+
+/// Supervisor-only witness nonce. When the consuming harness (the hermit
+/// *supervisor*) sets this env var, its exact value is stamped into every
+/// [`SKID_OVERSHOOT_MARKER`] line as a ` witness=<value>` field. A downstream
+/// retry gate uses it to distinguish a genuine supervisor-emitted overshoot from
+/// guest-printed marker text: hermit strips this var from the guest environment,
+/// so the guest can neither read nor forge the value. Unset or empty leaves the
+/// marker in its plain (unauthenticated) shape.
+pub const WITNESS_TOKEN_ENV: &str = "HERMIT_SKID_WITNESS_TOKEN";
+
+static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
+
+pub(crate) fn get_pmu_config() -> &'static PmuConfig {
+    PMU_CONFIG.get_or_init(PmuConfig::new)
+}
+
+/// Processor-specific PMU event settings used by precise ptrace timers.
+// TODO-HUMAN-REVIEW(PR-186): Review the programmatic PMU skid-margin override API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PmuConfig {
+    rcb_event: u64,
+    skid_margin: u64,
+    skid_margin_override: Option<u64>,
+}
+
+impl PmuConfig {
+    /// Attempts to configure the PMU without assuming that this CPU has a
+    /// measured deterministic-timer profile.
+    ///
+    /// In-guest clocks can treat an unknown CPU as an unavailable optional
+    /// capability. Precise ptrace timers retain [`Self::new`]'s fail-fast
+    /// contract because they also require a measured skid margin.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn try_new() -> Option<Self> {
+        let features = raw_cpuid::CpuId::new().get_feature_info()?;
+        Self::try_from_family_model(features.family_id(), features.model_id())
+            .map(Self::with_env_overrides)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn try_new() -> Option<Self> {
+        Some(Self::new())
+    }
+
+    /// Creates / initializes the PMU config.
+    #[cfg(target_arch = "x86_64")]
+    pub fn new() -> Self {
+        let c = raw_cpuid::CpuId::new();
+        let fi = c
+            .get_feature_info()
+            .expect("CPUID feature information is required to configure the PMU");
+        Self::from_cpuid_features(fi).with_env_overrides()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn new() -> Self {
+        // TODO:
+        //  1. Compute the microarchitecture from
+        //     `/sys/devices/system/cpu/cpu*/regs/identification/midr_el1`
+        //  2. Look up the microarchitecture in a table to determine what features
+        //     we can enable.
+        // References:
+        //  - https://github.com/rr-debugger/rr/blob/master/src/PerfCounters.cc#L156
+        const BR_RETIRED: u64 = 0x21;
+
+        // For now, always assume that we can get retired branch events.
+        Self {
+            rcb_event: BR_RETIRED,
+            skid_margin: 1000,
+            skid_margin_override: None,
+        }
+        .with_env_overrides()
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn from_cpuid_features(fi: raw_cpuid::FeatureInfo) -> Self {
+        Self::from_family_model(fi.family_id(), fi.model_id())
+    }
+

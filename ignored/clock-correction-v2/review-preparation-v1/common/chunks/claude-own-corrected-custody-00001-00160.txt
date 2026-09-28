@@ -1,0 +1,160 @@
+{
+  "scope": "Later combined coverage authentication for unchanged design. Original failed coverage receipt and false claim remain unchanged. No source/runtime approval inferred.",
+  "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+  "verdict": "CHANGES REQUESTED in original and corrected reports",
+  "original_complete_chunks": 155,
+  "original_required_chunks": 163,
+  "repair_complete_chunks": 8,
+  "distinct_union_chunks": 163,
+  "coverage_complete_now": true,
+  "original_audit_remains_failed": true,
+  "later_source_index_order_deviation_preserved": true,
+  "canonical_primary_grounding": "Own original ordered reads authenticated separately; not repeated or borrowed",
+  "repair_readonly_tools": [
+    "Read"
+  ],
+  "repair_tool_calls": 11,
+  "repair_errors": [],
+  "repair_unindexed_reads": [],
+  "raw_status": 0,
+  "elapsed_seconds": 167.07079092599452,
+  "held_inputs": 539,
+  "corrected_report_event": {
+    "event": 64,
+    "block": 0,
+    "uuid": "57ce4342-7dc9-4c9a-88a3-443e1228bcb9"
+  },
+  "metadata_read_limits": "The repair disclosed a partial read of the gap census and did not reread its own original report file. All eight required raw-log chunks were read completely; original report remains separately bound and composed, not presented as a new full read.",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/CLAUDE-REPORT.md",
+      "bytes": 30964,
+      "sha256": "8672b018344f47c00c03241fd77bb17bdc31da3e7b3b892389c84851cb4988ee",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/COVERAGE-GAP.json",
+      "bytes": 108523,
+      "sha256": "0d7bcae302e22848ca8a148d94c3d1fedd4beaa676825160d755de7f11ee0bc6",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/AUDIT-ATTEMPT.json",
+      "bytes": 265,
+      "sha256": "8da7f08ee157a48120d18e4f99f0ac20ca1d9a132642d60e8ec3a784741093e9",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/AUDIT-ATTEMPT.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/AUDIT-ATTEMPT.stderr",
+      "bytes": 542,
+      "sha256": "fd6a11980a1bd511615b5b876fd59a5282d3a7fdaa273867526dc931d945189b",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/ALL-ASSISTANT-TEXT.json",
+      "bytes": 32235,
+      "sha256": "7f5d47c8666f695d24f4d0795e0d588a78dacf87bcc5023e5aa7418538ee35b4",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/exit.json",
+      "bytes": 1504,
+      "sha256": "a28fab1cb4651dccdcb883ed9a623973384570685d3235f6a69e0b6a6df46397",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/output.jsonl",
+      "bytes": 3054019,
+      "sha256": "f24f43a046615cf5a213e2f5c98057204c80be4995589fe55b7389fd8c6988ef",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/source-before.json",
+      "bytes": 163349,
+      "sha256": "37a01a09f77b9ef6dac329e55de993d36af567812818dd57f313af912637df6e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude/source-after.json",
+      "bytes": 163349,
+      "sha256": "37a01a09f77b9ef6dac329e55de993d36af567812818dd57f313af912637df6e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/PREPARATION.json",
+      "bytes": 2494,
+      "sha256": "71ccf1ae3ab6c7b55ca58c9c40ec3f20a9ff9e0713a86dea6b456caf8175e955",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/TARGET.json",
+      "bytes": 2662,
+      "sha256": "e80bca69f3c142fc009918f7a1796a201ca83baabf2d6790f3bb6715c93c72e4",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/prompt.txt",
+      "bytes": 4374,
+      "sha256": "e80722d40dd16fc2448358407e4127d618f03fd684a8da6f7acbee29d1e8a433",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/inputs.json",
+      "bytes": 174869,
+      "sha256": "6a64211f71bc6d9e031f16c3959d1e701b784c393a51f54107add7232caebbd3",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/launch-review.py",
+      "bytes": 5182,
+      "sha256": "2fae51dc92750af09f914b673a2767071c01c0c2058c60b6c1ef1795a8e04245",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/audit-final.py",
+      "bytes": 5738,
+      "sha256": "d5f03d9964be5cfd0ed09940971f0c1a11aefe5204e57bf5c1dfcb9c807c3b13",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/COMPLETE_READS.json",
+      "bytes": 5055,
+      "sha256": "5c0e7c411b48b1443b75b79441f372f87a8097ee49f3b4442da03a0f834c863f",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/INITIAL-POLICY-READBACK.json",
+      "bytes": 258,
+      "sha256": "251ecff6c61882f6dcda008afff05aa9454d6f88dc7f43701bf4d9d4fd5a547f",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/exit.json",
+      "bytes": 1506,
+      "sha256": "8e8b34499828b2d89b84a10aab32647620f06a726fca4f7d757bf2ccea0ab649",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/output.jsonl",
+      "bytes": 396927,
+      "sha256": "770ac52e5d70ad26a5655dd571ea212a6747028bb11d9bc14d1d0258ac1d2eff",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/stderr.log",
+      "bytes": 93,
+      "sha256": "baa73543804294abc0f6c8fc48aeda5ae18986656b5edbc3c7f41677d79ac60e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/claude-coverage-v2/capacity-before.json",
+      "bytes": 7219,
+      "sha256": "061cc65df1c15fb09233165494268291f4a7a26a64d40e8c4983564cd535362c",
+      "mode": 420
+    },

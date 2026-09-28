@@ -1,0 +1,273 @@
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -2340,6 +2340,270 @@
+         }
+     }
+     Error::combine(errors)
++}
++
++/// Drain the retained consumers after their owner's caught panic. Publication
++/// and propagation of that panic remain the caller's responsibility.
++pub(crate) async fn finish_unstarted_tool_cleanups_after_panic(
++    executor: &mut ElfExecutor,
++) -> crate::failure::owned_future::CaughtFuture<Result<()>> {
++    use crate::failure::owned_future::CaughtFuture;
++    use crate::failure::owned_future::catch_owned_future;
++
++    // Take the whole queue before polling a consumer. The iterator and all
++    // prior outcomes stay outside each individual poll/destruction catch.
++    let cleanups = executor.take_unstarted_tool_cleanup();
++    let mut errors = Vec::new();
++    let mut panics = Vec::new();
++    for cleanup in cleanups {
++        let caught = catch_owned_future(cleanup).await;
++        match caught.output {
++            None | Some(Ok(())) | Some(Err(Error::RunAborted)) => {}
++            Some(Err(error)) => errors.push(error),
++        }
++        panics.extend(caught.panics);
++    }
++    CaughtFuture {
++        output: Some(Error::combine(errors)),
++        panics,
++    }
++}
++
++#[cfg(test)]
++mod unstarted_cleanup_panic_tests {
++    use std::panic::resume_unwind;
++    use std::sync::atomic::AtomicUsize;
++    use std::task::Context;
++    use std::task::Waker;
++
++    use futures::channel::oneshot;
++
++    use super::*;
++    use crate::failure::owned_future::PanicPayload;
++
++    #[derive(Default)]
++    struct Counts {
++        polls: AtomicUsize,
++        drops: AtomicUsize,
++    }
++
++    struct Consumer {
++        counts: Arc<Counts>,
++        output: Option<Result<()>>,
++        release: Option<oneshot::Receiver<()>>,
++        poll_panic: Option<PanicPayload>,
++        drop_panic: Option<PanicPayload>,
++    }
++
++    impl Consumer {
++        fn ready(output: Result<()>, counts: Arc<Counts>) -> Self {
++            Self {
++                counts,
++                output: Some(output),
++                release: None,
++                poll_panic: None,
++                drop_panic: None,
++            }
++        }
++    }
++
++    impl Future for Consumer {
++        type Output = Result<()>;
++
++        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
++            let this = self.get_mut();
++            this.counts.polls.fetch_add(1, Ordering::SeqCst);
++            if let Some(payload) = this.poll_panic.take() {
++                resume_unwind(payload);
++            }
++            if let Some(release) = this.release.as_mut() {
++                match Pin::new(release).poll(cx) {
++                    Poll::Pending => return Poll::Pending,
++                    Poll::Ready(Ok(())) => {}
++                    Poll::Ready(Err(_)) => panic!("consumer release was dropped"),
++                }
++            }
++            this.release.take();
++            Poll::Ready(this.output.take().expect("completed consumer was repolled"))
++        }
++    }
++
++    impl Drop for Consumer {
++        fn drop(&mut self) {
++            self.counts.drops.fetch_add(1, Ordering::SeqCst);
++            if let Some(payload) = self.drop_panic.take() {
++                resume_unwind(payload);
++            }
++        }
++    }
++
++    struct PanicMarker(&'static str);
++
++    fn payload(label: &'static str) -> (PanicPayload, usize) {
++        let marker = Box::new(PanicMarker(label));
++        let address = std::ptr::from_ref(marker.as_ref()) as usize;
++        (marker, address)
++    }
++
++    fn assert_payload(payload: &PanicPayload, address: usize, label: &'static str) {
++        let marker = payload.downcast_ref::<PanicMarker>().unwrap();
++        assert_eq!(std::ptr::from_ref(marker) as usize, address);
++        assert_eq!(marker.0, label);
++    }
++
++    fn executor() -> ElfExecutor {
++        ElfExecutor::new(
++            crate::executor::native_loaded_state(std::path::Path::new("/")),
++            false,
++        )
++    }
++
++    #[test]
++    fn poll_and_drop_panics_preserve_pending_and_later_consumers() {
++        let mut executor = executor();
++        let first = Arc::new(Counts::default());
++        let second = Arc::new(Counts::default());
++        let third = Arc::new(Counts::default());
++        let (poll_panic, poll_address) = payload("first poll");
++        let (drop_panic, drop_address) = payload("first drop");
++        let mut consumer = Consumer::ready(Ok(()), first.clone());
++        consumer.poll_panic = Some(poll_panic);
++        consumer.drop_panic = Some(drop_panic);
++        executor.retain_unstarted_tool_cleanup(Box::pin(consumer));
++        let (release, wait) = oneshot::channel();
++        let mut consumer = Consumer::ready(Ok(()), second.clone());
++        consumer.release = Some(wait);
++        executor.retain_unstarted_tool_cleanup(Box::pin(consumer));
++        executor.retain_unstarted_tool_cleanup(Box::pin(Consumer::ready(Ok(()), third.clone())));
++
++        let mut drain = Box::pin(finish_unstarted_tool_cleanups_after_panic(&mut executor));
++        let mut cx = Context::from_waker(Waker::noop());
++        assert!(drain.as_mut().poll(&mut cx).is_pending());
++        assert_eq!(first.polls.load(Ordering::SeqCst), 1);
++        assert_eq!(first.drops.load(Ordering::SeqCst), 1);
++        assert_eq!(second.polls.load(Ordering::SeqCst), 1);
++        assert_eq!(second.drops.load(Ordering::SeqCst), 0);
++        assert_eq!(third.polls.load(Ordering::SeqCst), 0);
++        assert_eq!(third.drops.load(Ordering::SeqCst), 0);
++
++        release.send(()).unwrap();
++        let Poll::Ready(caught) = drain.as_mut().poll(&mut cx) else {
++            panic!("released consumer stayed pending");
++        };
++        assert!(matches!(caught.output, Some(Ok(()))));
++        assert_eq!(caught.panics.len(), 2);
++        assert_payload(&caught.panics[0], poll_address, "first poll");
++        assert_payload(&caught.panics[1], drop_address, "first drop");
++        drop(drain);
++        assert_eq!(first.polls.load(Ordering::SeqCst), 1);
++        assert_eq!(first.drops.load(Ordering::SeqCst), 1);
++        assert_eq!(second.polls.load(Ordering::SeqCst), 2);
++        assert_eq!(second.drops.load(Ordering::SeqCst), 1);
++        assert_eq!(third.polls.load(Ordering::SeqCst), 1);
++        assert_eq!(third.drops.load(Ordering::SeqCst), 1);
++        assert!(executor.take_unstarted_tool_cleanup().is_empty());
++    }
++
++    #[test]
++    fn returned_error_and_drop_panic_preserve_later_real_errors() {
++        let mut executor = executor();
++        let first = Arc::new(Counts::default());
++        let second = Arc::new(Counts::default());
++        let third = Arc::new(Counts::default());
++        let first_cause = Arc::new(Error::GuestClock("first consumer error".to_owned()));
++        let second_cause = Arc::new(Error::HostIo(std::io::Error::from_raw_os_error(libc::EIO)));
++        let (drop_panic, drop_address) = payload("drop after returned error");
++        let (later_panic, later_address) = payload("drop after later error");
++        let mut consumer = Consumer::ready(
++            Err(Error::SharedFailure(first_cause.clone())),
++            first.clone(),
++        );
++        consumer.drop_panic = Some(drop_panic);
++        executor.retain_unstarted_tool_cleanup(Box::pin(consumer));
++        let mut consumer = Consumer::ready(
++            Err(Error::RunAborted.with_cleanup(vec![Error::SharedFailure(second_cause.clone())])),
++            second.clone(),
++        );
++        consumer.drop_panic = Some(later_panic);
++        executor.retain_unstarted_tool_cleanup(Box::pin(consumer));
++        executor.retain_unstarted_tool_cleanup(Box::pin(Consumer::ready(Ok(()), third.clone())));
++
++        let mut drain = Box::pin(finish_unstarted_tool_cleanups_after_panic(&mut executor));
++        let mut cx = Context::from_waker(Waker::noop());
++        let Poll::Ready(caught) = drain.as_mut().poll(&mut cx) else {
++            panic!("ready consumers stayed pending");
++        };
++        let Some(Err(error)) = caught.output else {
++            panic!("consumer errors were lost");
++        };
++        let Error::WithCleanup { primary, cleanup } = error else {
++            panic!("later error was not retained");
++        };
++        assert!(matches!(
++            primary.as_ref(),
++            Error::SharedFailure(cause) if Arc::ptr_eq(cause, &first_cause)
++        ));
++        assert_eq!(cleanup.len(), 1);
++        let Error::WithCleanup { primary, cleanup } = cleanup[0].as_ref() else {
++            panic!("wrapped abort hid its real cleanup error");
++        };
++        assert!(matches!(primary.as_ref(), Error::RunAborted));
++        assert_eq!(cleanup.len(), 1);
++        assert!(matches!(
++            cleanup[0].as_ref(),
++            Error::SharedFailure(cause) if Arc::ptr_eq(cause, &second_cause)
++        ));
++        assert_eq!(caught.panics.len(), 2);
++        assert_payload(&caught.panics[0], drop_address, "drop after returned error");
++        assert_payload(&caught.panics[1], later_address, "drop after later error");
++        drop(drain);
++        for counts in [&first, &second, &third] {
++            assert_eq!(counts.polls.load(Ordering::SeqCst), 1);
++            assert_eq!(counts.drops.load(Ordering::SeqCst), 1);
++        }
++        assert!(executor.take_unstarted_tool_cleanup().is_empty());
++    }
++
++    #[test]
++    fn only_bare_abort_is_ignored_and_empty_drain_has_an_output() {
++        let mut executor = executor();
++        let shared_abort = Arc::new(Error::RunAborted);
++        for error in [
++            Error::RunAborted,
++            Error::SharedFailure(shared_abort.clone()),
++            Error::RunAborted.cleanup("retained phase"),
++        ] {
++            executor.retain_unstarted_tool_cleanup(Box::pin(std::future::ready(Err(error))));
++        }
++        let mut drain = Box::pin(finish_unstarted_tool_cleanups_after_panic(&mut executor));
++        let mut cx = Context::from_waker(Waker::noop());
++        let Poll::Ready(caught) = drain.as_mut().poll(&mut cx) else {
++            panic!("ready consumers stayed pending");
++        };
++        let Some(Err(Error::WithCleanup { primary, cleanup })) = caught.output else {
++            panic!("wrapped abort was incorrectly ignored");
++        };
++        assert!(matches!(
++            primary.as_ref(),
++            Error::SharedFailure(cause) if Arc::ptr_eq(cause, &shared_abort)
++        ));
++        assert_eq!(cleanup.len(), 1);
++        assert!(matches!(
++            cleanup[0].as_ref(),
++            Error::Cleanup { phase: "retained phase", error }
++                if matches!(error.as_ref(), Error::RunAborted)
++        ));
++        assert!(caught.panics.is_empty());
++        drop(drain);
++        assert!(executor.take_unstarted_tool_cleanup().is_empty());
++
++        let mut empty = Box::pin(finish_unstarted_tool_cleanups_after_panic(&mut executor));
++        let Poll::Ready(caught) = empty.as_mut().poll(&mut cx) else {
++            panic!("empty drain stayed pending");
++        };
++        assert!(matches!(caught.output, Some(Ok(()))));
++        assert!(caught.panics.is_empty());
++    }
+ }
+ 
+ impl KvmBackend {

@@ -1,0 +1,160 @@
+
+    (VSYSCALL_START..VSYSCALL_END).contains(&ip)
+}
+
+#[derive(Debug)]
+struct Suspended {
+    waker: Option<mpsc::Sender<Pid>>,
+    suspended: Arc<AtomicBool>,
+}
+
+/// Expected resume action sent by gdb client, when the task is in a gdb stop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ExpectedGdbResume {
+    /// Expecting a normal gdb resume, either single step, until or continue
+    Resume,
+    /// Expecting a gdb step over, this happens the underlying task hit a sw
+    /// breakpoint, gdb then needs to restore the original instruction --
+    /// which implies deleting the breakpoint, single-step, then restore
+    /// the breakpoint. This is a special case because we need to serialize
+    /// the whole operation, otherwise when there's a different thread in
+    /// the same process group which share the same breakpoint, removing
+    /// breakpoint can cause the 2nd thread to miss the breakpoint.
+    StepOver,
+    /// Force single-step, even if Resume(continue) is requested. This
+    /// is a workaround when fork/vfork/clone event is reported to gdb,
+    /// gdb could then issue an `vCont;p<pid>:-1` to resume all threads in
+    /// the thread group, which could cause the main thread to miss events.
+    StepOnly,
+}
+
+pub struct Child {
+    id: Pid,
+    /// Task is suspended, either stopped by gdb (client), or received
+    /// SIGSTOP sent by other threads in the same process group.
+    suspended: Arc<AtomicBool>,
+    /// Notify a task reached SIGSTOP.
+    wait_all_stop_tx: Option<mpsc::Sender<(Pid, Suspended)>>,
+    /// Channel to receive if a child task is becoming a daemon, when
+    /// `daemonize()` is called.
+    pub(crate) daemonizer_rx: Option<mpsc::Receiver<broadcast::Receiver<()>>>,
+    /// Join handle to let child task exit gracefully.
+    pub(crate) handle: JoinHandle<ExitStatus>,
+}
+
+impl Child {
+    /// Child task identifier.
+    pub fn id(&self) -> Pid {
+        self.id
+    }
+}
+
+impl fmt::Debug for Child {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Child").field("id", &self.id).finish()
+    }
+}
+
+impl Future for Child {
+    type Output = Result<ExitStatus, JoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        self.handle.poll_unpin(cx)
+    }
+}
+
+pub type Children = children::Children<Child>;
+
+enum HandleSignalResult {
+    /// Signal is suppressed with task resumed.
+    SignalSuppressed(Wait),
+    /// signal needs to be delivered.
+    SignalToDeliver(Stopped, Signal),
+}
+
+#[cfg(target_arch = "x86_64")]
+// Linux can report PTRACE_SINGLESTEP completion from a seccomp syscall skip as
+// TRAP_BRKPT without advancing RIP. Distinguish that kernel transition from an
+// external or guest breakpoint using the controller's exact pre-step state.
+fn is_expected_syscall_skip_breakpoint(
+    si_code: i32,
+    pre_rip: u64,
+    post_rip: u64,
+    syscall_opcode: [u8; cp::SYSCALL_INSTR_SIZE],
+    post_opcode: u8,
+    forced_external_for_test: bool,
+) -> bool {
+    !forced_external_for_test
+        && si_code == libc::TRAP_BRKPT
+        && post_rip == pre_rip
+        && syscall_opcode == [0x0f, 0x05]
+        && post_opcode != 0xcc
+}
+
+fn is_expected_syscall_skip_trap(
+    task: &Stopped,
+    pre_rip: u64,
+    forced_external_for_test: bool,
+) -> Result<bool, TraceError> {
+    if forced_external_for_test {
+        return Ok(false);
+    }
+    let siginfo = task.getsiginfo()?;
+    if siginfo.si_code == libc::TRAP_TRACE {
+        return Ok(true);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        return Ok(false);
+    }
+    #[cfg(target_arch = "x86_64")]
+    if siginfo.si_code != libc::TRAP_BRKPT {
+        return Ok(false);
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let post_rip = task.getregs()?.ip();
+        let syscall_site = pre_rip
+            .checked_sub(cp::SYSCALL_INSTR_SIZE as u64)
+            .ok_or(Errno::EOVERFLOW)? as usize;
+        let mut syscall_opcode = [0; cp::SYSCALL_INSTR_SIZE];
+        task.read_exact(syscall_site, &mut syscall_opcode)?;
+        let mut post_opcode = [0];
+        task.read_exact(post_rip as usize, &mut post_opcode)?;
+        Ok(is_expected_syscall_skip_breakpoint(
+            siginfo.si_code,
+            pre_rip,
+            post_rip,
+            syscall_opcode,
+            post_opcode[0],
+            forced_external_for_test,
+        ))
+    }
+}
+
+fn is_expected_breakpoint_trap(
+    task: &Stopped,
+    breakpoint_rip: u64,
+    forced_external_for_test: bool,
+) -> Result<bool, TraceError> {
+    if forced_external_for_test {
+        return Ok(false);
+    }
+    let siginfo = task.getsiginfo()?;
+    let observed_rip = task.getregs()?.ip();
+    let after_breakpoint = breakpoint_rip.checked_add(1);
+    Ok((siginfo.si_code == libc::TRAP_BRKPT
+        && (observed_rip == breakpoint_rip || Some(observed_rip) == after_breakpoint))
+        || (siginfo.si_code == libc::SI_KERNEL && Some(observed_rip) == after_breakpoint))
+}
+
+fn is_expected_private_syscall_trap(
+    task: &Stopped,
+    expected_rip: u64,
+    forced_external_for_test: bool,
+) -> Result<bool, TraceError> {
+    if forced_external_for_test {
+        return Ok(false);
+    }
+    if task.getregs()?.ip() != expected_rip {
+        return Ok(false);

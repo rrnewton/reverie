@@ -1,0 +1,32 @@
+{
+  "checks": {
+    "reverie-kvm/src/vm.rs": {
+      "same_ordered_function_names": true,
+      "function_count": 306,
+      "same_ordered_assertion_macro_names": true,
+      "assertion_macro_count": 511,
+      "same_test_attribute_count": true,
+      "test_attribute_count": 75,
+      "no_added_lint_suppression": true
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "same_ordered_function_names": true,
+      "function_count": 243,
+      "same_ordered_assertion_macro_names": true,
+      "assertion_macro_count": 144,
+      "same_test_attribute_count": true,
+      "test_attribute_count": 25,
+      "no_added_lint_suppression": true
+    },
+    "reverie-kvm/src/entry/driver.rs": {
+      "same_ordered_function_names": true,
+      "function_count": 20,
+      "same_ordered_assertion_macro_names": true,
+      "assertion_macro_count": 2,
+      "same_test_attribute_count": true,
+      "test_attribute_count": 0,
+      "no_added_lint_suppression": true
+    }
+  },
+  "limits": "Structural source checks only. No Rust parser, formatter, compiler, Clippy, or guest/test execution ran."
+}

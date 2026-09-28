@@ -1,0 +1,3378 @@
+--- /dev/null
++++ b/reverie-kvm/src/capture_identity.rs
+@@ -0,0 +1,152 @@
++// Private identities for the in-memory capture streams. An owned anonymous
++// pipe endpoint reserves each native inode for the whole capture lifetime.
++use std::os::fd::AsRawFd;
++use std::os::fd::FromRawFd;
++use std::os::fd::OwnedFd;
++
++use super::OutputAlias;
++
++#[cfg(test)]
++thread_local! {
++    static PIPES_PREPARED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++    static RELOCATION_FAILURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
++#[cfg(test)]
++pub(super) fn pipes_prepared() -> usize {
++    PIPES_PREPARED.get()
++}
++
++#[cfg(test)]
++pub(super) fn relocation_failures() -> usize {
++    RELOCATION_FAILURES.get()
++}
++
++#[cfg(test)]
++pub(super) type CaptureDropProbe = Box<dyn FnOnce([std::os::fd::RawFd; 2]) + Send>;
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub(super) struct CaptureObjectIdentity {
++    pub(super) device: libc::dev_t,
++    pub(super) inode: libc::ino_t,
++}
++
++struct CapturePipe {
++    identity: CaptureObjectIdentity,
++    // Never installed in a guest file table, used for I/O, or exported.
++    _keeper: OwnedFd,
++}
++
++impl CapturePipe {
++    fn try_new() -> std::io::Result<Self> {
++        let mut descriptors = [-1; 2];
++        // SAFETY: descriptors has room for both newly owned endpoints.
++        if unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
++            return Err(std::io::Error::last_os_error());
++        }
++        // SAFETY: a successful pipe2 created both descriptors exclusively here.
++        let keeper = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
++        let unused = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
++        // A caller may have closed fd 0, 1 or 2. Never retain a private pipe in
++        // the executor's implicit host-standard-descriptor namespace. Closing
++        // the unused endpoint first bounds this relocation's descriptor peak.
++        drop(unused);
++        let keeper = if keeper.as_raw_fd() < 3 {
++            // SAFETY: keeper is live; the returned descriptor is newly owned.
++            let private = unsafe { libc::fcntl(keeper.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
++            if private < 0 {
++                let error = std::io::Error::last_os_error();
++                #[cfg(test)]
++                RELOCATION_FAILURES.set(RELOCATION_FAILURES.get() + 1);
++                return Err(error);
++            }
++            let private = unsafe { OwnedFd::from_raw_fd(private) };
++            drop(keeper);
++            private
++        } else {
++            keeper
++        };
++        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
++        // SAFETY: keeper is live and stat is writable storage.
++        if unsafe { libc::fstat(keeper.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
++            return Err(std::io::Error::last_os_error());
++        }
++        // SAFETY: fstat initialized stat on success.
++        let stat = unsafe { stat.assume_init() };
++        if stat.st_mode & libc::S_IFMT != libc::S_IFIFO {
++            return Err(std::io::Error::other("capture identity is not a pipe"));
++        }
++        // No writer or buffered data exists. Keep one endpoint to prevent inode
++        // reuse; do not retain an extra descriptor merely to reserve its peer.
++        #[cfg(test)]
++        PIPES_PREPARED.set(PIPES_PREPARED.get() + 1);
++        Ok(Self {
++            identity: CaptureObjectIdentity {
++                device: stat.st_dev,
++                inode: stat.st_ino,
++            },
++            _keeper: keeper,
++        })
++    }
++}
++
++pub(super) struct CapturedPipeIdentities {
++    stdout: CapturePipe,
++    stderr: CapturePipe,
++    #[cfg(test)]
++    pub(super) drop_probe: std::sync::Mutex<Option<CaptureDropProbe>>,
++}
++
++impl CapturedPipeIdentities {
++    pub(super) fn try_new() -> std::io::Result<Self> {
++        let stdout = CapturePipe::try_new()?;
++        let stderr = CapturePipe::try_new()?;
++        Ok(Self {
++            stdout,
++            stderr,
++            #[cfg(test)]
++            drop_probe: std::sync::Mutex::new(None),
++        })
++    }
++
++    pub(super) fn metadata(&self) -> CaptureMetadata {
++        CaptureMetadata {
++            stdout: self.stdout.identity,
++            stderr: self.stderr.identity,
++        }
++    }
++
++    #[cfg(test)]
++    pub(super) fn descriptors(&self) -> [std::os::fd::RawFd; 2] {
++        [
++            self.stdout._keeper.as_raw_fd(),
++            self.stderr._keeper.as_raw_fd(),
++        ]
++    }
++}
++
++#[cfg(test)]
++impl Drop for CapturedPipeIdentities {
++    fn drop(&mut self) {
++        let probe = self.drop_probe.get_mut().unwrap().take();
++        if let Some(probe) = probe {
++            probe(self.descriptors());
++        }
++        // The real OwnedFd fields close only after this observation.
++    }
++}
++
++#[derive(Clone, Copy)]
++pub(super) struct CaptureMetadata {
++    stdout: CaptureObjectIdentity,
++    stderr: CaptureObjectIdentity,
++}
++
++impl CaptureMetadata {
++    pub(super) fn identity(self, alias: OutputAlias) -> CaptureObjectIdentity {
++        match alias {
++            OutputAlias::Stdout => self.stdout,
++            OutputAlias::Stderr => self.stderr,
++        }
++    }
++}
+--- /dev/null
++++ b/reverie-kvm/src/capture_identity_tests.rs
+@@ -0,0 +1,533 @@
++// Included in executor::tests; these use the real descriptor and executor paths.
++fn capture_native_stat(fd: RawFd) -> libc::stat {
++    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
++    assert_eq!(unsafe { libc::fstat(fd, stat.as_mut_ptr()) }, 0);
++    unsafe { stat.assume_init() }
++}
++
++#[test]
++fn captured_output_identity_matches_pipefs_and_preserves_proc_symlinks() {
++    let root = TestDir::new();
++    let mut state = test_state(&root.0);
++    let mut memory = GuestMemory::new(0, 0x4000).unwrap();
++    let mut output = CapturedOutput::try_new().unwrap();
++    assert_eq!(
++        syscall_result(
++            &mut memory,
++            &mut state,
++            libc::SYS_pipe2,
++            [0x1800, 0, 0, 0, 0, 0]
++        ),
++        0
++    );
++    let pipe: [i32; 2] = read_struct(&memory, 0x1800);
++    let native_pipe = capture_native_stat(state.files[&pipe[0]].as_raw_fd());
++    let ordinary =
++        assert_descriptor_stat_routes(&mut memory, &mut state, pipe[0], Some(&mut output));
++    assert_eq!(
++        (ordinary.st_dev, ordinary.st_ino),
++        (native_pipe.st_dev, native_pipe.st_ino)
++    );
++    let mut captured_inodes = Vec::new();
++    for (fd, keeper) in [1, 2].into_iter().zip(output.identities.descriptors()) {
++        let native_capture = capture_native_stat(keeper);
++        assert_eq!(
++            unsafe { libc::fcntl(keeper, libc::F_GETFD) },
++            libc::FD_CLOEXEC
++        );
++        let captured =
++            assert_descriptor_stat_routes(&mut memory, &mut state, fd, Some(&mut output));
++        assert_eq!(
++            captured.st_dev, native_pipe.st_dev,
++            "capture and guest pipe must share pipefs"
++        );
++        assert_eq!(
++            (captured.st_dev, captured.st_ino),
++            (native_capture.st_dev, native_capture.st_ino)
++        );
++        assert_ne!(
++            captured.st_ino, native_pipe.st_ino,
++            "the reserved capture inode is a distinct live pipe"
++        );
++        captured_inodes.push(captured.st_ino);
++        write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
++        for (number, args) in [
++            (
++                libc::SYS_newfstatat,
++                [
++                    libc::AT_FDCWD as u64,
++                    0x100,
++                    0x800,
++                    libc::AT_SYMLINK_NOFOLLOW as u64,
++                    0,
++                    0,
++                ],
++            ),
++            (
++                libc::SYS_statx,
++                [
++                    libc::AT_FDCWD as u64,
++                    0x100,
++                    libc::AT_SYMLINK_NOFOLLOW as u64,
++                    libc::STATX_BASIC_STATS as u64,
++                    0x1000,
++                    0,
++                ],
++            ),
++        ] {
++            assert_eq!(
++                metadata_call(&mut memory, &mut state, Some(&mut output), number, args),
++                0
++            );
++        }
++        let link: libc::stat = read_struct(&memory, 0x800);
++        let linkx: libc::statx = read_struct(&memory, 0x1000);
++        assert_eq!(link.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
++        assert_eq!(link.st_mode & libc::S_IFMT, libc::S_IFLNK);
++        assert_eq!(
++            (linkx.stx_dev_major, linkx.stx_dev_minor, linkx.stx_ino),
++            (
++                libc::major(link.st_dev),
++                libc::minor(link.st_dev),
++                link.st_ino
++            )
++        );
++        assert_eq!(linkx.stx_mode & libc::S_IFMT as u16, libc::S_IFLNK as u16);
++        let expected = format!("pipe:[{}]", captured.st_ino);
++        let count = metadata_call(
++            &mut memory,
++            &mut state,
++            Some(&mut output),
++            libc::SYS_readlink,
++            [0x100, 0x2000, 256, 0, 0, 0],
++        );
++        assert_eq!(count as usize, expected.len());
++        let mut bytes = vec![0; count as usize];
++        memory.read(0x2000, &mut bytes).unwrap();
++        assert_eq!(bytes, expected.as_bytes());
++    }
++    assert_ne!(captured_inodes[0], captured_inodes[1]);
++}
++
++fn capture_executor_stat(executor: &mut ElfExecutor, memory: &GuestMemory, fd: i32) -> (u64, u64) {
++    assert_eq!(
++        executor.execute(
++            &SyscallRequest::new(libc::SYS_fstat as u64, [fd as u64, 0x800, 0, 0, 0, 0]),
++            memory
++        ),
++        0
++    );
++    let stat: libc::stat = read_struct(memory, 0x800);
++    (stat.st_dev, stat.st_ino)
++}
++
++#[test]
++fn captured_output_alias_identity_survives_thread_fork_exec_and_replacement() {
++    let root = TestDir::new();
++    let owner = CapturedOutput::try_new().unwrap();
++    let mut state = test_state(&root.0);
++    let regular = std::fs::File::open("/dev/null").unwrap();
++    let raw = capture_native_stat(regular.as_raw_fd());
++    let ordinary = insert_file_with_flags(&mut state, regular, false, None) as i32;
++    assert!(ordinary >= 3);
++    let mut parent = ElfExecutor::with_output(state, Some(owner.clone()));
++    let mut memory = GuestMemory::new(0, 0x4000).unwrap();
++    let stdout = capture_executor_stat(&mut parent, &memory, 1);
++    let stderr = capture_executor_stat(&mut parent, &memory, 2);
++    assert_eq!(stdout.0, stderr.0);
++    assert_ne!(stdout.1, stderr.1);
++    let alias = parent.execute(
++        &SyscallRequest::new(libc::SYS_dup as u64, [1, 0, 0, 0, 0, 0]),
++        &memory,
++    ) as i32;
++    assert!(alias >= 3);
++    let fcntl_alias = parent.execute(
++        &SyscallRequest::new(
++            libc::SYS_fcntl as u64,
++            [alias as u64, libc::F_DUPFD as u64, 20, 0, 0, 0],
++        ),
++        &memory,
++    ) as i32;
++    assert!(fcntl_alias >= 20);
++    write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{alias}"));
++    let reopened = parent.execute(
++        &SyscallRequest::new(
++            libc::SYS_open as u64,
++            [0x100, libc::O_WRONLY as u64, 0, 0, 0, 0],
++        ),
++        &memory,
++    ) as i32;
++    assert!(reopened >= 3);
++    for fd in [alias, fcntl_alias, reopened] {
++        assert_eq!(capture_executor_stat(&mut parent, &memory, fd), stdout);
++    }
++    let mut sibling = parent.thread_child(2).unwrap();
++    assert_eq!(
++        sibling.execute(
++            &SyscallRequest::new(libc::SYS_dup2 as u64, [2, 1, 0, 0, 0, 0]),
++            &memory
++        ),
++        1
++    );
++    assert_eq!(capture_executor_stat(&mut parent, &memory, 1), stderr);
++    assert_eq!(capture_executor_stat(&mut parent, &memory, alias), stdout);
++    let mut child = parent.fork_child(3, false, false).unwrap();
++    child.replace_after_exec(test_state(&root.0));
++    assert_eq!(capture_executor_stat(&mut child, &memory, alias), stdout);
++    assert_eq!(capture_executor_stat(&mut child, &memory, 1), stderr);
++    assert_eq!(
++        parent.execute(
++            &SyscallRequest::new(libc::SYS_close as u64, [alias as u64, 0, 0, 0, 0, 0]),
++            &memory
++        ),
++        0
++    );
++    assert_eq!(
++        parent.execute(
++            &SyscallRequest::new(
++                libc::SYS_dup2 as u64,
++                [ordinary as u64, alias as u64, 0, 0, 0, 0]
++            ),
++            &memory
++        ),
++        i64::from(alias)
++    );
++    assert_eq!(
++        capture_executor_stat(&mut parent, &memory, alias),
++        (raw.st_dev, raw.st_ino)
++    );
++    assert_eq!(
++        capture_executor_stat(&mut sibling, &memory, alias),
++        (raw.st_dev, raw.st_ino)
++    );
++    assert_eq!(
++        capture_executor_stat(&mut child, &memory, alias),
++        stdout,
++        "private fork retains its old capture alias"
++    );
++    memory.write(0x200, b"a").unwrap();
++    assert_eq!(
++        child.execute(
++            &SyscallRequest::new(libc::SYS_write as u64, [alias as u64, 0x200, 1, 0, 0, 0]),
++            &memory
++        ),
++        1
++    );
++    assert_eq!(parent.take_output(), (b"a".to_vec(), Vec::new()));
++    assert_eq!(
++        capture_executor_stat(&mut child, &memory, alias),
++        stdout,
++        "draining output does not retire stream identity"
++    );
++}
++
++fn capture_test_child(test: &str, marker: &str) -> bool {
++    const ENV: &str = "REVERIE_CAPTURE_IDENTITY_CHILD";
++    if std::env::var(ENV).as_deref() == Ok(test) {
++        return true;
++    }
++    assert!(std::env::var_os(ENV).is_none());
++    let output = std::process::Command::new("/usr/bin/timeout")
++        .args(["--kill-after=2s", "10s"])
++        .arg(std::env::current_exe().unwrap())
++        .args(["--exact", test, "--test-threads=1", "--nocapture"])
++        .env(ENV, test)
++        .output()
++        .unwrap();
++    eprintln!(
++        "capture child status={}\nstdout:\n{}\nstderr:\n{}",
++        output.status,
++        String::from_utf8_lossy(&output.stdout),
++        String::from_utf8_lossy(&output.stderr)
++    );
++    assert!(output.status.success());
++    assert_eq!(
++        String::from_utf8_lossy(&output.stderr)
++            .lines()
++            .filter(|line| *line == marker)
++            .count(),
++        1
++    );
++    false
++}
++
++#[test]
++fn capture_identity_keeps_closed_standard_descriptors_closed() {
++    const TEST: &str = "executor::tests::capture_identity_keeps_closed_standard_descriptors_closed";
++    const COMPLETE: &str = "capture closed standard descriptors completed";
++    if !capture_test_child(TEST, COMPLETE) {
++        return;
++    }
++    // Retain the child's real streams outside 0..2, then restore them before
++    // reporting assertions. No parent or parallel libtest descriptor is touched.
++    let saved = [0, 1, 2].map(|fd| {
++        let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(duplicate >= 3);
++        unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) }
++    });
++    for fd in [0, 1, 2] {
++        assert_eq!(unsafe { libc::close(fd) }, 0);
++    }
++    let prepared = CapturedOutput::try_new();
++    let closed = [0, 1, 2].map(|fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1
++        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF));
++    for (fd, saved) in [0, 1, 2].into_iter().zip(&saved) {
++        assert_eq!(unsafe { libc::dup2(saved.as_raw_fd(), fd) }, fd);
++    }
++    let owner = prepared.unwrap();
++    assert_eq!(closed, [true; 3]);
++    for fd in owner.identities.descriptors() {
++        assert!(fd >= 3);
++        assert_eq!(
++            capture_native_stat(fd).st_mode & libc::S_IFMT,
++            libc::S_IFIFO
++        );
++        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, libc::FD_CLOEXEC);
++    }
++    eprintln!("{COMPLETE}");
++}
++
++#[test]
++fn captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind() {
++    const TEST: &str =
++        "executor::tests::captured_pipe_root_owner_releases_after_executor_cleanup_and_unwind";
++    const COMPLETE: &str = "capture final owner cleanup completed";
++    if !capture_test_child(TEST, COMPLETE) {
++        return;
++    }
++    for unwind in [false, true] {
++        let root = TestDir::new();
++        let owner = CapturedOutput::try_new().unwrap();
++        let descriptors = owner.identities.descriptors();
++        let metadata = descriptors.map(capture_native_stat);
++        let weak = Arc::downgrade(&owner.identities);
++        let mut parent = ElfExecutor::with_output(test_state(&root.0), Some(owner.clone()));
++        let child = parent.thread_child(2).unwrap();
++        let files = parent.file_table.clone();
++        let transaction = parent.state.signal_transaction.clone();
++        let observed = Arc::new(AtomicBool::new(false));
++        let observed_by_drop = observed.clone();
++        *owner.identities.drop_probe.lock().unwrap() = Some(Box::new(move |actual| {
++            let _files = files
++                .try_lock()
++                .expect("final capture close held the file-table guard");
++            let _transaction = transaction
++                .try_lock()
++                .expect("final capture close held the signal guard");
++            assert_eq!(actual, descriptors);
++            for (fd, expected) in actual.into_iter().zip(metadata) {
++                let live = capture_native_stat(fd);
++                assert_eq!(
++                    (live.st_dev, live.st_ino),
++                    (expected.st_dev, expected.st_ino)
++                );
++            }
++            observed_by_drop.store(true, Ordering::SeqCst);
++        }));
++        assert_eq!(parent.take_output(), (Vec::new(), Vec::new()));
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
++            let _parent = parent;
++            let _child = child;
++            if unwind {
++                panic!("intentional capture cleanup unwind");
++            }
++        }));
++        assert_eq!(result.is_err(), unwind);
++        assert!(!observed.load(Ordering::SeqCst));
++        assert!(weak.upgrade().is_some());
++        for fd in descriptors {
++            assert_eq!(
++                capture_native_stat(fd).st_mode & libc::S_IFMT,
++                libc::S_IFIFO
++            );
++        }
++        drop(owner);
++        assert!(observed.load(Ordering::SeqCst));
++        assert!(weak.upgrade().is_none());
++        for fd in descriptors {
++            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
++            assert_eq!(
++                std::io::Error::last_os_error().raw_os_error(),
++                Some(libc::EBADF)
++            );
++        }
++    }
++    eprintln!("{COMPLETE}");
++}
++
++#[derive(Debug, Default)]
++struct CaptureSetupMustNotInitialize;
++
++#[reverie::global_tool]
++impl reverie::GlobalTool for CaptureSetupMustNotInitialize {
++    type Request = ();
++    type Response = ();
++    type Config = ();
++    async fn init_global_state(_: &()) -> Self {
++        panic!("failed capture setup initialized the Tool");
++    }
++    async fn receive_rpc(&self, _: reverie::Tid, _: ()) {
++        panic!("failed capture setup dispatched an RPC");
++    }
++}
++
++#[derive(Debug, Default)]
++struct CaptureSetupTool;
++
++#[reverie::tool]
++impl reverie::Tool for CaptureSetupTool {
++    type GlobalState = CaptureSetupMustNotInitialize;
++    type ThreadState = ();
++}
++
++#[test]
++fn capture_setup_emfile_preserves_image_and_closes_partial_streams() {
++    const TEST: &str =
++        "executor::tests::capture_setup_emfile_preserves_image_and_closes_partial_streams";
++    const COMPLETE: &str = "capture setup EMFILE control completed";
++    let mut backend = match crate::KvmBackend::new(16 * 1024 * 1024) {
++        Ok(backend) => backend,
++        Err(crate::Error::Kvm(error))
++            if matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM) =>
++        {
++            assert!(
++                std::env::var_os("REVERIE_REQUIRE_KVM").is_none(),
++                "capture setup control requires KVM: {error}"
++            );
++            eprintln!("capture setup control not executed: KVM unavailable: {error}");
++            return;
++        }
++        Err(error) => panic!("capture setup failed: {error}"),
++    };
++    if !capture_test_child(TEST, COMPLETE) {
++        return;
++    }
++    let root = TestDir::new();
++    backend.static_elf = Some(test_state(&root.0));
++    let original_pid = backend.static_elf.as_ref().unwrap().pid;
++    let mut original: libc::rlimit = unsafe { std::mem::zeroed() };
++    assert_eq!(
++        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
++        0
++    );
++    let highest = std::fs::read_dir("/proc/self/fd")
++        .unwrap()
++        .map(|entry| {
++            entry
++                .unwrap()
++                .file_name()
++                .to_string_lossy()
++                .parse::<u64>()
++                .unwrap()
++        })
++        .max()
++        .unwrap();
++    let reduced = libc::rlimit {
++        rlim_cur: original.rlim_cur.min(highest + 32),
++        rlim_max: original.rlim_max,
++    };
++    for free_slots in [0, 2] {
++        let mut fillers = Vec::new();
++        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) }, 0);
++        let exhausted = loop {
++            match std::fs::File::open("/dev/null") {
++                Ok(file) => fillers.push(file),
++                Err(error) => break error.raw_os_error(),
++            }
++        };
++        for _ in 0..free_slots {
++            drop(fillers.pop().expect("descriptor budget has enough fillers"));
++        }
++        // Two free slots let the first real pipe succeed; its keeper then
++        // leaves only one free slot, so the SECOND pipe2 fails atomically.
++        let before_prepared = capture_identity::pipes_prepared();
++        let error = futures::executor::block_on(
++            backend.run_static_elf_with_tool_completion::<CaptureSetupTool>((), true),
++        )
++        .err()
++        .expect("capture setup must fail before Tool initialization");
++        let mut recovered = Vec::new();
++        let after_error = loop {
++            match std::fs::File::open("/dev/null") {
++                Ok(file) => recovered.push(file),
++                Err(error) => break error.raw_os_error(),
++            }
++        };
++        assert_eq!(
++            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
++            0
++        );
++        assert_eq!(exhausted, Some(libc::EMFILE));
++        assert_eq!(after_error, Some(libc::EMFILE));
++        assert_eq!(recovered.len(), free_slots);
++        assert_eq!(
++            capture_identity::pipes_prepared() - before_prepared,
++            usize::from(free_slots == 2)
++        );
++        assert!(
++            matches!(error, crate::Error::HostIo(ref io) if io.raw_os_error() == Some(libc::EMFILE))
++        );
++        assert_eq!(backend.static_elf.as_ref().unwrap().pid, original_pid);
++        assert!(backend.tool_failure.is_none());
++        drop(recovered);
++        drop(fillers);
++        let owner = backend.prepare_captured_output(true).unwrap().unwrap();
++        for fd in owner.identities.descriptors() {
++            assert_eq!(
++                capture_native_stat(fd).st_mode & libc::S_IFMT,
++                libc::S_IFIFO
++            );
++        }
++    }
++    // Only closed standard-number slots remain available. pipe2 succeeds in
++    // 0/1, its unused end closes, but F_DUPFD_CLOEXEC(min=3) must fail.
++    let saved = [0, 1].map(|fd| {
++        let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
++        assert!(copy >= 3);
++        unsafe { std::os::fd::OwnedFd::from_raw_fd(copy) }
++    });
++    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) }, 0);
++    let mut fillers = Vec::new();
++    let exhausted = loop {
++        match std::fs::File::open("/dev/null") {
++            Ok(file) => fillers.push(file),
++            Err(error) => break error.raw_os_error(),
++        }
++    };
++    for fd in [0, 1] {
++        assert_eq!(unsafe { libc::close(fd) }, 0);
++    }
++    let before_relocation = capture_identity::relocation_failures();
++    let error = futures::executor::block_on(
++        backend.run_static_elf_with_tool_completion::<CaptureSetupTool>((), true),
++    )
++    .err()
++    .expect("private descriptor relocation must fail");
++    let closed = [0, 1].map(|fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1
++        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EBADF));
++    assert_eq!(
++        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
++        0
++    );
++    for (fd, saved) in [0, 1].into_iter().zip(&saved) {
++        assert_eq!(unsafe { libc::dup2(saved.as_raw_fd(), fd) }, fd);
++    }
++    assert_eq!(exhausted, Some(libc::EMFILE));
++    assert_eq!(
++        capture_identity::relocation_failures() - before_relocation,
++        1
++    );
++    assert_eq!(closed, [true; 2]);
++    assert!(
++        matches!(error, crate::Error::HostIo(ref io) if io.raw_os_error() == Some(libc::EMFILE))
++    );
++    assert_eq!(backend.static_elf.as_ref().unwrap().pid, original_pid);
++    assert!(backend.tool_failure.is_none());
++    drop(fillers);
++    drop(saved);
++    let owner = backend.prepare_captured_output(true).unwrap().unwrap();
++    for fd in owner.identities.descriptors() {
++        assert!(fd >= 3);
++    }
++    eprintln!("{COMPLETE}");
++}
+--- /dev/null
++++ b/reverie-kvm/src/cpuid_instruction.rs
+@@ -0,0 +1,379 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! CPL3 CPUID fault admission and instruction retirement. The existing Tool
++//! callback owns the result and any logical-time charge; this module adds none.
++
++use kvm_bindings::Msrs;
++use kvm_bindings::kvm_msr_entry;
++use kvm_bindings::kvm_regs;
++use kvm_ioctls::Kvm;
++use kvm_ioctls::VcpuFd;
++use reverie::CpuIdResult;
++
++use crate::Error;
++use crate::Result;
++
++const PLATFORM_INFO: u32 = 0xce;
++const MISC_FEATURES_ENABLES: u32 = 0x140;
++const SUPPORT: u64 = 1 << 31;
++const ENABLE: u64 = 1;
++
++#[derive(Clone, Copy)]
++struct MsrState {
++    platform: u64,
++    features: u64,
++}
++
++/// State belongs to one real vCPU, never to a process snapshot or a Tool type.
++/// Retain the original before the first write, including after a failed rollback.
++#[derive(Default)]
++pub(crate) struct Interception {
++    original: Option<MsrState>,
++    enabled: bool,
++}
++
++fn entry(index: u32, data: u64) -> kvm_msr_entry {
++    kvm_msr_entry {
++        index,
++        data,
++        ..Default::default()
++    }
++}
++
++fn exact_count(operation: &str, expected: usize, actual: usize) -> Result<()> {
++    if actual != expected {
++        return Err(Error::UnexpectedVcpuExit(format!(
++            "CPUID interception {operation}: transferred {actual} of {expected} MSRs"
++        )));
++    }
++    Ok(())
++}
++
++fn read_state(vcpu: &VcpuFd) -> Result<MsrState> {
++    let mut values =
++        Msrs::from_entries(&[entry(PLATFORM_INFO, 0), entry(MISC_FEATURES_ENABLES, 0)])
++            .expect("fixed CPUID MSR read fits");
++    exact_count("read", 2, vcpu.get_msrs(&mut values)?)?;
++    Ok(MsrState {
++        platform: values.as_slice()[0].data,
++        features: values.as_slice()[1].data,
++    })
++}
++
++fn write_one(vcpu: &VcpuFd, index: u32, value: u64) -> Result<()> {
++    let values = Msrs::from_entries(&[entry(index, value)]).expect("one CPUID MSR write fits");
++    exact_count(&format!("write {index:#x}"), 1, vcpu.set_msrs(&values)?)
++}
++
++impl Interception {
++    pub(crate) fn enabled(&self) -> bool {
++        self.enabled
++    }
++
++    pub(crate) fn configure(&mut self, vcpu: &VcpuFd, enabled: bool) -> Result<()> {
++        if !enabled {
++            // A fresh tool-less backend never requests this optional feature.
++            return self.restore(vcpu);
++        }
++        if self.enabled {
++            return self.verify(vcpu);
++        }
++        if self.original.is_some() {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception has unresolved MSR restoration".to_owned(),
++            ));
++        }
++        let kvm = Kvm::new()?;
++        if !kvm
++            .get_msr_feature_index_list()?
++            .as_slice()
++            .contains(&PLATFORM_INFO)
++        {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception unsupported: PLATFORM_INFO feature MSR absent".to_owned(),
++            ));
++        }
++        let mut feature =
++            Msrs::from_entries(&[entry(PLATFORM_INFO, 0)]).expect("one feature MSR fits");
++        exact_count("feature read", 1, kvm.get_msrs(&mut feature)?)?;
++        if feature.as_slice()[0].data & SUPPORT == 0 {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception unsupported: fault support bit absent".to_owned(),
++            ));
++        }
++        let original = read_state(vcpu)?;
++        if original.features & ENABLE != 0 {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception was armed without an owning Tool consumer".to_owned(),
++            ));
++        }
++        self.original = Some(original);
++        let admission: Result<()> = (|| {
++            write_one(vcpu, PLATFORM_INFO, original.platform | SUPPORT)?;
++            write_one(vcpu, MISC_FEATURES_ENABLES, original.features | ENABLE)?;
++            let actual = read_state(vcpu)?;
++            if actual.platform != (original.platform | SUPPORT)
++                || actual.features != (original.features | ENABLE)
++            {
++                return Err(Error::UnexpectedVcpuExit(
++                    "CPUID interception admission readback differs".to_owned(),
++                ));
++            }
++            Ok(())
++        })();
++        if let Err(error) = admission {
++            let restored = self.restore(vcpu);
++            return Err(error.with_cleanup(restored.err().into_iter().collect()));
++        }
++        self.enabled = true;
++        Ok(())
++    }
++
++    pub(crate) fn verify(&self, vcpu: &VcpuFd) -> Result<()> {
++        let original = self.original.ok_or_else(|| {
++            Error::UnexpectedVcpuExit("CPUID interception has no admitted MSR owner".to_owned())
++        })?;
++        let actual = read_state(vcpu)?;
++        if !self.enabled
++            || actual.platform != (original.platform | SUPPORT)
++            || actual.features != (original.features | ENABLE)
++        {
++            return Err(Error::UnexpectedVcpuExit(
++                "CPUID interception state changed after admission".to_owned(),
++            ));
++        }
++        Ok(())
++    }
++
++    fn restore(&mut self, vcpu: &VcpuFd) -> Result<()> {
++        let Some(original) = self.original else {
++            return Ok(());
++        };
++        self.enabled = false;
++        let mut errors = Vec::new();
++        // No guest may resume after any failure. Still attempt both original
++        // values and readback, retaining every error instead of overwriting one.
++        for (index, value) in [
++            (MISC_FEATURES_ENABLES, original.features),
++            (PLATFORM_INFO, original.platform),
++        ] {
++            if let Err(error) = write_one(vcpu, index, value) {
++                errors.push(error);
++            }
++        }
++        match read_state(vcpu) {
++            Ok(actual)
++                if actual.platform == original.platform && actual.features == original.features => {
++            }
++            Ok(_) => errors.push(Error::UnexpectedVcpuExit(
++                "CPUID interception restoration readback differs".to_owned(),
++            )),
++            Err(error) => errors.push(error),
++        }
++        if errors.is_empty() {
++            self.original = None;
++        }
++        Error::combine(errors)
++    }
++}
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub(crate) struct Instruction {
++    pub(crate) length: u8,
++}
++
++/// CPUID ignores ordinary legacy/REX prefixes. LOCK is invalid. Fetch no
++/// sixteenth byte and no byte after the completed two-byte opcode.
++pub(crate) fn decode(mut fetch: impl FnMut(u8) -> Option<u8>) -> Option<Instruction> {
++    let mut length = 0;
++    let mut next = || {
++        if length == 15 {
++            return None;
++        }
++        let byte = fetch(length)?;
++        length += 1;
++        Some(byte)
++    };
++    loop {
++        match next()? {
++            0x66 | 0x67 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x40..=0x4f => {
++                continue;
++            }
++            0x0f if next()? == 0xa2 => break,
++            _ => return None,
++        }
++    }
++    Some(Instruction { length })
++}
++
++pub(crate) fn result_registers(
++    mut original: kvm_regs,
++    instruction: Instruction,
++    result: CpuIdResult,
++) -> Option<kvm_regs> {
++    original.rip = original.rip.checked_add(u64::from(instruction.length))?;
++    original.rflags &= !(1 << 16); // Retirement clears the exception frame's RF.
++    original.rax = u64::from(result.eax);
++    original.rbx = u64::from(result.ebx);
++    original.rcx = u64::from(result.ecx);
++    original.rdx = u64::from(result.edx);
++    Some(original)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn cpuid_decoder_fetches_exact_legal_instruction_and_refuses_invalid_forms() {
++        for prefix in [
++            0x66, 0x67, 0xf2, 0xf3, 0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x40, 0x4f,
++        ] {
++            let bytes = [prefix, 0x0f, 0xa2];
++            assert_eq!(
++                decode(|i| bytes.get(usize::from(i)).copied()),
++                Some(Instruction { length: 3 })
++            );
++        }
++        let mut visits = Vec::new();
++        assert_eq!(
++            decode(|i| {
++                visits.push(i);
++                [0x0f, 0xa2].get(usize::from(i)).copied()
++            }),
++            Some(Instruction { length: 2 })
++        );
++        assert_eq!(visits, [0, 1]);
++        let mut longest = vec![0x66; 13];
++        longest.extend_from_slice(&[0x0f, 0xa2]);
++        assert_eq!(
++            decode(|i| longest.get(usize::from(i)).copied()),
++            Some(Instruction { length: 15 })
++        );
++        longest.insert(0, 0x66);
++        assert_eq!(decode(|i| longest.get(usize::from(i)).copied()), None);
++        for bytes in [
++            &[0xf0, 0x0f, 0xa2][..],
++            &[0x0f, 0x31],
++            &[0x0f, 0x01, 0xf9],
++            &[0x0f],
++            &[0xed],
++        ] {
++            assert_eq!(decode(|i| bytes.get(usize::from(i)).copied()), None);
++        }
++    }
++
++    #[test]
++    fn cpuid_result_zero_extends_all_outputs_and_preserves_other_user_state() {
++        let original = kvm_regs {
++            rax: u64::MAX,
++            rbx: u64::MAX,
++            rcx: u64::MAX,
++            rdx: u64::MAX,
++            rsi: 5,
++            rdi: 6,
++            rsp: 7,
++            rbp: 8,
++            r8: 9,
++            r9: 10,
++            r10: 11,
++            r11: 12,
++            r12: 13,
++            r13: 14,
++            r14: 15,
++            r15: 16,
++            rip: 0x200000,
++            rflags: 0x1_02d7,
++        };
++        let mut expected = original;
++        expected.rax = 0xf1234567;
++        expected.rbx = 0xe2345678;
++        expected.rcx = 0xd3456789;
++        expected.rdx = 0xc456789a;
++        expected.rip += 15;
++        expected.rflags &= !(1 << 16);
++        let result = CpuIdResult {
++            eax: 0xf1234567,
++            ebx: 0xe2345678,
++            ecx: 0xd3456789,
++            edx: 0xc456789a,
++        };
++        assert_eq!(
++            result_registers(original, Instruction { length: 15 }, result),
++            Some(expected)
++        );
++        assert!(
++            result_registers(
++                kvm_regs {
++                    rip: u64::MAX,
++                    ..original
++                },
++                Instruction { length: 2 },
++                result
++            )
++            .is_none()
++        );
++    }
++
++    #[test]
++    fn actual_partial_msr_transfers_are_refused_with_exact_counts() {
++        let backend = crate::KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++        let mut entries =
++            Msrs::from_entries(&[entry(PLATFORM_INFO, 0), entry(u32::MAX, 0)]).unwrap();
++        let actual = backend.vcpu.get_msrs(&mut entries).unwrap();
++        assert_eq!(
++            actual, 1,
++            "the real second unsupported MSR must stop this read"
++        );
++        let error = exact_count("read", 2, actual).unwrap_err();
++        assert!(
++            matches!(error,Error::UnexpectedVcpuExit(ref message) if message=="CPUID interception read: transferred 1 of 2 MSRs")
++        );
++        let error = write_one(&backend.vcpu, u32::MAX, 0).unwrap_err();
++        assert!(
++            matches!(error,Error::UnexpectedVcpuExit(ref message) if message=="CPUID interception write 0xffffffff: transferred 0 of 1 MSRs")
++        );
++        eprintln!("actual rejected MSR transfers: read 1/2; write 0/1");
++    }
++
++    #[test]
++    fn actual_cpuid_interception_is_owned_and_restores_original_msr_state() {
++        let backend = crate::KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++        let before = read_state(&backend.vcpu).unwrap();
++        let mut owner = Interception::default();
++        owner.configure(&backend.vcpu, true).unwrap();
++        assert!(owner.enabled());
++        owner.verify(&backend.vcpu).unwrap();
++        let mut stranger = Interception::default();
++        let error = stranger.configure(&backend.vcpu, true).unwrap_err();
++        assert!(matches!(error, Error::UnexpectedVcpuExit(ref message)
++            if message == "CPUID interception was armed without an owning Tool consumer"));
++        assert!(!stranger.enabled());
++        assert!(stranger.original.is_none());
++        owner.verify(&backend.vcpu).unwrap();
++        let independent = crate::KvmBackend::new(16 * 1024 * 1024).unwrap();
++        assert_eq!(read_state(&independent.vcpu).unwrap().features & ENABLE, 0);
++        owner.verify(&backend.vcpu).unwrap();
++        // Change the real vCPU behind its owner: a stale admission must fail,
++        // retain its original state, and still support explicit restoration.
++        write_one(&backend.vcpu, MISC_FEATURES_ENABLES, before.features).unwrap();
++        let error = owner.configure(&backend.vcpu, true).unwrap_err();
++        assert!(matches!(error, Error::UnexpectedVcpuExit(ref message)
++            if message == "CPUID interception state changed after admission"));
++        assert!(owner.original.is_some());
++        owner.configure(&backend.vcpu, false).unwrap();
++        assert!(!owner.enabled());
++        assert!(owner.original.is_none());
++        let after = read_state(&backend.vcpu).unwrap();
++        assert_eq!(
++            (after.platform, after.features),
++            (before.platform, before.features)
++        );
++        owner.configure(&backend.vcpu, false).unwrap();
++    }
++}
+--- /dev/null
++++ b/reverie-kvm/src/cpuid_runtime_tests.rs
+@@ -0,0 +1,146 @@
++mod cpuid_runtime_controls {
++    use reverie::syscalls::SyscallInfo;
++
++    use super::*;
++
++    #[test]
++    fn cpuid_boundary_respects_actual_fetch_permissions_and_completed_length() {
++        const BOUNDARY: u64 = 0x40_0000;
++        for crosses_page in [false, true] {
++            let mut backend = KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++            let opcode = if crosses_page {
++                &[0x66, 0x0f, 0xa2][..]
++            } else {
++                &[0x0f, 0xa2][..]
++            };
++            let mut code = vec![0x90; 0x20_0000 - 2];
++            code.extend_from_slice(opcode);
++            let mut image = minimal_test_elf(&code);
++            image[24..32].copy_from_slice(&(BOUNDARY - 2).to_le_bytes());
++            image[104..112].copy_from_slice(&(code.len() as u64).to_le_bytes());
++            backend
++                .install_static_elf(&image, "/cpuid-fetch-boundary")
++                .unwrap();
++            backend
++                .memory
++                .write_raw(
++                    0x4000 + 2 * 8,
++                    &(BOUNDARY | 0x87 | (1_u64 << 63)).to_le_bytes(),
++                )
++                .unwrap();
++            backend.set_cpuid_interception(true).unwrap();
++            assert!(matches!(backend.vcpu.run().unwrap(), VcpuExit::Hlt));
++            let fault = backend.static_elf_exception().unwrap().unwrap();
++            assert_eq!(fault.instruction_pointer, BOUNDARY - 2);
++            assert_eq!(fault.vector, if crosses_page { 14 } else { 13 });
++            let selected = backend.cpuid_instruction_exception().unwrap();
++            if crosses_page {
++                assert!(selected.is_none());
++                assert_eq!(backend.vcpu.get_sregs().unwrap().cr2, BOUNDARY);
++            } else {
++                assert_eq!(
++                    selected
++                        .expect("complete two-byte CPUID")
++                        .instruction
++                        .length,
++                    2
++                );
++            }
++        }
++    }
++
++    #[derive(Default)]
++    struct NonElfCpuidTool;
++
++    #[reverie::tool]
++    impl reverie::Tool for NonElfCpuidTool {
++        type GlobalState = ();
++        type ThreadState = ();
++        fn subscriptions(_: &()) -> reverie::Subscription {
++            let mut subscriptions = reverie::Subscription::none();
++            subscriptions.cpuid();
++            subscriptions
++        }
++        async fn handle_thread_start<G: reverie::Guest<Self>>(
++            &self,
++            guest: &mut G,
++        ) -> std::result::Result<(), reverie::Error> {
++            assert!(
++                !guest.has_cpuid_interception(),
++                "public non-ELF loop has no CPUID consumer"
++            );
++            Ok(())
++        }
++        async fn handle_cpuid_event<G: reverie::Guest<Self>>(
++            &self,
++            _guest: &mut G,
++            _eax: u32,
++            _ecx: u32,
++        ) -> std::result::Result<reverie::CpuIdResult, reverie::syscalls::Errno> {
++            panic!("public non-ELF loop must preserve ordinary CPUID execution");
++        }
++    }
++
++    fn assert_disarmed(backend: &KvmBackend) {
++        assert!(!backend.has_cpuid_interception());
++        let mut msrs = kvm_bindings::Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
++            index: 0x140,
++            ..Default::default()
++        }])
++        .unwrap();
++        assert_eq!(backend.vcpu.get_msrs(&mut msrs).unwrap(), 1);
++        assert_eq!(msrs.as_slice()[0].data & 1, 0);
++    }
++
++    #[test]
++    fn cpuid_nonconsumer_loops_disarm_actual_prior_owned_msr_state() {
++        for previously_armed in [false, true] {
++            for use_tool in [false, true] {
++                let mut backend =
++                    KvmBackend::new(16 * 1024 * 1024).expect("actual KVM is mandatory");
++                backend.set_cpuid_interception(previously_armed).unwrap();
++                let request = SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]);
++                backend.install_syscall(0x1002, 0x2000, request).unwrap();
++                backend.memory.write(0x1000, &[0x0f, 0xa2]).unwrap();
++                let mut registers = backend.vcpu.get_regs().unwrap();
++                registers.rip = 0x1000;
++                backend.vcpu.set_regs(&registers).unwrap();
++                let mut calls = 0;
++                if use_tool {
++                    futures::executor::block_on(backend.run_with_tool::<NonElfCpuidTool, _>(
++                        (),
++                        |actual: &SyscallRequest, _: &GuestMemory| {
++                            assert_eq!(*actual, request);
++                            calls += 1;
++                            41
++                        },
++                    ))
++                    .unwrap();
++                } else {
++                    backend
++                        .run(|call, _| {
++                            assert_eq!(call.number(), reverie::syscalls::Sysno::getpid);
++                            calls += 1;
++                            41
++                        })
++                        .unwrap();
++                }
++                assert_eq!(calls, 1);
++                assert_disarmed(&backend);
++            }
++            let mut backend = KvmBackend::new(16 * 1024 * 1024).unwrap();
++            backend.set_cpuid_interception(previously_armed).unwrap();
++            backend
++                .install_static_elf(
++                    &minimal_test_elf(&[0x0f, 0xa2, 0xb8, 60, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]),
++                    "/direct-cpuid",
++                )
++                .unwrap();
++            let (status, stdout, stderr) = backend.run_static_elf_captured().unwrap();
++            assert_eq!(status, 0);
++            assert!(stdout.is_empty());
++            assert!(stderr.is_empty());
++            assert_disarmed(&backend);
++        }
++    }
++}
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -55,6 +55,12 @@
+ #[path = "process_signal_publication.rs"]
+ mod process_signal_publication;
+ 
++#[path = "capture_identity.rs"]
++mod capture_identity;
++
++use capture_identity::CaptureMetadata;
++use capture_identity::CaptureObjectIdentity;
++use capture_identity::CapturedPipeIdentities;
+ use process_signal_publication::ProcessBinding;
+ use process_signal_publication::ProcessSignalRegistry;
+ 
+@@ -186,13 +192,35 @@
+     stderr: Vec<u8>,
+ }
+ 
+-#[derive(Clone, Default)]
++#[derive(Clone)]
+ // TODO-HUMAN-REVIEW(PR-172): Review cross-thread captured-output ownership.
+ pub(crate) struct CapturedOutput {
+     inner: Arc<Mutex<CapturedOutputInner>>,
++    identities: Arc<CapturedPipeIdentities>,
+ }
+ 
++#[cfg(test)]
++impl Default for CapturedOutput {
++    fn default() -> Self {
++        Self::try_new().expect("prepare test capture identities")
++    }
++}
++
+ impl CapturedOutput {
++    pub(crate) fn try_new() -> std::io::Result<Self> {
++        // Root setup calls this before consuming the image or initializing the
++        // Tool. Failure never publishes partial output or a fallback identity.
++        let identities = Arc::new(CapturedPipeIdentities::try_new()?);
++        Ok(Self {
++            inner: Arc::new(Mutex::new(CapturedOutputInner::default())),
++            identities,
++        })
++    }
++
++    fn metadata(&self) -> CaptureMetadata {
++        self.identities.metadata()
++    }
++
+     pub(crate) fn take(&mut self) -> (Vec<u8>, Vec<u8>) {
+         let mut inner = self.inner.lock().expect("captured output lock poisoned");
+         (
+@@ -354,6 +382,7 @@
+     let args = request.args();
+     let number = request.number();
+     let capture_output = output.is_some();
++    let capture_metadata = output.as_ref().map(|output| output.metadata());
+ 
+     if number == libc::SYS_exit as u64 || number == libc::SYS_exit_group as u64 {
+         return SyscallAction::Exit(ExitStatus::Exited((args[0] as i32) & 0xff));
+@@ -532,21 +561,21 @@
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         memfd_create(memory, state, args)
+     } else if number == libc::SYS_fstat as u64 {
+-        fstat(memory, state, args, capture_output)
++        fstat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_stat as u64 {
+-        path_stat(memory, state, args, 0, capture_output)
++        path_stat(memory, state, args, 0, capture_metadata)
+     } else if number == libc::SYS_lstat as u64 {
+         path_stat(
+             memory,
+             state,
+             args,
+             libc::AT_SYMLINK_NOFOLLOW,
+-            capture_output,
++            capture_metadata,
+         )
+     } else if number == libc::SYS_newfstatat as u64 {
+-        newfstatat(memory, state, args, capture_output)
++        newfstatat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_statx as u64 {
+-        statx(memory, state, args, capture_output)
++        statx(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_statfs as u64 {
+         statfs(memory, state, args)
+     } else if number == libc::SYS_fstatfs as u64 {
+@@ -873,10 +902,10 @@
+     } else if number == libc::SYS_gettimeofday as u64 {
+         gettimeofday(memory, args)
+     } else if number == libc::SYS_readlink as u64 {
+-        readlink(memory, state, args, capture_output)
++        readlink(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_readlinkat as u64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        readlinkat(memory, state, args, capture_output)
++        readlinkat(memory, state, args, capture_metadata)
+     } else if number == libc::SYS_uname as u64 {
+         uname(memory, args[0])
+     } else if number == libc::SYS_prlimit64 as u64 {
+@@ -1837,7 +1866,13 @@
+         (self.state.heap_base, self.state.program_break)
+     }
+ 
+-    pub(crate) fn new(mut state: LoadedStaticElf, capture_output: bool) -> Self {
++    #[cfg(test)]
++    pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
++        let output = capture_output.then(CapturedOutput::default);
++        Self::with_output(state, output)
++    }
++
++    pub(crate) fn with_output(mut state: LoadedStaticElf, output: Option<CapturedOutput>) -> Self {
+         let file_table;
+         let _retirement = state.file_retirement.hold();
+         let transaction = state.signal_transaction.clone();
+@@ -1883,7 +1918,7 @@
+             signal_effect_raw_result: None,
+             address_space,
+             file_table,
+-            output: capture_output.then(CapturedOutput::default),
++            output,
+             owns_output: true,
+             next_pid: Arc::new(AtomicI32::new(next_pid)),
+             sigchld_auto_reap,
+@@ -6462,14 +6497,10 @@
+ fn guest_fd_link_target(
+     state: &LoadedStaticElf,
+     guest_fd: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> Result<Vec<u8>, i64> {
+-    if capture_output && output_alias(state, guest_fd).is_some() {
+-        return Ok(format!(
+-            "pipe:[{}]",
+-            synthetic_captured_output_stat(state, guest_fd).st_ino
+-        )
+-        .into_bytes());
++    if let (Some(capture), Some(alias)) = (capture, output_alias(state, guest_fd)) {
++        return Ok(format!("pipe:[{}]", capture.identity(alias).inode).into_bytes());
+     }
+     let Some(host_fd) = host_fd(state, guest_fd) else {
+         return Err(negative_errno(libc::ENOENT));
+@@ -6500,7 +6531,7 @@
+         if target.starts_with(prefix.as_bytes()) && target.ends_with(b"]") {
+             return Ok(format!(
+                 "{kind}:[{}]",
+-                guest_object_stat(state, guest_fd, capture_output)?.st_ino
++                guest_object_stat(state, guest_fd, capture)?.st_ino
+             )
+             .into_bytes());
+         }
+@@ -10306,12 +10337,12 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let Ok(fd) = i32::try_from(args[0]) else {
+         return negative_errno(libc::EBADF);
+     };
+-    match guest_object_stat(state, fd, capture_output) {
++    match guest_object_stat(state, fd, capture) {
+         Ok(stat) => write_struct(memory, args[1], &stat),
+         Err(error) => error,
+     }
+@@ -10320,10 +10351,10 @@
+ fn guest_object_stat(
+     state: &LoadedStaticElf,
+     fd: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> Result<libc::stat, i64> {
+-    if capture_output && output_alias(state, fd).is_some() {
+-        return Ok(synthetic_captured_output_stat(state, fd));
++    if let (Some(capture), Some(alias)) = (capture, output_alias(state, fd)) {
++        return Ok(synthetic_captured_output_stat(capture.identity(alias)));
+     }
+     let Some(host_fd) = host_fd(state, fd) else {
+         return Err(negative_errno(libc::EBADF));
+@@ -10340,14 +10371,14 @@
+ }
+ 
+ // TODO-HUMAN-REVIEW(PR-205): Review synthetic metadata for in-memory captured output.
+-fn synthetic_captured_output_stat(state: &LoadedStaticElf, fd: libc::c_int) -> libc::stat {
++fn synthetic_captured_output_stat(identity: CaptureObjectIdentity) -> libc::stat {
+     // Captured writes never reach the host descriptor, so exposing that
+     // descriptor's type, size, or inode leaks the invoking shell into the
+     // guest. Model the capture sink as the pipe used by process-based backends.
+     // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
+     let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+-    stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
+-    stat.st_ino = synthetic_guest_fd_object_inode(state, fd);
++    stat.st_dev = identity.device;
++    stat.st_ino = identity.inode;
+     stat.st_mode = libc::S_IFIFO | 0o600;
+     stat.st_nlink = 1;
+     stat.st_uid = 0;
+@@ -10357,8 +10388,8 @@
+     stat
+ }
+ 
+-fn synthetic_captured_output_statx(state: &LoadedStaticElf, fd: libc::c_int) -> libc::statx {
+-    let stat = synthetic_captured_output_stat(state, fd);
++fn synthetic_captured_output_statx(identity: CaptureObjectIdentity) -> libc::statx {
++    let stat = synthetic_captured_output_stat(identity);
+     // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+     let mut extended = unsafe { std::mem::zeroed::<libc::statx>() };
+     extended.stx_mask = libc::STATX_BASIC_STATS;
+@@ -10381,7 +10412,7 @@
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+     flags: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     fstatat_impl(
+         memory,
+@@ -10390,7 +10421,7 @@
+         args[0],
+         args[1],
+         flags,
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -10398,7 +10429,7 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     fstatat_impl(
+         memory,
+@@ -10407,7 +10438,7 @@
+         args[1],
+         args[2],
+         args[3] as libc::c_int,
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -10418,7 +10449,7 @@
+     path_address: u64,
+     output_address: u64,
+     flags: libc::c_int,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let path = match read_c_string(memory, path_address, 4096) {
+         Ok(path) => path,
+@@ -10436,7 +10467,7 @@
+             Ok(target) => target,
+             Err(error) => return error,
+         };
+-        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture_output) {
++        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture.is_some()) {
+             return error;
+         }
+         let path = format!("/proc/{tid}/fdinfo/{fd}");
+@@ -10470,13 +10501,13 @@
+         .map(|metadata| metadata.guest_fd)
+         .or_else(|| (path.is_empty() && guest_dirfd != libc::AT_FDCWD).then_some(guest_dirfd));
+     if let Some(fd) = descriptor
+-        && capture_output
+-        && output_alias(state, fd).is_some()
++        && let Some(capture) = capture
++        && let Some(alias) = output_alias(state, fd)
+     {
+         return write_struct(
+             memory,
+             output_address,
+-            &synthetic_captured_output_stat(state, fd),
++            &synthetic_captured_output_stat(capture.identity(alias)),
+         );
+     }
+     let executable = if flags & libc::AT_SYMLINK_NOFOLLOW == 0 {
+@@ -10560,7 +10591,7 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let path = match read_c_string(memory, args[1], 4096) {
+         Ok(path) => path,
+@@ -10587,7 +10618,7 @@
+             Ok(target) => target,
+             Err(error) => return error,
+         };
+-        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture_output) {
++        if let Err(error) = fdinfo_target_generation(state, tid, fd, capture.is_some()) {
+             return error;
+         }
+         let path = format!("/proc/{tid}/fdinfo/{fd}");
+@@ -10639,18 +10670,22 @@
+             .then_some(args[0] as libc::c_int)
+     });
+     if let Some(fd) = descriptor
+-        && capture_output
+-        && output_alias(state, fd).is_some()
++        && let Some(capture) = capture
++        && let Some(alias) = output_alias(state, fd)
+     {
+         // Ordinary objects continue through the native statx call below. The
+-        // capture sink has no corresponding host object; validate the kernel's
++        // capture sink synthesizes fields beyond its reserved identity; validate the kernel's
+         // reserved mask bit and mutually exclusive synchronization flags here.
+         if args[3] as libc::c_uint & 0x8000_0000 != 0
+             || flags & libc::AT_STATX_SYNC_TYPE == libc::AT_STATX_SYNC_TYPE
+         {
+             return negative_errno(libc::EINVAL);
+         }
+-        return write_struct(memory, args[4], &synthetic_captured_output_statx(state, fd));
++        return write_struct(
++            memory,
++            args[4],
++            &synthetic_captured_output_statx(capture.identity(alias)),
++        );
+     }
+     let opened_file;
+     let host_fd = if let Some(metadata) = guest_path {
+@@ -12151,6 +12186,7 @@
+         })
+ }
+ 
++#[cfg(test)]
+ fn synthetic_guest_fd_object_inode(state: &LoadedStaticElf, guest_fd: libc::c_int) -> u64 {
+     guest_fd_object_identity(state, guest_fd).inode
+ }
+@@ -13869,7 +13905,7 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     readlink_at_impl(
+         memory,
+@@ -13878,7 +13914,7 @@
+         args[0],
+         args[1],
+         args[2],
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -13887,7 +13923,7 @@
+     memory: &mut GuestMemory,
+     state: &LoadedStaticElf,
+     args: &[u64; 6],
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     readlink_at_impl(
+         memory,
+@@ -13896,7 +13932,7 @@
+         args[1],
+         args[2],
+         args[3],
+-        capture_output,
++        capture,
+     )
+ }
+ 
+@@ -13908,7 +13944,7 @@
+     path_address: u64,
+     output_address: u64,
+     raw_capacity: u64,
+-    capture_output: bool,
++    capture: Option<CaptureMetadata>,
+ ) -> i64 {
+     let path = match read_c_string(memory, path_address, 4096) {
+         Ok(path) => path,
+@@ -13923,7 +13959,7 @@
+     let capacity = requested_capacity.min(MAX_HOST_IO);
+ 
+     if let Some(guest_fd) = guest_fd_path(state, &path) {
+-        let target = match guest_fd_link_target(state, guest_fd, capture_output) {
++        let target = match guest_fd_link_target(state, guest_fd, capture) {
+             Ok(target) => target,
+             Err(error) => return error,
+         };
+@@ -15215,6 +15251,7 @@
+ 
+     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
+ 
++    include!("capture_identity_tests.rs");
+     include!("pipe_fionread_tests.rs");
+     include!("child_exit_signal_tests.rs");
+     include!("process_alarm_signal_tests.rs");
+@@ -16553,8 +16590,13 @@
+                 }
+             ));
+             let stat: libc::stat = read_struct(&memory, address);
+-            assert_eq!(stat.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
+-            assert_eq!(stat.st_ino, synthetic_guest_fd_object_inode(&state, fd));
++            let identity = output
++                .metadata()
++                .identity(output_alias(&state, fd).unwrap());
++            assert_eq!(
++                (stat.st_dev, stat.st_ino),
++                (identity.device, identity.inode)
++            );
+             assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
+             assert_eq!(stat.st_size, 0);
+             assert_eq!(stat.st_blocks, 0);
+@@ -25011,12 +25053,12 @@
+     fn metadata_call(
+         memory: &mut GuestMemory,
+         state: &mut LoadedStaticElf,
+-        capture: bool,
++        capture: Option<&mut CapturedOutput>,
+         number: libc::c_long,
+         args: [u64; 6],
+     ) -> i64 {
+-        if capture {
+-            syscall_result_with_output(memory, state, &mut CapturedOutput::default(), number, args)
++        if let Some(output) = capture {
++            syscall_result_with_output(memory, state, output, number, args)
+         } else {
+             syscall_result(memory, state, number, args)
+         }
+@@ -25026,7 +25068,7 @@
+         memory: &mut GuestMemory,
+         state: &mut LoadedStaticElf,
+         fd: libc::c_int,
+-        capture: bool,
++        mut capture: Option<&mut CapturedOutput>,
+     ) -> libc::stat {
+         const PATH: u64 = 0x100;
+         const STAT: u64 = 0x800;
+@@ -25035,7 +25077,7 @@
+             metadata_call(
+                 memory,
+                 state,
+-                capture,
++                capture.as_deref_mut(),
+                 libc::SYS_fstat,
+                 [fd as u64, STAT, 0, 0, 0, 0]
+             ),
+@@ -25059,7 +25101,7 @@
+                 metadata_call(
+                     memory,
+                     state,
+-                    capture,
++                    capture.as_deref_mut(),
+                     libc::SYS_newfstatat,
+                     [dirfd as u64, PATH, STAT, flags as u64, 0, 0]
+                 ),
+@@ -25081,7 +25123,7 @@
+                 metadata_call(
+                     memory,
+                     state,
+-                    capture,
++                    capture.as_deref_mut(),
+                     libc::SYS_statx,
+                     [
+                         dirfd as u64,
+@@ -25121,7 +25163,7 @@
+                     metadata_call(
+                         memory,
+                         state,
+-                        capture,
++                        capture.as_deref_mut(),
+                         libc::SYS_stat,
+                         [PATH, STAT, 0, 0, 0, 0]
+                     ),
+@@ -27224,10 +27266,10 @@
+         assert!(fd >= 0 && reopened >= 0 && distinct >= 0 && duplicate >= 0);
+         let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
+         for alias in [fd, reopened, duplicate] {
+-            let stat = assert_descriptor_stat_routes(&mut memory, &mut state, alias, false);
++            let stat = assert_descriptor_stat_routes(&mut memory, &mut state, alias, None);
+             assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
+         }
+-        let other_stat = assert_descriptor_stat_routes(&mut memory, &mut state, distinct, false);
++        let other_stat = assert_descriptor_stat_routes(&mut memory, &mut state, distinct, None);
+         assert_ne!(
+             (other_stat.st_dev, other_stat.st_ino),
+             (native.st_dev, native.st_ino)
+@@ -27241,12 +27283,12 @@
+             ),
+             i64::from(fd)
+         );
+-        let replaced = assert_descriptor_stat_routes(&mut memory, &mut state, fd, false);
++        let replaced = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
+         assert_eq!(
+             (replaced.st_dev, replaced.st_ino),
+             (other_stat.st_dev, other_stat.st_ino)
+         );
+-        let retained = assert_descriptor_stat_routes(&mut memory, &mut state, duplicate, false);
++        let retained = assert_descriptor_stat_routes(&mut memory, &mut state, duplicate, None);
+         assert_eq!(
+             (retained.st_dev, retained.st_ino),
+             (native.st_dev, native.st_ino)
+@@ -27259,7 +27301,7 @@
+             None,
+         ) as i32;
+         assert_eq!(reused, fd);
+-        let after_close = assert_descriptor_stat_routes(&mut memory, &mut state, reused, false);
++        let after_close = assert_descriptor_stat_routes(&mut memory, &mut state, reused, None);
+         assert_eq!(
+             (after_close.st_dev, after_close.st_ino),
+             (native.st_dev, native.st_ino)
+@@ -27289,7 +27331,7 @@
+             assert_eq!(syscall_result(&mut memory, &mut state, number, args), 0);
+             let fds: [i32; 2] = read_struct(&memory, 0x1800);
+             for fd in fds {
+-                let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, false);
++                let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
+                 let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
+                 assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
+                 let expected = format!("{kind}:[{}]", native.st_ino).into_bytes();
+@@ -27312,6 +27354,7 @@
+ 
+     #[test]
+     fn captured_output_stat_and_link_routes_preserve_the_capture_sink() {
++        let mut output = CapturedOutput::default();
+         let root = TestDir::new();
+         let mut state = test_state(&root.0);
+         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+@@ -27324,20 +27367,26 @@
+             Some(OutputAlias::Stdout),
+         ) as i32;
+         assert!(alias >= 0);
+-        let ordinary = assert_descriptor_stat_routes(&mut memory, &mut state, alias, false);
++        let ordinary = assert_descriptor_stat_routes(&mut memory, &mut state, alias, None);
+         assert_eq!(ordinary.st_mode & libc::S_IFMT, libc::S_IFREG);
+         for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO, alias] {
+-            let captured = assert_descriptor_stat_routes(&mut memory, &mut state, fd, true);
++            let captured =
++                assert_descriptor_stat_routes(&mut memory, &mut state, fd, Some(&mut output));
+             assert_eq!(captured.st_mode & libc::S_IFMT, libc::S_IFIFO);
+             assert_eq!(captured.st_size, 0);
+-            assert_eq!(captured.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
+-            assert_eq!(captured.st_ino, synthetic_guest_fd_object_inode(&state, fd));
++            let identity = output
++                .metadata()
++                .identity(output_alias(&state, fd).unwrap());
++            assert_eq!(
++                (captured.st_dev, captured.st_ino),
++                (identity.device, identity.inode)
++            );
+             write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+             let expected = format!("pipe:[{}]", captured.st_ino).into_bytes();
+             let count = metadata_call(
+                 &mut memory,
+                 &mut state,
+-                true,
++                Some(&mut output),
+                 libc::SYS_readlinkat,
+                 [libc::AT_FDCWD as u64, 0x100, 0x2000, 256, 0, 0],
+             );
+@@ -27349,7 +27398,7 @@
+                 metadata_call(
+                     &mut memory,
+                     &mut state,
+-                    true,
++                    Some(&mut output),
+                     libc::SYS_lstat,
+                     [0x100, 0x800, 0, 0, 0, 0]
+                 ),
+@@ -27362,6 +27411,7 @@
+ 
+     #[test]
+     fn proc_fd_statx_preserves_native_masks_and_error_results() {
++        let mut output = CapturedOutput::default();
+         let root = TestDir::new();
+         let mut state = test_state(&root.0);
+         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+@@ -27402,7 +27452,7 @@
+             let actual = metadata_call(
+                 &mut memory,
+                 &mut state,
+-                false,
++                None,
+                 libc::SYS_statx,
+                 [
+                     libc::AT_FDCWD as u64,
+@@ -27428,7 +27478,7 @@
+                     metadata_call(
+                         &mut memory,
+                         &mut state,
+-                        true,
++                        Some(&mut output),
+                         libc::SYS_statx,
+                         [
+                             libc::AT_FDCWD as u64,
+@@ -39548,7 +39598,7 @@
+                 0x100,
+                 0x1000,
+                 4096,
+-                false,
++                None,
+             );
+             assert!((0..4096).contains(&count));
+             let mut output = [0; 4096];
+--- a/reverie-kvm/src/lib.rs
++++ b/reverie-kvm/src/lib.rs
+@@ -18,6 +18,7 @@
+ mod bootstrap;
+ mod clock;
+ mod cpuid;
++mod cpuid_instruction;
+ mod elf;
+ mod error;
+ mod executor;
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -254,6 +254,10 @@
+ trait GuestSyscallExecutor<T: Tool>: Send + Sync {
+     fn read_clock(&self) -> Result<u64>;
+ 
++    fn has_cpuid_interception(&self) -> bool {
++        false
++    }
++
+     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+ 
+     /// Reserve backend bookkeeping before executing an injected syscall.
+@@ -422,7 +426,7 @@
+     InitialExec(SyscallRequest),
+     InitialExecCompleted,
+     Lifecycle,
+-    Timestamp,
++    Instruction,
+     ThreadEntrySignal,
+     SignalBoundary(CompletedSyscallBoundary),
+     FaultBoundary(Box<PageZeroFault>),
+@@ -443,7 +447,7 @@
+     }
+ 
+     fn tail_injection_allowed(&self, request: &SyscallRequest) -> bool {
+-        if matches!(self, Self::Timestamp) {
++        if matches!(self, Self::Instruction) {
+             // Terminal exits do not need a syscall return frame. Every other
+             // tail still requires a transport that can consume its result.
+             return injection_is_explicit_exit(request);
+@@ -455,12 +459,12 @@
+     }
+ 
+     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+-        if matches!(self, Self::Timestamp) && injection_is_explicit_exit(request) {
++        if matches!(self, Self::Instruction) && injection_is_explicit_exit(request) {
+             // inject() itself is nonreturning once the real exit is staged;
+             // tail_inject() uses that same path and both executor preflights.
+             return true;
+         }
+-        if matches!(self, Self::ThreadEntrySignal | Self::Timestamp) {
++        if matches!(self, Self::ThreadEntrySignal | Self::Instruction) {
+             // There is a real user continuation, but no consumed syscall
+             // transport to restore after an injected process action.
+             return !injection_can_be_nonreturning(request)
+@@ -574,6 +578,10 @@
+         self.backend.vcpu.read_clock()
+     }
+ 
++    fn has_cpuid_interception(&self) -> bool {
++        self.backend.has_cpuid_interception()
++    }
++
+     fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
+         self.backend
+             .tool_failure
+@@ -591,7 +599,7 @@
+         }
+         if matches!(
+             self.process_context,
+-            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Timestamp
++            ProcessExecutionContext::Lifecycle | ProcessExecutionContext::Instruction
+         ) && let Some(result) = self
+             .executor
+             .lifecycle_signal_mask_preflight(request, memory)
+@@ -913,8 +921,8 @@
+                     ProcessExecutionContext::InitialExecCompleted => unreachable!(
+                         "synthetic initial exec completes before process actions are inspected"
+                     ),
+-                    ProcessExecutionContext::Timestamp => Err(Error::UnexpectedVcpuExit(
+-                        "process injection from a timestamp callback is unsupported".to_owned(),
++                    ProcessExecutionContext::Instruction => Err(Error::UnexpectedVcpuExit(
++                        "process injection from an instruction callback is unsupported".to_owned(),
+                     )),
+                     ProcessExecutionContext::ThreadEntrySignal => Err(Error::UnexpectedVcpuExit(
+                         "process injection from a thread-entry signal hook is unsupported"
+@@ -1089,6 +1097,10 @@
+ 
+ #[reverie::tool]
+ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
++    fn has_cpuid_interception(&self) -> bool {
++        self.executor.has_cpuid_interception()
++    }
++
+     type Memory = GuestMemory;
+     type Stack = KvmStack;
+ 
+@@ -2344,9 +2356,10 @@
+         T: Tool,
+         E: SyscallExecutor,
+     {
+-        // This public non-ELF loop has no timestamp consumer. Establish its
++        // This public non-ELF loop has no instruction consumer. Establish its
+         // ownership locally even if the vCPU previously ran a subscribed Tool.
+         self.set_rdtsc_interception(false)?;
++        self.set_cpuid_interception(false)?;
+         self.vcpu.track_clock()?;
+         let tool_stack_top = self.tool_stack_top();
+         let pid = Pid::from_raw(self.root_pid);
+@@ -2600,6 +2613,9 @@
+             // removing Guest on which to acknowledge its pending-state effects.
+             return Err(Error::SignalObservationRequiresToolThreads);
+         }
++        // Capture setup can fail before image consumption or any Tool state.
++        // Keep this root owner until the later executor and its workers retire.
++        let capture_owner = self.prepare_captured_output(capture_output)?;
+         let mut loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+         // Output capture replaces stdout and stderr with the executor's pipes,
+         // but an explicitly configured stdin remains the guest's input. Use
+@@ -2615,7 +2631,7 @@
+         let tool = Arc::new(T::new(pid, &config));
+         let subscriptions = T::subscriptions(&config);
+         let thread_state = tool.init_thread_state(pid, None);
+-        let mut executor = ElfExecutor::new(loaded, capture_output);
++        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+         let result = self
+             .run_static_elf_process_with_tool(
+                 &mut executor,
+@@ -2949,6 +2965,7 @@
+             // any user instruction. New fork/thread vCPUs start unarmed; the
+             // tool-less Host worker loop never inherits trapping without a hook.
+             self.set_rdtsc_interception(subscriptions.has_rdtsc())?;
++            self.set_cpuid_interception(subscriptions.has_cpuid())?;
+             self.vcpu.track_clock()?;
+             _registration = Some(self.register_guest_thread()?);
+             let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+@@ -3171,9 +3188,8 @@
+                         (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
+                     }
+                     VcpuExit::Hlt => {
+-                        if let Some(boundary) = self.timestamp_counter_exception()? {
+-                            let request = boundary.instruction.request;
+-                            executor.set_current_user_stack_pointer(boundary.registers.rsp);
++                        if let Some(boundary) = self.tool_instruction_exception()? {
++                            executor.set_current_user_stack_pointer(boundary.user_registers().rsp);
+                             let handler_signal = Arc::new(Mutex::new(None));
+                             let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                             let mut process_completed = false;
+@@ -3183,7 +3199,7 @@
+                                     backend: self,
+                                     executor,
+                                     memory: memory.clone(),
+-                                    process_context: ProcessExecutionContext::Timestamp,
++                                    process_context: ProcessExecutionContext::Instruction,
+                                     callback_site: None,
+                                     original_syscall: None,
+                                     signal_guard: SignalGuard::Ordinary,
+@@ -3209,7 +3225,28 @@
+                                     stack_checked_out.clone(),
+                                 );
+                                 drive_handler(
+-                                    tool.handle_rdtsc_event(&mut guest, request),
++                                    async {
++                                        match &boundary {
++                                            crate::vm::ToolInstructionBoundary::Timestamp(
++                                                boundary,
++                                            ) => tool
++                                                .handle_rdtsc_event(
++                                                    &mut guest,
++                                                    boundary.instruction.request,
++                                                )
++                                                .await
++                                                .map(crate::vm::ToolInstructionResult::Timestamp),
++                                            crate::vm::ToolInstructionBoundary::Cpuid(boundary) => {
++                                                tool.handle_cpuid_event(
++                                                    &mut guest,
++                                                    boundary.registers.rax as u32,
++                                                    boundary.registers.rcx as u32,
++                                                )
++                                                .await
++                                                .map(crate::vm::ToolInstructionResult::Cpuid)
++                                            }
++                                        }
++                                    },
+                                     handler_signal,
+                                     pending_child_starts,
+                                     wait_for_failure(
+@@ -3249,13 +3286,14 @@
+                                     hidden?;
+                                     let exit = executor.take_exit().ok_or_else(|| {
+                                         Error::UnexpectedVcpuExit(
+-                                            "terminal timestamp injection lost its exit".to_owned(),
++                                            "terminal instruction injection lost its exit"
++                                                .to_owned(),
+                                         )
+                                     })?;
+                                     if exit.group {
+                                         self.request_guest_thread_group_exit(exit.status);
+                                     }
+-                                    // The original timestamp never resumes. Normal
++                                    // The original instruction never resumes. Normal
+                                     // retirement and consuming hooks own cleanup.
+                                     return Ok(exit.into());
+                                 }
+@@ -3263,7 +3301,7 @@
+                                 | HandlerOutcome::ParkedFatal(_)
+                                 | HandlerOutcome::ParkedCancelled(_) => {
+                                     return Err(Error::UnexpectedVcpuExit(
+-                                        "nonreturning timestamp callback outcome".to_owned(),
++                                        "nonreturning instruction callback outcome".to_owned(),
+                                     )
+                                     .with_cleanup(hidden.err().into_iter().collect()));
+                                 }
+@@ -3271,14 +3309,14 @@
+                             hidden?;
+                             if process_completed {
+                                 return Err(Error::UnexpectedVcpuExit(
+-                                    "timestamp callback changed the process continuation"
++                                    "instruction callback changed the process continuation"
+                                         .to_owned(),
+                                 ));
+                             }
+                             if let Some((segment, address)) = executor.take_segment() {
+                                 set_user_segment_base(&self.vcpu, segment, address)?;
+                             }
+-                            self.resume_timestamp_counter(boundary, value)?;
++                            self.resume_tool_instruction(boundary, value)?;
+                             continue;
+                         }
+                         if self.try_resume_vmware_backdoor_probe()? {
+--- a/reverie-kvm/src/terminal_runtime_tests.rs
++++ b/reverie-kvm/src/terminal_runtime_tests.rs
+@@ -166,7 +166,7 @@
+ // can tail out of a timestamp callback without a syscall return transport.
+ #[test]
+ fn timestamp_exit_admission_preserves_returning_ordinary_injections() {
+-    let context = ProcessExecutionContext::Timestamp;
++    let context = ProcessExecutionContext::Instruction;
+     for (number, tail, ordinary) in [
+         (libc::SYS_exit, true, true),
+         (libc::SYS_exit_group, true, true),
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -70,6 +70,7 @@
+ use crate::elf::initial_thread_name;
+ use crate::elf::load_static_elf;
+ use crate::elf::load_static_elf_file;
++use crate::executor::CapturedOutput;
+ use crate::executor::ChildCompletion;
+ use crate::executor::ChildStartCommand;
+ use crate::executor::ChildStartGate;
+@@ -119,15 +120,37 @@
+     rflags: u64,
+ }
+ 
+-pub(crate) struct TimestampBoundary {
++pub(crate) struct InstructionBoundary<I> {
+     pub(crate) registers: kvm_regs,
+-    pub(crate) instruction: crate::timestamp::TimestampInstruction,
++    pub(crate) instruction: I,
+     special_registers: kvm_bindings::kvm_sregs,
+     code_segment: u16,
+     stack_segment: u16,
+ }
+ 
+-impl TimestampBoundary {
++pub(crate) type TimestampBoundary = InstructionBoundary<crate::timestamp::TimestampInstruction>;
++pub(crate) type CpuidBoundary = InstructionBoundary<crate::cpuid_instruction::Instruction>;
++
++pub(crate) enum ToolInstructionBoundary {
++    Timestamp(TimestampBoundary),
++    Cpuid(CpuidBoundary),
++}
++
++pub(crate) enum ToolInstructionResult {
++    Timestamp(reverie::RdtscResult),
++    Cpuid(reverie::CpuIdResult),
++}
++
++impl ToolInstructionBoundary {
++    pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
++        match self {
++            Self::Timestamp(boundary) => boundary.user_registers(),
++            Self::Cpuid(boundary) => boundary.user_registers(),
++        }
++    }
++}
++
++impl<I> InstructionBoundary<I> {
+     pub(crate) fn user_registers(&self) -> libc::user_regs_struct {
+         let mut registers = crate::runtime::kvm_registers(self.registers, u64::MAX);
+         registers.cs = self.code_segment.into();
+@@ -968,6 +991,7 @@
+     // Set by the active execution consumer, never copied to a new vCPU. A
+     // Host-owned worker has no Tool dispatcher and must retain native TSC.
+     intercept_rdtsc: bool,
++    cpuid_interception: crate::cpuid_instruction::Interception,
+     pub(crate) static_elf: Option<LoadedStaticElf>,
+     stdin: Option<File>,
+     pub(crate) root_pid: i32,
+@@ -1148,6 +1172,7 @@
+             // No explicit caller override: follow the tool at run entry.
+             thread_ownership_override: None,
+             intercept_rdtsc: false,
++            cpuid_interception: crate::cpuid_instruction::Interception::default(),
+             static_elf: None,
+             stdin,
+             root_pid: 1,
+@@ -2640,6 +2665,86 @@
+         Ok(())
+     }
+ 
++    pub(crate) fn set_cpuid_interception(&mut self, enabled: bool) -> Result<()> {
++        self.cpuid_interception.configure(&self.vcpu, enabled)
++    }
++
++    pub(crate) fn has_cpuid_interception(&self) -> bool {
++        self.cpuid_interception.enabled()
++    }
++
++    pub(crate) fn tool_instruction_exception(&self) -> Result<Option<ToolInstructionBoundary>> {
++        if let Some(boundary) = self.cpuid_instruction_exception()? {
++            return Ok(Some(ToolInstructionBoundary::Cpuid(boundary)));
++        }
++        Ok(self
++            .timestamp_counter_exception()?
++            .map(ToolInstructionBoundary::Timestamp))
++    }
++
++    fn cpuid_instruction_exception(&self) -> Result<Option<CpuidBoundary>> {
++        if !self.cpuid_interception.enabled() {
++            return Ok(None);
++        }
++        let Some(exception) = self.static_elf_exception()? else {
++            return Ok(None);
++        };
++        // CPUID is never an emulated #UD. LOCK and unrelated faults retain
++        // their genuine exception, even when this Tool subscribes to CPUID.
++        if exception.vector != 13 {
++            return Ok(None);
++        }
++        self.cpuid_interception.verify(&self.vcpu)?;
++        let halted = self.vcpu.get_regs()?;
++        let special = self.vcpu.get_sregs()?;
++        if special.cr0 & (1 << 31) == 0
++            || special.efer & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
++            || special.cr4 & (1 << 12) != 0
++        {
++            return Ok(None);
++        }
++        let mut frame = [0; 6 * 8];
++        self.memory.read_raw(halted.rsp, &mut frame)?;
++        let word = |index: usize| {
++            u64::from_le_bytes(
++                frame[index * 8..index * 8 + 8]
++                    .try_into()
++                    .expect("exception frame word"),
++            )
++        };
++        let cs = word(2);
++        let ss = word(5);
++        if word(0) != 0
++            || cs != u64::from(crate::signal::USER_CODE_SELECTOR)
++            || ![
++                u64::from(crate::signal::USER_DATA_SELECTOR),
++                u64::from(crate::signal::USER_DATA_SELECTOR & !3),
++            ]
++            .contains(&ss)
++        {
++            return Ok(None);
++        }
++        let Some(instruction) = crate::cpuid_instruction::decode(|offset| {
++            let address = exception
++                .instruction_pointer
++                .checked_add(u64::from(offset))?;
++            crate::timestamp::fetch_user_byte(&self.memory, special.cr3, address)
++        }) else {
++            return Ok(None);
++        };
++        let mut registers = halted;
++        registers.rip = exception.instruction_pointer;
++        registers.rsp = exception.stack_pointer;
++        registers.rflags = exception.rflags;
++        Ok(Some(CpuidBoundary {
++            registers,
++            instruction,
++            special_registers: special,
++            code_segment: cs as u16,
++            stack_segment: ss as u16,
++        }))
++    }
++
+     pub(crate) fn timestamp_counter_exception(&self) -> Result<Option<TimestampBoundary>> {
+         // This guard precedes even reading the fault frame: an unsubscribed
+         // RDTSCP #UD is a genuine guest fault, not an unsolicited callback.
+@@ -2718,6 +2823,39 @@
+         let registers =
+             crate::timestamp::result_registers(boundary.registers, boundary.instruction, result)
+                 .ok_or_else(|| Error::UnexpectedVcpuExit("timestamp RIP overflow".to_owned()))?;
++        self.resume_instruction_registers(boundary, registers)
++    }
++
++    pub(crate) fn resume_tool_instruction(
++        &mut self,
++        boundary: ToolInstructionBoundary,
++        result: ToolInstructionResult,
++    ) -> Result<()> {
++        match (boundary, result) {
++            (
++                ToolInstructionBoundary::Timestamp(boundary),
++                ToolInstructionResult::Timestamp(result),
++            ) => self.resume_timestamp_counter(boundary, result),
++            (ToolInstructionBoundary::Cpuid(boundary), ToolInstructionResult::Cpuid(result)) => {
++                let registers = crate::cpuid_instruction::result_registers(
++                    boundary.registers,
++                    boundary.instruction,
++                    result,
++                )
++                .ok_or_else(|| Error::UnexpectedVcpuExit("CPUID RIP overflow".to_owned()))?;
++                self.resume_instruction_registers(boundary, registers)
++            }
++            _ => Err(Error::UnexpectedVcpuExit(
++                "instruction callback result kind changed".to_owned(),
++            )),
++        }
++    }
++
++    fn resume_instruction_registers<I>(
++        &mut self,
++        boundary: InstructionBoundary<I>,
++        registers: kvm_regs,
++    ) -> Result<()> {
+         // Exception stubs preserve every GPR. Returning host-side injections
+         // cannot supply a replacement user register file. Preserve the saved
+         // instruction state, and any intentional injected FS/GS-base effect.
+@@ -2733,7 +2871,7 @@
+         self.vcpu.set_sregs(&special)?;
+         self.vcpu.set_regs(&registers)?;
+         if registers.rflags & (1 << 8) != 0 {
+-            // The timestamp has now retired. Preserve this backend's existing
++            // The instruction has now retired. Preserve this backend's existing
+             // typed #DB boundary here, before another guest instruction can
+             // run; resuming with TF would report the following instruction.
+             return Err(Error::GuestException {
+@@ -3179,17 +3317,33 @@
+     /// Runs the installed static ELF and its forked children until the root exits.
+     pub fn run_static_elf(&mut self) -> Result<i32> {
+         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+-        let mut executor = ElfExecutor::new(loaded, false);
++        let mut executor = ElfExecutor::with_output(loaded, None);
+         let (status, _, _) = self.run_static_elf_process(&mut executor)?;
+         Ok(conventional_exit_code(status))
+     }
+ 
+     /// Runs the installed ELF process tree and captures its standard output streams.
+     pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
++        // Declared before the executor so its private pipe identities outlive
++        // executor/child cleanup, including early-return and unwind paths.
++        let capture_owner = self.prepare_captured_output(true)?;
+         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+-        let mut executor = ElfExecutor::new(loaded, true);
++        let mut executor = ElfExecutor::with_output(loaded, capture_owner.clone());
+         let (status, stdout, stderr) = self.run_static_elf_process(&mut executor)?;
+         Ok((conventional_exit_code(status), stdout, stderr))
++    }
++
++    pub(crate) fn prepare_captured_output(
++        &self,
++        capture_output: bool,
++    ) -> Result<Option<CapturedOutput>> {
++        self.static_elf
++            .as_ref()
++            .ok_or(Error::StaticElfNotInstalled)?;
++        capture_output
++            .then(CapturedOutput::try_new)
++            .transpose()
++            .map_err(Into::into)
+     }
+ 
+     fn run_static_elf_process(
+@@ -3198,6 +3352,7 @@
+     ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+         // This loop never dispatches Tool events, including Host-owned workers.
+         self.set_rdtsc_interception(false)?;
++        self.set_cpuid_interception(false)?;
+         let _registration = self.register_guest_thread()?;
+         if self.is_guest_thread {
+             let entry_registers = self.vcpu.get_regs()?;
+@@ -3562,6 +3717,7 @@
+         F: FnMut(Syscall, &GuestMemory) -> i64,
+     {
+         self.set_rdtsc_interception(false)?;
++        self.set_cpuid_interception(false)?;
+         loop {
+             let vcpu_exit = self.vcpu.run()?;
+             Self::record_exit(self.exit_collector.as_deref(), &vcpu_exit);
+@@ -3670,6 +3826,8 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    include!("cpuid_runtime_tests.rs");
+ 
+     mod initialization_tests {
+         use std::io::Seek;
+--- a/reverie-kvm/tests/static_elf.rs
++++ b/reverie-kvm/tests/static_elf.rs
+@@ -14017,6 +14017,15 @@
+ #[path = "support/timestamp_terminal.rs"]
+ mod timestamp_terminal;
+ 
++#[path = "support/capture_identity.rs"]
++mod capture_identity;
++
++#[path = "support/cpuid_dispatch.rs"]
++mod cpuid_dispatch;
++
++#[path = "support/cpuid_terminal.rs"]
++mod cpuid_terminal;
++
+ const RDTSC_SENTINEL: u64 = 0x1122_3344_5566_7788;
+ const RDTSCP_SENTINEL: u64 = 0x99aa_bbcc_ddee_ff00;
+ const RDTSCP_AUX_SENTINEL: u32 = 0x1357_9bdf;
+--- /dev/null
++++ b/reverie-kvm/tests/support/capture_identity.rs
+@@ -0,0 +1,100 @@
++use super::*;
++
++#[derive(Debug, Default)]
++struct CaptureIdentityTool;
++
++#[reverie::tool]
++impl Tool for CaptureIdentityTool {
++    type GlobalState = ();
++    type ThreadState = ();
++}
++
++fn capture_identity_program() -> Vec<u8> {
++    let mut code = vec![
++        0x48, 0x81, 0xec, 0x00, 0x02, 0x00, 0x00, // sub rsp, 512
++        0x49, 0x89, 0xe4, // mov r12, rsp: stdout stat
++        0x4c, 0x8d, 0xac, 0x24, 0x90, 0x00, 0x00, 0x00, // lea r13,[rsp+144]: pipe stat
++        0x4c, 0x8d, 0xb4, 0x24, 0x20, 0x01, 0x00, 0x00, // lea r14,[rsp+288]: pipe fds
++    ];
++    let mut failures = Vec::new();
++    fn syscall_zero(code: &mut Vec<u8>, failures: &mut Vec<usize>, number: u32) {
++        code.push(0xb8);
++        code.extend_from_slice(&number.to_le_bytes());
++        code.extend_from_slice(&[0x0f, 0x05, 0x48, 0x85, 0xc0]); // syscall; test rax,rax
++        append_jne_failure(code, failures);
++    }
++    code.extend_from_slice(&[0xbf, 1, 0, 0, 0, 0x4c, 0x89, 0xe6]); // fd1; rsi=r12
++    syscall_zero(&mut code, &mut failures, libc::SYS_fstat as u32);
++    code.extend_from_slice(&[0x4c, 0x89, 0xf7, 0x31, 0xf6]); // rdi=r14; flags=0
++    syscall_zero(&mut code, &mut failures, libc::SYS_pipe2 as u32);
++    code.extend_from_slice(&[0x41, 0x8b, 0x3e, 0x4c, 0x89, 0xee]); // edi=[r14]; rsi=r13
++    syscall_zero(&mut code, &mut failures, libc::SYS_fstat as u32);
++    code.extend_from_slice(&[0x49, 0x8b, 0x04, 0x24, 0x49, 0x3b, 0x45, 0x00]); // cmp stdout.dev,pipe.dev
++    append_jne_failure(&mut code, &mut failures);
++    code.extend_from_slice(&[0x49, 0x8b, 0x44, 0x24, 0x08, 0x49, 0x3b, 0x45, 0x08]); // cmp inodes
++    code.extend_from_slice(&[0x0f, 0x84]); // je failure: distinct live objects
++    failures.push(code.len());
++    code.extend_from_slice(&0_i32.to_le_bytes());
++    for load in [
++        &[0x41, 0x8b, 0x44, 0x24, 0x18][..],
++        &[0x41, 0x8b, 0x45, 0x18][..],
++    ] {
++        code.extend_from_slice(load); // eax=st_mode
++        code.push(0x25); // and eax,S_IFMT
++        code.extend_from_slice(&libc::S_IFMT.to_le_bytes());
++        code.push(0x3d); // cmp eax,S_IFIFO
++        code.extend_from_slice(&libc::S_IFIFO.to_le_bytes());
++        append_jne_failure(&mut code, &mut failures);
++    }
++    code.extend_from_slice(&[0x41, 0x8b, 0x3e]);
++    syscall_zero(&mut code, &mut failures, libc::SYS_close as u32);
++    code.extend_from_slice(&[0x41, 0x8b, 0x7e, 0x04]);
++    syscall_zero(&mut code, &mut failures, libc::SYS_close as u32);
++    let message = b"capture-pipe-ok\n";
++    code.extend_from_slice(&[0xbf, 1, 0, 0, 0, 0x48, 0xbe]);
++    let message_operand = code.len();
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    code.push(0xba);
++    code.extend_from_slice(&(message.len() as u32).to_le_bytes());
++    code.extend_from_slice(&[0xb8, 1, 0, 0, 0, 0x0f, 0x05, 0x48, 0x3d]);
++    code.extend_from_slice(&(message.len() as u32).to_le_bytes());
++    append_jne_failure(&mut code, &mut failures);
++    append_stats_exit(&mut code, true);
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 91, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    let message_address = LOAD_ADDRESS + code.len() as u64;
++    code[message_operand..message_operand + 8].copy_from_slice(&message_address.to_le_bytes());
++    code.extend_from_slice(message);
++    code
++}
++
++#[test]
++fn direct_and_tool_capture_share_device_with_anonymous_pipe() {
++    if !kvm_available("captured output native pipe identity") {
++        return;
++    }
++    let image = static_elf(&capture_identity_program());
++    for with_tool in [false, true] {
++        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++        backend
++            .install_static_elf(&image, "/bin/capture-identity")
++            .unwrap();
++        let (status, stdout, stderr) = if with_tool {
++            let ((), status, stdout, stderr) = futures::executor::block_on(
++                backend.run_static_elf_with_tool::<CaptureIdentityTool>((), true),
++            )
++            .unwrap();
++            (status, stdout, stderr)
++        } else {
++            backend.run_static_elf_captured().unwrap()
++        };
++        assert_eq!(status, 0, "with_tool={with_tool}");
++        assert_eq!(stdout, b"capture-pipe-ok\n", "with_tool={with_tool}");
++        assert!(stderr.is_empty());
++    }
++}
+--- /dev/null
++++ b/reverie-kvm/tests/support/cpuid_dispatch.rs
+@@ -0,0 +1,561 @@
++// Real CPUID Tool dispatch controls. All guest fixtures are loader-free unless
++// a test explicitly installs an executable image for its exec transition.
++use reverie::CpuIdResult;
++
++use super::*;
++
++const OUTPUTS: [u32; 4] = [0xf1234567, 0xe2345678, 0xd3456789, 0xc456789a];
++
++#[derive(Debug, Default)]
++struct CpuidLog {
++    calls: Mutex<Vec<(Pid, u32, u32, u64)>>,
++}
++
++#[reverie::global_tool]
++impl GlobalTool for CpuidLog {
++    type Config = (bool, u8);
++    type Request = (u32, u32, u64);
++    type Response = ();
++    async fn receive_rpc(&self, from: Pid, (eax, ecx, clock): Self::Request) {
++        self.calls.lock().unwrap().push((from, eax, ecx, clock));
++    }
++}
++
++#[derive(Default)]
++struct CpuidTool;
++
++#[reverie::tool]
++impl Tool for CpuidTool {
++    type GlobalState = CpuidLog;
++    type ThreadState = u32;
++
++    fn subscriptions(config: &(bool, u8)) -> Subscription {
++        let mut subscription = Subscription::none();
++        if config.0 {
++            subscription.cpuid();
++        }
++        if config.1 == 3 {
++            subscription.rdtsc();
++        }
++        subscription
++    }
++
++    async fn handle_thread_start<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++    ) -> Result<(), reverie::Error> {
++        assert_eq!(guest.has_cpuid_interception(), guest.config().0);
++        Ok(())
++    }
++
++    async fn handle_rdtsc_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        request: Rdtsc,
++    ) -> Result<RdtscResult, Errno> {
++        assert_eq!(guest.config().1, 3);
++        assert!(guest.has_cpuid_interception());
++        let before = guest.read_clock().expect("actual mixed-instruction clock");
++        let (kind, result) = match request {
++            Rdtsc::Tsc => (
++                0,
++                RdtscResult {
++                    tsc: RDTSC_SENTINEL,
++                    aux: None,
++                },
++            ),
++            Rdtsc::Tscp => (
++                1,
++                RdtscResult {
++                    tsc: RDTSCP_SENTINEL,
++                    aux: Some(RDTSCP_AUX_SENTINEL),
++                },
++            ),
++        };
++        guest.send_rpc((u32::MAX, kind, before)).await;
++        assert_eq!(guest.read_clock().unwrap(), before);
++        Ok(result)
++    }
++
++    async fn handle_cpuid_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        eax: u32,
++        ecx: u32,
++    ) -> Result<CpuIdResult, Errno> {
++        assert!(guest.has_cpuid_interception());
++        let registers = guest.regs().await;
++        assert_eq!((registers.rax as u32, registers.rcx as u32), (eax, ecx));
++        let before = guest.read_clock().expect("actual guest clock");
++        assert_eq!(
++            guest.inject(reverie::syscalls::Getpid::new()).await?,
++            i64::from(guest.pid().as_raw())
++        );
++        assert_eq!(guest.inject(Fork::new()).await, Err(Errno::ENOSYS));
++        guest.send_rpc((eax, ecx, before)).await;
++        assert_eq!(
++            guest.read_clock().unwrap(),
++            before,
++            "host RPC/injection must not retire guest branches"
++        );
++        let ordinal = *guest.thread_state();
++        *guest.thread_state_mut() = ordinal + 1;
++        let values = if guest.config().1 == 2 {
++            [RDTSC_SENTINEL as u32, 0, 0, (RDTSC_SENTINEL >> 32) as u32]
++        } else {
++            OUTPUTS.map(|value| value + if guest.config().1 == 1 { ordinal } else { 0 })
++        };
++        Ok(CpuIdResult {
++            eax: values[0],
++            ebx: values[1],
++            ecx: values[2],
++            edx: values[3],
++        })
++    }
++}
++
++fn append_cpuid(code: &mut Vec<u8>, prefix: &[u8], ordinal: u32, failures: &mut Vec<usize>) {
++    code.extend_from_slice(&[0x48, 0xb8]);
++    code.extend_from_slice(&0x8877665500000007_u64.to_le_bytes());
++    code.extend_from_slice(&[0x48, 0xb9]);
++    code.extend_from_slice(&0x1234567800000002_u64.to_le_bytes());
++    code.extend_from_slice(&[0x48, 0xbb]);
++    code.extend_from_slice(&u64::MAX.to_le_bytes());
++    code.extend_from_slice(&[0x48, 0xba]);
++    code.extend_from_slice(&u64::MAX.to_le_bytes());
++    code.extend_from_slice(&[0x49, 0xb8]);
++    code.extend_from_slice(&0x123456789abcdef0_u64.to_le_bytes());
++    code.extend_from_slice(&[0x49, 0x89, 0xe4]); // mov r12,rsp
++    code.extend_from_slice(&[0x68, 0xd7, 0x02, 0, 0, 0x9d]); // push flags; popfq
++    code.extend_from_slice(prefix);
++    code.extend_from_slice(&[0x0f, 0xa2]);
++    code.extend_from_slice(&[0x9c, 0x41, 0x5b]); // pushfq; pop r11
++    code.extend_from_slice(&[0x49, 0x81, 0xfb, 0xd7, 0x02, 0, 0]);
++    append_jne_failure(code, failures);
++    for (register, value) in [0_u8, 3, 1, 2].into_iter().zip(OUTPUTS) {
++        code.extend_from_slice(&[0x49, 0xba]);
++        code.extend_from_slice(&u64::from(value + ordinal).to_le_bytes());
++        code.extend_from_slice(&[0x4c, 0x39, 0xd0 | register]);
++        append_jne_failure(code, failures);
++    }
++    code.extend_from_slice(&[0x49, 0xba]);
++    code.extend_from_slice(&0x123456789abcdef0_u64.to_le_bytes());
++    code.extend_from_slice(&[0x4d, 0x39, 0xd0]);
++    append_jne_failure(code, failures); // cmp r8,r10
++    code.extend_from_slice(&[0x4c, 0x39, 0xe4]);
++    append_jne_failure(code, failures); // cmp rsp,r12
++}
++
++fn assertion_program(prefix: &[u8], count: u32, evolving: bool) -> Vec<u8> {
++    let mut code = Vec::new();
++    let mut failures = Vec::new();
++    for ordinal in 0..count {
++        append_cpuid(
++            &mut code,
++            prefix,
++            if evolving { ordinal } else { 0 },
++            &mut failures,
++        );
++    }
++    append_stats_exit(&mut code, true);
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 19, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    code
++}
++
++fn run_cpuid(code: &[u8], config: (bool, u8), ownership: ThreadOwnership) -> (CpuidLog, i32) {
++    let mut backend = KvmBackend::new(MEMORY_SIZE).expect("actual KVM is mandatory");
++    backend.set_thread_ownership(ownership);
++    backend
++        .install_static_elf(&static_elf(code), "/cpuid-dispatch")
++        .unwrap();
++    let (log, status, stdout, stderr) =
++        futures::executor::block_on(backend.run_static_elf_with_tool::<CpuidTool>(config, true))
++            .unwrap();
++    assert!(stdout.is_empty());
++    assert!(stderr.is_empty());
++    (log, status)
++}
++
++#[test]
++fn cpuid_tool_returns_exact_full_registers_flags_stack_and_one_rpc_per_instruction() {
++    for prefix in [
++        vec![],
++        vec![0x66],
++        vec![0x67],
++        vec![0xf2],
++        vec![0xf3],
++        vec![0x64],
++        vec![0x4f],
++        vec![0x66; 13],
++    ] {
++        let (log, status) = run_cpuid(
++            &assertion_program(&prefix, 1, false),
++            (true, 0),
++            ThreadOwnership::Tool,
++        );
++        assert_eq!(status, 0, "prefix={prefix:x?}");
++        let calls = log.calls.lock().unwrap();
++        assert_eq!(calls.len(), 1);
++        assert_eq!((calls[0].0.as_raw(), calls[0].1, calls[0].2), (1, 7, 2));
++    }
++    let (log, status) = run_cpuid(
++        &assertion_program(&[], 3, true),
++        (true, 1),
++        ThreadOwnership::Tool,
++    );
++    assert_eq!(status, 0);
++    let calls = log.calls.lock().unwrap();
++    assert_eq!(calls.len(), 3);
++    assert!(
++        calls
++            .iter()
++            .all(|call| (call.0.as_raw(), call.1, call.2) == (1, 7, 2))
++    );
++    assert!(
++        calls.windows(2).all(|pair| pair[1].3 > pair[0].3),
++        "guest comparison branches must advance the real guest clock"
++    );
++}
++
++#[test]
++fn cpuid_subscription_keeps_unrelated_locked_overlength_and_debug_faults_exact() {
++    let mut overlong = vec![0x66; 14];
++    overlong.extend_from_slice(&[0x0f, 0xa2]);
++    for (code, vector, rip, calls) in [
++        (vec![0xf0, 0x0f, 0xa2], 6, LOAD_ADDRESS, 0),
++        (overlong, 13, LOAD_ADDRESS, 0),
++        (vec![0xfa], 13, LOAD_ADDRESS, 0),
++        (vec![0x0f, 0x0b], 6, LOAD_ADDRESS, 0),
++        (
++            vec![
++                0x9c, 0x48, 0x81, 0x0c, 0x24, 0x00, 0x01, 0, 0, 0x9d, 0x0f, 0xa2,
++            ],
++            1,
++            LOAD_ADDRESS + 12,
++            1,
++        ),
++    ] {
++        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++        backend
++            .install_static_elf(&static_elf(&code), "/cpuid-fault")
++            .unwrap();
++        let completion = futures::executor::block_on(
++            backend.run_static_elf_with_tool_completion::<CpuidTool>((true, 0), true),
++        )
++        .unwrap();
++        let error = completion.result.unwrap_err();
++        let Error::GuestException {
++            vector: actual_vector,
++            instruction_pointer: actual_rip,
++            ..
++        } = unwrap_shared_guest_exception(error)
++        else {
++            panic!("exact guest exception required");
++        };
++        assert_eq!((actual_vector, actual_rip), (vector, rip));
++        assert_eq!(completion.global_state.calls.lock().unwrap().len(), calls);
++    }
++}
++
++fn cpuid_clone_program() -> Vec<u8> {
++    fn append_root_read(code: &mut Vec<u8>, failures: &mut Vec<usize>) {
++        code.extend_from_slice(&[0x0f, 0xa2]); // cpuid
++        code.push(0x3d); // cmp eax, expected low word
++        code.extend_from_slice(&(RDTSC_SENTINEL as u32).to_le_bytes());
++        append_jne_failure(code, failures);
++        code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, expected high word
++        code.extend_from_slice(&((RDTSC_SENTINEL >> 32) as u32).to_le_bytes());
++        append_jne_failure(code, failures);
++    }
++
++    const CHILD_TID: u64 = LOAD_ADDRESS + 0x1800;
++    const CHILD_RESULT: u64 = LOAD_ADDRESS + 0x1808;
++    const CHILD_DONE: u64 = LOAD_ADDRESS + 0x1810;
++    const CHILD_STACK: u64 = LOAD_ADDRESS + 0x1900;
++    const CHILD_STACK_SIZE: u64 = 0x600;
++    let flags = libc::CLONE_VM as u64
++        | libc::CLONE_FS as u64
++        | libc::CLONE_FILES as u64
++        | libc::CLONE_SIGHAND as u64
++        | libc::CLONE_THREAD as u64
++        | libc::CLONE_SYSVSEM as u64
++        | libc::CLONE_CHILD_SETTID as u64
++        | libc::CLONE_CHILD_CLEARTID as u64;
++    let mut code = Vec::new();
++    let mut failures = Vec::new();
++    append_root_read(&mut code, &mut failures);
++    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_tid
++    code.extend_from_slice(&CHILD_TID.to_le_bytes());
++    code.extend_from_slice(&[
++        0xc7, 0x01, 0xff, 0xff, 0xff, 0x7f, // mov [rcx], nonzero sentinel
++        0xb8, 0xb3, 0x01, 0x00, 0x00, // mov eax, SYS_clone3
++        0x48, 0xbf, // movabs rdi, clone_args
++    ]);
++    let clone_args_operand = code.len();
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    code.extend_from_slice(&[
++        0xbe, 0x58, 0x00, 0x00, 0x00, // mov esi, sizeof(clone_args)
++        0x0f, 0x05, // syscall
++        0x85, 0xc0, // test eax, eax
++        0x0f, 0x84, 0, 0, 0, 0, // jz child
++    ]);
++    let child_jump = code.len() - 4;
++    code.extend_from_slice(&[0x0f, 0x88]); // js failure: clone must succeed
++    failures.push(code.len());
++    code.extend_from_slice(&0_i32.to_le_bytes());
++    code.extend_from_slice(&[0x41, 0x89, 0xc5]); // mov r13d, returned child tid
++    code.extend_from_slice(&[0x48, 0xbf]); // movabs rdi, child_tid
++    code.extend_from_slice(&CHILD_TID.to_le_bytes());
++    let wait = code.len();
++    code.extend_from_slice(&[
++        0x8b, 0x17, // mov edx, [rdi]
++        0x85, 0xd2, // test edx, edx
++        0x0f, 0x84, 0, 0, 0, 0, // jz joined
++    ]);
++    let joined_jump = code.len() - 4;
++    code.extend_from_slice(&[
++        0x31, 0xf6, // xor esi, esi: FUTEX_WAIT, current nonzero value in edx
++        0x45, 0x31, 0xd2, // xor r10d, r10d: no timeout
++        0xb8, 0xca, 0x00, 0x00, 0x00, // mov eax, SYS_futex
++        0x0f, 0x05, // syscall
++    ]);
++    // A racing clear-TID may win before FUTEX_WAIT. Only Linux's normal
++    // successful wake, changed-value refusal or signal interruption can retry.
++    for result in [0_i32, -libc::EAGAIN, -libc::EINTR] {
++        code.push(0x3d); // cmp eax, result
++        code.extend_from_slice(&result.to_le_bytes());
++        code.extend_from_slice(&[0x0f, 0x84, 0, 0, 0, 0]); // je wait
++        let operand = code.len() - 4;
++        patch_stats_jump(&mut code, operand, wait);
++    }
++    code.push(0xe9); // jmp failure for any other futex result
++    failures.push(code.len());
++    code.extend_from_slice(&0_i32.to_le_bytes());
++    let joined = code.len();
++    patch_stats_jump(&mut code, joined_jump, joined);
++    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_result
++    code.extend_from_slice(&CHILD_RESULT.to_le_bytes());
++    code.extend_from_slice(&[0x44, 0x39, 0x29]); // cmp [rcx], r13d
++    append_jne_failure(&mut code, &mut failures);
++    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_done
++    code.extend_from_slice(&CHILD_DONE.to_le_bytes());
++    code.extend_from_slice(&[0x81, 0x39, 0x34, 0x12, 0x00, 0x00]); // cmp [rcx], 0x1234
++    append_jne_failure(&mut code, &mut failures);
++    append_root_read(&mut code, &mut failures);
++    append_stats_exit(&mut code, true);
++
++    let child = code.len();
++    patch_stats_jump(&mut code, child_jump, child);
++    code.extend_from_slice(&[
++        0x0f, 0xa2, // actual Host-worker CPUID: must retire without a Tool callback
++        0xb8, 0xba, 0x00, 0x00, 0x00, // mov eax, SYS_gettid
++        0x0f, 0x05, // syscall
++        0x48, 0xb9, // movabs rcx, child_result
++    ]);
++    code.extend_from_slice(&CHILD_RESULT.to_le_bytes());
++    code.extend_from_slice(&[0x89, 0x01]); // mov [rcx], eax
++    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_done
++    code.extend_from_slice(&CHILD_DONE.to_le_bytes());
++    code.extend_from_slice(&[0xc7, 0x01, 0x34, 0x12, 0x00, 0x00]); // mov [rcx], 0x1234
++    append_stats_exit(&mut code, false); // clear-TID and wake parent on real exit
++
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
++        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
++        0x0f, 0x05, // syscall
++        0x0f, 0x0b, // ud2
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    while !code.len().is_multiple_of(8) {
++        code.push(0);
++    }
++    let clone_args_address = LOAD_ADDRESS + code.len() as u64;
++    code[clone_args_operand..clone_args_operand + 8]
++        .copy_from_slice(&clone_args_address.to_le_bytes());
++    let mut clone_args = [0_u8; 88];
++    clone_args[0..8].copy_from_slice(&flags.to_le_bytes());
++    clone_args[16..24].copy_from_slice(&CHILD_TID.to_le_bytes());
++    clone_args[40..48].copy_from_slice(&CHILD_STACK.to_le_bytes());
++    clone_args[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
++    code.extend_from_slice(&clone_args);
++    assert!(
++        code.len() < 0x1000,
++        "code must not overlap the shared data page"
++    );
++    code
++}
++
++#[test]
++fn cpuid_thread_ownership_keeps_host_worker_native_and_tool_worker_subscribed() {
++    for (ownership, expected) in [
++        (ThreadOwnership::Host, vec![1, 1]),
++        (ThreadOwnership::Tool, vec![1, 2, 1]),
++    ] {
++        let (log, status) = run_cpuid(&cpuid_clone_program(), (true, 2), ownership);
++        assert_eq!(status, 0);
++        assert_eq!(
++            log.calls
++                .lock()
++                .unwrap()
++                .iter()
++                .map(|row| row.0.as_raw())
++                .collect::<Vec<_>>(),
++            expected
++        );
++    }
++}
++
++fn table_program(leaf: u32, subleaf: u32, values: [u32; 4]) -> Vec<u8> {
++    let mut code = vec![0xb8];
++    code.extend_from_slice(&leaf.to_le_bytes());
++    code.push(0xb9);
++    code.extend_from_slice(&subleaf.to_le_bytes());
++    code.extend_from_slice(&[0x0f, 0xa2]);
++    let mut failures = Vec::new();
++    for (register, value) in [0_u8, 3, 1, 2].into_iter().zip(values) {
++        code.extend_from_slice(&[0x49, 0xba]);
++        code.extend_from_slice(&u64::from(value).to_le_bytes());
++        code.extend_from_slice(&[0x4c, 0x39, 0xd0 | register]);
++        append_jne_failure(&mut code, &mut failures);
++    }
++    append_stats_exit(&mut code, true);
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 20, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    code
++}
++
++#[test]
++fn unsubscribed_cpuid_keeps_the_installed_table_and_indexed_xstate_policy() {
++    for (leaf, subleaf, expected) in [
++        (0x80000001, 0, [0x663, 0, 1, 0x20100800]),
++        (0xd, 1, [0; 4]),
++        (0xd, 17, [0; 4]),
++        (0xd, 19, [0; 4]),
++    ] {
++        let (log, status) = run_cpuid(
++            &table_program(leaf, subleaf, expected),
++            (false, 0),
++            ThreadOwnership::Tool,
++        );
++        assert_eq!(status, 0, "leaf={leaf:#x}, subleaf={subleaf}");
++        assert!(log.calls.lock().unwrap().is_empty());
++    }
++}
++
++#[test]
++fn cpuid_dispatch_survives_real_fork_and_same_pid_exec() {
++    let directory = TestDirectory::new();
++    let executable = directory.0.join("cpuid-exec-target");
++    let child_image = static_elf(&assertion_program(&[], 1, false));
++    std::fs::write(&executable, &child_image).unwrap();
++    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
++    let mut code = Vec::new();
++    let mut failures = Vec::new();
++    append_cpuid(&mut code, &[], 0, &mut failures);
++    code.extend_from_slice(&[
++        0xb8, 57, 0, 0, 0, 0x0f, 0x05, 0x85, 0xc0, 0x0f, 0x84, 0, 0, 0, 0,
++    ]);
++    let child_jump = code.len() - 4;
++    code.extend_from_slice(&[0x0f, 0x88]);
++    failures.push(code.len());
++    code.extend_from_slice(&0_i32.to_le_bytes());
++    code.extend_from_slice(&[
++        0x49, 0x89, 0xc5, // mov r13,rax: exact child identity
++        0x48, 0x89, 0xc7, // mov rdi,rax: wait for that child
++        0x48, 0x83, 0xec, 0x10, // sub rsp,16: real writable guest stack
++        0x48, 0x89, 0xe6, // mov rsi,rsp: wait status
++        0xc7, 0x06, 0xff, 0xff, 0xff, 0xff, // status sentinel, overwritten by wait4
++    ]);
++    code.extend_from_slice(&[
++        0x31, 0xd2, 0x45, 0x31, 0xd2, 0xb8, 61, 0, 0, 0, 0x0f, 0x05, 0x4c, 0x39, 0xe8,
++    ]);
++    append_jne_failure(&mut code, &mut failures);
++    code.extend_from_slice(&[0x83, 0x3e, 0]);
++    append_jne_failure(&mut code, &mut failures);
++    append_stats_exit(&mut code, true);
++    let child = code.len();
++    patch_stats_jump(&mut code, child_jump, child);
++    append_cpuid(&mut code, &[], 0, &mut failures);
++    code.extend_from_slice(&[0x48, 0xbf]);
++    let path_operand = code.len();
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    code.extend_from_slice(&[0x48, 0xbe]);
++    let argv_operand = code.len();
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    code.extend_from_slice(&[0x31, 0xd2, 0xb8, 59, 0, 0, 0, 0x0f, 0x05]); // a returned exec is failure
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 21, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    while !code.len().is_multiple_of(8) {
++        code.push(0);
++    }
++    let path = LOAD_ADDRESS + code.len() as u64;
++    code.extend_from_slice(executable.to_str().unwrap().as_bytes());
++    code.push(0);
++    while !code.len().is_multiple_of(8) {
++        code.push(0);
++    }
++    let argv = LOAD_ADDRESS + code.len() as u64;
++    code.extend_from_slice(&path.to_le_bytes());
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    for (operand, value) in [(path_operand, path), (argv_operand, argv)] {
++        code[operand..operand + 8].copy_from_slice(&value.to_le_bytes());
++    }
++    let (log, status) = run_cpuid(&code, (true, 0), ThreadOwnership::Tool);
++    assert_eq!(status, 0);
++    assert_eq!(
++        log.calls
++            .lock()
++            .unwrap()
++            .iter()
++            .map(|call| (call.0.as_raw(), call.1, call.2))
++            .collect::<Vec<_>>(),
++        vec![(1, 7, 2), (2, 7, 2), (2, 7, 2)]
++    );
++}
++
++#[test]
++fn cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges() {
++    let mut code = Vec::new();
++    let mut failures = Vec::new();
++    append_cpuid(&mut code, &[], 0, &mut failures);
++    // Retain the existing complete RDTSC/RDTSCP guest result and AUX checks.
++    // Its relative jumps remain local when placed after the CPUID assertion.
++    code.extend_from_slice(&timestamp_assertion_program());
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 22, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    for operand in failures {
++        patch_stats_jump(&mut code, operand, failure);
++    }
++    let (log, status) = run_cpuid(&code, (true, 3), ThreadOwnership::Tool);
++    assert_eq!(status, 0);
++    let calls = log.calls.lock().unwrap();
++    assert_eq!(
++        calls
++            .iter()
++            .map(|call| (call.0.as_raw(), call.1, call.2))
++            .collect::<Vec<_>>(),
++        vec![(1, 7, 2), (1, u32::MAX, 0), (1, u32::MAX, 1)]
++    );
++    assert!(calls.windows(2).all(|pair| pair[1].3 > pair[0].3));
++}
+--- /dev/null
++++ b/reverie-kvm/tests/support/cpuid_terminal.rs
+@@ -0,0 +1,360 @@
++// Actual CPUID terminal transitions. These controls exercise the real
++// Tool/Guest/driver and consuming hooks; they do not model Detcore's clock RPC.
++use futures::channel::oneshot;
++
++use super::*;
++
++#[derive(Debug, Default)]
++struct SiblingGates {
++    entered: bool,
++    leader_entry: Option<oneshot::Sender<()>>,
++    worker_terminal: Option<oneshot::Sender<()>>,
++    leader_exit: Option<oneshot::Sender<()>>,
++}
++
++#[derive(Debug, Default)]
++struct TerminalLog {
++    events: Mutex<Vec<(u8, i32, ExitStatus)>>,
++    gates: Mutex<SiblingGates>,
++}
++
++#[reverie::global_tool]
++impl GlobalTool for TerminalLog {
++    type Request = (u8, ExitStatus);
++    type Response = ();
++    type Config = u8;
++
++    async fn receive_rpc(&self, from: Pid, (kind, status): Self::Request) {
++        self.events
++            .lock()
++            .unwrap()
++            .push((kind, from.as_raw(), status));
++        match kind {
++            10 => {
++                assert_eq!(from.as_raw(), 2);
++                let (sender, receiver) = oneshot::channel();
++                {
++                    let mut gates = self.gates.lock().unwrap();
++                    assert!(!gates.entered);
++                    gates.entered = true;
++                    assert!(gates.worker_terminal.replace(sender).is_none());
++                    if let Some(leader) = gates.leader_entry.take() {
++                        leader.send(()).unwrap();
++                    }
++                }
++                receiver
++                    .await
++                    .expect("leader must release the CPUID callback");
++            }
++            11 => {
++                assert_eq!(from.as_raw(), 1);
++                let wait = {
++                    let mut gates = self.gates.lock().unwrap();
++                    if gates.entered {
++                        None
++                    } else {
++                        let (sender, receiver) = oneshot::channel();
++                        assert!(gates.leader_entry.replace(sender).is_none());
++                        Some(receiver)
++                    }
++                };
++                if let Some(wait) = wait {
++                    wait.await.expect("worker must enter its CPUID callback");
++                }
++                let (sender, receiver) = oneshot::channel();
++                {
++                    let mut gates = self.gates.lock().unwrap();
++                    assert!(gates.leader_exit.replace(sender).is_none());
++                    gates.worker_terminal.take().unwrap().send(()).unwrap();
++                }
++                // Do not hold a mutex across either actual RPC wait. The worker
++                // must consume its exit hook before the leader's physical exit.
++                receiver
++                    .await
++                    .expect("worker must acknowledge its consuming exit hook");
++            }
++            2 if from.as_raw() == 2 => {
++                let sender = self.gates.lock().unwrap().leader_exit.take().unwrap();
++                sender.send(()).unwrap();
++            }
++            _ => {}
++        }
++    }
++}
++
++#[derive(Debug, Default)]
++struct TerminalTool {
++    mode: u8,
++}
++
++#[reverie::tool]
++impl Tool for TerminalTool {
++    type GlobalState = TerminalLog;
++    type ThreadState = bool;
++
++    fn new(_: Pid, mode: &u8) -> Self {
++        Self { mode: *mode }
++    }
++
++    fn subscriptions(mode: &u8) -> Subscription {
++        let mut subscriptions = Subscription::none();
++        subscriptions.cpuid();
++        if *mode == 7 {
++            subscriptions.syscalls([Sysno::exit_group]);
++        }
++        subscriptions
++    }
++
++    async fn handle_thread_start<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++    ) -> Result<(), reverie::Error> {
++        assert!(!*guest.thread_state());
++        *guest.thread_state_mut() = true;
++        guest.send_rpc((0, ExitStatus::SUCCESS)).await;
++        Ok(())
++    }
++
++    async fn handle_cpuid_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        _eax: u32,
++        _ecx: u32,
++    ) -> Result<reverie::CpuIdResult, Errno> {
++        assert!(guest.has_cpuid_interception());
++        guest.send_rpc((1, ExitStatus::SUCCESS)).await;
++        let call = match self.mode {
++            0 | 2 | 8 => Syscall::from_raw(Sysno::exit, SyscallArgs::new(23, 0, 0, 0, 0, 0)),
++            1 | 9 => Syscall::from_raw(Sysno::exit_group, SyscallArgs::new(29, 0, 0, 0, 0, 0)),
++            3 => Syscall::from_raw(
++                Sysno::uname,
++                SyscallArgs::new((LOAD_ADDRESS + 0x100) as usize, 0, 0, 0, 0, 0),
++            ),
++            4 => Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0)),
++            5 => Syscall::from_raw(Sysno::fork, SyscallArgs::new(0, 0, 0, 0, 0, 0)),
++            6 => Syscall::from_raw(Sysno::execve, SyscallArgs::new(0, 0, 0, 0, 0, 0)),
++            7 => {
++                assert_eq!(guest.tid().as_raw(), 2);
++                guest.send_rpc((10, ExitStatus::SUCCESS)).await;
++                Syscall::from_raw(Sysno::exit, SyscallArgs::new(0, 0, 0, 0, 0, 0))
++            }
++            _ => panic!("unknown terminal CPUID mode"),
++        };
++        if matches!(self.mode, 8 | 9) {
++            let result = guest.inject(call).await;
++            panic!("successful terminal injection must never return to the Tool: {result:?}");
++        }
++        guest.tail_inject(call).await
++    }
++
++    async fn handle_syscall_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        call: Syscall,
++    ) -> Result<i64, reverie::Error> {
++        assert_eq!(self.mode, 7);
++        assert_eq!(guest.tid().as_raw(), 1);
++        assert!(matches!(call, Syscall::ExitGroup(_)));
++        guest.send_rpc((11, ExitStatus::SUCCESS)).await;
++        guest.tail_inject(call).await
++    }
++
++    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
++        &self,
++        _tid: Pid,
++        global: &G,
++        started: bool,
++        status: ExitStatus,
++    ) -> Result<(), reverie::Error> {
++        assert!(started);
++        global.send_rpc((2, status)).await;
++        if self.mode == 2 {
++            Err(Errno::EIO.into())
++        } else {
++            Ok(())
++        }
++    }
++
++    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
++        self,
++        _pid: Pid,
++        global: &G,
++        status: ExitStatus,
++    ) -> Result<(), reverie::Error> {
++        global.send_rpc((3, status)).await;
++        Ok(())
++    }
++}
++
++fn terminal_program() -> Vec<u8> {
++    let mut code = vec![
++        0x0f, 0xa2, // cpuid: callback must never return a value to this frame
++        0x0f, 0xa2, // a resumed frame would produce a forbidden second callback
++        0xb8, 0xe7, 0, 0, 0, // mov eax, SYS_exit_group
++        0xbf, 77, 0, 0, 0, // mov edi, 77
++        0x0f, 0x05, 0x0f, 0x0b, // syscall; ud2
++    ];
++    code.resize(0x100, 0);
++    code.extend_from_slice(&[0x5a; 16]);
++    code
++}
++
++fn run_terminal(mode: u8, code: &[u8]) -> (reverie_kvm::ToolRunCompletion<TerminalLog>, [u8; 16]) {
++    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
++    backend.set_thread_ownership(ThreadOwnership::Tool);
++    backend
++        .install_static_elf(&static_elf(code), "/bin/CPUID-terminal")
++        .unwrap();
++    let completion = futures::executor::block_on(
++        backend.run_static_elf_with_tool_completion::<TerminalTool>(mode, true),
++    )
++    .unwrap();
++    let mut marker = [0; 16];
++    backend
++        .memory()
++        .read(LOAD_ADDRESS + 0x100, &mut marker)
++        .unwrap();
++    (completion, marker)
++}
++
++#[test]
++fn terminal_exit_preserves_status_and_consuming_cleanup() {
++    for mode in [0, 1, 2, 8, 9] {
++        let (completion, marker) = run_terminal(mode, &terminal_program());
++        assert_eq!(marker, [0x5a; 16]);
++        let expected_status = if matches!(mode, 1 | 9) { 29 } else { 23 };
++        let expected = ExitStatus::Exited(expected_status);
++        assert_eq!(
++            *completion.global_state.events.lock().unwrap(),
++            vec![
++                (0, 1, ExitStatus::SUCCESS),
++                (1, 1, ExitStatus::SUCCESS),
++                (2, 1, expected),
++                (3, 1, expected),
++            ],
++            "mode={mode}",
++        );
++        if mode == 2 {
++            let error = completion.result.unwrap_err();
++            eprintln!("actual terminal exit cleanup failure: {error:?}");
++            let Error::SharedFailure(cause) = error else {
++                panic!("expected exactly the real shared exit-hook failure");
++            };
++            assert!(
++                matches!(cause.as_ref(), Error::Reverie(reverie::Error::Errno(e)) if *e == Errno::EIO)
++            );
++        } else {
++            let (status, stdout, stderr) = completion.result.unwrap();
++            assert_eq!(status, expected_status);
++            assert!(stdout.is_empty());
++            assert!(stderr.is_empty());
++        }
++    }
++}
++
++#[test]
++fn nonterminal_tails_refuse_before_side_effects() {
++    for mode in [3, 4, 5, 6] {
++        let (completion, marker) = run_terminal(mode, &terminal_program());
++        assert_eq!(
++            marker, [0x5a; 16],
++            "refused uname must not write guest memory"
++        );
++        let error = completion.result.unwrap_err();
++        eprintln!("actual refused CPUID tail mode={mode}: {error:?}");
++        let Error::SharedFailure(cause) = error else {
++            panic!("refusal must have exactly one shared cause and no hidden cleanup error");
++        };
++        assert!(
++            matches!(cause.as_ref(), Error::Reverie(reverie::Error::Errno(e)) if *e == Errno::ENOSYS)
++        );
++        let events = completion.global_state.events.lock().unwrap();
++        assert_eq!(
++            *events,
++            vec![
++                (0, 1, ExitStatus::SUCCESS),
++                (1, 1, ExitStatus::SUCCESS),
++                (2, 1, ExitStatus::Exited(255)),
++                (3, 1, ExitStatus::Exited(255)),
++            ],
++            "mode={mode}: no new child/image or resumed CPUID",
++        );
++    }
++}
++
++#[test]
++fn worker_terminal_rpc_precedes_real_sibling_exit_group() {
++    const STACK: u64 = LOAD_ADDRESS + 0x1900;
++    let flags = libc::CLONE_VM as u64
++        | libc::CLONE_FS as u64
++        | libc::CLONE_FILES as u64
++        | libc::CLONE_SIGHAND as u64
++        | libc::CLONE_THREAD as u64
++        | libc::CLONE_SYSVSEM as u64;
++    let mut code = vec![
++        0xb8, 0xb3, 0x01, 0, 0, // mov eax, SYS_clone3
++        0x48, 0xbf, // movabs rdi, clone_args
++    ];
++    let args_operand = code.len();
++    code.extend_from_slice(&0_u64.to_le_bytes());
++    code.extend_from_slice(&[
++        0xbe, 88, 0, 0, 0, 0x0f, 0x05, // mov esi, 88; syscall
++        0x85, 0xc0, // test eax, eax
++        0x0f, 0x84, 0, 0, 0, 0, // jz worker
++        0x83, 0xf8, 0x02, // cmp eax, 2
++        0x0f, 0x85, 0, 0, 0, 0, // jne failure
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 17, 0, 0, 0, 0x0f, 0x05, // exit_group(17)
++        0x0f, 0x0b,
++    ]);
++    let child_jump = args_operand + 8 + 11;
++    let failure_jump = child_jump + 4 + 5;
++    let worker = code.len();
++    code.extend_from_slice(&terminal_program()[..18]);
++    let failure = code.len();
++    code.extend_from_slice(&[
++        0xb8, 0xe7, 0, 0, 0, 0xbf, 78, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
++    ]);
++    patch_stats_jump(&mut code, child_jump, worker);
++    patch_stats_jump(&mut code, failure_jump, failure);
++    while !code.len().is_multiple_of(8) {
++        code.push(0);
++    }
++    let args_address = LOAD_ADDRESS + code.len() as u64;
++    code[args_operand..args_operand + 8].copy_from_slice(&args_address.to_le_bytes());
++    let mut args = [0_u8; 88];
++    args[0..8].copy_from_slice(&flags.to_le_bytes());
++    args[40..48].copy_from_slice(&STACK.to_le_bytes());
++    args[48..56].copy_from_slice(&0x600_u64.to_le_bytes());
++    code.extend_from_slice(&args);
++    let (completion, _) = run_terminal(7, &code);
++    let (status, stdout, stderr) = completion.result.unwrap();
++    assert_eq!(status, 17);
++    assert!(stdout.is_empty());
++    assert!(stderr.is_empty());
++    let events = completion.global_state.events.lock().unwrap();
++    assert_eq!(
++        events
++            .iter()
++            .filter(|(kind, _, _)| *kind == 1)
++            .copied()
++            .collect::<Vec<_>>(),
++        vec![(1, 2, ExitStatus::SUCCESS)]
++    );
++    assert_eq!(events.iter().filter(|(kind, _, _)| *kind == 0).count(), 2);
++    assert_eq!(
++        events
++            .iter()
++            .filter(|(kind, _, _)| *kind == 2)
++            .copied()
++            .collect::<Vec<_>>(),
++        vec![(2, 2, ExitStatus::SUCCESS), (2, 1, ExitStatus::Exited(17))]
++    );
++    assert_eq!(
++        events
++            .iter()
++            .filter(|(kind, _, _)| *kind == 3)
++            .copied()
++            .collect::<Vec<_>>(),
++        vec![(3, 1, ExitStatus::Exited(17))]
++    );
++}

@@ -1,0 +1,62 @@
+Findings
+
+No blocking source findings.
+
+Review target: Reverie `6e3915b70a71657a08f0028b3f70d6074116206a..3d4a401ed8959befad0b2f10db59093725f27432`, tree `73024912837cbbeaa70b6d2173f5b596eebedcb3`, manifest `dfd21968df3b73ba28a7388f3504b8891e3f13035dab6f364e69fbe2947d1211`.
+
+Source conclusions
+
+- CPUID faulting is owned per real vCPU. Exact MSR counts, support detection, admission readback, stale-state verification, partial-failure cleanup, restoration, and tool-less opt-out fail closed in [cpuid_instruction.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/cpuid_instruction.rs:21).
+- Subscription is established before guest execution and fresh child vCPUs must establish their own ownership; public non-ELF and ordinary ELF loops explicitly disarm it in [runtime.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs:2359) and [runtime.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs:2963).
+- Decoder and retirement semantics are sound for the bounded CPL3, four-level, long-mode envelope: exact fetch length, ignored legal prefixes, LOCK refusal, zero-extended EAX/EBX/ECX/EDX, preserved remaining state, cleared fault RF, and typed TF boundary.
+- CPUID and timestamp callbacks share the existing protected instruction-callback driver. Ordinary returning injections remain available; only Exit/ExitGroup may complete without resuming the instruction. Cleanup, error, cancellation, and worker lifecycle behavior are preserved.
+- Capture identities are reserved by real private CLOEXEC pipe endpoints, relocated above descriptors 0–2, never placed in the guest table, and retained through root/child cleanup in [capture_identity.rs](/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/capture_identity.rs:40).
+- Alias, close/replacement, dup, fork/thread, exec, stat/statx and proc-link behavior tracks the existing authoritative descriptor model. Setup and partial EMFILE failures close staged owners without consuming the image.
+- Raw pipe device/inode values are not independently deterministic. The unchanged H39ac consumer determinizes both values when metadata virtualization is enabled, or records/replays them otherwise. That source compatibility was inspected; it is not tested Hermit integration or parity evidence.
+
+Linux/x86 and descriptor limits
+
+The implementation agrees with the bound upstream CPUID-faulting sequence: enabled CPL3 CPUID raises `#GP(0)` before architectural result writes. It preserves genuine unrelated `#GP`, `#UD`, fetch and debug faults.
+
+The capture identities establish pipe object identity only. They do not establish shared-OFD exclusivity, imported/exported alias ownership, readiness equivalence, generic cross-executor epoll portability, or physical pipe I/O semantics.
+
+Evidence
+
+The continuation contains 92 accepted phases and 83 exact passing declarations: 43 library, 34 static-ELF, two vmcall and four read-clock. Inventories were 523/331/6/8 respectively; those are not execution counts. No selected test was failed or ignored, and `REVERIE_REQUIRE_KVM=1` prevented unavailable-KVM skips.
+
+Four retained harnesses and the linked library were newly emitted (`fresh=false`) and source-bound. Aggregate continuation measurements were 437.664910 CPU seconds, 119.063640 payload seconds, and 425.442579 observer-transport seconds.
+
+The initial metadata attempt remains raw 137, `accepted=false`, with incomplete RefUnit accounting. It was not repaired or counted as passing. The later private-lease continuation is separate.
+
+This evidence is not:
+
+- a full suite;
+- a Hermit build or runtime integration;
+- a same-run cross-backend comparison;
+- timer, signal, clock-origin, FIFO, H1/H2/H3, or whole-backend parity evidence.
+
+Goalpost-moving assessment
+
+- Assertions weakened: no. The old synthetic capture identity oracle was replaced by exact live-pipe `fstat` equality, pipefs-device, distinct-inode, alias and negative controls.
+- Tolerance/exemption/skip/comparator relaxation: no.
+- Failure renamed as a pass: no; the raw-137 refusal remains failed.
+- Check deleted instead of satisfied: no.
+
+Review-protocol triggers
+
+1. New syscall support: no.
+2. Reverie API/core-abstraction or interception-model change: yes—KVM now implements the existing CPUID Tool instruction interception contract.
+3. New determinization strategy: no—the diff routes through existing CPUID Tool policy and existing inode/device determinization rather than adding a scheduler policy.
+4. Core DetCore scheduling change: no.
+
+Coverage and tool limits
+
+I read all 55 indexed documents, 162 chunks and 19,486 lines in index order, including the complete 3,378-line composition diff, complete new modules/tests, affected caller closure, qualification machinery, raw outputs and kernel evidence. Initial truncations of chunks 77, 147, 152 and 153 were repaired with complete bounded rereads.
+
+A supplemental attempt to print the enormous complete `COMMITTED-BINDING.json` and `RAW-RESULT-READBACK.json` was truncated. I therefore used the complete indexed evidence, focused binding fields, and the complete 1,423-byte committed-source proof instead; I do not claim a complete semantic read of the large manifest. One exploratory `rg` mistakenly searched a broader immutable ignored-packet directory and returned filenames only; none of that content or any reviewer report was used. A later relative-glob search failed with ENOENT and was repaired using the correct frozen path. No files were changed and nothing was executed.
+
+My prior complete H39ac scheduler grounding was authenticated and reused; it was not reread here. Its historical initial on-request/read-only policy discrepancy remains unchanged.
+
+Verdict: **APPROVE** the whole exact CPUID-plus-capture composition at `3d4a401ed8959befad0b2f10db59093725f27432` / tree `73024912837cbbeaa70b6d2173f5b596eebedcb3`.
+
+This is finite Reverie source approval only, not Hermit integration, activation, landing, or backend-parity approval.

@@ -1,0 +1,24 @@
+{
+  "started": [
+    "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "timestamp::tests::timestamp_prefixes_and_fifteen_byte_limit_preserve_faults",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 522,
+      "exec_time": 0.000276716
+    }
+  ]
+}

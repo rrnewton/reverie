@@ -1,0 +1,10 @@
+--- v1/vm.rs
++++ v2/vm.rs
+@@ -438,7 +438,6 @@
+     /// predicates. Readiness only requests another recheck; it grants no entry
+     /// and does not decide whether worker cancellation applies to the root.
+     /// Take a fresh subscription after every wake, including an irrelevant one.
+-    #[allow(dead_code)] // Used by the forthcoming stopped-entry wait adapters.
+     pub(crate) fn subscribe_cancellation(&self) -> GuestCancellationSubscription {
+         self.cancellation_wake
+             .lock()

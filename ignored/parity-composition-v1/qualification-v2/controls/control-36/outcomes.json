@@ -1,0 +1,24 @@
+{
+  "started": [
+    "static_elf_forks_execs_and_waits_for_child"
+  ],
+  "ended": [
+    {
+      "type": "test",
+      "name": "static_elf_forks_execs_and_waits_for_child",
+      "event": "ok"
+    }
+  ],
+  "suites": [
+    {
+      "type": "suite",
+      "event": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered_out": 330,
+      "exec_time": 0.144624962
+    }
+  ]
+}

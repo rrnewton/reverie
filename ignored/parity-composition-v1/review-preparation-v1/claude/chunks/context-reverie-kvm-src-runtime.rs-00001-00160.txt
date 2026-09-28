@@ -1,0 +1,160 @@
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 212..222; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    /// Executes `request` and returns its raw Linux syscall result.
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+}
+
+impl<F> SyscallExecutor for F
+where
+    F: FnMut(&SyscallRequest, &GuestMemory) -> i64 + Send + Sync,
+{
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        self(request, memory)
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 248..272; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    pub(crate) subscriptions: Subscription,
+    // TODO-HUMAN-REVIEW(PR-235): Review child release on parent handler suspension.
+    pub(crate) pending_child_starts: SharedChildStarts,
+}
+
+// TODO-HUMAN-REVIEW(PR-192): Review async KVM process-action completion.
+trait GuestSyscallExecutor<T: Tool>: Send + Sync {
+    fn read_clock(&self) -> Result<u64>;
+
+    fn has_cpuid_interception(&self) -> bool {
+        false
+    }
+
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
+
+    /// Reserve backend bookkeeping before executing an injected syscall.
+    /// Refusal is terminal backend failure, never an emulated syscall errno.
+    fn prepare_signal_effects(&mut self) -> std::result::Result<(), Errno> {
+        Ok(())
+    }
+
+    fn failure_subscription(&self) -> Option<crate::failure::FailureSubscription> {
+        None
+    }
+
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 373..379; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    fn ordinary_injection_allowed(&self, _request: &SyscallRequest) -> bool {
+        true
+    }
+
+    fn tail_injection_allowed(&self, _request: &SyscallRequest) -> bool {
+        true
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/runtime.rs lines 394..554; full file SHA256 3d061e02a0fa5bd023f194f1aa6e1c9ee20821ed11e25ebbdc44c56e678b62c2
+    fn complete_injection<'a>(
+        &'a mut self,
+        _context: ToolContext<'a, T>,
+    ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+    where
+        T: 'a,
+    {
+        Box::pin(async {
+            Ok(InjectionCompletion::Returns {
+                syscall_result: None,
+            })
+        })
+    }
+}
+
+struct DirectSyscallExecutor<'a> {
+    executor: &'a mut dyn SyscallExecutor,
+    vcpu: &'a crate::clock::CountedVcpu,
+}
+
+impl<T: Tool> GuestSyscallExecutor<T> for DirectSyscallExecutor<'_> {
+    fn read_clock(&self) -> Result<u64> {
+        self.vcpu.read_clock()
+    }
+
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        self.executor.execute(request, memory)
+    }
+}
+
+#[derive(Clone)]
+enum ProcessExecutionContext {
+    InitialExec(SyscallRequest),
+    InitialExecCompleted,
+    Lifecycle,
+    Instruction,
+    ThreadEntrySignal,
+    SignalBoundary(CompletedSyscallBoundary),
+    FaultBoundary(Box<PageZeroFault>),
+    SyscallBoundary(CompletedSyscallBoundary),
+}
+
+impl ProcessExecutionContext {
+    fn has_resumable_signal_boundary(&self) -> bool {
+        // These contexts carry an exact user continuation for a signal frame.
+        // Lifecycle and initial-exec callbacks have no such transport.
+        matches!(
+            self,
+            Self::SignalBoundary(_)
+                | Self::FaultBoundary(_)
+                | Self::SyscallBoundary(_)
+                | Self::ThreadEntrySignal
+        )
+    }
+
+    fn tail_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        if matches!(self, Self::Instruction) {
+            // Terminal exits do not need a syscall return frame. Every other
+            // tail still requires a transport that can consume its result.
+            return injection_is_explicit_exit(request);
+        }
+        !matches!(
+            self,
+            Self::SignalBoundary(_) | Self::FaultBoundary(_) | Self::ThreadEntrySignal
+        )
+    }
+
+    fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        if matches!(self, Self::Instruction) && injection_is_explicit_exit(request) {
+            // inject() itself is nonreturning once the real exit is staged;
+            // tail_inject() uses that same path and both executor preflights.
+            return true;
+        }
+        if matches!(self, Self::ThreadEntrySignal | Self::Instruction) {
+            // There is a real user continuation, but no consumed syscall
+            // transport to restore after an injected process action.
+            return !injection_can_be_nonreturning(request)
+                && !matches!(
+                    request.number() as libc::c_long,
+                    libc::SYS_fork | libc::SYS_vfork | libc::SYS_clone | libc::SYS_clone3
+                );
+        }
+        !matches!(self, Self::SignalBoundary(_) | Self::FaultBoundary(_))
+            || !injection_can_be_nonreturning(request)
+    }
+
+    fn injected_signal_allowed(&self, request: &SyscallRequest) -> bool {
+        !signal_request_requires_return_frame(request)
+            || matches!(
+                self,
+                Self::SignalBoundary(_)
+                    | Self::SyscallBoundary(_)
+                    | Self::FaultBoundary(_)
+                    | Self::ThreadEntrySignal
+            )
+    }
+}
+
+fn injection_is_explicit_exit(request: &SyscallRequest) -> bool {
+    matches!(
+        request.number() as libc::c_long,
+        libc::SYS_exit | libc::SYS_exit_group
+    )
+}
+
+/// Returns whether a successful injected syscall can abandon the current Tool
+/// handler instead of producing an ordinary scalar result.
+fn injection_can_be_nonreturning(request: &SyscallRequest) -> bool {
+    match request.number() {
+        number

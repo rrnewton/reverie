@@ -1,0 +1,75 @@
+{
+  "records": [
+    {
+      "bytes": 662,
+      "path": "CALLER-CONTEXT.json",
+      "sha256": "27cfb1eb0596e6da642f048dfbd0aa66c7d7a64e4a65eb0157ad0b388a362198"
+    },
+    {
+      "bytes": 2566,
+      "path": "CALLER-REFERENCES.txt",
+      "sha256": "e7f4ffce6f9659d6ece96b2b1c1cbe5894f314257299eb5a47436c70b2caf0fe"
+    },
+    {
+      "bytes": 3806,
+      "path": "REPORT.md",
+      "sha256": "077e2b1712ba6aadc8d2a9cab74e84a3eb47bf2083558185b526811057a67b34"
+    },
+    {
+      "bytes": 1627,
+      "path": "SOURCE.json",
+      "sha256": "984b8014ace8c42df8f09e692ac918e59e6b5a25642b185732009c2e70f4e4bf"
+    },
+    {
+      "bytes": 5047,
+      "path": "SOURCE.patch",
+      "sha256": "7600144ab1be82cba227eb8fcc153232e1312db7f8c410386dcf2de542e52df4"
+    },
+    {
+      "bytes": 41677,
+      "path": "after/reverie-kvm/src/clock.rs",
+      "sha256": "660a5b5b683d65479f9fd990840f91e4e1db06a29c8c3a98dbd1230159d022b3"
+    },
+    {
+      "bytes": 27085,
+      "path": "after/reverie-kvm/src/entry/cleanup_tests.rs",
+      "sha256": "8204b5f5a98da876478a31647a30901883e1f8f4ab410535c46c7ac7aebed712"
+    },
+    {
+      "bytes": 133569,
+      "path": "after/reverie-kvm/src/memory.rs",
+      "sha256": "5145578ae74400f31828f87331b92cbc4f15f00d44d0472d239ad6f4616af5a7"
+    },
+    {
+      "bytes": 35181,
+      "path": "after/reverie-kvm/src/vm/exec_wait_tests.rs",
+      "sha256": "e1faf5a6f1e2d60fd9e572ab3f933e7334d18c21ca2fa23f670b3cd6e50c1ecb"
+    },
+    {
+      "bytes": 41627,
+      "path": "before/reverie-kvm/src/clock.rs",
+      "sha256": "580080890af0ecd661cc8f016b32b25db85f35830aaaaada09296601bf5c4a16"
+    },
+    {
+      "bytes": 27125,
+      "path": "before/reverie-kvm/src/entry/cleanup_tests.rs",
+      "sha256": "82ec6c92233eb0be6ec723d4db79219ae4635523d4d36f813893c58e7d66820c"
+    },
+    {
+      "bytes": 133558,
+      "path": "before/reverie-kvm/src/memory.rs",
+      "sha256": "4f1fc51291e59e2fd1d2ac48d31823a447ab8e9e91ad03f0bde3c68adbdd61f6"
+    },
+    {
+      "bytes": 35146,
+      "path": "before/reverie-kvm/src/vm/exec_wait_tests.rs",
+      "sha256": "ee1062c5c3fd3c3dd56c67edea81c682b77649326611741073dc8860cacf42c2"
+    },
+    {
+      "bytes": 31560,
+      "path": "lint-v2-stderr",
+      "sha256": "41e9884b5aeaa874e60ab4a5945b5e77762eba098c09ceb67dcc549e38b51caa"
+    }
+  ],
+  "scope": "four-file unexecuted lint-fixture author release"
+}

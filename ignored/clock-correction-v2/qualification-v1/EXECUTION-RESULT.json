@@ -1,0 +1,125 @@
+{
+  "sequence": [
+    "metadata",
+    "compile",
+    "format",
+    "list-ptrace",
+    "list-vsyscall",
+    "core-check",
+    "clippy",
+    "test-01",
+    "test-02",
+    "test-03",
+    "test-04",
+    "test-05",
+    "test-06",
+    "test-07",
+    "test-08",
+    "test-09",
+    "test-10",
+    "test-11",
+    "test-12",
+    "test-13",
+    "test-14",
+    "test-15",
+    "test-16",
+    "test-17",
+    "test-18",
+    "test-19",
+    "test-20",
+    "test-21",
+    "test-22",
+    "test-23",
+    "test-24",
+    "test-25",
+    "test-26",
+    "test-27",
+    "test-28",
+    "test-29",
+    "test-30",
+    "test-31",
+    "test-32",
+    "test-33",
+    "test-34",
+    "test-35",
+    "test-36",
+    "test-37",
+    "test-38"
+  ],
+  "planned_phases": 45,
+  "planned_tests": 38,
+  "attempts": [
+    {
+      "name": "metadata",
+      "transport": {
+        "argv": [
+          "/usr/bin/python3",
+          "-B",
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/phase.py",
+          "launch",
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/metadata-plan.json",
+          "92d9e3dbb4582ce2d4507859f6e5ed9bf837d2993b5356357e84aad458ff2639"
+        ],
+        "returncode": 0,
+        "elapsed_seconds": 5.211062039947137,
+        "stdout": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/launch/phase-metadata.stdout",
+          "bytes": 2327,
+          "mode": 420,
+          "sha256": "6897aeaaba3080782b69035989e91e9721c072d7f5d60e8ac442f045b46ef5db"
+        },
+        "stderr": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/launch/phase-metadata.stderr",
+          "bytes": 0,
+          "mode": 420,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/controls/metadata/result.json",
+        "bytes": 2601,
+        "mode": 420,
+        "sha256": "7d3a616936dea21b8cf1b2fd50d5d4dee6573bed4a9dab11e5a9d044afbe2641"
+      }
+    },
+    {
+      "name": "compile",
+      "transport": {
+        "argv": [
+          "/usr/bin/python3",
+          "-B",
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/phase.py",
+          "launch",
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/compile-plan.json",
+          "a8479bd21916aa958dfbfa9daf88a597b21c526ed9da772a79e046af0cf4b106"
+        ],
+        "returncode": 1,
+        "elapsed_seconds": 60.12544969213195,
+        "stdout": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/launch/phase-compile.stdout",
+          "bytes": 2282,
+          "mode": 420,
+          "sha256": "a37335470d6e36db07b99e6ad7ec7fc57d3b1151f92ce9a569658d6f4659def6"
+        },
+        "stderr": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/launch/phase-compile.stderr",
+          "bytes": 0,
+          "mode": 420,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/controls/compile/result.json",
+        "bytes": 2546,
+        "mode": 420,
+        "sha256": "5f2719e83f9e9832bde743fcf69b4e57fe3a1a9c2256b19b811547ef43d8ee6d"
+      }
+    }
+  ],
+  "accepted": [
+    "metadata"
+  ],
+  "error": "RuntimeError('phase failed/refused; no retry: compile')",
+  "no_retry": true,
+  "prior_lease_untouched": true
+}

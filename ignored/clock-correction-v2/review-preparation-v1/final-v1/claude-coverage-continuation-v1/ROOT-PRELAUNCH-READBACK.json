@@ -1,0 +1,12 @@
+{
+  "setup_sha256": "cb589c9c6b6f67c9bae8e04ad8166c979e6b028d848f77a48d6ba8f3161a7163",
+  "verified_files": 3573,
+  "verified_aliases": 7,
+  "full_prompt_plan_launcher_delta_read": true,
+  "audit_unchanged": true,
+  "launcher_delta": "only the two 1800-to-600 timeout/record literals",
+  "same_session": true,
+  "original_incomplete_review_preserved": true,
+  "source_head": "a9449f8ee22a17ba87a106c2af957a938fa57c45",
+  "scope": "one bounded supplemental review; no new product run or source change"
+}

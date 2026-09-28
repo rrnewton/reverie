@@ -1,0 +1,63 @@
+{
+  "base": "6e3915b70a71657a08f0028b3f70d6074116206a",
+  "old_reviewed_head": "68569ed7fd5c3667456d1d3e0d74ba66264242f4",
+  "equal_tree": "8e9a1d6b22b421992508e26855a568314a12bddf",
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/SOURCE-MANIFEST.json",
+    "bytes": 472053,
+    "sha256": "dfd21968df3b73ba28a7388f3504b8891e3f13035dab6f364e69fbe2947d1211",
+    "mode": 420
+  },
+  "files": 2621,
+  "symlinks": 7,
+  "gitlinks": [
+    {
+      "path": "third-party/dynamorio",
+      "mode": "160000"
+    },
+    {
+      "path": "third-party/e9patch",
+      "mode": "160000"
+    },
+    {
+      "path": "third-party/sabre",
+      "mode": "160000"
+    }
+  ],
+  "changed_paths": [
+    "reverie-kvm/src/capture_identity.rs",
+    "reverie-kvm/src/capture_identity_tests.rs",
+    "reverie-kvm/src/cpuid_instruction.rs",
+    "reverie-kvm/src/cpuid_runtime_tests.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/terminal_runtime_tests.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie-kvm/tests/static_elf.rs",
+    "reverie-kvm/tests/support/capture_identity.rs",
+    "reverie-kvm/tests/support/cpuid_dispatch.rs",
+    "reverie-kvm/tests/support/cpuid_terminal.rs"
+  ],
+  "whole_composition_diff": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/review-preparation-v1/common/COMPLETE-COMPOSITION.patch",
+    "bytes": 130968,
+    "sha256": "6fb658fee86c1d5b2bcfb33177033cda3662fdd6994fb266005caf617ebb6593",
+    "mode": 420
+  },
+  "original_patches": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/01-cpuid-on-v7.patch",
+      "bytes": 75674,
+      "sha256": "c1c7add220f014f24079104386908c5aa3d8d964f5224fc67b0fb82379fc423b",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/02-capture-after-cpuid.patch",
+      "bytes": 57121,
+      "sha256": "83426cc72e517dee01139891a908c307719b0eb3ee57ca21fd25ac7954e663fc",
+      "mode": 420
+    }
+  ],
+  "current_claim": "Source-materialization identity only; committed successor and actual qualification final remain pending"
+}

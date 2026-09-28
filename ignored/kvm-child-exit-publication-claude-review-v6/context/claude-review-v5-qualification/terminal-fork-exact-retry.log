@@ -1,0 +1,37 @@
+[evidence begin]
+command cargo test -p reverie-kvm --test static_elf terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic -- --exact --nocapture 
+cwd /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918
+expected_head 6152ee999a41324be36456bb0a9b94a703711068
+expected_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+pre_head 6152ee999a41324be36456bb0a9b94a703711068
+pre_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_before_bytes 448352632832
+disk_floor_bytes 429496729600
+started_at 2026-09-20T15:05:40Z
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-631e2c0a95c3bdc8)
+
+running 1 test
+
+running 1 test
+
+thread 'reverie-kvm-process-2' (2705396) panicked at reverie-kvm/tests/support/terminal_fork.rs:126:17:
+controlled child wait callback panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+terminal fork mode=6 early=false result=Err(SharedFailure(Cleanup { phase: "child wait hook", error: GuestWorkerPanic })) at_return=[Event { kind: "start", pid: 1, value: 2705392 }, Event { kind: "start", pid: 2, value: 2705396 }, Event { kind: "write", pid: 2, value: 1 }, Event { kind: "write", pid: 2, value: 2 }, Event { kind: "wait-event", pid: 2, value: 0 }, Event { kind: "wait-collected", pid: 2, value: 0 }, Event { kind: "parent-ready", pid: 1, value: 6 }, Event { kind: "thread-exit", pid: 1, value: 0 }, Event { kind: "process-exit", pid: 1, value: 0 }, Event { kind: "tool-drop", pid: 1, value: 0 }, Event { kind: "thread-exit", pid: 2, value: 0 }, Event { kind: "process-exit", pid: 2, value: 0 }, Event { kind: "tool-drop", pid: 2, value: 0 }, Event { kind: "host-exit", pid: 2, value: 0 }] global_dropped=true
+test terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.22s
+
+test terminal_fork::cancellation_preserves_status_across_child_wait_callback_panic ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 335 filtered out; finished in 0.23s
+
+
+[evidence end]
+exit_code 0
+post_head 6152ee999a41324be36456bb0a9b94a703711068
+post_tree 1aa237f33bbf42528ae3082e09acc7cfe1d18b75
+disk_after_bytes 448352632832
+completed_at 2026-09-20T15:05:41Z

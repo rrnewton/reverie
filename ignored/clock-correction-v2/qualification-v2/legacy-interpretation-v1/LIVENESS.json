@@ -1,0 +1,12 @@
+{
+  "measured_unix_ns": 1789767090367365256,
+  "scanned_processes": 3808,
+  "all_uid_scan": true,
+  "matches": [],
+  "unreadable": [],
+  "driver_exec_session": 5414,
+  "driver_terminal_status": 1,
+  "all45_phase_receipts_terminal_authenticated": true,
+  "qualification_complete_no_remaining_work": true,
+  "interpretation_process_not_a_product_caller": true
+}

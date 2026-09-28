@@ -1,0 +1,15 @@
+{
+  "base_head": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "files": [
+    {
+      "bytes": 10186,
+      "path": "reverie-kvm/src/vm/entry_eintr_tests.rs",
+      "sha256": "9232de7a085a148c970ccd8e36aefbfbafa4be28c027341126834388b2b7de10",
+      "snapshot": "source-1/reverie-kvm/src/vm/entry_eintr_tests.rs"
+    }
+  ],
+  "kind": "unexecuted-test-author-source",
+  "module_include": "Root will include this file inside vm::tests; author did not modify vm.rs.",
+  "product_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918",
+  "production_edits": false
+}

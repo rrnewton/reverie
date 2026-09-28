@@ -1,0 +1,15 @@
+{
+  "raw_status": 0,
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/launch/retain_artifacts.stdout",
+    "bytes": 247,
+    "mode": 420,
+    "sha256": "2a3223b67694dabec9c9ed636c5f8a4deae93782800aa53afcdfd1ddc6edd1f4"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/launch/retain_artifacts.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

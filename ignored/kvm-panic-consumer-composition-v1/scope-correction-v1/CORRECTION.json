@@ -1,0 +1,43 @@
+{
+  "supersedes_report": "final-1/REPORT.md",
+  "preserved_report_sha256": "149e6ecf963e76e1c576630567891118b9250d872e6a83086ed807fa87094d8a",
+  "preserved_target_sha256": "ce98207bba88bc66788cbf44498ce0e40b52dbdca91226d773e29ca3a7099850",
+  "reason": "existing selected boundary and parking paths execute KVM guest code; prior no-intentional-KVM_RUN scope was wrong",
+  "frozen_source": "source-1/reverie-kvm/src/vm.rs",
+  "fixture_definition_line": 7804,
+  "fixture_calls_in_selected_tests": [
+    {
+      "name": "vm::tests::production_wrapper_cleans_fork_after_boundary_restore_failure",
+      "declaration_line": 8115,
+      "fixture_call_line": 8033,
+      "multiplicity": 1
+    },
+    {
+      "name": "vm::tests::production_wrapper_cleans_tool_thread_after_boundary_restore_failure",
+      "declaration_line": 8131,
+      "fixture_call_line": 8033,
+      "multiplicity": 1
+    },
+    {
+      "name": "vm::tests::cancelled_child_cleanup_retains_real_errors_and_ordinary_cancellation",
+      "declaration_line": 8284,
+      "fixture_call_line": 8288,
+      "multiplicity": 8
+    },
+    {
+      "name": "vm::tests::exec_teardown_disposition_survives_unstarted_child_cleanup",
+      "declaration_line": 8384,
+      "fixture_call_line": 8385,
+      "multiplicity": 1
+    }
+  ],
+  "fixture_calls_total": 11,
+  "total_kvm_run_ioctl_count": null,
+  "ioctl_count_limit": "production parking paths may add entries; no exact ioctl count measured",
+  "new_worker_controls": "three new worker controls use setup ioctls and host futures/threads, no KVM_RUN",
+  "test_count": 26,
+  "raw_statuses_or_counts_changed": false,
+  "reruns": 0,
+  "hermit_detcore_or_parity_execution": false,
+  "old_generator_limitation": "packet.py report template contains the incorrect sentence; its frozen source remains preserved, and it must not be reused unchanged."
+}

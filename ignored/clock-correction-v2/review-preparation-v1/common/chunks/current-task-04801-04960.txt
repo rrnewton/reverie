@@ -1,0 +1,160 @@
+            // automatically reap them by waiting for the final exit status.
+            let orphans = if self.global_state.liteinst_runtime.is_some() {
+                // A LiteInst session follows process children as part of one
+                // fail-closed instrumentation domain. Do not let root exit end
+                // the LocalSet while a child can still publish a session
+                // failure: join those exact followed tasks first.
+                let children = self.child_procs.lock().await.take_inner();
+                future::join_all(children).await;
+                Children::new()
+            } else {
+                let (orphans, _) = {
+                    let mut child_procs = self.child_procs.lock().await;
+                    child_procs.deref_mut().await
+                };
+                orphans
+            };
+
+            for orphan in orphans.into_inner() {
+                // Bon voyage.
+                if let Err(err) = self.orphanage.send(orphan).await {
+                    let orphan = err.0;
+                    tracing::warn!(
+                        pid = %orphan.id(),
+                        "orphan reaper closed; waiting for child inline"
+                    );
+                    let _ = orphan.await;
+                }
+            }
+
+            let _ = self
+                .notify_gdb_stop(StopReason::Exited(self.pid(), exit_status))
+                .await;
+
+            let wrapped = WrappedFrom(self.tid, &self.global_state);
+
+            // Thread exit
+            self.process_state
+                .on_exit_thread(self.tid, &wrapped, self.thread_state, exit_status)
+                .await?;
+
+            // The try_unwrap and subsequent unwrap are safe to do. ptrace
+            // guarantees that all threads in the thread group have exited
+            // before the main thread.
+            let process_state = Arc::try_unwrap(self.process_state).unwrap_or_else(|_| {
+                // If you end up seeing this panic, make sure that all clones of
+                // `process_state` are dropped before reaching this point.
+                panic!("Reverie internal invariant broken. try_unwrap on process state failed")
+            });
+            let wrapped = WrappedFrom(self.tid, &self.global_state);
+            process_state
+                .on_exit_process(self.tid, &wrapped, exit_status)
+                .await?;
+
+            let ntasks_remaining = self.ntasks.fetch_sub(1, Ordering::SeqCst);
+            let ndaemons = self.ndaemons.load(Ordering::SeqCst);
+
+            if self.is_a_daemon {
+                self.ndaemons.fetch_sub(1, Ordering::SeqCst);
+            }
+
+            if ntasks_remaining == 1 + ndaemons {
+                // daemonize() might not get called, this is not an error.
+                let _ = self.daemon_kill_switch.send(());
+            }
+        } else {
+            let _ = self
+                .notify_gdb_stop(StopReason::ThreadExited(
+                    self.tid(),
+                    self.pid(),
+                    exit_status,
+                ))
+                .await;
+            let wrapped = WrappedFrom(self.tid, &self.global_state);
+
+            self.child_threads
+                .lock()
+                .await
+                .retain(|child| child.id() != self.tid);
+
+            // Thread exit
+            self.process_state
+                .on_exit_thread(self.tid, &wrapped, self.thread_state, exit_status)
+                .await?;
+
+            self.ntasks.fetch_sub(1, Ordering::SeqCst);
+            if self.is_a_daemon {
+                self.ndaemons.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn run_loop(&mut self, task: Stopped) -> Result<ExitStatus, reverie::Error> {
+        match self.run_loop_internal(task).await {
+            Ok(exit_status) => Ok(exit_status),
+            Err(err) => {
+                if self.global_state.liteinst_runtime.is_some() {
+                    // Return immediately to the outer LiteInst cleanup guard.
+                    // It owns the original root pidfd and every generation-
+                    // bound notifier handle; this task must not reopen or
+                    // numerically signal the root PID.
+                    return Err(anyhow::Error::new(err).into());
+                }
+                // Note: Calling handle_internal_error cannot happen in the
+                // `select!()` of the `run` function because then the exit
+                // events that get generated in here cannot be caught by the
+                // `select!()`.
+                handle_internal_error(err).await
+            }
+        }
+    }
+
+    async fn run_loop_internal(&mut self, task: Stopped) -> Result<ExitStatus, Error> {
+        // This is the beginning of the life of the guest. Allow the tool to
+        // inject syscalls as soon as the thread starts.
+        if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
+            self.process_state.clone().handle_thread_start(self).await
+        })
+        .await
+        {
+            // Propagate user errors. Don't care about the result of syscall injections.
+            err.into_errno()?;
+        }
+        self.timer.finalize_requests();
+
+        // Resume the guest for the first time. Note that the root task and
+        // child tasks start out in a stopped state for different reasons: The
+        // root task is stopped because of the SIGSTOP raised inside of `fork()`
+        // after calling `traceme`. Child tasks start out in a running state,
+        // but we wait for them to stop in `Event::NewChild`.
+        //
+        // NB: await_gdb_resume == resume if not attached_by_gdb.
+        let running = self
+            .await_gdb_resume(task, ExpectedGdbResume::Resume)
+            .await
+            .tracee_context(self.tid(), "initial tracee resume")?;
+
+        // Notify gdb server (if any) that tracee is ready.
+        if let Some(server_tx) = self.gdbserver_start_tx.take() {
+            self.attached_by_gdb = true;
+            if server_tx.send(()).is_err() {
+                tracing::warn!(tid = %self.tid(), "GDB server closed before tracee attach");
+                self.attached_by_gdb = false;
+            }
+        }
+
+        let mut task_state = running
+            .next_state()
+            .await
+            .tracee_context(self.tid(), "wait after initial tracee resume")?;
+        let mut next_state_rx = self.next_state_rx.take().ok_or_else(|| {
+            Error::runtime(
+                self.tid(),
+                "initialize run loop",
+                "next-state receiver was already taken",
+            )
+        })?;
+
+        loop {

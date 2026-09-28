@@ -1,0 +1,67 @@
+[
+  {
+    "event": 69,
+    "type": "system",
+    "subtype": "status",
+    "status": "compacting",
+    "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+    "uuid": "fe5004fc-5656-483d-967e-f07a348b1fb4"
+  },
+  {
+    "event": 70,
+    "type": "system",
+    "subtype": "status",
+    "status": "compacting",
+    "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+    "uuid": "45e01431-07c4-4432-92a3-c89e2fccc869"
+  },
+  {
+    "event": 71,
+    "type": "system",
+    "subtype": "status",
+    "status": "compacting",
+    "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+    "uuid": "ac4a7ed4-72b8-443b-ae53-73ed364c4aff"
+  },
+  {
+    "event": 72,
+    "type": "system",
+    "subtype": "status",
+    "status": "compacting",
+    "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+    "uuid": "235f62ba-b2cc-49d3-9bcf-0b6ee241672f"
+  },
+  {
+    "event": 73,
+    "type": "system",
+    "subtype": "status",
+    "status": "compacting",
+    "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+    "uuid": "4b5372da-e823-44f9-8224-1a3e5058a824"
+  },
+  {
+    "event": 74,
+    "type": "system",
+    "subtype": "status",
+    "status": "compacting",
+    "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+    "uuid": "302e9286-0d4f-4358-8016-c307d4d81a42"
+  },
+  {
+    "event": 75,
+    "type": "system",
+    "subtype": "status",
+    "status": "compacting",
+    "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+    "uuid": "d6289bc0-1e2a-4272-8ad7-5e582b142d12"
+  },
+  {
+    "event": 110,
+    "type": "system",
+    "subtype": "status",
+    "status": null,
+    "compact_result": "success",
+    "session_id": "5d98403d-b8e9-42bf-8e2f-da7e7b70809c",
+    "uuid": "03e52b55-83b4-4902-9428-47e516e8a5a4"
+  }
+]

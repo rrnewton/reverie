@@ -1,0 +1,22 @@
+{
+  "original_callback_tests_exact_prefix": true,
+  "existing_driver_unchanged_except_extracted_signal_mapping": true,
+  "owned_future_source_unchanged": true,
+  "no_product_execution_or_formatting": true,
+  "concurrent_runtime_delta_present": true,
+  "existing_callback_tests": [
+    "owned_runtime_error_survives_actual_callback_destructor_panic",
+    "owned_runtime_error_survives_normal_callback_destruction",
+    "polling_panic_recovers_owned_error_before_callback_destructor_panic",
+    "owned_runtime_error_survives_failure_future_destructor_panic",
+    "selected_runtime_error_survives_discarded_ready_value_panic"
+  ],
+  "all_callback_tests": [
+    "owned_runtime_error_survives_actual_callback_destructor_panic",
+    "owned_runtime_error_survives_normal_callback_destruction",
+    "polling_panic_recovers_owned_error_before_callback_destructor_panic",
+    "owned_runtime_error_survives_failure_future_destructor_panic",
+    "selected_runtime_error_survives_discarded_ready_value_panic",
+    "constructor_panic_recovers_owned_signal_before_failure_future_destruction"
+  ]
+}

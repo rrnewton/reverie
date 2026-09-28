@@ -1,0 +1,44 @@
+            }
+            self.calls.append(row)
+            if status < 0:
+                raise OSError(-status, str(row))
+            value = {b"t": ctypes.c_uint64, b"u": ctypes.c_uint32, b"i": ctypes.c_int32, b"b": ctypes.c_int32, b"s": ctypes.c_char_p}[signature]()
+            read = self.lib.sd_bus_message_read(reply, signature, ctypes.byref(value))
+            if read <= 0:
+                raise RuntimeError(("property reply", name, read))
+            return value.value.decode() if signature == b"s" else value.value
+        finally:
+            if reply:
+                self.lib.sd_bus_message_unref(reply)
+            self.lib.sd_bus_error_free(ctypes.byref(error))
+
+    def properties(self, deadline):
+        # Use the already-held connection: a cancellable box must not leave an
+        # independently running systemctl query outside its measured scope.
+        path = self.method("GetUnit", deadline)
+        values = {
+            name: self.property(path, "org.freedesktop.systemd1.Unit", name, deadline)
+            for name in ["Id", "LoadState", "ActiveState", "SubState"]
+        }
+        values["CPUUsageNSec"] = self.property(
+            path, "org.freedesktop.systemd1.Service", "CPUUsageNSec", deadline
+        )
+        return values
+
+    def acquire(self):
+        assert self.bus and not self.held
+        self.method("RefUnit")
+        self.held = True
+
+    def close(self):
+        if self.bus:
+            try:
+                if self.held:
+                    self.method("UnrefUnit")
+                    self.held = False
+            finally:
+                self.lib.sd_bus_flush_close_unref(self.bus)
+                self.bus = ctypes.c_void_p()
+                self.calls.append(
+                    {"function": "sd_bus_flush_close_unref", "connection_closed": True}
+                )

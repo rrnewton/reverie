@@ -1,0 +1,19 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "notify_region_sha256": "55b4e0643a22504c5f0550a0f8212586cee50c74599a892ddc31f46e4972013f",
+  "notify_region_bytes": 4094,
+  "test_sha256": "dce0b1ce5c0e848b8b80a09c462eed053a3c7b21184a62dfe4e4103064e25a79",
+  "test_bytes": 12763,
+  "runtime_observed_sha256": "9f16e87600947f8f306770daffca725079d9aef70e6b64363b748b5e3cabef3f",
+  "runtime_observed_bytes": 246056,
+  "tool_panics_sha256": "577089838cb842f59ca6c2c982e6eb4b7a6b29677a4ccbfa715c8341afba075c",
+  "test_declarations": [
+    "pending_thread_error_and_destructor_panic_preserve_process_error_and_panic",
+    "thread_poll_and_drop_panics_do_not_skip_process_poll_and_drop_panics",
+    "successful_consuming_hooks_keep_normal_order_without_failure_publication"
+  ],
+  "concurrent_outside_region_changes": true,
+  "compiler_formatter_test_invocations": 0,
+  "module_declaration_added": false,
+  "existing_tests_changed_by_author": false
+}

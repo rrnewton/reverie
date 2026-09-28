@@ -1,0 +1,27 @@
+--- author-only/reverie-kvm/src/runtime.rs
++++ observed/reverie-kvm/src/runtime.rs
+@@ -3352,7 +3352,7 @@
+                 .filter_map(Result::err)
+                 .collect(),
+         );
+-        self.finish_public_tool_panic(result)?;
++        self.finish_public_tool_panic(result, None)?;
+         Ok(global_state)
+     }
+ 
+@@ -3491,13 +3491,13 @@
+                     Err(primary) => primary.with_cleanup(vec![ownership]),
+                     Ok(_) => ownership,
+                 });
+-                return self.finish_public_tool_panic(failure.complete(result));
++                return self.finish_public_tool_panic(failure.complete(result), Some(failure.clone()));
+             }
+         };
+         let result = failure
+             .complete(result)
+             .map(|(status, stdout, stderr)| (conventional_exit_code(status), stdout, stderr));
+-        let result = self.finish_public_tool_panic(result);
++        let result = self.finish_public_tool_panic(result, Some(failure.clone()));
+         Ok(ToolRunCompletion {
+             global_state,
+             result,

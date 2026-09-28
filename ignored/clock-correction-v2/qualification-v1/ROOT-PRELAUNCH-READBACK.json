@@ -1,0 +1,10 @@
+{
+  "target_sha256": "8caa2e42366b13fc98acd1a8dc53d47bb69452c56aed745302e68aca6037b098",
+  "files": 19939,
+  "aliases": 30,
+  "absent": 139,
+  "optimize": 0,
+  "debug": true,
+  "scope": "Root authored-source/caller inspection and frozen byte authentication; independent scheduler review remains pending",
+  "reading": "Initial combined output and compact projection truncated; reread full285-line delta and missing test12/test13. Explicitly checked every phase limit and exact test argv. Full source report read."
+}

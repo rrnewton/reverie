@@ -1,0 +1,15 @@
+[2m2026-09-18T21:28:53.363649Z[0m [35mTRACE[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0mmunmap [3margs[0m[2m=[0mSyscallArgs { arg0: 139752929947648, arg1: 12288, arg2: 51, arg3: 93944916987480, arg4: 93944917501184, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::syscall[0m[2m:[0m intercepting guest syscall
+[2m2026-09-18T21:28:53.363657Z[0m [32m INFO[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0mmunmap [3margs[0m[2m=[0mSyscallArgs { arg0: 139752929947648, arg1: 12288, arg2: 51, arg3: 93944916987480, arg4: 93944917501184, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [tool] (tid 3642550) beginning tail_inject of syscall: munmap
+[2m2026-09-18T21:28:53.363699Z[0m [35mTRACE[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0mmunmap [3margs[0m[2m=[0mSyscallArgs { arg0: 139752929947648, arg1: 12288, arg2: 51, arg3: 93944916987480, arg4: 93944917501184, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [scheduler/tool] (pid = 3642550) untraced syscall: munmap
+[2m2026-09-18T21:28:53.363791Z[0m [35mTRACE[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0mmunmap [3margs[0m[2m=[0mSyscallArgs { arg0: 139752929947648, arg1: 12288, arg2: 51, arg3: 93944916987480, arg4: 93944917501184, arg5: 1 }[1m}[0m[2m:[0m [2mreverie_ptrace::syscall[0m[2m:[0m completed guest syscall interception
+[2m2026-09-18T21:28:53.363830Z[0m [35mTRACE[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0mexit_group [3margs[0m[2m=[0mSyscallArgs { arg0: 0, arg1: 18446744073709551008, arg2: 231, arg3: 139752925738352, arg4: 0, arg5: 48 }[1m}[0m[2m:[0m [2mreverie_ptrace::syscall[0m[2m:[0m intercepting guest syscall
+[2m2026-09-18T21:28:53.363840Z[0m [32m INFO[0m [1msyscall.intercept[0m[1m{[0m[3mtid[0m[2m=[0m3642550 [3msyscall[0m[2m=[0mexit_group [3margs[0m[2m=[0mSyscallArgs { arg0: 0, arg1: 18446744073709551008, arg2: 231, arg3: 139752925738352, arg4: 0, arg5: 48 }[1m}[0m[2m:[0m [2mreverie_ptrace::task[0m[2m:[0m [tool] (tid 3642550) beginning tail_inject of syscall: exit_group
+{ "type": "test", "name": "suppressed_legacy_vsyscall_returns_to_caller", "event": "ok" }
+{ "type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered_out": 0, "exec_time": 0.004833349 }
+
+--- literal stdout ends ---
+stderr: /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-38/stderr
+SHA256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855; 0 bytes
+--- literal stderr begins ---
+
+--- literal stderr ends ---

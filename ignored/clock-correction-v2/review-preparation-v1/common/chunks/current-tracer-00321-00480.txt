@@ -1,0 +1,160 @@
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.take_for_transition()?.step(signal)
+    }
+
+    pub(crate) fn syscall<T: Into<Option<Signal>>>(
+        mut self,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.take_for_transition()?.syscall(signal)
+    }
+
+    pub(crate) fn detach<T: Into<Option<Signal>>>(
+        mut self,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.take_for_transition()?.detach(signal)
+    }
+}
+
+impl std::ops::Deref for RootStopLease {
+    type Target = Stopped;
+
+    fn deref(&self) -> &Self::Target {
+        self.task.as_ref().expect("root stop lease consumed once")
+    }
+}
+
+impl std::ops::DerefMut for RootStopLease {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.task.as_mut().expect("root stop lease consumed once")
+    }
+}
+
+impl NewbornTracee {
+    pub(crate) fn from_event(parent_tid: Pid, op: ChildOp, task: &Running) -> Self {
+        Self {
+            link: EventChildLink {
+                tid: task.pid(),
+                parent_tid,
+                op,
+            },
+            identity: None,
+            terminal: task.terminal_cleanup(),
+        }
+    }
+
+    pub(crate) fn set_identity(&mut self, identity: TraceeIdentity) {
+        self.identity = Some(identity);
+    }
+
+    pub(crate) fn registration_error(&self) -> Option<Errno> {
+        self.terminal.registration_error()
+    }
+
+    pub(crate) fn terminate_vfork_child(&self) -> Result<(), TraceError> {
+        let identity = self.identity.as_ref().ok_or(Errno::ESRCH)?;
+        match identity.send_signal(Signal::SIGKILL) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self.terminal.wait(Duration::ZERO) {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(reservation) = self.terminal.reserve_pending_for_cleanup(remaining) else {
+                if self.terminal.wait(Duration::ZERO) {
+                    return Ok(());
+                }
+                return Err(Errno::ETIMEDOUT.into());
+            };
+            let state = reservation.decode()?;
+            let Wait::Stopped(stopped, _) = state else {
+                reservation.commit();
+                continue;
+            };
+            reservation.commit();
+            match stopped.resume(None) {
+                Ok(_) | Err(TraceError::Died(_)) | Err(TraceError::Errno(Errno::ESRCH)) => {
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl TraceeIdentity {
+    pub(crate) fn open_root(pid: Pid) -> Result<Self, Errno> {
+        // `Command::spawn` is deliberately unblocked just before the child
+        // calls PTRACE_TRACEME. Bind the same procfs generation repeatedly
+        // until TracerPid becomes visible; resource/read errors remain fatal.
+        for _ in 0..2_000 {
+            match Self::capture(pid, None, false) {
+                Ok(identity)
+                    if identity.tid == identity.snapshot.tgid && identity.pidfd.is_some() =>
+                {
+                    return Ok(identity);
+                }
+                Ok(_) | Err(Errno::ESRCH | Errno::ENOENT)
+                    if std::path::Path::new(&format!("/proc/{pid}")).exists() =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(_) => return Err(Errno::ESRCH),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(Errno::ETIMEDOUT)
+    }
+
+    pub(crate) fn capture_event_child(
+        tid: Pid,
+        parent_tid: Pid,
+        op: ChildOp,
+    ) -> Result<Self, Errno> {
+        // PTRACE_GETEVENTMSG is the authoritative parent-child ownership edge.
+        // CLONE_PARENT intentionally makes PPid disagree with the event parent.
+        let link = EventChildLink {
+            tid,
+            parent_tid,
+            op,
+        };
+        Self::capture(link.tid, Some((link.parent_tid, Some(link.op))), false)
+    }
+
+    fn open_task_tid(tid: Pid, root_tgid: Pid) -> std::io::Result<Option<Self>> {
+        let identity = match Self::capture(tid, None, false) {
+            Ok(identity) => identity,
+            Err(error) if skippable_tracee_open_error(tid, error) => return Ok(None),
+            Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+        };
+        if tid == root_tgid || identity.snapshot.tgid != root_tgid || !identity.is_our_tracee() {
+            return Ok(None);
+        }
+        Ok(Some(identity))
+    }
+
+    fn open_discovered(tid: Pid, parent_tid: Pid) -> std::io::Result<Option<Self>> {
+        let identity = match Self::capture(tid, Some((parent_tid, None)), true) {
+            Ok(identity) => identity,
+            Err(error) if skippable_tracee_open_error(tid, error) => return Ok(None),
+            Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+        };
+
+        // Re-read the kernel children relationship after opening the procfs
+        // identity and pidfd. A list/open race may otherwise bind a replacement
+        // tracee that reused the numeric child PID.
+        if !direct_children(parent_tid)?.contains(&tid) {
+            if !identity.is_our_tracee() || tracee_absent_or_replaced(parent_tid) {
+                return Ok(None);
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("tracee {tid} no longer belongs to listed parent {parent_tid}"),
+            ));
+        }

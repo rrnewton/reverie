@@ -1,0 +1,160 @@
+{
+  "attempted_phases": 5,
+  "accepted_phases": 4,
+  "failed_phases": 1,
+  "selected_declarations": 2,
+  "passed_declarations": 1,
+  "failed_declarations": 1,
+  "ignored_declarations": 0,
+  "retries": 0,
+  "inventory": 186,
+  "cpu_usage_nsec": 125600023000,
+  "observer_elapsed_seconds_sum": 79.004453395,
+  "phases": [
+    {
+      "name": "compile",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/compile-plan.json",
+        "bytes": 51872,
+        "mode": 420,
+        "sha256": "508db5ac8302eb33e980710409158f603b8d4413f6583d8677e0ee53d82bcd6c"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/controls/compile/result.json",
+        "bytes": 4880,
+        "mode": 420,
+        "sha256": "1d41ecd34b2d70d6f918acaae440d61f41a4fdd5e7aa03810dfebdf16f5d0488"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/compile/result.json",
+        "bytes": 49377,
+        "mode": 384,
+        "sha256": "1fabe5409e01a62edd603d88e4e93383bdfb676730139c95f4a47390e8858a66"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/lease-state/508db5ac8302eb33e980710409158f603b8d4413f6583d8677e0ee53d82bcd6c.json",
+        "bytes": 428,
+        "mode": 420,
+        "sha256": "1dad58998bf4eccf14568d3c100cfe5b5b8f14b44e2ce1798cb8657888b968e0"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "source_unchanged": true,
+      "cpu_usage_nsec": 112025995000,
+      "observer_elapsed_seconds": 61.911316866,
+      "payload_elapsed_seconds": 58.34333835891448,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/compile/stdout",
+        "bytes": 174730,
+        "mode": 384,
+        "sha256": "6230a25581301d27e7a52c8a434044ece20ddc322d1368ca69f90329f8522d79"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/compile/stderr",
+        "bytes": 5488,
+        "mode": 384,
+        "sha256": "08cb4adfc5bf892b10e3fbefbc287e8ea549ab99162e19c01837eda922e8c585"
+      }
+    },
+    {
+      "name": "format",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/format-plan.json",
+        "bytes": 56812,
+        "mode": 420,
+        "sha256": "01cde012ca1ad4dc3a14808961df629bcdae621044791bf27dc0621caf08294b"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/controls/format/result.json",
+        "bytes": 2804,
+        "mode": 420,
+        "sha256": "5ddec3e9bdb4a3802bcba75f34debe0e6ddc248683232a1f86026b250ebe9b5c"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/format/result.json",
+        "bytes": 50085,
+        "mode": 384,
+        "sha256": "5904cf6b8e9333e70744e057643f122aae0a2fc1d445dc955531e69fab8e0006"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/lease-state/01cde012ca1ad4dc3a14808961df629bcdae621044791bf27dc0621caf08294b.json",
+        "bytes": 427,
+        "mode": 420,
+        "sha256": "118cafa70bc4ff54d4f0663d4d1181a32cefc81d765d0ba59ec22cd288c26b6a"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "source_unchanged": true,
+      "cpu_usage_nsec": 3350260000,
+      "observer_elapsed_seconds": 3.949492025,
+      "payload_elapsed_seconds": 0.04526205803267658,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/format/stdout",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/format/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "list-ptrace",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/list-ptrace-plan.json",
+        "bytes": 56994,
+        "mode": 420,
+        "sha256": "9268f3e01602d1dcac2730ccbbe9b559c47a100ac9bb028394754dd045b346da"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/controls/list-ptrace/result.json",
+        "bytes": 16871,
+        "mode": 420,
+        "sha256": "008713f21d2f50213425d275627af4731cb7b8a6998eb1cf060d64003beef0dd"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/list-ptrace/result.json",
+        "bytes": 62766,
+        "mode": 384,
+        "sha256": "d1199880305ab04626ec39d1ad19a1de505fb3cb2050535e5a94f0e88c796f5e"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/lease-state/9268f3e01602d1dcac2730ccbbe9b559c47a100ac9bb028394754dd045b346da.json",
+        "bytes": 433,
+        "mode": 420,
+        "sha256": "f952268d19e610d2c2000d60d39079832064acd175250fd8876cc17198703a4d"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "source_unchanged": true,
+      "cpu_usage_nsec": 3317797000,
+      "observer_elapsed_seconds": 4.484611547,
+      "payload_elapsed_seconds": 0.0024837919045239687,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/list-ptrace/stdout",
+        "bytes": 51398,
+        "mode": 384,
+        "sha256": "643722f6781a5ed491dddc7e6e3982dbff2f9cec4e117f4d8ff642675e21eb30"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/observer/list-ptrace/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "spawn-neighbor",
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-source-v1/baseline-component-continuation-v1/spawn-neighbor-plan.json",
+        "bytes": 57375,
+        "mode": 420,
+        "sha256": "a9b9f3cd7c9f80bf55b984e5bffcdb764eea7d913824af1a2e300d50713c3d86"
+      },
+      "receipt": {

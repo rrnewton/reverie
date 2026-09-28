@@ -1,0 +1,160 @@
+            .closed_standard_fds
+            .clone_from(&self.closed_standard_fds);
+        state.proc_files.clone_from(&self.proc_files);
+        state.fdinfo_files.clone_from(&self.fdinfo_files);
+        state.fd_object_inodes.clone_from(&self.fd_object_inodes);
+        Ok(())
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 1862..1937; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    /// guest. `heap_base` is the initial program break (`align_up(main_end)`),
+    /// so the returned range covers exactly the pages `brk()` has mapped; it is
+    /// empty when the guest has never grown its break.
+    pub(crate) fn heap_region(&self) -> (u64, u64) {
+        (self.state.heap_base, self.state.program_break)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
+        let output = capture_output.then(CapturedOutput::default);
+        Self::with_output(state, output)
+    }
+
+    pub(crate) fn with_output(mut state: LoadedStaticElf, output: Option<CapturedOutput>) -> Self {
+        let file_table;
+        let _retirement = state.file_retirement.hold();
+        let transaction = state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        let task_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .ensure_registered_with_signals(
+                state.tid,
+                state.pid,
+                state.pgid,
+                state.dumpable,
+                &state.thread_signals,
+            );
+        let process_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(state.tid)
+            .expect("registered KVM task exists")
+            .process_generation;
+        let next_pid = state.pid.saturating_add(1);
+        let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
+        let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
+        file_table = Arc::new(std::sync::Mutex::new(
+            FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
+        ));
+        state.fdinfo_table = Arc::downgrade(&file_table);
+        let signal_registry = Arc::new(ProcessSignalRegistry::default());
+        let signal_binding =
+            signal_registry.register(&state, &file_table, process_generation, None);
+        let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+        Self {
+            state,
+            task_generation,
+            process_generation,
+            signal_registry,
+            signal_binding,
+            signal_callback_nonce: 0,
+            parked_signals: None,
+            completed_signal_effects: Vec::new(),
+            signal_effect_raw_result: None,
+            address_space,
+            file_table,
+            output,
+            owns_output: true,
+            next_pid: Arc::new(AtomicI32::new(next_pid)),
+            sigchld_auto_reap,
+            pending_processes: std::collections::BTreeMap::new(),
+            completed_processes: Vec::new(),
+            transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            child_completion_sender,
+            child_completion_receiver: Mutex::new(child_completion_receiver),
+            process_action: None,
+            pending_segment: None,
+            current_user_stack_pointer: None,
+            exit_status: None,
+            exit_group: false,
+            clear_child_tid: None,
+        }
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 2272..2467; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    pub(crate) fn fork_child(
+        &self,
+        child_pid: i32,
+        clear_sighand: bool,
+        share_address_space: bool,
+    ) -> crate::Result<Self> {
+        // Declare owned child state and its cleanup scope before either guard.
+        let mut state;
+        let file_table;
+        let _child_retirement;
+        let _retirement = self.state.file_retirement.hold();
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        if !self
+            .state
+            .process_signals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .signalfd_masks
+            .is_empty()
+        {
+            return Err(crate::Error::UnexpectedVcpuExit(
+                "cannot fork a KVM process while a virtual signalfd is open".to_owned(),
+            ));
+        }
+        state = self.state.try_clone_for_fork_locked(child_pid)?;
+        _child_retirement = state.file_retirement.hold();
+        if share_address_space {
+            state.thp_disabled = self.state.thp_disabled.clone();
+        }
+        state.dumpable = self.current_dumpable();
+        if clear_sighand {
+            state
+                .process_signals
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .dispositions
+                .retain(|_, action| action.is_ignored());
+        }
+        let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
+        file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
+        state.fdinfo_table = Arc::downgrade(&file_table);
+        let task_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .register_with_signals(
+                state.tid,
+                state.pid,
+                state.pgid,
+                state.dumpable,
+                &state.thread_signals,
+            );
+        let process_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(state.tid)
+            .expect("registered KVM task exists")
+            .process_generation;
+        let sigchld_auto_reap = sigchld_auto_reaps(&state);
+        let signal_binding = self.signal_registry.register(
+            &state,
+            &file_table,
+            process_generation,
+            Some(reverie::SignalProcessId {
+                tgid: reverie::Pid::from_raw(self.state.pid),
+                generation: self.process_generation,
+            }),
+        );
+        let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+        let child = Self {
+            state,

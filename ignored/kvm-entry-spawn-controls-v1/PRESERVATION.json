@@ -1,0 +1,10 @@
+{
+  "failure_rs_identical_after_removing_only_new_cfg_test_additions": true,
+  "existing_test_changes": false,
+  "test_names": [
+    "vm::tests::entry_spawn_tests::public_elf_refused_fork_retains_child_until_published_cleanup",
+    "vm::tests::entry_spawn_tests::public_elf_refused_tool_thread_retains_child_until_published_cleanup",
+    "vm::tests::entry_spawn_tests::unarmed_spawn_owned_starts_exact_initialized_state"
+  ],
+  "executed": false
+}

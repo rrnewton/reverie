@@ -1,0 +1,160 @@
+        let retired = self.state.inherit_process_state_locked(previous);
+        self.state.file_retirement.retire(retired);
+        let identity = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(self.state.tid)
+            .expect("execing KVM task is absent from its lifecycle table");
+        self.task_generation = identity.generation;
+        self.process_generation = identity.process_generation;
+        *self
+            .address_space
+            .lock()
+            .expect("KVM address-space lock poisoned") = AddressSpaceState::from_elf(&self.state);
+        files
+            .update_from_elf(&self.state)
+            .expect("clone post-exec KVM file table");
+        self.signal_binding.rebind(&self.state, &file_table);
+        self.sigchld_auto_reap
+            .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
+        self.pending_segment = None;
+        self.exit_status = None;
+        self.exit_group = false;
+        self.clear_child_tid = None;
+        drop(_transaction);
+        drop(files);
+    }
+
+    pub(crate) fn append_output(&mut self, stdout: Vec<u8>, stderr: Vec<u8>) {
+        if let Some(output) = self.output.as_mut() {
+            let _ = output.append(false, &stdout);
+            let _ = output.append(true, &stderr);
+        }
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 4268..4281; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    /// Returns and clears a pending thread-local or group-wide exit.
+    pub(crate) fn take_exit(&mut self) -> Option<ProcessExit> {
+        let transaction = self.state.signal_transaction.clone();
+        let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
+        let status = self.exit_status.take()?;
+        let group = std::mem::take(&mut self.exit_group);
+        let status = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .exit(self.state.tid, self.task_generation, status, group);
+        Some(ProcessExit { status, group })
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 4314..4323; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    pub(crate) fn take_output(&mut self) -> (Vec<u8>, Vec<u8>) {
+        if self.owns_output {
+            self.output
+                .as_mut()
+                .map(CapturedOutput::take)
+                .unwrap_or_default()
+        } else {
+            (Vec::new(), Vec::new())
+        }
+    }
+
+// SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/executor.rs lines 4343..4449; full file SHA256 6e66a34ca883d7cc2e3409e8f99121f6d5f3f88a508631920d159cbaa63000c9
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        let _retirement = self.state.file_retirement.hold();
+        if let Some(result) = self.synchronize_wait4(request) {
+            return result;
+        }
+        if let Some(result) = self.synchronize_waitid(request, memory) {
+            return result;
+        }
+        if let Some(result) = self.execute_accept(request, memory) {
+            return result;
+        }
+        // TODO-HUMAN-REVIEW(PR-172): Review CLONE_FILES descriptor-table sharing.
+        // Thread children retain private executor state, but synchronize their
+        // descriptor mappings through this shared table before every syscall.
+        // Descriptor-creating and descriptor-closing operations hold the lock
+        // through the update; potentially blocking I/O releases it after the
+        // snapshot so QEMU AIO workers can continue to make progress.
+        let file_table = self.file_table.clone();
+        let mut shared_files = Some(file_table.lock().expect("KVM file-table lock poisoned"));
+        if let Err(error) = shared_files
+            .as_ref()
+            .expect("file-table guard disappeared")
+            .install(&mut self.state)
+        {
+            return io_error(error);
+        }
+        // install cloned every fdinfo description Arc while holding the
+        // current table. Scalar dispatch below therefore retains its entry
+        // description even if another thread closes/reuses that guest fd after
+        // the release. It may then lock seq and its ONE original target table.
+        let mutating_file_table = mutates_file_table(request.number());
+        if !mutating_file_table {
+            shared_files.take();
+            self.state.file_retirement.drain_unlocked();
+        }
+        if let Some(result) = self.execute_process_action(request, memory) {
+            return result;
+        }
+        // Clones share the underlying MAP_SHARED mapping, so writes through this
+        // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
+        let mut memory = memory.clone();
+        let sigchld_action_before = (request.number() == libc::SYS_rt_sigaction as u64
+            && request.args()[0] as libc::c_int == libc::SIGCHLD
+            && request.args()[1] != 0)
+            .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
+        let address_space_syscall = matches!(
+            request.number(),
+            number if number == libc::SYS_brk as u64
+                || number == libc::SYS_mmap as u64
+                || number == libc::SYS_mremap as u64
+        );
+        let action = if address_space_syscall {
+            let address_space = self.address_space.clone();
+            let mut shared = address_space
+                .lock()
+                .expect("KVM address-space lock poisoned");
+            self.state.program_break = shared.program_break;
+            self.state.mmap_base = shared.mmap_base;
+            self.state.mmap_next = shared.mmap_next;
+            self.state.mmap_limit = shared.mmap_limit;
+            let action = execute_basic_syscall_with_output(
+                &mut memory,
+                &mut self.state,
+                request,
+                self.current_user_stack_pointer,
+                self.output.as_mut(),
+            );
+            shared.program_break = self.state.program_break;
+            shared.mmap_base = self.state.mmap_base;
+            shared.mmap_next = self.state.mmap_next;
+            shared.mmap_limit = self.state.mmap_limit;
+            action
+        } else {
+            execute_basic_syscall_with_output(
+                &mut memory,
+                &mut self.state,
+                request,
+                self.current_user_stack_pointer,
+                self.output.as_mut(),
+            )
+        };
+        if let Some(before) = sigchld_action_before {
+            let after = installed_signal_action(&self.state, libc::SIGCHLD);
+            if after != before {
+                self.sigchld_auto_reap
+                    .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
+            }
+        }
+        if let Some(mut shared_files) = shared_files {
+            shared_files
+                .update_from_elf(&self.state)
+                .expect("clone updated KVM file table");
+        }
+        match action {
+            SyscallAction::Continue { result, segment } => {

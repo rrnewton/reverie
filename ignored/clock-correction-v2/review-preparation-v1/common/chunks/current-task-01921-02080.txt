@@ -1,0 +1,160 @@
+                Error::runtime(
+                    self.tid(),
+                    "reject unexpected LiteInst activation signal",
+                    format!(
+                        "received {sig} before the required preload handshake completed: tracee pre-initialization observed an unexpected nested signal"
+                    ),
+                ),
+            );
+        }
+        let mut task = task?;
+        #[cfg(test)]
+        pause_preinit(&pause_preinit_step, 1, &task).await;
+
+        // Restore registers after adding our temporary injection state.
+        remove_injection_state(&mut task, regs, prev_state)?;
+
+        if vdso::is_patch_required(&self.global_state.subscriptions) {
+            let subscriptions = self.global_state.subscriptions.clone();
+            vdso::vdso_patch(self, &subscriptions)
+                .await
+                .expect("unable to patch vdso");
+        }
+        #[cfg(test)]
+        pause_preinit(&pause_preinit_step, 2, &task).await;
+
+        // Protect our trampoline page from being written to. We won't need to
+        // change this again for the lifetime of the guest process.
+        self.inject_with_retry(
+            Mprotect::new()
+                .with_addr(AddrMut::from_raw(cp::TRAMPOLINE_BASE))
+                .with_len(cp::TRAMPOLINE_SIZE)
+                .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
+        )
+        .await?;
+        #[cfg(test)]
+        pause_preinit(&pause_preinit_step, 3, &task).await;
+
+        // Try to intercept cpuid instructions on x86_64
+        #[cfg(target_arch = "x86_64")]
+        if self.global_state.subscriptions.has_cpuid() {
+            self.has_cpuid_interception = match self.cpuid_state().await {
+                Ok(initial_state @ (0 | 1)) => match self.intercept_cpuid().await {
+                    Ok(()) => match self.cpuid_state().await {
+                        Ok(0) => true,
+                        Ok(state) => {
+                            tracing::error!(
+                                state,
+                                "ARCH_SET_CPUID succeeded but ARCH_GET_CPUID did not report the disabled state; continuing without CPUID interception"
+                            );
+                            false
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                "Unable to verify ARCH_SET_CPUID with ARCH_GET_CPUID: {}; continuing without CPUID interception",
+                                err
+                            );
+                            false
+                        }
+                    },
+                    Err(Errno::ENODEV) => {
+                        tracing::error!(
+                            initial_state,
+                            "ARCH_GET_CPUID reported a valid state, but ARCH_SET_CPUID returned ENODEV. The kernel exposes CPUID state without hardware faulting support. On AMD hosts, use Linux 6.17+ upstream or a kernel with CPUID faulting backported; continuing without CPUID interception"
+                        );
+                        false
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Unable to disable CPUID after ARCH_GET_CPUID reported a valid state: {}; continuing without CPUID interception",
+                            err
+                        );
+                        false
+                    }
+                },
+                Ok(state) => {
+                    tracing::error!(
+                        state,
+                        "ARCH_GET_CPUID returned an unexpected state; continuing without CPUID interception"
+                    );
+                    false
+                }
+                Err(Errno::ENODEV) => {
+                    tracing::error!(
+                        "CPUID faulting is unavailable: arch_prctl(ARCH_GET_CPUID) returned ENODEV. On AMD hosts, use Linux 6.17+ upstream or a kernel with CPUID faulting backported; continuing without CPUID interception"
+                    );
+                    false
+                }
+                Err(err) => {
+                    tracing::error!(
+                        "Unable to query CPUID faulting with arch_prctl(ARCH_GET_CPUID): {}; continuing without CPUID interception",
+                        err
+                    );
+                    false
+                }
+            };
+        }
+        #[cfg(test)]
+        pause_preinit(&pause_preinit_step, 4, &task).await;
+
+        // Restore registers again after we've injected syscalls so that we
+        // don't leave the return value register (%rax) in a dirty state.
+        task.setregs(&regs)?;
+
+        Ok(task)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn handle_cpuid(
+        &mut self,
+        mut regs: libc::user_regs_struct,
+    ) -> Result<libc::user_regs_struct, TraceError> {
+        let eax = regs.rax as u32;
+        let ecx = regs.rcx as u32;
+        let cpuid = self
+            .process_state
+            .clone()
+            .handle_cpuid_event(self, eax, ecx)
+            .await?;
+        regs.rax = cpuid.eax as u64;
+        regs.rbx = cpuid.ebx as u64;
+        regs.rcx = cpuid.ecx as u64;
+        regs.rdx = cpuid.edx as u64;
+        regs.rip += 2;
+        self.timer.finalize_requests();
+        Ok(regs)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn handle_rdtscs(
+        &mut self,
+        mut regs: libc::user_regs_struct,
+        request: Rdtsc,
+    ) -> Result<libc::user_regs_struct, TraceError> {
+        let retval = self
+            .process_state
+            .clone()
+            .handle_rdtsc_event(self, request)
+            .await?;
+        regs.rax = retval.tsc & 0xffff_ffffu64;
+        regs.rdx = retval.tsc >> 32;
+        match request {
+            Rdtsc::Tsc => {
+                regs.rip += 2;
+            }
+            Rdtsc::Tscp => {
+                regs.rip += 3;
+                regs.rcx = retval.aux.unwrap_or(0) as u64;
+            }
+        }
+        self.timer.finalize_requests();
+        Ok(regs)
+    }
+
+    /// Returns `true` if the signal was actually meant for the timer, and
+    /// therefore should not be forwarded to the tool / guest.
+    async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
+        let armer = self.liteinst_root_stop_armer(&task);
+        let held_root_stop = armer
+            .as_ref()
+            .map(|armer| Arc::clone(&armer.held_root_stop));

@@ -1,0 +1,9 @@
+{
+  "plan_sha256": "c45e098d72c371ed961661b8a6bfb3490aedde2a172a10dc91dd070a3d8ef2a7",
+  "result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/qualification-v2/controls/control-71/result.json",
+    "bytes": 2804,
+    "mode": 420,
+    "sha256": "ded21b21143daab3948ada87f3765b6661cc48e092360e68b03b165b7e691df5"
+  }
+}

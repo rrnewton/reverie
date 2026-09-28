@@ -1,0 +1,4316 @@
+{
+  "attempted_phases": 45,
+  "accepted_phases": 44,
+  "failed_or_refused_phases": 1,
+  "planned_phases": 45,
+  "planned_declarations": 38,
+  "attempted_declarations": 38,
+  "passed_declarations": 37,
+  "failed_or_refused_declarations": 1,
+  "unrun_declarations": 0,
+  "ignored_declarations": 0,
+  "unrun_phase_names": [],
+  "all_component_phases_accepted": false,
+  "retries": 0,
+  "cpu_usage_nsec": 344439192000,
+  "cpu_accounting_complete": true,
+  "observer_elapsed_seconds_sum": 289.91050101099995,
+  "test_payload_elapsed_seconds_sum": 0.2862755712121725,
+  "phases": [
+    {
+      "name": "metadata",
+      "kind": "metadata",
+      "selected": [],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/metadata-plan.json",
+        "bytes": 48332,
+        "mode": 420,
+        "sha256": "8fcf87358d441a4dfc9aab77a13afabf3c771b154983b3994a5bbd12b9fdcde0"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/metadata/result.json",
+        "bytes": 2615,
+        "mode": 420,
+        "sha256": "1341e9315790cd4a891f30789b7ae66d2671a908167883a8c03c50a7e03d1520"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/metadata/result.json",
+        "bytes": 58713,
+        "mode": 384,
+        "sha256": "cb2eaf4abc366f1d9cd3dec841bcf60d143994978caa05f02a63c555b17fe449"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 1914128000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212046Z-2950432.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 2952411,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925376116939,
+          "CPUUsageNSec": 1914128000
+        }
+      },
+      "observer_elapsed_seconds": 2.894001111,
+      "payload_elapsed_seconds": 0.1508239540271461,
+      "readback": {
+        "package_count": 288,
+        "workspace_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source"
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/metadata/stdout",
+        "bytes": 1277632,
+        "mode": 384,
+        "sha256": "78c491326e999172bfb9b06e667844af853280a3d112b413b127c2fc2d4f1855"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/metadata/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/8fcf87358d441a4dfc9aab77a13afabf3c771b154983b3994a5bbd12b9fdcde0.json",
+        "bytes": 388,
+        "mode": 420,
+        "sha256": "edf98a488de0ff6a794a0135b70cc27ef16d456c75bdb9d92cf1535d08186174"
+      }
+    },
+    {
+      "name": "compile",
+      "kind": "compile",
+      "selected": [],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/compile-plan.json",
+        "bytes": 50893,
+        "mode": 420,
+        "sha256": "b12afbde281b29d8a9306dad329490708127b451f4feffd85c51bf9ffb91267f"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/compile/result.json",
+        "bytes": 6369,
+        "mode": 420,
+        "sha256": "79967c7e435d3d001cd4b1b3f3e37886fa20b6d85e9f3ec6c711daab0fdacb8d"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/compile/result.json",
+        "bytes": 46153,
+        "mode": 384,
+        "sha256": "6ae63523125755f1eb3b2f32cbae12cb01478c3671f63358bfe24a13cba65e2c"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 124395659000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212053Z-2961604.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 2962508,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925382351297,
+          "CPUUsageNSec": 124395659000
+        }
+      },
+      "observer_elapsed_seconds": 65.342140207,
+      "payload_elapsed_seconds": 61.54747335612774,
+      "readback": {
+        "artifacts": {
+          "ptrace": {
+            "cargo_artifact": {
+              "reason": "compiler-artifact",
+              "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace#0.2.0",
+              "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+              "target": {
+                "kind": [
+                  "lib"
+                ],
+                "crate_types": [
+                  "lib"
+                ],
+                "name": "reverie_ptrace",
+                "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/lib.rs",
+                "edition": "2024",
+                "doc": true,
+                "doctest": true,
+                "test": true
+              },
+              "profile": {
+                "opt_level": "0",
+                "debuginfo": 2,
+                "debug_assertions": true,
+                "overflow_checks": true,
+                "test": true
+              },
+              "features": [],
+              "filenames": [
+                "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/reverie_ptrace-884b4a03308bc02f"
+              ],
+              "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/reverie_ptrace-884b4a03308bc02f",
+              "fresh": false
+            },
+            "file": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/reverie_ptrace-884b4a03308bc02f",
+              "bytes": 175556008,
+              "mode": 493,
+              "sha256": "c53579c6199ce038c64acf6114499bb3b17d17951da16a3dd130350d3d311eb7"
+            }
+          },
+          "vsyscall": {
+            "cargo_artifact": {
+              "reason": "compiler-artifact",
+              "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace#0.2.0",
+              "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+              "target": {
+                "kind": [
+                  "test"
+                ],
+                "crate_types": [
+                  "bin"
+                ],
+                "name": "vsyscall",
+                "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/tests/vsyscall.rs",
+                "edition": "2024",
+                "doc": false,
+                "doctest": false,
+                "test": true
+              },
+              "profile": {
+                "opt_level": "0",
+                "debuginfo": 2,
+                "debug_assertions": true,
+                "overflow_checks": true,
+                "test": true
+              },
+              "features": [],
+              "filenames": [
+                "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/vsyscall-fb351a729e11f350"
+              ],
+              "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/vsyscall-fb351a729e11f350",
+              "fresh": false
+            },
+            "file": {
+              "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/vsyscall-fb351a729e11f350",
+              "bytes": 113938440,
+              "mode": 493,
+              "sha256": "941407999e1b8c0011ec125f12efc2c7e4e2f7b775412ebd416a1b46bb8b3442"
+            }
+          }
+        },
+        "compiler_diagnostics": 0
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/compile/stdout",
+        "bytes": 170851,
+        "mode": 384,
+        "sha256": "388eb1fba72e0904bcae9125b7b544fd436938d09bce38c2d62390b27b65f53e"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/compile/stderr",
+        "bytes": 5338,
+        "mode": 384,
+        "sha256": "ce9a80d6b09e79e9c9c50a141dce9b04f514095125485d425964d3eadbee757a"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/b12afbde281b29d8a9306dad329490708127b451f4feffd85c51bf9ffb91267f.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "f778ac72496017efa75e6fc32da2803065b8fed181621ff13ec0e33702182391"
+      }
+    },
+    {
+      "name": "format",
+      "kind": "format",
+      "selected": [],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/format-plan.json",
+        "bytes": 57180,
+        "mode": 420,
+        "sha256": "c517c0fab905f5224708085226af833f417fd3e5e4e2bd521ca305c116bce9e6"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/format/result.json",
+        "bytes": 2491,
+        "mode": 420,
+        "sha256": "32da5b78f45ba9bb66bc9859d7b78ff30429ec5f709056749efe9704e8543900"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/format/result.json",
+        "bytes": 48869,
+        "mode": 384,
+        "sha256": "f495a45c933218202793762405a776de8279bb2e5a11ee07f05b428da24b2a75"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3930617000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212208Z-3069789.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3070514,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925457424782,
+          "CPUUsageNSec": 3930617000
+        }
+      },
+      "observer_elapsed_seconds": 4.528338302,
+      "payload_elapsed_seconds": 0.12122970703057945,
+      "readback": {
+        "format_check": true,
+        "changed_rust_paths": 6
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/format/stdout",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/format/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/c517c0fab905f5224708085226af833f417fd3e5e4e2bd521ca305c116bce9e6.json",
+        "bytes": 386,
+        "mode": 420,
+        "sha256": "6f8afa0a0d64cd6830a8a1a89f82ec21d8b18b45c0cf3d874cc8632dac1d73ca"
+      }
+    },
+    {
+      "name": "list-ptrace",
+      "kind": "list",
+      "selected": [
+        "timer::tests::initial_command_requests_retire_without_physical_notification",
+        "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop",
+        "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers",
+        "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live",
+        "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches",
+        "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive",
+        "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance",
+        "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec",
+        "tracer::tests::precise_timer_delivery_reaches_tool",
+        "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched",
+        "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once",
+        "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest",
+        "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call",
+        "tracer::injection_stop_tests::different_tail_injection_replaces_original_once",
+        "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted",
+        "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback",
+        "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection",
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step",
+        "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit",
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event",
+        "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease",
+        "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease",
+        "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root",
+        "tracer::tests::cancellation_at_signal_handler_reaps_root",
+        "tracer::tests::child_death_before_initialization_error_does_not_hang",
+        "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child",
+        "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance",
+        "task::tests::exec_generation_replaces_image_state_without_changing_old_holders",
+        "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame",
+        "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags",
+        "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap",
+        "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page",
+        "task::tests::cancellable_returns_a_completed_result",
+        "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/list-ptrace-plan.json",
+        "bytes": 60067,
+        "mode": 420,
+        "sha256": "f2fc6d91f6617e7e7c9b77dc190f117c98793711c32802f87d288843a2c79058"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/list-ptrace/result.json",
+        "bytes": 20248,
+        "mode": 420,
+        "sha256": "5ff63f0d4221d7f970f66a9579a9d7124a663a91631fa719d78e53fd478008cc"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/list-ptrace/result.json",
+        "bytes": 45211,
+        "mode": 384,
+        "sha256": "221a100e50cbb467df75c2216edaff01c3020ba29023ba91523cc78f8696a980"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3783767000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212217Z-3083660.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3084067,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925466257584,
+          "CPUUsageNSec": 3783767000
+        }
+      },
+      "observer_elapsed_seconds": 4.298176532,
+      "payload_elapsed_seconds": 0.0025445520877838135,
+      "readback": {
+        "names": [
+          "backend::tests::output_run_also_reports_real_backend_activity",
+          "backend::tests::output_run_captures_guest_stdout_generically",
+          "backend::tests::output_run_reports_exact_bytes_for_loud_and_silent_guests",
+          "backend::tests::stats_run_observes_real_tracee_activity",
+          "error::tests::liteinst_activation_category_accepts_general_pre_ready_reasons",
+          "error::tests::liteinst_activation_category_rejects_operation_failures",
+          "error::tests::liteinst_activation_category_rejects_post_ready_tampered_diagnostic",
+          "error::tests::liteinst_activation_category_rejects_untyped_lookalike",
+          "error::tests::liteinst_activation_reason_accepts_the_qualifying_typed_failure",
+          "error::tests::tracee_error_includes_operation_and_pid",
+          "gdbstub::commands::base::_vFile::test::hostio_sanity",
+          "gdbstub::commands::base::_vFile::test::hostio_stat_size_check",
+          "gdbstub::commands::base::_vFile::test::malformed_supported_vfile_operations_remain_errors",
+          "gdbstub::commands::base::_vFile::test::unknown_vfile_operations_are_valid_commands",
+          "gdbstub::commands::base::_x_upper::test::can_parse_X_special",
+          "gdbstub::commands::test::decode_vcont_test",
+          "gdbstub::commands::test::malformed_command",
+          "gdbstub::commands::test::parse_g_upper_with_thread_suffix",
+          "gdbstub::commands::test::parse_g_with_thread_suffix",
+          "gdbstub::commands::test::parse_lldb_query_packets",
+          "gdbstub::commands::test::parse_qregisterinfo_hex_index",
+          "gdbstub::commands::test::qthreadsuffix_not_shadowed_by_qthreadevents",
+          "gdbstub::commands::test::split_thread_suffix_forms",
+          "gdbstub::commands::test::unknown_command",
+          "gdbstub::hex::test::decode_gdb_binary_test",
+          "gdbstub::hex::test::decode_gdb_hex_test",
+          "gdbstub::hex::test::encode_decode_sanity",
+          "gdbstub::hex::test::serde_sanity",
+          "gdbstub::packet::test::can_decode_packet",
+          "gdbstub::packet::test::escaped_checksum_marker_is_packet_data",
+          "gdbstub::packet::test::partial_checksum_is_an_error_instead_of_a_panic",
+          "gdbstub::regs::x86_64::test::amd64_core_regs_sanity",
+          "gdbstub::regs::x86_64::test::amd64_core_regs_serde",
+          "gdbstub::regs::x86_64::test::fp80_sanity",
+          "gdbstub::regs::x86_64::test::register_infos_match_coreregs_layout",
+          "gdbstub::regs::x86_64::test::st_sanity",
+          "gdbstub::regs::x86_64::test::xmm_sanity",
+          "gdbstub::response::test::response_plain_string",
+          "gdbstub::server::tests::framing_honors_the_advertised_packet_limit",
+          "gdbstub::server::tests::framing_keeps_checksum_header_and_incomplete_eof_refusals",
+          "gdbstub::server::tests::framing_preserves_ack_nack_interrupt_and_combined_ack",
+          "gdbstub::server::tests::framing_preserves_an_escaped_checksum_marker",
+          "gdbstub::server::tests::framing_preserves_binary_escapes_at_every_read_boundary",
+          "gdbstub::server::tests::malformed_vfile_operations_close_session",
+          "gdbstub::server::tests::the_listener_is_closed_once_the_client_is_accepted",
+          "gdbstub::server::tests::the_relay_closes_the_session_channel_when_the_peer_departs",
+          "gdbstub::server::tests::unsupported_vfile_operations_keep_session_connected",
+          "gdbstub::server::tests::vfile_frames_survive_coalesced_reads",
+          "gdbstub::server::tests::vfile_frames_survive_fragmented_reads",
+          "in_guest::boundary_tests::disabled_creation_preserves_enabled_setup_and_owns_its_descriptor",
+          "in_guest::boundary_tests::hardware_paused_clock_preserves_exact_branch_trajectory",
+          "in_guest::tests::model_cf_is_refused_before_perf_event_open",
+          "injected_syscall::tests::frame_matches_e9tool_state_layout",
+          "injected_syscall::tests::rejects_register_updates_the_e9_frame_cannot_represent",
+          "injected_syscall::tests::shared_frame_accepts_stack_pointer_updates_for_e9patch",
+          "injected_syscall::tests::syscall_entry_clobbers_match_x86_64",
+          "injected_syscall::tests::user_register_round_trip_preserves_writable_fields",
+          "liteinst_stats::tests::aggregates_all_requested_buckets_and_deduplicates_rips",
+          "liteinst_stats::tests::disabled_collection_does_not_run_stats_only_classification",
+          "liteinst_stats::tests::equal_rips_in_different_processes_or_exec_generations_remain_distinct",
+          "perf::paused_tests::paused_read_errors_are_explicit_and_not_retried",
+          "perf::paused_tests::paused_read_preserves_exact_counts_without_retry",
+          "perf::paused_tests::paused_read_rejects_active_lost_or_unavailable_state_before_syscall",
+          "perf::paused_tests::paused_read_rejects_changed_metadata_after_one_read",
+          "perf::support_test::perf_event_open_errors_mean_pmu_is_unsupported",
+          "perf::test::bench_rdpmc_vs_read",
+          "perf::test::deliver_signal",
+          "perf::test::rdpmc_read_agrees_with_syscall_read",
+          "perf::test::test_do_branches",
+          "perf::test::trace_other_thread",
+          "perf::test::trace_self",
+          "regs::tests::basic",
+          "regs::tests::restore_syscall_clobbers_copies_rcx_r11",
+          "stack::tests::stack_guard_holds_then_releases_flag",
+          "stack::tests::stack_token_detects_simultaneous_checkout",
+          "stack::tests::stack_token_releases_on_drop_without_commit",
+          "stack::tests::transmute_sanity",
+          "stats::tests::enabled_source_reports_root_as_measured_activity",
+          "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap",
+          "task::tests::active_hook_noop_protection_retains_provenance",
+          "task::tests::cancellable_observes_cancellation_in_the_same_poll",
+          "task::tests::cancellable_returns_a_completed_result",
+          "task::tests::command_bootstrap_arguments_preserve_types_and_raw_tail",
+          "task::tests::exec_generation_replaces_image_state_without_changing_old_holders",
+          "task::tests::kernel_page_ranges_floor_ceil_and_reject_overflow",
+          "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags",
+          "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame",
+          "task::tests::pkey_mprotect_is_a_controller_mapping_syscall",
+          "task::tests::proc_maps_paths_preserve_literal_whitespace_and_decode_octal_escapes",
+          "task::tests::short_mapping_lengths_cover_the_whole_active_page",
+          "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page",
+          "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance",
+          "task::tests::task_panic_marker_has_canonical_shape",
+          "task::tests::task_panic_marker_is_always_one_greppable_line",
+          "task::tests::task_panic_marker_survives_a_non_string_payload",
+          "timer::tests::amd_epyc_9d85_uses_reduced_skid_margin",
+          "timer::tests::explicit_skid_margin_overrides_processor_default",
+          "timer::tests::initial_command_requests_retire_without_physical_notification",
+          "timer::tests::other_amd_cpus_keep_default_skid_margin",
+          "timer::tests::overshoot_decision_records_witness_counts_and_attributes_per_run",
+          "timer::tests::skid_overshoot_marker_has_canonical_shape",
+          "timer::tests::skid_overshoot_marker_overshoot_is_saturating",
+          "timer::tests::test_clock_counter_is_behind::clockcounter_new_0_0_10_0_1_some_true_expects",
+          "timer::tests::test_clock_counter_is_behind::clockcounter_new_1_10_200_1_11_some_true_expects",
+          "timer::tests::test_clock_counter_is_behind::clockcounter_new_2_100_200_3_0_some_true_expects",
+          "timer::tests::test_clock_counter_is_behind::clockcounter_new_2_100_2_3_0_none_expects",
+          "timer::tests::test_clock_counter_is_behind::clockcounter_new_4_4_4_4_3_some_false_expects",
+          "timer::tests::test_clock_counter_is_behind::clockcounter_new_4_4_4_4_4_some_false_expects",
+          "timer::tests::test_clock_counter_is_behind::clockcounter_new_4_4_4_4_5_some_true_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_0_0_0_0_0_1_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_0_1_0_2_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_0_2_0_2_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_1_0_0_2_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_1_1_1_0_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_1_2_2_0_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_0_1_1_3_3_0_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_10_0_11_10_10_1_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_10_1_11_10_10_2_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_10_1_11_11_11_0_expects",
+          "timer::tests::test_increment_counter_with_clock::clockcounter_new_10_1_11_12_12_0_expects",
+          "timer::tests::unknown_cpu_is_unavailable_to_fallible_in_guest_clock",
+          "timer::tests::zero_skid_margin_forces_interrupt_at_target",
+          "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive",
+          "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop",
+          "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches",
+          "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers",
+          "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live",
+          "tracer::injection_stop_tests::different_tail_injection_replaces_original_once",
+          "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback",
+          "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched",
+          "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted",
+          "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest",
+          "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call",
+          "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once",
+          "tracer::tests::async_exit_path_supersedes_preempted_same_generation_lease",
+          "tracer::tests::cancellation_at_each_preinit_step_reaps_root",
+          "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root",
+          "tracer::tests::cancellation_at_signal_handler_reaps_root",
+          "tracer::tests::cancelling_at_clone_parent_event_reaps_sibling",
+          "tracer::tests::cancelling_at_clone_thread_event_reaps_group",
+          "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child",
+          "tracer::tests::cancelling_before_clone_parent_handler_reaps_sibling",
+          "tracer::tests::cancelling_before_clone_thread_handler_reaps_group",
+          "tracer::tests::child_death_before_initialization_error_does_not_hang",
+          "tracer::tests::clone_parent_fails_closed_and_reaps_sibling",
+          "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec",
+          "tracer::tests::direct_drop_retries_first_discovery_failure",
+          "tracer::tests::discovery_error_restores_newborn_for_cleanup_retry",
+          "tracer::tests::discovery_skips_only_confirmed_absence_or_replacement",
+          "tracer::tests::exit_stop_atomically_supersedes_same_generation_lease",
+          "tracer::tests::exit_stop_rejects_mismatched_generation_without_replacement",
+          "tracer::tests::liteinst_clone_thread_fails_closed_and_reaps_group",
+          "tracer::tests::liteinst_clone_thread_guest",
+          "tracer::tests::liteinst_preinit_failure_reaps_and_unregisters_root",
+          "tracer::tests::liteinst_root_stop_pause_guest",
+          "tracer::tests::liteinst_runtime_rejects_gdbserver_before_spawning_tracee",
+          "tracer::tests::liteinst_stats_collector_is_allocated_only_when_requested",
+          "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease",
+          "tracer::tests::normal_liteinst_precise_timer_completion_clears_root_lease",
+          "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease",
+          "tracer::tests::pidfd_setup_error_retains_cleanup_drain_failure",
+          "tracer::tests::pidfd_setup_timeout_names_thread_group_leader_retry_exhaustion",
+          "tracer::tests::post_task_scan_error_retains_exact_cleanup_for_retry",
+          "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition",
+          "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event",
+          "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step",
+          "tracer::tests::pre_ready_liteinst_precise_timer_is_controller_handled_and_reaped",
+          "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion",
+          "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection",
+          "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit",
+          "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall",
+          "tracer::tests::pre_ready_pending_signal_is_rejected_before_seccomp_resume",
+          "tracer::tests::precise_timer_delivery_reaches_tool",
+          "tracer::tests::resolving_program_preserves_explicit_arg0",
+          "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance",
+          "tracer::tests::stale_pidfd_identity_never_signals_reused_numeric_pid",
+          "tracer::tests::subscribed_restart_syscall_reaches_the_tool",
+          "tracer::tests::terminal_descendant_remains_owned_until_recorded_parent_exits",
+          "tracer::tests::terminal_descendant_retention_does_not_touch_an_untraced_process",
+          "tracer::tests::tracee_generation_survives_zombie_until_real_reap",
+          "tracer::tests::unsubscribed_restart_syscall_retains_the_linux_result",
+          "validation::test::test_check_for_arch_bugs",
+          "validation::test::test_check_for_arch_bugs_precise_ip",
+          "validation::test::test_check_for_ioc_period_bug",
+          "validation::test::test_check_for_ioc_period_bug_precise_ip",
+          "validation::test::test_check_working_counters",
+          "validation::test::test_check_working_counters_precise_ip",
+          "vdso::tests::can_find_vdso",
+          "vdso::tests::each_subscription_selects_only_its_own_vdso_symbols",
+          "vdso::tests::getcpu_only_leaves_other_vdso_symbols_unselected",
+          "vdso::tests::patch_requirement_tracks_vdso_syscall_subscriptions",
+          "vdso::tests::test_align_up",
+          "vdso::tests::vdso_can_find_symbols_info",
+          "vdso::tests::vdso_patch_info_is_valid"
+        ],
+        "count": 194,
+        "selected": [
+          "timer::tests::initial_command_requests_retire_without_physical_notification",
+          "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop",
+          "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers",
+          "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live",
+          "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches",
+          "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive",
+          "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance",
+          "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec",
+          "tracer::tests::precise_timer_delivery_reaches_tool",
+          "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched",
+          "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once",
+          "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest",
+          "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call",
+          "tracer::injection_stop_tests::different_tail_injection_replaces_original_once",
+          "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted",
+          "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback",
+          "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition",
+          "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection",
+          "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step",
+          "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion",
+          "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall",
+          "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit",
+          "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event",
+          "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease",
+          "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease",
+          "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root",
+          "tracer::tests::cancellation_at_signal_handler_reaps_root",
+          "tracer::tests::child_death_before_initialization_error_does_not_hang",
+          "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child",
+          "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance",
+          "task::tests::exec_generation_replaces_image_state_without_changing_old_holders",
+          "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame",
+          "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags",
+          "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap",
+          "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page",
+          "task::tests::cancellable_returns_a_completed_result",
+          "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/list-ptrace/stdout",
+        "bytes": 53800,
+        "mode": 384,
+        "sha256": "bc93481fc0aa0d8d6a4b0898e5de33266824a49e92e271116b1d8aecd2fe7067"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/list-ptrace/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/f2fc6d91f6617e7e7c9b77dc190f117c98793711c32802f87d288843a2c79058.json",
+        "bytes": 392,
+        "mode": 420,
+        "sha256": "5a3be86b228a1d400c670b466eba7de00ad53ef864c0b9fa13fc2ae2074c8fd1"
+      }
+    },
+    {
+      "name": "list-vsyscall",
+      "kind": "list",
+      "selected": [
+        "suppressed_legacy_vsyscall_returns_to_caller"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/list-vsyscall-plan.json",
+        "bytes": 57068,
+        "mode": 420,
+        "sha256": "4e68dd1acafe8c627ce7494713831a84ecbe0da152b5cbb860dbea9c1d70c543"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/list-vsyscall/result.json",
+        "bytes": 2642,
+        "mode": 420,
+        "sha256": "e77c0e0a4c770cc869933267497814bb2c24c034cc722ecc1b21792c97bbc703"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/list-vsyscall/result.json",
+        "bytes": 46253,
+        "mode": 384,
+        "sha256": "e43da113a2f6e7f2bd379ac0a9d08261cbd532181b87e4a7466a1bd6937a0360"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3844538000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212226Z-3095248.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3095892,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925475225989,
+          "CPUUsageNSec": 3844538000
+        }
+      },
+      "observer_elapsed_seconds": 4.401102493,
+      "payload_elapsed_seconds": 0.0023484081029891968,
+      "readback": {
+        "names": [
+          "suppressed_legacy_vsyscall_returns_to_caller"
+        ],
+        "count": 1,
+        "selected": [
+          "suppressed_legacy_vsyscall_returns_to_caller"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/list-vsyscall/stdout",
+        "bytes": 392,
+        "mode": 384,
+        "sha256": "5dc24054d7bbf74001a5a4f4e813a3361c688fe95c4d1fcacae2908ceed1ddb6"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/list-vsyscall/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/4e68dd1acafe8c627ce7494713831a84ecbe0da152b5cbb860dbea9c1d70c543.json",
+        "bytes": 393,
+        "mode": 420,
+        "sha256": "d8242bc32dd530876bf2e930f40160b52e1ce05ae7f19a1c08196e74dffc38eb"
+      }
+    },
+    {
+      "name": "core-check",
+      "kind": "check",
+      "selected": [],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/core-check-plan.json",
+        "bytes": 57009,
+        "mode": 420,
+        "sha256": "6c3e6e94bc6ec589d1b80c80a9c588af0c3fd9a4815672f27e4128af50d58ed2"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/core-check/result.json",
+        "bytes": 2517,
+        "mode": 420,
+        "sha256": "e8af2a032081136bbef4b74b2f9e52625d00b101a944633c9339e822293ba066"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/core-check/result.json",
+        "bytes": 50770,
+        "mode": 384,
+        "sha256": "f26235fc3b6f18600d086ae5278ac9d5ae93ddb8a2cc777846c2b017cfd9b979"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 44958534000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212234Z-3108297.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3109584,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925484041825,
+          "CPUUsageNSec": 44958534000
+        }
+      },
+      "observer_elapsed_seconds": 27.655402302,
+      "payload_elapsed_seconds": 23.200042685028166,
+      "readback": {
+        "cargo_complete": true,
+        "compiler_diagnostics": 0
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/core-check/stdout",
+        "bytes": 145921,
+        "mode": 384,
+        "sha256": "8623242e2fa6235360ec47054e9711be665d8b1139c5c6a3ca4e26b998085908"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/core-check/stderr",
+        "bytes": 4443,
+        "mode": 384,
+        "sha256": "fbd9c12a67f6efb65c4013bf4953910f02156dd840a7c203435062c80a8a94f9"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/6c3e6e94bc6ec589d1b80c80a9c588af0c3fd9a4815672f27e4128af50d58ed2.json",
+        "bytes": 390,
+        "mode": 420,
+        "sha256": "283025f9b33f22d9c6e38a8b63a368525c8cc56e3f599d6a70e7846d4624c91e"
+      }
+    },
+    {
+      "name": "clippy",
+      "kind": "check",
+      "selected": [],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/clippy-plan.json",
+        "bytes": 57028,
+        "mode": 420,
+        "sha256": "b8dc7f549d1fb0907336896afe92389f00611b58b1510bdbaa7d93ae6ef894e7"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/clippy/result.json",
+        "bytes": 2496,
+        "mode": 420,
+        "sha256": "6e15ebed819bb7d5d4ada3483c51f4e5cbc809affc8c91f3a3da6b8b3350addf"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/clippy/result.json",
+        "bytes": 49242,
+        "mode": 384,
+        "sha256": "98cc3ce8634f9229f077d6d68adcd594623170514e36e62d77b2791566cb9d5f"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 16094171000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212306Z-3163240.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3165078,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925516275079,
+          "CPUUsageNSec": 16094171000
+        }
+      },
+      "observer_elapsed_seconds": 12.861202376,
+      "payload_elapsed_seconds": 8.287873118882999,
+      "readback": {
+        "cargo_complete": true,
+        "compiler_diagnostics": 0
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/clippy/stdout",
+        "bytes": 153317,
+        "mode": 384,
+        "sha256": "dd7b29a76c1f66a5b59f6b3ad2e15dd92986e76dd863e41f52121cc8175e6b90"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/clippy/stderr",
+        "bytes": 1198,
+        "mode": 384,
+        "sha256": "54526c2859baeeaf516704e1529ad515d969e9b9185e6b82f66f52959e51f599"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/b8dc7f549d1fb0907336896afe92389f00611b58b1510bdbaa7d93ae6ef894e7.json",
+        "bytes": 386,
+        "mode": 420,
+        "sha256": "577b58f1c9511e17b8930e72bb48876a85aea9fa0b61dfe1e8f0bce74e8cee4a"
+      }
+    },
+    {
+      "name": "test-01",
+      "kind": "test",
+      "selected": [
+        "timer::tests::initial_command_requests_retire_without_physical_notification"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-01-plan.json",
+        "bytes": 57506,
+        "mode": 420,
+        "sha256": "293d1e2da8fee9552759b990231851efc36a7968ecd0392dd0fa4d86ee7d3838"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-01/result.json",
+        "bytes": 2773,
+        "mode": 420,
+        "sha256": "cd228048ff4640cf0ae555ab4d396e2a9c049d33806af4c05350a0c058c0b0f6"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-01/result.json",
+        "bytes": 46785,
+        "mode": 384,
+        "sha256": "58d07821008401e29f7a381ee8dd4b38999ef6812bce77cf1ef5a02654612314"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3804504000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212324Z-3196999.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3197215,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925533330198,
+          "CPUUsageNSec": 3804504000
+        }
+      },
+      "observer_elapsed_seconds": 4.331859468,
+      "payload_elapsed_seconds": 0.0028968120459467173,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.000535375
+        },
+        "names": [
+          "timer::tests::initial_command_requests_retire_without_physical_notification"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-01/stdout",
+        "bytes": 441,
+        "mode": 384,
+        "sha256": "bbbdbd3e15e3c6562a72512931895bae4fd739b5729027cd17c1c066c9e663c8"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-01/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/293d1e2da8fee9552759b990231851efc36a7968ecd0392dd0fa4d86ee7d3838.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "edae0674352f2f0980356c555dda8df28f32383b1dc8aac24bb0654d57c4a402"
+      }
+    },
+    {
+      "name": "test-02",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-02-plan.json",
+        "bytes": 57524,
+        "mode": 420,
+        "sha256": "12c3d37453a7df34921beadafc257037b147bef00e3058240630db9b7e4f6c1c"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-02/result.json",
+        "bytes": 2781,
+        "mode": 420,
+        "sha256": "054b0421c849d897352b6fcff27d7b21e83f5d060b5f181b615f8e3720789c5f"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-02/result.json",
+        "bytes": 46135,
+        "mode": 384,
+        "sha256": "21401af3ad03dd7a174d0970590275144c9f9a73e3efbe3e9566ade5a1dff225"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3828421000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212332Z-3209513.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3209682,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925542058746,
+          "CPUUsageNSec": 3828421000
+        }
+      },
+      "observer_elapsed_seconds": 4.523055198,
+      "payload_elapsed_seconds": 0.008886148920282722,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.006243329
+        },
+        "names": [
+          "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-02/stdout",
+        "bytes": 459,
+        "mode": 384,
+        "sha256": "d7973d21992fee74ba2b35b213402a63a92d5c03e90536cb709352ba3136ac88"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-02/stderr",
+        "bytes": 267,
+        "mode": 384,
+        "sha256": "f02857facd807ad7e27c7340fdcea88cc5bab9176ff088c5e2bf7244bf257d32"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/12c3d37453a7df34921beadafc257037b147bef00e3058240630db9b7e4f6c1c.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "e93cca2b19f411e83717e2d77fd4a56e79449e2ef3129c29331839ce212dd19a"
+      }
+    },
+    {
+      "name": "test-03",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-03-plan.json",
+        "bytes": 57534,
+        "mode": 420,
+        "sha256": "0ae0a2841249449609595f5725acabd45b3efd72129c731d77c85c8e0c2fd300"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-03/result.json",
+        "bytes": 2786,
+        "mode": 420,
+        "sha256": "294a7b96d23a0abdfee547d1acc7bddf76c21a8679a62aa261ea7b1b760e14f4"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-03/result.json",
+        "bytes": 49257,
+        "mode": 384,
+        "sha256": "e56509311025ec834c19303be9b0d3779fa1c34f8b857babf6c25624b83ec47d"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3801382000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212341Z-3218021.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3218328,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925551022019,
+          "CPUUsageNSec": 3801382000
+        }
+      },
+      "observer_elapsed_seconds": 4.378483531,
+      "payload_elapsed_seconds": 0.019010978983715177,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.016390052
+        },
+        "names": [
+          "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-03/stdout",
+        "bytes": 469,
+        "mode": 384,
+        "sha256": "37cafc9a297d5998db098dbbe6ecc145b3afce789da6ce1512ffd9ba62f5f84d"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-03/stderr",
+        "bytes": 801,
+        "mode": 384,
+        "sha256": "42e31ae087ba4bed386575350687ffc11096773221cfb5354833dc4dc5bdbe9f"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/0ae0a2841249449609595f5725acabd45b3efd72129c731d77c85c8e0c2fd300.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "f810ccd903607e8f4a888f29abb46785f52d665e10512588c06440350e2595a4"
+      }
+    },
+    {
+      "name": "test-04",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-04-plan.json",
+        "bytes": 57518,
+        "mode": 420,
+        "sha256": "36a6982c85505589befa2f6269a8fb5a3739648a983e4a44669d6d21b04f4af6"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-04/result.json",
+        "bytes": 2777,
+        "mode": 420,
+        "sha256": "b20f43beaaee8b43670fa558de89052859b71fa1e85bc52914beaff728bd4b78"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-04/result.json",
+        "bytes": 46136,
+        "mode": 384,
+        "sha256": "d2bca1fb23f208d595d701b14a225d131a622a7cd7f74249bbb8b849bb721045"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3787817000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212350Z-3228344.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3229124,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925559786703,
+          "CPUUsageNSec": 3787817000
+        }
+      },
+      "observer_elapsed_seconds": 4.332583136,
+      "payload_elapsed_seconds": 0.00952016212977469,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.006928238
+        },
+        "names": [
+          "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-04/stdout",
+        "bytes": 453,
+        "mode": 384,
+        "sha256": "a3ce20f7a3d7caea4c657723241fba65eedc3699c4d4990ce1134e5b12127534"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-04/stderr",
+        "bytes": 323,
+        "mode": 384,
+        "sha256": "59df2c8e8ae7d078103f533791879820cccb659ff43d757276977b1f338f91bf"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/36a6982c85505589befa2f6269a8fb5a3739648a983e4a44669d6d21b04f4af6.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "3dc3ec2710b814eac62e023a7fcfbc3fa9cb8199a4baf5fa6b97778c81c4931a"
+      }
+    },
+    {
+      "name": "test-05",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-05-plan.json",
+        "bytes": 57540,
+        "mode": 420,
+        "sha256": "a139ab11e32bace4a37671bebd15d27bfdd5b53879e52189b9eba34a391a1bb5"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-05/result.json",
+        "bytes": 2789,
+        "mode": 420,
+        "sha256": "da96cc250042ca057c4ed524cc5c48ba149200c618164a8ee1216926e9743f3a"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-05/result.json",
+        "bytes": 47062,
+        "mode": 384,
+        "sha256": "a67dd443a20a66670e34e2af680ac2cc1d698757eb1a24105f14edaf1ec463dc"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3809360000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212359Z-3237168.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3237378,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925568485061,
+          "CPUUsageNSec": 3809360000
+        }
+      },
+      "observer_elapsed_seconds": 4.367171426,
+      "payload_elapsed_seconds": 0.008707980858162045,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.006215007
+        },
+        "names": [
+          "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-05/stdout",
+        "bytes": 475,
+        "mode": 384,
+        "sha256": "bfd9f2d7869698688d9f65c91f58d461eda9a84c6acec14d66a6c36568d133a9"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-05/stderr",
+        "bytes": 267,
+        "mode": 384,
+        "sha256": "f02857facd807ad7e27c7340fdcea88cc5bab9176ff088c5e2bf7244bf257d32"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/a139ab11e32bace4a37671bebd15d27bfdd5b53879e52189b9eba34a391a1bb5.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "b1245096416c64af640371d82444001f12b45db1e5cbfc893f20ffea487667bf"
+      }
+    },
+    {
+      "name": "test-06",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-06-plan.json",
+        "bytes": 57528,
+        "mode": 420,
+        "sha256": "7d60bce8a906a72d5cfc79ef226a9269fc9b7b68ac8896b68d7ed3b6fc764d2e"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-06/result.json",
+        "bytes": 2785,
+        "mode": 420,
+        "sha256": "194b4c817767786ea57c6ab7a16c726e497698e7cd450d7250098ef71615e201"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-06/result.json",
+        "bytes": 46131,
+        "mode": 384,
+        "sha256": "8f6bfcbaa365203ff899df140e8d0645facb4590116abe26d6fe307e938347f9"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3860651000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212408Z-3248381.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3248827,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925577229100,
+          "CPUUsageNSec": 3860651000
+        }
+      },
+      "observer_elapsed_seconds": 4.417658221,
+      "payload_elapsed_seconds": 0.0058137241285294294,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.003427909
+        },
+        "names": [
+          "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-06/stdout",
+        "bytes": 463,
+        "mode": 384,
+        "sha256": "af63574122de7464b3b5bd5001481404fc56cf467aaae775a0a854ad0c65f3d2"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-06/stderr",
+        "bytes": 95,
+        "mode": 384,
+        "sha256": "6e7156fb3f34e233b8290da9417f460f9226b39d2c249e8cdf62bba3f4855747"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/7d60bce8a906a72d5cfc79ef226a9269fc9b7b68ac8896b68d7ed3b6fc764d2e.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "17d90eefe6129fd4c2be32a137e5af5ab332292bf210bf3954e608b00e1ce1e3"
+      }
+    },
+    {
+      "name": "test-07",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-07-plan.json",
+        "bytes": 57480,
+        "mode": 420,
+        "sha256": "1ef33e9a53622aa06775b11629d11eda79f092849773c4bd836696d73a83c545"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-07/result.json",
+        "bytes": 2759,
+        "mode": 420,
+        "sha256": "49022df7fe6f04582442e464eb7ecd5b8bb09ee99f97d1e7f5ae7ac6e80d6092"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-07/result.json",
+        "bytes": 46143,
+        "mode": 384,
+        "sha256": "dc265e292f7bd8675aadc1dc612e994c6f8648355e7e4bab44f2d682ad05933d"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3820630000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212416Z-3267582.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3268069,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925586092472,
+          "CPUUsageNSec": 3820630000
+        }
+      },
+      "observer_elapsed_seconds": 4.365768399,
+      "payload_elapsed_seconds": 0.005861005047336221,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.003180678
+        },
+        "names": [
+          "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-07/stdout",
+        "bytes": 415,
+        "mode": 384,
+        "sha256": "c4eeb371daaeee8fcc281dd8264f47d294baba17c1b4792ed247100be6dcde1a"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-07/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/1ef33e9a53622aa06775b11629d11eda79f092849773c4bd836696d73a83c545.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "543359334267bd42fb938966a9f34575879c16b292d5da48d58c5df32b4db8df"
+      }
+    },
+    {
+      "name": "test-08",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-08-plan.json",
+        "bytes": 57506,
+        "mode": 420,
+        "sha256": "4246d4fc8d3afc063c32964a71f698dd6921122cef6b00e535d31f863f6cc239"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-08/result.json",
+        "bytes": 2774,
+        "mode": 420,
+        "sha256": "e3ba95a17ad49c29b0c64bf8f9a1e1cb12addb34418f7fbcc18e925f97e22e73"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-08/result.json",
+        "bytes": 48629,
+        "mode": 384,
+        "sha256": "e9862b642ae327d1b9a13f88645ee8bd2134e1eca674c615ac81e35c22672b6e"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3854986000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212425Z-3278604.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3278788,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925594887198,
+          "CPUUsageNSec": 3854986000
+        }
+      },
+      "observer_elapsed_seconds": 4.442084596,
+      "payload_elapsed_seconds": 0.0077010891400277615,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004913391
+        },
+        "names": [
+          "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-08/stdout",
+        "bytes": 441,
+        "mode": 384,
+        "sha256": "79102fa059d52865ad655af9eb654a3adc2b76834cae5fb5df3a786578d2a829"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-08/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/4246d4fc8d3afc063c32964a71f698dd6921122cef6b00e535d31f863f6cc239.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "e8f022e3bcd32b04d95fc0f1c3869c8b310d3ecc2653b6637920877ef4f38821"
+      }
+    },
+    {
+      "name": "test-09",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::precise_timer_delivery_reaches_tool"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-09-plan.json",
+        "bytes": 57456,
+        "mode": 420,
+        "sha256": "ac0863c51b65d9671fa0f784558ef26c6a93429a8da3c71aa1dc3a67d39e9aa5"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-09/result.json",
+        "bytes": 2746,
+        "mode": 420,
+        "sha256": "593a38ea2e2271dc09e4c735146eae092760c5f182ffb236c000d08ee330f9e4"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-09/result.json",
+        "bytes": 46782,
+        "mode": 384,
+        "sha256": "a59d6d8192b75128c24b101bca36cd89d7aa16ce3ae7f53d813b336ae8b61264"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3850589000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212434Z-3290516.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3291236,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925603681213,
+          "CPUUsageNSec": 3850589000
+        }
+      },
+      "observer_elapsed_seconds": 4.390092159,
+      "payload_elapsed_seconds": 0.04410679009743035,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.041635577
+        },
+        "names": [
+          "tracer::tests::precise_timer_delivery_reaches_tool"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-09/stdout",
+        "bytes": 391,
+        "mode": 384,
+        "sha256": "bba521598153b929fcd8148a9908e0cc849e5aee0bcd422b3c1db198cc01a509"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-09/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/ac0863c51b65d9671fa0f784558ef26c6a93429a8da3c71aa1dc3a67d39e9aa5.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "ecac55b3ee4d956116561be67b6bbdf004450a91ac1ba54341bbff859e5b343c"
+      }
+    },
+    {
+      "name": "test-10",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-10-plan.json",
+        "bytes": 57514,
+        "mode": 420,
+        "sha256": "c4406bb4f4552dc000f58843369d051d653d8ecbe6f364a8fd1ec918d4b32b7a"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-10/result.json",
+        "bytes": 2777,
+        "mode": 420,
+        "sha256": "f9e08a1386422d0cde31db4fa1351027138818ab4055c31ba9d5a4c99a3ed929"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-10/result.json",
+        "bytes": 46134,
+        "mode": 384,
+        "sha256": "f0af08f82ef16ee23738eaa4407aa76c7e77be3fa259cac3601fd7ca5a73496b"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3813521000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212443Z-3303806.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3304987,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925612442157,
+          "CPUUsageNSec": 3813521000
+        }
+      },
+      "observer_elapsed_seconds": 4.33514791,
+      "payload_elapsed_seconds": 0.006435577990487218,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004013809
+        },
+        "names": [
+          "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-10/stdout",
+        "bytes": 449,
+        "mode": 384,
+        "sha256": "2f306d48a999c5fb04ec8e73343c579f59656d123421a3a4271176f478a33893"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-10/stderr",
+        "bytes": 33,
+        "mode": 384,
+        "sha256": "a918ef034fd66d4173e43943e2aa7f74b200bfca4df92d3156e95b722a97a695"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/c4406bb4f4552dc000f58843369d051d653d8ecbe6f364a8fd1ec918d4b32b7a.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "60ba88e003b258cd70c604569ea5d5a55e78b3d590f7bf04a234e0fffa8721c0"
+      }
+    },
+    {
+      "name": "test-11",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-11-plan.json",
+        "bytes": 57516,
+        "mode": 420,
+        "sha256": "c2565fb85c043076a48aab1a5b8f56406f49d560b3509e0dd15d21de20d05470"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-11/result.json",
+        "bytes": 2778,
+        "mode": 420,
+        "sha256": "5449c4d2314354f922d8471aae0c0abb7ead0a2085d5a0a97d8e6093e157a147"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-11/result.json",
+        "bytes": 46139,
+        "mode": 384,
+        "sha256": "ac787e192675751e7462721e9c0640a8cc230aae23b62f2cac487d16d737692a"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3812929000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212452Z-3315437.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3316680,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925621197416,
+          "CPUUsageNSec": 3812929000
+        }
+      },
+      "observer_elapsed_seconds": 4.390736297,
+      "payload_elapsed_seconds": 0.0066339061595499516,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.003950034
+        },
+        "names": [
+          "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-11/stdout",
+        "bytes": 451,
+        "mode": 384,
+        "sha256": "310890721549921063ccc856c87f676f0eb02ce26acc1f8c5f80752f211b9ba4"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-11/stderr",
+        "bytes": 32,
+        "mode": 384,
+        "sha256": "cc8add37e8640196184a31cf8d860aedcfbdb4adb2c028d5406a6854aa4da06b"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/c2565fb85c043076a48aab1a5b8f56406f49d560b3509e0dd15d21de20d05470.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "ca575e0ac70e9b3d0df88a9dc157120ad8b8faf5a0b0c041d0aa4faebc55b98b"
+      }
+    },
+    {
+      "name": "test-12",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-12-plan.json",
+        "bytes": 57534,
+        "mode": 420,
+        "sha256": "27e82c1e05c5f0f12cc3867eedb250e1d5d8f0addededf5b319b143252719811"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-12/result.json",
+        "bytes": 2786,
+        "mode": 420,
+        "sha256": "c905352c6d2d6d8558a25aad99a3c7d79c98017a82a0e101a0e81bc7bf3c6a3d"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-12/result.json",
+        "bytes": 46136,
+        "mode": 384,
+        "sha256": "018ab19aa9813c6a3dde0d75fc30b3e6d7ebb9fb7b3f582b13100988a2b2a9b5"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3840745000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212500Z-3329797.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3330624,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925630016707,
+          "CPUUsageNSec": 3840745000
+        }
+      },
+      "observer_elapsed_seconds": 4.558029944,
+      "payload_elapsed_seconds": 0.007358865113928914,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004868964
+        },
+        "names": [
+          "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-12/stdout",
+        "bytes": 469,
+        "mode": 384,
+        "sha256": "8067893c4e0bb346decff6b69fb03b9c1850f8b7e30ea1df2bb3bd220b33db0a"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-12/stderr",
+        "bytes": 40,
+        "mode": 384,
+        "sha256": "a0a833fd62f3646b19639ba82e04ecb7849c4d6e1eebeedf55a1767c1078b09f"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/27e82c1e05c5f0f12cc3867eedb250e1d5d8f0addededf5b319b143252719811.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "39047dfa357b91ac40b9200885ba41b35789601251e51b9ba56e3f2d7147b68d"
+      }
+    },
+    {
+      "name": "test-13",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-13-plan.json",
+        "bytes": 57516,
+        "mode": 420,
+        "sha256": "63834a14ba0a516e4840790161b3ba777d283afc9bf4f5579b2f1c1a0aaeb374"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-13/result.json",
+        "bytes": 2777,
+        "mode": 420,
+        "sha256": "dd7c9cbfd2d6031fd4d63062a341b730b3804a8d8eed3d54d4a4cbb2d177a1e4"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-13/result.json",
+        "bytes": 47057,
+        "mode": 384,
+        "sha256": "3f471625a2d2e3b7e649ee0837da6470543c80daa2480f8a42306bcaf88de49f"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3830166000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212509Z-3341269.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3341755,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925639013998,
+          "CPUUsageNSec": 3830166000
+        }
+      },
+      "observer_elapsed_seconds": 4.377482166,
+      "payload_elapsed_seconds": 0.007381819188594818,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004508673
+        },
+        "names": [
+          "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-13/stdout",
+        "bytes": 451,
+        "mode": 384,
+        "sha256": "fbb22fd854b0557489540d5431c6bf9de4fecf30b143c0d56c30c6c439646f4b"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-13/stderr",
+        "bytes": 33,
+        "mode": 384,
+        "sha256": "550efeb9adbd5037d82bda7eef951aa2ab1a6c6b5d050012e4207bfeb5e78a1a"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/63834a14ba0a516e4840790161b3ba777d283afc9bf4f5579b2f1c1a0aaeb374.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "48ed8726670e77ed2bb4d7c7d9e5ca807385976326f5be75091f6bf6c0db658a"
+      }
+    },
+    {
+      "name": "test-14",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::different_tail_injection_replaces_original_once"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-14-plan.json",
+        "bytes": 57510,
+        "mode": 420,
+        "sha256": "261c8f3f22c69669afe5c9152d651273ecdcec54c10e3fcf08d5beebe69e55a6"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-14/result.json",
+        "bytes": 2774,
+        "mode": 420,
+        "sha256": "55efcaaa64d6ef19dd8fea52bed023baefb6d5e68b83e1944e8a11b6a04c3ae3"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-14/result.json",
+        "bytes": 47983,
+        "mode": 384,
+        "sha256": "cc4790a95933d5cf9327732833bdfd5ad044324d8c93ca9c182fdcd2a54877db"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3809789000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212518Z-3352820.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3353041,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925647788271,
+          "CPUUsageNSec": 3809789000
+        }
+      },
+      "observer_elapsed_seconds": 4.346630199,
+      "payload_elapsed_seconds": 0.006544342031702399,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004103985
+        },
+        "names": [
+          "tracer::injection_stop_tests::different_tail_injection_replaces_original_once"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-14/stdout",
+        "bytes": 445,
+        "mode": 384,
+        "sha256": "4ba002c9de3a62c0d8f14e2fe659d96c390d35747c25ec24ac8d0f70c8f5b750"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-14/stderr",
+        "bytes": 34,
+        "mode": 384,
+        "sha256": "085ea934f9464500b03277af1da9e4c1a097b8bafd431dcd98e8c37ae176b562"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/261c8f3f22c69669afe5c9152d651273ecdcec54c10e3fcf08d5beebe69e55a6.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "c445bce528d474e3fcdf3daa12846e477493be62a55b2adeec68fe2e65b9087d"
+      }
+    },
+    {
+      "name": "test-15",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-15-plan.json",
+        "bytes": 57502,
+        "mode": 420,
+        "sha256": "234dacacb4ede66ee5ad4c477483ee5ab4efa7366172357422c563c55bc9b73a"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-15/result.json",
+        "bytes": 2769,
+        "mode": 420,
+        "sha256": "67fd0c8f12567d0cd0a2a9bcd2699bad64025e576d3524f2bdf8d6102ba8cf89"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-15/result.json",
+        "bytes": 47050,
+        "mode": 384,
+        "sha256": "7f5dbe7d9716c666c8f3ca1ff4e6062214b15ae7b7949fab0f0d006f714a1415"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3882546000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212527Z-3363692.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3364317,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925656508788,
+          "CPUUsageNSec": 3882546000
+        }
+      },
+      "observer_elapsed_seconds": 4.427285874,
+      "payload_elapsed_seconds": 0.009053960908204317,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.005833924
+        },
+        "names": [
+          "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-15/stdout",
+        "bytes": 437,
+        "mode": 384,
+        "sha256": "2e69685a3fd31fc875370a756897d2038bac2ada72f8e084ffaa246e888bd00a"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-15/stderr",
+        "bytes": 37,
+        "mode": 384,
+        "sha256": "6c6c085b676621394ab714e74b10de74201df110657c0b4ffd26c1b27c264dfd"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/234dacacb4ede66ee5ad4c477483ee5ab4efa7366172357422c563c55bc9b73a.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "6cebda8d77746c76cac2ba50443212a8a9f8eaababceae064c9a5a0b4faec1bb"
+      }
+    },
+    {
+      "name": "test-16",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-16-plan.json",
+        "bytes": 57530,
+        "mode": 420,
+        "sha256": "473236e49a9e1b18d547723eeb4f2d6f66a039467a5bfea041ad08c1844ff937"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-16/result.json",
+        "bytes": 2784,
+        "mode": 420,
+        "sha256": "5fc1abbc92f4e28584c7554266459c69f5616e3608cb285503ac0debc872032d"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-16/result.json",
+        "bytes": 71200,
+        "mode": 384,
+        "sha256": "177dc1ccf14b64a9f653183eff395b78aa1f83aec45520d92c7d3efba6b6d3e8"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3837039000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212536Z-3379427.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3380637,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925665950622,
+          "CPUUsageNSec": 3837039000
+        }
+      },
+      "observer_elapsed_seconds": 4.997466758,
+      "payload_elapsed_seconds": 0.009243195876479149,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.006383699
+        },
+        "names": [
+          "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-16/stdout",
+        "bytes": 465,
+        "mode": 384,
+        "sha256": "92e4ede4b7e8c712b7dddfd2ff69a4094fe36302de94b948b18b2b2f8711550f"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-16/stderr",
+        "bytes": 69,
+        "mode": 384,
+        "sha256": "c08266ed628f2936af9f85bebcc11128042ab68961b3995d653f81c82daab8a3"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/473236e49a9e1b18d547723eeb4f2d6f66a039467a5bfea041ad08c1844ff937.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "73131f59e64229e1a2cd6bdc949fe206a248c6e027d5b7d44502ac567eaef192"
+      }
+    },
+    {
+      "name": "test-17",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-17-plan.json",
+        "bytes": 57510,
+        "mode": 420,
+        "sha256": "517507b6a66e00b1e6ea2b035ed6d11dca575dc69f09796e7cd1fb7b2722d16d"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-17/result.json",
+        "bytes": 2774,
+        "mode": 420,
+        "sha256": "b44fe43421f776c89ae1a919b559f8feed48b40f1df80a29cb60ee6d4a6e823b"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-17/result.json",
+        "bytes": 45484,
+        "mode": 384,
+        "sha256": "369f4bf3aef615292044ec33d1c124e815e3a09859631b768276121ac41ceb44"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3851591000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212545Z-3391612.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3391780,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925674704745,
+          "CPUUsageNSec": 3851591000
+        }
+      },
+      "observer_elapsed_seconds": 4.374023945,
+      "payload_elapsed_seconds": 0.010372021002694964,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.007877404
+        },
+        "names": [
+          "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-17/stdout",
+        "bytes": 445,
+        "mode": 384,
+        "sha256": "f958d4eb15609af76a70ca9dd4d337c28a36ecbe0d9d202afc969bf16b92e2e4"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-17/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/517507b6a66e00b1e6ea2b035ed6d11dca575dc69f09796e7cd1fb7b2722d16d.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "1632bde7c92a44cb71d2fd4b8564b77af66a2e7ffe5577742f5ab77f060e019d"
+      }
+    },
+    {
+      "name": "test-18",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-18-plan.json",
+        "bytes": 57520,
+        "mode": 420,
+        "sha256": "4db3b98fca1b44bfb71ccc6b94d1083ec39881906f04bfed494f173aee28e000"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-18/result.json",
+        "bytes": 2779,
+        "mode": 420,
+        "sha256": "77703fd7ef6aa6a8bc3ac84f56d7b9fa7a72f38ae77d0f4765bdbe53ba3410ff"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-18/result.json",
+        "bytes": 46138,
+        "mode": 384,
+        "sha256": "db09bdda8d5ca73676c57edfbd160cbdae8d4d7597be12854df76de5d3946ef4"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3800062000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212554Z-3406492.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3407247,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925683496112,
+          "CPUUsageNSec": 3800062000
+        }
+      },
+      "observer_elapsed_seconds": 4.320158418,
+      "payload_elapsed_seconds": 0.008026958908885717,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.005401183
+        },
+        "names": [
+          "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-18/stdout",
+        "bytes": 455,
+        "mode": 384,
+        "sha256": "9d9e4a271349f0fb0242a0857aabfae2889b8c3df84f7e89dc3bb768f7c35716"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-18/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/4db3b98fca1b44bfb71ccc6b94d1083ec39881906f04bfed494f173aee28e000.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "efdfed71478cc3aca9e630370ae3c84b09bffcbe06ac3cf6044431a42de9d52f"
+      }
+    },
+    {
+      "name": "test-19",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-19-plan.json",
+        "bytes": 57520,
+        "mode": 420,
+        "sha256": "5aef873d12a8a173d9c2bf10650fea05c56a46a3221cd9068144fd54175edee3"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-19/result.json",
+        "bytes": 2780,
+        "mode": 420,
+        "sha256": "eb7c61c6abbe6a152b608ee2905ca30b20598bfbf5a7b3e0e9c5fba71e4dbd12"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-19/result.json",
+        "bytes": 48630,
+        "mode": 384,
+        "sha256": "6be983ac51d27e1451efbc79b61fb6f5e1747a36e38791a2ca448e3b79b95024"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3831735000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212603Z-3419429.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3420368,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925692298434,
+          "CPUUsageNSec": 3831735000
+        }
+      },
+      "observer_elapsed_seconds": 4.42202928,
+      "payload_elapsed_seconds": 0.0065986220724880695,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004010835
+        },
+        "names": [
+          "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-19/stdout",
+        "bytes": 455,
+        "mode": 384,
+        "sha256": "b5e5d9cd04363400051485360b853523ed1317ca330183e8abc9f2b7b61816ac"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-19/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/5aef873d12a8a173d9c2bf10650fea05c56a46a3221cd9068144fd54175edee3.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "0d0c2f8d95bf1d3aaa3918d2477d4e8726b8aad9847265b0e224ac9929e438cc"
+      }
+    },
+    {
+      "name": "test-20",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-20-plan.json",
+        "bytes": 57540,
+        "mode": 420,
+        "sha256": "ecf2029f6b481a40e81ca872525b4597ebe5cebf4147cd41843e2528df91a40a"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-20/result.json",
+        "bytes": 2789,
+        "mode": 420,
+        "sha256": "c7fc5ca244f76ed5c59167cfb797c390f07a84f691d55396307ecac7f7f72314"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-20/result.json",
+        "bytes": 46786,
+        "mode": 384,
+        "sha256": "40f0e7ff8e9c5a0ee2c7f2e8b62a252f6edfbc6ce80c2bee681851467ad0871f"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3800147000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212612Z-3431377.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3431598,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925701128017,
+          "CPUUsageNSec": 3800147000
+        }
+      },
+      "observer_elapsed_seconds": 4.340267817,
+      "payload_elapsed_seconds": 0.007125073112547398,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004640632
+        },
+        "names": [
+          "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-20/stdout",
+        "bytes": 475,
+        "mode": 384,
+        "sha256": "41806f60e61fd4d1d0f0f2f3f9a64e3961bd09aaedd13f29bda62c4323643b06"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-20/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/ecf2029f6b481a40e81ca872525b4597ebe5cebf4147cd41843e2528df91a40a.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "830d12dc3e69b6a5fc83a27b6a0b678fc47733ad1f2acfc514593da049268462"
+      }
+    },
+    {
+      "name": "test-21",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-21-plan.json",
+        "bytes": 57518,
+        "mode": 420,
+        "sha256": "e39b0d4350c2a953482be01aa41a741128cd8a8f2b2b2f91da525a05fee1097f"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-21/result.json",
+        "bytes": 2775,
+        "mode": 420,
+        "sha256": "9d8d87a4cc1cd1758fdb396e57e8cab5bb071c439ca0a7327c5299eed2be25c0"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-21/result.json",
+        "bytes": 46139,
+        "mode": 384,
+        "sha256": "14cb36afe913317b40cc80241708fa7e6e14e00644d9eaea6f84639279f8c2e1"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3795787000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212620Z-3440333.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3440526,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925709869216,
+          "CPUUsageNSec": 3795787000
+        }
+      },
+      "observer_elapsed_seconds": 4.328367931,
+      "payload_elapsed_seconds": 0.00682523287832737,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.00432736
+        },
+        "names": [
+          "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-21/stdout",
+        "bytes": 452,
+        "mode": 384,
+        "sha256": "8ce832fd388144253586c92059e10cd7b0b72e30c86a2ddda0859e7e61147ce9"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-21/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/e39b0d4350c2a953482be01aa41a741128cd8a8f2b2b2f91da525a05fee1097f.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "fd35bedc4892ceb0fba048679876a54fd94c8bae91c3a44e10bb27b77f7f4577"
+      }
+    },
+    {
+      "name": "test-22",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-22-plan.json",
+        "bytes": 57500,
+        "mode": 420,
+        "sha256": "47a6f5fdc40297d639eb87404a99585dfcfc9ffe878fcba865d36e9ebda5dda5"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-22/result.json",
+        "bytes": 2769,
+        "mode": 420,
+        "sha256": "b5ef6b45d66b946e7e04013a2dd4f47a70dfabd8bdbbb32818d18d37ae2cc26d"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-22/result.json",
+        "bytes": 47049,
+        "mode": 384,
+        "sha256": "79220035df6748a78c4aeaaabfb7a62073b3717bd2aaf2d73be2cd4881972ca1"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3819332000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212629Z-3449098.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3449948,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925718746595,
+          "CPUUsageNSec": 3819332000
+        }
+      },
+      "observer_elapsed_seconds": 4.499642442,
+      "payload_elapsed_seconds": 0.007516741985455155,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004774292
+        },
+        "names": [
+          "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-22/stdout",
+        "bytes": 435,
+        "mode": 384,
+        "sha256": "7e71cab995c97483b8b8de00f2084d67b54f48c0c9eca98de07b52b511aeffbd"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-22/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/47a6f5fdc40297d639eb87404a99585dfcfc9ffe878fcba865d36e9ebda5dda5.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "4a18d78bba6b6daa732e8437525782b78fa7d20b39d925d1bfd4edb23e56d677"
+      }
+    },
+    {
+      "name": "test-23",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-23-plan.json",
+        "bytes": 57496,
+        "mode": 420,
+        "sha256": "6c588539daef8bab30fc80627c80c93c3090ffdc50725f57917fd7c6770b0191"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-23/result.json",
+        "bytes": 2767,
+        "mode": 420,
+        "sha256": "1a9a413366c9d43e687a326fef05fd21e406a34378bf54c372aadd9a1e4451b9"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-23/result.json",
+        "bytes": 46141,
+        "mode": 384,
+        "sha256": "489f4b785befabe56300975fab9530c64815413c99e556b7363af93eee32bc2a"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3828157000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212638Z-3459532.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3459737,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925727609277,
+          "CPUUsageNSec": 3828157000
+        }
+      },
+      "observer_elapsed_seconds": 4.380597831,
+      "payload_elapsed_seconds": 0.005832331022247672,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.003440819
+        },
+        "names": [
+          "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-23/stdout",
+        "bytes": 431,
+        "mode": 384,
+        "sha256": "2f6e5703317f0657ff5a34bef9a1adf27f0681fb129d3dd132118cc8c8baded9"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-23/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/6c588539daef8bab30fc80627c80c93c3090ffdc50725f57917fd7c6770b0191.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "c58818f12b07694dab96799f2e11a1f691f10f168d3737d460c6640467d1a73b"
+      }
+    },
+    {
+      "name": "test-24",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-24-plan.json",
+        "bytes": 57484,
+        "mode": 420,
+        "sha256": "64c2905601ba2b19ca976d8db7121f63b2eba22b9ffe785690ed51635b2c3cd7"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-24/result.json",
+        "bytes": 2761,
+        "mode": 420,
+        "sha256": "b48325261c33b4899ae78136a51301ec4c147e7fc88b30849a6517b936ccef56"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-24/result.json",
+        "bytes": 47981,
+        "mode": 384,
+        "sha256": "38b7347fa6215b072a0b59b469e3b3fb96cdf7433e3e3928f86569cf4f382c4d"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3826027000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212647Z-3471706.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3471957,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925736398661,
+          "CPUUsageNSec": 3826027000
+        }
+      },
+      "observer_elapsed_seconds": 4.409602888,
+      "payload_elapsed_seconds": 0.0039620110765099525,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.00151153
+        },
+        "names": [
+          "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-24/stdout",
+        "bytes": 418,
+        "mode": 384,
+        "sha256": "360845de72420aa7fd23cd670e017b8c8ae3a956aaf19dde08a7c0a336d79864"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-24/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/64c2905601ba2b19ca976d8db7121f63b2eba22b9ffe785690ed51635b2c3cd7.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "14ae1750e5f06d0eb07f4840aa114cffa6cfc9c66975d2ad4478543ef2300721"
+      }
+    },
+    {
+      "name": "test-25",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-25-plan.json",
+        "bytes": 57502,
+        "mode": 420,
+        "sha256": "b4ffe012d676dfa6fa2fc263bab5c7db2bfa6c95807111375caed0134178be24"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-25/result.json",
+        "bytes": 2769,
+        "mode": 420,
+        "sha256": "b7786dc33d0982f24b288b690aa0ba78c1469e5ef7e8b43a50c0eb7a7bbe4ceb"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-25/result.json",
+        "bytes": 45494,
+        "mode": 384,
+        "sha256": "516ddcb686d2ccbe0ba7d87a9e3465bf0fb4459f637d8d2965b5cd16495480e9"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3820438000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212656Z-3480906.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3481067,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925745150913,
+          "CPUUsageNSec": 3820438000
+        }
+      },
+      "observer_elapsed_seconds": 4.385079443,
+      "payload_elapsed_seconds": 0.007822860032320023,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.005088463
+        },
+        "names": [
+          "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-25/stdout",
+        "bytes": 437,
+        "mode": 384,
+        "sha256": "df1232b5e4a6e207f371ebb04c60c8283a3dd103cbf83edce0dac11c64933023"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-25/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/b4ffe012d676dfa6fa2fc263bab5c7db2bfa6c95807111375caed0134178be24.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "be1ac5bf3b3999c7d151586d03fb809b129513815ff82d223215dc2ae8f3c79e"
+      }
+    },
+    {
+      "name": "test-26",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-26-plan.json",
+        "bytes": 57486,
+        "mode": 420,
+        "sha256": "718056d2cf4d3b6cee3daac13cd157907d41dad148852ebb2fcbca01738e43f5"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-26/result.json",
+        "bytes": 2761,
+        "mode": 420,
+        "sha256": "c403d9e86f2fe9e52312e882235036c3115c6aff5954eaa7fe2f34b96b199e18"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-26/result.json",
+        "bytes": 46139,
+        "mode": 384,
+        "sha256": "c9888da4b3fd21c0e310f12225701486862359550a2aaf080d81dd75976b3bbe"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3865059000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212704Z-3490189.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3490848,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925754041945,
+          "CPUUsageNSec": 3865059000
+        }
+      },
+      "observer_elapsed_seconds": 4.414555268,
+      "payload_elapsed_seconds": 0.00711291516199708,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.004437755
+        },
+        "names": [
+          "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-26/stdout",
+        "bytes": 421,
+        "mode": 384,
+        "sha256": "7304f5ce1d6bb9307267286fd3dc7992bee876d8845e28732e9811f5f9d27422"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-26/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/718056d2cf4d3b6cee3daac13cd157907d41dad148852ebb2fcbca01738e43f5.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "5f3721485b6799e98b38e34bd85c3b9433063bf179cf2ec5d6fa7e14b76d88bf"
+      }
+    },
+    {
+      "name": "test-27",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancellation_at_signal_handler_reaps_root"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-27-plan.json",
+        "bytes": 57468,
+        "mode": 420,
+        "sha256": "13f9b965ad205bd5917813f4b6ad8af8ea3a968ca271a8bb6c682de20fa4b8e7"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-27/result.json",
+        "bytes": 2753,
+        "mode": 420,
+        "sha256": "e02d49f85555c2a8c0a092ac8396bd0c21d5b908fe98ff79ac57c8e97167efa0"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-27/result.json",
+        "bytes": 46136,
+        "mode": 384,
+        "sha256": "4470ac2cd906699b4197e93c81f2f4dc7a53d4308e053695c245678f71457323"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3832914000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212713Z-3504582.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3505788,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925762893990,
+          "CPUUsageNSec": 3832914000
+        }
+      },
+      "observer_elapsed_seconds": 4.397477165,
+      "payload_elapsed_seconds": 0.006239681970328093,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.003828871
+        },
+        "names": [
+          "tracer::tests::cancellation_at_signal_handler_reaps_root"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-27/stdout",
+        "bytes": 403,
+        "mode": 384,
+        "sha256": "b78aba7d7fa7a8e599ee1fdf6daa9d659272a0fb57c83929753d0b3202be8050"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-27/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/13f9b965ad205bd5917813f4b6ad8af8ea3a968ca271a8bb6c682de20fa4b8e7.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "39850ab522becd986cdc7131c067afbe28adbee90a50a9de3a1d1c5119f3beb6"
+      }
+    },
+    {
+      "name": "test-28",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::child_death_before_initialization_error_does_not_hang"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-28-plan.json",
+        "bytes": 57492,
+        "mode": 420,
+        "sha256": "4a77be1befc281c0fd3fe2565e8cedfac27977249daa24494c49f7af6f08a728"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-28/result.json",
+        "bytes": 2764,
+        "mode": 420,
+        "sha256": "dd7d3a1ca18f13a4cf6edc27fb9f701e1d6130f4516496d0f9bd0d7955e9c85d"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-28/result.json",
+        "bytes": 47713,
+        "mode": 384,
+        "sha256": "9961b5c06334e5da9d1fb80139d14178f624344111a644af64919cdb8ea39df3"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3853981000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212722Z-3521809.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3521981,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925771689007,
+          "CPUUsageNSec": 3853981000
+        }
+      },
+      "observer_elapsed_seconds": 4.382551215,
+      "payload_elapsed_seconds": 0.00369631196372211,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.001271119
+        },
+        "names": [
+          "tracer::tests::child_death_before_initialization_error_does_not_hang"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-28/stdout",
+        "bytes": 427,
+        "mode": 384,
+        "sha256": "9ab3851f722ddc60dd34a8ecec6c1d465d1122a7b899c81eafb4d5f961b6d12b"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-28/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/4a77be1befc281c0fd3fe2565e8cedfac27977249daa24494c49f7af6f08a728.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "c9ceeae9b027ae4bce8f3367f5c81e2beaf779a178606436278fb326a0c613d3"
+      }
+    },
+    {
+      "name": "test-29",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-29-plan.json",
+        "bytes": 57486,
+        "mode": 420,
+        "sha256": "5cae9774071ab27f408a5bff6553573273ce5b92c9098bb525a18ae9f25c669e"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-29/result.json",
+        "bytes": 2762,
+        "mode": 420,
+        "sha256": "0e0ee3b967132a1c0b97985eb4f070cb564c2b45c9b230e0ea33e456bb8484d7"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-29/result.json",
+        "bytes": 48629,
+        "mode": 384,
+        "sha256": "75758a6641b4acd5ff552cfa25e62e71f56df3b9fd3a841ac4ee5f44b1d4c89b"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3863837000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212731Z-3531006.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3531531,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925780622025,
+          "CPUUsageNSec": 3863837000
+        }
+      },
+      "observer_elapsed_seconds": 4.459459056,
+      "payload_elapsed_seconds": 0.010835335124284029,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.008189121
+        },
+        "names": [
+          "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-29/stdout",
+        "bytes": 421,
+        "mode": 384,
+        "sha256": "5e375486cec5d3e77f6cf3736dd5e3c3111f682195555cfdb24fa9d1c1da0787"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-29/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/5cae9774071ab27f408a5bff6553573273ce5b92c9098bb525a18ae9f25c669e.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "d39472ec7413351f18a0cf1c2864fadcf71ea36c63f7b48a14dcfd6edfa838f8"
+      }
+    },
+    {
+      "name": "test-30",
+      "kind": "test",
+      "selected": [
+        "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-30-plan.json",
+        "bytes": 57498,
+        "mode": 420,
+        "sha256": "cfbfc55b9a8c820825f8e0eafe29fe3f4263084ad540ba9aa724844f29136a01"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-30/result.json",
+        "bytes": 2769,
+        "mode": 420,
+        "sha256": "0dfe29ce9bb25160b1c0ac4bc6ecbdcbda5ae28ec05bb1a71df3d8baf7cbc08d"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-30/result.json",
+        "bytes": 46130,
+        "mode": 384,
+        "sha256": "5f8174e369bdbce34c337cd52c6ef7027f5d03bbd8919f2f7ff0c326a3f532f7"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3842288000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212740Z-3543753.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3543927,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925789477588,
+          "CPUUsageNSec": 3842288000
+        }
+      },
+      "observer_elapsed_seconds": 4.360588576,
+      "payload_elapsed_seconds": 0.0025918029714375734,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.000269794
+        },
+        "names": [
+          "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-30/stdout",
+        "bytes": 433,
+        "mode": 384,
+        "sha256": "0ef51f1aa03700e2050a8407b26bb8bb0e8bb79a6418a7e15f05b8e1ded34d39"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-30/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/cfbfc55b9a8c820825f8e0eafe29fe3f4263084ad540ba9aa724844f29136a01.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "d7ff78d19867dd77081a64bc796bd2ad56663224f72a9f082571c6f4c6785c17"
+      }
+    },
+    {
+      "name": "test-31",
+      "kind": "test",
+      "selected": [
+        "task::tests::exec_generation_replaces_image_state_without_changing_old_holders"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-31-plan.json",
+        "bytes": 57512,
+        "mode": 420,
+        "sha256": "2258d8fb8884484ac10688ea3d6f57dbb66079bb13c5171a1468d92012aea427"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-31/result.json",
+        "bytes": 2775,
+        "mode": 420,
+        "sha256": "6c027a4ca0ad1c150df6d1baf791f1377f41329bc8c9736fe8dd87fa8ab064b9"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-31/result.json",
+        "bytes": 46140,
+        "mode": 384,
+        "sha256": "4f44b24007ca0825fa3523fd9599f28167be831d3255977792368609fe17394f"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3839771000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212749Z-3559914.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3560793,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925798281054,
+          "CPUUsageNSec": 3839771000
+        }
+      },
+      "observer_elapsed_seconds": 4.375605084,
+      "payload_elapsed_seconds": 0.002746785990893841,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.000374182
+        },
+        "names": [
+          "task::tests::exec_generation_replaces_image_state_without_changing_old_holders"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-31/stdout",
+        "bytes": 447,
+        "mode": 384,
+        "sha256": "efdf206287aef718892ce15dc56815d75f3d102e936ff40bc13d632049ae46b6"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-31/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/2258d8fb8884484ac10688ea3d6f57dbb66079bb13c5171a1468d92012aea427.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "341be48f461aa99b1af989a49873ca715940f4375dbcdb28516ca6e52695307d"
+      }
+    },
+    {
+      "name": "test-32",
+      "kind": "test",
+      "selected": [
+        "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-32-plan.json",
+        "bytes": 57520,
+        "mode": 420,
+        "sha256": "c8173d7b9866fa8d3232e06d81860e8135f5642722fed64bddf503d353a2ce31"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-32/result.json",
+        "bytes": 2778,
+        "mode": 420,
+        "sha256": "d9969c69210dddfe902ded1ff06f32228c6916e9b6b1c7000fc332890e029a7e"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-32/result.json",
+        "bytes": 52651,
+        "mode": 384,
+        "sha256": "1760483e5d7ad0bf61750a63bf9d98d3cf9dc39a4b93d3c62cedb788efdc3276"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3865122000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212757Z-3568827.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3569176,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925807117546,
+          "CPUUsageNSec": 3865122000
+        }
+      },
+      "observer_elapsed_seconds": 4.646694512,
+      "payload_elapsed_seconds": 0.002531080972403288,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.00023249
+        },
+        "names": [
+          "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-32/stdout",
+        "bytes": 454,
+        "mode": 384,
+        "sha256": "42f9fdeefeeb7844fc05a76a37163301066b37f7f83922dd6dc67f840bd4b367"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-32/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/c8173d7b9866fa8d3232e06d81860e8135f5642722fed64bddf503d353a2ce31.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "3f340fbb4cffcfae72d5f2e1ec4bc0df01a6d7310c44956ee16e87b536cd61a7"
+      }
+    },
+    {
+      "name": "test-33",
+      "kind": "test",
+      "selected": [
+        "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-33-plan.json",
+        "bytes": 57496,
+        "mode": 420,
+        "sha256": "0d93383cb755681ff25e29d552ee835466c11273a1ed901b21f5a90ff30115f4"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-33/result.json",
+        "bytes": 2768,
+        "mode": 420,
+        "sha256": "375d849d4d07946b410be930e94ae5d596c5f3d03fca153e0faa1faca1fe60e6"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-33/result.json",
+        "bytes": 46131,
+        "mode": 384,
+        "sha256": "bf7cd429b21adbd00f0aa75e9bf2c780cc3b5ad2eb769d10f3c5109dd9909da3"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3798425000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212806Z-3576424.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3576655,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925816072141,
+          "CPUUsageNSec": 3798425000
+        }
+      },
+      "observer_elapsed_seconds": 4.329411245,
+      "payload_elapsed_seconds": 0.0024738251231610775,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.000230466
+        },
+        "names": [
+          "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-33/stdout",
+        "bytes": 431,
+        "mode": 384,
+        "sha256": "360eb098a908c6dfb48f2728fa418d437abf3a2d4b3c59b155bb0f016d4d0872"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-33/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/0d93383cb755681ff25e29d552ee835466c11273a1ed901b21f5a90ff30115f4.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "6af807d8f19c9d7b013693dc2b0658c1aa221f3cfeaa5192e3084f4d1af3697a"
+      }
+    },
+    {
+      "name": "test-34",
+      "kind": "test",
+      "selected": [
+        "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-34-plan.json",
+        "bytes": 57496,
+        "mode": 420,
+        "sha256": "6c531f1bb359d17860ba346b7a009f3dbbab37e30ae5c176f99651f200cfb300"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-34/result.json",
+        "bytes": 2769,
+        "mode": 420,
+        "sha256": "cac6c45c12157e63880fc8340d565783178bb31599c9276d9d90ed123f7ec32c"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-34/result.json",
+        "bytes": 47062,
+        "mode": 384,
+        "sha256": "80fac1b13c350eb174b9a7f1ad6ed1a31c1c6393efe1a7ef52a7c288ffe83744"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3815220000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212815Z-3587525.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3587696,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925824773176,
+          "CPUUsageNSec": 3815220000
+        }
+      },
+      "observer_elapsed_seconds": 4.355570053,
+      "payload_elapsed_seconds": 0.0027188430540263653,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.000356846
+        },
+        "names": [
+          "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-34/stdout",
+        "bytes": 431,
+        "mode": 384,
+        "sha256": "1a1e9435631e03b7486cd6eeebd2ef7be15ae4d8009c43a01d0c2e7213a34dde"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-34/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/6c531f1bb359d17860ba346b7a009f3dbbab37e30ae5c176f99651f200cfb300.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "873f4076902e7dcba34be06f2b634b7cac36b303e016eafb6b876bd89379301d"
+      }
+    },
+    {
+      "name": "test-35",
+      "kind": "test",
+      "selected": [
+        "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-35-plan.json",
+        "bytes": 57504,
+        "mode": 420,
+        "sha256": "ebbc8584a077bbe6b37c887783b2801d824d7ccd4342d2c41931cb0e7a5d0857"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-35/result.json",
+        "bytes": 2771,
+        "mode": 420,
+        "sha256": "4b0e2df5a4c7ea5bfca7dd55b7370cc105e4b58c8e9d8aa696a850b1f277c8cf"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-35/result.json",
+        "bytes": 47987,
+        "mode": 384,
+        "sha256": "7866b82924ae9a76cecc8f53e58b57fca86974e24798d88210bfb67772c0fe98"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3822004000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212824Z-3601171.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3602554,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925833546068,
+          "CPUUsageNSec": 3822004000
+        }
+      },
+      "observer_elapsed_seconds": 4.376562432,
+      "payload_elapsed_seconds": 0.002683961996808648,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.000317096
+        },
+        "names": [
+          "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-35/stdout",
+        "bytes": 439,
+        "mode": 384,
+        "sha256": "f815ae1b20baf52a75372caba1f633509f66b0049e05e344cc5049b0f3e10c93"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-35/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/ebbc8584a077bbe6b37c887783b2801d824d7ccd4342d2c41931cb0e7a5d0857.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "875a58da32187472f86a6fc7e400b84153e9fb435b689eb4c140509119d87970"
+      }
+    },
+    {
+      "name": "test-36",
+      "kind": "test",
+      "selected": [
+        "task::tests::cancellable_returns_a_completed_result"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-36-plan.json",
+        "bytes": 57458,
+        "mode": 420,
+        "sha256": "a25cf3396bd73c4a4a5d775cdfd3e116445fdbcdf64a85d05ea9616538e05838"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-36/result.json",
+        "bytes": 2749,
+        "mode": 420,
+        "sha256": "d6a02518dce62b1f791f50b830bd83157931d0b3f9eea62a7b1c4301bdcacd39"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-36/result.json",
+        "bytes": 46129,
+        "mode": 384,
+        "sha256": "40ce9cf1226d215062c095307ba0fe8f4b83918e3f2b5e533bf780a61f8f4dcf"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3830734000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212833Z-3611736.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3612194,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925842308759,
+          "CPUUsageNSec": 3830734000
+        }
+      },
+      "observer_elapsed_seconds": 4.550354289,
+      "payload_elapsed_seconds": 0.0034022401086986065,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.000354292
+        },
+        "names": [
+          "task::tests::cancellable_returns_a_completed_result"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-36/stdout",
+        "bytes": 393,
+        "mode": 384,
+        "sha256": "ff08f9b6254d99985e61e261edcac7fa2fb1b00f36266c6c3d8af72f311f01e0"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-36/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/a25cf3396bd73c4a4a5d775cdfd3e116445fdbcdf64a85d05ea9616538e05838.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "42821dafd677a9c086ef5031c5dee0ed0681a6586287329ecf6d4e2108899386"
+      }
+    },
+    {
+      "name": "test-37",
+      "kind": "test",
+      "selected": [
+        "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-37-plan.json",
+        "bytes": 57482,
+        "mode": 420,
+        "sha256": "1bb00eadef391601e5fe6dcfe5b05f25cabf48e88210ca539c4c3e0fca3fb2b8"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-37/result.json",
+        "bytes": 2760,
+        "mode": 420,
+        "sha256": "17bf3990a966b072ae09440f6cc85fa3b91e736e18581632852dfd6e2b8cb1b0"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-37/result.json",
+        "bytes": 46131,
+        "mode": 384,
+        "sha256": "185315a1685569b173e6abd2f5877937af9b465fc45194cbd1e9fc48025b8f7b"
+      },
+      "raw_status": 0,
+      "accepted": true,
+      "phase_accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3844596000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212842Z-3621634.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3622048,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925851265327,
+          "CPUUsageNSec": 3844596000
+        }
+      },
+      "observer_elapsed_seconds": 4.428458504,
+      "payload_elapsed_seconds": 0.002776749897748232,
+      "readback": {
+        "executed": 1,
+        "summary": {
+          "type": "suite",
+          "event": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered_out": 193,
+          "exec_time": 0.000368514
+        },
+        "names": [
+          "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+        ]
+      },
+      "error": null,
+      "readback_error": null,
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-37/stdout",
+        "bytes": 417,
+        "mode": 384,
+        "sha256": "57ef0851c5ea3f433300524ba4152437c17a198a767af8ea5a4acd6fb85dd30b"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-37/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/1bb00eadef391601e5fe6dcfe5b05f25cabf48e88210ca539c4c3e0fca3fb2b8.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "a4e98f2f4d894bb4d650615229f0dff9047b54e48dda27719dde79eb298b0367"
+      }
+    },
+    {
+      "name": "test-38",
+      "kind": "test",
+      "selected": [
+        "suppressed_legacy_vsyscall_returns_to_caller"
+      ],
+      "plan": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/test-38-plan.json",
+        "bytes": 57447,
+        "mode": 420,
+        "sha256": "8839e9724c5f306ff912f9d38a95cb1c4fbc823e4c756d3623832c5802824719"
+      },
+      "receipt": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/controls/test-38/result.json",
+        "bytes": 2564,
+        "mode": 420,
+        "sha256": "c4c955311795327c45d9cacc8908c5704004469a67e4ce4492b7b3af8102bd80"
+      },
+      "observer": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-38/result.json",
+        "bytes": 46133,
+        "mode": 384,
+        "sha256": "c331f089b1ea8f3e25c9b4b295a3823d605153dfcf2384d2a595ce087b21ea2d"
+      },
+      "raw_status": 0,
+      "accepted": false,
+      "phase_accepted": false,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 3825476000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260918T212851Z-3639367.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3640145,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1925860132022,
+          "CPUUsageNSec": 3825476000
+        }
+      },
+      "observer_elapsed_seconds": 4.411545012,
+      "payload_elapsed_seconds": 0.007227826165035367,
+      "readback": null,
+      "error": "RuntimeError('structured readback failed')",
+      "readback_error": "JSONDecodeError('Expecting value: line 1 column 1 (char 0)')",
+      "stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-38/stdout",
+        "bytes": 9212,
+        "mode": 384,
+        "sha256": "93f5db94149307a43c43f25c5781140e278f2c71269877c54880874232250356"
+      },
+      "stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/observer/test-38/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "completion": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/lease-state/8839e9724c5f306ff912f9d38a95cb1c4fbc823e4c756d3623832c5802824719.json",
+        "bytes": 387,
+        "mode": 420,
+        "sha256": "676c44622849e839d490c84da642b275b45ee1d69ad7ac25da206395a659c4da"
+      }
+    }
+  ],
+  "clock_observations": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/final-v1/CLOCK-OBSERVATIONS.json",
+    "bytes": 6327,
+    "mode": 420,
+    "sha256": "bc8df20321dbf552670f68dc6ff9fdcd4a492d0b3f575ef73d66817c04736b33"
+  },
+  "mode_observations": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/final-v1/MODE-OBSERVATIONS.json",
+    "bytes": 3631,
+    "mode": 420,
+    "sha256": "81754c1e36c3f029b1d2aa5ca60af1f7e0e9bb943d4909bdc6242714f497ba0a"
+  },
+  "prior_compiler_failure_preserved": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v1/final-v1/READBACK.json",
+    "bytes": 1710,
+    "mode": 420,
+    "sha256": "a3054a843b9456faa08e1ad781c519091e5ac4271dfafca48ea1d8c526ec0ab8"
+  },
+  "no_hermit_or_parity_execution": true,
+  "precise_timer_parent_result_not_independent_child_completion_evidence": true,
+  "retained_artifacts": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ARTIFACTS.json",
+    "bytes": 3525,
+    "mode": 420,
+    "sha256": "f6819d3707811e9398071b6360396424620e8094b46bc31f8515d4d72d48d41e"
+  },
+  "retained_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/BINDING.json",
+    "bytes": 17569,
+    "mode": 420,
+    "sha256": "f202ebc6e46e35bbac1179dda6fc1f6b08ff149ddcf85d47e6480d70a2227690"
+  },
+  "driver_error": "RuntimeError('phase failed/refused; no retry: test-38')",
+  "inventories": {
+    "ptrace": 194,
+    "vsyscall": 1
+  },
+  "legacy_output_inspection": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/final-v1/LEGACY-READBACK-LIMIT.json",
+    "bytes": 4561,
+    "mode": 420,
+    "sha256": "33151a81fa65ffdeacc2f608d26bb087c05bae2ea1b1041970b030a25a775e01"
+  }
+}

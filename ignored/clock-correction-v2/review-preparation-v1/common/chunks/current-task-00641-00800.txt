@@ -1,0 +1,160 @@
+    syscall_trap_rip: u64,
+    syscall_trap_return_rip: u64,
+    install_result: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+struct LiteinstInstallResult {
+    version: u64,
+    site_start: u64,
+    site_len: u64,
+    relocated_tail: u64,
+    trampoline_start: u64,
+    trampoline_len: u64,
+    arena_writable_start: u64,
+    arena_writable_len: u64,
+    arena_executable_start: u64,
+    arena_executable_len: u64,
+    instruction_len: u64,
+    straddle_prefix: u64,
+    complete: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GuestRange {
+    start: u64,
+    end: u64,
+}
+
+impl GuestRange {
+    fn new(start: u64, len: u64) -> Option<Self> {
+        let end = start.checked_add(len)?;
+        (start < end).then_some(Self { start, end })
+    }
+
+    fn overlaps(self, other: Self) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    fn contains(self, other: Self) -> bool {
+        self.start <= other.start && other.end <= self.end
+    }
+}
+
+fn kernel_page_range(start: u64, len: u64, page_size: u64) -> Result<Option<GuestRange>, ()> {
+    if page_size == 0 || !page_size.is_power_of_two() {
+        return Err(());
+    }
+    if len == 0 {
+        return Ok(None);
+    }
+
+    let end = start.checked_add(len).ok_or(())?;
+    let page_mask = page_size - 1;
+    let start = start & !page_mask;
+    let end = end.checked_add(page_mask).ok_or(())? & !page_mask;
+    Ok(Some(GuestRange { start, end }))
+}
+
+fn host_page_size() -> Result<u64, Errno> {
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page_size = u64::try_from(page_size).map_err(|_| Errno::EIO)?;
+    page_size
+        .is_power_of_two()
+        .then_some(page_size)
+        .ok_or(Errno::EIO)
+}
+
+fn is_liteinst_mapping_syscall(nr: Sysno) -> bool {
+    // TODO-HUMAN-REVIEW(PR-270): Review pkey_mprotect mapping-lifecycle classification.
+    matches!(
+        nr,
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        Sysno::mmap | Sysno::munmap | Sysno::mremap | Sysno::mprotect | Sysno::pkey_mprotect
+    )
+}
+
+/// Syscalls whose return lands in two tasks at once.
+///
+/// The kernel starts the new task at the instruction following the `syscall`,
+/// so the site must still decode as the original instruction stream there.
+fn is_task_creating_syscall(nr: Sysno) -> bool {
+    matches!(
+        nr,
+        Sysno::clone | Sysno::clone3 | Sysno::fork | Sysno::vfork
+    )
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActiveHookFootprint {
+    site: GuestRange,
+    trampoline: GuestRange,
+    arena_writable: GuestRange,
+    arena_executable: GuestRange,
+}
+
+impl ActiveHookFootprint {
+    fn protected_ranges(&self) -> [(GuestRange, i32); 4] {
+        [
+            (self.site, libc::PROT_READ | libc::PROT_EXEC),
+            (self.trampoline, libc::PROT_READ | libc::PROT_EXEC),
+            (self.arena_writable, libc::PROT_READ | libc::PROT_WRITE),
+            (self.arena_executable, libc::PROT_READ | libc::PROT_EXEC),
+        ]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LiteinstRuntimePhase {
+    PreExec,
+    Waiting,
+    Bootstrap,
+    Ready,
+}
+
+#[derive(Clone, Debug)]
+struct LiteinstRuntimeState {
+    phase: LiteinstRuntimePhase,
+    frame: Option<LiteinstHandshakeFrame>,
+    generation: u64,
+    ready_generation: Option<u64>,
+    attempted_sites: HashSet<u64>,
+    fallback_sites: HashMap<u64, LiteinstPatchOutcome>,
+    active_hooks: HashMap<u64, ActiveHookFootprint>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LiteinstEntryGuard {
+    address: u64,
+    saved_instruction: u64,
+}
+
+impl Default for LiteinstRuntimeState {
+    fn default() -> Self {
+        Self {
+            phase: LiteinstRuntimePhase::PreExec,
+            frame: None,
+            generation: 0,
+            ready_generation: None,
+            attempted_sites: HashSet::new(),
+            fallback_sites: HashMap::new(),
+            active_hooks: HashMap::new(),
+        }
+    }
+}
+
+impl LiteinstRuntimeState {
+    fn after_exec(&self) -> Result<Self, Errno> {
+        Ok(Self {
+            phase: LiteinstRuntimePhase::Waiting,
+            generation: self.generation.checked_add(1).ok_or(Errno::EOVERFLOW)?,
+            ..Self::default()
+        })
+    }
+
+    fn mapping_mutates_active_hook(&self, nr: Sysno, args: SyscallArgs, page_size: u64) -> bool {
+        let operation_range = match nr {
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            Sysno::mmap if args.arg3 as i32 & libc::MAP_FIXED != 0 => {
+                kernel_page_range(args.arg0 as u64, args.arg1 as u64, page_size)

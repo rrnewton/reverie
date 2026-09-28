@@ -1,0 +1,6 @@
+{
+  "entry_rs_all_predecessor_bytes_preserved": true,
+  "signal_rs_all_predecessor_bytes_preserved": true,
+  "entry.rs_old_test_suffix_unchanged": true,
+  "signal.rs_old_test_suffix_unchanged": true
+}

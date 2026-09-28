@@ -1,0 +1,160 @@
+@@ -13923,7 +13959,7 @@
+     let capacity = requested_capacity.min(MAX_HOST_IO);
+ 
+     if let Some(guest_fd) = guest_fd_path(state, &path) {
+-        let target = match guest_fd_link_target(state, guest_fd, capture_output) {
++        let target = match guest_fd_link_target(state, guest_fd, capture) {
+             Ok(target) => target,
+             Err(error) => return error,
+         };
+@@ -15215,6 +15251,7 @@
+ 
+     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
+ 
++    include!("capture_identity_tests.rs");
+     include!("pipe_fionread_tests.rs");
+     include!("child_exit_signal_tests.rs");
+     include!("process_alarm_signal_tests.rs");
+@@ -16553,8 +16590,13 @@
+                 }
+             ));
+             let stat: libc::stat = read_struct(&memory, address);
+-            assert_eq!(stat.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
+-            assert_eq!(stat.st_ino, synthetic_guest_fd_object_inode(&state, fd));
++            let identity = output
++                .metadata()
++                .identity(output_alias(&state, fd).unwrap());
++            assert_eq!(
++                (stat.st_dev, stat.st_ino),
++                (identity.device, identity.inode)
++            );
+             assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
+             assert_eq!(stat.st_size, 0);
+             assert_eq!(stat.st_blocks, 0);
+@@ -25011,12 +25053,12 @@
+     fn metadata_call(
+         memory: &mut GuestMemory,
+         state: &mut LoadedStaticElf,
+-        capture: bool,
++        capture: Option<&mut CapturedOutput>,
+         number: libc::c_long,
+         args: [u64; 6],
+     ) -> i64 {
+-        if capture {
+-            syscall_result_with_output(memory, state, &mut CapturedOutput::default(), number, args)
++        if let Some(output) = capture {
++            syscall_result_with_output(memory, state, output, number, args)
+         } else {
+             syscall_result(memory, state, number, args)
+         }
+@@ -25026,7 +25068,7 @@
+         memory: &mut GuestMemory,
+         state: &mut LoadedStaticElf,
+         fd: libc::c_int,
+-        capture: bool,
++        mut capture: Option<&mut CapturedOutput>,
+     ) -> libc::stat {
+         const PATH: u64 = 0x100;
+         const STAT: u64 = 0x800;
+@@ -25035,7 +25077,7 @@
+             metadata_call(
+                 memory,
+                 state,
+-                capture,
++                capture.as_deref_mut(),
+                 libc::SYS_fstat,
+                 [fd as u64, STAT, 0, 0, 0, 0]
+             ),
+@@ -25059,7 +25101,7 @@
+                 metadata_call(
+                     memory,
+                     state,
+-                    capture,
++                    capture.as_deref_mut(),
+                     libc::SYS_newfstatat,
+                     [dirfd as u64, PATH, STAT, flags as u64, 0, 0]
+                 ),
+@@ -25081,7 +25123,7 @@
+                 metadata_call(
+                     memory,
+                     state,
+-                    capture,
++                    capture.as_deref_mut(),
+                     libc::SYS_statx,
+                     [
+                         dirfd as u64,
+@@ -25121,7 +25163,7 @@
+                     metadata_call(
+                         memory,
+                         state,
+-                        capture,
++                        capture.as_deref_mut(),
+                         libc::SYS_stat,
+                         [PATH, STAT, 0, 0, 0, 0]
+                     ),
+@@ -27224,10 +27266,10 @@
+         assert!(fd >= 0 && reopened >= 0 && distinct >= 0 && duplicate >= 0);
+         let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
+         for alias in [fd, reopened, duplicate] {
+-            let stat = assert_descriptor_stat_routes(&mut memory, &mut state, alias, false);
++            let stat = assert_descriptor_stat_routes(&mut memory, &mut state, alias, None);
+             assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
+         }
+-        let other_stat = assert_descriptor_stat_routes(&mut memory, &mut state, distinct, false);
++        let other_stat = assert_descriptor_stat_routes(&mut memory, &mut state, distinct, None);
+         assert_ne!(
+             (other_stat.st_dev, other_stat.st_ino),
+             (native.st_dev, native.st_ino)
+@@ -27241,12 +27283,12 @@
+             ),
+             i64::from(fd)
+         );
+-        let replaced = assert_descriptor_stat_routes(&mut memory, &mut state, fd, false);
++        let replaced = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
+         assert_eq!(
+             (replaced.st_dev, replaced.st_ino),
+             (other_stat.st_dev, other_stat.st_ino)
+         );
+-        let retained = assert_descriptor_stat_routes(&mut memory, &mut state, duplicate, false);
++        let retained = assert_descriptor_stat_routes(&mut memory, &mut state, duplicate, None);
+         assert_eq!(
+             (retained.st_dev, retained.st_ino),
+             (native.st_dev, native.st_ino)
+@@ -27259,7 +27301,7 @@
+             None,
+         ) as i32;
+         assert_eq!(reused, fd);
+-        let after_close = assert_descriptor_stat_routes(&mut memory, &mut state, reused, false);
++        let after_close = assert_descriptor_stat_routes(&mut memory, &mut state, reused, None);
+         assert_eq!(
+             (after_close.st_dev, after_close.st_ino),
+             (native.st_dev, native.st_ino)
+@@ -27289,7 +27331,7 @@
+             assert_eq!(syscall_result(&mut memory, &mut state, number, args), 0);
+             let fds: [i32; 2] = read_struct(&memory, 0x1800);
+             for fd in fds {
+-                let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, false);
++                let stat = assert_descriptor_stat_routes(&mut memory, &mut state, fd, None);
+                 let native = file_identity_stat(state.files.get(&fd).unwrap()).unwrap();
+                 assert_eq!((stat.st_dev, stat.st_ino), (native.st_dev, native.st_ino));
+                 let expected = format!("{kind}:[{}]", native.st_ino).into_bytes();
+@@ -27312,6 +27354,7 @@
+ 
+     #[test]
+     fn captured_output_stat_and_link_routes_preserve_the_capture_sink() {
++        let mut output = CapturedOutput::default();
+         let root = TestDir::new();
+         let mut state = test_state(&root.0);
+         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+@@ -27324,20 +27367,26 @@
+             Some(OutputAlias::Stdout),
+         ) as i32;
+         assert!(alias >= 0);
+-        let ordinary = assert_descriptor_stat_routes(&mut memory, &mut state, alias, false);
++        let ordinary = assert_descriptor_stat_routes(&mut memory, &mut state, alias, None);
+         assert_eq!(ordinary.st_mode & libc::S_IFMT, libc::S_IFREG);
+         for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO, alias] {
+-            let captured = assert_descriptor_stat_routes(&mut memory, &mut state, fd, true);
++            let captured =
++                assert_descriptor_stat_routes(&mut memory, &mut state, fd, Some(&mut output));
+             assert_eq!(captured.st_mode & libc::S_IFMT, libc::S_IFIFO);

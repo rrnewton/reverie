@@ -1,0 +1,160 @@
+                    Err(Error::Errno(Errno::ENOSYS))
+                } else {
+                    self.passthrough(guest, call).await
+                }
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(#663)
+            // The pinned Reverie revision exposes process_madvise only as a raw call.
+            SyscallClassification::Determinized if call.number() == Sysno::process_madvise => {
+                match call {
+                    Syscall::Other(_, args) => Self::handle_process_madvise(args.arg0, args.arg4),
+                    _ => unreachable!("process_madvise unexpectedly gained a typed variant"),
+                }
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-1175): The pinned Reverie revision exposes
+            // pidfd_send_signal/pidfd_getfd only as raw calls, so dispatch on the
+            // Sysno. See the handlers in syscalls/files.rs for the determinism
+            // argument.
+            SyscallClassification::Determinized if call.number() == Sysno::pidfd_send_signal => {
+                match call {
+                    Syscall::Other(_, args) => {
+                        self.handle_pidfd_send_signal(
+                            guest,
+                            call,
+                            args.arg0 as RawFd,
+                            args.arg3 as u32,
+                        )
+                        .await
+                    }
+                    _ => unreachable!("pidfd_send_signal unexpectedly gained a typed variant"),
+                }
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-1175): pidfd_getfd, likewise untyped.
+            SyscallClassification::Determinized if call.number() == Sysno::pidfd_getfd => {
+                match call {
+                    Syscall::Other(_, args) => {
+                        self.handle_pidfd_getfd(
+                            guest,
+                            call,
+                            args.arg0 as RawFd,
+                            args.arg1 as RawFd,
+                            args.arg2 as u32,
+                        )
+                        .await
+                    }
+                    _ => unreachable!("pidfd_getfd unexpectedly gained a typed variant"),
+                }
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(#715): Deterministic ENOSYS for syscalls the pinned
+            // x86_64 kernel leaves unimplemented (sys_ni_syscall). A fixed -ENOSYS is
+            // deterministic by construction and identical to the modern kernel's own
+            // return, so no guest-visible behavior changes versus the legacy
+            // pass-through. These are untyped (Syscall::Other) in the pinned Reverie,
+            // so dispatch on the Sysno before the typed match below.
+            SyscallClassification::Determinized
+                if is_unimplemented_enosys_syscall(call.number()) =>
+            {
+                Err(Error::Errno(Errno::ENOSYS))
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-852): Review the futex2 fallback contract.
+            // Detcore models legacy futex but not the newer vector/sized futex2
+            // ABI. Match a kernel without futex2 so runtimes take their
+            // established legacy-futex fallback without consulting the host.
+            SyscallClassification::Determinized if is_futex2_enosys_syscall(call.number()) => {
+                Err(Error::Errno(Errno::ENOSYS))
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-836): Host filesystem and mount
+            // introspection are outside the deterministic model. Return the
+            // portable feature-absence errno so callers use /proc fallbacks.
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-859): Extend this boundary to obsolete ustat
+            // host-filesystem capacity counters.
+            SyscallClassification::Determinized
+                if is_mount_introspection_enosys_syscall(call.number()) =>
+            {
+                Err(Error::Errno(Errno::ENOSYS))
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-848): Hide unmodeled shared keyrings and
+            // request-key upcalls behind the portable CONFIG_KEYS-absent errno.
+            // TODO-HUMAN-REVIEW(PR-916): Fail closed whenever the
+            // panic-on-unsupported policy is active; ordinary runs select that
+            // policy by default. The explicit compatibility opt-out keeps the
+            // pre-848 host pass-through so the guest observes a real working
+            // keyring, restoring the enabled rr `keyctl` compatibility test.
+            // Under fail-closed execution the deterministic ENOSYS boundary is
+            // preserved.
+            SyscallClassification::Determinized if is_kernel_keyring_syscall(call.number()) => {
+                if panic_on_unsupported_syscalls {
+                    Err(Error::Errno(Errno::ENOSYS))
+                } else {
+                    self.passthrough(guest, call).await
+                }
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-855): Fail-closed runs cannot expose
+            // unmodeled pipe-buffer ownership or vmsplice page pinning. Return
+            // ENOSYS so callers use read/write fallbacks, but preserve host
+            // pass-through under the explicit compatibility opt-out used by the
+            // existing rr splice test.
+            SyscallClassification::Determinized if is_zero_copy_pipe_syscall(call.number()) => {
+                if panic_on_unsupported_syscalls {
+                    Err(Error::Errno(Errno::ENOSYS))
+                } else {
+                    self.passthrough(guest, call).await
+                }
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-860): Host LSM attributes are outside
+            // Detcore's model. Present a stable feature-absence boundary
+            // instead of forwarding probes.
+            SyscallClassification::Determinized
+                if is_host_security_identity_probe_syscall(call.number()) =>
+            {
+                Err(Error::Errno(Errno::ENOSYS))
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(#722): Deterministic EPERM for privileged
+            // system-administration syscalls (module load/unload, kexec, reboot,
+            // swap, raw I/O ports, root-mount pivot, host/domain name, tty
+            // hangup, disk quotas). The deterministic guest does not hold the
+            // capabilities these require against the host kernel, so a fixed
+            // -EPERM matches the unprivileged errno, never perturbs global host
+            // state, and is identical across --verify and record/replay. These
+            // are untyped (Syscall::Other) in the pinned Reverie, so dispatch on
+            // the Sysno before the typed match below.
+            SyscallClassification::Determinized
+                if is_privileged_admin_refused_syscall(call.number()) =>
+            {
+                Err(Error::Errno(Errno::EPERM))
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-844): Enforce a deterministic boundary
+            // around host-global process accounting and cross-process memory.
+            SyscallClassification::Determinized
+                if is_process_isolation_refused_syscall(call.number()) =>
+            {
+                Err(Error::Errno(Errno::EPERM))
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-876): Guest performance events
+            // expose host PMU availability, policy, and asynchronous counter
+            // state that Detcore does not model. A fixed ENOSYS preserves the
+            // portable feature-probe fallback without creating an untracked fd.
+            SyscallClassification::Determinized if is_perf_event_enosys_syscall(call.number()) => {
+                Err(Error::Errno(Errno::ENOSYS))
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-853): Refuse nested tracing, host-object
+            // comparison at the deterministic boundary.
+            SyscallClassification::Determinized
+                if is_privileged_observation_refused_syscall(call.number()) =>
+            {
+                Err(Error::Errno(Errno::EPERM))
+            }

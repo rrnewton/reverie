@@ -1,0 +1,120 @@
+        stat.st_nlink = st.nlink;
+        stat.st_mode = st.mode;
+        stat.st_uid = st.uid;
+        stat.st_gid = st.gid;
+        stat.st_rdev = st.rdev;
+        stat.st_size = st.size;
+        stat.st_blksize = st.blksize;
+        stat.st_blocks = st.blocks;
+        stat.st_atime = st.atime.tv_sec;
+        stat.st_atime_nsec = st.atime.tv_nsec;
+        stat.st_mtime = st.mtime.tv_sec;
+        stat.st_mtime_nsec = st.mtime.tv_nsec;
+        stat.st_ctime = st.ctime.tv_sec;
+        stat.st_ctime_nsec = st.ctime.tv_nsec;
+        stat
+    }
+}
+
+impl From<DetStat> for libc::stat {
+    fn from(st: DetStat) -> Self {
+        (&st).into()
+    }
+}
+
+impl From<&libc::statx> for DetStat {
+    fn from(st: &libc::statx) -> Self {
+        DetStat {
+            mask: StatxMask::from_bits_truncate(st.stx_mask),
+            mode: st.stx_mode as _,
+            uid: st.stx_uid,
+            gid: st.stx_gid,
+            attributes: StatxAttributes::from_bits_truncate(st.stx_attributes),
+            attributes_mask: StatxAttributes::from_bits_truncate(st.stx_attributes_mask),
+            dev: libc::makedev(st.stx_dev_major, st.stx_dev_minor),
+            rdev: libc::makedev(st.stx_rdev_major, st.stx_rdev_minor),
+            inode: st.stx_ino,
+            nlink: st.stx_nlink as u64,
+            size: st.stx_size as i64,
+            blksize: st.stx_blksize as i64,
+            blocks: st.stx_blocks as i64,
+            atime: st.stx_atime.into(),
+            btime: st.stx_btime.into(),
+            ctime: st.stx_ctime.into(),
+            mtime: st.stx_mtime.into(),
+        }
+    }
+}
+
+impl From<libc::statx> for DetStat {
+    fn from(st: libc::statx) -> Self {
+        (&st).into()
+    }
+}
+
+impl From<&DetStat> for libc::statx {
+    fn from(st: &DetStat) -> Self {
+        // libc::statx doesn't provide `impl Default`
+        let mut statx: libc::statx = unsafe { std::mem::zeroed() };
+        statx.stx_mask = st.mask.bits();
+        statx.stx_blksize = st.blksize as u32;
+        statx.stx_attributes = st.attributes.bits();
+        statx.stx_nlink = st.nlink as u32;
+        statx.stx_uid = st.uid;
+        statx.stx_gid = st.gid;
+        statx.stx_mode = st.mode as u16;
+        statx.stx_ino = st.inode;
+        statx.stx_size = st.size as u64;
+        statx.stx_blocks = st.blocks as u64;
+        statx.stx_attributes_mask = st.attributes_mask.bits();
+        statx.stx_atime = st.atime.into();
+        statx.stx_btime = st.btime.into();
+        statx.stx_ctime = st.ctime.into();
+        statx.stx_mtime = st.mtime.into();
+        statx.stx_rdev_major = libc::major(st.rdev);
+        statx.stx_rdev_minor = libc::minor(st.rdev);
+        statx.stx_dev_major = libc::major(st.dev);
+        statx.stx_dev_minor = libc::minor(st.dev);
+        statx
+    }
+}
+
+impl From<DetStat> for libc::statx {
+    fn from(st: DetStat) -> Self {
+        (&st).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stat_and_statx_use_the_same_device_encoding() {
+        let dev = libc::makedev(259, 5);
+        let rdev = libc::makedev(8, 1);
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        stat.st_dev = dev;
+        stat.st_rdev = rdev;
+        let mut statx: libc::statx = unsafe { std::mem::zeroed() };
+        statx.stx_dev_major = 259;
+        statx.stx_dev_minor = 5;
+        statx.stx_rdev_major = 8;
+        statx.stx_rdev_minor = 1;
+
+        let from_stat = DetStat::from(&stat);
+        let from_statx = DetStat::from(&statx);
+        assert_eq!(from_stat.dev, from_statx.dev);
+        assert_eq!(from_stat.rdev, from_statx.rdev);
+
+        let round_trip = libc::statx::from(&from_statx);
+        assert_eq!(
+            (round_trip.stx_dev_major, round_trip.stx_dev_minor),
+            (259, 5)
+        );
+        assert_eq!(
+            (round_trip.stx_rdev_major, round_trip.stx_rdev_minor),
+            (8, 1)
+        );
+    }
+}

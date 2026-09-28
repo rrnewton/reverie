@@ -1,0 +1,11 @@
+{
+  "after_bytes": 26797,
+  "after_sha256": "e9e67fc026e695f3174c09b8d96941e3f0b0857f04f403033419f745fa683bfe",
+  "base_head": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "before_sha256": "11004f3313f81d46178a88c5b9a297da6dc9136193748c39eedc2c690e899f29",
+  "file": "reverie-kvm/src/vm/entry_action_tests.rs",
+  "kind": "unexecuted-fixture-correction",
+  "only_additions": true,
+  "production_edits": false,
+  "snapshot": "source-2/reverie-kvm/src/vm/entry_action_tests.rs"
+}

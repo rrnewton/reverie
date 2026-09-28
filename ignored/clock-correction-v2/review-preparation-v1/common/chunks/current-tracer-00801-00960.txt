@@ -1,0 +1,160 @@
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "LiteInst root still exists after typed task cleanup",
+            ))
+        }
+    }
+
+    fn terminate_and_confirm(&mut self) -> std::io::Result<()> {
+        if self.confirm_reaped().is_ok() {
+            return Ok(());
+        }
+
+        let mut descendants = std::mem::take(&mut self.retained_descendants);
+        let mut terminal_descendants = std::mem::take(&mut self.retained_terminal_descendants);
+        let result =
+            self.terminate_and_confirm_attempt(&mut descendants, &mut terminal_descendants);
+        if result.is_err() {
+            self.retained_descendants.extend(descendants);
+            self.retained_terminal_descendants
+                .extend(terminal_descendants);
+        }
+        result
+    }
+
+    fn terminate_and_confirm_attempt(
+        &mut self,
+        descendants: &mut HashMap<Pid, RegisteredTraceeCleanup>,
+        terminal_descendants: &mut HashMap<Pid, TraceeIdentity>,
+    ) -> std::io::Result<()> {
+        if self.terminal.is_none() {
+            terminate_and_reap_new_child_with_identity(Running::new(self.pid()), &self.identity)
+                .map_err(|error| {
+                    std::io::Error::other(format!("pre-registration LiteInst cleanup: {error}"))
+                })?;
+            self.armed = false;
+            return Ok(());
+        }
+
+        if self.identity.same_process() {
+            self.freeze_root_generation()?;
+        } else {
+            // The exact root generation is already gone, so it cannot create
+            // another descendant. Drain any child event the notifier published
+            // before terminal acknowledgment and continue with the retained
+            // generation-bound descendants; trying to freeze a completed root
+            // would only collide with its consumed exit capability.
+            if let Some(terminal) = self.terminal.as_ref() {
+                self.capture_pending_children(terminal)?;
+            }
+            self.root_frozen = true;
+        }
+        #[cfg(test)]
+        if self
+            .force_task_scan_once
+            .as_ref()
+            .is_some_and(|flag| flag.swap(false, Ordering::SeqCst))
+        {
+            self.newborn_tracees.lock().unwrap().clear();
+        }
+        self.discover_descendants(descendants, terminal_descendants)?;
+        let root_terminal = self.terminal.as_ref().unwrap();
+        self.capture_pending_children(root_terminal)?;
+        if !root_terminal.pending_is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "root notifier FIFO changed while frozen",
+            ));
+        }
+        match self.identity.send_signal(Signal::SIGKILL) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+        }
+        for tracee in descendants.values() {
+            tracee
+                .terminal
+                .ensure_registered()
+                .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+            send_identity_sigkill(&tracee.identity)?;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Some(terminal) = self.terminal.as_ref() {
+                self.capture_pending_children(terminal)?;
+            }
+            for tracee in descendants.values() {
+                self.capture_pending_children(&tracee.terminal)?;
+            }
+            self.discover_descendants(descendants, terminal_descendants)?;
+            for tracee in descendants.values() {
+                tracee
+                    .terminal
+                    .ensure_registered()
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                send_identity_sigkill(&tracee.identity)?;
+            }
+
+            let root_done = self
+                .terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.wait(Duration::ZERO));
+            let completed = descendants
+                .iter()
+                .filter_map(|(pid, tracee)| tracee.terminal.wait(Duration::ZERO).then_some(*pid))
+                .collect::<Vec<_>>();
+            for pid in completed {
+                if let Some(tracee) = descendants.get(&pid) {
+                    self.capture_pending_children(&tracee.terminal)?;
+                }
+                let tracee = descendants
+                    .remove(&pid)
+                    .expect("completed descendant must remain registered");
+                if tracee.identity.same_process() {
+                    terminal_descendants.insert(pid, tracee.identity);
+                }
+            }
+            // Once the exact notifier generation is terminal, retain its proc
+            // identity only while it remains our tracee or its recorded parent
+            // still owns the zombie. After reparenting, waiting for another
+            // process to reap it cannot strengthen our cleanup proof and can
+            // never make progress here.
+            terminal_descendants.retain(|_, identity| terminal_descendant_remains_owned(identity));
+            let root_absent = !self.identity.same_process();
+            let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
+            if root_done
+                && root_absent
+                && descendants.is_empty()
+                && terminal_descendants.is_empty()
+                && newborns_empty
+            {
+                self.armed = false;
+                return Ok(());
+            }
+
+            if self.notifier_owner == Some(std::thread::current().id()) {
+                // The pidfd-bound SIGKILL is already pending. Numeric ptrace
+                // operations only advance an extant ptrace relationship and
+                // never inject a signal into a potentially reused PID.
+                // Preserve parentage until every descendant is terminal and
+                // reaped. Otherwise an auto-attached child can be reparented
+                // before its notifier consumes the final wait status.
+                if !root_done && descendants.is_empty() && self.identity.is_our_tracee() {
+                    root_terminal
+                        .revoke_unclaimed_exit_stop()
+                        .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                    let _ = ptrace::cont(self.pid().into(), None);
+                }
+                for tracee in descendants.values() {
+                    if tracee.identity.is_our_tracee() {
+                        tracee
+                            .terminal
+                            .revoke_unclaimed_exit_stop()
+                            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                        let _ = ptrace::cont(tracee.identity.tid.into(), None);
+                    }
+                }
+            }
+            if let Some(terminal) = self.terminal.as_ref() {

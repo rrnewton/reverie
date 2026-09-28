@@ -1,0 +1,136 @@
+            'monotonic_ns': time.monotonic_ns(), 'wrapper_identity': identity,
+            'complete': False,
+        })
+        return False
+
+
+def kill_owned_unit(unit, commands):
+    argv = [str(SYSTEMCTL), '--user', 'kill', '--kill-whom=all', '--signal=KILL', unit]
+    started = time.monotonic_ns()
+    result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2, check=False)
+    commands.append({'argv': argv, 'returncode': result.returncode, 'stdout': result.stdout.decode(errors='replace'),
+                     'stderr': result.stderr.decode(errors='replace'), 'started_monotonic_ns': started})
+    require(result.returncode == 0, 'owned service kill failed')
+
+
+def acquire_before_exec(listener, spec, launch, identity, deadline):
+    require(time.monotonic() < deadline, 'before-exec acquisition deadline expired')
+    listener.settimeout(deadline - time.monotonic())
+    connection, _address = listener.accept()
+    try:
+        peer = before_exec.credentials(connection)
+        require(peer == (identity['pid'], os.getuid(), os.getgid()), 'before-exec peer is not the exact service MainPID')
+        request = before_exec.receive(connection, deadline)
+        expected = {'phase': 'ready', 'spec_sha256': launch['before_exec_spec_sha256'],
+                    'token': spec['token'], 'pid': identity['pid'],
+                    'start_ticks': identity['start_ticks'], 'payload': launch['payload']}
+        require(request == expected, 'before-exec request identity or payload differs')
+        return connection, request
+    except BaseException:
+        connection.close()
+        raise
+
+
+def observe(out, binary, arguments, cpu_usec, wall_seconds, log_bytes=67108864, memory_bytes=16 * 1024**3):
+    out = Path(out).resolve()
+    binary = Path(binary).absolute()
+    require(type(cpu_usec) is int and cpu_usec > 0 and type(wall_seconds) is int and wall_seconds > 0, 'invalid original CPU/wall allowance')
+    require(type(log_bytes) is int and log_bytes > 0, 'invalid original stderr bound')
+    require(type(memory_bytes) is int and memory_bytes in (4 * 1024**3, 16 * 1024**3), 'unsupported payload memory bound')
+    require(out.is_relative_to(HERE) and not out.exists(), 'observer evidence must be new and under its owned directory')
+    require(binary.is_file() and os.access(binary, os.X_OK), 'selected binary is not executable')
+    check_inputs()
+    out.mkdir(mode=0o700, parents=True)
+    report = out / 'safehermit.report'
+    payload = {'binary': str(binary), 'binary_sha256': digest(binary), 'arguments': list(arguments)}
+    helper = Path('/usr/bin/python3')
+    spec_path = out / 'before-exec.json'
+    spec = {'payload': payload, 'token': secrets.token_hex(32), 'observer_pid': os.getpid(),
+            'locale_environment': {key: os.environ.get(key) for key in ['LC_CTYPE', 'LC_ALL', 'LANG']},
+            'ignore_sigpipe': True,
+            'observer_start_ticks': proc_identity(os.getpid())['start_ticks'],
+            'deadline_monotonic_ns': time.monotonic_ns() + int(STARTUP_SECONDS * 1e9)}
+    write_new(spec_path, spec)
+    helper_arguments = ['-B', str(HERE / 'before_exec.py'), str(spec_path), digest(spec_path)]
+    launch = {'binary': str(helper), 'binary_sha256': digest(helper), 'arguments': helper_arguments,
+              'payload': payload, 'before_exec_spec_sha256': digest(spec_path),
+              'cpu_allowance_usec': cpu_usec, 'wall_seconds': wall_seconds, 'log_bytes': log_bytes,
+              'payload_memory_bytes': memory_bytes,
+              'safehermit_log_root': str(out / 'safehermit'), 'wrapper_sha256': digest(WRAPPER),
+              'observer_sources': {name: digest(HERE / name) for name in ['observer.py', 'unit_reference.py', 'before_exec.py', 'source-inputs.json']},
+              'cwd': os.getcwd(), 'epoch': time.time(), 'monotonic_ns': time.monotonic_ns()}
+    argv = [str(WRAPPER), '--sh-deadline', str(wall_seconds), '--sh-max-log-bytes', str(log_bytes),
+            '--sh-report', str(report), str(helper), *helper_arguments]
+    environment = dict(os.environ, SAFEHERMIT_LOG_ROOT=launch['safehermit_log_root'])
+    result = {'schema': 1, 'scope': 'Aggregate CPU observation of the actual safehermit service only',
+              'launch': launch, 'wrapper_argv': argv, 'wrapper_exit_code': None, 'stop_reason': None,
+              'observer_error': None, 'final_accounting': None, 'kill_commands': [], 'accounting_complete': False, 'comparison_eligible': False}
+    process = reference = group = initial = listener = connection = directory_fd = None
+    unit = None
+    maximum_usage = 0
+    sample_count = 0
+    deadline = time.monotonic() + STARTUP_SECONDS
+    try:
+        evidence_guard(out)
+        directory_fd = os.open(out, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        original_cwd_fd = os.open('.', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fchdir(directory_fd)
+            listener.bind('before-exec.sock')
+        finally:
+            os.fchdir(original_cwd_fd)
+            os.close(original_cwd_fd)
+        listener.listen(1)
+        with (out / 'stdout').open('xb') as stdout, (out / 'stderr').open('xb') as stderr, (out / 'samples.jsonl').open('x') as samples:
+            reference = UnitReference('libsystemd.so.0', None)
+            result['loaded_systemd_library_before'] = loaded_systemd_library(reference)
+            process = subprocess.Popen(argv, env=environment, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
+            launch['pid'] = process.pid
+            launch['wrapper_identity'] = proc_identity(process.pid)
+            write_new(out / 'launch.json', launch)
+            while time.monotonic() < deadline:
+                fields = report_fields(report)
+                if 'env.forwarded' in fields:
+                    unit = authenticate_report(fields, launch)
+                    reference.bind(unit)
+                    break
+                require(process.poll() is None, 'wrapper failed before an authenticated startup report')
+                startup_evidence_guard(out, launch, process, deadline, result)
+                time.sleep(POLL_SECONDS)
+            require(unit is not None, 'safehermit startup report deadline expired')
+            while time.monotonic() < deadline:
+                try:
+                    reference.method('RefUnit', deadline)
+                    reference.held = True
+                    break
+                except FileNotFoundError:
+                    require(process.poll() is None, 'service ended before reference acquisition')
+                    time.sleep(POLL_SECONDS)
+            require(reference.held, 'service reference acquisition deadline expired')
+            initial = unit_properties(reference, deadline)
+            group, identity = authenticate_service(initial, unit, launch)
+            result['payload_memory'] = {}
+            initial, group, identity = apply_payload_memory(
+                reference, unit, launch, initial, group, identity, deadline, result['payload_memory'])
+            result['authenticated_service'] = {'unit': unit, 'initial_properties': initial, 'main_process': identity,
+                                               'cgroup_inode': group.stat().st_ino, 'cgroup_device': group.stat().st_dev}
+            service_wall_deadline = initial['ExecMainStartTimestampMonotonic'] / 1e6 + wall_seconds
+            release_deadline = min(deadline, service_wall_deadline)
+            connection, request = acquire_before_exec(listener, spec, launch, identity, release_deadline)
+            # This first real service sample is mandatory before authorizing the
+            # payload. It includes every CPU instruction used by its helper.
+            sample = read_usage(group)
+            maximum_usage = sample['usage_usec']
+            sample_count = 1
+            previous_stamp = sample['monotonic_ns']
+            samples.write(json.dumps(sample, sort_keys=True) + '\n'); samples.flush()
+            if maximum_usage >= cpu_usec:
+                result['stop_reason'] = 'aggregate_cpu_limit_before_payload'
+                kill_owned_unit(unit, result['kill_commands'])
+                raise Refusal('original aggregate CPU allowance exhausted before payload release')
+            require(time.monotonic() < release_deadline, 'original wall/startup allowance exhausted before payload release')
+            current_identity = proc_identity(identity['pid'])
+            require(all(current_identity[key] == identity[key] for key in ['pid', 'start_ticks', 'parent_pid', 'cgroup']), 'waiting helper process identity changed')
+            require(digest(binary) == payload['binary_sha256'], 'payload changed before authorization')
+            require(digest(spec_path) == launch['before_exec_spec_sha256'], 'before-exec specification changed')

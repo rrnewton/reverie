@@ -1,0 +1,58 @@
+[
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/AGENTS.md",
+      "bytes": 17897,
+      "mode": 420,
+      "sha256": "f80ea3182e85d7067acc4cb2ae7fe3775e882bdb5053b7c487b5c4939d0e5d1a"
+    },
+    "held": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/policy/AGENTS.md",
+      "bytes": 17897,
+      "mode": 420,
+      "sha256": "f80ea3182e85d7067acc4cb2ae7fe3775e882bdb5053b7c487b5c4939d0e5d1a"
+    }
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "bytes": 3617,
+      "mode": 420,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    },
+    "held": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/policy/code-review.md",
+      "bytes": 3617,
+      "mode": 420,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    }
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/.skills/deterministic-scheduling-review/SKILL.md",
+      "bytes": 11050,
+      "mode": 420,
+      "sha256": "b0f8bec8c6a278b34142c9a8e67a6795706c1ba3d296c037555b666f71c2812e"
+    },
+    "held": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/policy/deterministic-scheduling-review.md",
+      "bytes": 11050,
+      "mode": 420,
+      "sha256": "b0f8bec8c6a278b34142c9a8e67a6795706c1ba3d296c037555b666f71c2812e"
+    }
+  },
+  {
+    "original": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/.claude/skills/post-facto-review/SKILL.md",
+      "bytes": 5784,
+      "mode": 420,
+      "sha256": "88ceb86d661b468a0a32f99776ae480a5231e9c9695fd97a223a965950008567"
+    },
+    "held": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/policy/post-facto-review.md",
+      "bytes": 5784,
+      "mode": 420,
+      "sha256": "88ceb86d661b468a0a32f99776ae480a5231e9c9695fd97a223a965950008567"
+    }
+  }
+]

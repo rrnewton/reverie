@@ -1,0 +1,12 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "source_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/reverie-kvm/src/memory.rs",
+  "sha256": "ba6c2d7b32caa9440bef63a32ce896318bbcee577d588bbb4e9a0f9646ee0a14",
+  "bytes": 93043,
+  "write_scope": [
+    "reverie-kvm/src/memory.rs",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-memory-integration-v1"
+  ],
+  "product_execution": false
+}

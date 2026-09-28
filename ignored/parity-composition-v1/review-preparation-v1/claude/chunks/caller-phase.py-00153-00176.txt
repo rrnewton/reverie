@@ -1,0 +1,24 @@
+        result['payload_exit']=receipt
+        require(receipt['reaped'] and code==(receipt['returncode'] if receipt['returncode']>=0 else 128-receipt['returncode']),'payload status differs')
+        require(code==0 and outer['returncode']==0,'actual payload failed')
+        require('readback_error' not in result,'structured readback failed')
+        result['accepted']=True
+    except BaseException as e:
+        result['error']=repr(e)
+    finally:
+        try:
+            check(plan);scm(plan,control/'scm-after.json');cache_lease.check_held(fd,plan['lease'],sha)
+            result['inputs_unchanged']=True
+        except BaseException as e:
+            result['inputs_unchanged']=False;result['input_error']=repr(e);result['accepted']=False
+        write_new(control/'result.json',result)
+        cache_lease.complete(fd,plan['lease'],sha,control/'result.json');os.close(fd)
+    print(json.dumps(result),flush=True)
+    return 0 if result['accepted'] else 1
+
+
+if __name__=='__main__':
+    mode,path,sha=sys.argv[1:]
+    require(digest(path)==sha,'phase plan changed')
+    plan=json_read(path);require(plan['path']==path,'wrong plan path')
+    raise SystemExit(payload(plan,sha) if mode=='payload' else launch(plan,sha))

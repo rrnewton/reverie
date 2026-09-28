@@ -1,0 +1,38 @@
+        if report.exists():
+            result['safehermit_report_sha256'] = digest(report)
+        write_new(out / 'result.json', result)
+    return result
+
+
+def harden_observer():
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024**2,) * 2)
+    require(ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0, 'could not disable observer dumpability')
+    os.umask(0o077)
+
+
+def main():
+    harden_observer()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--out', required=True)
+    parser.add_argument('--cpu-usec', type=int, required=True)
+    parser.add_argument('--wall-seconds', type=int, required=True)
+    parser.add_argument('--log-bytes', type=int, default=67108864)
+    parser.add_argument('--memory-bytes', type=int, choices=[4 * 1024**3, 16 * 1024**3], default=16 * 1024**3)
+    parser.add_argument('binary')
+    parser.add_argument('arguments', nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    observer_bound = STARTUP_SECONDS + args.wall_seconds + 2 * FINAL_SECONDS + 5
+    require(observer_bound > 0, 'invalid observer bound')
+    resource.setrlimit(resource.RLIMIT_CPU, (observer_bound, observer_bound))
+    def expired(_number, _frame):
+        raise Refusal('independent observer wall bound expired')
+    signal.signal(signal.SIGALRM, expired)
+    signal.alarm(observer_bound)
+    result = observe(args.out, args.binary, args.arguments, args.cpu_usec, args.wall_seconds, args.log_bytes, args.memory_bytes)
+    print(json.dumps({key: result[key] for key in ['wrapper_exit_code', 'stop_reason', 'observer_error', 'accounting_complete', 'comparison_eligible', 'elapsed_seconds']}))
+    return 0 if result['comparison_eligible'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

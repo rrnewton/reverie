@@ -1,0 +1,22 @@
+{
+  "scope": "Private owner primitive source preparation only; no execution or independent approval",
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "source_sha256": "1f226b4264b2738b31f5673c638273dd4854d3213d3e8ff21212d7232bc9d906",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/owner.rs",
+      "bytes": 27132,
+      "sha256": "1f226b4264b2738b31f5673c638273dd4854d3213d3e8ff21212d7232bc9d906"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/SOURCE.json",
+      "bytes": 1068,
+      "sha256": "8893c69fb21aab51f083d535e197a65d512b282d20003114b0b1e8758a05cab8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/kvm-entry-owner-v1/REPORT.md",
+      "bytes": 6703,
+      "sha256": "34227fe4d26e2a5554185cf9a455cee45e2cc6a97dbd01ec6dda977f26c113bb"
+    }
+  ]
+}

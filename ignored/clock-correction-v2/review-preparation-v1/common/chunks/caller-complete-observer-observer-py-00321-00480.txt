@@ -1,0 +1,160 @@
+            'cgroup_empty': True, 'exec_main_code': values['ExecMainCode'], 'exec_main_status': values['ExecMainStatus'],
+            'properties': values}
+
+
+def validate_terminal_report(fields, wrapper_exit, final, stop_reason):
+    require(fields.get('exit_code') == str(wrapper_exit), 'captured wrapper status differs from report')
+    require(fields.get('truncated') in ['true', 'false'], 'final stderr accounting missing')
+    require(fields.get('bytes_written', '').isdecimal(), 'final stderr byte accounting missing')
+    require(fields.get('unit_result') in ['success', 'exit-code', 'signal', 'core-dump', 'timeout', 'oom-kill'],
+            'authoritative service result absent')
+    code, status = final['exec_main_code'], final['exec_main_status']
+    if fields['unit_result'] == 'success':
+        require((code, status, wrapper_exit) == (1, 0, 0), 'success report contradicts real process status')
+    elif fields['unit_result'] == 'exit-code':
+        require(code == 1 and status != 0 and wrapper_exit == status, 'exit report contradicts real process status')
+    elif fields['unit_result'] in ['signal', 'core-dump']:
+        expected_code = 2 if fields['unit_result'] == 'signal' else 3
+        require(code == expected_code and 1 <= status <= 64, 'signal report contradicts real process status')
+        require(fields.get('exec_main_pid') == str(final['properties']['ExecMainPID'])
+                and fields.get('exec_main_code') == str(code) and fields.get('exec_main_status') == str(status),
+                'signal status receipt disagrees with final unit')
+        require(wrapper_exit == (125 if fields['truncated'] == 'true' else 128 + status), 'wrapper signal status differs')
+    elif fields['unit_result'] == 'timeout':
+        require(wrapper_exit == 124, 'wall timeout report contradicts wrapper status')
+    if stop_reason == 'aggregate_cpu_limit':
+        require(wrapper_exit != 0, 'CPU termination was hidden as success')
+
+
+def evidence_guard(out):
+    # Guest TempDir cleanup can remove an entry between enumeration and stat.
+    # Keep directory descriptors open and ignore only an entry that disappeared;
+    # do not follow symlinks or ignore any other I/O error.
+    def directory_bytes(directory_fd, relative=()):
+        total = 0
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                    if stat.S_ISREG(info.st_mode):
+                        total += info.st_size
+                    elif stat.S_ISDIR(info.st_mode):
+                        child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY |
+                                        os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory_fd)
+                        try:
+                            held = os.fstat(child)
+                            require((held.st_dev, held.st_ino) == (info.st_dev, info.st_ino),
+                                    'evidence directory changed during enumeration')
+                            total += directory_bytes(child, (*relative, entry.name))
+                        finally:
+                            os.close(child)
+                except FileNotFoundError:
+                    # The removed entry contributes no retained bytes.
+                    continue
+                except PermissionError as error:
+                    # Retain the anchored logical path for startup admission;
+                    # evidence_guard itself never admits an incomplete scan.
+                    if not getattr(error, '_hermit_evidence_path_anchored', False):
+                        error.filename = str(out.joinpath(*relative, entry.name))
+                        error._hermit_evidence_path_anchored = True
+                    raise
+        return total
+
+    descriptor = os.open(out, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        initial = os.fstat(descriptor)
+        size = directory_bytes(descriptor)
+        current = out.lstat()
+        require((current.st_dev, current.st_ino) == (initial.st_dev, initial.st_ino),
+                'owned evidence root changed during enumeration')
+    finally:
+        os.close(descriptor)
+    free = os.statvfs(out)
+    require(size < EVIDENCE_BYTES, 'evidence byte guard reached')
+    require(free.f_bavail * free.f_frsize >= MIN_FREE_BYTES, 'free-space guard reached')
+    for name in ['stdout', 'stderr', 'samples.jsonl']:
+        path = out / name
+        require(not path.exists() or path.stat().st_size < STDIO_BYTES, 'independent output guard reached: ' + name)
+
+
+
+def startup_evidence_guard(out, launch, process, deadline, result):
+    require('payload_authorization' not in result, 'startup scan retry after payload authorization')
+    initial = out.lstat()
+    require(stat.S_ISDIR(initial.st_mode) and initial.st_uid == os.getuid(), 'owned startup root differs')
+    try:
+        evidence_guard(out)
+        return True
+    except PermissionError as error:
+        # bounded-run-space creates the private subvolume as root before chown.
+        # No payload is authorized yet. Retry only this invocation's exact BRS
+        # creation entry, inside the unchanged overall startup deadline.
+        path = Path(error.filename or '')
+        pattern = r'brs-safehermit-([0-9]{8}T[0-9]{6}Z)-' + str(launch['pid']) + r'-[1-9][0-9]*-[0-9]+'
+        match = re.fullmatch(pattern, path.name)
+        require(path.parent == out / 'safehermit' and match is not None,
+                'permission refusal outside this invocation startup directory')
+        when = datetime.datetime.strptime(match[1], '%Y%m%dT%H%M%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+        require(int(launch['epoch']) <= when <= int(time.time()), 'startup directory has stale/future identity')
+        info = path.lstat()
+        require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700,
+                'permission refusal is not private BRS creation')
+        current = out.lstat()
+        require((current.st_dev, current.st_ino) == (initial.st_dev, initial.st_ino), 'owned startup root changed')
+        require(process.poll() is None, 'wrapper exited during incomplete startup scan')
+        identity = proc_identity(launch['pid'])
+        require(all(identity[key] == launch['wrapper_identity'][key]
+                    for key in ['pid', 'start_ticks', 'parent_pid', 'cgroup']), 'startup wrapper generation changed')
+        require(time.monotonic() < deadline, 'original startup deadline expired during incomplete scan')
+        require(info.st_uid in (0, os.getuid()), 'BRS creation has an unexpected owner')
+        if info.st_uid == os.getuid():
+            # chown may finish after the denied open. Credit only a new complete
+            # scan; a still-unreadable user-owned directory is not retryable.
+            evidence_guard(out)
+            require(time.monotonic() < deadline, 'original startup deadline expired during complete rescan')
+            result.setdefault('completed_startup_rescans', []).append({
+                'initial_error': str(error), 'path': str(path),
+                'monotonic_ns': time.monotonic_ns(), 'complete': True,
+            })
+            return True
+        result.setdefault('incomplete_startup_scans', []).append({
+            'error': str(error), 'path': str(path), 'device': info.st_dev, 'inode': info.st_ino,
+            'uid': info.st_uid, 'mode': stat.S_IMODE(info.st_mode),
+            'monotonic_ns': time.monotonic_ns(), 'wrapper_identity': identity,
+            'complete': False,
+        })
+        return False
+
+
+def kill_owned_unit(unit, commands):
+    argv = [str(SYSTEMCTL), '--user', 'kill', '--kill-whom=all', '--signal=KILL', unit]
+    started = time.monotonic_ns()
+    result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2, check=False)
+    commands.append({'argv': argv, 'returncode': result.returncode, 'stdout': result.stdout.decode(errors='replace'),
+                     'stderr': result.stderr.decode(errors='replace'), 'started_monotonic_ns': started})
+    require(result.returncode == 0, 'owned service kill failed')
+
+
+def acquire_before_exec(listener, spec, launch, identity, deadline):
+    require(time.monotonic() < deadline, 'before-exec acquisition deadline expired')
+    listener.settimeout(deadline - time.monotonic())
+    connection, _address = listener.accept()
+    try:
+        peer = before_exec.credentials(connection)
+        require(peer == (identity['pid'], os.getuid(), os.getgid()), 'before-exec peer is not the exact service MainPID')
+        request = before_exec.receive(connection, deadline)
+        expected = {'phase': 'ready', 'spec_sha256': launch['before_exec_spec_sha256'],
+                    'token': spec['token'], 'pid': identity['pid'],
+                    'start_ticks': identity['start_ticks'], 'payload': launch['payload']}
+        require(request == expected, 'before-exec request identity or payload differs')
+        return connection, request
+    except BaseException:
+        connection.close()
+        raise
+
+
+def observe(out, binary, arguments, cpu_usec, wall_seconds, log_bytes=67108864, memory_bytes=16 * 1024**3):
+    out = Path(out).resolve()
+    binary = Path(binary).absolute()
+    require(type(cpu_usec) is int and cpu_usec > 0 and type(wall_seconds) is int and wall_seconds > 0, 'invalid original CPU/wall allowance')
+    require(type(log_bytes) is int and log_bytes > 0, 'invalid original stderr bound')

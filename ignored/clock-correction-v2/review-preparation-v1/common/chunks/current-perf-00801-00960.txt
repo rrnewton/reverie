@@ -1,0 +1,160 @@
+            ) as usize
+        })
+        .expect("Could not munmap ring buffer");
+    } else {
+        Errno::result(unsafe { libc::munmap(ptr as *mut _, get_mmap_size()) })
+            .expect("Could not munmap ring buffer");
+    }
+}
+
+impl Drop for PerfCounter {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.mmap {
+            close_mmap(ptr.as_ptr(), self.raw_syscall);
+        }
+        close_perf_fd(self.fd, self.raw_syscall);
+    }
+}
+
+// Safety:
+// The mmap region is never written to. Multiple readers then race with the
+// kernel as any single thread would. Though the reads are racy, that is the
+// intended behavior of the perf api.
+unsafe impl std::marker::Send for PerfCounter {}
+unsafe impl std::marker::Sync for PerfCounter {}
+
+fn get_mmap_size() -> usize {
+    // Use a single page; we only want the perf metadata
+    sysconf(SysconfVar::PAGE_SIZE)
+        .expect("failed to query the system page size")
+        .expect("the system did not report a page size")
+        .try_into()
+        .expect("the system page size must fit in usize")
+}
+
+/// Force a relaxed atomic load. Like Linux's READ_ONCE.
+/// SAFETY: caller must ensure v points to valid data and is aligned
+#[inline(always)]
+#[deny(unsafe_op_in_unsafe_fn)]
+unsafe fn read_once(v: *mut u32) -> u32 {
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering::Relaxed;
+    // SAFETY: AtomicU32 is guaranteed to have the same in-memory representation
+    // SAFETY: The UnsafeCell inside AtomicU32 allows aliasing with *mut
+    // SAFETY: The reference doesn't escape this function, so any lifetime is ok
+    let av: &AtomicU32 = unsafe { &*(v as *const AtomicU32) };
+    av.load(Relaxed)
+}
+
+#[inline(always)]
+fn smp_rmb() {
+    use core::sync::atomic::Ordering::SeqCst;
+    use core::sync::atomic::compiler_fence;
+    compiler_fence(SeqCst);
+}
+
+fn handle_perf_pmu_error(errno: Errno) -> bool {
+    match errno {
+        Errno::ENOENT | Errno::EPERM | Errno::EACCES | Errno::ENOSYS => {
+            warn!(
+                %errno,
+                "PMU hardware-event capability probe failed; performance counters are unavailable"
+            );
+        }
+        _ => {
+            warn!("Perf feature check failed unexpectedly due to {errno}; assuming unsupported");
+        }
+    }
+
+    false
+}
+
+// Test if we have PMU access by doing a check for a basic hardware event.
+fn test_perf_pmu_support() -> bool {
+    // Do a raw perf_event_open because our default configuration has flags that
+    // might be the actual cause of the error, which we want to catch separately.
+    let evt = Event::Hardware(HardwareEvent::Instructions);
+    let mut attr = perf::perf_event_attr::default();
+    attr.size = core::mem::size_of_val(&attr) as u32;
+    attr.type_ = evt.attr_type();
+    attr.config = evt.attr_config();
+    attr.__bindgen_anon_1.sample_period = PerfCounter::DISABLE_SAMPLE_PERIOD;
+    attr.set_exclude_kernel(1); // lowers permission requirements
+
+    let pid: libc::pid_t = 0; // track this thread
+    let cpu: libc::c_int = -1; // across any CPU
+    let group_fd: libc::c_int = -1;
+    let flags = perf::PERF_FLAG_FD_CLOEXEC;
+    let res = Errno::result(unsafe {
+        libc::syscall(libc::SYS_perf_event_open, &attr, pid, cpu, group_fd, flags)
+    });
+    match res {
+        Ok(fd) => {
+            Errno::result(unsafe { libc::close(fd as libc::c_int) })
+                .expect("perf feature check: close(fd) failed");
+            true
+        }
+        Err(errno) => handle_perf_pmu_error(errno),
+    }
+}
+
+static IS_PERF_SUPPORTED: LazyLock<bool> = LazyLock::new(test_perf_pmu_support);
+
+/// Returns true if the current system configuration supports use of perf for
+/// hardware events.
+pub fn is_perf_supported() -> bool {
+    *IS_PERF_SUPPORTED
+}
+
+/// Concisely return if `is_perf_supported` is `false`. Useful for guarding
+/// tests.
+#[macro_export]
+macro_rules! ret_without_perf {
+    () => {
+        if !$crate::is_perf_supported() {
+            return;
+        }
+    };
+    (expr:expr) => {
+        if !$crate::is_perf_supported() {
+            return ($expr);
+        }
+    };
+}
+
+/// Perform exactly `count+1` conditional branch instructions. Useful for
+/// testing timer-related code.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+pub fn do_branches(mut count: u64) {
+    // Anything but assembly is unreliable between debug and release
+    unsafe {
+        // Loop until carry flag is set, indicating underflow
+        core::arch::asm!(
+            "2:",
+            "sub {0}, 1",
+            "jnz 2b",
+            inout(reg) count,
+        )
+    }
+
+    assert_eq!(count, 0);
+}
+
+/// Perform exactly `count+1` conditional branch instructions. Useful for
+/// testing timer-related code.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+pub fn do_branches(mut count: u64) {
+    unsafe {
+        core::arch::asm!(
+            "2:",
+            "subs {0}, {0}, #0x1",
+            "b.ne 2b",
+            inout(reg) count,
+        )
+    }
+
+    assert_eq!(count, 0);
+}
+

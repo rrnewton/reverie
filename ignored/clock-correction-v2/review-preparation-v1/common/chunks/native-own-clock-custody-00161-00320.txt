@@ -1,0 +1,160 @@
+        "collaboration_mode": {
+          "mode": "default",
+          "settings": {
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "high",
+            "developer_instructions": null
+          }
+        },
+        "multi_agent_version": "v2",
+        "realtime_active": false,
+        "effort": "high",
+        "summary": "auto"
+      }
+    }
+  ],
+  "actual_read_only_commands": 182,
+  "actual_nonzero_commands": [
+    {
+      "index": 170,
+      "command": "/bin/bash -lc \"jq '.[0]' COMPLETE_READS.json\"",
+      "exit_code": 5,
+      "output": "jq: error (at COMPLETE_READS.json:1775): Cannot index object with number\n"
+    },
+    {
+      "index": 180,
+      "command": "/bin/bash -lc \"sha256sum /home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/TARGET.json /home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/GROUNDING_AUTHENTICATION.json; jq -r '[.documents|length, ([.documents[].chunks[]]|length), ([.documents[].lines]|add)] | @tsv' COMPLETE_READS.json\"",
+      "exit_code": 5,
+      "output": "6e302d07efd4feb6e6c9116b964a945467073b09dea158ffc20c5a48227f6f93  /home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-origin-correction-design-v1/TARGET.json\n61eb7af4a2bc6b5c087a130fb2d5e04e3c2f6c8588cfbe33bac72e631bd9c96d  /home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/GROUNDING_AUTHENTICATION.json\njq: error (at COMPLETE_READS.json:1775): Cannot index array with string \"documents\"\n"
+    }
+  ],
+  "diagnostic_classifier_precision": "15 candidates: two real jq rc5 errors; thirteen rc0 source outputs contain error: as source text. Original candidates remain unchanged in COVERAGE. One wrong-field rc0 jq query returned blank metadata rows; corrected later.",
+  "reading_precision": "Original ordered primary grounding was authenticated separately. Initial metadata truncation received no coverage credit. All 164 required source/evidence chunks later match complete literal bytes in unique ordinary outputs. Repaired late reads are not claimed to have occurred in initial strict index order.",
+  "truncation_candidates": [
+    {
+      "call_id": "call_qy7wesfKM98DS99rUOt0RrRi",
+      "line": 11786
+    }
+  ],
+  "side_effect_check": "Inspected all nonstandard command strings and the repeated jq/path+cat chunk reads: read-only source/metadata commands, no builds/guests/network/writes/delegation. Shell pipelines are read operations and not used to launder a gate status.",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/TARGET.json",
+      "bytes": 1869,
+      "sha256": "fc76dfdf5eb9324eafe5248c64fa9209950a8c5d3cfefa2662628fc7f8e18cc5",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/inputs.json",
+      "bytes": 170966,
+      "sha256": "80c306c046a7d1db4f09adc3bfb410107e0d126ad649f2487efe2bd3bf333aac",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/GROUNDING_AUTHENTICATION.json",
+      "bytes": 29119,
+      "sha256": "61eb7af4a2bc6b5c087a130fb2d5e04e3c2f6c8588cfbe33bac72e631bd9c96d",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/INITIAL-POLICY-READBACK.json",
+      "bytes": 2227,
+      "sha256": "2e6f8076d4a728743fb666632c9946afda8292401266e7a30df323772b2329a0",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.prompt.txt",
+      "bytes": 9949,
+      "sha256": "690880ad2f731e0f2eeae1a1c36e83d6f2469faa7ff03bc4a21451712d63a88e",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/run_stage.py",
+      "bytes": 5787,
+      "sha256": "4e096886254d294f6fbc9835bea819fed61bd9bb7909af06cf451e4793c42cfc",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/launch-guard.py",
+      "bytes": 3941,
+      "sha256": "f41f9119eb97cc493a0fd741ed4329a93ccd09c3fae254efbbd4792f62c549ed",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/audit_source.py",
+      "bytes": 4365,
+      "sha256": "56a37537049288a98827a28937811910b3d8fd1b00dfc0106a9ea53ca5ae9fd3",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.capacity-before.json",
+      "bytes": 7717,
+      "sha256": "1b51c7cbbc274e090961f2057230ebdb053ceb83f1f345499717102b44c20059",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.capacity-after.json",
+      "bytes": 8332,
+      "sha256": "f4303dc0b5970bd86113d391e730e494fe73c57eb0535911f1def7240f641cc7",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.launch.json",
+      "bytes": 1104,
+      "sha256": "0db49678892eebfcaafd7797341cdfdc96dea6d8c368acc92baabd959088f9b2",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.result.json",
+      "bytes": 2106,
+      "sha256": "2b16385bf459bcf24815d8553031734a04bc4a924ff078db6c0007fed33d1d41",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final.txt",
+      "bytes": 5602,
+      "sha256": "dfbf05cef850436be4d91bd39a11cae1eec0b74718722a24a67e39a37b528c16",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.jsonl",
+      "bytes": 1395830,
+      "sha256": "31a7d548dade2611bf84af7e247b40f1646e928f4113767ef6111afe438972fe",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.stderr",
+      "bytes": 149,
+      "sha256": "43df7f007afa289695cb9fd1c0f306d391d12176406046f9c5223046f30cae75",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/guard-launch.json",
+      "bytes": 1086,
+      "sha256": "30e7607159c7822ae38aca33d501d580053b966fb2a3cb2795059db87ecf34d0",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/guard-result.json",
+      "bytes": 267,
+      "sha256": "67dff29d21f9cdd2f6ea30d552161eb96e10a9c02dfc9f3f60ba019ab0de1134",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/source-before.json",
+      "bytes": 164619,
+      "sha256": "3ee5b4a8f25a137ab0b625515cc6b4ab55a205d8b364be97afc433e8c629e8bc",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/source-after.json",
+      "bytes": 164619,
+      "sha256": "3ee5b4a8f25a137ab0b625515cc6b4ab55a205d8b364be97afc433e8c629e8bc",
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-replay-prerequisites-20260918/ignored/kvm-clock-design-review-preparation-v1/native/01-design.final-COVERAGE.json",
+      "bytes": 243472,
+      "sha256": "f287fa3cc5a20669983252979fdbc2ed3881e1ed279e3cd8ccf91a6b7f279d14",
+      "mode": 420
+    },

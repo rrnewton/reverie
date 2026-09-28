@@ -1,0 +1,160 @@
+        }
+        _ => Err(executor.with_signal_effects(
+            Error::UnexpectedVcpuExit(
+                "nonlocal operation during dequeue acknowledgment".to_owned(),
+            ),
+            raw,
+        )),
+    }
+}
+
+#[cfg(test)]
+mod signal_cleanup_tests {
+    use std::task::Context;
+
+    use futures::task::noop_waker;
+
+    use super::*;
+
+    #[test]
+    fn signal_cleanup_pending_callback_observes_published_peer_failure() {
+        let global = Arc::new(());
+        let run = RunFailure::new(&global);
+        let context = FailureContext::new(run.clone(), Pid::from_raw(1), Pid::from_raw(2));
+        let polled = Arc::new(AtomicBool::new(false));
+        let pending = polled.clone();
+        let future = futures::future::poll_fn(move |_| {
+            pending.store(true, Ordering::Release);
+            Poll::<Result<()>>::Pending
+        });
+        let mut cleanup = pin!(drive_signal_cleanup(
+            future,
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(Vec::new())),
+            wait_for_failure(global.as_ref(), Some(run.subscribe())),
+        ));
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(cleanup.as_mut().poll(&mut cx).is_pending());
+        assert!(polled.load(Ordering::Acquire));
+        context.publish("lost dequeue owner", Error::GuestWorkerPanic);
+        assert!(
+            matches!(
+                cleanup.as_mut().poll(&mut cx),
+                Poll::Ready(HandlerOutcome::RunFailed)
+            ),
+            "a published lost owner must terminate consuming cleanup, not leave it parked"
+        );
+        assert!(matches!(
+            run.primary().unwrap().primary(),
+            Error::GuestWorkerPanic
+        ));
+    }
+
+    #[test]
+    fn signal_cleanup_ready_result_precedes_terminal_cancellation() {
+        for result in [Ok(()), Err(Error::Reverie(Errno::EFAULT.into()))] {
+            let was_error = result.is_err();
+            let outcome = futures::executor::block_on(drive_signal_cleanup(
+                std::future::ready(result),
+                Arc::new(Mutex::new(None)),
+                Arc::new(Mutex::new(Vec::new())),
+                std::future::ready(()),
+            ));
+            match outcome {
+                HandlerOutcome::Returned(result) => assert_eq!(result.is_err(), was_error),
+                _ => panic!("already-ready cleanup/result was discarded"),
+            }
+        }
+    }
+    #[test]
+    fn signal_bookkeeping_failure_cannot_resume_injected_or_unsubscribed_syscall() {
+        for signalfd in [false, true] {
+            for injected in [false, true] {
+                let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+                let state = crate::executor::native_loaded_state(std::path::Path::new("."));
+                state.process_signals.lock().unwrap().dequeue_sequence = u64::MAX;
+                let mut executor = ElfExecutor::new(state, false);
+                let mut memory = GuestMemory::new(0, STACK_CAPACITY).unwrap();
+                memory
+                    .write(0x80, &(1_u64 << (libc::SIGALRM - 1)).to_ne_bytes())
+                    .unwrap();
+                let fd = executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_signalfd4 as u64,
+                        [u64::MAX, 0x80, 8, libc::SFD_NONBLOCK as u64, 0, 0],
+                    ),
+                    &memory,
+                );
+                assert!(fd >= 0);
+                executor.enable_signal_dequeues();
+                let pid = Pid::from_raw(1);
+                let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+                info[..4].copy_from_slice(&libc::SIGALRM.to_ne_bytes());
+                info[8..12].copy_from_slice(&libc::SI_KERNEL.to_ne_bytes());
+                let event =
+                    SignalEvent::new(libc::SIGALRM, info, reverie::SignalTarget::Process { pid })
+                        .unwrap();
+                assert!(matches!(
+                    executor.queue_process_alarm_signal(event),
+                    reverie::ProcessAlarmSignalOutcome::Accepted(_)
+                ));
+                let request = if signalfd {
+                    SyscallRequest::new(libc::SYS_read as u64, [fd as u64, 0x100, 128, 0, 0, 0])
+                } else {
+                    SyscallRequest::new(libc::SYS_rt_sigtimedwait as u64, [0x80, 0x100, 0, 8, 0, 0])
+                };
+                let tool = Arc::new(crate::StraceTool);
+                let global = Arc::new(crate::StraceLog::default());
+                let mut state = ();
+                let subscriptions = Subscription::none();
+                let stack = Arc::new(AtomicBool::new(false));
+                // No instruction executes in this initialized VM control.
+                let registers = unsafe { std::mem::zeroed() };
+                let error = if injected {
+                    let signal = Arc::new(Mutex::new(None));
+                    let starts = Arc::new(Mutex::new(Vec::new()));
+                    let mut completed = false;
+                    let top = backend.tool_stack_top();
+                    let mut adapter = StaticElfSyscallExecutor {
+                        backend: &mut backend,
+                        executor: &mut executor,
+                        memory: memory.clone(),
+                        process_context: ProcessExecutionContext::Lifecycle,
+                        last_result: None,
+                        process_completed: &mut completed,
+                        callback_site: None,
+                        original_syscall: None,
+                        signal_guard: SignalGuard::Ordinary,
+                    };
+                    let mut guest = KvmGuest::new(
+                        pid,
+                        pid,
+                        tool.clone(),
+                        memory.clone(),
+                        &[],
+                        registers,
+                        &mut state,
+                        &mut adapter,
+                        global.as_ref(),
+                        Some(global.clone()),
+                        &(),
+                        &subscriptions,
+                        signal.clone(),
+                        starts.clone(),
+                        top,
+                        stack.clone(),
+                    );
+                    match futures::executor::block_on(drive_handler(
+                        guest.inject(request.into_syscall().unwrap()),
+                        signal,
+                        starts,
+                        std::future::pending(),
+                    )) {
+                        HandlerOutcome::RuntimeError(error) => error,
+                        _ => panic!("bookkeeping failure resumed the injecting Tool"),
+                    }
+                } else {
+                    let raw = executor.execute(&request, &memory);
+                    assert_eq!(raw, -i64::from(libc::EOVERFLOW));
+                    futures::executor::block_on(flush_pending_signal_effects_with_tool(

@@ -1,0 +1,241 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "phases": [
+    {
+      "phase": "format-1",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.2500668941065669,
+      "source_unchanged": null,
+      "service_collected": true,
+      "test_summaries": [],
+      "cpu_report": [
+        "204ms"
+      ]
+    },
+    {
+      "phase": "compile-1",
+      "raw_status": 0,
+      "payload_wall_seconds": 14.739119262900203,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [],
+      "cpu_report": [
+        "21.173s"
+      ]
+    },
+    {
+      "phase": "inventory-1",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.041445275070145726,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [],
+      "cpu_report": [
+        "3ms"
+      ]
+    },
+    {
+      "phase": "memory-1",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.12892876099795103,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [
+        [
+          "35",
+          "0",
+          "0",
+          "0",
+          "542"
+        ]
+      ],
+      "cpu_report": [
+        "9ms"
+      ]
+    },
+    {
+      "phase": "entry-1",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.1556912949308753,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [
+        [
+          "12",
+          "0",
+          "0",
+          "0",
+          "565"
+        ]
+      ],
+      "cpu_report": [
+        "20ms"
+      ]
+    },
+    {
+      "phase": "clock-1",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.06371497106738389,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "576"
+        ],
+        [
+          "8",
+          "0",
+          "0",
+          "0",
+          "569"
+        ]
+      ],
+      "cpu_report": [
+        "20ms"
+      ]
+    },
+    {
+      "phase": "format-2",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.22610442503355443,
+      "source_unchanged": null,
+      "service_collected": true,
+      "test_summaries": [],
+      "cpu_report": [
+        "195ms"
+      ]
+    },
+    {
+      "phase": "compile-2",
+      "raw_status": 0,
+      "payload_wall_seconds": 9.849837723886594,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [],
+      "cpu_report": [
+        "15.648s"
+      ]
+    },
+    {
+      "phase": "copy-wait-2",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.03638014616444707,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "578"
+        ]
+      ],
+      "cpu_report": [
+        "4ms"
+      ]
+    },
+    {
+      "phase": "counted-entry-2",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.06575534888543189,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "578"
+        ]
+      ],
+      "cpu_report": [
+        "6ms"
+      ]
+    },
+    {
+      "phase": "format-3",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.21329376101493835,
+      "source_unchanged": null,
+      "service_collected": true,
+      "test_summaries": [],
+      "cpu_report": [
+        "200ms"
+      ]
+    },
+    {
+      "phase": "compile-3",
+      "raw_status": 0,
+      "payload_wall_seconds": 7.594890485052019,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [],
+      "cpu_report": [
+        "10.652s"
+      ]
+    },
+    {
+      "phase": "try-copy-3",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.05652520596049726,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "580"
+        ]
+      ],
+      "cpu_report": [
+        "4ms"
+      ]
+    },
+    {
+      "phase": "parking-3",
+      "raw_status": 0,
+      "payload_wall_seconds": 0.1449825291056186,
+      "source_unchanged": true,
+      "service_collected": true,
+      "test_summaries": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "580"
+        ]
+      ],
+      "cpu_report": [
+        "9ms"
+      ]
+    }
+  ],
+  "unique_selected_declarations_by_source": {
+    "source-1": 55,
+    "source-2": 2,
+    "source-3": 2
+  },
+  "test_declarations_passed_across_source_versions": 59,
+  "actual_kvm_run_calls_in_controls": 3,
+  "hermit_invocations": 0,
+  "parity_comparisons": 0,
+  "all_tests_on_source_3": false,
+  "unfinished": [
+    "origin-owned failure routing and callback-generation lifetime",
+    "retained unstarted-child cleanup outside interrupted callback",
+    "synchronous preparatory frame reads before async parking",
+    "production end-to-end stop and effect controls",
+    "native and external review of complete implementation and rebase landing"
+  ],
+  "compiler_warning_source_3": "unused existing set_syscall_return_park helper; no lint approval"
+}

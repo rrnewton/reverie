@@ -1,0 +1,70 @@
+SOURCE /home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/parity-composition-v1/source/reverie-kvm/src/vm.rs SHA256 e05cbfbe1ad7890380fb7454d74c78a28ad47c11ad402100420fad9bb0665a46 lines 2748..2816
+    pub(crate) fn timestamp_counter_exception(&self) -> Result<Option<TimestampBoundary>> {
+        // This guard precedes even reading the fault frame: an unsubscribed
+        // RDTSCP #UD is a genuine guest fault, not an unsolicited callback.
+        if !self.intercept_rdtsc {
+            return Ok(None);
+        }
+        let Some(exception) = self.static_elf_exception()? else {
+            return Ok(None);
+        };
+        if !matches!(exception.vector, 6 | 13) {
+            return Ok(None);
+        }
+        let halted = self.vcpu.get_regs()?;
+        let special = self.vcpu.get_sregs()?;
+        if special.cr0 & (1 << 31) == 0
+            || special.efer & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            || special.cr4 & (1 << 12) != 0
+            || special.cr4 & (1 << 2) == 0
+        {
+            return Ok(None);
+        }
+        let mut frame = [0; 6 * 8];
+        let words = if exception.vector == 13 { 6 } else { 5 };
+        self.memory.read_raw(halted.rsp, &mut frame[..words * 8])?;
+        let word = |index: usize| {
+            u64::from_le_bytes(
+                frame[index * 8..index * 8 + 8]
+                    .try_into()
+                    .expect("exception frame word"),
+            )
+        };
+        let first = usize::from(exception.vector == 13);
+        let cs = word(first + 1);
+        let ss = word(first + 4);
+        if (exception.vector == 13 && word(0) != 0)
+            || cs != u64::from(crate::signal::USER_CODE_SELECTOR)
+            || ![
+                u64::from(crate::signal::USER_DATA_SELECTOR),
+                u64::from(crate::signal::USER_DATA_SELECTOR & !3),
+            ]
+            .contains(&ss)
+        {
+            return Ok(None);
+        }
+        let Some(instruction) = crate::timestamp::decode(|offset| {
+            let address = exception
+                .instruction_pointer
+                .checked_add(u64::from(offset))?;
+            crate::timestamp::fetch_user_byte(&self.memory, special.cr3, address)
+        }) else {
+            return Ok(None);
+        };
+        // RDTSC is enabled by every supported CPUID policy. Only RDTSCP may
+        // fault as #UD (the deterministic policy does not expose that feature).
+        if exception.vector == 6 && instruction.request != reverie::Rdtsc::Tscp {
+            return Ok(None);
+        }
+        let mut registers = halted;
+        registers.rip = exception.instruction_pointer;
+        registers.rsp = exception.stack_pointer;
+        registers.rflags = exception.rflags;
+        Ok(Some(TimestampBoundary {
+            registers,
+            instruction,
+            special_registers: special,
+            code_segment: cs as u16,
+            stack_segment: ss as u16,
+        }))
+    }

@@ -1,0 +1,42 @@
+--- a/reverie-kvm/src/vm/entry_action_tests.rs
++++ b/reverie-kvm/src/vm/entry_action_tests.rs
+@@ -379,7 +379,23 @@
+             ThreadOwnership::Host
+         };
+         let group = backend.thread_group.clone();
++        // The production pool initializes lazily and retains its capacity
++        // after release. Initialize through its real reserve/release path
++        // before measurement so exact equality detects any live slot rather
++        // than comparing initialized storage with an empty representation.
++        assert!(group.transport_slots.lock().unwrap().is_empty());
++        let initial_slot = group.reserve_transport_slot(CHILD).unwrap();
++        assert_eq!(initial_slot, 0);
++        {
++            let allocated = group.transport_slots.lock().unwrap();
++            assert_eq!(allocated.len(), MAX_GUEST_THREADS as usize);
++            for (index, in_use) in allocated.iter().enumerate() {
++                assert_eq!(*in_use, index == initial_slot);
++            }
++        }
++        group.release_transport_slot(initial_slot);
+         let slots = group.transport_slots.lock().unwrap().clone();
++        assert_eq!(slots, vec![false; MAX_GUEST_THREADS as usize]);
+         let memory = backend.memory.clone();
+         let mut original_image = [0; 64];
+         memory.read_raw(0x20_0000, &mut original_image).unwrap();
+@@ -469,6 +485,7 @@
+         };
+         stages.assert_exact(&prepared);
+         no_entry(&run_probe, &exits);
++        assert_eq!(*group.transport_slots.lock().unwrap(), slots);
+         assert!(!group.has_worker_handles());
+         assert!(starts.lock().unwrap().is_empty());
+         assert_eq!(log.initialized.load(Ordering::SeqCst), 0);
+@@ -482,6 +499,7 @@
+         );
+         stages.assert_exact(&prepared);
+         no_entry(&run_probe, &exits);
++        assert_eq!(*group.transport_slots.lock().unwrap(), slots);
+         match event {
+             Event::Failure if site == Site::ToolThread => {
+                 log.failed.store(true, Ordering::Release);

@@ -1,0 +1,856 @@
+{
+  "scope": "Read-only evidence projection; no change to any accepted/refused receipt",
+  "target": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/final-v1/TARGET.json",
+    "bytes": 2398,
+    "sha256": "0b4ab5639249a24e72c1249d255217552ae0147f1287b2036fb2d24f4de9d624",
+    "mode": 420
+  },
+  "results": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/final-v1/RESULTS.json",
+    "bytes": 186340,
+    "sha256": "e38a176b03f2b5c039e5cdf9f5a9c54952a42a5afa6555aabd62002435c414d3",
+    "mode": 420
+  },
+  "attempted_phases": 45,
+  "accepted_phases": 44,
+  "qualified_declarations": 37,
+  "legacy": "test-38: raw zero and test/suite success; original mixed-stdout JSON reader refusal remains accepted=false",
+  "phases": [
+    {
+      "name": "metadata",
+      "kind": "metadata",
+      "selected": [],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 2.894001111,
+      "payload_elapsed_seconds": 0.1508239540271461,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "compile",
+      "kind": "compile",
+      "selected": [],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 65.342140207,
+      "payload_elapsed_seconds": 61.54747335612774,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "format",
+      "kind": "format",
+      "selected": [],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.528338302,
+      "payload_elapsed_seconds": 0.12122970703057945,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "list-ptrace",
+      "kind": "list",
+      "selected": [
+        "timer::tests::initial_command_requests_retire_without_physical_notification",
+        "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop",
+        "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers",
+        "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live",
+        "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches",
+        "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive",
+        "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance",
+        "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec",
+        "tracer::tests::precise_timer_delivery_reaches_tool",
+        "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched",
+        "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once",
+        "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest",
+        "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call",
+        "tracer::injection_stop_tests::different_tail_injection_replaces_original_once",
+        "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted",
+        "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback",
+        "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection",
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step",
+        "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall",
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit",
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event",
+        "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease",
+        "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease",
+        "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root",
+        "tracer::tests::cancellation_at_signal_handler_reaps_root",
+        "tracer::tests::child_death_before_initialization_error_does_not_hang",
+        "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child",
+        "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance",
+        "task::tests::exec_generation_replaces_image_state_without_changing_old_holders",
+        "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame",
+        "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags",
+        "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap",
+        "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page",
+        "task::tests::cancellable_returns_a_completed_result",
+        "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.298176532,
+      "payload_elapsed_seconds": 0.0025445520877838135,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "list-vsyscall",
+      "kind": "list",
+      "selected": [
+        "suppressed_legacy_vsyscall_returns_to_caller"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.401102493,
+      "payload_elapsed_seconds": 0.0023484081029891968,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "core-check",
+      "kind": "check",
+      "selected": [],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 27.655402302,
+      "payload_elapsed_seconds": 23.200042685028166,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "clippy",
+      "kind": "check",
+      "selected": [],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 12.861202376,
+      "payload_elapsed_seconds": 8.287873118882999,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-01",
+      "kind": "test",
+      "selected": [
+        "timer::tests::initial_command_requests_retire_without_physical_notification"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.331859468,
+      "payload_elapsed_seconds": 0.0028968120459467173,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-02",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.523055198,
+      "payload_elapsed_seconds": 0.008886148920282722,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-03",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.378483531,
+      "payload_elapsed_seconds": 0.019010978983715177,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-04",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.332583136,
+      "payload_elapsed_seconds": 0.00952016212977469,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-05",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.367171426,
+      "payload_elapsed_seconds": 0.008707980858162045,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-06",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.417658221,
+      "payload_elapsed_seconds": 0.0058137241285294294,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-07",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.365768399,
+      "payload_elapsed_seconds": 0.005861005047336221,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-08",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.442084596,
+      "payload_elapsed_seconds": 0.0077010891400277615,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-09",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::precise_timer_delivery_reaches_tool"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.390092159,
+      "payload_elapsed_seconds": 0.04410679009743035,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-10",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.33514791,
+      "payload_elapsed_seconds": 0.006435577990487218,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-11",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::seccomp_replacement_suppresses_original_write_once"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.390736297,
+      "payload_elapsed_seconds": 0.0066339061595499516,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-12",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::same_reinjection_then_private_injection_does_not_step_guest"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.558029944,
+      "payload_elapsed_seconds": 0.007358865113928914,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-13",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::same_tail_injection_preserves_original_kernel_call"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.377482166,
+      "payload_elapsed_seconds": 0.007381819188594818,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-14",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::different_tail_injection_replaces_original_once"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.346630199,
+      "payload_elapsed_seconds": 0.006544342031702399,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-15",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::post_exec_tail_exit_leaves_entry_unexecuted"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.427285874,
+      "payload_elapsed_seconds": 0.009053960908204317,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-16",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::emulated_return_consumes_stop_before_instruction_callback"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.997466758,
+      "payload_elapsed_seconds": 0.009243195876479149,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-17",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_exec_skip_accepts_exact_kernel_breakpoint_transition"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.374023945,
+      "payload_elapsed_seconds": 0.010372021002694964,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-18",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_context_none_reinjection"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.320158418,
+      "payload_elapsed_seconds": 0.008026958908885717,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-19",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.42202928,
+      "payload_elapsed_seconds": 0.0065986220724880695,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-20",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.340267817,
+      "payload_elapsed_seconds": 0.007125073112547398,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-21",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.328367931,
+      "payload_elapsed_seconds": 0.00682523287832737,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-22",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_nested_signal_is_rejected_during_tracee_preinit"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.499642442,
+      "payload_elapsed_seconds": 0.007516741985455155,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-23",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::pre_ready_external_sigtrap_is_rejected_after_exec_event"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.380597831,
+      "payload_elapsed_seconds": 0.005832331022247672,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-24",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::normal_preinit_resume_clears_held_root_stop_lease"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.409602888,
+      "payload_elapsed_seconds": 0.0039620110765099525,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-25",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::normal_liteinst_completion_leaves_no_stale_root_stop_lease"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.385079443,
+      "payload_elapsed_seconds": 0.007822860032320023,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-26",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancellation_at_generic_syscall_handler_reaps_root"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.414555268,
+      "payload_elapsed_seconds": 0.00711291516199708,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-27",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancellation_at_signal_handler_reaps_root"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.397477165,
+      "payload_elapsed_seconds": 0.006239681970328093,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-28",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::child_death_before_initialization_error_does_not_hang"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.382551215,
+      "payload_elapsed_seconds": 0.00369631196372211,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-29",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::cancelling_at_new_child_event_reaps_root_and_child"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.459459056,
+      "payload_elapsed_seconds": 0.010835335124284029,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-30",
+      "kind": "test",
+      "selected": [
+        "task::tests::syscall_skip_breakpoint_requires_exact_captured_provenance"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.360588576,
+      "payload_elapsed_seconds": 0.0025918029714375734,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-31",
+      "kind": "test",
+      "selected": [
+        "task::tests::exec_generation_replaces_image_state_without_changing_old_holders"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.375605084,
+      "payload_elapsed_seconds": 0.002746785990893841,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-32",
+      "kind": "test",
+      "selected": [
+        "task::tests::liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.646694512,
+      "payload_elapsed_seconds": 0.002531080972403288,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-33",
+      "kind": "test",
+      "selected": [
+        "task::tests::liteinst_helper_clears_only_abi_sensitive_transient_flags"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.329411245,
+      "payload_elapsed_seconds": 0.0024738251231610775,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-34",
+      "kind": "test",
+      "selected": [
+        "task::tests::active_hook_footprint_rejects_destructive_mapping_overlap"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.355570053,
+      "payload_elapsed_seconds": 0.0027188430540263653,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-35",
+      "kind": "test",
+      "selected": [
+        "task::tests::short_successful_mapping_invalidates_the_whole_attempted_page"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.376562432,
+      "payload_elapsed_seconds": 0.002683961996808648,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-36",
+      "kind": "test",
+      "selected": [
+        "task::tests::cancellable_returns_a_completed_result"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.550354289,
+      "payload_elapsed_seconds": 0.0034022401086986065,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-37",
+      "kind": "test",
+      "selected": [
+        "task::tests::cancellable_observes_cancellation_in_the_same_poll"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.428458504,
+      "payload_elapsed_seconds": 0.002776749897748232,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-38",
+      "kind": "test",
+      "selected": [
+        "suppressed_legacy_vsyscall_returns_to_caller"
+      ],
+      "raw_status": 0,
+      "accepted": false,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.411545012,
+      "payload_elapsed_seconds": 0.007227826165035367,
+      "error": "RuntimeError('structured readback failed')",
+      "readback_error": "JSONDecodeError('Expecting value: line 1 column 1 (char 0)')"
+    }
+  ],
+  "raw_selected": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/Q2-RAW-SELECTED-OUTCOMES.txt",
+    "bytes": 55804,
+    "sha256": "d15162cb0c476773366e077c84959715f3a48fb69757f27d3c74aafa9ab6c520",
+    "mode": 420
+  },
+  "retained_artifacts": {
+    "ptrace": {
+      "cargo_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+        "target": {
+          "kind": [
+            "lib"
+          ],
+          "crate_types": [
+            "lib"
+          ],
+          "name": "reverie_ptrace",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/src/lib.rs",
+          "edition": "2024",
+          "doc": true,
+          "doctest": true,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/reverie_ptrace-884b4a03308bc02f"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/reverie_ptrace-884b4a03308bc02f",
+        "fresh": false
+      },
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/ptrace.elf",
+        "bytes": 175556008,
+        "mode": 365,
+        "sha256": "c53579c6199ce038c64acf6114499bb3b17d17951da16a3dd130350d3d311eb7"
+      }
+    },
+    "vsyscall": {
+      "cargo_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace#0.2.0",
+        "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/Cargo.toml",
+        "target": {
+          "kind": [
+            "test"
+          ],
+          "crate_types": [
+            "bin"
+          ],
+          "name": "vsyscall",
+          "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/source/reverie-ptrace/tests/vsyscall.rs",
+          "edition": "2024",
+          "doc": false,
+          "doctest": false,
+          "test": true
+        },
+        "profile": {
+          "opt_level": "0",
+          "debuginfo": 2,
+          "debug_assertions": true,
+          "overflow_checks": true,
+          "test": true
+        },
+        "features": [],
+        "filenames": [
+          "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/vsyscall-fb351a729e11f350"
+        ],
+        "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/v2-fix/private-target/debug/deps/vsyscall-fb351a729e11f350",
+        "fresh": false
+      },
+      "file": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/qualification-v2/retained-binaries/vsyscall.elf",
+        "bytes": 113938440,
+        "mode": 365,
+        "sha256": "941407999e1b8c0011ec125f12efc2c7e4e2f7b775412ebd416a1b46bb8b3442"
+      }
+    }
+  },
+  "python_optimize": 0
+}

@@ -1,0 +1,6 @@
+[
+  "vm::tests::entry_public_tests::public_direct_memory_failure_refuses_ready_rpc",
+  "vm::tests::entry_public_tests::public_direct_memory_failure_refuses_injection",
+  "vm::tests::entry_public_tests::public_elf_memory_failure_refuses_ready_rpc",
+  "vm::tests::entry_public_tests::public_elf_memory_failure_refuses_injection"
+]

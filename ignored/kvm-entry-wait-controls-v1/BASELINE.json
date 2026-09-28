@@ -1,0 +1,15 @@
+{
+  "base": "91110d249ffd8957267d71fab8c83d9636105efe",
+  "branch": "codex/kvm-parity-land-20260918",
+  "source": {
+    "reverie-kvm/src/runtime.rs": {
+      "bytes": 273526,
+      "sha256": "e921ca341ce85bcc09438f52f83d3b5221ba4a783ebc7be9bf50cf05750e40c4"
+    },
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 412707,
+      "sha256": "aff8fdbdfe2472ab9baf6aae82471d15e8d3f8cc31d04c7833b54034ed730203"
+    }
+  },
+  "vm_note": "Read-only patch basis; action author still owns live vm.rs"
+}

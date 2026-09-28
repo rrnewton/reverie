@@ -1,0 +1,29 @@
+{
+  "setup": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/SETUP.json",
+    "bytes": 4754,
+    "sha256": "11acef6571519f16bdc90d7dae5ae087d191c957f092d14fd902ffd43a6a3502",
+    "mode": 420
+  },
+  "report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/REPORT.md",
+    "bytes": 1592,
+    "sha256": "86c95e4a8c3ba2926957664bfb16bde15fa6c8dcbf6e83cec00aef5194f72399",
+    "mode": 420
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-reverie-landing-20260918/ignored/clock-correction-v2/review-preparation-v1/final-v1/PLAN.md",
+    "bytes": 3180,
+    "sha256": "9508f327b08e589b10c1a8cddbcb788d5301500a92ee9d3fb00d8487290f4b1b",
+    "mode": 420
+  },
+  "no_launch": true,
+  "source_approval": false,
+  "live_product_unchanged_by_preparer": true,
+  "source_qualification_counts": {
+    "attempted": 45,
+    "accepted": 44,
+    "qualified_declarations": 37,
+    "legacy_original_accepted": false
+  }
+}

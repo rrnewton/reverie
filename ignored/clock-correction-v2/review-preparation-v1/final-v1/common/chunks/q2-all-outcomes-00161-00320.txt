@@ -1,0 +1,160 @@
+      "selected": [
+        "timer::tests::initial_command_requests_retire_without_physical_notification"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.331859468,
+      "payload_elapsed_seconds": 0.0028968120459467173,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-02",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_command_clock_counts_first_branch_and_guest_loop"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.523055198,
+      "payload_elapsed_seconds": 0.008886148920282722,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-03",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_exec_retires_thread_start_and_intercepted_exec_timers"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.378483531,
+      "payload_elapsed_seconds": 0.019010978983715177,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-04",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_post_exec_injection_and_new_timer_remain_live"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.332583136,
+      "payload_elapsed_seconds": 0.00952016212977469,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-05",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::initial_command_clock_excludes_added_post_stop_launcher_branches"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.367171426,
+      "payload_elapsed_seconds": 0.008707980858162045,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-06",
+      "kind": "test",
+      "selected": [
+        "tracer::clock_origin_tests::failed_initial_exec_keeps_clock_and_notifications_inactive"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.417658221,
+      "payload_elapsed_seconds": 0.0058137241285294294,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-07",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::spawn_fn_never_has_command_bootstrap_provenance"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.365768399,
+      "payload_elapsed_seconds": 0.005861005047336221,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-08",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::command_bootstrap_ends_before_post_exec_and_later_guest_exec"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.442084596,
+      "payload_elapsed_seconds": 0.0077010891400277615,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-09",
+      "kind": "test",
+      "selected": [
+        "tracer::tests::precise_timer_delivery_reaches_tool"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.390092159,
+      "payload_elapsed_seconds": 0.04410679009743035,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-10",
+      "kind": "test",
+      "selected": [
+        "tracer::injection_stop_tests::post_exec_injections_leave_entry_memory_untouched"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "inputs_unchanged": true,
+      "accounting_complete": true,
+      "observer_elapsed_seconds": 4.33514791,
+      "payload_elapsed_seconds": 0.006435577990487218,
+      "error": null,
+      "readback_error": null
+    },
+    {
+      "name": "test-11",
+      "kind": "test",

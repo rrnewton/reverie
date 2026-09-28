@@ -1,0 +1,278 @@
+diff --git a/reverie-kvm/src/child_exit_signal_tests.rs b/reverie-kvm/src/child_exit_signal_tests.rs
+index b28bd707..6a7dd7be 100644
+--- a/reverie-kvm/src/child_exit_signal_tests.rs
++++ b/reverie-kvm/src/child_exit_signal_tests.rs
+@@ -1,8 +1,14 @@
+ // Included in executor::tests to exercise the actual pending-state operation.
+-fn child_exit_test_event(pid: i32, child: i32, status: i32, marker: u8) -> reverie::SignalEvent {
++fn child_exit_test_event_with_code(
++    pid: i32,
++    child: i32,
++    code: i32,
++    status: i32,
++    marker: u8,
++) -> reverie::SignalEvent {
+     let mut info = [0; reverie::SIGNAL_INFO_SIZE];
+     info[0..4].copy_from_slice(&libc::SIGCHLD.to_ne_bytes());
+-    info[8..12].copy_from_slice(&libc::CLD_EXITED.to_ne_bytes());
++    info[8..12].copy_from_slice(&code.to_ne_bytes());
+     info[16..20].copy_from_slice(&child.to_ne_bytes());
+     info[20..24].copy_from_slice(&65_534_u32.to_ne_bytes());
+     info[24..28].copy_from_slice(&status.to_ne_bytes());
+@@ -19,6 +25,52 @@ fn child_exit_test_event(pid: i32, child: i32, status: i32, marker: u8) -> rever
+     .unwrap()
+ }
+ 
++fn child_exit_test_event(pid: i32, child: i32, status: i32, marker: u8) -> reverie::SignalEvent {
++    child_exit_test_event_with_code(pid, child, libc::CLD_EXITED, status, marker)
++}
++
++#[test]
++fn child_exit_signal_accepts_every_terminal_status_class() {
++    use reverie::ChildExitSignalDisposition::PendingEligible;
++    use reverie::ChildExitSignalOutcome::Accepted;
++
++    let root = TestDir::new();
++    for (code, status) in [
++        (libc::CLD_EXITED, 0),
++        (libc::CLD_EXITED, i32::from(u8::MAX)),
++        (libc::CLD_KILLED, 1),
++        (libc::CLD_KILLED, 64),
++        (libc::CLD_DUMPED, libc::SIGQUIT),
++        (libc::CLD_DUMPED, libc::SIGSYS),
++    ] {
++        let mut executor = ElfExecutor::new(test_state(&root.0), false);
++        let event = child_exit_test_event_with_code(
++            executor.state.pid,
++            41,
++            code,
++            status,
++            0xa5,
++        );
++        assert_eq!(
++            executor.queue_child_exit_signal(event),
++            Accepted {
++                disposition: PendingEligible,
++                pending_generation: 0,
++                coalesced: false,
++            },
++            "code={code} status={status}",
++        );
++        let selected = executor.take_pending_signal().expect("published child event");
++        assert_eq!(selected.event, event);
++        assert_eq!(selected.domain, PendingSignalDomain::Process);
++        assert_eq!(
++            executor.prepare_filtered_signal_delivery(event, selected.domain),
++            Ok(Some(selected)),
++            "Tool-return validation narrowed code={code} status={status}",
++        );
++    }
++}
++
+ #[test]
+ fn child_exit_signal_preserves_process_ownership_and_first_complete_siginfo() {
+     use reverie::ChildExitSignalDisposition::PendingEligible;
+@@ -165,8 +217,6 @@ fn child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish() {
+     for code in [
+         libc::SI_USER,
+         libc::SI_TKILL,
+-        libc::CLD_KILLED,
+-        libc::CLD_DUMPED,
+         libc::CLD_STOPPED,
+         libc::CLD_CONTINUED,
+         libc::CLD_TRAPPED,
+@@ -180,6 +230,27 @@ fn child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish() {
+         info[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+         cases.push((info, valid.target(), Invalid, Errno::EINVAL));
+     }
++    for (code, status) in [
++        (libc::CLD_KILLED, 0_i32),
++        (libc::CLD_KILLED, libc::SIGCHLD),
++        (libc::CLD_KILLED, libc::SIGCONT),
++        (libc::CLD_KILLED, libc::SIGSTOP),
++        (libc::CLD_KILLED, libc::SIGTSTP),
++        (libc::CLD_KILLED, libc::SIGTTIN),
++        (libc::CLD_KILLED, libc::SIGTTOU),
++        (libc::CLD_KILLED, libc::SIGURG),
++        (libc::CLD_KILLED, libc::SIGWINCH),
++        (libc::CLD_KILLED, 65),
++        (libc::CLD_DUMPED, 0),
++        (libc::CLD_DUMPED, libc::SIGHUP),
++        (libc::CLD_DUMPED, 64),
++        (libc::CLD_DUMPED, 65),
++    ] {
++        let mut info = valid.siginfo();
++        info[8..12].copy_from_slice(&code.to_ne_bytes());
++        info[24..28].copy_from_slice(&status.to_ne_bytes());
++        cases.push((info, valid.target(), Invalid, Errno::EINVAL));
++    }
+     for offset in [32, 40] {
+         let mut info = valid.siginfo();
+         info[offset..offset + 8].copy_from_slice(&(-1_i64).to_ne_bytes());
+@@ -327,6 +398,31 @@ fn child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer(
+     assert_eq!(actual, expected);
+ }
+ 
++#[test]
++fn child_exit_signal_signalfd_encodes_every_terminal_status_class() {
++    for (code, status) in [
++        (libc::CLD_EXITED, 37),
++        (libc::CLD_KILLED, libc::SIGTERM),
++        (libc::CLD_DUMPED, libc::SIGABRT),
++    ] {
++        let event = child_exit_test_event_with_code(3, 41, code, status, 0xa5);
++        let mut expected: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
++        expected.ssi_signo = libc::SIGCHLD as u32;
++        expected.ssi_code = code;
++        expected.ssi_pid = 41;
++        expected.ssi_uid = 65_534;
++        expected.ssi_status = status;
++        expected.ssi_utime = 11;
++        expected.ssi_stime = 13;
++        let expected = struct_bytes(&expected);
++        assert_eq!(
++            encode_signalfd_siginfo(event).as_slice(),
++            expected.as_slice(),
++            "code={code} status={status}",
++        );
++    }
++}
++
+ #[test]
+ fn child_exit_signal_distinguishes_failure_before_and_after_pending_publication() {
+     use reverie::ChildExitSignalErrorKind::Backend;
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+index 13f7b91b..3b8bbe63 100644
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -3529,7 +3529,9 @@ impl ElfExecutor {
+ 
+         let info = event.siginfo();
+         let code = i32::from_ne_bytes(info[8..12].try_into().expect("siginfo code"));
+-        if event.signal() != libc::SIGCHLD || code != libc::CLD_EXITED {
++        if event.signal() != libc::SIGCHLD
++            || !matches!(code, libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED)
++        {
+             return Err((Unsupported, Errno::ENOSYS));
+         }
+         let reverie::SignalTarget::Process { pid } = event.target() else {
+@@ -3543,20 +3545,27 @@ impl ElfExecutor {
+         let status = i32::from_ne_bytes(info[24..28].try_into().expect("siginfo child status"));
+         let user_time = i64::from_ne_bytes(info[32..40].try_into().expect("siginfo child utime"));
+         let system_time = i64::from_ne_bytes(info[40..48].try_into().expect("siginfo child stime"));
+-        if errno != 0
+-            || child <= 0
+-            || !(0..=255).contains(&status)
+-            || user_time < 0
+-            || system_time < 0
+-        {
++        // Linux stores an unsigned exit byte for CLD_EXITED and the raw signal
++        // number for CLD_KILLED/CLD_DUMPED. Keep those domains distinct: a
++        // status that is coherent for one class must not validate another.
++        let valid_status = match code {
++            libc::CLD_EXITED => (0..=i32::from(u8::MAX)).contains(&status),
++            libc::CLD_KILLED => {
++                (1..=64).contains(&status)
++                    && default_signal_disposition(status) == SignalDisposition::Terminate
++            }
++            libc::CLD_DUMPED => signal_has_core_default(status),
++            _ => unreachable!("terminal child status code was validated above"),
++        };
++        if errno != 0 || child <= 0 || !valid_status || user_time < 0 || system_time < 0 {
+             return Err((Invalid, Errno::EINVAL));
+         }
+         Ok(())
+     }
+ 
+-    /// Publishes a Tool-selected normal child-exit event into its process's
+-    /// pending set. The Tool owns child identity/status provenance; the backend
+-    /// owns receiver validation, coalescing, and the later delivery boundary.
++    /// Publishes a Tool-selected terminal child event into its process's pending
++    /// set. The Tool owns child identity/status provenance; the backend owns
++    /// receiver validation, coalescing, and the later delivery boundary.
+     pub(crate) fn queue_child_exit_signal(
+         &mut self,
+         event: reverie::SignalEvent,
+@@ -8620,7 +8629,12 @@ fn encode_signalfd_siginfo(event: reverie::SignalEvent) -> [u8; SIGNALFD_RECORD_
+         let value = u64::from_ne_bytes(raw[24..32].try_into().expect("siginfo timer value"));
+         info.ssi_ptr = value;
+         info.ssi_int = value as i32;
+-    } else if info.ssi_signo == libc::SIGCHLD as u32 && info.ssi_code == libc::CLD_EXITED {
++    } else if info.ssi_signo == libc::SIGCHLD as u32
++        && matches!(
++            info.ssi_code,
++            libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
++        )
++    {
+         info.ssi_pid = u32::from_ne_bytes(raw[16..20].try_into().expect("siginfo child pid"));
+         info.ssi_uid = u32::from_ne_bytes(raw[20..24].try_into().expect("siginfo child uid"));
+         info.ssi_status = i32::from_ne_bytes(raw[24..28].try_into().expect("siginfo child status"));
+@@ -15293,23 +15307,26 @@ fn process_dumpable(state: &LoadedStaticElf) -> bool {
+ 
+ fn terminating_signal_status(signal: libc::c_int, dumpable: bool) -> Option<ExitStatus> {
+     let signal_kind = Signal::try_from(signal).ok()?;
+-    let core_dumped = dumpable
+-        && matches!(
+-            signal,
+-            libc::SIGQUIT
+-                | libc::SIGILL
+-                | libc::SIGTRAP
+-                | libc::SIGABRT
+-                | libc::SIGBUS
+-                | libc::SIGFPE
+-                | libc::SIGSEGV
+-                | libc::SIGXCPU
+-                | libc::SIGXFSZ
+-                | libc::SIGSYS
+-        );
++    let core_dumped = dumpable && signal_has_core_default(signal);
+     Some(ExitStatus::Signaled(signal_kind, core_dumped))
+ }
+ 
++fn signal_has_core_default(signal: libc::c_int) -> bool {
++    matches!(
++        signal,
++        libc::SIGQUIT
++            | libc::SIGILL
++            | libc::SIGTRAP
++            | libc::SIGABRT
++            | libc::SIGBUS
++            | libc::SIGFPE
++            | libc::SIGSEGV
++            | libc::SIGXCPU
++            | libc::SIGXFSZ
++            | libc::SIGSYS
++    )
++}
++
+ /// Resolves the effective disposition of `signal`, honoring any installed
+ /// handler before falling back to the kernel default action.
+ fn installed_signal_action(
+diff --git a/reverie/src/guest.rs b/reverie/src/guest.rs
+index 36b09bff..5bcc2ef2 100644
+--- a/reverie/src/guest.rs
++++ b/reverie/src/guest.rs
+@@ -261,13 +261,16 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
+         Err(Errno::ENOSYS.into())
+     }
+ 
+-    /// Queues a Tool-selected normal child-exit event for the current process.
+-    ///
+-    /// The caller supplies a complete process-directed `SIGCHLD`/`CLD_EXITED`
+-    /// event and owns its child-status provenance and deterministic ordering.
+-    /// The backend validates the receiver and metadata, preserves process-wide
+-    /// pending ownership and first-siginfo coalescing, and reports whether queue
+-    /// publication preceded any failure. Wait status and child reaping remain
++    /// Queues a Tool-selected terminal child event for the current process.
++    ///
++    /// The caller supplies a complete process-directed `SIGCHLD` event with
++    /// `CLD_EXITED`, `CLD_KILLED`, or `CLD_DUMPED`, and owns its child-status
++    /// provenance and deterministic ordering. `CLD_EXITED` carries an unsigned
++    /// exit byte; `CLD_KILLED` carries a terminal-default Linux signal number;
++    /// `CLD_DUMPED` carries a core-default signal number. The backend validates
++    /// the receiver and that class-specific status domain, preserves
++    /// process-wide pending ownership and first-siginfo coalescing, and reports
++    /// whether queue publication preceded any failure. Wait status and child reaping remain
+     /// independent. This operation never recursively invokes a Tool hook or
+     /// resumes guest instructions; normal receiver boundaries own delivery.
+     ///

@@ -1,0 +1,9 @@
+{
+  "files": {
+    "reverie-kvm/src/vm.rs": {
+      "bytes": 411449,
+      "sha256": "27a4d4cd81818e3c8d5336e07c725201bd2a41ea6252733193fab18a061e0455"
+    }
+  },
+  "scope": "Owned cfg(test) observer insertion baseline; no existing test body edits; root owns module include"
+}

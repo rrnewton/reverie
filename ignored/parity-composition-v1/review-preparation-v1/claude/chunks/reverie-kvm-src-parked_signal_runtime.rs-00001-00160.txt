@@ -1,0 +1,160 @@
+// This file is included in runtime.rs to use the one real KvmGuest reborrow.
+
+impl StaticElfSyscallExecutor<'_> {
+    fn signal_injection_allowed(&self, request: &SyscallRequest) -> bool {
+        if self.signal_guard == SignalGuard::DequeueNotification {
+            return false;
+        }
+        if (self.signal_guard == SignalGuard::Observation || self.executor.has_prepared_signal())
+            && (injection_can_be_nonreturning(request)
+                || matches!(
+                    request.number() as libc::c_long,
+                    libc::SYS_fork | libc::SYS_vfork | libc::SYS_clone | libc::SYS_clone3
+                ))
+        {
+            return false;
+        }
+        if request.number() == libc::SYS_rt_sigaction as u64
+            && request.args()[1] != 0
+            && self
+                .executor
+                .prepared_signal_number()
+                .is_some_and(|signal| request.args()[0] == signal as u64)
+        {
+            return false;
+        }
+        self.process_context.ordinary_injection_allowed(request)
+    }
+
+    fn current_parked_site(&self) -> Option<reverie::CallbackSignalSite> {
+        (self.executor.signal_dequeues_enabled()
+            && matches!(
+                self.process_context,
+                ProcessExecutionContext::SyscallBoundary(_)
+            )
+            && !*self.process_completed
+            && !self.executor.has_prepared_signal()
+            && self.executor.sole_signal_receiver())
+        .then_some(self.callback_site)
+        .flatten()
+    }
+}
+
+impl<T: Tool> KvmGuest<'_, T> {
+    async fn complete_signal_effects(
+        &mut self,
+        raw: Option<i64>,
+    ) -> Result<Option<reverie::SignalDequeue>> {
+        let mut last = None;
+        if self.executor.signal_dequeue_front().is_some() {
+            // Stored outside this future: cancellation during the notification
+            // must retain the real copyout errno along with the removal.
+            self.executor.retain_signal_effect_result(raw);
+        }
+        loop {
+            let next = futures::future::poll_fn(|cx| self.executor.poll_signal_dequeue(cx)).await;
+            let effect = match next {
+                Ok(Some(effect)) => effect,
+                Ok(None) => break,
+                Err(error) => return Err(self.executor.with_signal_effects(error, raw)),
+            };
+            self.executor.retain_signal_dequeue(effect);
+            let previous = self
+                .executor
+                .set_signal_guard(SignalGuard::DequeueNotification);
+            self.notifying_dequeue = true;
+            let tool = self.process_state.clone();
+            let result = tool.handle_signal_dequeue(self, effect).await;
+            self.notifying_dequeue = false;
+            self.executor.set_signal_guard(previous);
+            if let Err(errno) = result {
+                return Err(self
+                    .executor
+                    .with_signal_effects(Error::Reverie(errno.into()), raw));
+            }
+            if let Err(errno) = self.executor.acknowledge_signal_dequeue(effect) {
+                return Err(self
+                    .executor
+                    .with_signal_effects(Error::Reverie(errno.into()), raw));
+            }
+            last = Some(effect);
+        }
+        Ok(last)
+    }
+
+    async fn observe_parked_signal_impl(
+        &mut self,
+        site: reverie::CallbackSignalSite,
+        lease: reverie::ParkedObservationLease,
+    ) -> std::result::Result<reverie::ParkedSignalObservation, reverie::SignalObservationFailure>
+    {
+        use reverie::SignalObservationFailure as Failure;
+        use reverie::SignalObservationStep as Step;
+        use reverie::SignalObservationStop as Stop;
+        if self.executor.parked_signal_site() != Some(site)
+            || self.observation_lease.is_some()
+            || self.notifying_dequeue
+            || self.stack_checked_out.load(Ordering::Acquire)
+        {
+            return Err(Failure::RejectedBeforeRemoval {
+                errno: Errno::ENOSYS,
+            });
+        }
+        let mut steps = Vec::new();
+        steps
+            .try_reserve_exact(64)
+            .map_err(|_| Failure::RejectedBeforeRemoval {
+                errno: Errno::ENOMEM,
+            })?;
+        self.executor
+            .admit_signal_observation(site, lease)
+            .map_err(|errno| Failure::RejectedBeforeRemoval { errno })?;
+        self.observation_lease = Some(lease);
+        let previous = self.executor.set_signal_guard(SignalGuard::Observation);
+        let result: Result<reverie::ParkedSignalObservation> = async {
+            for _ in 0..64 {
+                let pending = self.executor.take_signal_for_observation();
+                // Even readiness failure after removal must flush before propagating.
+                let effect = self.complete_signal_effects(None).await?;
+                let pending = pending.map_err(|errno| Error::Reverie(errno.into()))?;
+                let Some(pending) = pending else {
+                    return Ok(reverie::ParkedSignalObservation {
+                        steps,
+                        stop: Stop::NoEligibleSignal,
+                    });
+                };
+                let effect = effect.ok_or_else(|| {
+                    Error::UnexpectedVcpuExit(
+                        "parked removal had no dequeue journal entry".to_owned(),
+                    )
+                })?;
+                if effect.event != pending.event
+                    || effect.domain
+                        != match pending.domain {
+                            crate::executor::PendingSignalDomain::Thread => {
+                                reverie::PendingDomain::Thread
+                            }
+                            crate::executor::PendingSignalDomain::Process => {
+                                reverie::PendingDomain::Process
+                            }
+                        }
+                    || effect.consumer != reverie::SignalConsumer::ReturnToUser
+                {
+                    return Err(Error::UnexpectedVcpuExit(
+                        "parked dequeue identity did not match selected event".to_owned(),
+                    ));
+                }
+                let id = effect.id();
+                let tool = self.process_state.clone();
+                let replacement = tool
+                    .handle_structured_signal_event(self, pending.event)
+                    .await
+                    .map_err(|errno| Error::Reverie(errno.into()))?;
+                let Some(event) = replacement else {
+                    steps.push(Step::Suppressed { dequeue: id });
+                    continue;
+                };
+                let selected = self
+                    .executor
+                    .filter_signal_replacement(event, pending.domain)
+                    .map_err(|errno| Error::Reverie(errno.into()))?;

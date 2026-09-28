@@ -1,0 +1,27 @@
+{
+  "names": {
+    "test-owner": "entry::owner::tests::",
+    "test-entry-owner": "entry::captured_owner_is_visible_before_wake_outside_registry_lock",
+    "test-memory-generation": "memory::tests::entry_copy_tests::retained_memory_copy_keeps_its_issuing_callback_generation",
+    "test-memory-retired": "memory::tests::entry_copy_tests::retired_memory_origin_retains_cause_without_expired_publisher",
+    "test-read-preparation": "memory::tests::entry_copy_tests::read_preparation_runs_once_with_one_token_and_preserves_poison",
+    "test-action-preparation": "vm::tests::action_parent_captures_yield_for_close_and_keep_stop_and_validation",
+    "test-boundary": "vm::tests::completed_syscall_boundary_accepts_only_the_two_transport_rip_forms",
+    "test-handler-destruction": "runtime::tests::handler_failure_destroys_owned_callback_before_scope_acknowledgement",
+    "test-cleanup-storage": "executor::tests::unstarted_tool_cleanup_retains_children_unpolled_and_transfers_once",
+    "test-cleanup-drain": "runtime::tests::unstarted_cleanup_retains_pending_future_and_real_errors"
+  },
+  "counts": {
+    "test-owner": 7,
+    "test-entry-owner": 1,
+    "test-memory-generation": 1,
+    "test-memory-retired": 1,
+    "test-read-preparation": 1,
+    "test-action-preparation": 1,
+    "test-boundary": 1,
+    "test-handler-destruction": 1,
+    "test-cleanup-storage": 1,
+    "test-cleanup-drain": 1
+  },
+  "total": 16
+}

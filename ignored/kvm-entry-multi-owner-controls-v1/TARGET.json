@@ -1,0 +1,21 @@
+{
+  "records": {
+    "BASELINE.json": {
+      "sha256": "ff48331fb19785ed8a2b1526687d6ce7519a340462284286eef75eab2fe6e95d",
+      "bytes": 826
+    },
+    "SOURCE.json": {
+      "sha256": "3ca8febd431c5894e1224c8805181370f6ed74507c5b36bfdb59fbae62987235",
+      "bytes": 1429
+    },
+    "AUTHOR.patch": {
+      "sha256": "c5482babc58c0af19c5ddcb68e89df56671f6286165cfc64f5a99c4ee021b0f0",
+      "bytes": 43375
+    },
+    "REPORT.md": {
+      "sha256": "532528b69ae3ea9b67e2b499c07557e046f5ac9a776a6846655c88f2c6e7337a",
+      "bytes": 8651
+    }
+  },
+  "scope": "Unformatted, uncompiled author release only; no execution or review approval"
+}

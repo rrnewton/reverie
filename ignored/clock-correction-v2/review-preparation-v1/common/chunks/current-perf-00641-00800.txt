@@ -1,0 +1,160 @@
+        // This check must be outside the loop to ensure our reads were actually
+        // serialized with any writes.
+        if running != enabled {
+            // Non-equal running/enabled time indicates the event was
+            // descheduled at some point, meaning our counts are inaccurate.
+            // This is not recoverable. The slow-read equivalent is getting EOF
+            // when attr.pinned = 1.
+            panic!("fast-read perf event was probably descheduled!")
+        }
+        Ok(count as u64)
+    }
+
+    /// Safety: `ptr` must refer to the metadata page corresponding to self.fd,
+    /// and the calling thread must be the monitored thread running on the core
+    /// the counter is scheduled on (see [`ctr_value_rdpmc`](Self::ctr_value_rdpmc)).
+    #[cfg(target_arch = "x86_64")]
+    #[allow(dead_code)]
+    #[deny(unsafe_op_in_unsafe_fn)]
+    #[inline(always)]
+    unsafe fn ctr_value_rdpmc_loop(
+        &self,
+        ptr: NonNull<perf::perf_event_mmap_page>,
+    ) -> Result<u64, Errno> {
+        use std::ptr::addr_of_mut;
+        let ptr = ptr.as_ptr();
+        // `pmc_width` and the capability bits are fixed for the lifetime of the
+        // mapping, so read them once outside the seqlock loop.
+        // SAFETY: ptr is a valid, aligned perf metadata page.
+        let width = unsafe { (*ptr).pmc_width } as u32;
+        // SAFETY: reading the raw `capabilities` word of the capability union.
+        let caps = unsafe { (*ptr).__bindgen_anon_1.capabilities };
+        // `cap_user_rdpmc` is bit 2 of the capability bitfield (after `cap_bit0`
+        // and `cap_bit0_is_deprecated`).
+        let cap_user_rdpmc = (caps >> 2) & 1 == 1;
+
+        let mut seq;
+        let mut running;
+        let mut enabled;
+        let mut count: i64;
+        // This mirrors the seqlock synchronization in `ctr_value_fast_loop`; see
+        // https://www.kernel.org/doc/html/latest/locking/seqlock.html and the
+        // rdpmc self-monitoring example in perf_event_open(2).
+        loop {
+            loop {
+                // SAFETY: ptr->lock is valid and aligned
+                seq = unsafe { read_once(addr_of_mut!((*ptr).lock)) };
+                if seq & 1 == 0 {
+                    break;
+                }
+            }
+            smp_rmb();
+            let index;
+            // SAFETY: these reads are synchronized by the seqlock; nothing is
+            // acted upon until the outer loop confirms serialization.
+            unsafe {
+                running = (*ptr).time_running;
+                enabled = (*ptr).time_enabled;
+                count = (*ptr).offset;
+                index = (*ptr).index;
+            }
+            if index != 0 {
+                if !cap_user_rdpmc {
+                    // Counter is live but user-space rdpmc is disabled; the only
+                    // correct read is the slow syscall path.
+                    return self.ctr_value_fallback();
+                }
+                // `index != 0` means the counter is scheduled on this core's
+                // PMU; read the raw hardware counter and add it to `offset`.
+                // Sign-extend the rdpmc result from `pmc_width` bits to 64 bits
+                // (arithmetic shifts on a signed value), exactly as the kernel's
+                // rdpmc self-monitoring example in perf_event_open(2) does: the
+                // hardware counter can wrap, and `offset` is chosen so that
+                // `offset + sign_extend(rdpmc)` is the current count mod 2^width.
+                // SAFETY: index-1 is the currently-scheduled PMC for this core,
+                // and cap_user_rdpmc confirmed user-space rdpmc is permitted.
+                let raw = unsafe { rdpmc(index - 1) };
+                let pmc = ((raw << (64 - width)) as i64) >> (64 - width);
+                count = count.wrapping_add(pmc);
+            }
+            smp_rmb();
+            // SAFETY: ptr->lock is valid and aligned
+            if seq == unsafe { read_once(addr_of_mut!((*ptr).lock)) } {
+                // Unchanged seq => our reads were not torn by a writer.
+                break;
+            }
+        }
+        if running != enabled {
+            // Non-equal running/enabled time means the event was descheduled at
+            // some point, making counts inaccurate and unrecoverable. Same
+            // condition the slow path detects as EOF when attr.pinned = 1.
+            panic!("rdpmc perf event was probably descheduled!")
+        }
+        Ok(count as u64)
+    }
+
+    /// Non-x86-64 fallback: there is no portable `rdpmc`, so always use the
+    /// syscall read.
+    #[cfg(not(target_arch = "x86_64"))]
+    #[allow(dead_code)]
+    #[inline(always)]
+    unsafe fn ctr_value_rdpmc_loop(
+        &self,
+        _ptr: NonNull<perf::perf_event_mmap_page>,
+    ) -> Result<u64, Errno> {
+        self.ctr_value_fallback()
+    }
+
+    /// Return the underlying perf fd.
+    pub fn raw_fd(&self) -> libc::c_int {
+        self.fd
+    }
+}
+
+/// Execute the `rdpmc` instruction to read hardware performance counter number
+/// `counter`. Returns the raw counter value (the low `pmc_width` bits are
+/// meaningful; higher bits are unspecified and must be masked by the caller).
+///
+/// SAFETY: the caller must ensure `counter` is the currently-scheduled PMC
+/// index for the calling core (i.e. `index - 1` from the perf mmap page) and
+/// that user-space `rdpmc` is permitted (`cap_user_rdpmc`). Executing `rdpmc`
+/// without user-space access enabled raises `#GP`.
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+#[inline(always)]
+unsafe fn rdpmc(counter: u32) -> u64 {
+    let lo: u32;
+    let hi: u32;
+    // SAFETY: rdpmc reads the counter selected by ecx into edx:eax and touches
+    // no memory or other registers.
+    unsafe {
+        core::arch::asm!(
+            "rdpmc",
+            in("ecx") counter,
+            out("eax") lo,
+            out("edx") hi,
+            options(nostack, preserves_flags),
+        );
+    }
+    ((hi as u64) << 32) | (lo as u64)
+}
+
+fn close_perf_fd(fd: libc::c_int, raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>) {
+    if let Some(raw_syscall) = raw_syscall {
+        Errno::from_ret(unsafe {
+            raw_syscall(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]) as usize
+        })
+        .expect("Could not close perf fd");
+    } else {
+        Errno::result(unsafe { libc::close(fd) }).expect("Could not close perf fd");
+    }
+}
+fn close_mmap(
+    ptr: *mut perf::perf_event_mmap_page,
+    raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
+) {
+    if let Some(raw_syscall) = raw_syscall {
+        Errno::from_ret(unsafe {
+            raw_syscall(
+                libc::SYS_munmap,
+                [ptr as u64, get_mmap_size() as u64, 0, 0, 0, 0],
