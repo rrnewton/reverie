@@ -1626,7 +1626,7 @@ fn report_pre_exec_capability_error(message: &'static [u8]) -> Errno {
 }
 
 /// Sets up the child process for ptracing right before execve is called.
-fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
+fn init_tracee(intercept_rdtsc: bool, executable_fd: Option<i32>) -> Result<(), Errno> {
     // NOTE: There should be *NO* allocations along the happy path here.
     // Allocating between a fork() and execve() can cause deadlocks in glibc
     // when using jemalloc.
@@ -1670,12 +1670,17 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
     // first N file descriptors hoping it is among those. Unfortunately, in
     // doing so, we lose the ability to capture `execve` failures.
     //
+    // A descriptor selected for Command's execveat path is the executable
+    // authority and must survive this workaround until do_exec consumes it.
     // There are a couple options for a better implementation:
     //  1. Recreate the entire `std::process` module to provide better ptrace
     //     support. (A lot of work!)
     //  2. Don't raise a SIGSTOP, but instead let the ptracer stop on the call to
     //     `execve` and have the parent set the ptrace options at that point.
     for i in 3..256 {
+        if executable_fd == Some(i) {
+            continue;
+        }
         unsafe {
             libc::close(i);
         }
@@ -2351,6 +2356,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         }
         let backend_stats = PtraceBackendStatsSource::from_request(self.backend_stats_request);
         let mut command = self.command;
+
+        // Resolve or validate executable authority before initializing Tool
+        // state or deriving any execution metadata. A retained descriptor is
+        // the executable; its program string remains diagnostic-only.
+        resolve_program(&mut command)?;
+
         let config = self.config.unwrap_or_default();
         let liteinst_fail_closed = self.liteinst_runtime.is_some();
 
@@ -2373,21 +2384,16 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         }
         let gref = Arc::new(global_state);
 
-        // Get the full path to the program and change the command to use it. This
-        // also checks that the path exists and provides an early exit just in case
-        // it doesn't.
-        //
-        // Normally, we'd rely upon the `exit(1)` following a failed call to
-        // `execve`, but that is tricky when ptracing the `execve` call.
-        resolve_program(&mut command)?;
-
         // Disable sanitizers that use ptrace from running on tracer.
         command.env("LSAN_OPTIONS", "detect_leaks=0");
         command.env("ASAN_OPTIONS", "detect_leaks=0");
 
         let intercept_rdtsc = events.has_rdtsc();
+        let executable_fd = command
+            .get_executable()
+            .map(|executable| executable.as_raw_fd());
         unsafe {
-            command.pre_exec(move || init_tracee(intercept_rdtsc));
+            command.pre_exec(move || init_tracee(intercept_rdtsc, executable_fd));
         }
 
         command.seccomp(seccomp_filter(&traced_events));
@@ -2553,6 +2559,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 }
 
 fn resolve_program(command: &mut Command) -> Result<(), Error> {
+    if command.get_executable().is_some() {
+        command.validate_executable_descriptor().with_context(|| {
+            format!(
+                "Could not execute retained descriptor named diagnostically as {:?}",
+                command.get_program()
+            )
+        })?;
+        return Ok(());
+    }
     let arg0 = command.get_arg0().to_owned();
     let program = command
         .find_program()
@@ -2620,7 +2635,7 @@ where
                 write2.close()?;
             }
 
-            init_tracee(events.has_rdtsc()).expect("init_tracee failed");
+            init_tracee(events.has_rdtsc(), None).expect("init_tracee failed");
 
             seccomp_filter.load().expect("Failed to set seccomp filter");
 
@@ -2684,6 +2699,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use reverie::Guest;
     use reverie::syscalls::Syscall;
     use reverie::syscalls::SyscallInfo;
@@ -3731,6 +3748,106 @@ mod tests {
         resolve_program(&mut command).unwrap();
         assert_eq!(command.get_program(), "/bin/echo");
         assert_eq!(command.get_arg0(), "chosen-name");
+    }
+
+    #[test]
+    fn resolving_descriptor_preserves_diagnostic_path_arg0_and_identity() {
+        let executable = std::fs::File::open("/bin/true").unwrap();
+        let expected = executable.metadata().unwrap();
+        let mut command = Command::new("/diagnostic/path/must-not-be-resolved");
+        command.arg0("chosen-descriptor-name");
+        command.executable(executable.into()).unwrap();
+
+        resolve_program(&mut command).unwrap();
+
+        assert_eq!(
+            command.get_program(),
+            "/diagnostic/path/must-not-be-resolved"
+        );
+        assert_eq!(command.get_arg0(), "chosen-descriptor-name");
+        let actual = command
+            .get_executable()
+            .map(|descriptor| fs::metadata(format!("/proc/self/fd/{}", descriptor.as_raw_fd())))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (actual.dev(), actual.ino()),
+            (expected.dev(), expected.ino())
+        );
+    }
+
+    static DESCRIPTOR_INIT_RAN: AtomicBool = AtomicBool::new(false);
+
+    #[derive(Default)]
+    struct DescriptorInitGlobal;
+
+    #[reverie::global_tool]
+    impl GlobalTool for DescriptorInitGlobal {
+        type Request = ();
+        type Response = ();
+        type Config = ();
+
+        async fn init_global_state(_config: &()) -> Self {
+            DESCRIPTOR_INIT_RAN.store(true, Ordering::SeqCst);
+            Self
+        }
+
+        async fn receive_rpc(&self, _from: reverie::Tid, _request: ()) {}
+    }
+
+    #[derive(Default)]
+    struct DescriptorInitTool;
+
+    #[reverie::tool]
+    impl Tool for DescriptorInitTool {
+        type GlobalState = DescriptorInitGlobal;
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::none()
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_descriptor_is_refused_before_global_tool_initialization() {
+        DESCRIPTOR_INIT_RAN.store(false, Ordering::SeqCst);
+        let executable = tempfile::NamedTempFile::new().unwrap();
+        let mut permissions = executable.as_file().metadata().unwrap().permissions();
+        permissions.set_mode(0o600);
+        executable.as_file().set_permissions(permissions).unwrap();
+        let mut command = Command::new("/bin/true");
+        command.executable(executable.into_file().into()).unwrap();
+
+        let error = match TracerBuilder::<DescriptorInitTool>::new(command)
+            .spawn()
+            .await
+        {
+            Ok(_) => panic!("ptrace accepted a non-executable retained descriptor"),
+            Err(error) => error,
+        };
+        let Error::Tool(error) = error else {
+            panic!("descriptor validation returned the wrong error variant: {error}");
+        };
+        let io_error = error
+            .chain()
+            .find_map(|source| source.downcast_ref::<std::io::Error>())
+            .expect("descriptor validation lost its I/O cause");
+        assert_eq!(io_error.raw_os_error(), Some(libc::EPERM));
+        assert!(
+            !DESCRIPTOR_INIT_RAN.load(Ordering::SeqCst),
+            "GlobalTool initialization ran before descriptor validation"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ptrace_executes_retained_descriptor_instead_of_diagnostic_path() {
+        let mut command = Command::new("/bin/false");
+        command
+            .executable(std::fs::File::open("/bin/true").unwrap().into())
+            .unwrap();
+        let tracer = TracerBuilder::<()>::new(command).spawn().await.unwrap();
+        let (status, ()) = tracer.wait().await.unwrap();
+        assert_eq!(status, ExitStatus::Exited(0));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -8,6 +8,7 @@
 
 use std::io;
 use std::io::Write;
+use std::os::fd::AsRawFd;
 
 use super::Child;
 use super::Command;
@@ -140,15 +141,37 @@ impl Command {
     /// Only returns if an error occurs, thus it is only possible for it to
     /// return an error.
     fn do_exec(&mut self, context: &ChildContext, env: &CStringArray) -> Error {
+        if let Some(executable) = self.get_executable() {
+            let descriptor = executable.as_raw_fd();
+            let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+            if let Err(error) = Error::result(flags, Context::Exec) {
+                return error;
+            }
+            if let Err(error) = Error::result(
+                unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) },
+                Context::Exec,
+            ) {
+                return error;
+            }
+        }
         if let Err(err) = self.container.setup(context, &mut self.pre_exec) {
             return err;
         }
 
-        Error::result(
-            unsafe { libc::execvpe(self.program.as_ptr(), self.args.as_ptr(), env.as_ptr()) },
-            Context::Exec,
-        )
-        .unwrap_err()
+        let result = if let Some(executable) = self.get_executable() {
+            unsafe {
+                libc::execveat(
+                    executable.as_raw_fd(),
+                    c"".as_ptr(),
+                    self.args.as_ptr().cast::<*mut libc::c_char>(),
+                    env.as_ptr().cast::<*mut libc::c_char>(),
+                    libc::AT_EMPTY_PATH,
+                )
+            }
+        } else {
+            unsafe { libc::execvpe(self.program.as_ptr(), self.args.as_ptr(), env.as_ptr()) }
+        };
+        Error::result(result, Context::Exec).unwrap_err()
     }
 }
 

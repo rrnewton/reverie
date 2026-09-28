@@ -157,8 +157,8 @@ fn build_e9patch_tools(source: &Path, build: &Path) -> (PathBuf, PathBuf) {
     let e9patch = build.join("e9patch");
     assert!(e9tool.is_file(), "e9patch build did not produce e9tool");
     assert!(e9patch.is_file(), "e9patch build did not produce e9patch");
-    println!(
-        "cargo:warning=e9patch source build completed in {:.2}s (jobs={jobs})",
+    eprintln!(
+        "e9patch source build completed in {:.2}s (jobs={jobs})",
         started.elapsed().as_secs_f64()
     );
     (e9tool, e9patch)
