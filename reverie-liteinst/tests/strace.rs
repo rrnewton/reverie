@@ -466,6 +466,20 @@ fn unsafe_clone_is_rejected_in_compatibility_and_strace_modes() {
         strace.stdout,
         format!("unsafe clone rejected: {}\n", libc::ENOTSUP).as_bytes()
     );
+
+    let expected = format!(
+        "unsafe process creation rejected: vfork={0} clone3={0} clone3-shared={0} clone3-thread={0} clone3-stack={0} clone3-tls={0} clone3-flags={0} clone3-size={0} parent-canaries=unchanged\n",
+        libc::ENOTSUP
+    );
+    for compatibility in [true, false] {
+        let output = if compatibility {
+            run_compat_guest(guest, &["--unsafe-process"])
+        } else {
+            run_guest(guest, &["--unsafe-process"])
+        };
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, expected.as_bytes(), "{output:?}");
+    }
 }
 
 fn assert_compatibility_fork_event(arguments: &[&str], syscall: i64) {

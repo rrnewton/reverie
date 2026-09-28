@@ -31,6 +31,15 @@ use crate::seccomp::TrustedGate;
 use crate::signal;
 pub mod frame;
 mod pkru;
+#[cfg(feature = "liteinst-rcb")]
+mod rcb;
+
+/// Loaded installed-callback boundary for the native qualification artifact.
+#[cfg(feature = "rcb-qualification")]
+#[doc(hidden)]
+pub fn rcb_callback_boundary() -> (u64, usize) {
+    rcb::callback_boundary()
+}
 const SYS_SECCOMP_CODE: libc::c_int = 1;
 
 core::arch::global_asm!(
@@ -350,7 +359,13 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     signal_number: libc::c_int,
     info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
-) {
+) -> i64 {
+    #[cfg(feature = "rcb-qualification")]
+    if !info.is_null()
+        && rcb::consume_async_sigsys_probe(signal_number, unsafe { (*info).si_code })
+    {
+        return finish_signal();
+    }
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review fail-closed SIGSYS provenance validation.
     if signal_number != libc::SIGSYS
@@ -374,7 +389,7 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
     };
     if dispatcher().is_some_and(|dispatcher| dispatcher.dispatch_private_signal(&mut frame)) {
         IN_HANDLER.set(false);
-        return;
+        return finish_signal();
     }
     let guest_pkru = match frame.pkru() {
         Ok(value) => value,
@@ -412,6 +427,41 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
         }
     }
     IN_HANDLER.set(false);
+    finish_signal()
+}
+
+#[inline]
+fn finish_signal() -> i64 {
+    #[cfg(feature = "liteinst-rcb")]
+    {
+        rcb::finish_signal()
+    }
+    #[cfg(not(feature = "liteinst-rcb"))]
+    {
+        0
+    }
+}
+
+// The shared standalone preload keeps its original direct Rust signal entry.
+// The LiteInst-only feature binds the same call site to the counter-owning
+// assembly entry in `trap::rcb`.
+#[cfg(not(feature = "liteinst-rcb"))]
+unsafe extern "C" fn signal_entry(
+    signal_number: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut libc::c_void,
+) {
+    let _ = unsafe { sigsys_handler(signal_number, info, context) };
+}
+
+#[cfg(feature = "liteinst-rcb")]
+unsafe extern "C" {
+    #[link_name = "reverie_preload_sigsys_entry"]
+    fn signal_entry(
+        signal_number: libc::c_int,
+        info: *mut libc::siginfo_t,
+        context: *mut libc::c_void,
+    );
 }
 
 core::arch::global_asm!(
@@ -435,7 +485,7 @@ reverie_preload_sigsys_pkru:
     jmp {handler}
     .size reverie_preload_sigsys_pkru, .-reverie_preload_sigsys_pkru
     "#,
-    handler = sym sigsys_handler,
+    handler = sym signal_entry,
 );
 
 unsafe extern "C" {
@@ -470,7 +520,7 @@ pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
     let handler = if ospke {
         reverie_preload_sigsys_pkru
     } else {
-        sigsys_handler
+        signal_entry
     };
     if use_alt_stack {
         unsafe { signal::install_alt_stack()? };

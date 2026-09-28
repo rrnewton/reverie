@@ -231,7 +231,9 @@ pub(super) fn run(path: &Path) {
     let native_pid = unsafe { libc::getpid() } as i64;
     for tool in [false, true] {
         if tool {
-            unsafe { reverie_liteinst::install_tool::<MemoryTool>(path) }.unwrap();
+            unsafe { reverie_liteinst::with_tool_root!({
+                unsafe { reverie_liteinst::install_tool::<MemoryTool>(path) }.unwrap();
+            }); }
         }
         for pkru in [0, 1] {
             state.pkru = pkru;

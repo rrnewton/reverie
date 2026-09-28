@@ -114,7 +114,9 @@ fn prepare_site() -> (*mut u8, i32) {
 
 pub(super) fn run(path: &Path) {
     let (site, native_pid) = prepare_site();
-    unsafe { reverie_liteinst::install_tool::<FallbackTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<FallbackTool>(path) }.unwrap();
+    }); }
     unsafe { *libc::__errno_location() = libc::E2BIG };
     for _ in 0..3 {
         assert_eq!(
@@ -291,7 +293,9 @@ pub(super) fn run_fork(path: &Path, installed: bool) {
     } else {
         prepare_site()
     };
-    unsafe { reverie_liteinst::install_tool::<FallbackTool>(path) }.unwrap();
+    unsafe { reverie_liteinst::with_tool_root!({
+        unsafe { reverie_liteinst::install_tool::<FallbackTool>(path) }.unwrap();
+    }); }
     let child = unsafe { fallback_test_call(site as usize, libc::SYS_fork) };
     assert!(child >= 0, "fork failed: {child}");
     let hooks = reverie_liteinst::reverie_liteinst_site_hook_count(site as u64);
@@ -343,6 +347,12 @@ pub(super) fn run_fork(path: &Path, installed: bool) {
         println!(
             "{label} fork child: hooks={hooks} traps={traps} fallback={fallback} syscall={syscall}"
         );
+        #[cfg(feature = "rcb-qualification")]
+        super::emit_hardware_counter_result(if installed {
+            "syscall-installed-fork-child"
+        } else {
+            "syscall-fallback-fork-child"
+        });
         unsafe { libc::_exit(0) };
     }
     super::wait_for_child(child as libc::pid_t);

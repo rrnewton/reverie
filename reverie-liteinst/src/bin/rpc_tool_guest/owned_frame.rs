@@ -355,7 +355,9 @@ pub(super) fn run(path: &Path) {
     let mut native = Vec::new();
     for mediated in [false, true] {
         if mediated {
-            unsafe { reverie_liteinst::install_tool::<FrameTool>(path) }.unwrap();
+            unsafe { reverie_liteinst::with_tool_root!({
+                unsafe { reverie_liteinst::install_tool::<FrameTool>(path) }.unwrap();
+            }); }
         }
         for (index, (name, number, args, pkru)) in cases.iter().copied().enumerate() {
             let observed = observe(

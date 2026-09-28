@@ -59,17 +59,28 @@ impl Drop for DispatchScratchScope {
 }
 
 trait ToolHandler: Send + Sync {
+    fn start_root(&self, context: &mut HookContext) -> io::Result<()>;
     fn dispatch(&self, event: &mut SyscallEvent);
     fn dispatch_instruction(&self, kind: runtime::InstructionEventKind, context: &mut HookContext);
 }
 
 static HANDLER: std::sync::OnceLock<Box<dyn ToolHandler>> = std::sync::OnceLock::new();
 
+#[cfg(test)]
+pub(crate) fn handler_is_published() -> bool {
+    HANDLER.get().is_some()
+}
+
 // TODO-HUMAN-REVIEW(PR-127): Review generic in-guest Tool hosting.
 /// Install a concrete Reverie tool in this guest and connect it to its coordinator.
 ///
 /// The caller is normally a tool-specific preload DSO. It must invoke this
-/// before application threads start and before any seccomp filter is active.
+/// before application threads start, inside [`crate::with_tool_root!`] or the
+/// assembly constructor adapter emitted by [`crate::tool_root_constructor!`].
+/// External DSO authors must keep bootstrap decoding, this call, Result
+/// handling, and every setup-owned destructor in that one constructor body. It
+/// prepares the Tool; the outer entry owns lifecycle completion and the final
+/// counter activation after the whole body returns and all setup values drop.
 ///
 /// # Safety
 ///
@@ -90,10 +101,11 @@ where
 
 /// Install a concrete Reverie tool with quiescent patch publication.
 ///
-/// This has the same process-global effects as [`install_tool`], but skips the
-/// concurrent instruction-tearing and straddler protocol when publishing a new
-/// site. The caller must keep every other application thread from fetching
-/// guest text for the full lifetime of the installed tool.
+/// This has the same process-global effects and root-activation obligation as
+/// [`install_tool`], but skips the concurrent instruction-tearing and straddler
+/// protocol when publishing a new site. The caller must keep every other
+/// application thread from fetching guest text for the full lifetime of the
+/// installed tool.
 ///
 /// # Safety
 ///
@@ -116,7 +128,9 @@ where
 /// Installs a concrete tool using a consumed bootstrap coordinator path.
 ///
 /// Unlike the legacy install entry point, this does not remove its coordinator
-/// environment variable because the bootstrap path did not introduce one.
+/// environment variable because the bootstrap path did not introduce one. It
+/// has the same complete-constructor and root-activation obligation as
+/// [`install_tool`].
 ///
 /// # Safety
 ///
@@ -142,9 +156,18 @@ unsafe fn install_tool_inner<T>(
 where
     T: Tool + 'static,
 {
+    // Root assembly already captured the caller's exact mask and blocked every
+    // asynchronous signal before its first Rust/global/allocation operation.
+    crate::root::begin_install()?;
+    // A pre-existing io_uring, including a registered-only SQPOLL worker,
+    // could consume an already-published descriptor operation after the
+    // private counter is imported. Inventory numeric descriptors and all
+    // sixteen per-task registered-ring slots before any private FD exists.
+    if let Err(error) = runtime::refuse_inherited_io_uring() {
+        crate::rcb::setup_failed(error.raw_os_error().unwrap_or(libc::EIO));
+        return Err(error);
+    }
     crate::syscall_fallback::initialize()?;
-    let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
-    runtime::reserve_coordinator_fd(rpc.raw_fd())?;
     let stats =
         if let Some(stats_coordinator) = std::env::var_os(crate::backend::STATS_COORDINATOR_ENV) {
             let stats = crate::stats::initialize_guest_stats(Path::new(&stats_coordinator))?;
@@ -154,7 +177,10 @@ where
         } else {
             crate::stats::GuestStatsHooks::DISABLED
         };
-    runtime::initialize_rcb_clock()?;
+    let bootstrap = runtime::prepare_reverie_tool(stats, publication)?;
+    let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
+    runtime::reserve_coordinator_fd(rpc.raw_fd())?;
+    runtime::initialize_rcb_clock(&rpc)?;
     COMMITTED_STACKS.lock().clear();
     let pid = Pid::from_raw(unsafe { libc::getpid() });
     let subscriptions = T::subscriptions(rpc.config());
@@ -165,7 +191,13 @@ where
     runtime::preflight_instruction_faulting(instruction_subscriptions)?;
     let vdso_sites = reverie_ptrace::patch_current_vdso(&subscriptions)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;
+    let reserved = (1_u64 << (libc::SIGSYS - 1))
+        | if instruction_subscriptions.cpuid || instruction_subscriptions.rdtsc {
+            1_u64 << (libc::SIGSEGV - 1)
+        } else {
+            0
+        };
+    crate::root::unblock_on_restore(reserved)?;
     let syscall_subscriptions = subscriptions.iter_syscalls().collect();
     if remove_legacy_environment {
         // SAFETY: legacy tool installation runs before application-created threads.
@@ -185,7 +217,15 @@ where
         .map_err(|_| {
             io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
         })?;
-    runtime::initialize_reverie_tool(stats, publication, instruction_subscriptions, &vdso_sites)
+    runtime::initialize_reverie_tool(bootstrap, instruction_subscriptions, &vdso_sites)?;
+    crate::root::prepared()
+}
+
+pub(crate) fn start_root(context: &mut HookContext) -> io::Result<()> {
+    HANDLER
+        .get()
+        .ok_or_else(|| io::Error::other("root Tool handler was not published"))?
+        .start_root(context)
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {
@@ -216,6 +256,58 @@ impl<T> ToolHandler for ToolHost<T>
 where
     T: Tool + 'static,
 {
+    fn start_root(&self, context: &mut HookContext) -> io::Result<()> {
+        if !crate::root::lifecycle_active() {
+            return Err(io::Error::from_raw_os_error(libc::ESTALE));
+        }
+        let _scratch_scope = DispatchScratchScope::enter();
+        let tid = raw_pid(libc::SYS_gettid);
+        let pid = raw_pid(libc::SYS_getpid);
+        if tid != self.root_pid || pid != self.root_pid {
+            return Err(io::Error::from_raw_os_error(libc::ESRCH));
+        }
+        let tool_slot = self.tool.lock();
+        let tool = tool_slot.as_ref().ok_or_else(|| io::Error::other("missing root Tool"))?;
+        let mut states = self.states.lock();
+        if !states.is_empty() {
+            return Err(io::Error::from_raw_os_error(libc::EALREADY));
+        }
+        states.insert(tid.as_raw(), tool.init_thread_state(tid, None));
+        let state = states.get_mut(&tid.as_raw()).expect("root state just inserted");
+        let tail = TailResult::default();
+        let mut event = SyscallEvent {
+            number: -1,
+            args: [0; 6],
+            instruction_pointer: context.instruction_pointer,
+            result: 0,
+            context: context as *mut HookContext as usize,
+            dispatch: runtime::SyscallDispatch::InstalledHook,
+            guest_pkru: None,
+        };
+        let mut guest = LiteinstGuest::<T> {
+            event: &mut event,
+            tid,
+            pid,
+            ppid: None,
+            state,
+            rpc: &self.rpc,
+            tail: &tail,
+            cpuid_interception: self.instruction_subscriptions.cpuid,
+            fork_parent_state: None,
+        };
+        runtime::verify_initial_rcb_clock()?;
+        if let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
+            tool_fatal(124, &error);
+        }
+        runtime::verify_initial_rcb_clock()?;
+        // This is the root image's one real post-exec lifecycle. It remains
+        // private and precedes all ordinary syscall/instruction callbacks.
+        if let Err(error) = drive_ready(tool.handle_post_exec(&mut guest)) {
+            tool_fatal(124, &Error::from(error));
+        }
+        runtime::verify_initial_rcb_clock()
+    }
+
     fn dispatch(&self, event: &mut SyscallEvent) {
         let _scratch_scope = DispatchScratchScope::enter();
         let tid = raw_pid(libc::SYS_gettid);
@@ -230,6 +322,9 @@ where
         let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
         let mut states = self.states.lock();
         let is_new = !states.contains_key(&tid.as_raw());
+        if is_new && pid == self.root_pid {
+            fatal(126);
+        }
         let state = states
             .entry(tid.as_raw())
             .or_insert_with(|| tool.init_thread_state(tid, None));
@@ -262,13 +357,8 @@ where
         // once for the root process's main thread restores contract parity. It
         // is intentionally not emitted for child threads (there is none in the
         // current single-process/thread tool mode) nor re-emitted per dispatch.
-        if is_new
-            && tid.as_raw() == self.root_pid.as_raw()
-            && let Err(error) = drive_ready(tool.handle_post_exec(&mut guest))
-        {
-            // handle_post_exec returns Errno; tool_fatal expects reverie::Error.
-            tool_fatal(124, &Error::from(error));
-        }
+        // Root thread-start/post-exec already completed inside the disabled
+        // root activation. They must never be deferred to this first syscall.
 
         let Some(number) = usize::try_from(guest.event.number)
             .ok()
@@ -282,7 +372,8 @@ where
             let args = guest.event.args;
             if is_plain_fork(number, args) {
                 guest.prepare_fork_parent_state();
-                let result = forward_plain_fork(number, args, Some(&mut guest.event.guest_pkru));
+                let result =
+                    forward_plain_fork(guest.rpc, number, args, Some(&mut guest.event.guest_pkru));
                 if result == 0 {
                     let parent_state = guest.take_fork_parent_state();
                     drop(guest);
@@ -391,6 +482,9 @@ where
         let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
         let mut states = self.states.lock();
         let is_new = !states.contains_key(&tid.as_raw());
+        if is_new && pid == self.root_pid {
+            fatal(126);
+        }
         let state = states
             .entry(tid.as_raw())
             .or_insert_with(|| tool.init_thread_state(tid, None));
@@ -417,12 +511,6 @@ where
         };
         if is_new && let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
             tool_fatal(124, &error);
-        }
-        if is_new
-            && tid.as_raw() == self.root_pid.as_raw()
-            && let Err(error) = drive_ready(tool.handle_post_exec(&mut guest))
-        {
-            tool_fatal(124, &Error::from(error));
         }
 
         match kind {
@@ -472,14 +560,17 @@ fn finish_fork_child<T: Tool>(
         child_pid,
     } = context;
     crate::syscall_fallback::rebind_fork_child();
+    runtime::emit_in_guest_stage(b"fork-child-clock-acquire-begin");
+    if let Err(error) = rpc
+        .rebind_fork_child()
+        .and_then(|()| runtime::initialize_rcb_clock(rpc))
+    {
+        tool_fatal(124, &Error::from(error));
+    }
+    runtime::emit_in_guest_stage(b"fork-child-clock-acquire-complete");
     runtime::emit_in_guest_stage(b"fork-child-thread-start-begin");
-    // This child inherited the parent's coordinator connection. Flag it before
-    // any child-side callback can issue an RPC (`handle_thread_start` below is
-    // the first such opportunity) so the next `send_rpc` reconnects under the
-    // child's own identity. Doing it here rather than from a `pthread_atfork`
-    // hook also covers forks that never enter libc, such as a raw `SYS_fork` or
-    // a raw plain `SYS_clone`.
-    crate::rpc::note_fork_in_child();
+    // Child identity, config handshake and imported clock are complete before
+    // any new Tool or lifecycle callback can issue its first real child RPC.
     let inherited_parent_state = states
         .remove(&parent_tid.as_raw())
         .unwrap_or_else(|| fatal(126));
@@ -511,8 +602,14 @@ fn finish_fork_child<T: Tool>(
         cpuid_interception: runtime::cpuid_interception_enabled(),
         fork_parent_state: None,
     };
+    if let Err(error) = runtime::verify_initial_rcb_clock() {
+        tool_fatal(124, &Error::from(error));
+    }
     if let Err(error) = drive_ready(tool.handle_thread_start(&mut child_guest)) {
         tool_fatal(124, &error);
+    }
+    if let Err(error) = runtime::verify_initial_rcb_clock() {
+        tool_fatal(124, &Error::from(error));
     }
     runtime::emit_in_guest_stage(b"fork-child-thread-start-complete");
     child_guest.event.result = 0;
@@ -707,7 +804,15 @@ fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
         && fields[8..].iter().all(|field| *field == 0)
 }
 
-fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Option<u32>>) -> i64 {
+fn forward_plain_fork<G: GlobalTool>(
+    rpc: &CoordinatorRpc<G>,
+    number: i64,
+    args: [u64; 6],
+    guest_pkru: Option<&mut Option<u32>>,
+) -> i64 {
+    if let Err(error) = rpc.prepare_fork() {
+        tool_fatal(124, &Error::from(error));
+    }
     let permissions = guest_pkru.as_ref().and_then(|value| **value);
     let physical = if number == libc::SYS_vfork {
         // A real vfork child would run the instrumentation callback on the
@@ -720,6 +825,19 @@ fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Optio
     } else {
         unsafe { reverie_preload::trap::raw_syscall6_with_result(number, args, permissions) }
     };
+    if physical.result == 0 {
+        // Before updating Rust Tool state, RPC, allocation or any nested libc
+        // operation, make the inherited parent event unavailable in this child.
+        if let Err(error) = rpc
+            .verify_cpu_binding()
+            .and_then(|()| runtime::begin_fork_child_rcb())
+        {
+            tool_fatal(124, &Error::from(error));
+        }
+        crate::rpc::note_fork_in_child();
+    } else {
+        rpc.discard_prepared_fork();
+    }
     if let Some(output) = guest_pkru {
         *output = physical.pkru;
     }
@@ -768,10 +886,11 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
         || (number == libc::SYS_sigaltstack && args[0] != 0)
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (number == libc::SYS_rt_sigprocmask && args[1] != 0);
+    let protected_cpu = number == libc::SYS_sched_setaffinity;
 
     if unsupported_process {
         Some(Errno::EOPNOTSUPP)
-    } else if protected_signal {
+    } else if protected_signal || protected_cpu {
         Some(Errno::EPERM)
     } else {
         None
@@ -845,6 +964,14 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         regs
     }
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        if crate::root::lifecycle_active() {
+            let original = self.regs().await;
+            // The root entry returns to its captured stack/continuation. Do not
+            // claim successful control-flow mutation that assembly ignores.
+            if regs.rip != original.rip || regs.rsp != original.rsp {
+                return Err(Errno::EOPNOTSUPP.into());
+            }
+        }
         self.event.number = regs.rax as i64;
         self.event.args = [regs.rdi, regs.rsi, regs.rdx, regs.r10, regs.r8, regs.r9];
         if self.event.context != 0 {
@@ -889,10 +1016,13 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         ];
 
         if is_plain_fork(number, raw_args) {
+            if crate::root::lifecycle_active() {
+                return Err(Errno::EOPNOTSUPP);
+            }
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
-            let result = forward_plain_fork(number, raw_args, None);
+            let result = forward_plain_fork(self.rpc, number, raw_args, None);
             if result == 0 {
                 let child_tid = raw_pid(libc::SYS_gettid);
                 let child_pid = raw_pid(libc::SYS_getpid);
@@ -941,7 +1071,12 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             raw_args[1] = mask as *const u64 as u64;
         }
 
-        let result = unsafe { raw_syscall6(number, raw_args) };
+        // Private buffers keep caller permissions. FD ownership protection is
+        // separate from buffer permissions and also applies to injection.
+        let result = match unsafe { runtime::private_descriptor_result(number, raw_args) } {
+            Some(result) => result,
+            None => unsafe { raw_syscall6(number, raw_args) },
+        };
         Errno::from_ret(result as usize).map(|value| value as i64)
     }
 
@@ -957,10 +1092,14 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         ];
         let number = number.id() as i64;
         if is_plain_fork(number, args) {
+            if crate::root::lifecycle_active() {
+                self.tail.set_result(-i64::from(libc::EOPNOTSUPP));
+                return std::future::pending().await;
+            }
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
-            let result = forward_plain_fork(number, args, None);
+            let result = forward_plain_fork(self.rpc, number, args, None);
             if result == 0 {
                 self.tail.set_fork_child(
                     parent_tid,
@@ -976,7 +1115,10 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
         } else {
-            let value = unsafe { raw_syscall6(number, args) };
+            let value = match unsafe { runtime::private_descriptor_result(number, args) } {
+                Some(result) => result,
+                None => unsafe { raw_syscall6(number, args) },
+            };
             self.tail.set_result(value);
         }
         std::future::pending().await
