@@ -94,11 +94,14 @@
 //! patching `On`, these differences remain, each pinned by a test:
 //!
 //! - Visible to the Tool and the guest, undetected: a SIGCONT sent in the
-//!   window between that read and the re-raise (two system calls) is
+//!   window between that read and the re-raise (the tracer's own work
+//!   between them, whose length the host's scheduling decides) is
 //!   discarded by the re-raised SIGSTOP. Under plain ptrace the SIGCONT
 //!   discards the SIGSTOP instead and is delivered: the Tool loses a
-//!   SIGCONT signal event and gets a SIGSTOP one, the guest's SIGCONT handler
-//!   does not run, and a blocking syscall the SIGSTOP interrupts restarts.
+//!   SIGCONT signal event, the guest's SIGCONT handler does not run, and a
+//!   SIGSTOP delivery stop happens instead (reverie suppresses it before the
+//!   Tool or the guest sees it), which restarts a blocking syscall it
+//!   interrupts.
 //!   A SIGCONT to a non-seized tracee that is not stopped leaves no trace,
 //!   so the hop cannot detect it (`trap_only_p2_sigcont_after_the_pending_read_is_lost`).
 //!   Hermit's scheduler does not close this for Hermit guests: a signal a

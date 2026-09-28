@@ -1149,7 +1149,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   every SIGSTOP), and a blocking syscall it interrupts restarts, one
     ///   more syscall event. A non-seized tracee's SIGCONT leaves no trace
     ///   when nothing is stopped, so the hop cannot detect it; the window is
-    ///   the two system calls between the read and the send.
+    ///   the tracer's own work between the read and the send, whose length
+    ///   the host's scheduling decides.
     ///   `trap_only_p2_sigcont_after_the_pending_read_is_lost` pins it.
     /// - Not visible to the Tool or the guest (reverie suppresses every
     ///   SIGSTOP before either sees it), only in the siginfo and number of
