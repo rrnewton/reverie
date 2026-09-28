@@ -5995,7 +5995,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // neither exit nor failure: stay pending so the leader's
                     // actual Exec edge transfers this state, while session
                     // cancellation and backend failure remain observable.
-                    return future::pending().await;
+                    { eprintln!("PROBE_RUNLOOP_ECHILD_PENDING tid={} err={:?}", self.tid(), err); } return future::pending().await;
                 }
                 // Note: Calling handle_internal_error cannot happen in the
                 // `select!()` of the `run` function because then the exit
@@ -6681,7 +6681,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         // has no terminal status to consume. The outer owner
                         // remains available for the leader's actual Exec edge;
                         // ECHILD itself authorizes neither transfer nor exit.
-                        return future::pending().await;
+                        { eprintln!("PROBE_EXIT_ECHILD_PENDING tid={}", self.tid()); } return future::pending().await;
                     }
                     session.retry_after(error.into()).await;
                     stopped = (&mut *exit_event).await;
