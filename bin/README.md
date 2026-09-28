@@ -137,10 +137,11 @@ Tests: `bin/safehermit-test.sh` and `bin/safehermit-resource-test.py`.
 
 ## Disk-bound scope
 
-`scripts/bounded-run-space` gives `safehermit`'s retained log directory a btrfs
-qgroup limit. The `bound.disk` report names that scope: it does not claim to
-bound guest writes, an explicit Hermit `--log-file` outside that directory, or
-a Hermit process that did not enter through `safehermit`.
+`safehermit` does not create a btrfs subvolume per run: it no longer calls
+`scripts/bounded-run-space`, so its retained log directory is a plain directory
+and `bound.disk` reports `NOT_APPLIED`. It never bounded guest writes, an
+explicit Hermit `--log-file` outside that directory, or a Hermit process that
+did not enter through `safehermit`.
 
 `hermit-repeat` therefore keeps its own total-artefact cap (`--max-total-mb`,
 default 4096), because under `--verify` Hermit's log goes to files that

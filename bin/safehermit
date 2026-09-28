@@ -485,26 +485,11 @@ PY
 
 # ---------------------------------------------------------------- (6) bounded space
 mkdir -p "$LOG_ROOT" "$REGISTRY" 2>/dev/null
-brs="$ROOT/scripts/bounded-run-space"
-disk_state=""; log_dir=""
-if [ -x "$brs" ]; then
-    log_dir="$("$brs" create --limit "$disk_limit" --tag "safehermit-$run_id" --base "$LOG_ROOT" 2>/dev/null)"
-    rc=$?
-    if [ $rc -eq 0 ] && [ -n "$log_dir" ]; then
-        disk_state="APPLIED:$disk_limit for log_dir only; guest paths and explicit log files elsewhere are outside this bound"
-    elif [ -n "$log_dir" ]; then
-        # exit 10: the space exists but nothing caps it. RELAY IT -- this is the
-        # case bounded-run-space exists to make impossible to miss.
-        disk_state="NOT_APPLIED:bounded-run-space reported UNBOUNDED (rc=$rc); space exists but is not capped"
-    else
-        disk_state="NOT_APPLIED:bounded-run-space failed (rc=$rc)"
-    fi
-fi
-if [ -z "$log_dir" ]; then
-    log_dir="$LOG_ROOT/$run_id"
-    mkdir -p "$log_dir" || die "cannot create log dir $log_dir"
-    [ -n "$disk_state" ] || disk_state="NOT_APPLIED:scripts/bounded-run-space not present; retained log directory is not capped"
-fi
+# No btrfs subvolume per run: bounded-run-space is not called, by owner
+# direction (2026-09-28). The retained log directory is a plain directory.
+disk_state="NOT_APPLIED:per-run subvolumes disabled; retained log directory is not capped"
+log_dir="$LOG_ROOT/$run_id"
+mkdir -p "$log_dir" || die "cannot create log dir $log_dir"
 log_file="$log_dir/hermit.log"
 
 # ---------------------------------------------------------------- (1)(2) killability
