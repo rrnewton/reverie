@@ -1637,7 +1637,9 @@ mod tests {
 
         for builder in [None, Some(serde_json::json!("cargo"))] {
             assert!(
-                evaluate(&with_clean(builder.clone()), FIX).unwrap().is_empty(),
+                evaluate(&with_clean(builder.clone()), FIX)
+                    .unwrap()
+                    .is_empty(),
                 "release_builder={builder:?} must discharge the obligation"
             );
         }
@@ -1664,7 +1666,8 @@ mod tests {
 
     #[test]
     fn non_cargo_failure_still_latches_an_obligation() {
-        let buck_red = with_release_builder(uncalibrated_row(BAD, 1, false), serde_json::json!("buck"));
+        let buck_red =
+            with_release_builder(uncalibrated_row(BAD, 1, false), serde_json::json!("buck"));
         let obligations = evaluate(&[buck_red, uncalibrated_row(FIX, 2, true)], FIX).unwrap();
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].failing_commit, BAD);
