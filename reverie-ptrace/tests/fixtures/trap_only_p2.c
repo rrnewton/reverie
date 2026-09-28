@@ -27,9 +27,15 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
 #include <linux/futex.h>
+#include <linux/seccomp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sched.h>
+#include <spawn.h>
+#include <stddef.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -38,7 +44,9 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/shm.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -147,6 +155,8 @@ static long tp_seq;
              TP_MAGIC | ((++tp_seq) << 16) | (act))
 
 static int report_fd = -1;
+static char **main_argv;
+extern char **environ;
 
 static void say(const char *fmt, ...) {
   va_list ap;
@@ -462,6 +472,14 @@ static void mode_fork_family(void) {
   warm();
   long r;
   int status;
+  /* SIGCHLD stays blocked (and is inherited blocked) until the end, so its
+   * one delivery lands at a fixed point in the syscall stream instead of
+   * wherever a child's exit happens to overtake its parent. */
+  sigset_t chld;
+  sigemptyset(&chld);
+  sigaddset(&chld, SIGCHLD);
+  if (sigprocmask(SIG_BLOCK, &chld, NULL) != 0)
+    die("block SIGCHLD");
 
   /* fork through the patched site; the child forks a grandchild there. */
   r = SITE(SYS_fork, 0, 0, 0, 0, 0);
@@ -522,12 +540,16 @@ static void mode_fork_family(void) {
                CLONE_CHILD_CLEARTID;
   r = SITE(SYS_clone, flags, top, NULL, &thread_ctid, 0);
   report_result("thread", r > 0 ? 1 : r);
+  /* Join without syscalls, so whether the thread has already exited does
+   * not change the parent's syscall stream (a futex wait did). */
   while (__atomic_load_n(&thread_ctid, __ATOMIC_SEQ_CST) != 0)
-    syscall(SYS_futex, &thread_ctid, FUTEX_WAIT, thread_ctid, NULL, NULL, 0);
+    __builtin_ia32_pause();
   say("thread child rcx=%s r11=%#lx\n", where(tp_z_rcx), tp_z_r11);
   site_bytes("after thread");
   r = SITE(SYS_getpid, 0, 0, 0, 0, 0);
   say("getpid after thread pid=%d\n", r == getpid());
+  if (sigprocmask(SIG_UNBLOCK, &chld, NULL) != 0)
+    die("unblock SIGCHLD");
 }
 
 /* T7c */
@@ -614,6 +636,351 @@ static void mode_rcx_r11(void) {
   report_result("fork parent", r > 0 ? 1 : r);
 }
 
+
+/* ---- P2c: site-table lifecycle (T6b-T6d) and guest installs (T7a-T7b) ---- */
+
+/* Runs this fixture again, in `mode`, with the same report file. */
+static void exec_self(const char *mode) {
+  char *args[] = {"/proc/self/exe", (char *)mode, main_argv[2], NULL};
+  execve(args[0], args, environ);
+  die("execve");
+}
+
+/* The image an exec installs: its table starts empty, so warm() patches the
+ * site again (under trap-only) at the same -no-pie address. */
+static void mode_exec_image(void) {
+  warm();
+  say("exec image getpid ok\n");
+}
+
+/* T6b: the leader execs. */
+static void mode_exec_leader(void) {
+  warm();
+  exec_self("exec_image");
+}
+
+static volatile int exec_leader_waiting;
+
+static void *exec_thread_entry(void *arg) {
+  (void)arg;
+  /* Exec only once the leader is parked in pause(), so that its stop
+   * sequence is the same in every run: spin without syscalls until it is
+   * about to call pause(), then give it time to enter the call. */
+  while (!__atomic_load_n(&exec_leader_waiting, __ATOMIC_SEQ_CST))
+    __asm__ volatile("pause");
+  struct timespec delay = {0, 200 * 1000 * 1000};
+  nanosleep(&delay, NULL);
+  exec_self("exec_image");
+  return NULL;
+}
+
+/* T6b: a non-leader thread execs; the kernel kills the leader first. */
+static void mode_exec_thread(void) {
+  warm();
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, exec_thread_entry, NULL) != 0)
+    die("pthread_create");
+  __atomic_store_n(&exec_leader_waiting, 1, __ATOMIC_SEQ_CST);
+  for (;;)
+    pause();
+}
+
+/* x86_64 code `mov $nr, %eax; syscall; ret` after `pad` nops; the syscall is
+ * at code + pad + 5. */
+static void emit(unsigned char *code, int pad, int nr) {
+  for (int i = 0; i < pad; i++)
+    code[i] = 0x90;
+  unsigned char body[] = {0xb8, (unsigned char)nr, 0, 0, 0, 0x0f, 0x05, 0xc3};
+  memcpy(code + pad, body, sizeof body);
+}
+
+static unsigned char *map_at(unsigned long address, int prot, int extra) {
+  void *p = mmap((void *)address, 4096, prot, MAP_PRIVATE | MAP_ANONYMOUS | extra, -1, 0);
+  if (p != (void *)address)
+    die("mmap jit");
+  return p;
+}
+
+static long run_code(unsigned char *code) {
+  return ((long (*)(void))code)();
+}
+
+static void protect(void *address, int prot) {
+  if (mprotect(address, 4096, prot) != 0)
+    die("mprotect");
+}
+
+static void jit_bytes(const char *tag, unsigned char *site) {
+  say("%s bytes %02x %02x\n", tag, site[0], site[1]);
+}
+
+/* T6c: JIT code; its site is patched only while its page is r-xp, and every
+ * mapping change restores the bytes before it runs. */
+static void mode_jit(void) {
+  const int rw = PROT_READ | PROT_WRITE, rx = PROT_READ | PROT_EXEC;
+  int status;
+
+  unsigned char *a = map_at(0x50000000, rw, MAP_FIXED_NOREPLACE);
+  emit(a, 0, SYS_getpid);
+  protect(a, rx);
+  for (int i = 0; i < 3; i++)
+    say("jit a %d pid=%d\n", i, run_code(a) == getpid());
+  /* A fork child changes its own copy of the page: the parent's patch, in
+   * the parent's own table, must stay live. */
+  pid_t child = fork();
+  if (child == 0) {
+    protect(a, rw);
+    jit_bytes("jit fork child a", a + 5);
+    _exit(0);
+  }
+  if (waitpid(child, &status, 0) != child)
+    die("wait jit child");
+  say("jit fork child exited=%d code=%d\n", WIFEXITED(status), WEXITSTATUS(status));
+  say("jit a after fork pid=%d\n", run_code(a) == getpid());
+  /* Writable again: the guest reads its own bytes, then rewrites the code. */
+  protect(a, rw);
+  jit_bytes("jit a after mprotect rw", a + 5);
+  emit(a, 2, SYS_getppid);
+  protect(a, rx);
+  for (int i = 0; i < 3; i++)
+    say("jit a2 %d ppid=%d\n", i, run_code(a) > 0);
+
+  /* munmap of a patched page, then new code at the same address. */
+  unsigned char *b = map_at(0x50010000, rw, MAP_FIXED_NOREPLACE);
+  emit(b, 0, SYS_getpid);
+  protect(b, rx);
+  for (int i = 0; i < 3; i++)
+    say("jit b %d pid=%d\n", i, run_code(b) == getpid());
+  if (munmap(b, 4096) != 0)
+    die("munmap");
+  b = map_at(0x50010000, rw, MAP_FIXED_NOREPLACE);
+  jit_bytes("jit b after munmap", b + 5);
+  emit(b, 0, SYS_gettid);
+  protect(b, rx);
+  for (int i = 0; i < 3; i++)
+    say("jit b2 %d tid=%d\n", i, run_code(b) == gettid());
+
+  /* mmap(MAP_FIXED) over a patched page. */
+  unsigned char *d = map_at(0x50050000, rw, MAP_FIXED_NOREPLACE);
+  emit(d, 0, SYS_getpid);
+  protect(d, rx);
+  for (int i = 0; i < 3; i++)
+    say("jit d %d pid=%d\n", i, run_code(d) == getpid());
+  d = map_at(0x50050000, rw, MAP_FIXED);
+  jit_bytes("jit d after mmap fixed", d + 5);
+
+  /* mremap moves a patched page. */
+  unsigned char *c = map_at(0x50020000, rw, MAP_FIXED_NOREPLACE);
+  emit(c, 0, SYS_getpid);
+  protect(c, rx);
+  for (int i = 0; i < 3; i++)
+    say("jit c %d pid=%d\n", i, run_code(c) == getpid());
+  unsigned char *moved =
+      mremap(c, 4096, 4096, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)0x50030000);
+  if (moved != (void *)0x50030000)
+    die("mremap");
+  jit_bytes("jit c after mremap", moved + 5);
+  for (int i = 0; i < 3; i++)
+    say("jit c2 %d pid=%d\n", i, run_code(moved) == getpid());
+
+  /* A writable and executable page is never patched. */
+  unsigned char *e = map_at(0x50040000, rw | PROT_EXEC, MAP_FIXED_NOREPLACE);
+  emit(e, 0, SYS_getpid);
+  for (int i = 0; i < 3; i++)
+    say("jit e %d pid=%d\n", i, run_code(e) == getpid());
+  jit_bytes("jit e", e + 5);
+
+  /* madvise(MADV_DONTNEED) on the fixture's own patched text page. */
+  warm();
+  if (madvise((void *)((unsigned long)tp_site & ~4095UL), 4096, MADV_DONTNEED) != 0)
+    die("madvise");
+  site_bytes("after madvise");
+  warm();
+}
+
+/* T6d: posix_spawn and system() (both vfork-style) from a process with warm
+ * sites; the parent's sites stay patched after the children exec. */
+static void mode_vfork_spawn(void) {
+  warm();
+  pid_t child;
+  char *args[] = {"/proc/self/exe", "exec_image", main_argv[2], NULL};
+  if (posix_spawn(&child, args[0], NULL, NULL, args, environ) != 0)
+    die("posix_spawn");
+  int status;
+  if (waitpid(child, &status, 0) != child)
+    die("wait spawn");
+  say("spawn child exited=%d code=%d\n", WIFEXITED(status), WEXITSTATUS(status));
+  warm();
+  status = system("exit 3");
+  say("system exited=%d code=%d\n", WIFEXITED(status), WEXITSTATUS(status));
+  warm();
+  say("parent getpid ok\n");
+}
+
+/* A filter: KILL_PROCESS for any arch other than x86_64, EPERM for getppid,
+ * everything else allowed. */
+static struct sock_filter guest_filter_code[] = {
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getppid, 0, 1),
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+};
+static struct sock_fprog guest_filter = {
+    sizeof guest_filter_code / sizeof guest_filter_code[0],
+    guest_filter_code,
+};
+
+static int tsync_pipe[2];
+static long tsync_thread_getppid;
+
+static void *tsync_thread_entry(void *arg) {
+  (void)arg;
+  char c;
+  if (read(tsync_pipe[0], &c, 1) != 1)
+    _exit(97);
+  tsync_thread_getppid = SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  return NULL;
+}
+
+/* T7a. how: "site" installs with seccomp() through the patched site (an I386
+ * stop), "tsync" from a two-thread process through libc, "prctl" with
+ * prctl(PR_SET_SECCOMP) through libc (x86_64 stops). */
+static void guest_seccomp(const char *how) {
+  install(SIGSYS, 0, handler);
+  warm();
+  if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+    die("no_new_privs");
+  pthread_t thread;
+  long r;
+  if (!strcmp(how, "tsync")) {
+    if (pipe(tsync_pipe) != 0)
+      die("pipe");
+    if (pthread_create(&thread, NULL, tsync_thread_entry, NULL) != 0)
+      die("pthread_create");
+    r = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, &guest_filter);
+  } else if (!strcmp(how, "prctl")) {
+    r = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &guest_filter, 0, 0);
+  } else {
+    r = SITE(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &guest_filter, 0, 0);
+  }
+  say("install %s ret=%ld\n", how, r);
+  site_bytes("after install");
+  for (int i = 0; i < 3; i++)
+    say("getpid %d pid=%d\n", i, SITE(SYS_getpid, 0, 0, 0, 0, 0) == getpid());
+  say("getppid ret=%ld\n", SITE(SYS_getppid, 0, 0, 0, 0, 0));
+  if (!strcmp(how, "tsync")) {
+    if (write(tsync_pipe[1], "x", 1) != 1)
+      die("write");
+    pthread_join(thread, NULL);
+    say("thread getppid ret=%ld\n", tsync_thread_getppid);
+  }
+  /* A fork child calls the site, then execs: the new image inherits the
+   * filter, so its table must start disabled as well. */
+  pid_t child = fork();
+  if (child == 0) {
+    for (int i = 0; i < 3; i++)
+      say("child getpid %d pid=%d\n", i, SITE(SYS_getpid, 0, 0, 0, 0, 0) == getpid());
+    exec_self("exec_image");
+  }
+  int status;
+  if (waitpid(child, &status, 0) != child)
+    die("wait child");
+  say("child exited=%d code=%d signaled=%d sig=%d\n", WIFEXITED(status), WEXITSTATUS(status),
+      WIFSIGNALED(status), WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+  say("sigsys handled=%d\n", nrec);
+}
+
+static volatile unsigned char sud_selector;
+static volatile int sud_count, sud_syscall;
+static volatile unsigned sud_arch;
+static volatile long sud_call_addr;
+
+static void sud_handler(int sig, siginfo_t *si, void *uc_) {
+  ucontext_t *uc = uc_;
+  (void)sig;
+  sud_count++;
+  sud_syscall = si->si_syscall;
+  sud_arch = si->si_arch;
+  sud_call_addr = (long)si->si_call_addr;
+  uc->uc_mcontext.gregs[REG_RAX] = 1234;
+  sud_selector = SYSCALL_DISPATCH_FILTER_ALLOW;
+}
+
+/* T7b: syscall user dispatch, with the allowed region excluding the site. */
+static void mode_sud(void) {
+  install(SIGSYS, 0, sud_handler);
+  warm();
+  sud_selector = SYSCALL_DISPATCH_FILTER_ALLOW;
+  long r = prctl(PR_SET_SYSCALL_USER_DISPATCH, PR_SYS_DISPATCH_ON, (long)t8_fn,
+                 (long)(t8_site_end - (char *)t8_fn), &sud_selector);
+  say("sud on ret=%ld\n", r);
+  site_bytes("after sud");
+  sud_selector = SYSCALL_DISPATCH_FILTER_BLOCK;
+  r = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  sud_selector = SYSCALL_DISPATCH_FILTER_ALLOW;
+  say("dispatched getpid ret=%ld count=%d syscall=%d arch=%#x call=%s\n", r, sud_count,
+      sud_syscall, sud_arch, where(sud_call_addr));
+  r = prctl(PR_SET_SYSCALL_USER_DISPATCH, PR_SYS_DISPATCH_OFF, 0, 0, 0);
+  say("sud off ret=%ld\n", r);
+  for (int i = 0; i < 3; i++)
+    say("getpid %d pid=%d\n", i, SITE(SYS_getpid, 0, 0, 0, 0, 0) == getpid());
+  pid_t child = fork();
+  if (child == 0) {
+    for (int i = 0; i < 3; i++)
+      say("child getpid %d pid=%d\n", i, SITE(SYS_getpid, 0, 0, 0, 0, 0) == getpid());
+    _exit(0);
+  }
+  int status;
+  if (waitpid(child, &status, 0) != child)
+    die("wait child");
+  say("child exited=%d code=%d\n", WIFEXITED(status), WEXITSTATUS(status));
+  say("sud handled=%d\n", sud_count);
+}
+
+static volatile long untraced_ret, untraced_rcx;
+static volatile int untraced_done;
+
+static void untraced_entry(void) {
+  /* An untraced thread: every syscall it makes is refused by the inherited
+   * filter (ENOSYS), so it records one call through the shared site and
+   * then spins until exit_group ends it. */
+  untraced_ret = SITE(SYS_getpid, 0, 0, 0, 0, 0);
+  untraced_rcx = tp_nz_rcx;
+  __atomic_store_n(&untraced_done, 1, __ATOMIC_SEQ_CST);
+  for (;;)
+    __asm__ volatile("pause");
+}
+
+/* A CLONE_UNTRACED thread gets no new-child stop, so the site must already
+ * be restored when the clone runs. `through`: "libc" clones from libc's
+ * syscall() (never patched), "site" through the patched site itself. */
+static void untraced_thread(const char *through) {
+  warm();
+  size_t size = 64 * 1024;
+  char *stack = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (stack == MAP_FAILED)
+    die("mmap stack");
+  uintptr_t *top = (uintptr_t *)(stack + size - 64);
+  top[0] = (uintptr_t)untraced_entry;
+  long flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM |
+               CLONE_UNTRACED;
+  long r;
+  if (!strcmp(through, "site"))
+    r = SITE(SYS_clone, flags, top, NULL, NULL, 0);
+  else
+    r = syscall(SYS_clone, flags, top, NULL, NULL, 0);
+  say("untraced clone ok=%d\n", r > 0);
+  /* Spin without syscalls, so that the stop sequence is the same in every
+   * run. */
+  while (!__atomic_load_n(&untraced_done, __ATOMIC_SEQ_CST))
+    __asm__ volatile("pause");
+  say("untraced thread getpid ret=%ld rcx=%s\n", untraced_ret, where(untraced_rcx));
+  site_bytes("after untraced");
+}
+
 int main(int argc, char **argv) {
   if (argc != 3) {
     fprintf(stderr, "usage: %s <mode> <report>\n", argv[0]);
@@ -622,6 +989,7 @@ int main(int argc, char **argv) {
   report_fd = open(argv[2], O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
   if (report_fd < 0)
     return 3;
+  main_argv = argv;
   say("mode %s site=%#lx\n", argv[1], (long)tp_site);
   const char *m = argv[1];
   if (!strcmp(m, "sig_pending"))
@@ -644,6 +1012,28 @@ int main(int argc, char **argv) {
     mode_resume_signal();
   else if (!strcmp(m, "stray_slot"))
     mode_stray_slot();
+  else if (!strcmp(m, "exec_image"))
+    mode_exec_image();
+  else if (!strcmp(m, "exec_leader"))
+    mode_exec_leader();
+  else if (!strcmp(m, "exec_thread"))
+    mode_exec_thread();
+  else if (!strcmp(m, "jit"))
+    mode_jit();
+  else if (!strcmp(m, "vfork_spawn"))
+    mode_vfork_spawn();
+  else if (!strcmp(m, "guest_seccomp"))
+    guest_seccomp("site");
+  else if (!strcmp(m, "guest_seccomp_tsync"))
+    guest_seccomp("tsync");
+  else if (!strcmp(m, "guest_seccomp_prctl"))
+    guest_seccomp("prctl");
+  else if (!strcmp(m, "sud"))
+    mode_sud();
+  else if (!strcmp(m, "untraced_thread"))
+    untraced_thread("libc");
+  else if (!strcmp(m, "untraced_thread_site"))
+    untraced_thread("site");
   else
     return 4;
   say("done\n");
