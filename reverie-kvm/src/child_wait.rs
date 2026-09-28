@@ -47,6 +47,14 @@ pub(crate) struct ChildWaitContext {
     identity: Option<reverie::SignalTaskIdentity>,
 }
 
+impl std::fmt::Debug for ChildWaitContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChildWaitContext")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
 pub(crate) enum ChildWaitSelection {
     Ready(SelectedChildWait),
     Pending,
