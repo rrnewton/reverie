@@ -29,7 +29,7 @@ path = "src/bin/lifecycle_guest.rs"
 [dependencies]
 bincode = { version = "2", features = ["serde"] }
 libc = "0.2.186"
-liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "95ee5e6917fa33191eb41c3f1606ea8b03c1b78c" }
+liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "7b4744aa4595790c1ef24606b5c72e4e9f8353a9" }
 reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
 reverie-preload = { version = "0.2.0", path = "../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
 reverie-ptrace = { version = "0.2.0", path = "../reverie-ptrace" }
@@ -70,3 +70,11 @@ path = "tests/rpc_tool.rs"
 [[test]]
 name = "lifecycle"
 path = "tests/lifecycle.rs"
+
+[[bin]]
+name = "reverie-liteinst-mapped-fork-fixture"
+path = "src/bin/mapped_fork_fixture.rs"
+
+[[bin]]
+name = "reverie-liteinst-installed-mapping-fixture"
+path = "src/bin/installed_mapping_fixture.rs"

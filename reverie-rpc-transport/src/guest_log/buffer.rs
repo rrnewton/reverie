@@ -13,6 +13,10 @@ use super::Options;
 
 pub mod ordered;
 
+#[cfg(test)]
+#[path = "buffer/mapped_tests.rs"]
+mod mapped_tests;
+
 pub const PAYLOAD: usize = 4096;
 const PRODUCERS: usize = 64;
 const MAGIC: u64 = 0x33474f4c52455652;
@@ -191,10 +195,7 @@ pub unsafe fn channel_pair(options: Options) -> io::Result<(UnixStream, UnixStre
     channel_pair_version(options, None)
 }
 
-fn channel_pair_version(
-    options: Options,
-    ordered: Option<ordered::Limits>,
-) -> io::Result<(UnixStream, UnixStream)> {
+fn create_descriptor(options: Options, ordered: Option<ordered::Limits>) -> io::Result<OwnedFd> {
     let base_length = size(options)?;
     let length = match ordered {
         Some(limits) => ordered::size(limits)?,
@@ -263,6 +264,14 @@ fn channel_pair_version(
     if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals) } != 0 {
         return Err(io::Error::last_os_error());
     }
+    Ok(fd)
+}
+
+fn channel_pair_version(
+    options: Options,
+    ordered: Option<ordered::Limits>,
+) -> io::Result<(UnixStream, UnixStream)> {
+    let fd = create_descriptor(options, ordered)?;
     let mut pair = [-1; 2];
     if unsafe {
         libc::socketpair(
@@ -381,6 +390,10 @@ impl SharedBuffer {
             return Err(invalid());
         }
         let descriptor = descriptor.ok_or_else(invalid)?;
+        unsafe { Self::import_version(descriptor, ordered) }
+    }
+
+    unsafe fn import_version(descriptor: OwnedFd, ordered: bool) -> io::Result<Self> {
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
         let seals = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_GET_SEALS) };
         let required = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;

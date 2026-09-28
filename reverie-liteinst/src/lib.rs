@@ -10,10 +10,15 @@ use std::process::Command;
 compile_error!("reverie-liteinst requires Linux x86-64");
 
 mod backend;
+mod installed_log;
+pub use installed_log::MappedLogProducer;
+pub use installed_log::mapped_log_producers;
 mod patch_alloc;
 mod stats;
 mod straddler;
 mod syscall_fallback;
+#[cfg(test)]
+mod test_process;
 
 pub use backend::COORDINATOR_ENV;
 pub use backend::LiteinstBackend;
@@ -24,6 +29,7 @@ pub use backend::take_preload_bootstrap;
 pub use reverie_ptrace::LiteinstInstrumentationStats;
 pub use stats::LiteinstBackendStatsSnapshot;
 pub use stats::LiteinstBackendStatsSource;
+pub use stats::MappedStatsCollector;
 pub use stats::LiteinstDispatchPath;
 pub use stats::LiteinstPatchDecision;
 pub mod rpc;
@@ -56,6 +62,9 @@ pub use straddler::straddler_staleness_from_env_value;
 pub use tool_host::install_tool;
 pub use tool_host::install_tool_from_bootstrap;
 pub use tool_host::install_tool_quiescent;
+pub use tool_host::install_tool_with_mapped_coordinator;
+pub use tool_host::install_tool_with_rpc;
+pub use tool_host::install_tool_with_mapped_endpoints;
 
 #[global_allocator]
 static PATCH_ALLOCATOR: patch_alloc::PatchAllocator = patch_alloc::PatchAllocator;

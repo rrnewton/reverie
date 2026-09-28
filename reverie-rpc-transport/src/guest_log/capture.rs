@@ -26,7 +26,9 @@ use super::RunState;
 use super::Stream;
 use super::ordered;
 
+mod mapped;
 pub(crate) mod publication;
+pub use mapped::*;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureLimits {
@@ -126,10 +128,13 @@ pub struct CaptureReport {
 
 impl CaptureReport {
     pub fn qualifies(&self) -> bool {
+        self.guest.peer_closed && self.complete_except_socket_lifetime()
+    }
+
+    fn complete_except_socket_lifetime(&self) -> bool {
         self.guest.phase == Phase::Complete
             && self.guest.run == RunState::Succeeded
             && self.guest.root_reaped
-            && self.guest.peer_closed
             && self.guest.issues.is_empty()
             && self.guest.rpc_issues.is_empty()
             && self.host.closed
@@ -207,6 +212,7 @@ pub(super) struct Shared {
     late_host_writes: AtomicU64,
     pub(super) omitted_issues: AtomicU64,
     collector: Mutex<Option<JoinHandle<()>>>,
+    mapped_lifetime: Option<MappedProcessObserver>,
 }
 
 impl Shared {
@@ -338,8 +344,14 @@ impl CaptureOwner {
         self.handle.clone()
     }
 
-    pub fn finish_until(&mut self, deadline: Instant) -> CaptureReport {
+    /// Close both admissions without waiting, retaining the earliest deadline.
+    /// Call for every capture after emitter quiescence before waiting for any.
+    pub fn request_close_until(&self, deadline: Instant) {
         self.shared.close(deadline);
+    }
+
+    pub fn finish_until(&mut self, deadline: Instant) -> CaptureReport {
+        self.request_close_until(deadline);
         let deadline = self
             .shared
             .state
@@ -387,7 +399,12 @@ impl LogHandle {
             guest: GuestReport {
                 phase: state.guest_phase,
                 run: legacy.run,
-                root_reaped: legacy.root_reaped,
+                root_reaped: shared
+                    .mapped_lifetime
+                    .as_ref()
+                    .map_or(legacy.root_reaped, |lifetime| {
+                        lifetime.snapshot().root_status.is_some()
+                    }),
                 peer_closed: state.peer_closed,
                 issues: legacy.issues,
                 rpc_issues: legacy.rpc_issues,
@@ -476,6 +493,23 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
     destination: D,
     spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
 ) -> Result<(CaptureOwner, LogSink, HostProducer), CaptureStartError> {
+    validate_options(options)?;
+    let deadline = Instant::now() + options.timeouts.startup;
+    let (host, guest) = unsafe { ordered::channel_pair(options.limits.ordered()) }?;
+    let buffer = unsafe { ordered::Buffer::receive(host.as_raw_fd()) }?;
+    let (owner, mut sink, producer) = prepare_buffer(
+        options,
+        deadline,
+        destination,
+        buffer,
+        GuestLifetime::Socket(host),
+        spawn,
+    )?;
+    sink.prepared = Some(guest);
+    Ok((owner, sink, producer))
+}
+
+fn validate_options(options: CaptureOptions) -> Result<(), CaptureStartError> {
     if options.limits.diagnostic_bytes == 0
         || options.limits.diagnostic_bytes > 32 * 1024 * 1024
         || [
@@ -488,15 +522,23 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
     {
         return Err(io::Error::other("invalid capture bounds/deadlines").into());
     }
-    let deadline = Instant::now() + options.timeouts.startup;
-    let (host, guest) = unsafe { ordered::channel_pair(options.limits.ordered()) }?;
-    let buffer = unsafe { ordered::Buffer::receive(host.as_raw_fd()) }?;
+    Ok(())
+}
+
+fn prepare_buffer<D: CaptureDestination>(
+    options: CaptureOptions,
+    deadline: Instant,
+    destination: D,
+    buffer: Arc<ordered::Buffer>,
+    lifetime: GuestLifetime,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+) -> Result<(CaptureOwner, LogSink, HostProducer), CaptureStartError> {
     let writer = unsafe { buffer.activate(0, i64::from(std::process::id())) }
         .map_err(|_| io::Error::other("host registration failed"))?;
     let collector = buffer
         .collector()
         .map_err(|_| io::Error::other("collector registration failed"))?;
-    let (mut sink, handle) = super::retained_log_with_drain(
+    let (sink, handle) = super::retained_log_with_drain(
         super::Options {
             byte_limit: options.limits.host_pending_bytes + options.limits.guest_pending_bytes,
             producers: options.limits.producers,
@@ -536,9 +578,12 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
         late_host_writes: AtomicU64::new(0),
         omitted_issues: AtomicU64::new(0),
         collector: Mutex::new(None),
+        mapped_lifetime: match &lifetime {
+            GuestLifetime::Socket(_) => None,
+            GuestLifetime::Mapped(observer) => Some(observer.clone()),
+        },
     });
     assert!(handle.0.capture.set(shared.clone()).is_ok());
-    sink.prepared = Some(guest);
     let owner = CaptureOwner {
         handle: handle.clone(),
         shared: shared.clone(),
@@ -547,7 +592,7 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
     let worker = shared.clone();
     let thread = spawn(Box::new(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            collect(&worker, host, collector)
+            collect(&worker, lifetime, collector)
         }));
         if result.is_err() {
             worker.fail("capture collector panicked");
@@ -605,7 +650,21 @@ unsafe fn prepared_capture_with<D: CaptureDestination>(
     Ok((owner, sink, producer))
 }
 
-fn collect(shared: &Shared, socket: UnixStream, mut collector: ordered::Collector) {
+enum GuestLifetime {
+    Socket(UnixStream),
+    Mapped(MappedProcessObserver),
+}
+
+impl GuestLifetime {
+    fn closed(&self) -> io::Result<bool> {
+        match self {
+            Self::Socket(socket) => super::peer_closed(socket),
+            Self::Mapped(processes) => processes.closed(),
+        }
+    }
+}
+
+fn collect(shared: &Shared, lifetime: GuestLifetime, mut collector: ordered::Collector) {
     shared.state.lock().unwrap().ready = true;
     shared.notify();
     let mut pending = None;
@@ -638,7 +697,7 @@ fn collect(shared: &Shared, socket: UnixStream, mut collector: ordered::Collecto
                 pending = shared.publication.enqueue(record).err();
             }
         }
-        let closed = match super::peer_closed(&socket) {
+        let closed = match lifetime.closed() {
             Ok(closed) => closed,
             Err(_) => {
                 shared.fail("guest lifetime endpoint protocol failure");
@@ -666,7 +725,7 @@ fn collect(shared: &Shared, socket: UnixStream, mut collector: ordered::Collecto
         }
         {
             let mut state = shared.state.lock().unwrap();
-            state.peer_closed = closed;
+            state.peer_closed = matches!(lifetime, GuestLifetime::Socket(_)) && closed;
             if complete && state.guest_stop.is_none() {
                 state.guest_phase = Phase::Complete;
             } else if guest_cutoff || drained || (closed && shared.buffer.order_failed()) {
