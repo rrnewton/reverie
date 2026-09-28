@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-6ae5e35517e53716)
+
+running 4 tests
+test executor::tests::received_rights_prepare_failures_preserve_both_tables_and_identity_allocator ... ok
+test executor::tests::received_rights_stage_every_owner_before_a_later_clone_failure ... ok
+test executor::tests::received_right_in_closed_standard_slot_cannot_resurrect_supervisor_stdio ... ok
+test executor::tests::received_rights_reservation_and_rewrite_failures_are_transactional ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 846 filtered out; finished in 0.01s
+

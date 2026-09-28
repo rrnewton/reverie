@@ -1,0 +1,50 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling futures-core v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling rustix v1.1.5
+   Compiling bytes v1.12.1
+   Compiling serde_json v1.0.151
+   Compiling lock_api v0.4.14
+   Compiling tracing-core v0.1.36
+   Compiling generic-array v0.14.7
+   Compiling chrono v0.4.45
+   Compiling futures-channel v0.3.34
+   Compiling parking_lot v0.12.5
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling quote v1.0.47
+   Compiling sha2 v0.10.9
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling reverie-dbt v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-dbt)
+   Compiling procfs-core v0.18.0
+   Compiling tempfile v3.27.0
+   Compiling serde_derive v1.0.229
+   Compiling serde_repr v0.1.21
+   Compiling futures-macro v0.3.34
+   Compiling tokio-macros v2.7.2
+   Compiling thiserror-impl v2.0.20
+   Compiling async-trait v0.1.92
+   Compiling procfs v0.18.0
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling thiserror v2.0.20
+   Compiling derive_more-impl v1.0.0
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling serde v1.0.229
+   Compiling syscalls v0.6.18
+   Compiling bincode v2.0.1
+   Compiling linked-hash-map v0.5.6
+   Compiling reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-memory)
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling derive_more v1.0.0
+   Compiling reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-syscalls)
+   Compiling reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-process)
+warning: reverie-dbt@0.2.0: DynamoRIO build cache HIT key=sha256:b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed observed_unix_seconds=1790065962 install=/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/target/debug/reverie-dbt-native-cache/dynamorio-install-b0247764df7fba083f90538e12d3afcc8ffad5150c65bd321e689da5e57b74ed
+   Compiling reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie)
+   Compiling reverie-rpc-transport v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-rpc-transport)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.06s
+PASS: DBT virtual identity and pidfd_open policy

@@ -1,0 +1,6 @@
+result: exit 101
+cause: integration called candidate_kind/open_inspection_alias/reserved_guest_name as associated methods while the first core draft exposed them as free functions
+Cargo.lock sha256 after: 25b12ddd48c1e2ebe75ca5a09a339cc3de5d3b37b71ea1d14a16a13b9875dcc3
+typescript sha256: a648f0aa37d2f7f9a88461242cbcb8d16d04e4356ff4d9082fb28e196141a620
+available bytes after: 498477035520
+resolution: added thin associated wrappers; every later Cargo command uses --locked

@@ -1,0 +1,3 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-carrier-auth-20260921/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.96s
+  Executable tests/static_elf.rs (target/debug/deps/static_elf-517cc153de5ead7b)
