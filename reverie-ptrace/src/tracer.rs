@@ -5699,10 +5699,18 @@ mod tests {
             Ok(())
         }
     }
+    // Prefer the run-time CARGO_MANIFEST_DIR, which Cargo and the fbsource
+    // BUCK rule set. The compile-time value is a directory on the build host
+    // and is missing on the test host when the binary was built remotely.
+    fn fixture(name: &str) -> PathBuf {
+        std::env::var_os("CARGO_MANIFEST_DIR")
+            .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
+            .join("tests/fixtures")
+            .join(name)
+    }
     fn fatal_exec_timer_payload() -> &'static std::ffi::CString {
         static PAYLOAD: LazyLock<std::ffi::CString> = LazyLock::new(|| {
-            let source =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fatal_exec_timer.c");
+            let source = fixture("fatal_exec_timer.c");
             let output = std::env::temp_dir()
                 .join(format!("reverie-fatal-exec-timer-{}", std::process::id()));
             let status = std::process::Command::new("timeout")
@@ -9148,8 +9156,7 @@ mod tests {
 
     fn clone_parent_guest_command() -> Command {
         static GUEST: LazyLock<PathBuf> = LazyLock::new(|| {
-            let source =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/clone_parent.c");
+            let source = fixture("clone_parent.c");
             let output =
                 std::env::temp_dir().join(format!("reverie-clone-parent-{}", std::process::id()));
             let status = std::process::Command::new("cc")
