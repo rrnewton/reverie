@@ -24,14 +24,17 @@
 //!   `handle_syscall_event` future with a waker that does nothing. A future
 //!   pending in a non-tail `inject` whose syscall parked the task is kept
 //!   and polled again, with the syscall's value, when the kernel
-//!   re-executes it. Any other future that is still pending without having
-//!   made a terminal transition is waiting for another task: the kernel
-//!   lets other tasks run ([`KernelServices::wait_for_repoll`]) and the
-//!   core polls it again, within the same interceptor entry, until it
-//!   finishes or the task is killed. Where the kernel cannot wait, such a
-//!   future fails closed with [`NarfFatal::ToolSuspended`] and is never
-//!   polled again, and so does one pending in thread start, post-exec, an
-//!   exit hook or an interrupted inject, which are polled once;
+//!   re-executes it. The core treats any other future that is still
+//!   pending, without a terminal transition or a failure, as waiting for
+//!   another task: the kernel lets other tasks run
+//!   ([`KernelServices::wait_for_repoll`]) and the core polls it again,
+//!   within the same interceptor entry, until it finishes, makes its
+//!   terminal transition, parks, fails, or the task is killed. Only the
+//!   kernel can bound that wait. Where the kernel cannot wait, such a future
+//!   fails closed with [`NarfFatal::ToolSuspended`] and is never polled
+//!   again, and so does one pending in thread start, post-exec, an exit
+//!   hook, an interrupted inject or `init_global_state`, which are polled
+//!   once;
 //! * global RPC is a direct call of [`reverie::GlobalTool::receive_rpc`] on the
 //!   singleton;
 //! * [`NarfToolHost::task_exited`] runs `on_exit_thread` exactly once per

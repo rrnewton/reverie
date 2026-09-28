@@ -126,8 +126,9 @@ pub(crate) enum Injected {
     Stopped,
 }
 
-/// Everything one poll of a Tool callback may touch, borrowed from the host's
-/// stack for that poll only.
+/// Everything a Tool callback may touch while the host polls it within one
+/// interceptor entry, borrowed from the host's stack; the host publishes it
+/// for one poll at a time.
 ///
 /// No code replaces a reference field of a published frame; the guest only
 /// calls through them and mutates `call`.
@@ -410,8 +411,16 @@ impl FrameSlot {
 /// }
 /// ```
 ///
-/// The host stores a suspended future only while it awaits a parked inject,
-/// so no reference into a frame survives from one poll to the next.
+/// A borrow taken through the guest can still be held across an await that
+/// does not need the guest mutably: `send_rpc(..).await`, or a future of the
+/// Tool's own. The host polls such a future again only within the same
+/// interceptor entry, after the kernel let other tasks run
+/// ([`KernelServices::wait_for_repoll`]), and publishes the same frame
+/// again: the host, Tool and thread state it borrows have not moved, and
+/// between the two polls the host touches only the frame's call state and
+/// kernel, of which no guest method returns a borrow. The host keeps a
+/// future from one entry to the next only while it awaits a parked inject,
+/// and `&mut self` has ended every such borrow by then.
 pub struct NarfGuest<T, L, M> {
     slot: Arc<FrameSlot>,
     types: Types<T, L, M>,
@@ -450,12 +459,18 @@ where
         // unwind; `published` asserted non-null, so the frame is live for
         // this call. The host publishes only frames of this guest's `T`, `L`
         // and `M` (a stored continuation records `M` and is resumed only with
-        // the same type). The returned borrow is tied to `&self`, and the
-        // guest never hands out a frame borrow that outlives the method call
-        // that produced it, so it ends within this poll. Shared borrows here
-        // alias only other shared borrows: the exclusive one below needs
-        // `&mut self`. Shortening the frame's lifetime parameter is sound
-        // because no code replaces a frame's reference fields.
+        // the same type). The returned borrow is tied to `&self`. What
+        // `thread_state` and `config` derive from it can outlive this poll,
+        // but only across an await that does not need the guest mutably:
+        // every method that can park the task takes `&mut self`. So a future
+        // holding such a borrow is polled again only within the same entry,
+        // with the same frame, whose `host`, `tool` and `thread_state`
+        // referents have not moved; between the polls the host touches only
+        // `call` and `kernel`, and no guest method returns a borrow of either.
+        // Shared borrows here alias only other shared borrows: the exclusive
+        // one below needs `&mut self`. Shortening the frame's lifetime
+        // parameter is sound because no code replaces a frame's reference
+        // fields.
         unsafe { &*frame }
     }
 
