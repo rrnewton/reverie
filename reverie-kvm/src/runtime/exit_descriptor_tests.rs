@@ -588,6 +588,7 @@ mod unpermitted_retirement {
         let status = f.finish_fault(Some(context), 0);
         // The family ledger retains the exact orphan generation and frozen
         // completion, but must not make it waitable by the retired parent.
+        parent_wait.assert_namespace_reaped_child_for_test(child, status);
         let registry = parent_wait.registry().unwrap();
         assert_eq!(
             registry.registered_child_wait(parent, child.tgid.as_raw()),

@@ -918,7 +918,6 @@ fn run_cross_thread_waitid(test: &str, direction: &str, with_tool: bool) {
         "cross-thread-waitid",
         include_str!("../fixtures/cross_thread_waitid.c"),
         &[
-            "-static",
             "-fno-pie",
             "-no-pie",
             "-std=gnu11",

@@ -646,3 +646,191 @@ fn signal_terminal_receipt_preserves_committed_scope_and_status() {
         }
     }
 }
+
+#[test]
+fn wait_group_exit_injection_is_nonreturning_and_failure_still_wins() {
+    // A transport control: real exact-generation selection/retirement is
+    // exercised separately through ElfExecutor and the public KVM driver.
+    struct FailurePublication {
+        context: crate::failure::FailureContext,
+        cause: Arc<Error>,
+        published: Arc<Mutex<Option<Arc<Error>>>>,
+    }
+    impl FailurePublication {
+        fn publish(self) {
+            assert!(self.context.run.primary().is_none());
+            let error = self.context.publish(
+                "wait control peer failure",
+                Error::SharedFailure(self.cause.clone()),
+            );
+            let Error::SharedFailure(primary) = error else {
+                panic!("real failure did not retain its primary Arc");
+            };
+            assert!(std::ptr::eq(primary.primary(), self.cause.primary()));
+            assert!(self.published.lock().unwrap().replace(primary).is_none());
+        }
+    }
+    struct WaitExecutor {
+        status: ExitStatus,
+        parked: reverie::ParkedSignalFailureContext,
+        fail: Option<FailurePublication>,
+        wrapped: usize,
+    }
+    impl GuestSyscallExecutor<LowerTool> for WaitExecutor {
+        fn read_clock(&self) -> Result<u64> {
+            panic!("terminal wait requested a guest clock")
+        }
+        fn execute(&mut self, request: &SyscallRequest, _: &GuestMemory) -> Result<i64> {
+            assert_eq!(request.number(), libc::SYS_waitid as u64);
+            if let Some(failure) = self.fail.take() {
+                failure.publish();
+            }
+            Err(Error::ChildWaitGroupExit {
+                status: self.status,
+            })
+        }
+        fn signal_failure_context(&self) -> Option<reverie::ParkedSignalFailureContext> {
+            Some(self.parked)
+        }
+        fn with_signal_effects(&mut self, error: Error, _: Option<i64>) -> Error {
+            self.wrapped += 1;
+            error
+        }
+        fn complete_injection<'a>(
+            &'a mut self,
+            _: ToolContext<'a, LowerTool>,
+        ) -> Pin<Box<dyn Future<Output = Result<InjectionCompletion>> + Send + 'a>>
+        where
+            LowerTool: 'a,
+        {
+            panic!("terminal wait completed an ordinary injection")
+        }
+    }
+    struct Dropped {
+        dropped: Arc<AtomicBool>,
+        failure: Option<FailurePublication>,
+    }
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            // The owned driver selects GroupExit before destroying its
+            // suspended callback allocation. Publish only in that destructor.
+            if let Some(failure) = self.failure.take() {
+                failure.publish();
+            }
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FailureTiming {
+        Never,
+        BeforeSelection,
+        DuringDrop,
+    }
+    for timing in [
+        FailureTiming::Never,
+        FailureTiming::BeforeSelection,
+        FailureTiming::DuringDrop,
+    ] {
+        let global = Arc::new(());
+        let run = crate::failure::RunFailure::new(&global);
+        let status = ExitStatus::Exited(37);
+        let cause = Arc::new(Error::GuestClock("retained primary".to_owned()));
+        let published = Arc::new(Mutex::new(None));
+        let publication = || FailurePublication {
+            context: crate::failure::FailureContext::new(
+                run.clone(),
+                Pid::from_raw(71),
+                Pid::from_raw(73),
+            ),
+            cause: cause.clone(),
+            published: published.clone(),
+        };
+        let mut executor = WaitExecutor {
+            status,
+            parked: reverie::ParkedSignalFailureContext {
+                site: reverie::CallbackSignalSite {
+                    process: reverie::SignalProcessId {
+                        tgid: Pid::from_raw(71),
+                        generation: 3,
+                    },
+                    tid: Pid::from_raw(72),
+                    task_generation: 4,
+                    callback_nonce: 5,
+                    boundary_nonce: 6,
+                },
+                ledger_nonce: 7,
+            },
+            fail: (timing == FailureTiming::BeforeSelection).then(publication),
+            wrapped: 0,
+        };
+        let mut state = ();
+        let subscriptions = Subscription::none();
+        let signal = Arc::new(Mutex::new(None));
+        let starts = Arc::new(Mutex::new(Vec::new()));
+        let mut guest = KvmGuest::<LowerTool>::new(
+            Pid::from_raw(71),
+            Pid::from_raw(72),
+            Arc::new(LowerTool),
+            GuestMemory::new(0, STACK_CAPACITY).unwrap(),
+            &[],
+            // The transport mock never reads vCPU registers.
+            unsafe { std::mem::zeroed() },
+            &mut state,
+            &mut executor,
+            global.as_ref(),
+            None,
+            &(),
+            &subscriptions,
+            signal.clone(),
+            starts.clone(),
+            crate::bootstrap::TOOL_STACK_TOP,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut continued = false;
+        let outcome = futures::executor::block_on(drive_handler(
+            async {
+                let _drop = Dropped {
+                    dropped: dropped.clone(),
+                    failure: (timing == FailureTiming::DuringDrop).then(publication),
+                };
+                let wait = SyscallRequest::new(
+                    libc::SYS_waitid as u64,
+                    [libc::P_PID as u64, 2, 0, libc::WEXITED as u64, 0, 0],
+                )
+                .into_syscall()
+                .unwrap();
+                let result = guest.inject(wait).await;
+                continued = true;
+                result
+            },
+            signal,
+            starts,
+            run.subscribe(),
+        ));
+        drop(guest);
+        assert!(!continued);
+        assert!(dropped.load(Ordering::Acquire));
+        assert_eq!(executor.wrapped, 0);
+        if timing == FailureTiming::BeforeSelection {
+            assert!(matches!(outcome, HandlerOutcome::RunFailed));
+        } else {
+            assert!(matches!(outcome, HandlerOutcome::GroupExit(actual) if actual == status));
+        }
+        if timing == FailureTiming::Never {
+            assert!(published.lock().unwrap().is_none());
+            assert!(run.primary().is_none());
+            assert!(run.complete::<()>(Ok(())).is_ok());
+        } else {
+            let expected = published.lock().unwrap().clone().unwrap();
+            assert!(Arc::ptr_eq(&run.primary().unwrap(), &expected));
+            let error = run.complete::<()>(Ok(())).unwrap_err();
+            assert!(error.retains_primary(&cause));
+            assert!(std::ptr::eq(error.primary(), cause.primary()));
+            assert!(
+                matches!(&error, Error::SharedFailure(actual) if Arc::ptr_eq(actual, &expected))
+            );
+            assert!(Arc::ptr_eq(&run.primary().unwrap(), &expected));
+        }
+    }
+}
