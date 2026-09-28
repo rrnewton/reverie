@@ -78,8 +78,50 @@
 //!
 //! Gates on the P2d steps, which exercise the masked hop further: an
 //! asynchronous signal and an `ERESTART*` restart through an in-place hop
-//! (a syscall run at its own site), and a `SIGSTOP` during any hop, which
-//! currently fails closed.
+//! (a syscall run at its own site), and a `SIGSTOP` during an in-place hop:
+//! the deferral described below runs at either hop's target, and no test is
+//! known to run it in place.
+//!
+//! # SIGSTOP inside the masked hop: known differences from plain ptrace
+//!
+//! The hop's mask cannot hold SIGSTOP, so a SIGSTOP pending when the hop
+//! starts is dequeued before the patched syscall runs, where plain ptrace
+//! delivers it after. The hop suppresses such a SIGSTOP, settles it from one
+//! read of the thread's pending signals once the slot's seccomp stop
+//! arrives, and raises it again, before the syscall, with the original
+//! siginfo restored at its delivery stop (P2-SPEC O1.4, section 8 item 2;
+//! `trap_only_reraise_stops` in `task_trap_only.rs` has the details). With
+//! patching `On`, these differences remain, each pinned by a test:
+//!
+//! - Visible to the Tool and the guest, undetected: a SIGCONT sent in the
+//!   window between that read and the re-raise (the tracer's own work
+//!   between them, whose length the host's scheduling decides) is
+//!   discarded by the re-raised SIGSTOP. Under plain ptrace the SIGCONT
+//!   discards the SIGSTOP instead and is delivered: the Tool loses a
+//!   SIGCONT signal event, the guest's SIGCONT handler does not run, and a
+//!   SIGSTOP delivery stop happens instead (reverie suppresses it before the
+//!   Tool or the guest sees it), which restarts a blocking syscall it
+//!   interrupts.
+//!   A SIGCONT to a non-seized tracee that is not stopped leaves no trace,
+//!   so the hop cannot detect it (`trap_only_p2_sigcont_after_the_pending_read_is_lost`).
+//!   Hermit's scheduler does not close this for Hermit guests: a signal a
+//!   guest sends is queued at the sender's own syscall, and a thread doing
+//!   external IO runs its syscall outside its turn, so a guest's
+//!   `kill -STOP; kill -CONT` can straddle the window. Making `On` public
+//!   (P2e) therefore requires closing this window, or refusing at run time
+//!   whatever can reach it, first.
+//! - Refused (`TrapOnlyHopDeferredStopBehindStopSignal`): a SIGTSTP,
+//!   SIGTTIN or SIGTTOU pending at the read. It may have discarded a SIGCONT
+//!   sent after the deferred SIGSTOP, which under plain ptrace discarded the
+//!   SIGSTOP, and nothing left in the pending signals says whether it did,
+//!   so the run fails closed, also when plain ptrace would have completed
+//!   (`trap_only_p2_sigcont_then_a_stop_signal_fails_closed`).
+//! - Refused (`TrapOnlyHopDeferredStopMultiThread`): a deferred SIGSTOP in a
+//!   thread group of more than one thread. Unreachable while sites are
+//!   retired before a second task shares the address space (unit test only).
+//! - Invisible to the Tool and the guest (reverie suppresses every SIGSTOP),
+//!   only in the siginfo or number of SIGSTOP delivery stops: see
+//!   `trap_only_reraise_stops`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -481,6 +523,25 @@ pub enum TrapOnlyFailure {
         site: u64,
         /// The `Threads:` count of the hopping thread's group.
         threads: u64,
+    },
+    /// The masked hop deferred a SIGSTOP, and when it settled the deferral a
+    /// stop signal other than SIGSTOP (SIGTSTP, SIGTTIN or SIGTTOU) was
+    /// pending. Sending any stop signal discards every pending SIGCONT, so a
+    /// SIGCONT sent after the deferred SIGSTOP and before that stop signal
+    /// has left no trace: under plain ptrace it discarded the SIGSTOP (still
+    /// pending there), while the hop, seeing no SIGCONT, would raise the
+    /// SIGSTOP again. Whether such a SIGCONT was sent cannot be read from
+    /// the pending signals (a stop signal pending since before the SIGSTOP
+    /// looks the same, as does one sent again after a SIGCONT discarded it),
+    /// so the hop refuses rather than guess.
+    #[error(
+        "TrapOnlyHopDeferredStopBehindStopSignal: site {site:#x} deferred a SIGSTOP while signal {signal} was pending"
+    )]
+    HopDeferredStopBehindStopSignal {
+        /// The patched site.
+        site: u64,
+        /// The pending stop signal (the lowest-numbered, if several).
+        signal: i32,
     },
     /// A second executing task appeared in an address space that still had
     /// live sites or still accepted new ones: the restore that must precede
