@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-543bfc99885654c3)
+
+running 2 tests
+test executor::tests::close_range_validates_bounds_and_flags ... ok
+test executor::tests::close_range_closes_the_inclusive_descriptor_span ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 813 filtered out; finished in 0.00s
+
