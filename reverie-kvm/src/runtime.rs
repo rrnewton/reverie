@@ -3040,14 +3040,10 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                                 snapshot.completion.status,
                                 snapshot.completion.waitable,
                             );
-                            if !context.completion.begin_publication() {
-                                Err(report(
-                                    "child wait completion",
-                                    Error::UnexpectedVcpuExit(format!(
-                                        "KVM child process {} armed its logical completion twice",
-                                        context.raw_child_pid
-                                    )),
-                                ))
+                            if let Err(error) = executor
+                                .begin_child_wait_publication(context.child, &context.completion)
+                            {
+                                Err(report("child wait completion", error))
                             } else {
                                 let event = reverie::BackendChildWaitEvent {
                                     parent: snapshot.completion.parent,
@@ -3071,21 +3067,14 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                                 // already-committed publication decision.
                                 let first_poll =
                                     poll_fn(|cx| Poll::Ready(callback.as_mut().poll(cx))).await;
-                                let waitability = if context
-                                    .completion
-                                    .publish_after_fence(completion)
-                                {
-                                    let _ = context.completion_notifier.send(context.raw_child_pid);
-                                    Ok(())
-                                } else {
-                                    Err(report(
-                                        "child wait completion",
-                                        Error::UnexpectedVcpuExit(format!(
-                                            "KVM child process {} published its logical completion twice",
-                                            context.raw_child_pid
-                                        )),
-                                    ))
-                                };
+                                let waitability = executor
+                                    .publish_child_wait(
+                                        context.child,
+                                        completion,
+                                        &context.completion,
+                                        true,
+                                    )
+                                    .map_err(|error| report("child wait completion", error));
                                 let caught = match first_poll {
                                     Poll::Ready(caught) => caught,
                                     Poll::Pending => callback.await,
@@ -3124,20 +3113,15 @@ async fn finish_tool_process_after_workers_with_panics<T: Tool>(
                         validate_tool_child_status(family_status, status, context.raw_child_pid)
                     {
                         Err(report("child family exit", error))
-                    } else if !context
-                        .completion
-                        .publish(crate::executor::ChildCompletion::AutoReaped(family_status))
-                    {
-                        Err(report(
-                            "child teardown completion",
-                            Error::UnexpectedVcpuExit(format!(
-                                "KVM child process {} published its teardown completion twice",
-                                context.raw_child_pid
-                            )),
-                        ))
                     } else {
-                        let _ = context.completion_notifier.send(context.raw_child_pid);
-                        Ok(())
+                        executor
+                            .publish_child_wait(
+                                context.child,
+                                crate::executor::ChildCompletion::AutoReaped(family_status),
+                                &context.completion,
+                                false,
+                            )
+                            .map_err(|error| report("child teardown completion", error))
                     }
                 }
                 Ok(crate::executor::ProcessFamilyExit::Root) => Err(report(

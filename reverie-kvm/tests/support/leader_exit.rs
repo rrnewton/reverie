@@ -906,3 +906,133 @@ fn panicked_worker_interrupts_natural_join_without_losing_panic() {
     *WORKER_ERROR.lock().unwrap() = None;
     assert_eq!(std::sync::Arc::strong_count(&control), 1);
 }
+
+// Cross-thread waits use one process-wide child set in Direct and Tool runs.
+fn run_cross_thread_waitid(test: &str, direction: &str, with_tool: bool) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "cross-thread-waitid",
+        include_str!("../fixtures/cross_thread_waitid.c"),
+        &[
+            "-static",
+            "-fno-pie",
+            "-no-pie",
+            "-std=gnu11",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic",
+            "-Wformat=2",
+            "-Werror",
+        ],
+    );
+    for selector in ["pid", "all"] {
+        for consume in ["success", "efault"] {
+            let arguments = [direction, selector, consume];
+            let expected =
+                format!("cross-thread waitid {direction} {selector} {consume} calls=8\n");
+            let native = std::process::Command::new("timeout")
+                .args(["--kill-after=2s", "5s"])
+                .arg(&executable)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert_eq!(native.status.code(), Some(0), "{arguments:?}: {native:?}");
+            assert_eq!(native.stdout, expected.as_bytes(), "{arguments:?}");
+            assert!(native.stderr.is_empty(), "{arguments:?}: {native:?}");
+            let mut argv = vec![executable.to_str().unwrap()];
+            argv.extend_from_slice(&arguments);
+            let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+            backend
+                .install_static_elf_file_with_context(
+                    std::fs::File::open(&executable).unwrap(),
+                    &argv,
+                    &[],
+                    &directory.0,
+                )
+                .unwrap();
+            let (status, stdout, stderr) = if with_tool {
+                // Checked backend plus real lifecycle callbacks. ExitTool does
+                // not subscribe to waitid or emulate Detcore's syscall helper.
+                let (log, status, stdout, stderr) = futures::executor::block_on(
+                    backend.run_static_elf_with_tool::<ExitTool>((), true),
+                )
+                .unwrap();
+                let events = log.0.into_inner().unwrap();
+                let (child, worker) = if direction == "leader-child" {
+                    (2, 3)
+                } else {
+                    (3, 2)
+                };
+                let mut by_identity = events.clone();
+                by_identity.sort_by_key(|(kind, tid, _)| (*kind, *tid));
+                let mut expected_events = vec![
+                    (0, 1, ExitStatus::SUCCESS),
+                    (0, worker, ExitStatus::SUCCESS),
+                    (0, child, ExitStatus::Exited(73)),
+                    (1, 1, ExitStatus::SUCCESS),
+                    (1, child, ExitStatus::Exited(73)),
+                ];
+                expected_events.sort_by_key(|(kind, tid, _)| (*kind, *tid));
+                assert_eq!(by_identity, expected_events, "{arguments:?}");
+                let position = |kind, tid| {
+                    events
+                        .iter()
+                        .position(|(k, id, _)| *k == kind && *id == tid)
+                        .unwrap()
+                };
+                assert!(position(0, child) < position(1, child), "{events:?}");
+                assert!(position(0, 1) < position(1, 1), "{events:?}");
+                assert!(position(0, worker) < position(1, 1), "{events:?}");
+                (status, stdout, stderr)
+            } else {
+                backend.run_static_elf_captured().unwrap()
+            };
+            assert_eq!(
+                status, 0,
+                "{arguments:?}: stdout={stdout:?} stderr={stderr:?}"
+            );
+            assert_eq!(stdout, native.stdout, "{arguments:?}");
+            assert_eq!(stderr, native.stderr, "{arguments:?}");
+        }
+    }
+}
+
+#[test]
+fn cross_thread_waitid_leader_child_direct() {
+    run_cross_thread_waitid(
+        "leader_exit::cross_thread_waitid_leader_child_direct",
+        "leader-child",
+        false,
+    );
+}
+
+#[test]
+fn cross_thread_waitid_leader_child_tool() {
+    run_cross_thread_waitid(
+        "leader_exit::cross_thread_waitid_leader_child_tool",
+        "leader-child",
+        true,
+    );
+}
+
+#[test]
+fn cross_thread_waitid_worker_child_direct() {
+    run_cross_thread_waitid(
+        "leader_exit::cross_thread_waitid_worker_child_direct",
+        "worker-child",
+        false,
+    );
+}
+
+#[test]
+fn cross_thread_waitid_worker_child_tool() {
+    run_cross_thread_waitid(
+        "leader_exit::cross_thread_waitid_worker_child_tool",
+        "worker-child",
+        true,
+    );
+}

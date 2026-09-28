@@ -1308,7 +1308,6 @@ pub(crate) struct OwnChildExitContext {
     pub(crate) child: SignalProcessId,
     pub(crate) _parent_binding: ProcessSignalBindingGuard,
     pub(crate) completion: Arc<ChildCompletionSlot>,
-    pub(crate) completion_notifier: std::sync::mpsc::Sender<i32>,
     pub(crate) raw_child_pid: i32,
 }
 
@@ -2382,7 +2381,7 @@ impl KvmBackend {
             snapshot.completion.status,
             snapshot.completion.waitable,
         );
-        executor.record_child_completion(child.pid, completion)?;
+        executor.record_child_completion(snapshot.completion.child, completion)?;
         executor.append_output(stdout, stderr);
         configure_process_syscall_return(
             &self.memory,
@@ -3034,15 +3033,12 @@ impl KvmBackend {
                 let subscriptions = context.subscriptions;
                 let pending_child_starts = context.pending_child_starts;
                 let raw_child_pid = child.pid;
-                let completion_notifier = executor.child_completion_notifier();
                 let completion = Arc::new(ChildCompletionSlot::default());
                 let child_completion = completion.clone();
-                let child_completion_notifier = completion_notifier.clone();
                 let child_exit_context = OwnChildExitContext {
                     child: child_signal_process,
                     _parent_binding: parent_signal_binding,
                     completion: completion.clone(),
-                    completion_notifier,
                     raw_child_pid,
                 };
                 let panic_owner = child.backend.tool_failure.as_ref().map(|failure| {
@@ -3157,8 +3153,11 @@ impl KvmBackend {
                                         .backend
                                         .report_tool_failure("fork owner retirement", error)
                                 });
-                        if result.is_err() && child_completion.fail_if_pending() {
-                            let _ = child_completion_notifier.send(raw_child_pid);
+                        if result.is_err() {
+                            child_completion.fail_if_pending();
+                            child
+                                .executor
+                                .fail_child_wait_publication(child_signal_process);
                         }
                         child
                             .backend
@@ -9245,12 +9244,22 @@ mod tests {
 
         let (first_sender, first_receiver) = std::sync::mpsc::channel();
         let first_gate = ChildStartGate::new(first_sender);
+        let mut child = leader.fork_child(41, false, false).unwrap();
+        let child_id = child.signal_task_identity().unwrap().process;
+        child.retire_current_thread(ExitStatus::SUCCESS, false);
+        let first_completion = Arc::new(ChildCompletionSlot::default());
+        leader
+            .publish_child_wait(
+                child_id,
+                ChildCompletion::Waitable(ExitStatus::SUCCESS),
+                &first_completion,
+                false,
+            )
+            .unwrap();
         leader.register_child_process_with_gate(
             41,
             first_gate.clone(),
-            Arc::new(ChildCompletionSlot::with_completion(
-                ChildCompletion::Waitable(ExitStatus::SUCCESS),
-            )),
+            first_completion,
             ChildThread::spawn(|| Ok(())),
         );
 

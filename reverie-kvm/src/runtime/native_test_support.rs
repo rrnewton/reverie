@@ -415,15 +415,21 @@ where
                     ))),
                 };
                 let exit_policy = child.executor.as_ref().unwrap().child_exit_policy();
+                let wait_context = child
+                    .executor
+                    .as_ref()
+                    .unwrap()
+                    .fixture_child_wait_context();
                 let result = futures::executor::block_on(child.finish_retired(outcome, Ok(())));
                 if let Ok((status, _, _)) = &result {
                     // No output is captured by this native fixture.
-                    assert!(child_completion.publish(
+                    wait_context.publish_fixture_owner(
                         crate::executor::ChildCompletion::from_waitability(
                             *status,
                             !exit_policy.load(Ordering::SeqCst),
-                        )
-                    ));
+                        ),
+                        &child_completion,
+                    )?;
                 }
                 result.map(|_| ())
             });

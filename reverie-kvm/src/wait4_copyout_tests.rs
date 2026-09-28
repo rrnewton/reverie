@@ -31,9 +31,14 @@ fn assert_wait4_copyout_effects(
     state.children.insert(7, ExitStatus::Exited(3));
     state.children.insert(8, ExitStatus::Exited(4));
     assert_eq!(wait4(memory, &mut state, &args), result, "{args:?}");
-    assert_eq!(state.consumed_child_wait.take(), Some(7));
+    let receipt = state
+        .consumed_child_wait
+        .take()
+        .expect("consuming wait retained its receipt");
+    assert_eq!(receipt.child_pid(), 7);
+    state.children.acknowledge(receipt).unwrap();
     assert_eq!(state.children.len(), 1);
-    assert_eq!(state.children.get(&8), Some(&ExitStatus::Exited(4)));
+    assert_eq!(state.children.get(&8), Some(ExitStatus::Exited(4)));
     let mut actual = vec![0; expected.len()];
     memory.read_raw(WAIT4_COPYOUT_BASE, &mut actual).unwrap();
     assert_eq!(actual, expected, "first wait: {args:?}");
@@ -46,7 +51,7 @@ fn assert_wait4_copyout_effects(
     );
     assert!(state.consumed_child_wait.is_none());
     assert_eq!(state.children.len(), 1);
-    assert_eq!(state.children.get(&8), Some(&ExitStatus::Exited(4)));
+    assert_eq!(state.children.get(&8), Some(ExitStatus::Exited(4)));
     memory.read_raw(WAIT4_COPYOUT_BASE, &mut actual).unwrap();
     assert_eq!(actual, expected, "ECHILD changed output: {args:?}");
 }

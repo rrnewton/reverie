@@ -66,7 +66,7 @@ fn assert_waitid_terminal_effects(
     assert_eq!(waitid(memory, &mut state, &args), result, "{args:?}");
     assert_waitid_arena(memory, base, expected);
     if args[3] & libc::WNOWAIT as u64 != 0 {
-        assert_eq!(state.children.get(&7), Some(&status));
+        assert_eq!(state.children.get(&7), Some(status));
         assert_eq!(state.children.len(), 2);
         assert!(state.consumed_child_wait.is_none());
         // Another protected-output EFAULT could hide ECHILD. A successful
@@ -97,10 +97,15 @@ fn assert_waitid_terminal_effects(
         );
     }
     // Scalar-only tests acknowledge the effect that execute_checked drains.
-    assert_eq!(state.consumed_child_wait.take(), Some(7));
+    let receipt = state
+        .consumed_child_wait
+        .take()
+        .expect("consuming wait retained its receipt");
+    assert_eq!(receipt.child_pid(), 7);
+    state.children.acknowledge(receipt).unwrap();
     assert!(!state.children.contains_key(&7));
     assert_eq!(state.children.len(), 1);
-    assert_eq!(state.children.get(&8), Some(&ExitStatus::Exited(4)));
+    assert_eq!(state.children.get(&8), Some(ExitStatus::Exited(4)));
     assert_eq!(
         waitid(
             memory,
@@ -111,7 +116,7 @@ fn assert_waitid_terminal_effects(
     );
     assert!(state.consumed_child_wait.is_none());
     assert_eq!(state.children.len(), 1);
-    assert_eq!(state.children.get(&8), Some(&ExitStatus::Exited(4)));
+    assert_eq!(state.children.get(&8), Some(ExitStatus::Exited(4)));
     assert_waitid_arena(memory, base, expected);
 }
 
@@ -333,8 +338,8 @@ fn waitid_errors_store_only_six_zero_fields() {
                 );
                 assert!(state.consumed_child_wait.is_none());
                 assert_eq!(state.children.len(), 2);
-                assert_eq!(state.children.get(&7), Some(&ExitStatus::Exited(3)));
-                assert_eq!(state.children.get(&8), Some(&ExitStatus::Exited(4)));
+                assert_eq!(state.children.get(&7), Some(ExitStatus::Exited(3)));
+                assert_eq!(state.children.get(&8), Some(ExitStatus::Exited(4)));
                 assert_waitid_arena(&memory, base, &expected);
             }
         }
@@ -490,16 +495,14 @@ fn waitid_wnohang_checks_options_before_starting_child() {
             let mut executor = ElfExecutor::new(test_state(&root.0), false);
             let (start_sender, start_receiver) = std::sync::mpsc::channel();
             let (release_sender, release_receiver) = std::sync::mpsc::channel();
-            let completion = Arc::new(ChildCompletionSlot::default());
+            let completion = executor.mock_child_completion(7);
             let child_completion = completion.clone();
-            let notifier = executor.child_completion_notifier();
             let handle = ChildThread::spawn(move || {
                 release_receiver.recv().unwrap();
                 assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9))));
-                notifier.send(7).unwrap();
                 Ok(())
             });
-            executor.register_child_process(7, start_sender, completion, handle);
+            executor.register_mock_child_process(7, start_sender, completion, handle);
             let memory = waitid_copyout_memory(base);
             let result = executor.execute_checked(
                 &SyscallRequest::new(
@@ -541,18 +544,16 @@ fn waitid_wnohang_writes_only_fields_without_consuming() {
             let (start_sender, start_receiver) = std::sync::mpsc::channel();
             let (running_sender, running_receiver) = std::sync::mpsc::channel();
             let (release_sender, release_receiver) = std::sync::mpsc::channel();
-            let completion = Arc::new(ChildCompletionSlot::default());
+            let completion = executor.mock_child_completion(7);
             let child_completion = completion.clone();
-            let notifier = executor.child_completion_notifier();
             let handle = ChildThread::spawn(move || {
                 running_sender.send(()).unwrap();
                 start_receiver.recv().unwrap();
                 release_receiver.recv().unwrap();
                 assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9))));
-                notifier.send(7).unwrap();
                 Ok(())
             });
-            executor.register_child_process(7, start_sender, completion, handle);
+            executor.register_mock_child_process(7, start_sender, completion, handle);
             running_receiver.recv().unwrap();
             let memory = waitid_copyout_memory(base);
             if output >= 2 {

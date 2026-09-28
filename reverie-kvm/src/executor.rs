@@ -63,6 +63,9 @@ use crate::signal::signal_info_user;
 
 #[path = "process_signal_publication.rs"]
 mod process_signal_publication;
+pub(crate) use process_signal_publication::ChildWaitContext;
+pub(crate) use process_signal_publication::ChildWaitReceipt;
+use process_signal_publication::ChildWaitSelection;
 pub(crate) use process_signal_publication::ProcessFamilyExit;
 
 #[path = "capture_identity.rs"]
@@ -866,11 +869,17 @@ fn execute_basic_syscall_inner(
         i64::from(state.pgid)
     } else if number == libc::SYS_wait4 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        wait4(memory, state, args)
+        return match wait4_result(memory, state, args) {
+            Ok(result) => continue_with(result),
+            Err(error) => SyscallAction::Failure(error),
+        };
     } else if number == libc::SYS_waitid as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-227): Review serialized-child waitid emulation.
-        waitid(memory, state, args)
+        return match waitid_result(memory, state, args) {
+            Ok(result) => continue_with(result),
+            Err(error) => SyscallAction::Failure(error),
+        };
     } else if number == libc::SYS_getuid as u64
         || number == libc::SYS_geteuid as u64
         || number == libc::SYS_getgid as u64
@@ -1381,8 +1390,6 @@ pub(crate) struct ElfExecutor {
     // and the traced root, which outlives every process it transitively joins,
     // joins them. Keyed by PID, which is never reissued within a run.
     namespace_orphanage: Arc<Mutex<std::collections::BTreeMap<i32, PendingProcess>>>,
-    child_completion_sender: std::sync::mpsc::Sender<i32>,
-    child_completion_receiver: Mutex<std::sync::mpsc::Receiver<i32>>,
     process_action: Option<ProcessAction>,
     pending_segment: Option<(SegmentBase, u64)>,
     current_user_stack_pointer: Option<u64>,
@@ -1512,6 +1519,7 @@ struct OwnedChildProcesses {
 }
 
 struct PendingProcess {
+    child: Option<reverie::SignalProcessId>,
     start: ChildStartGate,
     completion: Arc<ChildCompletionSlot>,
     handle: ChildProcessHandle,
@@ -1825,14 +1833,6 @@ enum ChildCompletionSlotError {
 }
 
 impl ChildCompletionSlot {
-    #[cfg(test)]
-    pub(crate) fn with_completion(completion: ChildCompletion) -> Self {
-        Self {
-            state: Mutex::new(ChildCompletionState::Ready(completion)),
-            ..Default::default()
-        }
-    }
-
     /// Fence a callback-announced transition before polling arbitrary Tool
     /// code. A concurrent nonblocking parent wait may still poll a genuinely
     /// running `Pending` child, but it must wait through this bounded state so
@@ -3095,12 +3095,22 @@ impl ElfExecutor {
             FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
         ));
         state.fdinfo_table = Arc::downgrade(&file_table);
-        let signal_registry = Arc::new(ProcessSignalRegistry::default());
+        let signal_registry = state.children.registry().unwrap_or_default();
         let signal_binding = signal_registry
             .register(&state, &file_table, process_generation, None)
             .expect("a traced root has no parent registration to reject");
         signal_registry.install_namespace_reaper(&state);
-        let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+        state.children = ChildWaitContext::bind(
+            signal_registry.clone(),
+            reverie::SignalTaskIdentity {
+                process: reverie::SignalProcessId {
+                    tgid: reverie::Pid::from_raw(state.pid),
+                    generation: process_generation,
+                },
+                tid: reverie::Pid::from_raw(state.tid),
+                task_generation,
+            },
+        );
         Self {
             state,
             task_generation,
@@ -3122,8 +3132,6 @@ impl ElfExecutor {
             unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             namespace_orphanage: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
-            child_completion_sender,
-            child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
             pending_segment: None,
             current_user_stack_pointer: None,
@@ -3561,7 +3569,17 @@ impl ElfExecutor {
                 )));
             }
         };
-        let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+        state.children = ChildWaitContext::bind(
+            self.signal_registry.clone(),
+            reverie::SignalTaskIdentity {
+                process: reverie::SignalProcessId {
+                    tgid: reverie::Pid::from_raw(state.pid),
+                    generation: process_generation,
+                },
+                tid: reverie::Pid::from_raw(state.tid),
+                task_generation,
+            },
+        );
         let child = Self {
             state,
             task_generation,
@@ -3583,8 +3601,6 @@ impl ElfExecutor {
             unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             namespace_orphanage: self.namespace_orphanage.clone(),
-            child_completion_sender,
-            child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
             pending_segment: None,
             current_user_stack_pointer: None,
@@ -3663,7 +3679,17 @@ impl ElfExecutor {
             .get(state.tid)
             .expect("registered KVM task exists")
             .process_generation;
-        let (child_completion_sender, child_completion_receiver) = std::sync::mpsc::channel();
+        state.children = ChildWaitContext::bind(
+            self.signal_registry.clone(),
+            reverie::SignalTaskIdentity {
+                process: reverie::SignalProcessId {
+                    tgid: reverie::Pid::from_raw(state.pid),
+                    generation: process_generation,
+                },
+                tid: reverie::Pid::from_raw(state.tid),
+                task_generation,
+            },
+        );
         let child = Self {
             state,
             task_generation,
@@ -3685,8 +3711,6 @@ impl ElfExecutor {
             unstarted_tool_cleanup: Mutex::new(Vec::new()),
             transferred_processes: self.transferred_processes.clone(),
             namespace_orphanage: self.namespace_orphanage.clone(),
-            child_completion_sender,
-            child_completion_receiver: Mutex::new(child_completion_receiver),
             process_action: None,
             pending_segment: None,
             current_user_stack_pointer: None,
@@ -3710,30 +3734,86 @@ impl ElfExecutor {
         self.sigchld_auto_reap.clone()
     }
 
-    pub(crate) fn child_completion_notifier(&self) -> std::sync::mpsc::Sender<i32> {
-        self.child_completion_sender.clone()
-    }
-
     #[cfg(test)]
     pub(crate) fn child_completion(&self, status: ExitStatus) -> ChildCompletion {
         ChildCompletion::from_waitability(status, !self.sigchld_auto_reap.load(Ordering::SeqCst))
     }
 
+    #[cfg(any(test, feature = "native-test-support"))]
+    pub(crate) fn fixture_child_wait_context(&self) -> ChildWaitContext {
+        self.state.children.clone()
+    }
+
     pub(crate) fn record_child_completion(
         &mut self,
-        pid: i32,
+        child: reverie::SignalProcessId,
         completion: ChildCompletion,
     ) -> crate::Result<()> {
-        match completion {
-            ChildCompletion::Waitable(status) => {
-                self.state.children.insert(pid, status);
-                Ok(())
-            }
-            ChildCompletion::AutoReaped(_) => Ok(()),
-        }
+        self.signal_registry
+            .publish_direct_child_wait(child, completion)
+    }
+
+    fn validate_owned_child_completion(
+        &self,
+        pid: i32,
+        child: Option<reverie::SignalProcessId>,
+        completion: ChildCompletion,
+    ) -> crate::Result<()> {
+        let parent = self.admitted_signal_identity().process;
+        let child = child.ok_or(crate::Error::FamilyWaitLedgerMismatch {
+            parent,
+            child_pid: pid,
+        })?;
+        self.signal_registry
+            .validate_owned_child_wait(parent, child, completion)
+    }
+
+    pub(crate) fn begin_child_wait_publication(
+        &self,
+        child: reverie::SignalProcessId,
+        completion: &ChildCompletionSlot,
+    ) -> crate::Result<()> {
+        self.signal_registry.begin_wait_boundary(child, completion)
+    }
+
+    pub(crate) fn publish_child_wait(
+        &self,
+        child: reverie::SignalProcessId,
+        status: ChildCompletion,
+        completion: &ChildCompletionSlot,
+        fenced: bool,
+    ) -> crate::Result<()> {
+        self.signal_registry
+            .publish_wait_boundary(child, status, completion, fenced)
+    }
+
+    pub(crate) fn fail_child_wait_publication(&self, child: reverie::SignalProcessId) {
+        self.signal_registry.fail_child_wait(child);
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review KVM child registration and join semantics.
+    #[cfg(test)]
+    fn register_mock_child_process(
+        &mut self,
+        pid: i32,
+        start: std::sync::mpsc::Sender<ChildStartCommand>,
+        completion: Arc<process_signal_publication::TestChildCompletion>,
+        handle: ChildThread,
+    ) {
+        self.register_child_process(pid, start, completion.slot.clone(), handle);
+    }
+
+    #[cfg(test)]
+    fn mock_child_completion(
+        &self,
+        pid: i32,
+    ) -> Arc<process_signal_publication::TestChildCompletion> {
+        Arc::new(process_signal_publication::TestChildCompletion::new(
+            &self.state.children,
+            pid,
+        ))
+    }
+
     #[cfg(test)]
     pub(crate) fn register_child_process(
         &mut self,
@@ -3767,6 +3847,9 @@ impl ElfExecutor {
         let previous = self.pending_processes.insert(
             pid,
             PendingProcess {
+                child: self
+                    .signal_registry
+                    .registered_child_wait(self.admitted_signal_identity().process, pid),
                 start,
                 completion,
                 handle: ChildProcessHandle {
@@ -3837,7 +3920,10 @@ impl ElfExecutor {
         }
 
         let PendingProcess {
-            completion, handle, ..
+            child,
+            completion,
+            handle,
+            ..
         } = self
             .pending_processes
             .remove(&pid)
@@ -3867,7 +3953,7 @@ impl ElfExecutor {
                 "KVM child process {pid} exited without publishing its status"
             ))
         })?;
-        self.record_child_completion(pid, completion)?;
+        self.validate_owned_child_completion(pid, child, completion)?;
         Ok(true)
     }
 
@@ -4088,9 +4174,9 @@ impl ElfExecutor {
                             ))
                         })
                     });
-                    if let Err(error) = completion
-                        .and_then(|completion| self.record_child_completion(pid, completion))
-                    {
+                    if let Err(error) = completion.and_then(|completion| {
+                        self.validate_owned_child_completion(pid, process.child, completion)
+                    }) {
                         errors.push(error);
                     }
                 }
@@ -4218,160 +4304,88 @@ impl ElfExecutor {
         }
     }
 
-    fn synchronize_wait4(&mut self, request: &SyscallRequest) -> Option<i64> {
-        if request.number() != libc::SYS_wait4 as u64 {
-            return None;
-        }
-        let args = request.args();
-        if !wait4_options_supported(args[2]) {
-            return Some(negative_errno(libc::EINVAL));
-        }
-        let requested = args[0] as u32 as libc::pid_t;
-        let matches = |pid: i32| requested == -1 || requested > 0 && pid == requested;
-        if self.state.children.keys().copied().any(matches) {
-            return None;
-        }
-        let nonblocking = args[2] & libc::WNOHANG as u64 != 0;
-
-        loop {
-            let pids = self
-                .pending_processes
-                .keys()
-                .copied()
-                .filter(|pid| matches(*pid))
-                .collect::<Vec<_>>();
-            if pids.is_empty() {
-                return None;
-            }
-
-            let mut running = None;
-            for pid in pids {
-                match self.collect_child_process(pid, false) {
-                    Ok(true) if self.state.children.contains_key(&pid) => return None,
-                    Ok(true) => {}
-                    Ok(false) => {
-                        running.get_or_insert(pid);
-                    }
-                    Err(error) => {
-                        eprintln!("reverie-kvm child {pid} failed before wait4: {error}");
-                        return Some(negative_errno(libc::EIO));
-                    }
-                }
-            }
-
-            if nonblocking {
-                if running.is_some() {
-                    return Some(0);
-                }
-                continue;
-            }
-            if running.is_none() {
-                continue;
-            }
-            if self
-                .child_completion_receiver
-                .lock()
-                .expect("KVM child completion receiver poisoned")
-                .recv()
-                .is_err()
-            {
-                eprintln!("reverie-kvm child completion channel disconnected before wait4");
-                return Some(negative_errno(libc::EIO));
-            }
-        }
-    }
-
-    // Mirror `synchronize_wait4` for `waitid`. KVM child processes run on
-    // separate host threads tracked in `pending_processes`; their exit codes
-    // only reach `state.children` after `join_child_process`. `waitid()` (like
-    // `wait4()`) reads exclusively from `state.children`, so without this
-    // synchronization a `waitid` on a not-yet-joined child returns spurious
-    // `ECHILD`. The tool's `waitid` poll loop (detcore) converts every wait to
-    // `WNOHANG` and treats `ECHILD` as terminal, so that spurious error
-    // propagates to the guest instead of retrying — a timing-raced failure a
-    // determinism engine must not produce.
-    //
-    // While a target child is still running under a `WNOHANG` poll, report the
-    // POSIX "no child ready yet" result by writing the six zero waitid fields,
-    // including `si_pid`; the tool's poll loop then retries instead of erroring.
-    // Once the child has finished (or for a blocking wait), join it so its exit
-    // is recorded, then fall through to `waitid()` which reaps it normally.
-    fn synchronize_waitid(
+    fn execute_child_wait(
         &mut self,
         request: &SyscallRequest,
         memory: &GuestMemory,
-    ) -> Option<i64> {
-        if request.number() != libc::SYS_waitid as u64 {
-            return None;
-        }
+    ) -> Option<crate::Result<i64>> {
         let args = request.args();
-        // args: [idtype, id, infop, options, rusage, _]
-        // Invalid options must not release a pending child's start gate.
-        if !waitid_options_supported(args[3]) {
-            return Some(finish_waitid(
-                memory,
-                args,
-                None,
-                negative_errno(libc::EINVAL),
-            ));
-        }
-        let exact = match args[0] as libc::idtype_t {
-            libc::P_PID => match libc::pid_t::try_from(args[1]) {
-                Ok(pid) => Some(pid),
-                Err(_) => return None,
-            },
-            libc::P_ALL | libc::P_PGID => None,
-            _ => return None,
-        };
-        let matches = |pid: i32| exact.is_none_or(|expected| pid == expected);
-        if self.state.children.keys().copied().any(matches) {
+        let waitid_call = request.number() == libc::SYS_waitid as u64;
+        if !waitid_call && request.number() != libc::SYS_wait4 as u64 {
             return None;
         }
-        let nonblocking = (args[3] as libc::c_int) & libc::WNOHANG != 0;
-
-        loop {
-            let pids = self
+        let valid = if waitid_call {
+            waitid_options_supported(args[3])
+        } else {
+            wait4_options_supported(args[2])
+        };
+        if valid {
+            let requested = if waitid_call {
+                match args[0] as libc::idtype_t {
+                    libc::P_PID => match i32::try_from(args[1]) {
+                        Ok(pid) => Some(pid),
+                        Err(_) => {
+                            return Some(Ok(finish_waitid(
+                                memory,
+                                args,
+                                None,
+                                negative_errno(libc::ECHILD),
+                            )));
+                        }
+                    },
+                    libc::P_ALL | libc::P_PGID => None,
+                    _ => {
+                        return Some(Ok(finish_waitid(
+                            memory,
+                            args,
+                            None,
+                            negative_errno(libc::EINVAL),
+                        )));
+                    }
+                }
+            } else {
+                let pid = args[0] as i32;
+                (pid > 0).then_some(pid)
+            };
+            // An already ready sibling result need not join or wait through a
+            // different creator-owned child's physical completion fence.
+            let ready = match self.state.children.has_ready(requested) {
+                Ok(ready) => ready,
+                Err(error) => return Some(Err(error)),
+            };
+            let own_children: Vec<_> = self
                 .pending_processes
                 .keys()
                 .copied()
-                .filter(|pid| matches(*pid))
-                .collect::<Vec<_>>();
-            if pids.is_empty() {
-                return None;
-            }
-
-            let mut running = None;
-            for pid in pids {
-                match self.collect_child_process(pid, false) {
-                    Ok(true) if self.state.children.contains_key(&pid) => return None,
-                    Ok(true) => {}
-                    Ok(false) => {
-                        running.get_or_insert(pid);
-                    }
-                    Err(error) => {
-                        eprintln!("reverie-kvm child {pid} failed before waitid: {error}");
-                        return Some(negative_errno(libc::EIO));
-                    }
+                .filter(|pid| !ready && requested.is_none_or(|requested| requested == *pid))
+                .collect();
+            for pid in own_children {
+                if self.pending_processes[&pid].child.is_none() {
+                    return Some(Err(crate::Error::FamilyWaitLedgerMismatch {
+                        parent: self.admitted_signal_identity().process,
+                        child_pid: pid,
+                    }));
+                }
+                if let Err(error) = self.collect_child_process(pid, false) {
+                    return Some(Err(error));
                 }
             }
-
-            if nonblocking && running.is_some() {
-                return Some(finish_waitid(memory, args, None, 0));
-            }
-            if running.is_none() {
-                continue;
-            }
-            if self
-                .child_completion_receiver
-                .lock()
-                .expect("KVM child completion receiver poisoned")
-                .recv()
-                .is_err()
-            {
-                eprintln!("reverie-kvm child completion channel disconnected before waitid");
-                return Some(negative_errno(libc::EIO));
-            }
         }
+        let result = if waitid_call {
+            waitid_result(memory, &mut self.state, args)
+        } else {
+            wait4_result(memory, &mut self.state, args)
+        };
+        let acknowledged = self
+            .state
+            .consumed_child_wait
+            .take()
+            .map(|receipt| self.state.children.acknowledge(receipt))
+            .transpose();
+        Some(match (result, acknowledged) {
+            (Ok(value), Ok(_)) => Ok(value),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        })
     }
 
     pub(crate) fn take_clear_child_tid(&mut self) -> Option<u64> {
@@ -4416,6 +4430,10 @@ impl ElfExecutor {
             .update_from_elf(&self.state)
             .expect("clone post-exec KVM file table");
         self.signal_binding.rebind(&self.state, &file_table);
+        self.state.children = ChildWaitContext::bind(
+            self.signal_registry.clone(),
+            self.admitted_signal_identity(),
+        );
         self.sigchld_auto_reap
             .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
         self.pending_segment = None;
@@ -5534,15 +5552,6 @@ impl ElfExecutor {
         }
     }
 
-    fn record_consumed_child_wait(&self, child_pid: i32) -> crate::Result<()> {
-        let parent = self.admitted_signal_identity().process;
-        let consumed = self.signal_registry.consume_child_wait(parent, child_pid);
-        if !consumed && self.signal_registry.controlled() {
-            return Err(crate::Error::FamilyWaitLedgerMismatch { parent, child_pid });
-        }
-        Ok(())
-    }
-
     pub(crate) fn sole_signal_receiver(&self) -> bool {
         let lifecycle = self
             .state
@@ -6379,19 +6388,16 @@ impl ElfExecutor {
     ) -> crate::Result<i64> {
         #[cfg(test)]
         memory.observe_test_syscall_dispatch(request);
-        if let Some(child_pid) = self.state.consumed_child_wait {
+        if let Some(receipt) = self.state.consumed_child_wait.as_ref() {
             return Err(crate::Error::ChildWaitLedgerEffectPending {
                 parent: self.admitted_signal_identity().process,
-                child_pid,
+                child_pid: receipt.child_pid(),
             });
         }
         self.bind_address_space(memory);
         let _retirement = self.state.file_retirement.hold();
-        if let Some(result) = self.synchronize_wait4(request) {
-            return Ok(result);
-        }
-        if let Some(result) = self.synchronize_waitid(request, memory) {
-            return Ok(result);
+        if let Some(result) = self.execute_child_wait(request, memory) {
+            return result;
         }
         if let Some(result) = self.execute_accept(request, memory) {
             return Ok(result);
@@ -6459,7 +6465,7 @@ impl ElfExecutor {
                 }
                 let consumed_child = self.state.consumed_child_wait.take();
                 if let Some(child) = consumed_child {
-                    self.record_consumed_child_wait(child)?;
+                    self.state.children.acknowledge(child)?;
                 }
                 Ok(result)
             }
@@ -17926,35 +17932,33 @@ fn wait4_options_supported(raw: u64) -> bool {
     options & !(libc::WNOHANG | libc::WUNTRACED) == 0
 }
 
-fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    // pid_t is a 32-bit signed value; the guest passes wait4(-1) as 0xFFFFFFFF
-    // in a 64-bit register. Truncate to i32 before sign-extending so the common
-    // wait-for-any-child form (-1), process-group forms (0, <-1), and a specific
-    // pid are all interpreted correctly instead of collapsing to ECHILD.
-    let requested = args[0] as i32 as i64;
+fn wait4_result(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+) -> crate::Result<i64> {
+    // Linux pid_t is signed low32. Retain the existing raw backend's single
+    // group selector approximation; this change does not add PGID support.
+    let requested = args[0] as i32;
     if !wait4_options_supported(args[2]) {
-        return negative_errno(libc::EINVAL);
+        return Ok(negative_errno(libc::EINVAL));
     }
-    let child_pid = if requested > 0 {
-        i32::try_from(requested)
-            .ok()
-            .filter(|pid| state.children.contains_key(pid))
-    } else {
-        // -1 (any child), 0 and <-1 (any child in a process group): this guest
-        // models a single process group, so reap any recorded child.
-        state.children.keys().next().copied()
+    let selected = match state.children.select(
+        (requested > 0).then_some(requested),
+        true,
+        args[2] as libc::c_int & libc::WNOHANG != 0,
+    )? {
+        ChildWaitSelection::Ready(selected) => selected,
+        ChildWaitSelection::Pending => return Ok(0),
+        ChildWaitSelection::NoChild => return Ok(negative_errno(libc::ECHILD)),
     };
-    let Some(child_pid) = child_pid else {
-        return negative_errno(libc::ECHILD);
-    };
-    // Linux reaps the zombie before either copy-out. An EFAULT must still
-    // consume this exact child in both the backend and the family ledger.
-    let status = state.children.remove(&child_pid).unwrap().into_raw();
-    state.consumed_child_wait = Some(child_pid);
-    // Status is a nonpartial scalar store; the bulk rusage copy may leave a
-    // writable prefix on fault. Keep the backend's existing zero accounting.
+    let child_pid = selected.child.tgid.as_raw();
+    let status = selected.status.into_raw();
+    // Selection already consumed the exact family edge. Preserve that receipt
+    // through either output fault: status is nonpartial and precedes bulk usage.
+    state.consumed_child_wait = selected.receipt;
     if args[1] != 0 && memory.user().put_user_i32(args[1], status).is_err() {
-        return negative_errno(libc::EFAULT);
+        return Ok(negative_errno(libc::EFAULT));
     }
     if args[3] != 0
         && memory
@@ -17962,9 +17966,14 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
             .copy_to_user(args[3], &[0; std::mem::size_of::<libc::rusage>()])
             .is_err()
     {
-        return negative_errno(libc::EFAULT);
+        return Ok(negative_errno(libc::EFAULT));
     }
-    i64::from(child_pid)
+    Ok(i64::from(child_pid))
+}
+
+#[cfg(test)]
+fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    wait4_result(memory, state, args).expect("raw wait4 fixture has a coherent family ledger")
 }
 
 #[repr(C)]
@@ -18044,28 +18053,60 @@ fn finish_waitid(
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-227): Review serialized-child waitid ABI emulation.
-fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn waitid_result(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+) -> crate::Result<i64> {
     if !waitid_options_supported(args[3]) {
-        return finish_waitid(memory, args, None, negative_errno(libc::EINVAL));
+        return Ok(finish_waitid(
+            memory,
+            args,
+            None,
+            negative_errno(libc::EINVAL),
+        ));
     }
-
-    let child_pid = match args[0] as libc::idtype_t {
-        libc::P_PID => libc::pid_t::try_from(args[1])
-            .ok()
-            .filter(|pid| state.children.contains_key(pid)),
-        libc::P_ALL | libc::P_PGID => state.children.keys().next().copied(),
-        _ => return finish_waitid(memory, args, None, negative_errno(libc::EINVAL)),
+    let requested = match args[0] as libc::idtype_t {
+        libc::P_PID => match i32::try_from(args[1]) {
+            Ok(pid) => Some(pid),
+            Err(_) => {
+                return Ok(finish_waitid(
+                    memory,
+                    args,
+                    None,
+                    negative_errno(libc::ECHILD),
+                ));
+            }
+        },
+        libc::P_ALL | libc::P_PGID => None,
+        _ => {
+            return Ok(finish_waitid(
+                memory,
+                args,
+                None,
+                negative_errno(libc::EINVAL),
+            ));
+        }
     };
-    let Some(child_pid) = child_pid else {
-        return finish_waitid(memory, args, None, negative_errno(libc::ECHILD));
+    let selected = match state.children.select(
+        requested,
+        args[3] as libc::c_int & libc::WNOWAIT == 0,
+        args[3] as libc::c_int & libc::WNOHANG != 0,
+    )? {
+        ChildWaitSelection::Ready(selected) => selected,
+        ChildWaitSelection::Pending => return Ok(finish_waitid(memory, args, None, 0)),
+        ChildWaitSelection::NoChild => {
+            return Ok(finish_waitid(
+                memory,
+                args,
+                None,
+                negative_errno(libc::ECHILD),
+            ));
+        }
     };
-    let status = state.children[&child_pid];
-    if (args[3] as libc::c_int) & libc::WNOWAIT == 0 {
-        // Linux consumes the selected zombie before either copyout. The
-        // checked executor must drain this exact effect even after EFAULT.
-        state.children.remove(&child_pid);
-        state.consumed_child_wait = Some(child_pid);
-    }
+    let child_pid = selected.child.tgid.as_raw();
+    let status = selected.status;
+    state.consumed_child_wait = selected.receipt;
     let (si_code, si_status) = match status {
         ExitStatus::Exited(code) => (libc::CLD_EXITED, code),
         ExitStatus::Signaled(signal, true) => (libc::CLD_DUMPED, signal as libc::c_int),
@@ -18084,7 +18125,12 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         _si_stime: 0,
         _padding: [0; std::mem::size_of::<libc::siginfo_t>() - 48],
     };
-    finish_waitid(memory, args, Some(&info), 0)
+    Ok(finish_waitid(memory, args, Some(&info), 0))
+}
+
+#[cfg(test)]
+fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    waitid_result(memory, state, args).expect("raw waitid fixture has a coherent family ledger")
 }
 
 fn write_u64(memory: &mut GuestMemory, address: u64, value: u64) -> i64 {
@@ -18428,7 +18474,7 @@ pub(crate) fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         stderr_alias_fds: std::collections::BTreeSet::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
-        children: std::collections::BTreeMap::new(),
+        children: ChildWaitContext::default(),
         consumed_child_wait: None,
         proc_files: std::collections::BTreeMap::new(),
         synthetic_proc_nofollow_fds: std::collections::BTreeSet::new(),
@@ -19374,7 +19420,9 @@ mod tests {
     }
 
     pub(super) fn test_state(cwd: &Path) -> LoadedStaticElf {
-        native_loaded_state(cwd)
+        let mut state = native_loaded_state(cwd);
+        state.children = ChildWaitContext::test_root();
+        state
     }
 
     fn prctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -44867,8 +44915,14 @@ mod tests {
                                 0,
                             ];
                             assert_eq!(wait4(&mut memory, &mut state, &args), 7);
-                            assert_eq!(state.consumed_child_wait, Some(7));
-                            assert_eq!(state.children.get(&8), Some(&ExitStatus::Exited(4)));
+                            assert_eq!(
+                                state
+                                    .consumed_child_wait
+                                    .as_ref()
+                                    .map(|receipt| receipt.child_pid()),
+                                Some(7)
+                            );
+                            assert_eq!(state.children.get(&8), Some(ExitStatus::Exited(4)));
                             assert!(!state.children.contains_key(&7));
                             if outputs {
                                 expected[STATUS as usize..STATUS as usize + 4]
@@ -44878,7 +44932,10 @@ mod tests {
                                     .fill(0);
                             }
                             // A second exact wait cannot consume the remaining sibling.
-                            state.consumed_child_wait.take();
+                            state
+                                .children
+                                .acknowledge(state.consumed_child_wait.take().unwrap())
+                                .unwrap();
                             let mut second = args;
                             second[0] = 7;
                             assert_eq!(
@@ -44915,7 +44972,7 @@ mod tests {
                     ),
                     negative_errno(libc::EINVAL)
                 );
-                assert_eq!(state.children.get(&7), Some(&ExitStatus::Exited(3)));
+                assert_eq!(state.children.get(&7), Some(ExitStatus::Exited(3)));
                 assert!(state.consumed_child_wait.is_none());
                 let mut actual = [0; PAGE_SIZE as usize];
                 memory.read(0, &mut actual).unwrap();
@@ -44998,9 +45055,9 @@ mod tests {
                 let mut executor = ElfExecutor::new(test_state(&root.0), false);
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let (release_sender, release_receiver) = std::sync::mpsc::channel();
-                let completion = Arc::new(ChildCompletionSlot::default());
+                let completion = executor.mock_child_completion(7);
                 let child_completion = completion.clone();
-                let notifier = executor.child_completion_notifier();
+
                 let handle = ChildThread::spawn(move || {
                     // Rescue a regressed blocking invalid wait; success releases
                     // immediately. Do not leave a failed assertion owning a child.
@@ -45008,10 +45065,10 @@ mod tests {
                     assert!(
                         child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9)))
                     );
-                    notifier.send(7).unwrap();
+
                     Ok(())
                 });
-                executor.register_child_process(7, start_sender, completion, handle);
+                executor.register_mock_child_process(7, start_sender, completion, handle);
                 let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
                 memory.write(0, &[0xa5; PAGE_SIZE as usize]).unwrap();
                 let result = executor.execute(
@@ -45044,17 +45101,17 @@ mod tests {
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (release_sender, release_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(ChildCompletionSlot::default());
+        let completion = executor.mock_child_completion(7);
         let child_completion = completion.clone();
-        let notifier = executor.child_completion_notifier();
+
         let handle = ChildThread::spawn(move || {
             start_receiver.recv().unwrap();
             release_receiver.recv().unwrap();
             assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9))));
-            notifier.send(7).unwrap();
+
             Ok(())
         });
-        executor.register_child_process(7, start_sender, completion, handle);
+        executor.register_mock_child_process(7, start_sender, completion, handle);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         memory.write(0, &[0xa5; PAGE_SIZE as usize]).unwrap();
         let request = SyscallRequest::new(
@@ -45248,7 +45305,7 @@ mod tests {
         let mut usage = vec![0xff; std::mem::size_of::<libc::rusage>()];
         memory.read(USAGE, &mut usage).unwrap();
         assert!(usage.iter().all(|byte| *byte == 0));
-        assert_eq!(state.children.get(&7), Some(&ExitStatus::Exited(3)));
+        assert_eq!(state.children.get(&7), Some(ExitStatus::Exited(3)));
 
         assert_eq!(
             waitid(
@@ -45288,18 +45345,18 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (running_sender, running_receiver) = std::sync::mpsc::channel();
         let (exit_sender, exit_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(ChildCompletionSlot::default());
+        let completion = executor.mock_child_completion(2);
         let child_completion = completion.clone();
-        let completion_notifier = executor.child_completion_notifier();
+
         let handle = ChildThread::spawn(move || {
             running_sender.send(()).unwrap();
             start_receiver.recv().unwrap();
             exit_receiver.recv().unwrap();
             assert!(child_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(9))));
-            completion_notifier.send(2).unwrap();
+
             Ok(())
         });
-        executor.register_child_process(2, start_sender, completion, handle);
+        executor.register_mock_child_process(2, start_sender, completion, handle);
         // Guarantee the child is running without having published completion.
         running_receiver.recv().unwrap();
 
@@ -45363,16 +45420,15 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (callback_started_sender, callback_started_receiver) = std::sync::mpsc::channel();
         let (callback_release_sender, callback_release_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(ChildCompletionSlot::with_completion(
-            ChildCompletion::Waitable(ExitStatus::Exited(7)),
-        ));
+        let completion = executor.mock_child_completion(2);
+        assert!(completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(7))));
         let handle = ChildThread::spawn(move || {
             start_receiver.recv().unwrap();
             callback_started_sender.send(()).unwrap();
             callback_release_receiver.recv().unwrap();
             Ok(())
         });
-        executor.register_child_process(2, start_sender, completion, handle);
+        executor.register_mock_child_process(2, start_sender, completion, handle);
         executor.start_pending_child_processes().unwrap();
         callback_started_receiver.recv().unwrap();
 
@@ -45419,9 +45475,9 @@ mod tests {
             let (start_sender, start_receiver) = std::sync::mpsc::channel();
             let (armed_sender, armed_receiver) = std::sync::mpsc::channel();
             let (publish_sender, publish_receiver) = std::sync::mpsc::channel();
-            let completion = Arc::new(ChildCompletionSlot::default());
+            let completion = executor.mock_child_completion(2);
             let child_completion = completion.clone();
-            let notifier = executor.child_completion_notifier();
+
             let handle = ChildThread::spawn(move || {
                 start_receiver.recv().unwrap();
                 assert!(child_completion.begin_publication());
@@ -45431,10 +45487,10 @@ mod tests {
                     child_completion
                         .publish_after_fence(ChildCompletion::Waitable(ExitStatus::Exited(9),))
                 );
-                notifier.send(2).unwrap();
+
                 Ok(())
             });
-            executor.register_child_process(2, start_sender, completion.clone(), handle);
+            executor.register_mock_child_process(2, start_sender, completion.clone(), handle);
             executor.start_pending_child_processes().unwrap();
             armed_receiver.recv().unwrap();
 
@@ -45506,44 +45562,42 @@ mod tests {
 
     fn register_published_child(executor: &mut ElfExecutor, pid: i32, completion: ChildCompletion) {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(ChildCompletionSlot::with_completion(completion));
+        let published = completion;
+        let completion = executor.mock_child_completion(pid);
+        assert!(completion.publish(published));
         let handle = ChildThread::spawn(move || {
             start_receiver.recv().unwrap();
             Ok(())
         });
-        executor.register_child_process(pid, start_sender, completion, handle);
+        executor.register_mock_child_process(pid, start_sender, completion, handle);
     }
 
     fn register_any_wait_race(executor: &mut ElfExecutor) -> std::sync::mpsc::Sender<()> {
-        let notifier = executor.child_completion_notifier();
         let (release_sender, release_receiver) = std::sync::mpsc::channel();
         let (low_start_sender, low_start_receiver) = std::sync::mpsc::channel();
-        let low_completion = Arc::new(ChildCompletionSlot::default());
+        let low_completion = executor.mock_child_completion(2);
         let child_low_completion = low_completion.clone();
-        let low_notifier = notifier.clone();
         let low_handle = ChildThread::spawn(move || {
             low_start_receiver.recv().unwrap();
             release_receiver.recv().unwrap();
             assert!(
                 child_low_completion.publish(ChildCompletion::AutoReaped(ExitStatus::Exited(2)))
             );
-            low_notifier.send(2).unwrap();
             Ok(())
         });
-        executor.register_child_process(2, low_start_sender, low_completion, low_handle);
+        executor.register_mock_child_process(2, low_start_sender, low_completion, low_handle);
 
         let (high_start_sender, high_start_receiver) = std::sync::mpsc::channel();
-        let high_completion = Arc::new(ChildCompletionSlot::default());
+        let high_completion = executor.mock_child_completion(3);
         let child_high_completion = high_completion.clone();
         let high_handle = ChildThread::spawn(move || {
             high_start_receiver.recv().unwrap();
             assert!(
                 child_high_completion.publish(ChildCompletion::Waitable(ExitStatus::Exited(3)))
             );
-            notifier.send(3).unwrap();
             Ok(())
         });
-        executor.register_child_process(3, high_start_sender, high_completion, high_handle);
+        executor.register_mock_child_process(3, high_start_sender, high_completion, high_handle);
         executor.start_pending_child_processes().unwrap();
         release_sender
     }
@@ -46285,7 +46339,7 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
         let (started_sender, started_receiver) = std::sync::mpsc::channel();
-        let completion = Arc::new(ChildCompletionSlot::default());
+        let completion = executor.mock_child_completion(2);
         let child_completion = completion.clone();
         let handle = ChildThread::spawn(move || {
             ready_sender.send(()).unwrap();
@@ -46295,7 +46349,7 @@ mod tests {
             Ok(())
         });
 
-        executor.register_child_process(2, start_sender, completion, handle);
+        executor.register_mock_child_process(2, start_sender, completion, handle);
         ready_receiver.recv().unwrap();
         assert!(started_receiver.try_recv().is_err());
         executor.start_pending_child_processes().unwrap();
@@ -46516,7 +46570,7 @@ mod tests {
         let lifetime = Arc::new(());
         for pid in 2..=7 {
             let (start_sender, start_receiver) = std::sync::mpsc::channel();
-            let completion = Arc::new(ChildCompletionSlot::default());
+            let completion = executor.mock_child_completion(pid);
             let child_completion = completion.clone();
             let child_lifetime = lifetime.clone();
             let receiver = if pid == 2 {
@@ -46557,7 +46611,7 @@ mod tests {
                     _ => unreachable!(),
                 }
             });
-            executor.register_child_process(pid, start_sender, completion, handle);
+            executor.register_mock_child_process(pid, start_sender, completion, handle);
         }
         let (release, wait_release) = std::sync::mpsc::channel();
         let (finished, wait_finished) = std::sync::mpsc::channel();
@@ -46617,7 +46671,7 @@ mod tests {
             (0, 0, 1),
             "all handles must be joined before returning: {error}"
         );
-        assert_eq!(executor.state.children.get(&7), Some(&ExitStatus::SUCCESS));
+        assert_eq!(executor.state.children.get(&7), Some(ExitStatus::SUCCESS));
         let expected = [
             "KVM child process 2 lost its parent start gate",
             "lost-gate child diagnostic",
@@ -47024,9 +47078,8 @@ mod tests {
             ),
             0,
         );
-        executor
-            .record_child_completion(7, exited_before_ignore)
-            .unwrap();
+        let before_ignore = executor.mock_child_completion(7);
+        assert!(before_ignore.publish(exited_before_ignore));
         assert_eq!(
             executor.state.children.remove(&7),
             Some(ExitStatus::Exited(3)),
@@ -47052,9 +47105,8 @@ mod tests {
             ),
             0,
         );
-        executor
-            .record_child_completion(8, exited_while_ignored)
-            .unwrap();
+        let while_ignored = executor.mock_child_completion(8);
+        assert!(while_ignored.publish(exited_while_ignored));
         assert!(
             !executor.state.children.contains_key(&8),
             "restoring SIG_DFL after exit must not resurrect an auto-reaped child",
