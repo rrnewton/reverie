@@ -2572,7 +2572,9 @@ fn product_result(
                 SeriesOutcome::Passed => match (payload.result, payload.failure_class) {
                     (Some(ObservedResult::Pass), None) => Some("pass"),
                     _ => {
-                        return Err("stress-series/v3 passed classification is contradictory".into())
+                        return Err(
+                            "stress-series/v3 passed classification is contradictory".into()
+                        );
                     }
                 },
                 SeriesOutcome::Diverged => match (payload.result, payload.failure_class) {
@@ -2587,7 +2589,7 @@ fn product_result(
                     _ => {
                         return Err(
                             "stress-series/v3 diverged classification is contradictory".into()
-                        )
+                        );
                     }
                 },
                 SeriesOutcome::Errored => match (payload.result, payload.failure_class) {
@@ -2598,7 +2600,7 @@ fn product_result(
                     _ => {
                         return Err(
                             "stress-series/v3 errored classification is contradictory".into()
-                        )
+                        );
                     }
                 },
                 SeriesOutcome::Timeout => match (payload.result, payload.failure_class) {
@@ -2606,7 +2608,7 @@ fn product_result(
                     _ => {
                         return Err(
                             "stress-series/v3 timeout classification is contradictory".into()
-                        )
+                        );
                     }
                 },
                 SeriesOutcome::NoResult => match (payload.result, payload.failure_class) {
@@ -2615,7 +2617,7 @@ fn product_result(
                     _ => {
                         return Err(
                             "stress-series/v3 no_result classification is contradictory".into()
-                        )
+                        );
                     }
                 },
                 SeriesOutcome::Skipped => match (payload.result, payload.failure_class) {
@@ -2623,7 +2625,7 @@ fn product_result(
                     _ => {
                         return Err(
                             "stress-series/v3 skipped classification is contradictory".into()
-                        )
+                        );
                     }
                 },
             };
@@ -3086,12 +3088,16 @@ mod tests {
             public["recorded"]["cells"][0]["cell_verdict"]["state"],
             "compared-and-matched"
         );
-        assert!(public["recorded"]["cells"][0]
-            .get("backend_parity")
-            .is_none());
-        assert!(public["recorded"]["cells"][0]
-            .get("comparison_authority")
-            .is_none());
+        assert!(
+            public["recorded"]["cells"][0]
+                .get("backend_parity")
+                .is_none()
+        );
+        assert!(
+            public["recorded"]["cells"][0]
+                .get("comparison_authority")
+                .is_none()
+        );
     }
 
     #[test]
@@ -3132,12 +3138,14 @@ mod tests {
         assert_eq!(projected.history.len(), 1);
         assert_eq!(projected.history[0]["run_id"], "run-cargo");
         assert_eq!(projected.current.len(), 1);
-        assert!(projected
-            .exclusion_counts
-            .iter()
-            .any(|((schema, reason), counts)| {
-                schema == "7" && reason == REASON && *counts == (1, 1)
-            }));
+        assert!(
+            projected
+                .exclusion_counts
+                .iter()
+                .any(|((schema, reason), counts)| {
+                    schema == "7" && reason == REASON && *counts == (1, 1)
+                })
+        );
     }
 
     #[test]
@@ -3157,28 +3165,36 @@ mod tests {
         assert_eq!(projected.selections.len(), 1);
         assert_eq!(projected.history[0]["run_id"], "run-good");
         assert_eq!(values.len() - projected.history.len(), 2);
-        assert!(projected
-            .exclusion_counts
-            .iter()
-            .any(|((schema, reason), counts)| {
-                schema == "6"
-                    && reason == "validation HistoryRow schema is not 7, 8, 9 or 10"
-                    && *counts == (1, 1)
-            }));
-        assert!(projected
-            .exclusion_counts
-            .iter()
-            .any(|((schema, reason), counts)| {
-                schema == "7"
-                    && reason == "validation HistoryRow omits profile"
-                    && *counts == (1, 1)
-            }));
-        assert!(projected
-            .exclusion_counts
-            .iter()
-            .any(|((schema, reason), counts)| {
-                schema == "7" && reason == "validation HistoryRow omits result" && *counts == (1, 1)
-            }));
+        assert!(
+            projected
+                .exclusion_counts
+                .iter()
+                .any(|((schema, reason), counts)| {
+                    schema == "6"
+                        && reason == "validation HistoryRow schema is not 7, 8, 9 or 10"
+                        && *counts == (1, 1)
+                })
+        );
+        assert!(
+            projected
+                .exclusion_counts
+                .iter()
+                .any(|((schema, reason), counts)| {
+                    schema == "7"
+                        && reason == "validation HistoryRow omits profile"
+                        && *counts == (1, 1)
+                })
+        );
+        assert!(
+            projected
+                .exclusion_counts
+                .iter()
+                .any(|((schema, reason), counts)| {
+                    schema == "7"
+                        && reason == "validation HistoryRow omits result"
+                        && *counts == (1, 1)
+                })
+        );
         let audited_physical: u64 = projected
             .exclusion_counts
             .values()
@@ -3255,12 +3271,16 @@ mod tests {
             "full"
         );
         assert_eq!(value["series_rows"][0]["current_main_ancestry"], true);
-        assert!(value["series_rows"][0]
-            .get("projection_validation_reason")
-            .is_none());
-        assert!(value["series_rows"][0]
-            .get("product_result_available")
-            .is_none());
+        assert!(
+            value["series_rows"][0]
+                .get("projection_validation_reason")
+                .is_none()
+        );
+        assert!(
+            value["series_rows"][0]
+                .get("product_result_available")
+                .is_none()
+        );
         let audit = value["projection_exclusion_counts"].as_array().unwrap();
         assert!(audit.iter().any(|row| {
             row["schema"] == "stress-series/v1"
@@ -3525,9 +3545,11 @@ mod tests {
             let mut bad = operand.clone();
             bad[field] = "foreign".into();
             write(&bad);
-            assert!(project_history_with(&parsed, None, load)
-                .unwrap_err()
-                .contains("differs from its original terminal/census"));
+            assert!(
+                project_history_with(&parsed, None, load)
+                    .unwrap_err()
+                    .contains("differs from its original terminal/census")
+            );
             assert!(
                 project_history_with(&parsed, Some(("record-five", "run-five")), load)
                     .unwrap_err()
@@ -3551,10 +3573,12 @@ mod tests {
                 .contains("matched 0 terminal rows")
         );
         std::fs::remove_file(&path).unwrap();
-        assert!(project_history_with(&parsed, None, load)
-            .unwrap()
-            .history
-            .is_empty());
+        assert!(
+            project_history_with(&parsed, None, load)
+                .unwrap()
+                .history
+                .is_empty()
+        );
         assert!(
             project_history_with(&parsed, Some(("record-five", "run-five")), load)
                 .unwrap_err()
@@ -3655,14 +3679,18 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             // Neither a malformed operand nor a non-ENOENT lookup error is absence.
             std::fs::write(&path, b"{}\n").unwrap();
-            assert!(project_history_with(&parsed, None, load)
-                .unwrap_err()
-                .contains("missing field"));
+            assert!(
+                project_history_with(&parsed, None, load)
+                    .unwrap_err()
+                    .contains("missing field")
+            );
             std::fs::remove_file(&path).unwrap();
             std::os::unix::fs::symlink("missing-target", &path).unwrap();
-            assert!(project_history_with(&parsed, None, load)
-                .unwrap_err()
-                .contains("cannot open derived census"));
+            assert!(
+                project_history_with(&parsed, None, load)
+                    .unwrap_err()
+                    .contains("cannot open derived census")
+            );
             std::fs::remove_file(&path).unwrap();
 
             let operand = serde_json::json!({
