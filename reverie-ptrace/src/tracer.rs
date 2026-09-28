@@ -5810,6 +5810,16 @@ mod tests {
         &PAYLOAD
     }
     async fn ordinary_exec_owner_control(fail: bool, timer_mode: u8) {
+        // DEMO ONLY: stand-in for parallel tests opening descriptors.
+        let churn_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let churn = std::env::var_os("EXEC_FD_CHURN").map(|_| {
+            let stop = churn_stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    drop(std::fs::File::open("/dev/null"));
+                }
+            })
+        });
         let marker_observations = Arc::new(StdMutex::new(Vec::new()));
         crate::timer::EXEC_SIGNAL_OBSERVATIONS
             .with(|slot| *slot.borrow_mut() = Some(marker_observations.clone()));
@@ -5896,6 +5906,10 @@ mod tests {
             &mut completion,
         )
         .await;
+        churn_stop.store(true, Ordering::Relaxed);
+        if let Some(churn) = churn {
+            churn.join().unwrap();
+        }
         crate::task::EXEC_TIMER_TRANSFERS.with(|slot| *slot.borrow_mut() = None);
         crate::timer::EXEC_SIGNAL_OBSERVATIONS.with(|slot| *slot.borrow_mut() = None);
         let markers = marker_observations.lock().unwrap().clone();
