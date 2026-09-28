@@ -1,0 +1,106 @@
+{
+ "question": "During a non-leader execve on a ptraced multi-threaded process (https://github.com/rrnewton/reverie/issues/688, https://github.com/rrnewton/reverie/issues/686, reverie 1e1e1f783f740423b6f07c5ce7fd16565adbcfb1 / https://github.com/rrnewton/reverie/pull/694): (a) can the kernel wake the old leader out of an EXIT stop it has already reported, and which code does it? (b) what does PTRACE_GETEVENTMSG return for a zap-killed leader (exactly 0?) and for a leader that exited on its own first? (c) do other interfaces (waitid, /proc) give the old leader's status, and are they race-free? (d) how much depends on timing? And what can a tracer conclude at the exec event when its GETEVENTMSG at the EXIT stop failed?",
+ "answer": "NOTE: REPORT.md was not written. The harness refuses report files from subagents (\"Subagents should return findings as text\"), so this structured result is the whole report. Test kernel: Linux 7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf (vendor). Sources: upstream v7.1, cached in /home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/ksrc/. The measured kernel matched the source in every case.\n\n(a) YES, but only for one kind of leader: one that entered its EXIT stop before the exec zap, i.e. it made a thread-only exit such as SYS_exit while other threads kept running. de_thread calls zap_other_threads. That function skips a thread only if exit_state is already set (signal.c:1348). A leader sitting in its PTRACE_EVENT_EXIT stop has no exit_state yet, so it gets SIGKILL queued (1350) and signal_wake_up(t,1) (1351). For a fatal signal on a thread that is not JOBCTL_PTRACE_FROZEN, signal_wake_up clears JOBCTL_TRACED and wakes it from __TASK_TRACED (sched/signal.h:444-451). If a ptrace request holds the leader frozen at that moment, ptrace_unfreeze_traced does the wake instead (ptrace.c:203-219). When the leader wakes, ptrace_stop clears ptrace_message to 0 (signal.c:2486-2488), and from then on every ptrace request returns ESRCH, because task_is_traced is false (ptrace.c:193-194).\nMeasured (S3a, 250 of 250 runs): the leader called SYS_exit(7) and GETEVENTMSG at its EXIT stop gave 0x700. After that the exec completed without the tracer ever resuming the leader. GETEVENTMSG turned to ESRCH 88/145/633 us (min/median/max) after the gate opened.\nA leader killed BY the zap behaves differently. Its EXIT stop is stable: get_signal already dequeued the zap SIGKILL (signal.c:2870-2873), and de_thread only waits for leader->exit_state (fs/exec.c:945-961). S2h held such a leader for 30 ms: zero new arrivals, the leader stayed in state 't', and the exec could not finish until the tracer resumed the leader.\nThe zap also pulls a leader out of any other ptrace stop and into its EXIT stop, with no tracer action (S6: a SIGALRM signal-delivery stop and a PTRACE_EVENT_STOP both became si_code 0x605, msg 0x0; 8 of 8 runs per mode).\n\n(b) Zap-killed leader: the message is exactly 0. When group_exec_task is set, do_group_exit uses exit_code 0 (exit.c:1100-1101, 1109-1110), and that value becomes ptrace_event(PTRACE_EVENT_EXIT, code) (exit.c:913). Measured: 0x0 in every successful read across more than 1760 runs (S1p, S1f, S2d, S2h, S4b, S4c, S4e, S6). Not one read was nonzero.\nSelf-exited leader: the message is (n&0xff)<<8 (exit.c:1084-1087), e.g. 0x700. It can be read only before the zap wakes the leader; after that the read returns ESRCH (S3c: 250/250 reads of 0x700 when read immediately; S3x: 240 of 250 ESRCH after a 1-50 ms delay).\nAll the ways GETEVENTMSG at the old leader's tid can fail with ESRCH:\n(1) the tracer itself resumed or stepped the leader (ptrace.c:874-876; S4a 250/250);\n(2) a fatal signal woke it or is pending: the zap for a self-exited leader, or a real SIGKILL, which also prevents the exec (S4d 250/250: no exec, KL:9);\n(3) the caller is not the ptracer thread (child->parent != current, ptrace.c:251; source only, not measured);\n(4) after exchange_tids the tid names the exec'ing thread, which is either running or in an exec stop not yet waited (looks_like_a_spurious_pid, ptrace.c:163-176; S3b state_post=t).\nSIGALRM and PTRACE_INTERRUPT delivered at a zap-killed leader's EXIT stop do NOT cause ESRCH (S4b, S4c: 250/250 each still read 0x0).\n\n(c) No interface gives the old leader's status race-free.\n- waitpid/waitid: never report the old leader as exited. delay_group_leader blocks reaping the zombie (exit.c:1499-1509; S3r: waitpid returned 0 and waitid WNOWAIT returned nothing). de_thread then sets EXIT_DEAD and calls release_task (fs/exec.c:1001-1013). At the exec event, waitid on the former tid gives ECHILD and /proc/<former tid> is gone (all scenarios).\n- /proc/L/task/L/stat, the exit_code field (fs/proc/array.c:483, 654-655): shows 1792 (=0x700) only in a window. In S3p the sampled sequence was [t,0] -> [R,1792] -> sometimes [Z,1792] -> [R,0] -> [R,1029=0x405, the exec stop after exchange_tids] -> [t,1029]. [Z,1792] appeared in only 3 of 250 runs. The one reliable case is when the tracer itself resumes a self-exited leader and then reads before the exec proceeds (S3r 250/250). That does not help after the fact.\n- PTRACE_GETSIGINFO has the same freeze precondition as GETEVENTMSG.\n\n(d) Zap-killed leader: the VALUE does not depend on timing. It is always 0, and the EXIT stop is always reported before EXEC. Whether the tracer ever SEES that EXIT stop does depend on timing it cannot control. A resume the tracer aimed at an earlier stop (signal-delivery or group-stop/INTERRUPT) consumes the EXIT stop if the zap has converted the stop in between. Measured in S6 (8/8 sc, 8/8 ic): the stale PTRACE_CONT returned 0 and waitpid never reported the leader's EXIT stop; order was EXEC@L, EXIT@L (the new image), XL:0. It also happened naturally once in S4e, a SIGALRM spray (1/250: no leader EXIT stop reported).\nSelf-exited leader: several outcomes depend on timing:\n- whether the read returns 0x700 or ESRCH (S3c vs S3x);\n- whether an EXIT stop is reported at all, since ptrace_stop returns without stopping if a fatal signal is already pending (signal.c:2379; source only);\n- /proc visibility.\n\nWHAT A TRACER CAN CONCLUDE at the exec event after an EXIT-stop GETEVENTMSG failed:\n- A PTRACE_EVENT_EXEC report proves that no group SIGKILL/exit won the race: de_thread returns -EAGAIN on SIGNAL_GROUP_EXIT (fs/exec.c:913-920, 1026-1032).\n- So one of exactly two things happened. (i) The leader was zap-killed and something advanced it past the EXIT stop before the read: the tracer's own resume or step, or a request from a non-tracer thread. Its status is 0 by kernel definition. (ii) The leader had already exited on its own before the zap, and the zap woke it. Its status was (n&0xff)<<8 and can no longer be recovered.\n- The kernel gives no post-hoc signal that separates (i) from (ii). Only the tracer's own history does: whether it issued a resume or step to the leader after the EXIT stop was delivered, or whether it observed the leader enter exit/exit_group, or a thread-only exit, before the exec.\nFor reverie's ordinary_exec_owner_control test (the leader loops in pause() while a thread calls execv), case (ii) cannot happen: the leader never exits on its own, so the kernel alone cannot turn its unresumed EXIT stop into ESRCH. An ESRCH there therefore points to reverie itself having resumed or stepped the leader (or a request issued from the wrong thread). This agrees with the comment at /tmp/lc-tracer-1e1e.rs:573-583 that a synchronous transition can advance the physical EXIT stop before the queued ExitFuture is polled. That link to reverie is inferred from kernel behaviour, not traced through reverie code.",
+ "confidence": "strong",
+ "evidence": [
+  {
+   "claim": "The zap wakes a leader that had already exited on its own out of its reported EXIT stop, and then ptrace requests return ESRCH (proven)",
+   "how_shown": "S3a campaign 1: 250/250 runs read lmsg_pre=0x700, and the exec completed without the tracer resuming the leader. 226 runs turned ESRCH at 88/145/633 us. The 24 NO_ESRCH_1s runs came from the test harness, not the kernel. By construction, holding the leader before T's initial PTRACE_EVENT_STOP was waited leaves T traced-stopped, so T cannot exec: ptx.c:223-225, 256. After adding t_started_at_lexit, 5/5 S3a and 5/5 S3b runs with t_started_at_lexit=1 all returned ESRCH.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/campaign/S3a.out; single/S3a.t5.out; single/S3b.t5.out; ptx.c"
+  },
+  {
+   "claim": "A zap-killed leader's EXIT stop is stable, reads exactly 0x0, and blocks the exec until the tracer resumes the leader (proven)",
+   "how_shown": "S1p, S1f, S2d and S2h: 250/250 each read lmsg=0x0. The S2h 30 ms hold saw held_arrivals=0 and state t. exec_msg == former T tid. No WIFEXITED report for the leader before the exec.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/campaign/S1p.out, S1f.out, S2d.out, S2h.out"
+  },
+  {
+   "claim": "Non-fatal signals and PTRACE_INTERRUPT do not wake a zap-killed EXIT stop. A real SIGKILL does, and it also cancels the exec (proven)",
+   "how_shown": "S4b (SIGALRM) and S4c (INTERRUPT): 250/250 each read 0x0. S4d (SIGKILL): 250/250 ESRCH, no exec, KT:9 and KL:9. S4a (the tracer's own CONT, then a read): 250/250 ESRCH.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/campaign/S4a.out..S4d.out"
+  },
+  {
+   "claim": "The zap turns a leader held in another ptrace stop into its EXIT stop, and a stale resume meant for the earlier stop then silently consumes the EXIT stop (proven)",
+   "how_shown": "ptx6, sc and ic modes: 3 single runs plus 5 more per mode, 8/8 each. The held stop was si_code 0xfffffffa (SI_TKILL) or 0x8005 (EVENT_STOP). After the gate opened it read si_code 0x605 with msg 0x0 and no tracer action. The stale CONT returned ok, and waitpid never reported the old leader's EXIT stop (order=EXEC@L,EXIT@L,XL:0). In the sw/iw modes, where waitpid WNOHANG runs first, the EXIT@L msg 0x0 was reported. It also occurred naturally once in S4e (1/250).",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/ptx6.c; single/S6sc.t5.out; single/S6ic.t5.out; campaign/S4e.out"
+  },
+  {
+   "claim": "waitid/waitpid never yield the old leader's status, and /proc yields it only in a window (proven)",
+   "how_shown": "S3r: zombie state Z, /proc exit_code 1792, waitid(L,WNOWAIT) returned nothing, waitpid returned 0. At the exec event in every scenario: waitid_formerT=ECHILD and proc_formerT absent. S3p: [Z,1792] sampled in 3/250 runs, followed by exit_code 0 and then 1029 (0x405).",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/campaign/S3r.out, S3p.out"
+  },
+  {
+   "claim": "For a self-exited leader, reading the status depends on timing (proven)",
+   "how_shown": "S3c, immediate read: 250/250 returned 0x700. S3x, 1-50 ms delay: 240 ESRCH and 10 0x700. S3b: in campaign 1, 233 ESRCH and 17 0x700 (harness artifact as above); with the fixed flag, 5/5 ESRCH.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/campaign/S3c.out, S3x.out, S3b.out"
+  },
+  {
+   "claim": "Partial lead for #686: SINGLESTEP at the exec event produces a SIGTRAP signal stop after the exec; CONT does not (partial, 5 runs)",
+   "how_shown": "ptx5, S5s vs S5c: after stepping into execve, S5s showed SIG5@L after EXEC; S5c did not.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/single/ (S5 outputs), ptx.c"
+  }
+ ],
+ "fix_implications": "1. At the exec event, never fabricate an exit status for the old leader from GETEVENTMSG failure alone. EXEC proves no group kill occurred (fs/exec.c:913-920). The failure then means one of two things: (i) the tracer, or a non-tracer thread, advanced a zap-killed leader, and the kernel-defined status is 0; or (ii) the leader self-exited before the zap, and the status (n&0xff)<<8 is irrecoverable. waitid and /proc cannot fill the gap race-free.\n2. A tracer that wants a correct status must make case (i) impossible. Read GETEVENTMSG before any resume or step can reach the leader's EXIT stop. Keep every ptrace request on the tracer thread.\n3. Treat every pending resume or step aimed at the leader as possibly landing on an EXIT stop the zap substituted. The kernel does not bind a resume to the stop the tracer intended. Before resuming the leader, confirm with waitpid (for example WNOHANG) or GETSIGINFO si_code (0x605 = EXIT event) that the stop you think it is in is still the current stop.\n4. To tell case (ii) apart, record the leader's own exit or exit_group entry (syscall stop), or a thread-only exit, before the exec. If none was seen, and no tracer resume was issued, then status 0 is the kernel-consistent answer. If the tracer did issue a resume, status 0 is still correct, but the missed read is a tracer ordering bug.\n5. For reverie's ordinary_exec_owner_control, which uses a pause() leader, ESRCH at the EXIT stop implies a resume or step by reverie (for example a timer step) or a request from a non-tracer thread. Fix the ordering; do not paper over it with a synthetic status. If a fallback is kept, 0 is correct only for a zap-killed leader, and the code must be able to prove the leader did not exit on its own.",
+ "open_questions": [
+  "Which reverie 1e1e code path issues the resume or step that reaches the leader's EXIT stop before ExitFuture reads GETEVENTMSG (for example a timer-driven step or a pending resume from an earlier signal or group stop)? Not traced in reverie; only inferred from kernel behaviour and the comment at tracer.rs:573-583.",
+  "Whether reverie ever issues ptrace requests from a thread other than the attaching tracer thread (ESRCH via ptrace.c:251). Established from source only; not measured.",
+  "#686: the S5 result (SINGLESTEP at the exec event gives a post-exec SIGTRAP stop) comes from 5 runs and has not been mapped to reverie's stepping logic.",
+  "The larger repeat campaign 2 (S3a/S3b/S3c/S3x/S6 at N=200) never ran: the shared pressure lock was held by another lane's validate-694-9878 run for more than 20 minutes, so I cancelled it before it started (rc=143, no output). Only 5-run confirmations were done instead. The S6 repeat counts are 8 per mode, not 200.",
+  "The self-exited-leader case where the fatal signal is already pending before ptrace_stop, so no EXIT stop is reported at all (signal.c:2379). Established from source; not isolated by a reproducer."
+ ],
+ "kernel_source_refs": [
+  "kernel/signal.c:1335-1355 zap_other_threads (1348 skip only if exit_state; 1350-1351 SIGKILL + signal_wake_up)",
+  "include/linux/sched/signal.h:444-451 signal_wake_up: fatal wake clears JOBCTL_TRACED unless PTRACE_FROZEN",
+  "kernel/ptrace.c:203-219 ptrace_unfreeze_traced wakes if fatal pending",
+  "kernel/signal.c:2352-2488 ptrace_stop (2379 early return on fatal pending; 2405/2407 message/exit_code; 2486-2488 clears ptrace_message on wake)",
+  "kernel/signal.c:2870-2882 get_signal group-exit path dequeues SIGKILL",
+  "kernel/exit.c:1093-1118 do_group_exit (1100-1101, 1109-1110 exit_code 0 under group_exec_task); 913 ptrace_event EXIT; 1084-1087 sys_exit encoding",
+  "fs/exec.c:900-1033 de_thread (913-920 -EAGAIN on group exit; 945-961 wait for leader exit_state; 987 exchange_tids; 1001-1013 EXIT_DEAD, release_task)",
+  "fs/exec.c:1681-1687, 1719 old_vpid and PTRACE_EVENT_EXEC",
+  "kernel/ptrace.c:163-176 looks_like_a_spurious_pid; 184-199 ptrace_freeze_traced; 239-265 ptrace_check_attach (251 parent == current); 874-876 ptrace_resume; 1171-1172 GETEVENTMSG",
+  "kernel/exit.c:1454-1509 wait_consider_task + include/linux/sched/signal.h:738 delay_group_leader",
+  "fs/proc/array.c:483, 654-655 exit_code in stat",
+  "Upstream tag v7.1 (b3f94b2b3f3e51ab880a51fc6510e1dafba654ed); copies in /home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/ksrc/"
+ ],
+ "refuted_hypotheses": [
+  "A zap-killed leader's EXIT-stop status is nonzero or varies: refuted, 0x0 in every successful read of more than 1760.",
+  "The kernel alone can make GETEVENTMSG fail at an unresumed EXIT stop of a zap-killed leader: refuted (S2h hold, S4b, S4c).",
+  "SIGALRM or PTRACE_INTERRUPT at the EXIT stop causes ESRCH: refuted (250/250 each read 0x0).",
+  "Delay alone before reading causes ESRCH for a zap-killed leader: refuted (S2d 250/250 read 0x0 with 1-50 ms delay).",
+  "waitid/waitpid or /proc give a race-free old-leader status: refuted (S3r, S3p, ECHILD at exec).",
+  "The S3a NO_ESRCH_1s / S3b 0x700 outliers are kernel behaviour: refuted. They are a harness artifact: T had not been released from its initial EVENT_STOP (5/5 + 5/5 ESRCH with t_started_at_lexit=1)."
+ ],
+ "runs": [
+  {
+   "cmd": "flock pressure.lock campaign.sh (ptx.campaign1.bin, S1p S1f S2d S2h S3a S3b S3c S3x S3r S3p S4a S4b S4c S4d S4e, 250 each)",
+   "failures": "0 unexpected kernel outcomes; S3a 24 and S3b 17 harness artifacts, explained and reconfirmed",
+   "runs": 3750,
+   "load": "loadavg 256/109/57 at start, 132/98/56 at end (2026-09-28 07:22:30-07:23:24)",
+   "wall_s": 54
+  },
+  {
+   "cmd": "nice -n 10 ./ptx S3a 5; ./ptx S3b 5 (t_started_at_lexit build)",
+   "failures": "0: 10/10 t_started=1 and ESRCH",
+   "runs": 10,
+   "load": "12.52 21.01 32.99 (07:44:09)",
+   "wall_s": 2
+  },
+  {
+   "cmd": "nice -n 10 ./ptx6 sc 5; ./ptx6 ic 5 (plus 3 earlier single runs each of sc/sw/ic/iw)",
+   "failures": "0: 10/10 held stop became EXIT (0x605, msg 0x0), stale CONT ok, EXIT stop never reported",
+   "runs": 22,
+   "load": "13.71 20.65 32.55 (07:44:38)",
+   "wall_s": 2
+  },
+  {
+   "cmd": "ptx5 S5c/S5s, 5 each",
+   "failures": "n/a (S5s shows post-exec SIGTRAP)",
+   "runs": 10
+  },
+  {
+   "cmd": "flock pressure.lock campaign2.sh (N=200)",
+   "failures": "never ran: lock held by another lane's validation; cancelled by me (rc=143), no output",
+   "runs": 0,
+   "load": "queued at 42.62 75.20 53.62"
+  }
+ ]
+}

@@ -1,0 +1,65 @@
+
+running 4 tests
+PROBE_FINISH_GETEVENT tid=1677253 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step")
+PROBE_FINISH_GETEVENT tid=1677266 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer")
+exec timer payload: /tmp/reverie-fatal-exec-timer-1677231
+PROBE_FINISH_GETEVENT tid=1677253 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step")
+actual delivered marker observations: tracer=1677231, rows=[(1677253, 16, 1, 65, 100450, false, false)]
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step") ok_complete=true result_is_err=false
+exec owner before rescue: fail=false, timer_mode=1, root_absent=true, events=[(0, Pid(1677253), 1677253, None), (0, Pid(1677296), 1677296, None), (2, Pid(1677253), 1677253, Some(Exited(0))), (1, Pid(1677253), 1677296, None), (9, Pid(1677253), 100450, None), (4, Pid(1677253), 1677296, None), (2, Pid(1677253), 1677296, Some(Exited(0))), (3, Pid(1677253), 0, Some(Exited(0)))], elapsed=70.773064ms, outcome=Complete(Ok(Output { status: Exited(0), stdout: "survived", stderr: "" }))
+actual perf exec handoff: ExecTimerTransfer { displaced: Some(ExecTimerIdentity { clock_fd: 37, timer_fd: 36, clock_event_id: 6894622, timer_event_id: 6894621, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677253), guest_tid: Pid(1677253), kernel_owner_tid: Pid(1677253) }), before: Some(ExecTimerIdentity { clock_fd: 48, timer_fd: 47, clock_event_id: 6894624, timer_event_id: 6894623, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677253), guest_tid: Pid(1677296), kernel_owner_tid: Pid(0) }), after: Some(ExecTimerIdentity { clock_fd: 48, timer_fd: 47, clock_event_id: 6894624, timer_event_id: 6894623, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677253), guest_tid: Pid(1677253), kernel_owner_tid: Pid(1677253) }), displaced_fds_closed: true }
+test tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step ... ok
+PROBE_FINISH_GETEVENT tid=1677585 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement")
+PROBE_FINISH_GETEVENT tid=1677266 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer")
+PROBE_EXITSTOP_GETEVENT_ESRCH=1 tid=1677597 test=Some("tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once")
+ history tid=1677597:
+  #83 COLLECT worker raw=0x137f
+  #84 STOP raw=0x137f
+  #85 REQ SINGLESTEP sig=None rip=0x7fa7d568d38c  [<safeptrace::Stopped>::step::<core::option::Option<nix::sys::signal::Signal>>@lib.rs:841:9 <- <reverie_ptrace::tracer::RootStopLease>::step::<core::option::Option<nix::sys::signal::Signal>>@tracer.rs:1023:27 <- <reverie_ptrace::task::TracedTask<_>>::tracee_preinit::{closure#0}::{closure#0}::setup_special_mmap_page::{closure#0}@task.rs:2703:80 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::tracee_preinit::{closure#0}::{closure#0}@task.rs:2860:10 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::tracee_preinit::{closure#0}@task.rs:2600:5 <- reverie_ptrace::tracer::postspawn::<reverie_ptrace::tracer::tests::ExecOwnerTool>::{closure#0}::{closure#0}@tracer.rs:3927:46]
+  #88 COLLECT worker raw=0x57f
+  #95 STOP raw=0x57f
+  #96 REQ SINGLESTEP sig=None rip=0x71000000  [<safeptrace::Stopped>::step::<core::option::Option<nix::sys::signal::Signal>>@lib.rs:841:9 <- <reverie_ptrace::tracer::RootStopLease>::step::<core::option::Option<nix::sys::signal::Signal>>@tracer.rs:1023:27 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::step_stopped::<core::option::Option<nix::sys::signal::Signal>>@task.rs:5439:45 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::step_private_syscall::{closure#0}@task.rs:7527:32 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::untraced_syscall::{closure#0}@task.rs:7327:83 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::inner_inject::{closure#0}@task.rs:7830:63]
+  #97 COLLECT worker raw=0x57f
+  #101 STOP raw=0x57f
+  #106 REQ CONT sig=None  [<safeptrace::Stopped>::resume::<core::option::Option<nix::sys::signal::Signal>>@lib.rs:786:9 <- <reverie_ptrace::tracer::RootStopLease>::resume::<core::option::Option<nix::sys::signal::Signal>>@tracer.rs:1006:37 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::resume_stopped::<core::option::Option<nix::sys::signal::Signal>>@task.rs:5428:45 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::await_gdb_resume::{closure#0}@task.rs:8014:25 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop_internal::{closure#0}@task.rs:6224:14 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop::{closure#0}@task.rs:6176:44]
+  #107 COLLECT worker raw=0x3057f
+  #108 STOP raw=0x3057f
+  #109 CLONE-DECODE former=1677783
+  #114 REQ SINGLESTEP sig=None rip=0x7fa7d5710a6d  [<safeptrace::Stopped>::step::<core::option::Option<nix::sys::signal::Signal>>@lib.rs:841:9 <- <reverie_ptrace::tracer::RootStopLease>::step::<core::option::Option<nix::sys::signal::Signal>>@tracer.rs:1023:27 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::step_stopped::<core::option::Option<nix::sys::signal::Signal>>@task.rs:5439:45 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_new_task::{closure#0}@task.rs:5992:32 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::dispatch_new_task::{closure#0}@task.rs:5472:14 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_stop_event::{closure#0}@task.rs:3147:18]
+  #118 COLLECT worker raw=0x57f
+  #120 STOP raw=0x57f
+  #121 COLLECT worker raw=0x6057f
+  #122 REQ CONT sig=None  [<safeptrace::Stopped>::resume::<core::option::Option<nix::sys::signal::Signal>>@lib.rs:786:9 <- <reverie_ptrace::tracer::RootStopLease>::resume::<core::option::Option<nix::sys::signal::Signal>>@tracer.rs:1006:37 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::resume_stopped::<core::option::Option<nix::sys::signal::Signal>>@task.rs:5428:45 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_sigtrap::{closure#0}@task.rs:3622:32 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_signal::{closure#0}@task.rs:3842:58 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_stop_event::{closure#0}@task.rs:3138:18]
+ history former tid=1677783:
+  #115 COLLECT worker raw=0x137f
+  #116 STOP raw=0x137f
+  #117 REQ CONT sig=None  [<safeptrace::Stopped>::resume::<core::option::Option<nix::sys::signal::Signal>>@lib.rs:786:9 <- <reverie_ptrace::tracer::RootStopLease>::resume::<core::option::Option<nix::sys::signal::Signal>>@tracer.rs:1006:37 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::resume_stopped::<core::option::Option<nix::sys::signal::Signal>>@task.rs:5428:45 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::await_gdb_resume::{closure#0}@task.rs:8014:25 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop_internal::{closure#0}@task.rs:6224:14 <- <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop::{closure#0}@task.rs:6176:44]
+
+actual delivered marker observations: tracer=1677231, rows=[]
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once") ok_complete=false result_is_err=false
+exec owner before rescue: fail=false, timer_mode=0, root_absent=false, events=[(0, Pid(1677597), 1677597, None), (0, Pid(1677783), 1677783, None)], elapsed=253.820549ms, outcome=Pending(PtraceRunFailure { primary: Tool(actual exec for 1677597 from 1677783 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1677597), tid: Pid(1677597), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+exec owner rescue only: signal=Ok(()), completed=false
+
+thread 'tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once' (1677260) panicked at reverie-ptrace/src/tracer.rs:6046:17:
+exec owner did not Complete within original3s predicate: Pending(PtraceRunFailure { primary: Tool(actual exec for 1677597 from 1677783 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1677597), tid: Pid(1677597), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once ... FAILED
+actual delivered marker observations: tracer=1677231, rows=[(1677266, 16, 1, 65, 100431, true, false)]
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer") ok_complete=true result_is_err=false
+exec owner before rescue: fail=false, timer_mode=2, root_absent=true, events=[(0, Pid(1677266), 1677266, None), (0, Pid(1677303), 1677303, None), (2, Pid(1677266), 1677266, Some(Exited(0))), (1, Pid(1677266), 1677303, None), (7, Pid(1677266), 10, None), (2, Pid(1677266), 1677303, Some(Exited(0))), (3, Pid(1677266), 0, Some(Exited(0)))], elapsed=255.572411ms, outcome=Complete(Ok(Output { status: Exited(0), stdout: "survived", stderr: "" }))
+PROBE_FINISH_GETEVENT tid=1677585 raw=0x9 test=Some("tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement")
+actual perf exec handoff: ExecTimerTransfer { displaced: Some(ExecTimerIdentity { clock_fd: 31, timer_fd: 30, clock_event_id: 6894620, timer_event_id: 6894619, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677266), guest_tid: Pid(1677266), kernel_owner_tid: Pid(1677266) }), before: Some(ExecTimerIdentity { clock_fd: 55, timer_fd: 54, clock_event_id: 6894626, timer_event_id: 6894625, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677266), guest_tid: Pid(1677303), kernel_owner_tid: Pid(0) }), after: Some(ExecTimerIdentity { clock_fd: 55, timer_fd: 54, clock_event_id: 6894626, timer_event_id: 6894625, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677266), guest_tid: Pid(1677266), kernel_owner_tid: Pid(1677266) }), displaced_fds_closed: true }
+test tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer ... ok
+actual delivered marker observations: tracer=1677231, rows=[]
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement") ok_complete=true result_is_err=true
+exec owner before rescue: fail=true, timer_mode=0, root_absent=true, events=[(0, Pid(1677585), 1677585, None), (0, Pid(1677642), 1677642, None), (2, Pid(1677585), 1677585, Some(Exited(0))), (2, Pid(1677585), 1677642, Some(Signaled(SIGKILL, false))), (3, Pid(1677585), 0, Some(Signaled(SIGKILL, false)))], elapsed=259.923666ms, outcome=Complete(Err(PtraceRunFailure { primary: Tool(ordinary nonleader failure control), origin: BackendFailure { pid: Pid(1677585), tid: Pid(1677585), phase: "ptrace replaced leader on_exit_thread" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) }))
+actual perf exec handoff: ExecTimerTransfer { displaced: Some(ExecTimerIdentity { clock_fd: 53, timer_fd: 52, clock_event_id: 6894630, timer_event_id: 6894629, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677585), guest_tid: Pid(1677585), kernel_owner_tid: Pid(1677585) }), before: Some(ExecTimerIdentity { clock_fd: 14, timer_fd: 12, clock_event_id: 6894632, timer_event_id: 6894631, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677585), guest_tid: Pid(1677642), kernel_owner_tid: Pid(0) }), after: Some(ExecTimerIdentity { clock_fd: 14, timer_fd: 12, clock_event_id: 6894632, timer_event_id: 6894631, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(1677585), guest_tid: Pid(1677585), kernel_owner_tid: Pid(1677585) }), displaced_fds_closed: true }
+test tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement ... ok
+
+failures:
+
+failures:
+    tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 358 filtered out; finished in 0.26s
+

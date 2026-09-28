@@ -1,0 +1,5 @@
+iter=0 mode=sc pre_state=S held=SIG14@L, si_held=signo14/code0xfffffffa state_after_gate=t si_now=signo5/code0x605 msg_now=0x0 stale_cont=ok exec_msg=0x30547f T=3167359 order=EXEC@L,EXIT@L,XL:0,
+iter=1 mode=sc pre_state=S held=SIG14@L, si_held=signo14/code0xfffffffa state_after_gate=t si_now=signo5/code0x605 msg_now=0x0 stale_cont=ok exec_msg=0x30549d T=3167389 order=EXEC@L,EXIT@L,XL:0,
+iter=2 mode=sc pre_state=S held=SIG14@L, si_held=signo14/code0xfffffffa state_after_gate=t si_now=signo5/code0x605 msg_now=0x0 stale_cont=ok exec_msg=0x3054b7 T=3167415 order=EXEC@L,EXIT@L,XL:0,
+iter=3 mode=sc pre_state=S held=SIG14@L, si_held=signo14/code0xfffffffa state_after_gate=t si_now=signo5/code0x605 msg_now=0x0 stale_cont=ok exec_msg=0x3054d5 T=3167445 order=EXEC@L,EXIT@L,XL:0,
+iter=4 mode=sc pre_state=S held=SIG14@L, si_held=signo14/code0xfffffffa state_after_gate=t si_now=signo5/code0x605 msg_now=0x0 stale_cont=ok exec_msg=0x305535 T=3167541 order=EXEC@L,EXIT@L,XL:0,

@@ -1,0 +1,126 @@
+//! INVESTIGATION PROBE (scratch checkout only; never landed).
+//! A global ring of ptrace requests, signals and wait statuses, dumped on demand.
+
+use std::collections::VecDeque;
+use std::panic::Location;
+use std::sync::Mutex;
+
+pub struct Rec {
+    pub ns: u64,
+    pub caller: i32,
+    pub target: i32,
+    pub what: String,
+    pub rc: i64,
+    pub site: &'static Location<'static>,
+}
+
+static RING: Mutex<VecDeque<Rec>> = Mutex::new(VecDeque::new());
+
+pub fn now_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+pub fn gettid() -> i32 {
+    unsafe { libc::syscall(libc::SYS_gettid) as i32 }
+}
+
+#[track_caller]
+pub fn rec(target: i32, what: impl Into<String>, rc: i64) {
+    rec_at(Location::caller(), target, what, rc)
+}
+
+pub fn rec_at(site: &'static Location<'static>, target: i32, what: impl Into<String>, rc: i64) {
+    let r = Rec {
+        ns: now_ns(),
+        caller: gettid(),
+        target,
+        what: what.into(),
+        rc,
+        site,
+    };
+    let mut ring = RING.lock().unwrap_or_else(|e| e.into_inner());
+    if ring.len() >= 200_000 {
+        ring.pop_front();
+    }
+    ring.push_back(r);
+}
+
+/// pid bound to a pidfd, read from fdinfo.
+pub fn pidfd_pid(fd: i32) -> i32 {
+    std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("Pid:").map(|v| v.trim().parse().unwrap_or(-9)))
+        })
+        .unwrap_or(-9)
+}
+
+pub fn proc_snapshot(pid: i32) -> String {
+    let mut out = String::new();
+    let tasks = std::fs::read_dir(format!("/proc/{pid}/task"));
+    match tasks {
+        Err(e) => out.push_str(&format!(" /proc/{pid}/task unreadable: {e};")),
+        Ok(dir) => {
+            for entry in dir.flatten() {
+                let tid = entry.file_name().to_string_lossy().to_string();
+                let status = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/status"))
+                    .map(|s| {
+                        s.lines()
+                            .filter(|l| {
+                                l.starts_with("State:")
+                                    || l.starts_with("SigPnd:")
+                                    || l.starts_with("ShdPnd:")
+                                    || l.starts_with("TracerPid:")
+                                    || l.starts_with("Pid:")
+                            })
+                            .map(|l| l.replace('\t', " "))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    })
+                    .unwrap_or_else(|e| format!("status unreadable {e}"));
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat"))
+                    .map(|s| {
+                        // state is after ") "; exit_code is the last field (52).
+                        let after = s.rsplit_once(") ").map(|x| x.1).unwrap_or("");
+                        let fields: Vec<&str> = after.split_whitespace().collect();
+                        format!(
+                            "stat.state={} stat.exit_code={}",
+                            fields.first().unwrap_or(&"?"),
+                            fields.last().unwrap_or(&"?")
+                        )
+                    })
+                    .unwrap_or_else(|e| format!("stat unreadable {e}"));
+                let wchan = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/wchan"))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    " [task {tid}: {status} | {stat} | wchan={wchan}]"
+                ));
+            }
+        }
+    }
+    out
+}
+
+pub fn dump(label: &str, targets: &[i32]) {
+    let ring = RING.lock().unwrap_or_else(|e| e.into_inner());
+    let now = now_ns();
+    for r in ring.iter().filter(|r| targets.contains(&r.target)) {
+        eprintln!(
+            "PROBE[{label}] t={} (dt={}us) caller={} target={} what={} rc={} site={}:{}",
+            r.ns,
+            (now.saturating_sub(r.ns)) / 1000,
+            r.caller,
+            r.target,
+            r.what,
+            r.rc,
+            r.site.file(),
+            r.site.line()
+        );
+    }
+}

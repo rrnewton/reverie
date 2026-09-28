@@ -1,0 +1,114 @@
+{
+ "question": "Which ptrace stop reaches finish_ordinary_terminal as \"unexpected ptrace terminal stop: Signal(SIGTRAP)\" in the exec-owner tests at rrnewton/reverie 1e1e1f783f740423b6f07c5ce7fd16565adbcfb1 (https://github.com/rrnewton/reverie/pull/694, base 547278b9b5e9a205c92e40c9e6f189beb8a3ddd7; issue https://github.com/rrnewton/reverie/issues/686)? And why does the exec-owner harness accept a Complete(Err)?",
+ "answer": "The SIGTRAP is stale. It is the completed result of the displaced leader's post-clone PTRACE_SINGLESTEP from handle_new_task, reverie-ptrace/src/task.rs:6008 at head (task.rs:5992 at base), which the run loop never consumed. All 6 natural captures and all 9 forced captures show the same sequence on the leader tid:\n\n1. The run loop issues the SINGLESTEP (rip = libc base + 0x110a6d, the instruction after the clone syscall).\n2. The notifier worker collects the step's SIGTRAP stop (raw 0x57f). update() pushes it onto the per-tid pending FIFO (safeptrace/src/notifier.rs:869).\n3. The non-leader's execve kills the leader, and the worker collects the leader's PTRACE_EVENT_EXIT stop (raw 0x6057f). update() sends that out-of-band via publish_exit_stop (notifier.rs:844-847), so it never enters the FIFO.\n4. drive_ordinary's select_biased! polls the exit future before run_loop (task.rs:6928-6937). The exit future wins and the run-loop future is dropped mid-step. The probe proves the drop: the FORCE-DELAY \"done\" record never appears.\n5. finish_ordinary_terminal reads getevent at the EXIT stop (tracer.rs:547, which returns 0). It then issues PTRACE_CONT through resume_retaining (tracer.rs:592) and calls running.wait_owned() (tracer.rs:606).\n6. That wait pops the FIFO front (notifier.rs:661), which is the stale 0x57f, and decodes it as Signal(SIGTRAP). By then the tracee is no longer in that stop: GETSIGINFO and GETEVENTMSG both return ESRCH.\n7. The `else if event != Event::Exit` arm (tracer.rs:710-716) fails the session and signals the process groups. The real PTRACE_EVENT_EXEC (0x4057f) for the same pid is collected behind the stale stop (base run-11 #38, and the forced run f2) but is never delivered.\n8. The run ends as Pending(PtraceRunFailure{primary: Tool(unexpected ptrace terminal stop: Signal(SIGTRAP)), phase \"ptrace tree cleanup\"}). The harness panics at tracer.rs:5993 (\"exec owner did not Complete within original3s predicate\").\n\nAnswers to the specific probes:\n- **tid:** the thread-group leader being displaced (leader=true in every capture), not the thread that called exec.\n- **Last ptrace request to that tid:** the PTRACE_CONT from finish_ordinary_terminal. The request before the EXIT stop was the post-clone SINGLESTEP.\n- **siginfo, RIP and the other register fields:** unreadable, because the kernel returns ESRCH. The stop no longer exists as a ptrace stop when it is decoded.\n- **Not the PR's regression:** the race predates https://github.com/rrnewton/reverie/pull/694. Base 547278b9 reproduces it naturally (3 in 12 runs) and under forcing (4 of 4 tests).\n\nHarness (step 4): `ordinary_exec_owner_control` matches any Complete, including Complete(Err) (tracer.rs:5960), because the fail=true test legitimately expects one. The result is only checked at the end: `expect_err` plus a NonleaderFailure primary plus phase \"ptrace replaced leader on_exit_thread\" for fail=true (tracer.rs:6151-6160), and `unwrap()` plus Exited(0) and \"survived\" for fail=false (tracer.rs:6171). The probe counts:\n- Head: 96 passing test executions, 20 with result Err. All 20 were in displaced_hook_failure_fences_replacement (fail=true), and each of the 13 fail=true Err lines kept in saved logs carried Tool(ordinary nonleader failure control) with phase \"ptrace replaced leader on_exit_thread\".\n- Base: 44 passes, 12 with Err, all fail=true.\n- Zero fail=false passes carried an Err.\n- Every failure, SIGTRAP or not, was Pending (ok_complete=false), never Complete(Err).\n\nSo the harness does not falsely pass on an Err. Its only defect is ordering: in a fail=false run, a Complete(Err) would first trip the timer/event asserts (tracer.rs:6006 \"actual exec timer handoff omitted or duplicated\") and hide the real error.",
+ "confidence": "proven",
+ "evidence": [
+  {
+   "claim": "The stale 0x57f is collected after the post-clone SINGLESTEP and before the leader's EXIT stop. It is decoded only after finish_ordinary_terminal has issued PTRACE_CONT on the EXIT stop.",
+   "how_shown": "Collection-time probe (COLLECT, recorded in notifier worker_thread before event.update) plus request and decode probes, all on one global sequence counter. Natural head run-2: #81 SINGLESTEP (backtrace task.rs:6008) -> #85 COLLECT 0x57f -> #86 COLLECT 0x6057f -> #92 CONT(retaining) (tracer.rs:594 in the probed build = pristine :592) -> #93 STOP 0x57f -> SIGTRAP arm. The same order appears in head run-16 and run-20 and in base run-10, run-11 and run-12: 6 of 6 natural captures.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/sigtrap/runs/head-filter/run-2.log, run-16.log, run-20.log; .../runs/base-filter/run-10.log, run-11.log, run-12.log"
+  },
+  {
+   "claim": "Forcing the window deterministically reproduces the failure at head and base, and it shows the run-loop future is dropped while the step result is queued.",
+   "how_shown": "An env-gated mutation (SIGTRAP_FORCE_DELAY_MS=200) inserts an async tokio sleep between step_stopped(parent) and next_state() at task.rs:6008. Results: head, 1 of 1 for a single test plus 5 of 5 tests; base, 4 of 4 tests. All failed with the SIGTRAP arm, and all 9 histories show SINGLESTEP -> FORCE-DELAY start -> COLLECT 0x57f -> COLLECT 0x6057f -> CONT(retaining) -> STOP 0x57f. 'FORCE-DELAY done' is never recorded, so the run_loop future was dropped by select_biased.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/sigtrap/runs/forced/f1.log, f2.log, f3.log"
+  },
+  {
+   "claim": "The real next stop, PTRACE_EVENT_EXEC under the leader pid, is queued behind the stale SIGTRAP and is lost.",
+   "how_shown": "COLLECT worker raw=0x4057f is recorded on the leader tid after the stale entry. Base run-11: #38 COLLECT 0x4057f before #39 STOP 0x57f. Forced f2: #63, #64 and #65 COLLECT 0x4057f. The events list shows only thread-start rows, and no Exec edge ever reaches the owner, which is why timers.len()==0.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/sigtrap/runs/base-filter/run-11.log; .../runs/forced/f2.log"
+  },
+  {
+   "claim": "When the stale stop is decoded, the tracee is no longer in any ptrace stop.",
+   "how_shown": "In the SIGTRAP arm, GETSIGINFO and GETEVENTMSG both return Died(ESRCH). The notifier state shows pending=[] and exit_status=1. /proc SigPnd and ShdPnd are 0. exit_status_captured=Some(Exited(0)) in 6 of 6 natural captures, so EXIT had already been observed with message 0.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/sigtrap/runs/single5.log (PROBE_SIGTRAP_EXTRA / PROBE_SIGTRAP_TERMINAL lines)"
+  },
+  {
+   "claim": "EXIT stops bypass the FIFO while every other stop is queued, and the owned wait consumes the FIFO front.",
+   "how_shown": "Source reading at head: notifier.rs:844-847 (`if status == PTRACE_EVENT_EXIT_STOP { self.publish_exit_stop(..); return None; }`), :869 (pending.push_back), :661 (pending.pop_front on consumption).",
+   "artifact": "safeptrace/src/notifier.rs @1e1e1f78"
+  },
+  {
+   "claim": "The exit future has priority over the run loop, and the loser is dropped without draining its in-flight stop.",
+   "how_shown": "Source reading: task.rs:6928-6937 `futures::select_biased! { cancelled, global_failure, task = exit => ..., result = run_loop => ... }`. It is corroborated by the missing FORCE-DELAY done record.",
+   "artifact": "reverie-ptrace/src/task.rs @1e1e1f78"
+  },
+  {
+   "claim": "The race predates https://github.com/rrnewton/reverie/pull/694.",
+   "how_shown": "The base 547278b9 campaign, run under the pressure lock and pinned to CPUs 100-101, hit 3 SIGTRAP captures in 12 runs (runs 10, 11 and 12). The head campaign hit 3 in 20 runs (runs 2, 16 and 20).",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/sigtrap/runs/{head-filter,base-filter}/summary.txt"
+  },
+  {
+   "claim": "A legacy exec SIGTRAP is not the source.",
+   "how_shown": "PTRACE_O_TRACEEXEC is set in the options at tracer.rs:3846. Kernel header include/linux/ptrace.h:148-157 sends the legacy SIGTRAP only when TRACEEXEC is off and the tracee is not seized. The probe also shows the stale stop was collected before the EXIT stop.",
+   "artifact": "/usr/src/kernels/7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf/include/linux/ptrace.h"
+  },
+  {
+   "claim": "No passing run carried an unexpected Err. Every Complete(Err) was the expected fail=true NonleaderFailure.",
+   "how_shown": "The PROBE_OUTCOME line (ok_complete, result_is_err) was joined with the per-test verdict. Head: 96 passes, 20 Err, all displaced_hook_failure_fences_replacement. Base: 44 passes, 12 Err, all fail=true. Every failing execution had ok_complete=false. All 13 fail=true outcome lines kept in saved logs show primary Tool(ordinary nonleader failure control) with phase 'ptrace replaced leader on_exit_thread'.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/sigtrap/runs/{head-filter,base-filter}/outcomes.txt and tests.txt"
+  },
+  {
+   "claim": "A kernel fatal wakeup clears JOBCTL_TRACED and wakes a __TASK_TRACED task unless JOBCTL_PTRACE_FROZEN is set, so a reported stop can be left without a live ptrace stop behind it.",
+   "how_shown": "Read include/linux/sched/signal.h:444-452 (signal_wake_up). That de_thread reaches this helper through kernel/signal.c was NOT read, because only headers are installed. That link is inferred, and the measured ESRCH plus the later EXIT collection is the direct evidence.",
+   "artifact": "/usr/src/kernels/7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf/include/linux/sched/signal.h"
+  }
+ ],
+ "fix_implications": "Correct handling of the stop:\n- A status collected for a tid before that tid's PTRACE_EVENT_EXIT stop has been superseded once the EXIT stop is taken by the terminal owner. It must never be delivered as a terminal-owner event, and it must never fail the session.\n- The measured correct next stop after the EXIT stop is resumed is either the Exec edge (0x4057f under the leader pid) or the final exit status.\n- Note that the conclusion that EXIT is the last non-exec stop comes from the design comment at wait_after_exit_event (task.rs ~6019) and from these measurements, not from kernel source I read.\n\nPreferred fix, in safeptrace:\n- Give the out-of-band EXIT publication an ordering fence against `pending`. Record the FIFO length or sequence at publish_exit_stop time (notifier.rs:844). When the owner that took the EXIT capability resumes it (resume_retaining/resume on the EXIT stop), retire every non-terminal status queued before the EXIT publication.\n- Alternatively, have the owned wait created from the EXIT stop skip pre-EXIT entries.\n- This fixes the race for every consumer, not just ordinary mode.\n\nWeaker fix, in reverie-ptrace: in finish_ordinary_terminal, after the EXIT stop has been resumed (tracer.rs:592-606), treat a Signal or Syscall stop from that same tid that was queued before the EXIT as superseded and keep waiting. Do not hit the session.fail arm at tracer.rs:710-716. The decode-time ESRCH ('owned ptrace wait observed death during decoding') already marks such a stop as dead. That is a usable signal only together with an ordering fact, not on its own.\n\nRelated latent defect (not observed): after the fail arm, `current = Ok(stopped)` (tracer.rs:717) loops back. If exit_status were None (the ESRCH-at-getevent path), it would call getevent on a non-EXIT stop and could treat an unrelated event message as the exit status. The loop should never re-enter the getevent path with a non-EXIT stop.\n\nDo not paper over this by dropping the run-loop cancellation. The run loop being preempted by the exit future is correct. The bug is that its in-flight stop is left in a shared queue that the next owner trusts.\n\nExact harness assertion: immediately after `let completed = match result { Ok(ToolRunOutcome::Complete(completed)) => completed, ... }` (tracer.rs:5960), and before the elapsed, root_absent, timers.len() and event asserts, check the result as follows.\n- **fail=false:** `let output = completed.result.as_ref().unwrap_or_else(|e| panic!(\"exec owner completed with error: {e:?}\"));` then `assert_eq!(output.status, ExitStatus::Exited(0)); assert_eq!(output.stdout, b\"survived\"); assert_eq!(output.stderr, b\"\");`.\n- **fail=true:** `let failure = completed.result.as_ref().expect_err(\"displaced leader Tool failure lost\"); assert!(matches!(failure.primary(), Error::Tool(e) if e.downcast_ref::<NonleaderFailure>().is_some()), \"unexpected primary: {failure:?}\"); assert_eq!(failure.origin().phase, \"ptrace replaced leader on_exit_thread\");`.\n\nKeep the existing Pending panic (tracer.rs:5993), which already prints the primary error. Optionally assert that `description` never contains \"unexpected ptrace terminal stop\", so a regression names itself.\n\nThis ordering change fixes diagnostics only. The measured false-pass count is 0, so it does not change which runs pass.",
+ "open_questions": [
+  "I did not write REPORT.md at /home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/sigtrap/REPORT.md. The Write tool refused because subagents may not write report files, so this StructuredOutput is the report.",
+  "A second failure class, not SIGTRAP, appeared twice at head: single3 and head-filter run-12, both in ordinary_nonleader_exec_postexec_timer_survives_internal_step (timer_mode 1). The failure is Pending(PtraceRunFailure{primary: Errno(EALREADY), phase 'ptrace tree cleanup'}) about 7 ms in. Its producer (notifier.rs EXIT_CAP_CLAIMED/EALREADY sites or task.rs:3370) was not traced.",
+  "Base run-8 failed with the ESRCH-at-EXIT-getevent class tracked in https://github.com/rrnewton/reverie/issues/688: 'actual exec ... has no retained preceding EXIT event status', with PROBE_EXITSTOP_GETEVENT_ESRCH=1. It did not recur at head in 20 runs. A sample that small bounds flakiness only.",
+  "The kernel path from de_thread/zap_other_threads to signal_wake_up(t, fatal) was not read, because only headers are installed on this host. The abandonment of the step stop is shown by measurement (ESRCH, a later EXIT collection), not by kernel .c source.",
+  "siginfo fields (si_signo, si_code, si_pid, si_uid, si_addr) and the registers at the stale stop could not be captured, because the kernel returns ESRCH. The stop's origin is identified by collection order and by the preceding SINGLESTEP request instead.",
+  "Other nested-step sites (task.rs:2719, 3980, 7336, 7644; timer.rs:1518; task.rs:4144 post-exec step) can in principle leave a collected status in the FIFO when the exit future wins. Only the post-clone step at task.rs:6008 was observed in these tests."
+ ],
+ "kernel_source_refs": [
+  "/usr/src/kernels/7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf/include/linux/sched/signal.h:444-452 (signal_wake_up: a fatal wakeup clears JOBCTL_TRACED and wakes __TASK_TRACED unless JOBCTL_PTRACE_FROZEN)",
+  "/usr/src/kernels/7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf/include/linux/ptrace.h:148-157 (the legacy exec SIGTRAP is sent only without PTRACE_O_TRACEEXEC and without seize)",
+  "/usr/src/kernels/7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf/include/linux/sched/jobctl.h:22,35 (JOBCTL_PTRACE_FROZEN)"
+ ],
+ "refuted_hypotheses": [
+  "The SIGTRAP is a legacy post-exec SIGTRAP: refuted. TRACEEXEC is set (tracer.rs:3846), ptrace.h:148-157 rules it out, and the stale 0x57f was collected before the EXIT stop, before the exec completed.",
+  "The SIGTRAP is a live signal-delivery stop reported after the EXIT stop was resumed: refuted. COLLECT shows 0x57f collected before 0x6057f in 15 of 15 captures, and GETSIGINFO returns ESRCH at decode.",
+  "The SIGTRAP is specific to the timer modes or to the ECHILD change in https://github.com/rrnewton/reverie/pull/694: refuted. It occurs in timer mode 0 (transfers_state), mode 1 and mode 2, and in the fail=true test. It reproduces at base 547278b9 both naturally (3/12) and forced (4/4).",
+  "The SIGTRAP comes from the exec'ing non-leader thread: refuted. leader=true and tid==tgid in every capture. The non-leader only had its initial 0x137f stop and a CONT.",
+  "The harness passes runs whose Complete result is an unexpected Err: refuted. There were 0 such runs in 140 passing test executions, and code reading shows every pass goes through unwrap (fail=false) or expect_err plus NonleaderFailure plus phase (fail=true)."
+ ],
+ "runs": [
+  {
+   "cmd": "flock .../flake/pressure.lock campaign.sh head-filter bin-head 400 3 ordinary_nonleader_exec 100-101 (= timeout 180 nice -n 10 taskset -c 100-101 bin-head --test-threads=4 --nocapture ordinary_nonleader_exec), head 1e1e1f78 + probe",
+   "failures": "4 of 20 runs failed: 3 SIGTRAP (runs 2, 16, 20) and 1 EALREADY (run 12); stopped at the 3-capture target",
+   "load": "start 30.62 58.02 50.38; end 29.68 56.93 50.11 (316 CPUs)",
+   "runs": 20,
+   "wall_s": 6
+  },
+  {
+   "cmd": "flock .../flake/pressure.lock campaign.sh base-filter bin-base 200 3 ordinary_nonleader_exec 100-101, base 547278b9 + probe",
+   "failures": "4 of 12 runs failed: 3 SIGTRAP (runs 10, 11, 12) and 1 #688-class ESRCH 'no retained preceding EXIT event status' (run 8); stopped at the 3-capture target",
+   "load": "29.68 56.93 50.11",
+   "runs": 12,
+   "wall_s": 3
+  },
+  {
+   "cmd": "SIGTRAP_FORCE_DELAY_MS=200 nice -n 10 bin-head --test-threads=4 --nocapture [--exact ...transfers_state_and_consumes_old_leader_once | ordinary_nonleader_exec] (forced reproducer, head)",
+   "failures": "2 of 2 runs failed; 6 of 6 test executions hit the SIGTRAP arm",
+   "load": "~21-25 1-min",
+   "runs": 2,
+   "wall_s": 1
+  },
+  {
+   "cmd": "SIGTRAP_FORCE_DELAY_MS=200 nice -n 10 bin-base --test-threads=4 --nocapture ordinary_nonleader_exec (forced reproducer, base)",
+   "failures": "1 of 1 run failed; 4 of 4 test executions hit the SIGTRAP arm",
+   "load": "~21-25 1-min",
+   "runs": 1,
+   "wall_s": 1
+  },
+  {
+   "cmd": "nice -n 10 [taskset -c 100-101] bin-head --test-threads=4 --nocapture ordinary_nonleader_exec (unlocked single runs, earlier probe build without COLLECT)",
+   "failures": "2 of 5 runs failed: single5 SIGTRAP (history matches: #39 SINGLESTEP task.rs:6008, #44 CONT(retaining), #47 stale 0x57f) and single3 EALREADY",
+   "load": "see runs/single*.load",
+   "runs": 5
+  }
+ ]
+}

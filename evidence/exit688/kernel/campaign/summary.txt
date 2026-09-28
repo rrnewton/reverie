@@ -1,0 +1,37 @@
+== S1f: 250 iterations
+   250  lmsg=0x0 lcont=ok waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S1p: 250 iterations
+   250  lmsg=0x0 lcont=ok waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S2d: 250 iterations
+   250  lmsg=0x0 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S2h: 250 iterations
+   250  lmsg=0x0 held_arrivals=0 held_state=t waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S3a: 250 iterations
+   117  lmsg_pre=0x700 state_pre=t state_post=R errno=ESRCH waitid_formerT=ECHILD proc_formerT=- held_leader_tid_now=t leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+   109  lmsg_pre=0x700 state_pre=t state_post=Z errno=ESRCH waitid_formerT=ECHILD proc_formerT=- held_leader_tid_now=t leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+    24  lmsg_pre=0x700 state_pre=t state_post=t waitid_formerT=ECHILD proc_formerT=- held_leader_tid_now=t leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, NO_ESRCH_1s exec_msg==T
+  esrch_after_us min/median/max = 88/145/633
+== S3b: 250 iterations
+   233  lmsg_post=EESRCH state_pre=t state_post=t waitid_formerT=ECHILD proc_formerT=- held_leader_tid_now=t leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+    17  lmsg_post=0x700 state_pre=t state_post=t waitid_formerT=ECHILD proc_formerT=- held_leader_tid_now=t leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S3c: 250 iterations
+   250  lmsg=0x700 lcont=ok waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S3p: 250 iterations
+   247  waitid_formerT=ECHILD proc_formerT=- held_leader_tid_now=t leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T zhits=0
+     3  waitid_formerT=ECHILD proc_formerT=- held_leader_tid_now=t leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T zhits>0
+== S3r: 250 iterations
+   250  lmsg=0x700 zombie_state=Z proc_exit_code=1792 waitid_L=none waitpid_L=0 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S3x: 250 iterations
+   240  lmsg=EESRCH lcont=ESRCH waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+    10  lmsg=0x700 lcont=ok waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S4a: 250 iterations
+   250  lmsg_after_cont=EESRCH lcont=ok waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S4b: 250 iterations
+   250  lmsg=0x0 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S4c: 250 iterations
+   250  lmsg=0x0 intr=ok waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+== S4d: 250 iterations
+   250  lmsg=EESRCH lcont=ESRCH leader_exit_stop=1 exec=0 leader_wexit_before_exec=1 order=EXIT@L,EXIT@T,KT:9,KL:9,
+== S4e: 250 iterations
+   249  lmsg=0x0 lcont=ok waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0, exec_msg==T
+     1  waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=0 exec=1 leader_wexit_before_exec=0 order=EXEC@L,EXIT@L,XL:0, exec_msg==T

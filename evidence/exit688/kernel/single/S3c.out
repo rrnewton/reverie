@@ -1,0 +1,3 @@
+iter=0 sc=S3c L=3718067 lmsg=0x700 lcont=ok exec_msg=0x38bbba T=3718074 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0,
+iter=1 sc=S3c L=3718118 lmsg=0x700 lcont=ok exec_msg=0x38bbea T=3718122 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0,
+iter=2 sc=S3c L=3718178 lmsg=0x700 lcont=ok exec_msg=0x38bc26 T=3718182 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0,

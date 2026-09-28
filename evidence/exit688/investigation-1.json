@@ -1,0 +1,113 @@
+{
+ "question": "Issue 688 (https://github.com/rrnewton/reverie/issues/688), code at 1e1e1f78 (https://github.com/rrnewton/reverie/pull/694). A non-leader thread in ordinary mode calls execve. What takes the leader out of its PTRACE_EVENT_EXIT stop before finish_ordinary_terminal calls getevent, so that getevent returns ESRCH and the Exec edge has no status? Is that EXIT stop the leader's own exit or the exec's zap, and what status would it have reported?",
+ "answer": "No signal wakes the leader out of its EXIT stop. The tracer resumes that stop itself with a stale PTRACE_CONT.\n\n1. After the clone event, the tracer single-steps the leader (task.rs:6008 \u2192 step_stopped at 5455) and receives a SIGTRAP stop (status 0x57f).\n2. The run loop hands that stop to handle_stop_event (task.rs:3154) \u2192 handle_signal (3858) \u2192 handle_sigtrap. Its default branch at task.rs:3638 calls resume_stopped(task, None), which reaches the PTRACE_CONT at task.rs:5444. The tracer resumes the new non-leader thread first.\n3. If the non-leader calls execve before the leader's CONT is issued, de_thread's zap_other_threads sends the leader SIGKILL. That takes the leader out of its tracer-held 0x57f stop with no tracer request, and it enters the EXIT stop (0x6057f).\n4. The CONT meant for the 0x57f stop then lands on the EXIT stop and succeeds (rc=0).\n5. The leader runs on to exit and becomes a zombie, and de_thread completes. getevent at the leader's TID (tracer.rs:547, unprobed) then gets ESRCH, and the Exec edge raises #688.\n\nThe EXIT stop comes from the exec's zap, not from the leader exiting on its own. The leader loops in pause() and never exits by itself. SIGKILL was seen pending while it sat in its trace stop, and the event message is the exec-zap value. The stop would have reported 0, i.e. Exited(0), which is what the tests expect. A raw GETEVENTMSG taken inside the window returned 0 in 5 of 5 cases, and kernel v7.1 exit.c:1100-1101 sets the exec-zap exit code to 0.\n\nThe comment's hypothesis, that a timer step advanced the stop, is refuted for all 17 captured instances: no timer or other request reached the leader in the window.\n\nThe harness blocked writing REPORT.md (\"Subagents should return findings as text\"), so the report content is in this output. Artifacts are under /home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/empirical/:\n- probe-final.patch, and probe.rs.copy (the new probe module)\n- runs/ (single*.log, delay1-3.log and .timeline files)\n- campaign1/ (summary.txt, kept failing runs 13, 17, 35, 47, 62, classify-all.txt)\n- the analysis scripts timeline.py, classify.py, gaps.py, gap2.py\n\nThe target dir and test binaries were deleted, and no test process of mine is left.",
+ "confidence": "strong",
+ "evidence": [
+  {
+   "claim": "Failing pattern (proven for the forced reproducer, strong for natural runs): the leader reports 0x57f (the post-clone single step). No ptrace request or signal reaches the leader, yet it reaches 0x6057f. The first request after that is PTRACE_CONT(resume)@task.rs:5444, and then GETEVENTMSG at tracer.rs:556 returns ESRCH (probe rc=-1000003).",
+   "how_shown": "classify.py over the probe ring dumps. Natural runs: 6 of 7 failing instances. Forced runs: 10 of 10.",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/empirical/campaign1/classify-all.txt; runs/delay1.log; runs/delay2.log"
+  },
+  {
+   "claim": "Passing contrast: in 363 of 364 natural passing exec edges and 30 of 30 unlocked ones, the leader's PTRACE_CONT at task.rs:5444 lands between the 0x57f and the 0x6057f, and GETEVENTMSG then returns 0. In run-48 the zap hit the 0x57f stop but the ExitFuture branch won: getevent returned 0 and the stale CONT was never issued.",
+   "how_shown": "classify.py over the 62 campaign runs (gzipped passing logs decompressed to a temp dir that was then deleted) and over runs/single*.log.",
+   "artifact": "campaign1/classify-all.txt; runs/single1.log, single-pre1..4.log"
+  },
+  {
+   "claim": "The EXIT stop comes from the exec zap and carries status 0 (proven).",
+   "how_shown": "Inside the delay window, a raw PTRACE_GETEVENTMSG from the thread that later issues the CONT returned r=0 msg=0x0 in 5 of 5 cases. The buffer held the sentinel 0xdeadbeef, and the previous event message was the clone TID. Two snapshots show the leader in 'State: t (tracing stop)' with SigPnd 0x100 (SIGKILL) while the exec'ing thread is in 'D' with wchan=begin_new_exec.",
+   "artifact": "runs/delay2.timeline (DELAY-raw-GETEVENTMSG); runs/delay1.timeline tgt=901838; runs/delay2.timeline tgt=1071702"
+  },
+  {
+   "claim": "The zap-driven EXIT stop does not leave on its own: it persists until the tracer resumes it, while the exec waits in de_thread.",
+   "how_shown": "Snapshots before and after the delay show the leader still in 'State: t, wchan=ptrace_stop' 3.2 ms after its 0x6057f, with the non-leader in D/begin_new_exec. It left only at the tracer's own CONT.",
+   "artifact": "runs/delay1.timeline (tgt=901837)"
+  },
+  {
+   "claim": "The stale CONT comes from the handle_sigtrap default branch.",
+   "how_shown": "A backtrace captured at the delayed CONT reads: resume_stopped <- handle_sigtrap task.rs:3638 <- handle_signal 3858 <- handle_stop_event 3154 <- run_loop_events 6341 <- run_loop 6225 <- ordinary_start 6642.",
+   "artifact": "runs/delay3.log (PROBE_DELAY_BACKTRACE)"
+  },
+  {
+   "claim": "Forced reproducer: delaying a multi-threaded leader's run-loop CONT by 3 ms reproduces the #688 error deterministically.",
+   "how_shown": "PROBE_DELAY_LEADER_CONT_US=3000. Run 1: 5 of 6 exec tests failed. Run 2: 5 of 5. Run 3: 1 of 1. Each failed with 'actual exec for P from F has no retained preceding EXIT event status'. The one test that passed does an injected syscall before exec, which pushes the exec past the delay.",
+   "artifact": "runs/delay1.log, delay2.log, delay3.log"
+  },
+  {
+   "claim": "Natural window size: the notifier latched 0x6057f 3.2 to 136.6 \u00b5s before the stale CONT in 6 instances, and -0.7 \u00b5s in run-47. That value is within probe resolution, and by elimination the CONT still consumed the EXIT stop.",
+   "how_shown": "gap2.py over the natural failing runs.",
+   "artifact": "campaign1/run-13,17,35,47,62.log"
+  },
+  {
+   "claim": "The kernel semantics that explain the measurements, read from sibling-fetched kernel v7.1 source.",
+   "how_shown": "Read directly: exec.c:922-923 (de_thread zap), signal.c:1349-1350 (zap sends SIGKILL and wakes the thread), sched/signal.h:447-449 (a fatal wake clears TRACED), ptrace.c:193-195 (no check of which stop a request targets), exit.c:1100-1101 (exec zap exit_code=0), signal.c:2870-2881 (SIGKILL dequeued before do_group_exit, so the EXIT stop still happens).",
+   "artifact": "/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/kernel/ksrc/ (tags.json: refs/tags/v7.1)"
+  }
+ ],
+ "fix_implications": "What the tracer knows at the Exec edge:\n- The leader's 0x6057f had already been latched by the notifier before the stale CONT, 3 to 137 \u00b5s earlier in 6 of 7 natural instances.\n- The Exec edge names the former TID.\n- getevent returned ESRCH.\n\nThe EXIT payload is then gone from the kernel: the leader is released by de_thread, and the former TID's pidfd gets ECHILD. So the retry loop at the Exec edge (session.retry_after(ExitEventStatusUnavailable)) can never succeed. Every failure stays Pending until the 3 s deadline.\n\nA check before the resume (look at the latched EXIT stop or exit epoch before resume_stopped) narrows the window but cannot close it. SIGKILL can move the tracee from the reported 0x57f stop into the EXIT stop at any moment outside a ptrace request (sched/signal.h:447-449). The kernel also accepts a CONT against whichever trace stop the tracee is in (ptrace.c:193). Run-47 shows the gap can be under 1 \u00b5s. So a fence on the resume alone cannot close the window, with or without a retry. It can be closed only by not needing the lost payload.\n\nOption 1: derive the displaced leader's status from the Exec edge.\n- Kernel exit.c:1100-1101 sets the exec-zap exit code to 0, and all measurements agree.\n- This contradicts the current comment at the Exec edge (\"Losing the old EXIT payload cannot authorize a fabricated consuming hook\").\n- It is only sound when the loss came from a zap. zap_other_threads also sends SIGKILL to a leader already in its own EXIT stop (signal.c:1348 skips only threads with exit_state set). That would lose a real nonzero status with the same observable signature. This comes from reading the source only; it was not measured.\n- A safe rule must tell apart an EXIT stop entered from a stop the tracer never released (zap, status 0) from one entered after a tracer resume.\n\nOption 2: reorder the clone path so the leader's post-clone step stop is resumed before the new child is resumed (task.rs:6008 and the run-loop CONT order). An exec by the child could then only zap a running leader, never a leader held in a stop. This narrows the race by construction but does not cover other held stops.",
+ "open_questions": [
+  "Can the exec zap also take a leader out of its own EXIT stop (status N) and lose N? The kernel source suggests yes (the fatal wake applies to any trace stop), but it was not measured. The answer decides whether 'Exec edge + ESRCH => Exited(0)' is sound in general.",
+  "Run-47's ordering (-0.7 \u00b5s between the CONT and the 0x6057f wait) cannot be resolved with timestamps taken at syscall return. A shared sequence number taken around every ptrace request and every waitid return would settle it.",
+  "For the natural failures, the stale CONT's caller (handle_sigtrap at task.rs:3638) is inferred from the same ptrace site (5444) and the same preceding stop kind. The backtrace was captured only in the forced run.",
+  "In campaign run 17, postexec_timer_survives_internal_step also failed with 'unexpected ptrace terminal stop: Signal(SIGTRAP)'. That is a different signature, possibly https://github.com/rrnewton/reverie/issues/686. My probes dump only at ESRCH or at the Exec edge, so no timeline was captured for it.",
+  "The kernel citations come from the upstream v7.1 copy fetched by the sibling kernel investigator. The host runs the 7.1.3-0_fbk0 vendor build, which may differ.",
+  "The harness refused the requested REPORT.md write, so no report file exists; its content is in this output."
+ ],
+ "kernel_source_refs": [
+  "fs/exec.c:922-923 @v7.1 (de_thread: group_exec_task = tsk; notify_count = zap_other_threads(tsk))",
+  "fs/exec.c:940-955 @v7.1 (de_thread waits TASK_KILLABLE for leader->exit_state)",
+  "fs/exec.c:987 @v7.1 (exchange_tids(tsk, leader))",
+  "kernel/signal.c:1348-1350 @v7.1 (zap_other_threads skips exit_state threads, sigaddset SIGKILL, signal_wake_up(t,1))",
+  "include/linux/sched/signal.h:447-449 @v7.1 (fatal wake clears JOBCTL_TRACED and wakes __TASK_TRACED unless JOBCTL_PTRACE_FROZEN)",
+  "kernel/ptrace.c:193-195 @v7.1 (ptrace_freeze_traced accepts any task_is_traced tracee)",
+  "kernel/ptrace.c:241,256-263 @v7.1 (ptrace_check_attach returns -ESRCH when not traced)",
+  "kernel/signal.c:2870-2881 @v7.1 (get_signal: group_exec_task -> SIGKILL dequeued -> fatal)",
+  "kernel/signal.c:3038 @v7.1 (do_group_exit(signr))",
+  "kernel/exit.c:1100-1101 @v7.1 (group_exec_task -> exit_code = 0)",
+  "kernel/exit.c:913 @v7.1 (ptrace_event(PTRACE_EVENT_EXIT, code))",
+  "kernel/signal.c:2375-2376 @v7.1 (ptrace_stop skips the stop when a fatal signal is pending)"
+ ],
+ "refuted_hypotheses": [
+  "A synchronous timer step advanced the physical EXIT stop (the comment at tracer.rs:574-576): refuted for all 17 captured instances. No timer tgkill, step or other request reached the leader in the window; the consuming resume is the handle_sigtrap CONT at task.rs:3638 \u2192 5444.",
+  "The EXIT stop is the leader's own exit: refuted. The leader loops in pause(); SIGKILL was pending in its trace stop; the event message is 0, the exec-zap value.",
+  "A signal wakes the leader out of its EXIT stop: refuted. The EXIT stop persisted 3.2 ms with no signal pending and ended only at the tracer's own CONT.",
+  "The leader is always blocked in pause() when the zap arrives: true only in passing runs. In every failing instance the leader was in the tracer-held post-clone SIGTRAP stop (0x57f)."
+ ],
+ "runs": [
+  {
+   "cmd": "bin/rp-probe1 --test-threads=4 --show-output ordinary_nonleader (unlocked baseline)",
+   "failures": "0 of 5 runs (30 of 30 exec edges passed)",
+   "load": "~19.5 (1-minute)",
+   "runs": 5,
+   "wall_s": 0.5
+  },
+  {
+   "cmd": "flock .../flake/pressure.lock campaign.sh campaign1 200 5 ordinary_nonleader (bin/rp-probe1, --test-threads=4)",
+   "failures": "5 runs failed with #688 (runs 13, 17, 35, 47, 62; 7 test instances out of 371 exec edges, 1.9%). Run 17 also had 1 failure with a different signature (unexpected terminal SIGTRAP). The campaign stopped at run 62 on reaching the 5 failures asked for.",
+   "load": "132.46 -> 111.64 (1-minute)",
+   "runs": 62,
+   "wall_s": 10.6
+  },
+  {
+   "cmd": "PROBE_DELAY_LEADER_CONT_US=3000 bin/rp-delay --test-threads=4 ordinary_nonleader",
+   "failures": "5 of 6 exec tests failed with #688",
+   "load": "17.64",
+   "runs": 1,
+   "wall_s": 1
+  },
+  {
+   "cmd": "PROBE_DELAY_LEADER_CONT_US=3000 bin/rp-delay2 --test-threads=4 ordinary_nonleader_exec",
+   "failures": "5 of 5 failed with #688; raw GETEVENTMSG in the window = 0 in 5 of 5",
+   "load": "22.88",
+   "runs": 1,
+   "wall_s": 1
+  },
+  {
+   "cmd": "PROBE_DELAY_LEADER_CONT_US=3000 bin/rp-delay3 ordinary_nonleader_exec_run_loop_echild",
+   "failures": "1 of 1 failed with #688; backtrace of the stale CONT captured",
+   "load": "37.20",
+   "runs": 1,
+   "wall_s": 1
+  }
+ ]
+}

@@ -1,0 +1,394 @@
+diff --git a/reverie-ptrace/src/task.rs b/reverie-ptrace/src/task.rs
+index 2462f7c3a..2867499ff 100644
+--- a/reverie-ptrace/src/task.rs
++++ b/reverie-ptrace/src/task.rs
+@@ -5441,6 +5441,46 @@ impl<L: Tool + 'static> TracedTask<L> {
+         if self.global_state.fatal_session.is_failed() {
+             return Err(Errno::ECANCELED.into());
+         }
++        // INVESTIGATION PROBE: env-gated delay of a multi-threaded leader's
++        // run-loop CONT, to widen the window in which a nonleader exec can
++        // zap the leader while it is still in its tracer-held stop.
++        if let Ok(us) = std::env::var("PROBE_DELAY_LEADER_CONT_US") {
++            let tid = task.pid().as_raw();
++            let tgid = std::fs::read_to_string(format!("/proc/{tid}/status"))
++                .ok()
++                .and_then(|s| {
++                    s.lines()
++                        .find_map(|l| l.strip_prefix("Tgid:").map(|v| v.trim().parse::<i32>().unwrap_or(-1)))
++                })
++                .unwrap_or(-1);
++            let nthreads = std::fs::read_dir(format!("/proc/{tid}/task"))
++                .map(|d| d.count())
++                .unwrap_or(0);
++            if tid == tgid && nthreads > 1 {
++                let us: u64 = us.parse().unwrap_or(0);
++                let before = safeptrace::probe::proc_snapshot(tid);
++                safeptrace::probe::rec(tid, format!("DELAY-before-CONT {us}us snapshot:{before}"), 0);
++                {
++                    let bt = std::backtrace::Backtrace::force_capture().to_string();
++                    let frames: Vec<String> = bt
++                        .lines()
++                        .filter(|l| l.contains("at ./src/") || l.contains("reverie-ptrace/src/") || l.contains("reverie_ptrace::"))
++                        .take(24)
++                        .map(|l| l.trim().to_string())
++                        .collect();
++                    eprintln!("PROBE_DELAY_BACKTRACE tid={tid} {}", frames.join(" <- "));
++                }
++                std::thread::sleep(std::time::Duration::from_micros(us));
++                let after = safeptrace::probe::proc_snapshot(tid);
++                safeptrace::probe::rec(tid, format!("DELAY-after-CONT-about-to-issue snapshot:{after}"), 0);
++                let mut msg: libc::c_ulong = 0xdead_beef;
++                let r = unsafe {
++                    libc::ptrace(libc::PTRACE_GETEVENTMSG, tid, std::ptr::null_mut::<libc::c_void>(), &mut msg as *mut libc::c_ulong)
++                };
++                let err = if r < 0 { std::io::Error::last_os_error().raw_os_error().unwrap_or(0) } else { 0 };
++                safeptrace::probe::rec(tid, format!("DELAY-raw-GETEVENTMSG r={r} errno={err} msg={msg:#x} (same thread as the CONT)"), msg as i64);
++            }
++        }
+         self.lease_liteinst_root_stop(task).resume(signal)
+     }
+ 
+@@ -6943,6 +6983,7 @@ impl<L: Tool + 'static> TracedTask<L> {
+                 crate::tracer::OrdinaryTerminal::Exited(status, session.ordinary_receipt())
+             }
+             Some(Either::Left(mut stopped)) => {
++                safeptrace::probe::rec(self.tid().as_raw(), format!("drive_ordinary: ExitFuture resolved ok={} main={}", stopped.is_ok(), self.is_main_thread()), 0);
+                 while let Err(TraceError::Errno(error)) = stopped {
+                     if stop
+                         .terminal
+@@ -8358,6 +8399,7 @@ impl<L: Tool + 'static> TracedTask<L> {
+                 let killed = Errno::result(unsafe {
+                     libc::syscall(libc::SYS_tgkill, self.pid(), child.id(), Signal::SIGSTOP)
+                 });
++                safeptrace::probe::rec(child.id().as_raw(), "tgkill(SIGSTOP) task.rs wait_all_stop", killed.map(|_| 0).unwrap_or(-1));
+                 if killed.is_ok() {
+                     child.suspended.store(true, Ordering::SeqCst);
+                     child.wait_all_stop_tx = Some(stop_tx.clone());
+diff --git a/reverie-ptrace/src/timer.rs b/reverie-ptrace/src/timer.rs
+index 8e4ca8bb2..22a0cb629 100644
+--- a/reverie-ptrace/src/timer.rs
++++ b/reverie-ptrace/src/timer.rs
+@@ -1335,6 +1335,7 @@ impl TimerImpl {
+ 
+             // Give the guest a kick via an "artificial signal".  This gives us something
+             // to handle in `handle_signal` and thus drives single-stepping.
++            safeptrace::probe::rec(self.guest_tid.as_raw(), "tgkill(MARKER_SIGNAL) timer.rs", 0);
+             Errno::result(unsafe {
+                 libc::syscall(
+                     libc::SYS_tgkill,
+diff --git a/reverie-ptrace/src/tracer.rs b/reverie-ptrace/src/tracer.rs
+index d064fa8f2..dd47d4133 100644
+--- a/reverie-ptrace/src/tracer.rs
++++ b/reverie-ptrace/src/tracer.rs
+@@ -533,6 +533,15 @@ async fn finish_ordinary_terminal(
+ ) -> OrdinaryTerminal {
+     let mut current = stopped;
+     let mut exit_status = None;
++    let mut probe_esrch: Option<i32> = None;
++    {
++        let (kind, pid) = match &current {
++            Ok(s) => ("Ok(Stopped)", s.pid().as_raw()),
++            Err(TraceError::Died(z)) => ("Err(Died)", z.pid().as_raw()),
++            Err(_) => ("Err(other)", -1),
++        };
++        safeptrace::probe::rec(pid, format!("finish_ordinary_terminal entered with {kind}"), 0);
++    }
+     #[cfg(test)]
+     record_fatal_phase_for_test(|| format!("finish_ordinary_terminal entered: {current:?}"));
+     loop {
+@@ -571,6 +580,18 @@ async fn finish_ordinary_terminal(
+                                 }
+                             }
+                             Err(TraceError::Died(zombie)) => {
++                                {
++                                    let leader = stopped.pid().as_raw();
++                                    let snap = safeptrace::probe::proc_snapshot(leader);
++                                    eprintln!(
++                                        "PROBE_EXITSTOP_GETEVENT_ESRCH=1 t={} tracer_tid={} leader={leader} snapshot:{snap}",
++                                        safeptrace::probe::now_ns(),
++                                        safeptrace::probe::gettid()
++                                    );
++                                    safeptrace::probe::rec(leader, format!("ESRCH-snapshot:{snap}"), 0);
++                                    safeptrace::probe::dump("esrch-immediate", &[leader]);
++                                    probe_esrch = Some(leader);
++                                }
+                                 // A synchronous transition (for example a timer
+                                 // step) can have advanced the physical EXIT
+                                 // stop before its queued ExitFuture is polled.
+@@ -648,6 +669,13 @@ async fn finish_ordinary_terminal(
+             }
+             Wait::Stopped(stopped, event) => {
+                 if let Event::Exec(former) = event {
++                    {
++                        let pid = stopped.pid().as_raw();
++                        let snap = safeptrace::probe::proc_snapshot(pid);
++                        safeptrace::probe::rec(pid, format!("EXEC-EDGE observed former={former} exit_status={exit_status:?} esrch={probe_esrch:?} snapshot:{snap}"), 0);
++                        let label = if exit_status.is_none() { "exec-edge-NOSTATUS" } else { "exec-edge-ok" };
++                        safeptrace::probe::dump(label, &[pid, former.as_raw()]);
++                    }
+                     #[cfg(test)]
+                     EXIT_PAYLOAD_CONTROL.with(|slot| {
+                         if let Some(control) = slot.borrow().as_ref() {
+@@ -954,6 +982,7 @@ impl RootStopLease {
+         Ok(task)
+     }
+ 
++    #[track_caller]
+     pub(crate) fn resume<T: Into<Option<Signal>>>(
+         mut self,
+         signal: T,
+@@ -961,6 +990,7 @@ impl RootStopLease {
+         self.take_for_transition()?.resume(signal)
+     }
+ 
++    #[track_caller]
+     pub(crate) fn step<T: Into<Option<Signal>>>(
+         mut self,
+         signal: T,
+@@ -981,6 +1011,7 @@ impl RootStopLease {
+         result
+     }
+ 
++    #[track_caller]
+     pub(crate) fn syscall<T: Into<Option<Signal>>>(
+         mut self,
+         signal: T,
+@@ -988,6 +1019,7 @@ impl RootStopLease {
+         self.take_for_transition()?.syscall(signal)
+     }
+ 
++    #[track_caller]
+     pub(crate) fn detach<T: Into<Option<Signal>>>(
+         mut self,
+         signal: T,
+@@ -1321,8 +1353,10 @@ impl TraceeIdentity {
+                 0,
+             )
+         };
++        let errno = if result == -1 { -(Errno::last().into_raw() as i64) } else { 0 };
++        safeptrace::probe::rec(safeptrace::probe::pidfd_pid(pidfd.as_raw_fd()), format!("pidfd_send_signal(send_raw_signal,{signal})"), errno);
+         if result == -1 {
+-            Err(Errno::last())
++            Err(Errno::new(-errno as i32))
+         } else {
+             Ok(())
+         }
+@@ -1896,6 +1930,7 @@ impl LiteinstTraceeCleanup {
+                         root_terminal.revoke_unclaimed_exit_stop()
+                     )
+                     .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
++                    safeptrace::probe::rec(self.pid().as_raw(), "PTRACE_CONT(root-cleanup-cont) about to issue", 0);
+                     let _ = legacy_cleanup_observe!(
+                         "root-cleanup-cont",
+                         self.pid(),
+@@ -1914,6 +1949,7 @@ impl LiteinstTraceeCleanup {
+                             tracee.terminal.revoke_unclaimed_exit_stop()
+                         )
+                         .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
++                        safeptrace::probe::rec(tracee.identity.tid.as_raw(), "PTRACE_CONT(descendant-cleanup-cont) about to issue", 0);
+                         let _ = legacy_cleanup_observe!(
+                             "descendant-cleanup-cont",
+                             tracee.identity.tid,
+@@ -3752,9 +3788,10 @@ async fn run_orphaned(orphans: mpsc::Receiver<Child>, session: Option<Arc<FatalS
+                                             }
+                                         }
+                                     } else {
+-                                        unsafe {
+-                                            libc::kill(pid.as_raw(), libc::SIGKILL);
+-                                        }
++                                        let r = unsafe {
++                                            libc::kill(pid.as_raw(), libc::SIGKILL)
++                                        };
++                                        safeptrace::probe::rec(pid.as_raw(), "kill(SIGKILL) tracer.rs:3756", r as i64);
+                                     }
+                                     let status = handle.await;
+                                     tracing::debug!(
+diff --git a/safeptrace/src/lib.rs b/safeptrace/src/lib.rs
+index 457937a77..a64fdabfb 100644
+--- a/safeptrace/src/lib.rs
++++ b/safeptrace/src/lib.rs
+@@ -16,6 +16,8 @@
+ mod memory;
+ #[cfg(feature = "notifier")]
+ mod notifier;
++#[allow(missing_docs)]
++pub mod probe;
+ mod regs;
+ mod waitid;
+ 
+@@ -773,8 +775,12 @@ impl Stopped {
+     }
+ 
+     /// Resumes the process and transitions it back to a running state.
++    #[track_caller]
+     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
+-        ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
++        let sig = sig.into();
++        let r = ptrace::cont(self.0.into(), sig);
++        crate::probe::rec(self.0.as_raw(), format!("PTRACE_CONT(resume,{sig:?})"), r.map(|_| 0).unwrap_or_else(|e| -(e as i64)));
++        r.map_err(|err| self.map_nix_err(err))?;
+         Ok(Running::from_token(self.0, self.1))
+     }
+ 
+@@ -787,11 +793,14 @@ impl Stopped {
+     /// capability escapes beside the retained Stopped. An errno alone does not
+     /// acknowledge terminal status or guarantee the same physical kernel stop.
+     /// Callers must use their original event owner before another transition.
++    #[track_caller]
+     pub fn resume_retaining<T: Into<Option<Signal>>>(
+         self,
+         sig: T,
+     ) -> Result<Running, (Self, Errno)> {
++        let sig = sig.into();
+         let result = ptrace::cont(self.0.into(), sig);
++        crate::probe::rec(self.0.as_raw(), format!("PTRACE_CONT(resume_retaining,{sig:?})"), result.map(|_| 0).unwrap_or_else(|e| -(e as i64)));
+         self.finish_retained_resume(result)
+     }
+ 
+@@ -823,15 +832,23 @@ impl Stopped {
+ 
+     /// Advances the execution of the process by a single step optionally
+     /// delivering a signal specified by `sig`.
++    #[track_caller]
+     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
+-        ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
++        let sig = sig.into();
++        let r = ptrace::step(self.0.into(), sig);
++        crate::probe::rec(self.0.as_raw(), format!("PTRACE_SINGLESTEP({sig:?})"), r.map(|_| 0).unwrap_or_else(|e| -(e as i64)));
++        r.map_err(|err| self.map_nix_err(err))?;
+         Ok(Running::from_token(self.0, self.1))
+     }
+ 
+     /// Like `step`, but arranges for the tracee to be stopped at the next
+     /// entry to or exit from a system call.
++    #[track_caller]
+     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
+-        ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
++        let sig = sig.into();
++        let r = ptrace::syscall(self.0.into(), sig);
++        crate::probe::rec(self.0.as_raw(), format!("PTRACE_SYSCALL({sig:?})"), r.map(|_| 0).unwrap_or_else(|e| -(e as i64)));
++        r.map_err(|err| self.map_nix_err(err))?;
+         Ok(Running::from_token(self.0, self.1))
+     }
+ 
+@@ -962,13 +979,21 @@ impl Stopped {
+     ///
+     /// It shouldn't be necessary to call this in most cases because `Event`
+     /// provides the necessary context for certain ptrace events.
++    #[track_caller]
+     pub fn getevent(&self) -> Result<i64, Error> {
+-        ptrace::getevent(self.0.into()).map_err(|err| self.map_nix_err(err))
++        crate::probe::rec(self.0.as_raw(), "GETEVENTMSG-before", 0);
++        let r = ptrace::getevent(self.0.into());
++        crate::probe::rec(self.0.as_raw(), "GETEVENTMSG-after", r.unwrap_or_else(|e| -(e as i64) - 1_000_000));
++        r.map_err(|err| self.map_nix_err(err))
+     }
+ 
+     /// Detaches from and then resumes the stopped tracee.
++    #[track_caller]
+     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
+-        ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
++        let sig = sig.into();
++        let r = ptrace::detach(self.0.into(), sig);
++        crate::probe::rec(self.0.as_raw(), format!("PTRACE_DETACH({sig:?})"), r.map(|_| 0).unwrap_or_else(|e| -(e as i64)));
++        r.map_err(|err| self.map_nix_err(err))?;
+         Ok(Running::from_token(self.0, self.1))
+     }
+ }
+@@ -1136,10 +1161,13 @@ impl Running {
+     /// # Limitations
+     ///
+     /// This only works for processes being traced via `Running::seize`.
++    #[track_caller]
+     pub fn interrupt(&self) -> Result<(), Errno> {
+         // nix doesn't provide `ptrace::interrupt` yet, so we need to roll our
+         // own.
+-        Errno::result(unsafe {
++        let site = std::panic::Location::caller();
++        let target = self.0.as_raw();
++        let r = Errno::result(unsafe {
+             libc::ptrace(
+                 libc::PTRACE_INTERRUPT,
+                 self.0.as_raw(),
+@@ -1147,7 +1175,9 @@ impl Running {
+                 std::ptr::null_mut::<libc::c_void>(),
+             )
+         })
+-        .map(drop)
++        .map(drop);
++        crate::probe::rec_at(site, target, "PTRACE_INTERRUPT", r.map(|_| 0).unwrap_or_else(|e| -(e.into_raw() as i64)));
++        r
+     }
+ 
+     /// Returns the pid of the running process.
+diff --git a/safeptrace/src/notifier.rs b/safeptrace/src/notifier.rs
+index b92a9589d..418ebde25 100644
+--- a/safeptrace/src/notifier.rs
++++ b/safeptrace/src/notifier.rs
+@@ -1855,7 +1855,7 @@ fn wait_pidfd_status(identity: &WorkerIdentity) -> Option<i32> {
+         WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
+     );
+     loop {
+-        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
++        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags); crate::probe::rec(identity.pid.as_raw(), format!("WAITID(P_PIDFD) thread={:?} result={:?}", std::thread::current().name(), result.map(|s| s.map(|v| format!("{v:#x}")))), 0);
+ 
+         return match result {
+             Ok(status) => Some(status.unwrap()),
+@@ -1938,7 +1938,9 @@ fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
+     if !libc::WIFSTOPPED(status) {
+         return Ok(());
+     }
+-    match nix::sys::ptrace::cont(pid.into(), None) {
++    let r = nix::sys::ptrace::cont(pid.into(), None);
++    crate::probe::rec(pid.as_raw(), format!("PTRACE_CONT(resume_cancelled_sync_status, status={status:#x})"), r.map(|_| 0).unwrap_or_else(|e| -(e as i64)));
++    match r {
+         Ok(()) => Ok(()),
+         // An untraced job-control stop needs no resume for the already-pending
+         // exact-pidfd SIGKILL to terminate it.
+@@ -2029,7 +2031,7 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
+                             NOTIFIER.remove(pid, &event);
+                             return Err(Errno::ESRCH.into());
+                         }
+-                        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
++                        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags); crate::probe::rec(identity.pid.as_raw(), format!("WAITID(P_PIDFD) thread={:?} result={:?}", std::thread::current().name(), result.map(|s| s.map(|v| format!("{v:#x}")))), 0);
+                         match result {
+                             Ok(Some(status)) => break status,
+                             Ok(None) => {
+@@ -3049,6 +3051,7 @@ impl TerminalCleanup {
+     /// identity or signals a numeric PID. Registration failure is returned
+     /// without a fallback. Neither success nor ESRCH acknowledges an exit:
+     /// callers must still consume the actual exit and terminal wait status.
++    #[track_caller]
+     pub fn request_sigkill(&self) -> Result<(), Errno> {
+         self.request_cancellation_signal(libc::SIGKILL)
+     }
+@@ -3056,11 +3059,14 @@ impl TerminalCleanup {
+     /// Stops this already-bound generation for fatal tree cancellation.
+     /// Like `request_sigkill`, delivery is not a stopped-state acknowledgment.
+     /// The caller must consume an actual owned ptrace stop before discovery.
++    #[track_caller]
+     pub fn request_sigstop(&self) -> Result<(), Errno> {
+         self.request_cancellation_signal(libc::SIGSTOP)
+     }
+ 
++    #[track_caller]
+     fn request_cancellation_signal(&self, signal: i32) -> Result<(), Errno> {
++        let site = std::panic::Location::caller();
+         if let Some(error) = self.registration_error() {
+             return Err(error);
+         }
+@@ -3077,10 +3083,12 @@ impl TerminalCleanup {
+                 0,
+             )
+         };
++        let errno = if result == 0 { 0 } else { -(io::Error::last_os_error().raw_os_error().unwrap_or(0) as i64) };
++        crate::probe::rec_at(site, identity.pid.as_raw(), format!("pidfd_send_signal(cancellation,{signal})"), errno);
+         if result == 0 {
+             Ok(())
+         } else {
+-            Err(io_errno(io::Error::last_os_error()))
++            Err(Errno::new(-errno as i32))
+         }
+     }
+ 

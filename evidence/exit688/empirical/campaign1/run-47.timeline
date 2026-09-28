@@ -1,0 +1,182 @@
+/home/newton/work/dev-hermit/ignored/liteinst-lane-claude/exit688/empirical/campaign1/run-47.log: ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once: PROBE_EXITSTOP_GETEVENT_ESRCH=1 t=134880999507023 tracer_tid=3090311 leader=3090317 snapshot: [task 3090317: State: R (running) | Pid: 3090317 | TracerPid: 3090311 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0]
+== run-47.log ordinary_nonleader_exec_displaced_hook_failure_fences_replacement [exec-edge-ok]
+  +      0.0us tgt=3090205 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +    375.6us tgt=3090205 PTRACE_SINGLESTEP(None) rc=0 @task.rs:2719
+  +    424.9us tgt=3090205 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +    570.2us tgt=3090205 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +    598.3us tgt=3090205 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +    833.5us tgt=3090205 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   1019.9us tgt=3090205 WAITID(P_PIDFD) result=Ok(Some("0x3057f")) rc=0 @sp/notifier.rs:1858
+  +   1035.3us tgt=3090205 GETEVENTMSG-before rc=0 @sp/lib.rs:234
+  +   1038.0us tgt=3090205 GETEVENTMSG-after rc=3090247 @sp/lib.rs:234
+  +   1459.4us tgt=3090247 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +   1791.7us tgt=3090205 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +   1815.9us tgt=3090205 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   1859.0us tgt=3090247 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   1907.7us tgt=3090205 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   2080.0us tgt=3090205 WAITID(P_PIDFD) result=Ok(Some("0x6057f")) rc=0 @sp/notifier.rs:1858
+  +   2105.1us tgt=3090205 drive_ordinary: ExitFuture resolved ok=true main=true rc=0 @task.rs:6946
+  +   2110.7us tgt=3090205 finish_ordinary_terminal entered with Ok(Stopped) rc=0 @tracer.rs:543
+  +   2112.7us tgt=3090205 GETEVENTMSG-before rc=0 @tracer.rs:556
+  +   2114.6us tgt=3090205 GETEVENTMSG-after rc=0 @tracer.rs:556
+  +   2122.6us tgt=3090205 PTRACE_CONT(resume_retaining,None) rc=0 @tracer.rs:613
+  +   2190.4us tgt=3090247 WAITID(P_PIDFD) result=Err(ECHILD) rc=0 @sp/notifier.rs:1858
+  +   2268.7us tgt=3090247 drive_ordinary: ExitFuture resolved ok=false main=false rc=0 @task.rs:6946
+  +   2646.5us tgt=3090205 WAITID(P_PIDFD) result=Ok(Some("0x4057f")) rc=0 @sp/notifier.rs:1858
+  +   2660.6us tgt=3090205 GETEVENTMSG-before rc=0 @sp/lib.rs:246
+  +   2662.8us tgt=3090205 GETEVENTMSG-after rc=3090247 @sp/lib.rs:246
+  +   2805.0us tgt=3090205 EXEC-EDGE observed former=3090247 exit_status=Some(Exited(0)) esrch=None snapshot: [task 3090205: State: t (tracing stop) | Pid: 3090205 | TracerPid: 3089475 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 @tracer.rs:675
+== run-47.log ordinary_nonleader_injected_exec_echild_awaits_leader_exec_edge [exec-edge-ok]
+  +      0.0us tgt=3090381 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +    929.6us tgt=3090381 PTRACE_SINGLESTEP(None) rc=0 @task.rs:2719
+  +    972.5us tgt=3090381 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   1161.6us tgt=3090381 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +   1197.9us tgt=3090381 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   1400.8us tgt=3090381 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   2105.8us tgt=3090381 WAITID(P_PIDFD) result=Ok(Some("0x3057f")) rc=0 @sp/notifier.rs:1858
+  +   2143.9us tgt=3090381 GETEVENTMSG-before rc=0 @sp/lib.rs:234
+  +   2147.9us tgt=3090381 GETEVENTMSG-after rc=3090410 @sp/lib.rs:234
+  +   2581.6us tgt=3090410 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +   4122.9us tgt=3090381 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +   4171.1us tgt=3090381 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   4228.7us tgt=3090410 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   4292.9us tgt=3090410 WAITID(P_PIDFD) result=Ok(Some("0x7057f")) rc=0 @sp/notifier.rs:1858
+  +   4304.7us tgt=3090381 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   4381.6us tgt=3090410 PTRACE_SYSCALL(None) rc=0 @task.rs:5466
+  +   4590.9us tgt=3090381 WAITID(P_PIDFD) result=Ok(Some("0x6057f")) rc=0 @sp/notifier.rs:1858
+  +   4622.6us tgt=3090381 drive_ordinary: ExitFuture resolved ok=true main=true rc=0 @task.rs:6946
+  +   4632.1us tgt=3090381 finish_ordinary_terminal entered with Ok(Stopped) rc=0 @tracer.rs:543
+  +   4635.1us tgt=3090381 GETEVENTMSG-before rc=0 @tracer.rs:556
+  +   4638.9us tgt=3090381 GETEVENTMSG-after rc=0 @tracer.rs:556
+  +   4643.2us tgt=3090381 PTRACE_CONT(resume_retaining,None) rc=0 @tracer.rs:613
+  +   4701.6us tgt=3090410 WAITID(P_PIDFD) result=Err(ECHILD) rc=0 @sp/notifier.rs:1858
+  +   5482.9us tgt=3090381 WAITID(P_PIDFD) result=Ok(Some("0x4057f")) rc=0 @sp/notifier.rs:1858
+  +   5494.7us tgt=3090381 GETEVENTMSG-before rc=0 @sp/lib.rs:246
+  +   5496.7us tgt=3090381 GETEVENTMSG-after rc=3090410 @sp/lib.rs:246
+  +   5649.8us tgt=3090381 EXEC-EDGE observed former=3090410 exit_status=Some(Exited(0)) esrch=None snapshot: [task 3090381: State: t (tracing stop) | Pid: 3090381 | TracerPid: 3090375 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 @tracer.rs:675
+== run-47.log ordinary_nonleader_exec_postexec_timer_survives_internal_step [exec-edge-ok]
+  +      0.0us tgt=3089508 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +    674.8us tgt=3089508 PTRACE_SINGLESTEP(None) rc=0 @task.rs:2719
+  +    730.6us tgt=3089508 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   1905.2us tgt=3089508 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +   1941.1us tgt=3089508 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   2263.9us tgt=3089508 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   2442.4us tgt=3089508 WAITID(P_PIDFD) result=Ok(Some("0x3057f")) rc=0 @sp/notifier.rs:1858
+  +   2465.7us tgt=3089508 GETEVENTMSG-before rc=0 @sp/lib.rs:234
+  +   2469.4us tgt=3089508 GETEVENTMSG-after rc=3089557 @sp/lib.rs:234
+  +   2975.3us tgt=3089557 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +  33109.1us tgt=3089508 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +  33174.0us tgt=3089508 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +  33326.5us tgt=3089557 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +  33433.0us tgt=3089508 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +  33681.4us tgt=3089508 WAITID(P_PIDFD) result=Ok(Some("0x6057f")) rc=0 @sp/notifier.rs:1858
+  +  33711.4us tgt=3089508 drive_ordinary: ExitFuture resolved ok=true main=true rc=0 @task.rs:6946
+  +  33717.6us tgt=3089508 finish_ordinary_terminal entered with Ok(Stopped) rc=0 @tracer.rs:543
+  +  33719.7us tgt=3089508 GETEVENTMSG-before rc=0 @tracer.rs:556
+  +  33723.7us tgt=3089508 GETEVENTMSG-after rc=0 @tracer.rs:556
+  +  33727.0us tgt=3089508 PTRACE_CONT(resume_retaining,None) rc=0 @tracer.rs:613
+  +  33781.0us tgt=3089557 WAITID(P_PIDFD) result=Err(ECHILD) rc=0 @sp/notifier.rs:1858
+  +  33882.9us tgt=3089557 drive_ordinary: ExitFuture resolved ok=false main=false rc=0 @task.rs:6946
+  +  34403.4us tgt=3089508 WAITID(P_PIDFD) result=Ok(Some("0x4057f")) rc=0 @sp/notifier.rs:1858
+  +  34425.7us tgt=3089508 GETEVENTMSG-before rc=0 @sp/lib.rs:246
+  +  34430.9us tgt=3089508 GETEVENTMSG-after rc=3089557 @sp/lib.rs:246
+  +  34649.4us tgt=3089508 EXEC-EDGE observed former=3089557 exit_status=Some(Exited(0)) esrch=None snapshot: [task 3089508: State: t (tracing stop) | Pid: 3089508 | TracerPid: 3089476 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 @tracer.rs:675
+== run-47.log ordinary_nonleader_exec_real_signal_cancels_postexec_timer [exec-edge-ok]
+  +      0.0us tgt=3089503 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +    593.6us tgt=3089503 PTRACE_SINGLESTEP(None) rc=0 @task.rs:2719
+  +    674.5us tgt=3089503 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   1823.2us tgt=3089503 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +   1842.3us tgt=3089503 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   2183.4us tgt=3089503 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   2419.8us tgt=3089503 WAITID(P_PIDFD) result=Ok(Some("0x3057f")) rc=0 @sp/notifier.rs:1858
+  +   2438.4us tgt=3089503 GETEVENTMSG-before rc=0 @sp/lib.rs:234
+  +   2442.1us tgt=3089503 GETEVENTMSG-after rc=3089559 @sp/lib.rs:234
+  +  32831.3us tgt=3089559 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +  33123.3us tgt=3089503 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +  33202.1us tgt=3089503 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +  33245.9us tgt=3089559 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +  33344.4us tgt=3089503 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +  33545.2us tgt=3089503 WAITID(P_PIDFD) result=Ok(Some("0x6057f")) rc=0 @sp/notifier.rs:1858
+  +  33592.8us tgt=3089503 drive_ordinary: ExitFuture resolved ok=true main=true rc=0 @task.rs:6946
+  +  33601.3us tgt=3089503 finish_ordinary_terminal entered with Ok(Stopped) rc=0 @tracer.rs:543
+  +  33604.0us tgt=3089503 GETEVENTMSG-before rc=0 @tracer.rs:556
+  +  33607.6us tgt=3089503 GETEVENTMSG-after rc=0 @tracer.rs:556
+  +  33612.2us tgt=3089503 PTRACE_CONT(resume_retaining,None) rc=0 @tracer.rs:613
+  +  33666.7us tgt=3089559 WAITID(P_PIDFD) result=Err(ECHILD) rc=0 @sp/notifier.rs:1858
+  +  33745.1us tgt=3089559 drive_ordinary: ExitFuture resolved ok=false main=false rc=0 @task.rs:6946
+  +  34074.5us tgt=3089503 WAITID(P_PIDFD) result=Ok(Some("0x4057f")) rc=0 @sp/notifier.rs:1858
+  +  34090.8us tgt=3089503 GETEVENTMSG-before rc=0 @sp/lib.rs:246
+  +  34092.6us tgt=3089503 GETEVENTMSG-after rc=3089559 @sp/lib.rs:246
+  +  34269.8us tgt=3089503 EXEC-EDGE observed former=3089559 exit_status=Some(Exited(0)) esrch=None snapshot: [task 3089503: State: t (tracing stop) | Pid: 3089503 | TracerPid: 3089477 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 @tracer.rs:675
+== run-47.log ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge [exec-edge-ok]
+  +      0.0us tgt=3089498 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +    547.8us tgt=3089498 PTRACE_SINGLESTEP(None) rc=0 @task.rs:2719
+  +    623.4us tgt=3089498 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   1782.2us tgt=3089498 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +   1803.8us tgt=3089498 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   2140.3us tgt=3089498 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   2363.9us tgt=3089498 WAITID(P_PIDFD) result=Ok(Some("0x3057f")) rc=0 @sp/notifier.rs:1858
+  +   2392.1us tgt=3089498 GETEVENTMSG-before rc=0 @sp/lib.rs:234
+  +   2396.4us tgt=3089498 GETEVENTMSG-after rc=3089558 @sp/lib.rs:234
+  +  32798.0us tgt=3089558 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +  33093.3us tgt=3089498 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +  33159.0us tgt=3089498 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +  33202.9us tgt=3089558 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +  33299.0us tgt=3089498 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +  33533.4us tgt=3089498 WAITID(P_PIDFD) result=Ok(Some("0x6057f")) rc=0 @sp/notifier.rs:1858
+  +  33579.7us tgt=3089498 drive_ordinary: ExitFuture resolved ok=true main=true rc=0 @task.rs:6946
+  +  33585.8us tgt=3089498 finish_ordinary_terminal entered with Ok(Stopped) rc=0 @tracer.rs:543
+  +  33588.0us tgt=3089498 GETEVENTMSG-before rc=0 @tracer.rs:556
+  +  33590.5us tgt=3089498 GETEVENTMSG-after rc=0 @tracer.rs:556
+  +  33593.6us tgt=3089498 PTRACE_CONT(resume_retaining,None) rc=0 @tracer.rs:613
+  +  33688.6us tgt=3089558 WAITID(P_PIDFD) result=Err(ECHILD) rc=0 @sp/notifier.rs:1858
+  +  34142.1us tgt=3089498 WAITID(P_PIDFD) result=Ok(Some("0x4057f")) rc=0 @sp/notifier.rs:1858
+  +  34155.3us tgt=3089498 GETEVENTMSG-before rc=0 @sp/lib.rs:246
+  +  34158.1us tgt=3089498 GETEVENTMSG-after rc=3089558 @sp/lib.rs:246
+  +  34309.7us tgt=3089498 EXEC-EDGE observed former=3089558 exit_status=Some(Exited(0)) esrch=None snapshot: [task 3089498: State: t (tracing stop) | Pid: 3089498 | TracerPid: 3089478 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 @tracer.rs:675
+== run-47.log ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once [esrch-immediate]
+  +      0.0us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +    437.3us tgt=3090317 PTRACE_SINGLESTEP(None) rc=0 @task.rs:2719
+  +    488.6us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +    673.1us tgt=3090317 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +    711.4us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   1096.8us tgt=3090317 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   1294.5us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x3057f")) rc=0 @sp/notifier.rs:1858
+  +   1317.4us tgt=3090317 GETEVENTMSG-before rc=0 @sp/lib.rs:234
+  +   1321.2us tgt=3090317 GETEVENTMSG-after rc=3090338 @sp/lib.rs:234
+  +   2181.8us tgt=3090317 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +   2201.9us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   3022.4us tgt=3090317 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   3023.1us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x6057f")) rc=0 @sp/notifier.rs:1858
+  +   3084.1us tgt=3090317 drive_ordinary: ExitFuture resolved ok=true main=true rc=0 @task.rs:6946
+  +   3098.3us tgt=3090317 finish_ordinary_terminal entered with Ok(Stopped) rc=0 @tracer.rs:543
+  +   3102.0us tgt=3090317 GETEVENTMSG-before rc=0 @tracer.rs:556
+  +   3107.6us tgt=3090317 GETEVENTMSG-after rc=-1000003 @tracer.rs:556
+  +   3321.6us tgt=3090317 ESRCH-snapshot: [task 3090317: State: R (running) | Pid: 3090317 | TracerPid: 3090311 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 @tracer.rs:591
+== run-47.log ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once [exec-edge-NOSTATUS]
+  +      0.0us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +    437.3us tgt=3090317 PTRACE_SINGLESTEP(None) rc=0 @task.rs:2719
+  +    488.6us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +    673.1us tgt=3090317 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +    711.4us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   1096.8us tgt=3090317 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   1294.5us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x3057f")) rc=0 @sp/notifier.rs:1858
+  +   1317.4us tgt=3090317 GETEVENTMSG-before rc=0 @sp/lib.rs:234
+  +   1321.2us tgt=3090317 GETEVENTMSG-after rc=3090338 @sp/lib.rs:234
+  +   1762.9us tgt=3090338 WAITID(P_PIDFD) result=Ok(Some("0x137f")) rc=0 @sp/notifier.rs:1858
+  +   2181.8us tgt=3090317 PTRACE_SINGLESTEP(None) rc=0 @task.rs:5455
+  +   2201.9us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x57f")) rc=0 @sp/notifier.rs:1858
+  +   2345.3us tgt=3090338 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   3022.4us tgt=3090317 PTRACE_CONT(resume,None) rc=0 @task.rs:5444
+  +   3023.1us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x6057f")) rc=0 @sp/notifier.rs:1858
+  +   3084.1us tgt=3090317 drive_ordinary: ExitFuture resolved ok=true main=true rc=0 @task.rs:6946
+  +   3089.7us tgt=3090338 WAITID(P_PIDFD) result=Err(ECHILD) rc=0 @sp/notifier.rs:1858
+  +   3098.3us tgt=3090317 finish_ordinary_terminal entered with Ok(Stopped) rc=0 @tracer.rs:543
+  +   3102.0us tgt=3090317 GETEVENTMSG-before rc=0 @tracer.rs:556
+  +   3107.6us tgt=3090317 GETEVENTMSG-after rc=-1000003 @tracer.rs:556
+  +   3321.6us tgt=3090317 ESRCH-snapshot: [task 3090317: State: R (running) | Pid: 3090317 | TracerPid: 3090311 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 @tracer.rs:591
+  +   3389.9us tgt=3090338 drive_ordinary: ExitFuture resolved ok=false main=false rc=0 @task.rs:6946
+  +   3541.9us tgt=3090317 WAITID(P_PIDFD) result=Ok(Some("0x4057f")) rc=0 @sp/notifier.rs:1858
+  +   3589.6us tgt=3090317 GETEVENTMSG-before rc=0 @sp/lib.rs:246
+  +   3595.3us tgt=3090317 GETEVENTMSG-after rc=3090338 @sp/lib.rs:246
+  +   3734.6us tgt=3090317 EXEC-EDGE observed former=3090338 exit_status=None esrch=Some(3090317) snapshot: [task 3090317: State: t (tracing stop) | Pid: 3090317 | TracerPid: 3090311 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 @tracer.rs:675

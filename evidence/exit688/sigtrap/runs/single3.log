@@ -1,0 +1,49 @@
+
+running 5 tests
+actual delivered marker observations: tracer=168964, rows=[]
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step") ok_complete=false result_is_err=false
+exec owner before rescue: fail=false, timer_mode=1, root_absent=false, events=[(0, Pid(168979), 168979, None), (0, Pid(168983), 168983, None)], elapsed=7.511383ms, outcome=Pending(PtraceRunFailure { primary: Errno(EALREADY), origin: BackendFailure { pid: Pid(168979), tid: Pid(168979), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+exec owner rescue only: signal=Ok(()), completed=false
+
+thread 'tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step' (168970) panicked at reverie-ptrace/src/tracer.rs:6046:17:
+exec owner did not Complete within original3s predicate: Pending(PtraceRunFailure { primary: Errno(EALREADY), origin: BackendFailure { pid: Pid(168979), tid: Pid(168979), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step ... FAILED
+exec timer payload: /tmp/reverie-fatal-exec-timer-168964
+PROBE_FINISH_GETEVENT tid=168972 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer")
+PROBE_FINISH_GETEVENT tid=169014 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement")
+PROBE_FINISH_GETEVENT tid=168977 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge")
+PROBE_FINISH_GETEVENT tid=169014 raw=0x9 test=Some("tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement")
+PROBE_FINISH_GETEVENT tid=169012 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once")
+actual delivered marker observations: tracer=168964, rows=[]
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement") ok_complete=true result_is_err=true
+exec owner before rescue: fail=true, timer_mode=0, root_absent=true, events=[(0, Pid(169014), 169014, None), (0, Pid(169139), 169139, None), (2, Pid(169014), 169014, Some(Exited(0))), (2, Pid(169014), 169139, Some(Signaled(SIGKILL, false))), (3, Pid(169014), 0, Some(Signaled(SIGKILL, false)))], elapsed=182.536189ms, outcome=Complete(Err(PtraceRunFailure { primary: Tool(ordinary nonleader failure control), origin: BackendFailure { pid: Pid(169014), tid: Pid(169014), phase: "ptrace replaced leader on_exit_thread" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) }))
+actual perf exec handoff: ExecTimerTransfer { displaced: Some(ExecTimerIdentity { clock_fd: 8, timer_fd: 6, clock_event_id: 6847149, timer_event_id: 6847148, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(169014), guest_tid: Pid(169014), kernel_owner_tid: Pid(169014) }), before: Some(ExecTimerIdentity { clock_fd: 79, timer_fd: 78, clock_event_id: 6847153, timer_event_id: 6847152, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(169014), guest_tid: Pid(169139), kernel_owner_tid: Pid(0) }), after: Some(ExecTimerIdentity { clock_fd: 79, timer_fd: 78, clock_event_id: 6847153, timer_event_id: 6847152, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(169014), guest_tid: Pid(169014), kernel_owner_tid: Pid(169014) }), displaced_fds_closed: true }
+PROBE_FINISH_GETEVENT tid=169012 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once")
+actual delivered marker observations: tracer=168964, rows=[(169012, 16, 1, 65, 150348, false, false)]
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once") ok_complete=true result_is_err=false
+exec owner before rescue: fail=false, timer_mode=0, root_absent=true, events=[(0, Pid(169012), 169012, None), (0, Pid(169146), 169146, None), (2, Pid(169012), 169012, Some(Exited(0))), (1, Pid(169012), 169146, None), (5, Pid(169012), 50297, None), (9, Pid(169012), 150348, None), (4, Pid(169012), 169146, None), (6, Pid(169012), 1050542, None), (2, Pid(169012), 169146, Some(Exited(0))), (3, Pid(169012), 0, Some(Exited(0)))], elapsed=177.11151ms, outcome=Complete(Ok(Output { status: Exited(0), stdout: "survived", stderr: "" }))
+actual perf exec handoff: ExecTimerTransfer { displaced: Some(ExecTimerIdentity { clock_fd: 56, timer_fd: 55, clock_event_id: 6847146, timer_event_id: 6847145, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(169012), guest_tid: Pid(169012), kernel_owner_tid: Pid(169012) }), before: Some(ExecTimerIdentity { clock_fd: 53, timer_fd: 38, clock_event_id: 6847155, timer_event_id: 6847154, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(169012), guest_tid: Pid(169146), kernel_owner_tid: Pid(0) }), after: Some(ExecTimerIdentity { clock_fd: 53, timer_fd: 38, clock_event_id: 6847155, timer_event_id: 6847154, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(169012), guest_tid: Pid(169012), kernel_owner_tid: Pid(169012) }), displaced_fds_closed: true }
+test tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement ... ok
+test tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once ... ok
+PROBE_FINISH_GETEVENT tid=168972 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer")
+PROBE_FINISH_GETEVENT tid=168977 raw=0x0 test=Some("tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge")
+actual delivered marker observations: tracer=168964, rows=[(168972, 16, 1, 65, 100440, true, false)]
+actual delivered marker observations: tracer=168964, rows=[(168977, 16, 1, 65, 100438, false, false)]
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer") ok_complete=true result_is_err=false
+exec owner before rescue: fail=false, timer_mode=2, root_absent=true, events=[(0, Pid(168972), 168972, None), (0, Pid(168984), 168984, None), (2, Pid(168972), 168972, Some(Exited(0))), (1, Pid(168972), 168984, None), (7, Pid(168972), 10, None), (2, Pid(168972), 168984, Some(Exited(0))), (3, Pid(168972), 0, Some(Exited(0)))], elapsed=239.086537ms, outcome=Complete(Ok(Output { status: Exited(0), stdout: "survived", stderr: "" }))
+PROBE_OUTCOME test=Some("tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge") ok_complete=true result_is_err=false
+exec owner before rescue: fail=false, timer_mode=1, root_absent=true, events=[(0, Pid(168977), 168977, None), (0, Pid(168989), 168989, None), (2, Pid(168977), 168977, Some(Exited(0))), (1, Pid(168977), 168989, None), (9, Pid(168977), 100438, None), (4, Pid(168977), 168989, None), (2, Pid(168977), 168989, Some(Exited(0))), (3, Pid(168977), 0, Some(Exited(0)))], elapsed=238.116381ms, outcome=Complete(Ok(Output { status: Exited(0), stdout: "survived", stderr: "" }))
+actual perf exec handoff: ExecTimerTransfer { displaced: Some(ExecTimerIdentity { clock_fd: 25, timer_fd: 24, clock_event_id: 6847137, timer_event_id: 6847136, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(168972), guest_tid: Pid(168972), kernel_owner_tid: Pid(168972) }), before: Some(ExecTimerIdentity { clock_fd: 64, timer_fd: 63, clock_event_id: 6847147, timer_event_id: 6847144, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(168972), guest_tid: Pid(168984), kernel_owner_tid: Pid(0) }), after: Some(ExecTimerIdentity { clock_fd: 64, timer_fd: 63, clock_event_id: 6847147, timer_event_id: 6847144, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(168972), guest_tid: Pid(168972), kernel_owner_tid: Pid(168972) }), displaced_fds_closed: true }
+actual perf exec handoff: ExecTimerTransfer { displaced: Some(ExecTimerIdentity { clock_fd: 38, timer_fd: 37, clock_event_id: 6847139, timer_event_id: 6847138, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(168977), guest_tid: Pid(168977), kernel_owner_tid: Pid(168977) }), before: Some(ExecTimerIdentity { clock_fd: 71, timer_fd: 69, clock_event_id: 6847151, timer_event_id: 6847150, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(168977), guest_tid: Pid(168989), kernel_owner_tid: Pid(0) }), after: Some(ExecTimerIdentity { clock_fd: 71, timer_fd: 69, clock_event_id: 6847151, timer_event_id: 6847150, artificial_pending: false, artificial_signal_sent: false, cancelled: true, guest_pid: Pid(168977), guest_tid: Pid(168977), kernel_owner_tid: Pid(168977) }), displaced_fds_closed: true }
+nonleader run loop stayed pending on: ["wait after initial tracee resume"]
+test tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer ... ok
+test tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge ... ok
+
+failures:
+
+failures:
+    tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 360 filtered out; finished in 0.24s
+

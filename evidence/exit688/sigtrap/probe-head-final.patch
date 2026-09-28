@@ -1,0 +1,366 @@
+diff --git a/reverie-ptrace/src/task.rs b/reverie-ptrace/src/task.rs
+index 2462f7c3a..b5595571c 100644
+--- a/reverie-ptrace/src/task.rs
++++ b/reverie-ptrace/src/task.rs
+@@ -6005,7 +6005,14 @@ impl<L: Tool + 'static> TracedTask<L> {
+             // that will transition the root again. Every other nested handler
+             // does the same; this one only looks new because the whole
+             // new-task path used to be unreachable under LiteInst.
+-            let wait = self.step_stopped(parent, None)?.next_state().await?;
++            let running = self.step_stopped(parent, None)?;
++            if let Some(ms) = std::env::var("SIGTRAP_FORCE_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
++                let tid = self.tid().as_raw();
++                safeptrace::probe::record(tid, format!("FORCE-DELAY start ms={ms}"), false);
++                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
++                safeptrace::probe::record(tid, "FORCE-DELAY done".to_string(), false);
++            }
++            let wait = running.next_state().await?;
+             self.arm_liteinst_wait(&wait);
+             Ok(wait)
+         }
+diff --git a/reverie-ptrace/src/tracer.rs b/reverie-ptrace/src/tracer.rs
+index d064fa8f2..b75b87435 100644
+--- a/reverie-ptrace/src/tracer.rs
++++ b/reverie-ptrace/src/tracer.rs
+@@ -556,6 +556,7 @@ async fn finish_ordinary_terminal(
+                         });
+                         match observed_event {
+                             Ok(raw) => {
++                                eprintln!("PROBE_FINISH_GETEVENT tid={} raw={raw:#x} test={:?}", stopped.pid(), std::thread::current().name());
+                                 exit_status = Some(ExitStatus::from_raw(raw as i32));
+                                 #[cfg(test)]
+                                 if let Some(control) =
+@@ -571,6 +572,7 @@ async fn finish_ordinary_terminal(
+                                 }
+                             }
+                             Err(TraceError::Died(zombie)) => {
++                                eprintln!("PROBE_EXITSTOP_GETEVENT_ESRCH=1 tid={} test={:?}\n{}", stopped.pid(), std::thread::current().name(), safeptrace::probe::dump_related(stopped.pid().as_raw()));
+                                 // A synchronous transition (for example a timer
+                                 // step) can have advanced the physical EXIT
+                                 // stop before its queued ExitFuture is polled.
+@@ -708,6 +710,49 @@ async fn finish_ordinary_terminal(
+                         receipt,
+                     };
+                 } else if event != Event::Exit {
++                    {
++                        let tid = stopped.pid().as_raw();
++                        let si = stopped.getsiginfo();
++                        let si_text = match &si {
++                            Ok(si) => unsafe {
++                                format!(
++                                    "si_signo={} si_code={} si_errno={} si_pid={} si_uid={} si_addr={:?}",
++                                    si.si_signo, si.si_code, si.si_errno, si.si_pid(), si.si_uid(), si.si_addr()
++                                )
++                            },
++                            Err(e) => format!("getsiginfo err {e:?}"),
++                        };
++                        let regs = stopped.getregs();
++                        let (rip_text, bytes) = match &regs {
++                            Ok(r) => {
++                                let word = nix::sys::ptrace::read(
++                                    nix::unistd::Pid::from_raw(tid),
++                                    (r.rip.wrapping_sub(2)) as *mut libc::c_void,
++                                );
++                                (
++                                    format!("rip={:#x} rax={:#x} orig_rax={:#x} eflags={:#x}", r.rip, r.rax, r.orig_rax, r.eflags),
++                                    format!("{word:x?}"),
++                                )
++                            }
++                            Err(e) => (format!("getregs err {e:?}"), String::new()),
++                        };
++                        let status = std::fs::read_to_string(format!("/proc/{tid}/status")).unwrap_or_default();
++                        let tgid = status.lines().find_map(|l| l.strip_prefix("Tgid:\t")).unwrap_or("?").to_owned();
++                        let tasks: Vec<String> = std::fs::read_dir(format!("/proc/{tid}/task"))
++                            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
++                            .unwrap_or_default();
++                        let geteventmsg = stopped.getevent();
++                        let sigmask_pending = status.lines().filter(|l| l.starts_with("SigPnd") || l.starts_with("ShdPnd") || l.starts_with("State")).collect::<Vec<_>>().join(" | ");
++                        eprintln!("PROBE_SIGTRAP_EXTRA tid={tid} geteventmsg={geteventmsg:?} {sigmask_pending}");
++                        let exe = std::fs::read_link(format!("/proc/{tid}/exe")).map(|p| p.display().to_string()).unwrap_or_default();
++                        eprintln!(
++                            "PROBE_SIGTRAP_TERMINAL test={:?} tid={tid} event={event:?} tgid={tgid} leader={} tasks={tasks:?} exe={exe} exit_status_captured={:?} {si_text} {rip_text} bytes_at_rip-2={bytes}\n{}",
++                            std::thread::current().name(),
++                            tgid == tid.to_string(),
++                            exit_status,
++                            safeptrace::probe::dump_related(tid)
++                        );
++                    }
+                     session
+                         .fail(anyhow::anyhow!("unexpected ptrace terminal stop: {event:?}").into());
+                     for error in session.signal_groups() {
+@@ -1896,6 +1941,7 @@ impl LiteinstTraceeCleanup {
+                         root_terminal.revoke_unclaimed_exit_stop()
+                     )
+                     .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
++                    safeptrace::probe::record(self.pid().as_raw(), "REQ CONT(raw root-cleanup-cont)".to_owned(), true);
+                     let _ = legacy_cleanup_observe!(
+                         "root-cleanup-cont",
+                         self.pid(),
+@@ -1914,6 +1960,7 @@ impl LiteinstTraceeCleanup {
+                             tracee.terminal.revoke_unclaimed_exit_stop()
+                         )
+                         .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
++                        safeptrace::probe::record(tracee.identity.tid.as_raw(), "REQ CONT(raw descendant-cleanup-cont)".to_owned(), true);
+                         let _ = legacy_cleanup_observe!(
+                             "descendant-cleanup-cont",
+                             tracee.identity.tid,
+@@ -5952,6 +5999,12 @@ mod tests {
+             Ok(ToolRunOutcome::UnsupportedBackend(_)) => "UnsupportedBackend".to_owned(),
+             Err(error) => format!("Timeout({error})"),
+         };
++        eprintln!(
++            "PROBE_OUTCOME test={:?} ok_complete={} result_is_err={}",
++            std::thread::current().name(),
++            matches!(&result, Ok(ToolRunOutcome::Complete(_))),
++            matches!(&result, Ok(ToolRunOutcome::Complete(c)) if c.result.is_err())
++        );
+         eprintln!(
+             "exec owner before rescue: fail={fail}, timer_mode={timer_mode}, root_absent={root_absent}, events={events:?}, elapsed={:?}, outcome={description}",
+             started.elapsed()
+diff --git a/safeptrace/src/lib.rs b/safeptrace/src/lib.rs
+index 457937a77..9fcfd715a 100644
+--- a/safeptrace/src/lib.rs
++++ b/safeptrace/src/lib.rs
+@@ -18,6 +18,7 @@ mod memory;
+ mod notifier;
+ mod regs;
+ mod waitid;
++pub mod probe;
+ 
+ use core::mem::MaybeUninit;
+ use std::fmt;
+@@ -230,6 +231,7 @@ impl Event {
+                 // Get the pid of the child immediately since we almost always
+                 // want that.
+                 let child_pid = Pid::from_raw(task.getevent()? as i32);
++                crate::probe::record(task.pid().as_raw(), format!("CLONE-DECODE former={}", child_pid.as_raw()), false);
+                 #[cfg(all(test, feature = "notifier"))]
+                 notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
+                 Ok(Self::NewChild(
+@@ -242,6 +244,8 @@ impl Event {
+                 // identifies the executing thread's former TID; it is not a
+                 // newly allocated PID or a terminal status for that thread.
+                 let former_tid = Pid::from_raw(task.getevent()? as i32);
++                crate::probe::record(task.pid().as_raw(), format!("EXEC-DECODE former={}", former_tid.as_raw()), false);
++                crate::probe::record(former_tid.as_raw(), format!("EXEC-DECODE became={}", task.pid().as_raw()), false);
+                 Ok(Self::Exec(former_tid))
+             }
+             libc::PTRACE_EVENT_VFORK_DONE => Ok(Self::VforkDone),
+@@ -413,6 +417,7 @@ impl Wait {
+     }
+ 
+     fn from_raw_with_token(pid: Pid, status: i32, token: TraceeToken) -> Result<Self, Error> {
++        crate::probe::record(pid.as_raw(), format!("STOP raw={status:#x}"), false);
+         Ok(if libc::WIFEXITED(status) {
+             Wait::Exited(pid, ExitStatus::Exited(libc::WEXITSTATUS(status)))
+         } else if libc::WIFSIGNALED(status) {
+@@ -470,6 +475,9 @@ impl Wait {
+         wait_status: WaitStatus,
+         token: TraceeToken,
+     ) -> Result<Self, Error> {
++        if let Some(pid) = wait_status.pid() {
++            crate::probe::record(pid.as_raw(), format!("STOP ws={wait_status:?}"), false);
++        }
+         Ok(match wait_status {
+             WaitStatus::Exited(pid, code) => Self::Exited(pid.into(), ExitStatus::Exited(code)),
+             WaitStatus::Signaled(pid, sig, coredump) => {
+@@ -774,6 +782,8 @@ impl Stopped {
+ 
+     /// Resumes the process and transitions it back to a running state.
+     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
++        let sig: Option<Signal> = sig.into();
++        crate::probe::record(self.0.as_raw(), format!("REQ CONT sig={sig:?}"), true);
+         ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+         Ok(Running::from_token(self.0, self.1))
+     }
+@@ -791,6 +801,8 @@ impl Stopped {
+         self,
+         sig: T,
+     ) -> Result<Running, (Self, Errno)> {
++        let sig: Option<Signal> = sig.into();
++        crate::probe::record(self.0.as_raw(), format!("REQ CONT(retaining) sig={sig:?}"), true);
+         let result = ptrace::cont(self.0.into(), sig);
+         self.finish_retained_resume(result)
+     }
+@@ -824,6 +836,9 @@ impl Stopped {
+     /// Advances the execution of the process by a single step optionally
+     /// delivering a signal specified by `sig`.
+     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
++        let sig: Option<Signal> = sig.into();
++        let rip = self.getregs().map(|r| format!("{:#x}", r.rip)).unwrap_or_else(|e| format!("{e:?}"));
++        crate::probe::record(self.0.as_raw(), format!("REQ SINGLESTEP sig={sig:?} rip={rip}"), true);
+         ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+         Ok(Running::from_token(self.0, self.1))
+     }
+@@ -831,6 +846,8 @@ impl Stopped {
+     /// Like `step`, but arranges for the tracee to be stopped at the next
+     /// entry to or exit from a system call.
+     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
++        let sig: Option<Signal> = sig.into();
++        crate::probe::record(self.0.as_raw(), format!("REQ SYSCALL sig={sig:?}"), true);
+         ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+         Ok(Running::from_token(self.0, self.1))
+     }
+@@ -968,6 +985,7 @@ impl Stopped {
+ 
+     /// Detaches from and then resumes the stopped tracee.
+     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
++        crate::probe::record(self.0.as_raw(), "REQ DETACH".to_owned(), true);
+         ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
+         Ok(Running::from_token(self.0, self.1))
+     }
+diff --git a/safeptrace/src/notifier.rs b/safeptrace/src/notifier.rs
+index b92a9589d..07a654a33 100644
+--- a/safeptrace/src/notifier.rs
++++ b/safeptrace/src/notifier.rs
+@@ -1905,6 +1905,7 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
+             let _ = pause.captured.send(());
+             let _ = pause.resume.recv_timeout(Duration::from_secs(2));
+         }
++        crate::probe::record(pid.as_raw(), format!("COLLECT worker raw={status:#x}"), false);
+         event.update(status);
+ 
+         // Try to avoid reaching an ECHILD error by terminating the loop on the
+@@ -1938,6 +1939,7 @@ fn resume_cancelled_sync_status(pid: Pid, status: i32) -> Result<(), Error> {
+     if !libc::WIFSTOPPED(status) {
+         return Ok(());
+     }
++    crate::probe::record(pid.as_raw(), "REQ CONT(raw notifier:1941)".to_owned(), true);
+     match nix::sys::ptrace::cont(pid.into(), None) {
+         Ok(()) => Ok(()),
+         // An untraced job-control stop needs no resume for the already-pending
+@@ -2046,6 +2048,7 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
+                             }
+                         }
+                     };
++                    crate::probe::record(pid.as_raw(), format!("COLLECT sync raw={status:#x}"), false);
+                     event.update_sync_status(status);
+                     #[cfg(test)]
+                     if let Some(pause) = SYNC_STATUS_PUBLICATION_PAUSES.lock().remove(&pid) {
+@@ -3842,6 +3845,7 @@ mod test {
+             match waitpid_status_bounded(pid, libc::__WALL, remaining) {
+                 Ok(status) if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) => return Ok(()),
+                 Ok(status) if libc::WIFSTOPPED(status) => {
++                    crate::probe::record(pid.as_raw(), "REQ CONT(raw notifier:3845)".to_owned(), true);
+                     let _ = nix::sys::ptrace::cont(pid, None);
+                 }
+                 Ok(status) => {
+@@ -3889,6 +3893,7 @@ mod test {
+                     assert_eq!(waited, pid, "pidfd observed a different tracee stop");
+                     // The exact pidfd-reported stop pins this numeric PID until
+                     // the following transition completes.
++                    crate::probe::record(pid.as_raw(), "REQ CONT(raw notifier:3892)".to_owned(), true);
+                     nix::sys::ptrace::cont(pid, None).map_err(|error| {
+                         io::Error::other(format!("resume pidfd-bound cleanup stop: {error}"))
+                     })?;
+@@ -4225,6 +4230,7 @@ mod test {
+                     return Ok(());
+                 }
+                 if terminal.exit_stop_observed() && !exit_stop_resumed {
++                    crate::probe::record(pid.as_raw(), "REQ CONT(raw notifier:4228)".to_owned(), true);
+                     nix::sys::ptrace::cont(pid, None).map_err(|error| {
+                         io::Error::other(format!("resume cleanup exit stop: {error}"))
+                     })?;
+diff --git a/safeptrace/src/probe.rs b/safeptrace/src/probe.rs
+new file mode 100644
+index 000000000..ce5cbd3ba
+--- /dev/null
++++ b/safeptrace/src/probe.rs
+@@ -0,0 +1,97 @@
++//! INVESTIGATION PROBE (sigtrap): per-tid history of ptrace requests and decoded stops.
++#![allow(missing_docs)]
++use std::backtrace::Backtrace;
++use std::collections::HashMap;
++use std::collections::VecDeque;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicU64;
++use std::sync::atomic::Ordering;
++
++pub struct Entry {
++    pub seq: u64,
++    pub text: String,
++    pub bt: Option<Backtrace>,
++}
++
++static SEQ: AtomicU64 = AtomicU64::new(0);
++static HIST: Mutex<Option<HashMap<i32, VecDeque<Entry>>>> = Mutex::new(None);
++
++pub fn record(tid: i32, text: String, with_bt: bool) {
++    let seq = SEQ.fetch_add(1, Ordering::SeqCst);
++    let bt = with_bt.then(Backtrace::force_capture);
++    let mut guard = HIST.lock().unwrap_or_else(|p| p.into_inner());
++    let map = guard.get_or_insert_with(HashMap::new);
++    let ring = map.entry(tid).or_default();
++    if ring.len() >= 128 {
++        ring.pop_front();
++    }
++    ring.push_back(Entry { seq, text, bt });
++}
++
++fn frames(bt: &Backtrace) -> String {
++    let rendered = format!("{bt}");
++    let mut out = Vec::new();
++    let mut lines = rendered.lines().peekable();
++    while let Some(line) = lines.next() {
++        let t = line.trim();
++        if (t.contains("reverie_ptrace::") || t.contains("safeptrace::"))
++            && !t.contains("safeptrace::probe")
++        {
++            let loc = lines
++                .peek()
++                .map(|l| l.trim().to_owned())
++                .filter(|l| l.starts_with("at "))
++                .unwrap_or_default();
++            let short = loc.rsplit("/src/").next().unwrap_or("").to_owned();
++            out.push(format!("{}@{}", t.split(": ").nth(1).unwrap_or(t), short));
++            if out.len() >= 6 {
++                break;
++            }
++        }
++    }
++    out.join(" <- ")
++}
++
++pub fn dump(tid: i32) -> String {
++    let guard = HIST.lock().unwrap_or_else(|p| p.into_inner());
++    let Some(map) = guard.as_ref() else {
++        return String::new();
++    };
++    let Some(ring) = map.get(&tid) else {
++        return format!("  (no history for {tid})");
++    };
++    let mut s = String::new();
++    for e in ring {
++        s.push_str(&format!("  #{} {}", e.seq, e.text));
++        if let Some(bt) = &e.bt {
++            s.push_str(&format!("  [{}]", frames(bt)));
++        }
++        s.push('\n');
++    }
++    s
++}
++
++/// Dump `tid` plus any former tid named in its EXEC-DECODE records.
++pub fn dump_related(tid: i32) -> String {
++    let mut out = format!(" history tid={tid}:\n{}", dump(tid));
++    let formers: Vec<i32> = {
++        let guard = HIST.lock().unwrap_or_else(|p| p.into_inner());
++        guard
++            .as_ref()
++            .and_then(|m| m.get(&tid))
++            .map(|ring| {
++                ring.iter()
++                    .filter_map(|e| e.text.strip_prefix("EXEC-DECODE former=").or_else(|| e.text.strip_prefix("CLONE-DECODE former=")))
++                    .filter_map(|v| v.parse().ok())
++                    .collect()
++            })
++            .unwrap_or_default()
++    };
++    let mut formers = formers;
++    formers.sort();
++    formers.dedup();
++    for f in formers {
++        out.push_str(&format!(" history former tid={f}:\n{}", dump(f)));
++    }
++    out
++}

@@ -1,0 +1,3 @@
+iter=0 sc=S2d L=3715990 delay_us=16137 lmsg=0x0 exec_msg=0x38b398 T=3715992 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0,
+iter=1 sc=S2d L=3716120 delay_us=16061 lmsg=0x0 exec_msg=0x38b41a T=3716122 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0,
+iter=2 sc=S2d L=3716161 delay_us=10441 lmsg=0x0 exec_msg=0x38b447 T=3716167 waitid_formerT=ECHILD proc_formerT=- leader_exit_stop=1 exec=1 leader_wexit_before_exec=0 order=EXIT@L,EXEC@L,EXIT@L,XL:0,

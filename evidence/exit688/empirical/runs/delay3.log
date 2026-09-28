@@ -1,0 +1,485 @@
+
+running 1 test
+test tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge ... FAILED
+
+successes:
+
+successes:
+
+failures:
+
+---- tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge stdout ----
+PROBE_DELAY_BACKTRACE tid=806615 0: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::resume_stopped::<core::option::Option<nix::sys::signal::Signal>> <- at ./src/task.rs:5464:30 <- 1: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_sigtrap::{closure#0} <- at ./src/task.rs:3638:32 <- 2: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_signal::{closure#0} <- at ./src/task.rs:3858:58 <- 3: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_stop_event::{closure#0} <- at ./src/task.rs:3154:18 <- 4: <futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_stop_event::{closure#0}> as core::future::future::Future>::poll <- 5: <core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_stop_event::{closure#0}>> as core::future::future::Future>::poll <- 6: <core::pin::Pin<&mut core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_stop_event::{closure#0}>>> as core::future::future::Future>::poll <- 7: <core::pin::Pin<&mut core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::handle_stop_event::{closure#0}>>> as futures_util::future::future::FutureExt>::poll_unpin <- 8: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop_events::{closure#0}::{closure#1}::{closure#1} <- 9: <&mut dyn for<'a, 'b> core::ops::function::FnMut<(&'a mut core::task::wake::Context<'b>,), Output = core::option::Option<core::task::poll::Poll<<reverie_ptrace::task::TracedTask<_>>::run_loop_events::{closure#0}::__PrivResult<core::option::Option<core::result::Result<safeptrace::Wait, safeptrace::Error>>, core::result::Result<safeptrace::Wait, reverie_ptrace::error::Error>>>>> as core::ops::function::FnMut<(&mut core::task::wake::Context,)>>::call_mut <- 10: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop_events::{closure#0}::{closure#1} <- 11: <futures_util::future::poll_fn::PollFn<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop_events::{closure#0}::{closure#1}> as core::future::future::Future>::poll <- 12: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop_events::{closure#0} <- at ./src/task.rs:6341:34 <- 13: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop_internal::{closure#0} <- at ./src/task.rs:6310:42 <- 14: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_loop::{closure#0} <- at ./src/task.rs:6225:44 <- 15: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::ordinary_start::{closure#0} <- at ./src/task.rs:6642:30
+PROBE_EXITSTOP_GETEVENT_ESRCH=1 t=135057888653230 tracer_tid=806582 leader=806615 snapshot: [task 806615: State: R (running) | Pid: 806615 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0]
+PROBE[esrch-immediate] t=135057652036126 (dt=236620us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=135057656502083 (dt=232154us) caller=806582 target=806615 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[esrch-immediate] t=135057656567481 (dt=232088us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=135057657426641 (dt=231229us) caller=806582 target=806615 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5495
+PROBE[esrch-immediate] t=135057657446101 (dt=231210us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=135057657845951 (dt=230810us) caller=806582 target=806615 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5484
+PROBE[esrch-immediate] t=135057658050889 (dt=230605us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=135057658196197 (dt=230459us) caller=806582 target=806615 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=135057658205070 (dt=230451us) caller=806582 target=806615 what=GETEVENTMSG-after rc=806635 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=135057659157781 (dt=229498us) caller=806582 target=806615 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5495
+PROBE[esrch-immediate] t=135057659172263 (dt=229483us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=135057659590541 (dt=229065us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=135057659723671 (dt=228932us) caller=806582 target=806615 what=DELAY-before-CONT 3000us snapshot: [task 806615: State: t (tracing stop) | Pid: 806615 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 806635: State: D (disk sleep) | Pid: 806635 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[esrch-immediate] t=135057888280390 (dt=375us) caller=806582 target=806615 what=DELAY-after-CONT-about-to-issue snapshot: [task 806615: State: t (tracing stop) | Pid: 806615 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 806635: State: D (disk sleep) | Pid: 806635 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5475
+PROBE[esrch-immediate] t=135057888289143 (dt=367us) caller=806582 target=806615 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5481
+PROBE[esrch-immediate] t=135057888313790 (dt=342us) caller=806582 target=806615 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5484
+PROBE[esrch-immediate] t=135057888522614 (dt=133us) caller=806582 target=806615 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6986
+PROBE[esrch-immediate] t=135057888538748 (dt=117us) caller=806582 target=806615 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[esrch-immediate] t=135057888546109 (dt=110us) caller=806582 target=806615 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=135057888551147 (dt=105us) caller=806582 target=806615 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=135057888655684 (dt=0us) caller=806582 target=806615 what=ESRCH-snapshot: [task 806615: State: R (running) | Pid: 806615 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=135057652036126 (dt=237364us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057656502083 (dt=232898us) caller=806582 target=806615 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[exec-edge-NOSTATUS] t=135057656567481 (dt=232832us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057657426641 (dt=231973us) caller=806582 target=806615 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5495
+PROBE[exec-edge-NOSTATUS] t=135057657446101 (dt=231954us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057657845951 (dt=231554us) caller=806582 target=806615 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5484
+PROBE[exec-edge-NOSTATUS] t=135057658050889 (dt=231349us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057658196197 (dt=231203us) caller=806582 target=806615 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=135057658205070 (dt=231195us) caller=806582 target=806615 what=GETEVENTMSG-after rc=806635 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=135057658740855 (dt=230659us) caller=806637 target=806635 what=WAITID(P_PIDFD) thread=Some("guest-806635") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057659157781 (dt=230242us) caller=806582 target=806615 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5495
+PROBE[exec-edge-NOSTATUS] t=135057659172263 (dt=230227us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057659398433 (dt=230001us) caller=806582 target=806635 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5484
+PROBE[exec-edge-NOSTATUS] t=135057659590541 (dt=229809us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057659723671 (dt=229676us) caller=806582 target=806615 what=DELAY-before-CONT 3000us snapshot: [task 806615: State: t (tracing stop) | Pid: 806615 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 806635: State: D (disk sleep) | Pid: 806635 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[exec-edge-NOSTATUS] t=135057888280390 (dt=1119us) caller=806582 target=806615 what=DELAY-after-CONT-about-to-issue snapshot: [task 806615: State: t (tracing stop) | Pid: 806615 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 806635: State: D (disk sleep) | Pid: 806635 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5475
+PROBE[exec-edge-NOSTATUS] t=135057888289143 (dt=1111us) caller=806582 target=806615 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5481
+PROBE[exec-edge-NOSTATUS] t=135057888313790 (dt=1086us) caller=806582 target=806615 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5484
+PROBE[exec-edge-NOSTATUS] t=135057888451347 (dt=948us) caller=806637 target=806635 what=WAITID(P_PIDFD) thread=Some("guest-806635") result=Err(ECHILD) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057888522614 (dt=877us) caller=806582 target=806615 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6986
+PROBE[exec-edge-NOSTATUS] t=135057888538748 (dt=861us) caller=806582 target=806615 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[exec-edge-NOSTATUS] t=135057888546109 (dt=854us) caller=806582 target=806615 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=135057888551147 (dt=849us) caller=806582 target=806615 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=135057888655684 (dt=744us) caller=806582 target=806615 what=ESRCH-snapshot: [task 806615: State: R (running) | Pid: 806615 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=135057889027362 (dt=372us) caller=806619 target=806615 what=WAITID(P_PIDFD) thread=Some("guest-806615") result=Ok(Some("0x4057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=135057889151258 (dt=248us) caller=806582 target=806615 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=135057889160261 (dt=239us) caller=806582 target=806615 what=GETEVENTMSG-after rc=806635 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=135057889398920 (dt=1us) caller=806582 target=806615 what=EXEC-EDGE observed former=806635 exit_status=None esrch=Some(806615) snapshot: [task 806615: State: t (tracing stop) | Pid: 806615 | TracerPid: 806582 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 site=reverie-ptrace/src/tracer.rs:675
+actual delivered marker observations: tracer=806464, rows=[]
+exec owner before rescue: fail=false, timer_mode=1, root_absent=false, events=[(0, Pid(806615), 806615, None), (0, Pid(806635), 806635, None)], elapsed=240.361597ms, outcome=Pending(PtraceRunFailure { primary: Tool(actual exec for 806615 from 806635 has no retained preceding EXIT event status
+
+Stack backtrace:
+   0: <anyhow::Error>::new::<reverie_ptrace::tracer::ExitEventStatusUnavailable>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/src/backtrace.rs:10:14
+   1: reverie_ptrace::tracer::finish_ordinary_terminal::{closure#0}
+             at ./src/tracer.rs:720:37
+   2: reverie_ptrace::tracer::finish_ordinary_exit::{closure#0}
+             at ./src/tracer.rs:496:76
+   3: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}
+             at ./src/task.rs:7009:77
+   4: <futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/future/fuse.rs:85:30
+   5: <core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+   6: <core::pin::Pin<&mut core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}>>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+   7: <core::pin::Pin<&mut core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}>>> as futures_util::future::future::FutureExt>::poll_unpin
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/future/mod.rs:556:24
+   8: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary_owned::{closure#0}::{closure#5}::{closure#1}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/async_await/select_mod.rs:335:13
+   9: <&mut dyn for<'a, 'b> core::ops::function::FnMut<(&'a mut core::task::wake::Context<'b>,), Output = core::option::Option<core::task::poll::Poll<<reverie_ptrace::task::TracedTask<_>>::run_ordinary_owned::{closure#0}::__PrivResult<(), reverie_ptrace::tracer::OrdinaryTerminal>>>> as core::ops::function::FnMut<(&mut core::task::wake::Context,)>>::call_mut
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:298:21
+  10: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary_owned::{closure#0}::{closure#5}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/async_await/select_mod.rs:335:13
+  11: <futures_util::future::poll_fn::PollFn<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary_owned::{closure#0}::{closure#5}> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/poll_fn.rs:56:9
+  12: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary_owned::{closure#0}
+             at ./src/task.rs:6743:17
+  13: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary::{closure#0}
+             at ./src/task.rs:6657:14
+  14: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run::{closure#0}
+             at ./src/task.rs:7152:45
+  15: <core::pin::Pin<&mut <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run::{closure#0}> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  16: <core::pin::Pin<&mut <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run::{closure#0}> as futures_util::future::future::FutureExt>::poll_unpin
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/future/mod.rs:556:24
+  17: <futures_util::future::select::Select<core::pin::Pin<&mut <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run::{closure#0}>, core::pin::Pin<&mut reverie_ptrace::tracer::run_orphaned::{closure#0}>> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/select.rs:113:37
+  18: reverie_ptrace::tracer::run_task_tree::<reverie_ptrace::tracer::tests::ExecOwnerTool>::{closure#0}
+             at ./src/tracer.rs:3825:54
+  19: <reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#0}
+             at ./src/tracer.rs:3050:85
+  20: <futures_util::future::poll_fn::PollFn<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#0}> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/poll_fn.rs:56:9
+  21: <core::pin::Pin<&mut futures_util::future::poll_fn::PollFn<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  22: <&mut core::pin::Pin<&mut futures_util::future::poll_fn::PollFn<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:121:9
+  23: <reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#1}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/macros/select.rs:710:49
+  24: <core::future::poll_fn::PollFn<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#1}> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/poll_fn.rs:151:9
+  25: <reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}
+             at ./src/tracer.rs:3089:9
+  26: <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:1073:44
+  27: <tokio::task::local::LocalSet>::with::<core::task::poll::Poll<bool>, <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:824:13
+  28: <std::thread::local::LocalKey<tokio::task::local::LocalData>>::try_with::<<tokio::task::local::LocalSet>::with<core::task::poll::Poll<bool>, <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}>::{closure#0}, core::task::poll::Poll<bool>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:464:12
+  29: <std::thread::local::LocalKey<tokio::task::local::LocalData>>::with::<<tokio::task::local::LocalSet>::with<core::task::poll::Poll<bool>, <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}>::{closure#0}, core::task::poll::Poll<bool>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:428:20
+  30: <tokio::task::local::LocalSet>::with::<core::task::poll::Poll<bool>, <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:822:17
+  31: <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:1063:22
+  32: <tokio::task::local::LocalSet>::run_until::<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:720:19
+  33: <reverie_ptrace::tracer::CompletionDriver<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::drive::{closure#0}
+             at ./src/tracer.rs:3113:68
+  34: <reverie_ptrace::tracer::Tracer<reverie_ptrace::tracer::tests::ExecOwnerLog>>::wait_with_output_completion::{closure#0}
+             at ./src/tracer.rs:3261:10
+  35: <core::pin::Pin<alloc::boxed::Box<<reverie_ptrace::tracer::Tracer<reverie_ptrace::tracer::tests::ExecOwnerLog>>::wait_with_output_completion::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  36: <&mut core::pin::Pin<alloc::boxed::Box<<reverie_ptrace::tracer::Tracer<reverie_ptrace::tracer::tests::ExecOwnerLog>>::wait_with_output_completion::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:121:9
+  37: <tokio::time::timeout::Timeout<&mut core::pin::Pin<alloc::boxed::Box<<reverie_ptrace::tracer::Tracer<reverie_ptrace::tracer::tests::ExecOwnerLog>>::wait_with_output_completion::{closure#0}>>> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/time/timeout.rs:217:42
+  38: reverie_ptrace::tracer::tests::ordinary_exec_owner_control::{closure#0}
+             at ./src/tracer.rs:5974:10
+  39: reverie_ptrace::tracer::tests::with_nonleader_run_loop_echild_first::<reverie_ptrace::tracer::tests::ordinary_exec_owner_control::{closure#0}>::{closure#0}
+             at ./src/tracer.rs:6267:14
+  40: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0}
+             at ./src/tracer.rs:6276:89
+  41: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  42: <core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  43: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:70
+  44: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  45: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  46: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:25
+  47: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  48: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:829:44
+  49: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  50: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  51: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  52: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:464:12
+  53: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:428:20
+  54: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  55: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  56: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  57: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  58: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  59: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  60: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  61: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  62: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge
+             at ./src/tracer.rs:6282:10
+  63: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0}
+             at ./src/tracer.rs:6274:79
+  64: <reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  65: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  66: test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:733:18
+  67: test::run_test_in_process::{closure#0}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:74
+  68: <core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  69: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  70: std::panicking::catch_unwind::<core::result::Result<(), alloc::string::String>, core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  71: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  72: test::run_test_in_process
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:27
+  73: test::run_test::{closure#0}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:677:43
+  74: test::run_test::{closure#1}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:707:41
+  75: std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:166:18
+  76: std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:70:13
+  77: <core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  78: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  79: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  80: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  81: std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:68:26
+  82: <std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  83: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/alloc/src/boxed.rs:2326:9
+  84: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/thread/unix.rs:123:17
+  85: start_thread
+  86: clone3), origin: BackendFailure { pid: Pid(806615), tid: Pid(806615), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+exec owner rescue only: signal=Ok(()), completed=false
+
+thread 'tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge' (806582) panicked at reverie-ptrace/src/tracer.rs:6030:17:
+exec owner did not Complete within original3s predicate: Pending(PtraceRunFailure { primary: Tool(actual exec for 806615 from 806635 has no retained preceding EXIT event status
+
+Stack backtrace:
+   0: <anyhow::Error>::new::<reverie_ptrace::tracer::ExitEventStatusUnavailable>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/src/backtrace.rs:10:14
+   1: reverie_ptrace::tracer::finish_ordinary_terminal::{closure#0}
+             at ./src/tracer.rs:720:37
+   2: reverie_ptrace::tracer::finish_ordinary_exit::{closure#0}
+             at ./src/tracer.rs:496:76
+   3: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}
+             at ./src/task.rs:7009:77
+   4: <futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/future/fuse.rs:85:30
+   5: <core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+   6: <core::pin::Pin<&mut core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}>>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+   7: <core::pin::Pin<&mut core::pin::Pin<&mut futures_util::future::future::fuse::Fuse<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::drive_ordinary::{closure#0}>>> as futures_util::future::future::FutureExt>::poll_unpin
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/future/mod.rs:556:24
+   8: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary_owned::{closure#0}::{closure#5}::{closure#1}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/async_await/select_mod.rs:335:13
+   9: <&mut dyn for<'a, 'b> core::ops::function::FnMut<(&'a mut core::task::wake::Context<'b>,), Output = core::option::Option<core::task::poll::Poll<<reverie_ptrace::task::TracedTask<_>>::run_ordinary_owned::{closure#0}::__PrivResult<(), reverie_ptrace::tracer::OrdinaryTerminal>>>> as core::ops::function::FnMut<(&mut core::task::wake::Context,)>>::call_mut
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:298:21
+  10: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary_owned::{closure#0}::{closure#5}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/async_await/select_mod.rs:335:13
+  11: <futures_util::future::poll_fn::PollFn<<reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary_owned::{closure#0}::{closure#5}> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/poll_fn.rs:56:9
+  12: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary_owned::{closure#0}
+             at ./src/task.rs:6743:17
+  13: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run_ordinary::{closure#0}
+             at ./src/task.rs:6657:14
+  14: <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run::{closure#0}
+             at ./src/task.rs:7152:45
+  15: <core::pin::Pin<&mut <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run::{closure#0}> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  16: <core::pin::Pin<&mut <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run::{closure#0}> as futures_util::future::future::FutureExt>::poll_unpin
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/future/mod.rs:556:24
+  17: <futures_util::future::select::Select<core::pin::Pin<&mut <reverie_ptrace::task::TracedTask<reverie_ptrace::tracer::tests::ExecOwnerTool>>::run::{closure#0}>, core::pin::Pin<&mut reverie_ptrace::tracer::run_orphaned::{closure#0}>> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/select.rs:113:37
+  18: reverie_ptrace::tracer::run_task_tree::<reverie_ptrace::tracer::tests::ExecOwnerTool>::{closure#0}
+             at ./src/tracer.rs:3825:54
+  19: <reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#0}
+             at ./src/tracer.rs:3050:85
+  20: <futures_util::future::poll_fn::PollFn<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#0}> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34/src/future/poll_fn.rs:56:9
+  21: <core::pin::Pin<&mut futures_util::future::poll_fn::PollFn<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  22: <&mut core::pin::Pin<&mut futures_util::future::poll_fn::PollFn<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:121:9
+  23: <reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#1}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/macros/select.rs:710:49
+  24: <core::future::poll_fn::PollFn<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}::{closure#1}> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/poll_fn.rs:151:9
+  25: <reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}
+             at ./src/tracer.rs:3089:9
+  26: <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:1073:44
+  27: <tokio::task::local::LocalSet>::with::<core::task::poll::Poll<bool>, <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:824:13
+  28: <std::thread::local::LocalKey<tokio::task::local::LocalData>>::try_with::<<tokio::task::local::LocalSet>::with<core::task::poll::Poll<bool>, <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}>::{closure#0}, core::task::poll::Poll<bool>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:464:12
+  29: <std::thread::local::LocalKey<tokio::task::local::LocalData>>::with::<<tokio::task::local::LocalSet>::with<core::task::poll::Poll<bool>, <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}>::{closure#0}, core::task::poll::Poll<bool>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:428:20
+  30: <tokio::task::local::LocalSet>::with::<core::task::poll::Poll<bool>, <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:822:17
+  31: <tokio::task::local::RunUntil<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:1063:22
+  32: <tokio::task::local::LocalSet>::run_until::<<reverie_ptrace::tracer::CompletionWork<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::round::{closure#0}>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/local.rs:720:19
+  33: <reverie_ptrace::tracer::CompletionDriver<reverie_ptrace::tracer::tests::ExecOwnerLog, reverie_process::child::Output>>::drive::{closure#0}
+             at ./src/tracer.rs:3113:68
+  34: <reverie_ptrace::tracer::Tracer<reverie_ptrace::tracer::tests::ExecOwnerLog>>::wait_with_output_completion::{closure#0}
+             at ./src/tracer.rs:3261:10
+  35: <core::pin::Pin<alloc::boxed::Box<<reverie_ptrace::tracer::Tracer<reverie_ptrace::tracer::tests::ExecOwnerLog>>::wait_with_output_completion::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  36: <&mut core::pin::Pin<alloc::boxed::Box<<reverie_ptrace::tracer::Tracer<reverie_ptrace::tracer::tests::ExecOwnerLog>>::wait_with_output_completion::{closure#0}>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:121:9
+  37: <tokio::time::timeout::Timeout<&mut core::pin::Pin<alloc::boxed::Box<<reverie_ptrace::tracer::Tracer<reverie_ptrace::tracer::tests::ExecOwnerLog>>::wait_with_output_completion::{closure#0}>>> as core::future::future::Future>::poll
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/time/timeout.rs:217:42
+  38: reverie_ptrace::tracer::tests::ordinary_exec_owner_control::{closure#0}
+             at ./src/tracer.rs:5974:10
+  39: reverie_ptrace::tracer::tests::with_nonleader_run_loop_echild_first::<reverie_ptrace::tracer::tests::ordinary_exec_owner_control::{closure#0}>::{closure#0}
+             at ./src/tracer.rs:6267:14
+  40: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0}
+             at ./src/tracer.rs:6276:89
+  41: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  42: <core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+  43: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:70
+  44: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+  45: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  46: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:25
+  47: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  48: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:829:44
+  49: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  50: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  51: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  52: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:464:12
+  53: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:428:20
+  54: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  55: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  56: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  57: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  58: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  59: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  60: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  61: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  62: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge
+             at ./src/tracer.rs:6282:10
+  63: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0}
+             at ./src/tracer.rs:6274:79
+  64: <reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  65: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  66: test::__rust_begin_short_backtrace::<core::result::Result<(), alloc::string::String>, fn() -> core::result::Result<(), alloc::string::String>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:733:18
+  67: test::run_test_in_process::{closure#0}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:74
+  68: <core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  69: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  70: std::panicking::catch_unwind::<core::result::Result<(), alloc::string::String>, core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  71: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<test::run_test_in_process::{closure#0}>, core::result::Result<(), alloc::string::String>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  72: test::run_test_in_process
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:756:27
+  73: test::run_test::{closure#0}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:677:43
+  74: test::run_test::{closure#1}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/test/src/lib.rs:707:41
+  75: std::sys::backtrace::__rust_begin_short_backtrace::<test::run_test::{closure#1}, ()>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/backtrace.rs:166:18
+  76: std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:70:13
+  77: <core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panic/unwind_safe.rs:275:9
+  78: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:576:43
+  79: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:544:19
+  80: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1}::{closure#0}>, ()>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panic.rs:359:14
+  81: std::thread::lifecycle::spawn_unchecked::<test::run_test::{closure#1}, ()>::{closure#1}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/lifecycle.rs:68:26
+  82: <std::thread::lifecycle::spawn_unchecked<test::run_test::{closure#1}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  83: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/alloc/src/boxed.rs:2326:9
+  84: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/sys/thread/unix.rs:123:17
+  85: start_thread
+  86: clone3), origin: BackendFailure { pid: Pid(806615), tid: Pid(806615), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:80:14
+   2: reverie_ptrace::tracer::tests::ordinary_exec_owner_control::{closure#0}
+             at ./src/tracer.rs:6030:17
+   3: reverie_ptrace::tracer::tests::with_nonleader_run_loop_echild_first::<reverie_ptrace::tracer::tests::ordinary_exec_owner_control::{closure#0}>::{closure#0}
+             at ./src/tracer.rs:6267:14
+   4: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0}
+             at ./src/tracer.rs:6276:89
+   5: <core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+   6: <core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>> as core::future::future::Future>::poll
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/future/future.rs:133:9
+   7: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:70
+   8: tokio::task::coop::with_budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:167:5
+   9: tokio::task::coop::budget::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs:133:5
+  10: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:830:25
+  11: <tokio::runtime::scheduler::current_thread::Context>::enter::<core::task::poll::Poll<()>, <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:488:19
+  12: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:829:44
+  13: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:68
+  14: <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/scoped.rs:40:9
+  15: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:38
+  16: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::try_with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:464:12
+  17: <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/std/src/thread/local.rs:428:20
+  18: tokio::runtime::context::set_scheduler::<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>::{closure#0}>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context.rs:187:17
+  19: <tokio::runtime::scheduler::current_thread::CoreGuard>::enter::<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>::{closure#0}, core::option::Option<()>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:906:27
+  20: <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:817:24
+  21: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:218:33
+  22: tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>::{closure#0}, ()>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/context/runtime.rs:65:16
+  23: <tokio::runtime::scheduler::current_thread::CurrentThread>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/scheduler/current_thread/mod.rs:206:9
+  24: <tokio::runtime::runtime::Runtime>::block_on_inner::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:374:52
+  25: <tokio::runtime::runtime::Runtime>::block_on::<core::pin::Pin<&mut dyn core::future::future::Future<Output = ()>>>
+             at /home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/runtime/runtime.rs:343:18
+  26: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge
+             at ./src/tracer.rs:6282:10
+  27: reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0}
+             at ./src/tracer.rs:6274:79
+  28: <reverie_ptrace::tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+  29: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 364 filtered out; finished in 0.25s
+

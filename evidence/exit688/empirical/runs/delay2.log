@@ -1,0 +1,320 @@
+
+running 5 tests
+test tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer ... FAILED
+test tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step ... FAILED
+test tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge ... FAILED
+test tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement ... FAILED
+test tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once ... FAILED
+
+successes:
+
+successes:
+
+failures:
+
+---- tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer stdout ----
+PROBE_EXITSTOP_GETEVENT_ESRCH=1 t=134437339342875 tracer_tid=1071695 leader=1071701 snapshot: [task 1071701: State: R (running) | Pid: 1071701 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0]
+PROBE[esrch-immediate] t=134437299443030 (dt=39903us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437301542573 (dt=37803us) caller=1071695 target=1071701 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[esrch-immediate] t=134437301592658 (dt=37753us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302240221 (dt=37106us) caller=1071695 target=1071701 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437302287372 (dt=37059us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302675875 (dt=36670us) caller=1071695 target=1071701 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437302886211 (dt=36460us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302905470 (dt=36441us) caller=1071695 target=1071701 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437302908605 (dt=36437us) caller=1071695 target=1071701 what=GETEVENTMSG-after rc=1071709 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437334847203 (dt=4499us) caller=1071695 target=1071701 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437334923077 (dt=4423us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437335813564 (dt=3532us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437335972082 (dt=3374us) caller=1071695 target=1071701 what=DELAY-before-CONT 3000us snapshot: [task 1071701: State: t (tracing stop) | Pid: 1071701 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071709: State: D (disk sleep) | Pid: 1071709 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[esrch-immediate] t=134437339167181 (dt=179us) caller=1071695 target=1071701 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071701: State: t (tracing stop) | Pid: 1071701 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071709: State: D (disk sleep) | Pid: 1071709 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[esrch-immediate] t=134437339169685 (dt=176us) caller=1071695 target=1071701 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[esrch-immediate] t=134437339173761 (dt=172us) caller=1071695 target=1071701 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437339228513 (dt=118us) caller=1071695 target=1071701 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[esrch-immediate] t=134437339240431 (dt=106us) caller=1071695 target=1071701 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[esrch-immediate] t=134437339243666 (dt=102us) caller=1071695 target=1071701 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437339249175 (dt=97us) caller=1071695 target=1071701 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437339345660 (dt=0us) caller=1071695 target=1071701 what=ESRCH-snapshot: [task 1071701: State: R (running) | Pid: 1071701 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437299443030 (dt=40471us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437301542573 (dt=38371us) caller=1071695 target=1071701 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[exec-edge-NOSTATUS] t=134437301592658 (dt=38321us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302240221 (dt=37674us) caller=1071695 target=1071701 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437302287372 (dt=37627us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302675875 (dt=37238us) caller=1071695 target=1071701 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437302886211 (dt=37028us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302905470 (dt=37008us) caller=1071695 target=1071701 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437302908605 (dt=37005us) caller=1071695 target=1071701 what=GETEVENTMSG-after rc=1071709 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437303381495 (dt=36532us) caller=1071711 target=1071709 what=WAITID(P_PIDFD) thread=Some("guest-1071709") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437334847203 (dt=5067us) caller=1071695 target=1071701 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437334923077 (dt=4991us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437335519883 (dt=4394us) caller=1071695 target=1071709 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437335813564 (dt=4100us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437335972082 (dt=3942us) caller=1071695 target=1071701 what=DELAY-before-CONT 3000us snapshot: [task 1071701: State: t (tracing stop) | Pid: 1071701 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071709: State: D (disk sleep) | Pid: 1071709 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[exec-edge-NOSTATUS] t=134437339167181 (dt=747us) caller=1071695 target=1071701 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071701: State: t (tracing stop) | Pid: 1071701 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071709: State: D (disk sleep) | Pid: 1071709 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[exec-edge-NOSTATUS] t=134437339169685 (dt=744us) caller=1071695 target=1071701 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[exec-edge-NOSTATUS] t=134437339173761 (dt=740us) caller=1071695 target=1071701 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437339228513 (dt=685us) caller=1071695 target=1071701 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437339240431 (dt=673us) caller=1071695 target=1071701 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[exec-edge-NOSTATUS] t=134437339243666 (dt=670us) caller=1071695 target=1071701 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437339249175 (dt=665us) caller=1071695 target=1071701 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437339257096 (dt=657us) caller=1071711 target=1071709 what=WAITID(P_PIDFD) thread=Some("guest-1071709") result=Err(ECHILD) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437339345660 (dt=568us) caller=1071695 target=1071701 what=ESRCH-snapshot: [task 1071701: State: R (running) | Pid: 1071701 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437339381243 (dt=533us) caller=1071695 target=1071709 what=drive_ordinary: ExitFuture resolved ok=false main=false rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437339804078 (dt=110us) caller=1071704 target=1071701 what=WAITID(P_PIDFD) thread=Some("guest-1071701") result=Ok(Some("0x4057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437339823287 (dt=91us) caller=1071695 target=1071701 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437339826281 (dt=88us) caller=1071695 target=1071701 what=GETEVENTMSG-after rc=1071709 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437339913753 (dt=0us) caller=1071695 target=1071701 what=EXEC-EDGE observed former=1071709 exit_status=None esrch=Some(1071701) snapshot: [task 1071701: State: t (tracing stop) | Pid: 1071701 | TracerPid: 1071695 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 site=reverie-ptrace/src/tracer.rs:675
+actual delivered marker observations: tracer=1071691, rows=[]
+exec owner before rescue: fail=false, timer_mode=2, root_absent=false, events=[(0, Pid(1071701), 1071701, None), (0, Pid(1071709), 1071709, None)], elapsed=43.15902ms, outcome=Pending(PtraceRunFailure { primary: Tool(actual exec for 1071701 from 1071709 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071701), tid: Pid(1071701), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+exec owner rescue only: signal=Ok(()), completed=false
+
+thread 'tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer' (1071695) panicked at reverie-ptrace/src/tracer.rs:6030:17:
+exec owner did not Complete within original3s predicate: Pending(PtraceRunFailure { primary: Tool(actual exec for 1071701 from 1071709 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071701), tid: Pid(1071701), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+
+---- tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step stdout ----
+PROBE_EXITSTOP_GETEVENT_ESRCH=1 t=134437339342134 tracer_tid=1071694 leader=1071702 snapshot: [task 1071702: State: R (running) | Pid: 1071702 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0]
+PROBE[esrch-immediate] t=134437299563741 (dt=39807us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437301540590 (dt=37830us) caller=1071694 target=1071702 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[esrch-immediate] t=134437301592578 (dt=37778us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302239009 (dt=37132us) caller=1071694 target=1071702 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437302256185 (dt=37114us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302675895 (dt=36695us) caller=1071694 target=1071702 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437302872290 (dt=36498us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302894474 (dt=36476us) caller=1071694 target=1071702 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437302898920 (dt=36472us) caller=1071694 target=1071702 what=GETEVENTMSG-after rc=1071708 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437334847233 (dt=4523us) caller=1071694 target=1071702 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437334937609 (dt=4433us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437335802859 (dt=3568us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437335971131 (dt=3399us) caller=1071694 target=1071702 what=DELAY-before-CONT 3000us snapshot: [task 1071702: State: t (tracing stop) | Pid: 1071702 | TracerPid: 1071694 | SigPnd: 0000000000000100 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071708: State: D (disk sleep) | Pid: 1071708 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[esrch-immediate] t=134437339166751 (dt=204us) caller=1071694 target=1071702 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071702: State: t (tracing stop) | Pid: 1071702 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071708: State: D (disk sleep) | Pid: 1071708 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[esrch-immediate] t=134437339169615 (dt=201us) caller=1071694 target=1071702 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[esrch-immediate] t=134437339173841 (dt=197us) caller=1071694 target=1071702 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437339228584 (dt=142us) caller=1071694 target=1071702 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[esrch-immediate] t=134437339240462 (dt=130us) caller=1071694 target=1071702 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[esrch-immediate] t=134437339243536 (dt=127us) caller=1071694 target=1071702 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437339249144 (dt=121us) caller=1071694 target=1071702 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437339345599 (dt=25us) caller=1071694 target=1071702 what=ESRCH-snapshot: [task 1071702: State: R (running) | Pid: 1071702 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437299563741 (dt=40183us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437301540590 (dt=38206us) caller=1071694 target=1071702 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[exec-edge-NOSTATUS] t=134437301592578 (dt=38154us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302239009 (dt=37507us) caller=1071694 target=1071702 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437302256185 (dt=37490us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302675895 (dt=37070us) caller=1071694 target=1071702 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437302872290 (dt=36874us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302894474 (dt=36852us) caller=1071694 target=1071702 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437302898920 (dt=36847us) caller=1071694 target=1071702 what=GETEVENTMSG-after rc=1071708 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437303559032 (dt=36187us) caller=1071712 target=1071708 what=WAITID(P_PIDFD) thread=Some("guest-1071708") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437334847233 (dt=4899us) caller=1071694 target=1071702 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437334937609 (dt=4809us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437335519863 (dt=4226us) caller=1071694 target=1071708 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437335802859 (dt=3943us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437335971131 (dt=3775us) caller=1071694 target=1071702 what=DELAY-before-CONT 3000us snapshot: [task 1071702: State: t (tracing stop) | Pid: 1071702 | TracerPid: 1071694 | SigPnd: 0000000000000100 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071708: State: D (disk sleep) | Pid: 1071708 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[exec-edge-NOSTATUS] t=134437339166751 (dt=579us) caller=1071694 target=1071702 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071702: State: t (tracing stop) | Pid: 1071702 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071708: State: D (disk sleep) | Pid: 1071708 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[exec-edge-NOSTATUS] t=134437339169615 (dt=577us) caller=1071694 target=1071702 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[exec-edge-NOSTATUS] t=134437339173841 (dt=572us) caller=1071694 target=1071702 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437339228584 (dt=518us) caller=1071694 target=1071702 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437339240462 (dt=506us) caller=1071694 target=1071702 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[exec-edge-NOSTATUS] t=134437339242494 (dt=504us) caller=1071712 target=1071708 what=WAITID(P_PIDFD) thread=Some("guest-1071708") result=Err(ECHILD) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437339243536 (dt=503us) caller=1071694 target=1071702 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437339249144 (dt=497us) caller=1071694 target=1071702 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437339345599 (dt=401us) caller=1071694 target=1071702 what=ESRCH-snapshot: [task 1071702: State: R (running) | Pid: 1071702 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437339405379 (dt=341us) caller=1071694 target=1071708 what=drive_ordinary: ExitFuture resolved ok=false main=false rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437339635665 (dt=111us) caller=1071705 target=1071702 what=WAITID(P_PIDFD) thread=Some("guest-1071702") result=Ok(Some("0x4057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437339651379 (dt=95us) caller=1071694 target=1071702 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437339654233 (dt=92us) caller=1071694 target=1071702 what=GETEVENTMSG-after rc=1071708 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437339745881 (dt=0us) caller=1071694 target=1071702 what=EXEC-EDGE observed former=1071708 exit_status=None esrch=Some(1071702) snapshot: [task 1071702: State: t (tracing stop) | Pid: 1071702 | TracerPid: 1071694 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 site=reverie-ptrace/src/tracer.rs:675
+actual delivered marker observations: tracer=1071691, rows=[]
+exec owner before rescue: fail=false, timer_mode=1, root_absent=false, events=[(0, Pid(1071702), 1071702, None), (0, Pid(1071708), 1071708, None)], elapsed=43.024618ms, outcome=Pending(PtraceRunFailure { primary: Tool(actual exec for 1071702 from 1071708 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071702), tid: Pid(1071702), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+exec owner rescue only: signal=Ok(()), completed=false
+
+thread 'tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step' (1071694) panicked at reverie-ptrace/src/tracer.rs:6030:17:
+exec owner did not Complete within original3s predicate: Pending(PtraceRunFailure { primary: Tool(actual exec for 1071702 from 1071708 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071702), tid: Pid(1071702), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge stdout ----
+PROBE_EXITSTOP_GETEVENT_ESRCH=1 t=134437339661443 tracer_tid=1071696 leader=1071700 snapshot: [task 1071700: State: R (running) | Pid: 1071700 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0]
+PROBE[esrch-immediate] t=134437299618674 (dt=40046us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437301543425 (dt=38121us) caller=1071696 target=1071700 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[esrch-immediate] t=134437301602503 (dt=38062us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302242595 (dt=37422us) caller=1071696 target=1071700 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437302272229 (dt=37392us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302740732 (dt=36924us) caller=1071696 target=1071700 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437302953051 (dt=36711us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437302973733 (dt=36691us) caller=1071696 target=1071700 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437302977989 (dt=36686us) caller=1071696 target=1071700 what=GETEVENTMSG-after rc=1071710 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437335076408 (dt=4588us) caller=1071696 target=1071700 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437335135376 (dt=4529us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437336016790 (dt=3647us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437336233906 (dt=3430us) caller=1071696 target=1071700 what=DELAY-before-CONT 3000us snapshot: [task 1071700: State: R (running) | Pid: 1071700 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071710: State: D (disk sleep) | Pid: 1071710 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[esrch-immediate] t=134437339474543 (dt=190us) caller=1071696 target=1071700 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071700: State: t (tracing stop) | Pid: 1071700 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071710: State: D (disk sleep) | Pid: 1071710 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[esrch-immediate] t=134437339478359 (dt=186us) caller=1071696 target=1071700 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[esrch-immediate] t=134437339485570 (dt=179us) caller=1071696 target=1071700 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437339556025 (dt=108us) caller=1071696 target=1071700 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[esrch-immediate] t=134437339565840 (dt=98us) caller=1071696 target=1071700 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[esrch-immediate] t=134437339569385 (dt=95us) caller=1071696 target=1071700 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437339574243 (dt=90us) caller=1071696 target=1071700 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437339664168 (dt=0us) caller=1071696 target=1071700 what=ESRCH-snapshot: [task 1071700: State: R (running) | Pid: 1071700 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437299618674 (dt=40419us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437301543425 (dt=38494us) caller=1071696 target=1071700 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[exec-edge-NOSTATUS] t=134437301602503 (dt=38435us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302242595 (dt=37795us) caller=1071696 target=1071700 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437302272229 (dt=37766us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302740732 (dt=37297us) caller=1071696 target=1071700 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437302953051 (dt=37085us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437302973733 (dt=37064us) caller=1071696 target=1071700 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437302977989 (dt=37060us) caller=1071696 target=1071700 what=GETEVENTMSG-after rc=1071710 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437334586201 (dt=5452us) caller=1071757 target=1071710 what=WAITID(P_PIDFD) thread=Some("guest-1071710") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437335076408 (dt=4961us) caller=1071696 target=1071700 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437335135376 (dt=4902us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437335695727 (dt=4342us) caller=1071696 target=1071710 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437336016790 (dt=4021us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437336233906 (dt=3804us) caller=1071696 target=1071700 what=DELAY-before-CONT 3000us snapshot: [task 1071700: State: R (running) | Pid: 1071700 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071710: State: D (disk sleep) | Pid: 1071710 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[exec-edge-NOSTATUS] t=134437339474543 (dt=563us) caller=1071696 target=1071700 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071700: State: t (tracing stop) | Pid: 1071700 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071710: State: D (disk sleep) | Pid: 1071710 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[exec-edge-NOSTATUS] t=134437339478359 (dt=559us) caller=1071696 target=1071700 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[exec-edge-NOSTATUS] t=134437339485570 (dt=552us) caller=1071696 target=1071700 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437339546661 (dt=491us) caller=1071757 target=1071710 what=WAITID(P_PIDFD) thread=Some("guest-1071710") result=Err(ECHILD) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437339556025 (dt=482us) caller=1071696 target=1071700 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437339565840 (dt=472us) caller=1071696 target=1071700 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[exec-edge-NOSTATUS] t=134437339569385 (dt=468us) caller=1071696 target=1071700 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437339574243 (dt=464us) caller=1071696 target=1071700 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437339664168 (dt=374us) caller=1071696 target=1071700 what=ESRCH-snapshot: [task 1071700: State: R (running) | Pid: 1071700 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437339912541 (dt=125us) caller=1071706 target=1071700 what=WAITID(P_PIDFD) thread=Some("guest-1071700") result=Ok(Some("0x4057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437339928925 (dt=109us) caller=1071696 target=1071700 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437339932401 (dt=105us) caller=1071696 target=1071700 what=GETEVENTMSG-after rc=1071710 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437340037519 (dt=0us) caller=1071696 target=1071700 what=EXEC-EDGE observed former=1071710 exit_status=None esrch=Some(1071700) snapshot: [task 1071700: State: t (tracing stop) | Pid: 1071700 | TracerPid: 1071696 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 site=reverie-ptrace/src/tracer.rs:675
+actual delivered marker observations: tracer=1071691, rows=[]
+exec owner before rescue: fail=false, timer_mode=1, root_absent=false, events=[(0, Pid(1071700), 1071700, None), (0, Pid(1071710), 1071710, None)], elapsed=43.296737ms, outcome=Pending(PtraceRunFailure { primary: Tool(actual exec for 1071700 from 1071710 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071700), tid: Pid(1071700), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+exec owner rescue only: signal=Ok(()), completed=false
+
+thread 'tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge' (1071696) panicked at reverie-ptrace/src/tracer.rs:6030:17:
+exec owner did not Complete within original3s predicate: Pending(PtraceRunFailure { primary: Tool(actual exec for 1071700 from 1071710 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071700), tid: Pid(1071700), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+
+---- tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement stdout ----
+exec timer payload: /tmp/reverie-fatal-exec-timer-1071691
+PROBE_EXITSTOP_GETEVENT_ESRCH=1 t=134437341657632 tracer_tid=1071693 leader=1071756 snapshot: [task 1071756: State: R (running) | Pid: 1071756 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0]
+PROBE[esrch-immediate] t=134437334931720 (dt=6728us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437335541115 (dt=6119us) caller=1071693 target=1071756 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[esrch-immediate] t=134437335580675 (dt=6079us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437335728287 (dt=5932us) caller=1071693 target=1071756 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437335746834 (dt=5913us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437336121157 (dt=5539us) caller=1071693 target=1071756 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437336296460 (dt=5364us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437336349820 (dt=5310us) caller=1071693 target=1071756 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437336356279 (dt=5304us) caller=1071693 target=1071756 what=GETEVENTMSG-after rc=1071760 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437337183552 (dt=4477us) caller=1071693 target=1071756 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437337199306 (dt=4461us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437337609071 (dt=4051us) caller=1071693 target=1071756 what=DELAY-before-CONT 3000us snapshot: [task 1071756: State: t (tracing stop) | Pid: 1071756 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071760: State: R (running) | Pid: 1071760 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[esrch-immediate] t=134437337628009 (dt=4032us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437341165943 (dt=494us) caller=1071693 target=1071756 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071756: State: t (tracing stop) | Pid: 1071756 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071760: State: D (disk sleep) | Pid: 1071760 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[esrch-immediate] t=134437341180275 (dt=480us) caller=1071693 target=1071756 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[esrch-immediate] t=134437341196559 (dt=464us) caller=1071693 target=1071756 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437341530160 (dt=130us) caller=1071693 target=1071756 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[esrch-immediate] t=134437341542368 (dt=118us) caller=1071693 target=1071756 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[esrch-immediate] t=134437341546044 (dt=114us) caller=1071693 target=1071756 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437341549880 (dt=110us) caller=1071693 target=1071756 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437341659945 (dt=0us) caller=1071693 target=1071756 what=ESRCH-snapshot: [task 1071756: State: R (running) | Pid: 1071756 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437334931720 (dt=6896us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437335541115 (dt=6287us) caller=1071693 target=1071756 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[exec-edge-NOSTATUS] t=134437335580675 (dt=6247us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437335728287 (dt=6099us) caller=1071693 target=1071756 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437335746834 (dt=6081us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437336121157 (dt=5707us) caller=1071693 target=1071756 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437336296460 (dt=5531us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437336349820 (dt=5478us) caller=1071693 target=1071756 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437336356279 (dt=5471us) caller=1071693 target=1071756 what=GETEVENTMSG-after rc=1071760 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437336880467 (dt=4947us) caller=1071761 target=1071760 what=WAITID(P_PIDFD) thread=Some("guest-1071760") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437337183552 (dt=4644us) caller=1071693 target=1071756 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437337199306 (dt=4628us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437337329261 (dt=4498us) caller=1071693 target=1071760 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437337609071 (dt=4219us) caller=1071693 target=1071756 what=DELAY-before-CONT 3000us snapshot: [task 1071756: State: t (tracing stop) | Pid: 1071756 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071760: State: R (running) | Pid: 1071760 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[exec-edge-NOSTATUS] t=134437337628009 (dt=4200us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437341165943 (dt=662us) caller=1071693 target=1071756 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071756: State: t (tracing stop) | Pid: 1071756 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071760: State: D (disk sleep) | Pid: 1071760 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[exec-edge-NOSTATUS] t=134437341180275 (dt=647us) caller=1071693 target=1071756 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[exec-edge-NOSTATUS] t=134437341196559 (dt=631us) caller=1071693 target=1071756 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437341278392 (dt=549us) caller=1071761 target=1071760 what=WAITID(P_PIDFD) thread=Some("guest-1071760") result=Err(ECHILD) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437341530160 (dt=298us) caller=1071693 target=1071756 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437341542368 (dt=285us) caller=1071693 target=1071756 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[exec-edge-NOSTATUS] t=134437341546044 (dt=282us) caller=1071693 target=1071756 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437341549880 (dt=278us) caller=1071693 target=1071756 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437341659945 (dt=168us) caller=1071693 target=1071756 what=ESRCH-snapshot: [task 1071756: State: R (running) | Pid: 1071756 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437341697852 (dt=130us) caller=1071759 target=1071756 what=WAITID(P_PIDFD) thread=Some("guest-1071756") result=Ok(Some("0x4057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437341715499 (dt=112us) caller=1071693 target=1071760 what=drive_ordinary: ExitFuture resolved ok=false main=false rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437341741017 (dt=87us) caller=1071693 target=1071756 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437341742870 (dt=85us) caller=1071693 target=1071756 what=GETEVENTMSG-after rc=1071760 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437341827677 (dt=0us) caller=1071693 target=1071756 what=EXEC-EDGE observed former=1071760 exit_status=None esrch=Some(1071756) snapshot: [task 1071756: State: t (tracing stop) | Pid: 1071756 | TracerPid: 1071693 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 site=reverie-ptrace/src/tracer.rs:675
+actual delivered marker observations: tracer=1071691, rows=[]
+exec owner before rescue: fail=true, timer_mode=0, root_absent=false, events=[(0, Pid(1071756), 1071756, None), (0, Pid(1071760), 1071760, None)], elapsed=45.090802ms, outcome=Pending(PtraceRunFailure { primary: Tool(actual exec for 1071756 from 1071760 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071756), tid: Pid(1071756), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+exec owner rescue only: signal=Ok(()), completed=false
+
+thread 'tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement' (1071693) panicked at reverie-ptrace/src/tracer.rs:6030:17:
+exec owner did not Complete within original3s predicate: Pending(PtraceRunFailure { primary: Tool(actual exec for 1071756 from 1071760 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071756), tid: Pid(1071756), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+
+---- tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once stdout ----
+PROBE_EXITSTOP_GETEVENT_ESRCH=1 t=134437347254558 tracer_tid=1071766 leader=1071768 snapshot: [task 1071768: State: R (running) | Pid: 1071768 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0]
+PROBE[esrch-immediate] t=134437341640867 (dt=5617us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437341986265 (dt=5271us) caller=1071766 target=1071768 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[esrch-immediate] t=134437342044293 (dt=5213us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437342209781 (dt=5048us) caller=1071766 target=1071768 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437342229000 (dt=5029us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437342602220 (dt=4656us) caller=1071766 target=1071768 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437342797584 (dt=4460us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437342816492 (dt=4441us) caller=1071766 target=1071768 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437342820979 (dt=4437us) caller=1071766 target=1071768 what=GETEVENTMSG-after rc=1071770 site=safeptrace/src/lib.rs:234
+PROBE[esrch-immediate] t=134437343489493 (dt=3768us) caller=1071766 target=1071768 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[esrch-immediate] t=134437343505998 (dt=3752us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437343899879 (dt=3358us) caller=1071766 target=1071768 what=DELAY-before-CONT 3000us snapshot: [task 1071768: State: t (tracing stop) | Pid: 1071768 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071770: State: R (running) | Pid: 1071770 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[esrch-immediate] t=134437344028923 (dt=3229us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[esrch-immediate] t=134437347114177 (dt=144us) caller=1071766 target=1071768 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071768: State: t (tracing stop) | Pid: 1071768 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071770: State: D (disk sleep) | Pid: 1071770 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[esrch-immediate] t=134437347117151 (dt=141us) caller=1071766 target=1071768 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[esrch-immediate] t=134437347120005 (dt=138us) caller=1071766 target=1071768 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[esrch-immediate] t=134437347157552 (dt=100us) caller=1071766 target=1071768 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[esrch-immediate] t=134437347166495 (dt=91us) caller=1071766 target=1071768 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[esrch-immediate] t=134437347169230 (dt=89us) caller=1071766 target=1071768 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437347172124 (dt=86us) caller=1071766 target=1071768 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[esrch-immediate] t=134437347257612 (dt=0us) caller=1071766 target=1071768 what=ESRCH-snapshot: [task 1071768: State: R (running) | Pid: 1071768 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437341640867 (dt=6049us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437341986265 (dt=5704us) caller=1071766 target=1071768 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:2719
+PROBE[exec-edge-NOSTATUS] t=134437342044293 (dt=5645us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437342209781 (dt=5480us) caller=1071766 target=1071768 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437342229000 (dt=5461us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437342602220 (dt=5088us) caller=1071766 target=1071768 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437342797584 (dt=4892us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x3057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437342816492 (dt=4873us) caller=1071766 target=1071768 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437342820979 (dt=4869us) caller=1071766 target=1071768 what=GETEVENTMSG-after rc=1071770 site=safeptrace/src/lib.rs:234
+PROBE[exec-edge-NOSTATUS] t=134437343196553 (dt=4493us) caller=1071772 target=1071770 what=WAITID(P_PIDFD) thread=Some("guest-1071770") result=Ok(Some("0x137f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437343489493 (dt=4200us) caller=1071766 target=1071768 what=PTRACE_SINGLESTEP(None) rc=0 site=reverie-ptrace/src/task.rs:5485
+PROBE[exec-edge-NOSTATUS] t=134437343505998 (dt=4184us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x57f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437343635212 (dt=4055us) caller=1071766 target=1071770 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437343899879 (dt=3790us) caller=1071766 target=1071768 what=DELAY-before-CONT 3000us snapshot: [task 1071768: State: t (tracing stop) | Pid: 1071768 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071770: State: R (running) | Pid: 1071770 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/task.rs:5462
+PROBE[exec-edge-NOSTATUS] t=134437344028923 (dt=3661us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x6057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437347114177 (dt=576us) caller=1071766 target=1071768 what=DELAY-after-CONT-about-to-issue snapshot: [task 1071768: State: t (tracing stop) | Pid: 1071768 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] [task 1071770: State: D (disk sleep) | Pid: 1071770 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=D stat.exit_code=0 | wchan=begin_new_exec] rc=0 site=reverie-ptrace/src/task.rs:5465
+PROBE[exec-edge-NOSTATUS] t=134437347117151 (dt=573us) caller=1071766 target=1071768 what=DELAY-raw-GETEVENTMSG r=0 errno=0 msg=0x0 (same thread as the CONT) rc=0 site=reverie-ptrace/src/task.rs:5471
+PROBE[exec-edge-NOSTATUS] t=134437347120005 (dt=570us) caller=1071766 target=1071768 what=PTRACE_CONT(resume,None) rc=0 site=reverie-ptrace/src/task.rs:5474
+PROBE[exec-edge-NOSTATUS] t=134437347157552 (dt=532us) caller=1071766 target=1071768 what=drive_ordinary: ExitFuture resolved ok=true main=true rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437347163120 (dt=527us) caller=1071772 target=1071770 what=WAITID(P_PIDFD) thread=Some("guest-1071770") result=Err(ECHILD) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437347166495 (dt=523us) caller=1071766 target=1071768 what=finish_ordinary_terminal entered with Ok(Stopped) rc=0 site=reverie-ptrace/src/tracer.rs:543
+PROBE[exec-edge-NOSTATUS] t=134437347169230 (dt=521us) caller=1071766 target=1071768 what=GETEVENTMSG-before rc=0 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437347172124 (dt=518us) caller=1071766 target=1071768 what=GETEVENTMSG-after rc=-1000003 site=reverie-ptrace/src/tracer.rs:556
+PROBE[exec-edge-NOSTATUS] t=134437347257612 (dt=432us) caller=1071766 target=1071768 what=ESRCH-snapshot: [task 1071768: State: R (running) | Pid: 1071768 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=R stat.exit_code=0 | wchan=0] rc=0 site=reverie-ptrace/src/tracer.rs:591
+PROBE[exec-edge-NOSTATUS] t=134437347289159 (dt=401us) caller=1071766 target=1071770 what=drive_ordinary: ExitFuture resolved ok=false main=false rc=0 site=reverie-ptrace/src/task.rs:6976
+PROBE[exec-edge-NOSTATUS] t=134437347584614 (dt=105us) caller=1071769 target=1071768 what=WAITID(P_PIDFD) thread=Some("guest-1071768") result=Ok(Some("0x4057f")) rc=0 site=safeptrace/src/notifier.rs:1858
+PROBE[exec-edge-NOSTATUS] t=134437347597903 (dt=92us) caller=1071766 target=1071768 what=GETEVENTMSG-before rc=0 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437347600547 (dt=89us) caller=1071766 target=1071768 what=GETEVENTMSG-after rc=1071770 site=safeptrace/src/lib.rs:246
+PROBE[exec-edge-NOSTATUS] t=134437347689701 (dt=0us) caller=1071766 target=1071768 what=EXEC-EDGE observed former=1071770 exit_status=None esrch=Some(1071768) snapshot: [task 1071768: State: t (tracing stop) | Pid: 1071768 | TracerPid: 1071766 | SigPnd: 0000000000000000 | ShdPnd: 0000000000000000 | stat.state=t stat.exit_code=0 | wchan=ptrace_stop] rc=0 site=reverie-ptrace/src/tracer.rs:675
+actual delivered marker observations: tracer=1071691, rows=[]
+exec owner before rescue: fail=false, timer_mode=0, root_absent=false, events=[(0, Pid(1071768), 1071768, None), (0, Pid(1071770), 1071770, None)], elapsed=6.973053ms, outcome=Pending(PtraceRunFailure { primary: Tool(actual exec for 1071768 from 1071770 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071768), tid: Pid(1071768), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+exec owner rescue only: signal=Ok(()), completed=false
+
+thread 'tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once' (1071766) panicked at reverie-ptrace/src/tracer.rs:6030:17:
+exec owner did not Complete within original3s predicate: Pending(PtraceRunFailure { primary: Tool(actual exec for 1071768 from 1071770 has no retained preceding EXIT event status), origin: BackendFailure { pid: Pid(1071768), tid: Pid(1071768), phase: "ptrace tree cleanup" }, secondary: [], captured_prefix: Some(CapturedPrefix { stdout: [], stderr: [] }) })
+
+
+failures:
+    tracer::tests::ordinary_nonleader_exec_displaced_hook_failure_fences_replacement
+    tracer::tests::ordinary_nonleader_exec_postexec_timer_survives_internal_step
+    tracer::tests::ordinary_nonleader_exec_real_signal_cancels_postexec_timer
+    tracer::tests::ordinary_nonleader_exec_run_loop_echild_awaits_leader_exec_edge
+    tracer::tests::ordinary_nonleader_exec_transfers_state_and_consumes_old_leader_once
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 360 filtered out; finished in 0.06s
+
