@@ -1844,6 +1844,16 @@ static void mode_sigstop_hop(void) {
  * logical point under both backends. */
 #define TOOL_PARK(sig) ((long)(sig) << 32)
 #define HOOK_PARK(sig) ((long)(sig) << 40)
+/* After the call's inject returned, the Tool notifies the parent, waits for
+ * its SIGCONT, then sends SIGSTOP to the thread. */
+#define TOOL_AFTER_CONT (0x40L << 32)
+/* The hook parks at its late point: under trap-only after the hop read the
+ * pending signals, immediately before it raises the deferred SIGSTOPs. */
+#define HOOK_LATE (0x20L << 40)
+/* The hook (tracer) sends SIGSTOP to the process and to the thread. */
+#define HOOK_SEND_STOPS (0x40L << 40)
+/* The hook (tracer) sends SIGKILL to the process, then stays parked. */
+#define HOOK_KILL (0x80L << 40)
 /* The Tool also notifies the parent when the kernel restarts the call. */
 #define NOTIFY_AGAIN 0x4000
 /* park_run: the site call is a blocking read (else a write). */
@@ -1853,6 +1863,9 @@ static void mode_sigstop_hop(void) {
 #define PARK_LATE_CONT 2
 /* park_run: the child handles SIGTSTP (else SIG_DFL). */
 #define PARK_TSTP_HANDLER 4
+/* park_run: the child has a second thread, which blocks every signal, while
+ * it makes the call. */
+#define PARK_SIBLING 8
 
 struct park_rec {
   int sig, code, from_parent;
@@ -1873,12 +1886,30 @@ static void park_handler(int sig, siginfo_t* si, void* uc_) {
   r->rax = uc->uc_mcontext.gregs[REG_RAX];
 }
 
+static void* park_sibling(void* fd) {
+  char byte;
+  if (read(*(int*)fd, &byte, 1) != 1)
+    die("sibling read");
+  return NULL;
+}
+
 static void
 park_child(const char* tag, long act, int how, int from_parent, int to_parent) {
   install(SIGCONT, 0, park_handler);
   if (how & PARK_TSTP_HANDLER)
     install(SIGTSTP, 0, park_handler);
   sigset_t mask;
+  int sibling_pipe[2];
+  pthread_t sibling;
+  if (how & PARK_SIBLING) {
+    /* The sibling inherits a mask that blocks everything, so every signal
+     * goes to this thread, as in a single-threaded child. */
+    sigfillset(&mask);
+    if (pipe(sibling_pipe) != 0 || sigprocmask(SIG_SETMASK, &mask, NULL) != 0)
+      die("sibling setup");
+    if (pthread_create(&sibling, NULL, park_sibling, &sibling_pipe[0]) != 0)
+      die("pthread_create sibling");
+  }
   sigemptyset(&mask);
   if (how & PARK_LATE_CONT)
     sigaddset(&mask, SIGCONT);
@@ -1889,6 +1920,10 @@ park_child(const char* tag, long act, int how, int from_parent, int to_parent) {
                            : SITEM(SYS_write, to_parent, "data", 4, 0, 0, act);
   if (write(to_parent, "after", 5) != 5)
     die("child write after");
+  if (how & PARK_SIBLING) {
+    if (write(sibling_pipe[1], "s", 1) != 1 || pthread_join(sibling, NULL) != 0)
+      die("sibling join");
+  }
   char token;
   if (read(from_parent, &token, 1) != 1)
     die("child read token");
@@ -1948,7 +1983,9 @@ park_run(const char* tag, long act, int how, const int* kills, int nkills) {
     if (!park_notified(10))
       break;
     notified++;
-    if (kill(child, kills[i]) != 0)
+    /* A negative entry is sent to the thread (tgkill), else to the process. */
+    if (kills[i] < 0 ? syscall(SYS_tgkill, child, child, -kills[i]) != 0
+                     : kill(child, kills[i]) != 0)
       die("kill");
   }
   char buf[8] = {0};
@@ -1957,7 +1994,7 @@ park_run(const char* tag, long act, int how, const int* kills, int nkills) {
   if (how & PARK_READ) {
     /* A call interrupted by the SIGSTOP restarts; one that was not blocks
      * until the parent gives up waiting and writes. */
-    restarted = park_notified(3);
+    restarted = park_notified(10);
     if (write(down[1], "d", 1) != 1)
       die("write data");
   } else {
@@ -2059,9 +2096,12 @@ static void mode_sigtstp_handler(void) {
 }
 
 /* SIGKILL at the site's stop, inside the hop, and inside the hop with a
- * deferred SIGSTOP: the child dies without the call running. */
+ * deferred SIGSTOP, from the parent and (stop-kill) from the tracer, which
+ * kills before the hop settles the deferred SIGSTOP: the child dies without
+ * the call running. */
 static void mode_sigkill_hop(void) {
-  static const int kill_only[] = {SIGKILL}, stop_kill[] = {SIGSTOP, SIGKILL};
+  static const int kill_only[] = {SIGKILL}, stop_kill[] = {SIGSTOP, SIGKILL},
+                   stop[] = {SIGSTOP};
   warm();
   park_run("entry", SHAPE_TAIL | TOOL_PARK(SIGKILL), 0, kill_only, 1);
   park_run("hop", SHAPE_TAIL | HOOK_PARK(SIGKILL), 0, kill_only, 1);
@@ -2071,6 +2111,98 @@ static void mode_sigkill_hop(void) {
       0,
       stop_kill,
       2);
+  park_run(
+      "stop-kill", SHAPE_TAIL | TOOL_PARK(SIGSTOP) | HOOK_KILL, 0, stop, 1);
+}
+
+/* Several SIGSTOPs in one call, into both queues, some sent while the hop
+ * already deferred others: each queue delivers one SIGSTOP, with the siginfo
+ * of the first sent to it. parent-kill: the tracer's tgkill and the parent's
+ * kill at the site's stop, then the tracer's kill and tgkill immediately
+ * before the call (the shared queue keeps the parent's siginfo).
+ * parent-tgkill: the parent's tgkill, then the tracer's kill and tgkill (the
+ * private queue keeps the parent's siginfo). */
+static void mode_sigstop_many(void) {
+  static const int kill_stop[] = {SIGSTOP}, tgkill_stop[] = {-SIGSTOP};
+  warm();
+  park_run(
+      "parent-kill-tail",
+      SHAPE_TAIL | SEND_SIGSTOP | TOOL_PARK(SIGSTOP) | HOOK_SEND_STOPS,
+      0,
+      kill_stop,
+      1);
+  park_run(
+      "parent-kill-inject",
+      SHAPE_INJECT | SEND_SIGSTOP | TOOL_PARK(SIGSTOP) | HOOK_SEND_STOPS,
+      0,
+      kill_stop,
+      1);
+  park_run(
+      "parent-tgkill-tail",
+      SHAPE_TAIL | TOOL_PARK(SIGSTOP) | HOOK_SEND_STOPS,
+      0,
+      tgkill_stop,
+      1);
+  park_run(
+      "parent-tgkill-inject",
+      SHAPE_INJECT | TOOL_PARK(SIGSTOP) | HOOK_SEND_STOPS,
+      0,
+      tgkill_stop,
+      1);
+}
+
+/* A SIGCONT that arrives after the hop's last read of the pending signals
+ * and before it raises the deferred SIGSTOP (plain ptrace: the same instant
+ * as mode_sigstop_cont_window's). */
+static void mode_sigstop_cont_late(void) {
+  static const int kills[] = {SIGSTOP, SIGCONT};
+  warm();
+  park_run(
+      "tail",
+      SHAPE_TAIL | TOOL_PARK(SIGSTOP) | HOOK_PARK(SIGCONT) | HOOK_LATE,
+      0,
+      kills,
+      2);
+  park_run(
+      "inject",
+      SHAPE_INJECT | TOOL_PARK(SIGSTOP) | HOOK_PARK(SIGCONT) | HOOK_LATE,
+      0,
+      kills,
+      2);
+}
+
+/* After an injected write whose SIGSTOP the hop re-raised, a SIGCONT
+ * discards it, and the Tool sends a new SIGSTOP (SI_TKILL) before the thread
+ * returns to user mode: its delivery stop keeps its own siginfo. */
+static void mode_sigstop_stale(void) {
+  static const int kills[] = {SIGSTOP, SIGCONT};
+  warm();
+  park_run(
+      "inject",
+      SHAPE_INJECT | TOOL_PARK(SIGSTOP) | TOOL_AFTER_CONT,
+      0,
+      kills,
+      2);
+}
+
+/* mode_sigstop_cont_window and T1e with a second thread in the child: the
+ * thread's creation retires the sites, so no call hops. The SIGSTOP is
+ * thread-directed: a process-directed one could be taken by the sibling. */
+static void mode_sigstop_threaded(void) {
+  static const int stop_cont[] = {-SIGSTOP, SIGCONT}, stop[] = {-SIGSTOP};
+  warm();
+  park_run(
+      "window",
+      SHAPE_TAIL | TOOL_PARK(SIGSTOP) | HOOK_PARK(SIGCONT),
+      PARK_SIBLING,
+      stop_cont,
+      2);
+  park_run(
+      "late-cont",
+      SHAPE_INJECT | TOOL_PARK(SIGSTOP),
+      PARK_SIBLING | PARK_LATE_CONT,
+      stop,
+      1);
 }
 
 /* A SIGSTOP pending when a blocking read starts interrupts it: the read
@@ -2292,6 +2424,14 @@ int main(int argc, char** argv) {
     mode_sigkill_hop();
   else if (!strcmp(m, "sigstop_blocking_read"))
     mode_sigstop_blocking_read();
+  else if (!strcmp(m, "sigstop_many"))
+    mode_sigstop_many();
+  else if (!strcmp(m, "sigstop_cont_late"))
+    mode_sigstop_cont_late();
+  else if (!strcmp(m, "sigstop_stale"))
+    mode_sigstop_stale();
+  else if (!strcmp(m, "sigstop_threaded"))
+    mode_sigstop_threaded();
   else if (!strcmp(m, "probe_uretprobe"))
     probe_nr(335);
   else if (!strcmp(m, "probe_uprobe"))
