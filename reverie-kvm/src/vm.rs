@@ -1401,6 +1401,20 @@ impl KvmBackend {
         {
             let mut context = self.terminal_read_context(executor, memory);
             executor.execute_checked_with_read_context(request, memory, &mut context)
+        } else if request.number() == libc::SYS_wait4 as u64
+            || request.number() == libc::SYS_waitid as u64
+        {
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-653): Review routing blocking waits through
+            // the terminal-read cancellation source.
+            // A blocking child wait is retired by the same committed
+            // thread/group cancellation as an inherited-stdin read, and every
+            // caller consumes its `TerminalReadCancelled` identically.
+            let cancellation = self
+                .thread_group
+                .terminal_reads
+                .wait_cancellation(self.is_guest_thread);
+            executor.execute_checked_with_wait_cancellation(request, memory, &cancellation)
         } else {
             executor.execute_checked(request, memory)
         }
