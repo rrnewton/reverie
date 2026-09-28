@@ -15,7 +15,11 @@
 //! runs the syscall in place, the "masked hop" (H1-H4) runs it through the
 //! private page's traced `syscall` stub ([`SLOT`]) with every signal blocked
 //! until the slot's own seccomp stop, so that signals become deliverable at
-//! the same kernel state as ptrace's in-place resume. Every other tool
+//! the same kernel state as ptrace's in-place resume. When the site-table
+//! lifecycle restored the site at this very stop (a task-creating, mapping
+//! or guest-install syscall), the same hop runs the syscall at the restored
+//! site instead of the slot, so that a child the tracer never sees
+//! (`CLONE_UNTRACED`) starts after the guest's own instruction. Every other tool
 //! handler shape keeps ptrace's own paths (skip, private inject), which work
 //! from an I386 stop unchanged because H0 has already normalized the
 //! registers they save and restore.
@@ -24,6 +28,7 @@ use reverie::Errno;
 #[cfg(test)]
 use reverie::Pid;
 use reverie::Tool;
+use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::Sysno;
 use safeptrace::Error as TraceError;
 use safeptrace::Event;
@@ -31,13 +36,13 @@ use safeptrace::Stopped;
 use safeptrace::Wait;
 
 use super::TracedTask;
+use crate::liteinst_trap_only::ALL_ADDRESSES;
 use crate::liteinst_trap_only::DisabledReason;
 use crate::liteinst_trap_only::PATCHED_BYTES;
 use crate::liteinst_trap_only::RetiredReason;
 use crate::liteinst_trap_only::SLOT;
 use crate::liteinst_trap_only::SLOT_RET;
 use crate::liteinst_trap_only::SYSCALL_BYTES;
-use crate::liteinst_trap_only::SiteTable;
 use crate::liteinst_trap_only::TAG_I386;
 use crate::liteinst_trap_only::TAG_SLOT;
 use crate::liteinst_trap_only::TrapOnlyFailure;
@@ -98,30 +103,129 @@ fn is_patchable_number(nr: Sysno) -> bool {
     )
 }
 
-/// The clone flags of the syscall a new-child event stop belongs to. When
-/// they cannot be read, the answer is the conservative "shares the address
-/// space and is not a vfork".
-fn clone_flags(parent: &Stopped, op: safeptrace::ChildOp) -> u64 {
-    const CONSERVATIVE: u64 = libc::CLONE_VM as u64;
-    let Ok(regs) = parent.getregs() else {
-        return CONSERVATIVE;
-    };
-    match Sysno::from(regs.orig_rax as i32) {
-        Sysno::clone => regs.rdi,
+const CLONE_VM: u64 = libc::CLONE_VM as u64;
+const CLONE_VFORK: u64 = libc::CLONE_VFORK as u64;
+const CLONE_UNTRACED: u64 = libc::CLONE_UNTRACED as u64;
+const PAGE_SIZE: u64 = 4096;
+
+/// The clone flags of a task-creating syscall, decoded at its creating stop,
+/// before it runs. `clone3`'s flags are read from the guest while the address
+/// space is single-task (when it is not, the table is already disabled and
+/// the flags decide nothing). When they cannot be read the answer is the
+/// conservative "shares the address space and is not a vfork"; the syscall
+/// itself then fails with EFAULT.
+fn creating_flags(tid: nix::unistd::Pid, nr: Sysno, args: &SyscallArgs) -> Option<u64> {
+    match nr {
+        Sysno::clone => Some(args.arg0 as u64),
         Sysno::clone3 => {
             use std::os::unix::fs::FileExt;
             let mut flags = [0u8; 8];
-            match std::fs::File::open(format!("/proc/{}/mem", parent.pid()))
-                .and_then(|mem| mem.read_exact_at(&mut flags, regs.rdi))
-            {
-                Ok(()) => u64::from_ne_bytes(flags),
-                Err(_) => CONSERVATIVE,
-            }
+            Some(
+                match std::fs::File::open(format!("/proc/{tid}/mem"))
+                    .and_then(|mem| mem.read_exact_at(&mut flags, args.arg0 as u64))
+                {
+                    Ok(()) => u64::from_ne_bytes(flags),
+                    Err(_) => CLONE_VM,
+                },
+            )
         }
-        Sysno::fork => 0,
-        Sysno::vfork => (libc::CLONE_VM | libc::CLONE_VFORK) as u64,
-        _ if op == safeptrace::ChildOp::Vfork => (libc::CLONE_VM | libc::CLONE_VFORK) as u64,
-        _ => CONSERVATIVE,
+        Sysno::fork => Some(0),
+        Sysno::vfork => Some(CLONE_VM | CLONE_VFORK),
+        _ => None,
+    }
+}
+
+/// The page-rounded range `[start, start + len)`, saturating at the top of
+/// the address space.
+fn page_range(start: u64, len: u64) -> (u64, u64) {
+    let end = start
+        .checked_add(len)
+        .and_then(|end| end.checked_add(PAGE_SIZE - 1))
+        .map_or(u64::MAX, |end| end & !(PAGE_SIZE - 1));
+    (start & !(PAGE_SIZE - 1), end)
+}
+
+/// The address ranges a mapping-changing syscall can reach, decided before it
+/// runs (P2 spec section 4). Empty when it cannot change an existing mapping.
+fn mapping_ranges(nr: Sysno, args: &SyscallArgs) -> Vec<(u64, u64)> {
+    const MREMAP_FIXED: u64 = libc::MREMAP_FIXED as u64;
+    const SHM_REMAP: u64 = libc::SHM_REMAP as u64;
+    let (a0, a1, a2, a3, a4) = (
+        args.arg0 as u64,
+        args.arg1 as u64,
+        args.arg2 as u64,
+        args.arg3 as u64,
+        args.arg4 as u64,
+    );
+    match nr {
+        // Without MAP_FIXED the address is a hint and no existing mapping is
+        // replaced (MAP_FIXED_NOREPLACE fails instead of replacing).
+        Sysno::mmap if a3 & libc::MAP_FIXED as u64 != 0 => vec![page_range(a0, a1)],
+        Sysno::munmap
+        | Sysno::mprotect
+        | Sysno::pkey_mprotect
+        | Sysno::madvise
+        | Sysno::remap_file_pages => vec![page_range(a0, a1)],
+        Sysno::mremap => {
+            let mut ranges = vec![page_range(a0, a1.max(a2))];
+            if a3 & MREMAP_FIXED != 0 {
+                ranges.push(page_range(a4, a2));
+            }
+            ranges
+        }
+        // The segment's size is unknown to the tracer: SHM_REMAP may replace
+        // any mapping. Without it an overlapping attach fails with EINVAL.
+        Sysno::shmat if a2 & SHM_REMAP != 0 => vec![ALL_ADDRESSES],
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the syscall installs (or tries to install) a guest seccomp filter
+/// or syscall user dispatch (P2 spec section 5). `prctl`'s option and
+/// `seccomp`'s operation are C `int`s, so only their low 32 bits count.
+fn guest_install(nr: Sysno, args: &SyscallArgs) -> Option<DisabledReason> {
+    const PR_SET_SECCOMP: u32 = 22;
+    const PR_SET_SYSCALL_USER_DISPATCH: u32 = 59;
+    const SECCOMP_GET_ACTION_AVAIL: u32 = 2;
+    const SECCOMP_GET_NOTIF_SIZES: u32 = 3;
+    match nr {
+        // SET_MODE_STRICT, SET_MODE_FILTER and any operation this tracer does
+        // not know; only the two read-only queries are excluded.
+        Sysno::seccomp
+            if !matches!(
+                args.arg0 as u32,
+                SECCOMP_GET_ACTION_AVAIL | SECCOMP_GET_NOTIF_SIZES
+            ) =>
+        {
+            Some(DisabledReason::GuestSeccomp)
+        }
+        Sysno::prctl if args.arg0 as u32 == PR_SET_SECCOMP => Some(DisabledReason::GuestSeccomp),
+        // Any mode other than PR_SYS_DISPATCH_OFF turns dispatch on.
+        Sysno::prctl if args.arg0 as u32 == PR_SET_SYSCALL_USER_DISPATCH && args.arg1 != 0 => {
+            Some(DisabledReason::Sud)
+        }
+        _ => None,
+    }
+}
+
+/// Whether `parent` and `child` share one address space, from the kernel
+/// (`kcmp(KCMP_VM)`); `None` when the kernel cannot answer.
+fn shares_address_space(parent: reverie::Pid, child: reverie::Pid) -> Option<bool> {
+    const KCMP_VM: libc::c_long = 1;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_kcmp,
+            parent.as_raw() as libc::c_long,
+            child.as_raw() as libc::c_long,
+            KCMP_VM,
+            0 as libc::c_long,
+            0 as libc::c_long,
+        )
+    };
+    match result {
+        0 => Some(true),
+        1..=3 => Some(false),
+        _ => None,
     }
 }
 
@@ -304,7 +408,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(())
     }
 
-    /// Runs a live patched site's syscall in place through the slot (H1-H4).
+    /// Runs a patched site's syscall in place (H1-H4): through the slot, or
+    /// at the site itself when the site-table lifecycle restored it at this
+    /// stop.
     pub(super) async fn trap_only_hop(
         &mut self,
         task: Stopped,
@@ -329,23 +435,50 @@ impl<L: Tool + 'static> TracedTask<L> {
         site: u64,
         nr: u64,
     ) -> Result<HopOutcome, TraceError> {
-        // H1: block everything, skip the int 0x80, and run `syscall` at SLOT.
+        // A site restored at this very stop (by the site-table lifecycle, for
+        // a task-creating, mapping or install syscall) holds `syscall` again:
+        // run the syscall there, in place, so that everything the kernel
+        // derives from the instruction pointer is ptrace's. That includes the
+        // start address of a child no new-child stop fixes up (CLONE_UNTRACED).
+        let in_place = self
+            .trap_only
+            .as_ref()
+            .is_some_and(|trap_only| !trap_only.lock().is_live(site));
+        let (target, expected_tag, expected_rip) = if in_place {
+            let bytes = read_site(nix_pid(self.tid), site);
+            if !matches!(bytes, Ok(bytes) if bytes == SYSCALL_BYTES) {
+                return Err(self.trap_only_failure(
+                    "trap-only hop",
+                    TrapOnlyFailure::HopUnexpectedStop {
+                        phase: "H1 in-place site",
+                        site,
+                        stop: format!("restored site reads {bytes:02x?}"),
+                    },
+                ));
+            }
+            (site, 0, view.rip)
+        } else {
+            (SLOT, TAG_SLOT as i64, SLOT_RET)
+        };
+
+        // H1: block everything, skip the int 0x80, and run `syscall` at SLOT
+        // (or at the restored site).
         let saved_mask = task.getsigmask()?;
         task.setsigmask(!0)?;
         let mut regs = view;
         regs.orig_rax = -1i64 as u64;
         regs.rax = nr;
-        regs.rip = SLOT;
+        regs.rip = target;
         task.setregs(&regs)?;
         let wait = self.resume_stopped(task, None)?.next_state().await?;
         self.arm_liteinst_wait(&wait);
 
-        // H2: the slot's own seccomp stop.
+        // H2: the slot's (or the restored site's) own seccomp stop.
         let task = match wait {
             Wait::Stopped(task, Event::Seccomp) => {
                 let tag = task.getevent()?;
                 let regs = task.getregs()?;
-                if tag != TAG_SLOT as i64 || regs.rip != SLOT_RET || regs.orig_rax != nr {
+                if tag != expected_tag || regs.rip != expected_rip || regs.orig_rax != nr {
                     return Err(self.trap_only_failure(
                         "trap-only hop",
                         TrapOnlyFailure::HopUnexpectedStop {
@@ -385,7 +518,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         match wait {
             Wait::Stopped(task, Event::Syscall) => {
                 let mut regs = task.getregs()?;
-                if regs.rip == SLOT_RET {
+                if regs.rip == expected_rip {
                     regs.rip = view.rip;
                     regs.rcx = view.rcx;
                     regs.r11 = view.r11;
@@ -465,50 +598,186 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    /// Trap-only bookkeeping at a new-child event stop, before either task
-    /// runs: decide whether the child shares the site table, and restore every
-    /// site before a second task can execute the address space.
+    /// Site-table lifecycle at a seccomp stop, before the syscall runs and
+    /// before any Tool code sees it, whether it arrived as an x86_64 or a
+    /// (normalized) I386 stop (P2 spec sections 4 and 5).
     ///
-    /// Both tasks are stopped here, and an auto-attached child executes no
-    /// user code before its first stop, so the text writes cannot race.
+    /// - A task-creating syscall records its clone flags for the new-child
+    ///   stop. When it would create a second executing task (`CLONE_VM`
+    ///   without `CLONE_VFORK`) or an untraced one (`CLONE_UNTRACED`, which
+    ///   produces no new-child stop at all), every site is restored and the
+    ///   table disabled now, while this is the only task that can execute
+    ///   the address space.
+    /// - A mapping change restores the sites it can reach.
+    /// - A guest seccomp filter or syscall user dispatch restores every site
+    ///   and disables the lineage, whether or not the install then succeeds.
+    ///
+    /// The call then proceeds exactly as under plain ptrace.
+    pub(super) fn trap_only_lifecycle(
+        &mut self,
+        nr: Sysno,
+        args: &SyscallArgs,
+    ) -> Result<(), TraceError> {
+        let tid = nix_pid(self.tid);
+        let Some(trap_only) = self.trap_only.as_mut() else {
+            return Ok(());
+        };
+        trap_only.pending_clone_flags = None;
+        if !trap_only.lock().patching().rewrites_sites() {
+            return Ok(());
+        }
+        let result = if let Some(flags) = creating_flags(tid, nr, args) {
+            trap_only.pending_clone_flags = Some(flags);
+            let second_executor = flags & CLONE_VM != 0 && flags & CLONE_VFORK == 0;
+            if second_executor || flags & CLONE_UNTRACED != 0 {
+                let restored = trap_only.retire_all(
+                    &[tid],
+                    RetiredReason::MultiTask,
+                    DisabledReason::MultiTask,
+                );
+                #[cfg(test)]
+                if let Ok(restored) = &restored {
+                    trap_only.shared.hooks.record(format!(
+                        "creating {nr} flags={flags:#x} restored={restored}"
+                    ));
+                }
+                restored.map(drop)
+            } else {
+                Ok(())
+            }
+        } else if let Some(reason) = guest_install(nr, args) {
+            let restored = {
+                let mut table = trap_only.lock();
+                table.mark_lineage(reason);
+                table.restore_sites(&[tid], &[ALL_ADDRESSES], retired_for(reason))
+            };
+            #[cfg(test)]
+            if let Ok(restored) = &restored {
+                trap_only
+                    .shared
+                    .hooks
+                    .record(format!("install {nr} {reason:?} restored={restored}"));
+            }
+            restored.map(drop)
+        } else {
+            let ranges = mapping_ranges(nr, args);
+            if ranges.is_empty() {
+                Ok(())
+            } else {
+                let restored =
+                    trap_only
+                        .lock()
+                        .restore_sites(&[tid], &ranges, RetiredReason::Mapping);
+                #[cfg(test)]
+                if let Ok(restored) = &restored {
+                    trap_only
+                        .shared
+                        .hooks
+                        .record(format!("mapping {nr} restored={restored}"));
+                }
+                restored.map(drop)
+            }
+        };
+        result.map_err(|error| self.trap_only_fail("trap-only site-table lifecycle", error))
+    }
+
+    /// Trap-only bookkeeping at a new-child event stop, before either task
+    /// runs: give the child the table of its address space.
+    ///
+    /// The decision uses the clone flags decoded at the creating stop, never
+    /// `ChildOp`. A second executing task was already made safe there. When
+    /// no creating stop decoded these flags (a Tool-injected clone), or they
+    /// disagree with the kernel (the stop's `CLONE_VFORK` or `kcmp(KCMP_VM)`),
+    /// every site is restored now, in both tasks, and the two tasks share the
+    /// disabled table: both are stopped, and an auto-attached child executes
+    /// no user code before its first stop, so the writes cannot race.
     pub(super) fn trap_only_new_child(
-        &self,
+        &mut self,
         parent: &Stopped,
+        child: reverie::Pid,
         op: safeptrace::ChildOp,
     ) -> Result<Option<crate::liteinst_trap_only::TrapOnlyTask>, TraceError> {
-        let Some(trap_only) = self.trap_only.as_ref() else {
+        let Some(trap_only) = self.trap_only.as_mut() else {
             return Ok(None);
         };
-        let flags = clone_flags(parent, op);
-        let shares_vm = flags & libc::CLONE_VM as u64 != 0;
-        if shares_vm && flags & libc::CLONE_VFORK as u64 == 0 {
-            trap_only
+        let recorded = trap_only.pending_clone_flags.take();
+        let vfork = op == safeptrace::ChildOp::Vfork;
+        let shared_vm = shares_address_space(parent.pid(), child);
+        let flags = recorded.filter(|flags| {
+            (flags & CLONE_VFORK != 0) == vfork
+                && shared_vm.is_none_or(|shared| shared == (flags & CLONE_VM != 0))
+        });
+        let trap_only = self.trap_only.as_ref().expect("checked above");
+        let Some(flags) = flags else {
+            let restored = trap_only
                 .retire_all(
-                    nix_pid(parent.pid()),
+                    &[nix_pid(parent.pid()), nix_pid(child)],
                     RetiredReason::MultiTask,
                     DisabledReason::MultiTask,
                 )
-                .map_err(|error| self.trap_only_fail("trap-only multi-task restore", error))?;
+                .map_err(|error| self.trap_only_fail("trap-only new-child restore", error))?;
+            #[cfg(test)]
+            trap_only.shared.hooks.record(format!(
+                "new-child {op:?} undecided recorded={recorded:x?} restored={restored}"
+            ));
+            let _ = restored;
+            return Ok(Some(trap_only.child(true)));
+        };
+        let shares = flags & CLONE_VM != 0;
+        if shares && flags & CLONE_VFORK == 0 {
+            let table = trap_only.lock();
+            let live = table.patched_sites();
+            if live != 0 || table.accepts_new_sites() {
+                let state = format!("{:?}", table.state());
+                drop(table);
+                return Err(self.trap_only_failure(
+                    "trap-only new-child",
+                    TrapOnlyFailure::MultiTaskLiveSites {
+                        child: child.as_raw(),
+                        live,
+                        state,
+                    },
+                ));
+            }
         }
-        Ok(Some(trap_only.child(shares_vm)))
+        #[cfg(test)]
+        trap_only
+            .shared
+            .hooks
+            .record(format!("new-child {op:?} flags={flags:#x} shares={shares}"));
+        Ok(Some(trap_only.child(shares)))
     }
 
-    /// Gives an exec'ing task an empty table and drops its hop state.
+    /// Gives an exec'ing task the empty table of its new address space and
+    /// drops its hop state. A vfork child's exec detaches it from its
+    /// parent's table.
     pub(super) fn trap_only_exec(&mut self, initial_command: bool) {
         let Some(trap_only) = self.trap_only.as_mut() else {
             return;
         };
         trap_only.live_entry = None;
         trap_only.new_child_view = None;
-        let mut fresh = SiteTable::new(trap_only.lock().patching());
+        trap_only.pending_clone_flags = None;
+        let mut fresh = trap_only.lock().after_exec();
         if !trap_only.shared.full_subscription {
             fresh.disable(DisabledReason::PartialSubscription);
         }
+        #[cfg(test)]
+        trap_only.shared.hooks.record(format!(
+            "exec initial={initial_command} entries={} state={:?}",
+            fresh.entries(),
+            fresh.state()
+        ));
         if initial_command {
             // The launch exec: keep the table the tracer handle observes.
             *trap_only.lock() = fresh;
         } else {
             trap_only.sites = std::sync::Arc::new(std::sync::Mutex::new(fresh));
+            #[cfg(test)]
+            trap_only
+                .shared
+                .hooks
+                .record_table("exec".to_owned(), &trap_only.sites);
         }
     }
 
@@ -605,6 +874,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             }
         }
+    }
+}
+
+/// The site retirement reason for a guest install.
+fn retired_for(reason: DisabledReason) -> RetiredReason {
+    match reason {
+        DisabledReason::Sud => RetiredReason::Sud,
+        _ => RetiredReason::GuestSeccomp,
     }
 }
 
