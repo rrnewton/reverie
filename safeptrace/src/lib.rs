@@ -862,6 +862,39 @@ impl Stopped {
         ptrace::setsiginfo(self.0.into(), siginfo).map_err(|err| self.map_nix_err(err))
     }
 
+    /// Gets the tracee's blocked signal mask (`PTRACE_GETSIGMASK`). Bit `n - 1`
+    /// is set when signal `n` is blocked.
+    pub fn getsigmask(&self) -> Result<u64, Error> {
+        let mut mask: u64 = 0;
+        Errno::result(unsafe {
+            libc::ptrace(
+                libc::PTRACE_GETSIGMASK,
+                self.0.as_raw(),
+                core::mem::size_of::<u64>(),
+                &mut mask as *mut u64,
+            )
+        })
+        .map_err(|err| self.map_err(err))?;
+        Ok(mask)
+    }
+
+    /// Sets the tracee's blocked signal mask (`PTRACE_SETSIGMASK`). The kernel
+    /// ignores the `SIGKILL` and `SIGSTOP` bits. Like any ptrace mask write, it
+    /// also clears the tracee's pending restore of a mask saved by a
+    /// mask-swapping syscall such as `ppoll` or `rt_sigsuspend`.
+    pub fn setsigmask(&self, mask: u64) -> Result<(), Error> {
+        Errno::result(unsafe {
+            libc::ptrace(
+                libc::PTRACE_SETSIGMASK,
+                self.0.as_raw(),
+                core::mem::size_of::<u64>(),
+                &mask as *const u64,
+            )
+        })
+        .map_err(|err| self.map_err(err))?;
+        Ok(())
+    }
+
     /// Like `getsiginfo`, but do not remove the signal info from an internal
     /// queue.
     pub fn peeksiginfo<T: Into<Option<PeekSigInfoFlags>>>(
