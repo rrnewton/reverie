@@ -38691,6 +38691,509 @@ mod tests {
         state.file_retirement.set_probe(None);
     }
 
+    // Each geometry runs against Linux first, then the guest syscall adapter.
+    // One queued datagram is consumed even when a later result scalar faults.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ReceiveHeaderCase {
+        ReadonlyInput,
+        ReadonlyPadding,
+        FlagsFault,
+        FlagsCrossFault,
+        ControlLengthFaultAfterFlags,
+        MessageLengthFault,
+        MessageLengthCrossFault,
+        PayloadAliasesInput,
+        NamedZeroCapacity,
+        PayloadAliasesNameLength,
+    }
+
+    impl ReceiveHeaderCase {
+        fn layout(self, batch: bool) -> (usize, Option<usize>) {
+            let page = PAGE_SIZE as usize;
+            match self {
+                Self::ReadonlyInput => (page - 40, Some(0)),
+                Self::ReadonlyPadding => (page - if batch { 60 } else { 52 }, Some(page)),
+                Self::FlagsFault => (page - 48, Some(page)),
+                Self::FlagsCrossFault => (page - 50, Some(page)),
+                Self::ControlLengthFaultAfterFlags => (page - 44, Some(0)),
+                Self::MessageLengthFault => (page - 56, Some(page)),
+                Self::MessageLengthCrossFault => (page - 58, Some(page)),
+                Self::PayloadAliasesInput
+                | Self::NamedZeroCapacity
+                | Self::PayloadAliasesNameLength => (128, None),
+            }
+        }
+
+        fn has_name(self) -> bool {
+            matches!(self, Self::FlagsFault | Self::FlagsCrossFault) || self.named_peer()
+        }
+
+        fn named_peer(self) -> bool {
+            matches!(
+                self,
+                Self::NamedZeroCapacity | Self::PayloadAliasesNameLength
+            )
+        }
+
+        fn payload_alias_offset(self) -> Option<u64> {
+            match self {
+                Self::PayloadAliasesInput => Some(16),
+                Self::PayloadAliasesNameLength => Some(8),
+                _ => None,
+            }
+        }
+
+        fn wire_payload(self) -> [u8; 8] {
+            if self == Self::PayloadAliasesNameLength {
+                let mut bytes = *b"xxxxTAIL";
+                bytes[..4].copy_from_slice(&64u32.to_ne_bytes());
+                bytes
+            } else {
+                *b"ABCDEFGH"
+            }
+        }
+
+        fn faults(self) -> bool {
+            !matches!(
+                self,
+                Self::ReadonlyInput
+                    | Self::ReadonlyPadding
+                    | Self::PayloadAliasesInput
+                    | Self::NamedZeroCapacity
+                    | Self::PayloadAliasesNameLength
+            )
+        }
+    }
+
+    struct ReceiveHeaderObservation {
+        result: i64,
+        header: [u8; 64],
+        payload: [u8; 8],
+        control: [u8; 64],
+        name: [u8; 64],
+    }
+
+    fn receive_header_bytes(
+        iov: u64,
+        control: u64,
+        name: u64,
+        case: ReceiveHeaderCase,
+    ) -> [u8; 64] {
+        // Deliberately initialize every padding byte; do not copy an aggregate
+        // with Rust/C padding whose initialization cannot be assumed.
+        assert_eq!(std::mem::size_of::<libc::msghdr>(), 56);
+        assert_eq!(std::mem::size_of::<libc::mmsghdr>(), 64);
+        assert_eq!(std::mem::offset_of!(libc::msghdr, msg_controllen), 40);
+        assert_eq!(std::mem::offset_of!(libc::msghdr, msg_flags), 48);
+        assert_eq!(std::mem::offset_of!(libc::mmsghdr, msg_len), 56);
+        let mut header = [0xa5; 64];
+        header[0..8].copy_from_slice(&name.to_ne_bytes());
+        header[8..12].copy_from_slice(
+            &(if name == 0 || case.named_peer() {
+                0u32
+            } else {
+                64u32
+            })
+            .to_ne_bytes(),
+        );
+        header[16..24].copy_from_slice(&iov.to_ne_bytes());
+        header[24..32].copy_from_slice(&1u64.to_ne_bytes());
+        header[32..40].copy_from_slice(&control.to_ne_bytes());
+        header[40..48].copy_from_slice(&64u64.to_ne_bytes());
+        header[48..52].copy_from_slice(&0x1357_9bdf_i32.to_ne_bytes());
+        header
+    }
+
+    fn check_receive_header_observation(
+        case: ReceiveHeaderCase,
+        batch: bool,
+        stage: &str,
+        before: &[u8; 64],
+        observed: &ReceiveHeaderObservation,
+        expected_address: &[u8],
+    ) {
+        let expected_result = if case.faults() {
+            negative_errno(libc::EFAULT)
+        } else if batch {
+            1
+        } else {
+            8
+        };
+        assert_eq!(
+            observed.result, expected_result,
+            "{stage} receive header {case:?}: result"
+        );
+        let mut expected = *before;
+        if let Some(offset) = case.payload_alias_offset() {
+            expected[offset as usize..offset as usize + 8].copy_from_slice(&case.wire_payload());
+        }
+        if case.has_name() {
+            // The actual address length is stored even with input capacity zero.
+            // The unnamed-peer cases require this before the later flags fault.
+            expected[8..12].copy_from_slice(&(expected_address.len() as u32).to_ne_bytes());
+        }
+        if !matches!(
+            case,
+            ReceiveHeaderCase::FlagsFault | ReceiveHeaderCase::FlagsCrossFault
+        ) {
+            expected[48..52].copy_from_slice(&libc::MSG_CMSG_CLOEXEC.to_ne_bytes());
+            if case != ReceiveHeaderCase::ControlLengthFaultAfterFlags {
+                expected[40..48].copy_from_slice(&0u64.to_ne_bytes());
+                if batch && !case.faults() {
+                    expected[56..60].copy_from_slice(&8u32.to_ne_bytes());
+                }
+            }
+        }
+        assert_eq!(
+            observed.header, expected,
+            "{stage} receive header {case:?}: exact scalar/input/padding footprint"
+        );
+        assert_eq!(
+            observed.payload,
+            if case.payload_alias_offset().is_some() {
+                [0xa5; 8]
+            } else {
+                case.wire_payload()
+            },
+            "{stage} receive header {case:?}: payload"
+        );
+        assert_eq!(
+            observed.control, [0xa5; 64],
+            "{stage} receive header {case:?}: no ancillary stores"
+        );
+        let mut expected_name = [0xa5; 64];
+        if case == ReceiveHeaderCase::PayloadAliasesNameLength {
+            expected_name[..expected_address.len()].copy_from_slice(expected_address);
+        }
+        assert_eq!(
+            observed.name, expected_name,
+            "{stage} receive header {case:?}: exact address footprint"
+        );
+    }
+
+    fn bind_receive_header_sender(fd: RawFd) -> Vec<u8> {
+        static NEXT_ADDRESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT_ADDRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let label = format!("rv-header-{}-{sequence}", std::process::id());
+        // SAFETY: sockaddr_un is a plain C address structure, fully initialized.
+        let mut address = unsafe { std::mem::zeroed::<libc::sockaddr_un>() };
+        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        assert!(label.len() < address.sun_path.len());
+        for (destination, byte) in address.sun_path[1..].iter_mut().zip(label.bytes()) {
+            *destination = byte as libc::c_char;
+        }
+        let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + label.len();
+        assert!(length <= 64);
+        // SAFETY: this owned unnamed endpoint is bound to a fresh abstract name.
+        // No filesystem pathname or public network endpoint is used.
+        assert_eq!(
+            unsafe {
+                libc::bind(
+                    fd,
+                    std::ptr::from_ref(&address).cast(),
+                    length as libc::socklen_t,
+                )
+            },
+            0
+        );
+        // Derive the exact expected returned bytes from the constructed address,
+        // not getsockname or the receive output. Native/model runs own distinct names.
+        let mut bytes = Vec::with_capacity(length);
+        bytes.extend_from_slice(&address.sun_family.to_ne_bytes());
+        assert_eq!(
+            bytes.len(),
+            std::mem::offset_of!(libc::sockaddr_un, sun_path)
+        );
+        bytes.push(0);
+        bytes.extend_from_slice(label.as_bytes());
+        bytes
+    }
+
+    fn send_receive_header_datagram(fd: RawFd, case: ReceiveHeaderCase) {
+        let bytes = case.wire_payload();
+        // SAFETY: the owned socket and the eight-byte input remain live.
+        assert_eq!(
+            unsafe { libc::send(fd, bytes.as_ptr().cast(), bytes.len(), libc::MSG_NOSIGNAL) },
+            8
+        );
+    }
+
+    fn assert_receive_header_queue_empty(fd: RawFd, case: ReceiveHeaderCase, stage: &str) {
+        let mut sentinel = [0xa5; 8];
+        // SAFETY: the owned socket and writable destination remain live.
+        let result = unsafe {
+            libc::recv(
+                fd,
+                sentinel.as_mut_ptr().cast(),
+                sentinel.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        let error = std::io::Error::last_os_error().raw_os_error();
+        assert_eq!(
+            result, -1,
+            "{stage} receive header {case:?}: consumed datagram"
+        );
+        assert_eq!(
+            error,
+            Some(libc::EAGAIN),
+            "{stage} receive header {case:?}: empty queue errno"
+        );
+        assert_eq!(
+            sentinel, [0xa5; 8],
+            "{stage} receive header {case:?}: empty queue destination"
+        );
+    }
+
+    fn native_receive_header_case(case: ReceiveHeaderCase, batch: bool) -> i64 {
+        let arena = NativeFaultBuffer::new();
+        // SAFETY: restore writable access to both pages of this owned mapping
+        // for initialization; selected pages become readable-only before receive.
+        assert_eq!(
+            unsafe {
+                libc::mprotect(
+                    arena.mapping,
+                    arena.length,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                )
+            },
+            0
+        );
+        let (offset, readonly) = case.layout(batch);
+        // SAFETY: every table entry leaves a complete readable 64-byte header.
+        let header = unsafe { arena.mapping.cast::<u8>().add(offset) };
+        let mut payload = [0xa5; 8];
+        let mut control = [0xa5; 64];
+        let mut name = [0xa5; 64];
+        let mut iov = libc::iovec {
+            iov_base: if let Some(alias) = case.payload_alias_offset() {
+                // SAFETY: each alias selects eight writable bytes in this header.
+                unsafe { header.add(alias as usize).cast() }
+            } else {
+                payload.as_mut_ptr().cast()
+            },
+            iov_len: 8,
+        };
+        let before = receive_header_bytes(
+            std::ptr::from_mut(&mut iov) as usize as u64,
+            control.as_mut_ptr() as usize as u64,
+            if case.has_name() {
+                name.as_mut_ptr() as usize as u64
+            } else {
+                0
+            },
+            case,
+        );
+        // SAFETY: the complete header is writable during initialization.
+        unsafe { std::ptr::copy_nonoverlapping(before.as_ptr(), header, before.len()) };
+        if let Some(page) = readonly {
+            // SAFETY: the selected page is aligned and belongs to this mapping.
+            assert_eq!(
+                unsafe {
+                    libc::mprotect(
+                        arena.mapping.cast::<u8>().add(page).cast(),
+                        PAGE_SIZE as usize,
+                        libc::PROT_READ,
+                    )
+                },
+                0
+            );
+        }
+        let endpoint = native_vectored_endpoint(VectoredFaultEndpoint::Datagram);
+        let expected_address = if case.named_peer() {
+            bind_receive_header_sender(endpoint.writer.as_raw_fd())
+        } else {
+            Vec::new()
+        };
+        send_receive_header_datagram(endpoint.writer.as_raw_fd(), case);
+        let flags = libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC;
+        // SAFETY: pointers describe the initialized live buffers. Deliberate
+        // readable-only output fields are the kernel copyout oracle, not Rust stores.
+        let raw = unsafe {
+            if batch {
+                libc::syscall(
+                    libc::SYS_recvmmsg,
+                    endpoint.reader.as_raw_fd(),
+                    header,
+                    1u32,
+                    flags,
+                    std::ptr::null::<libc::timespec>(),
+                )
+            } else {
+                libc::syscall(
+                    libc::SYS_recvmsg,
+                    endpoint.reader.as_raw_fd(),
+                    header,
+                    flags,
+                )
+            }
+        };
+        let result = if raw == -1 {
+            negative_errno(std::io::Error::last_os_error().raw_os_error().unwrap())
+        } else {
+            raw as i64
+        };
+        let mut after = [0; 64];
+        // SAFETY: all pages stay readable even in fault cases.
+        unsafe { std::ptr::copy_nonoverlapping(header, after.as_mut_ptr(), after.len()) };
+        let observed = ReceiveHeaderObservation {
+            result,
+            header: after,
+            payload,
+            control,
+            name,
+        };
+        check_receive_header_observation(
+            case,
+            batch,
+            "native",
+            &before,
+            &observed,
+            &expected_address,
+        );
+        assert_receive_header_queue_empty(endpoint.reader.as_raw_fd(), case, "native");
+        result
+    }
+
+    fn mediated_receive_header_case(case: ReceiveHeaderCase, batch: bool) -> i64 {
+        const IOV: u64 = 2 * PAGE_SIZE;
+        const PAYLOAD: u64 = 3 * PAGE_SIZE;
+        const CONTROL: u64 = 4 * PAGE_SIZE;
+        const NAME: u64 = 5 * PAGE_SIZE;
+        const PAIR: u64 = IOV + 128;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, (6 * PAGE_SIZE) as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [libc::AF_UNIX as u64, libc::SOCK_DGRAM as u64, 0, PAIR, 0, 0]
+            ),
+            0
+        );
+        let pair: [libc::c_int; 2] = read_struct(&memory, PAIR);
+        let (offset, readonly) = case.layout(batch);
+        let header = offset as u64;
+        let iov = libc::iovec {
+            iov_base: (if let Some(alias) = case.payload_alias_offset() {
+                header + alias
+            } else {
+                PAYLOAD
+            }) as usize as *mut libc::c_void,
+            iov_len: 8,
+        };
+        assert_eq!(write_struct(&mut memory, IOV, &iov), 0);
+        let before =
+            receive_header_bytes(IOV, CONTROL, if case.has_name() { NAME } else { 0 }, case);
+        memory.write(header, &before).unwrap();
+        memory.write(PAYLOAD, &[0xa5; 8]).unwrap();
+        memory.write(CONTROL, &[0xa5; 64]).unwrap();
+        memory.write(NAME, &[0xa5; 64]).unwrap();
+        memory
+            .map_user_permissions(0, 6 * PAGE_SIZE, true, true)
+            .unwrap();
+        if let Some(page) = readonly {
+            memory
+                .map_user_permissions(page as u64, PAGE_SIZE, true, false)
+                .unwrap();
+        }
+        memory.enable_user_access();
+        if let Some(page) = readonly {
+            assert_eq!(
+                memory
+                    .user()
+                    .user_writable_prefix(page as u64, PAGE_SIZE as usize)
+                    .unwrap(),
+                0,
+                "mediated receive header {case:?}: readonly geometry"
+            );
+        }
+        let files_before = state.files.keys().copied().collect::<Vec<_>>();
+        let expected_address = if case.named_peer() {
+            bind_receive_header_sender(host_fd(&state, pair[0]).unwrap())
+        } else {
+            Vec::new()
+        };
+        send_receive_header_datagram(host_fd(&state, pair[0]).unwrap(), case);
+        let flags = (libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC) as u64;
+        let result = if batch {
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [pair[1] as u64, header, 1, flags, 0, 0],
+            )
+        } else {
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmsg,
+                [pair[1] as u64, header, flags, 0, 0, 0],
+            )
+        };
+        let observed = ReceiveHeaderObservation {
+            result,
+            header: read_guest_bytes::<64>(&memory, header).unwrap(),
+            payload: read_guest_bytes::<8>(&memory, PAYLOAD).unwrap(),
+            control: read_guest_bytes::<64>(&memory, CONTROL).unwrap(),
+            name: read_guest_bytes::<64>(&memory, NAME).unwrap(),
+        };
+        check_receive_header_observation(
+            case,
+            batch,
+            "mediated",
+            &before,
+            &observed,
+            &expected_address,
+        );
+        assert_receive_header_queue_empty(host_fd(&state, pair[1]).unwrap(), case, "mediated");
+        assert_eq!(
+            state.files.keys().copied().collect::<Vec<_>>(),
+            files_before,
+            "mediated receive header {case:?}: no received descriptors"
+        );
+        result
+    }
+
+    fn receive_header_cases(batch: bool) {
+        let mut cases = vec![
+            ReceiveHeaderCase::ReadonlyInput,
+            ReceiveHeaderCase::ReadonlyPadding,
+            ReceiveHeaderCase::FlagsFault,
+            ReceiveHeaderCase::FlagsCrossFault,
+            ReceiveHeaderCase::ControlLengthFaultAfterFlags,
+            ReceiveHeaderCase::PayloadAliasesInput,
+            ReceiveHeaderCase::NamedZeroCapacity,
+            ReceiveHeaderCase::PayloadAliasesNameLength,
+        ];
+        if batch {
+            cases.extend([
+                ReceiveHeaderCase::MessageLengthFault,
+                ReceiveHeaderCase::MessageLengthCrossFault,
+            ]);
+        }
+        for case in cases {
+            let native = native_receive_header_case(case, batch);
+            let mediated = mediated_receive_header_case(case, batch);
+            assert_eq!(
+                mediated, native,
+                "receive header {case:?}: native/mediated return"
+            );
+        }
+    }
+
+    #[test]
+    fn recvmsg_header_copyout_matches_native_fields() {
+        receive_header_cases(false);
+    }
+
+    #[test]
+    fn recvmmsg_header_copyout_matches_native_fields() {
+        receive_header_cases(true);
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct UnusedControlObservation {
         payload: u8,
