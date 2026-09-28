@@ -29,6 +29,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "ci-hub" / "health" / "slot_agent_parity.py"
+CONVERTED_YAML_CONFIG = (
+    ROOT / "ci-hub" / "lib" / "tests" / "fixtures" / "wrkslots-config.converted.yml"
+)
 
 
 def _load_gate_module():
@@ -227,6 +230,63 @@ class SlotAgentParityTests(unittest.TestCase):
         code, fields = run(self.root, "--test-live-agents", "hermit-001")
         self.assertEqual(code, 2)
         self.assertIn("machine shard", fields["summary"])
+
+    def test_a_converted_yaml_configuration_selects_the_same_shard(self) -> None:
+        """`wrkslots config convert --to yaml` rewrites .wrkslots.yml as YAML.
+
+        The gate reached the file through json.loads, so a converted file made
+        every tick refuse with "cannot read" instead of judging the fleet. The
+        fixture is the converter's real output with only the machine renamed,
+        and the case is an actionable one so the verdict proves the registry
+        was actually read.
+        """
+        self.write_registry(
+            {
+                "alive": self.slot("alive", "hermit-001"),
+                "abandoned": self.slot("abandoned", "hermit-999"),
+            }
+        )
+        converted = CONVERTED_YAML_CONFIG.read_text(encoding="utf-8")
+        renamed = converted.replace("machine: devbig014\n", "machine: testhost\n", 1)
+        self.assertNotEqual(renamed, converted)
+        (self.root / ".wrkslots.yml").write_text(renamed, encoding="utf-8")
+        code, fields = run(self.root, "--test-live-agents", "hermit-001")
+        self.assertEqual(code, 1, fields.get("summary"))
+        self.assertEqual(fields["state"], "actionable")
+        self.assertEqual(fields["active_slots_without_live_agent"], "1")
+        self.assertIn("abandoned", fields["summary"])
+
+    def test_a_yaml_value_pyyaml_cannot_construct_refuses_rather_than_crashing(
+        self,
+    ) -> None:
+        """PyYAML raises a plain ValueError for a plain `2026-13-45` (its date
+        pattern matches, then datetime refuses month 13). That escaped the
+        registry reader, and an uncaught exception exits 1 -- this gate's
+        "actionable" verdict -- with a traceback, for a fleet it never read.
+
+        agent-utils bada63e reads the value as a string and accepts the file, so
+        refusing is a known difference, but it must be a refusal (exit 2), not
+        a verdict. The registry holds an orphan, so an accidental read would
+        also exit 1 and could not pass for this refusal.
+        """
+        self.write_registry(
+            {
+                "alive": self.slot("alive", "hermit-001"),
+                "abandoned": self.slot("abandoned", "hermit-999"),
+            }
+        )
+        converted = CONVERTED_YAML_CONFIG.read_text(encoding="utf-8")
+        edited = converted.replace(
+            "machine: devbig014\n", "machine: testhost\n", 1
+        ).replace("  - node_modules\n", "  - node_modules\n  - 2026-13-45\n", 1)
+        self.assertEqual(edited.count("testhost"), 1)
+        self.assertIn("  - 2026-13-45\n", edited)
+        (self.root / ".wrkslots.yml").write_text(edited, encoding="utf-8")
+        code, fields = run(self.root, "--test-live-agents", "hermit-001")
+        self.assertEqual(code, 2, fields.get("summary"))
+        self.assertEqual(fields["state"], "unknown")
+        self.assertIn("cannot read", fields["summary"])
+        self.assertIn("month must be in 1..12", fields["summary"])
 
     # --- the refusals ---------------------------------------------------------
 

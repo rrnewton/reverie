@@ -1,0 +1,52 @@
+# wrkslots project configuration (.wrkslots.yml): where this project's agent and validation
+# slots live and how they are stored and boxed. The format is a strict YAML subset (`wrkslots
+# --userguide`, section "Configuration file"); a file whose first character is { is read as
+# JSON.
+# wrkslots rewrites this file with these comments regenerated (init --repair, sandbox
+# write-defaults, image set-default); hand-written comments are not kept, and the previous bytes
+# are saved to .wrkslots.yml.bak. Regenerate it with `wrkslots config convert --to yaml`.
+
+# Configuration schema version (2). Written by init; do not edit.
+schema: 2
+
+# Machine shard name: state files are ACTIVE.<machine>.json and EVENTS.<machine>. Defaults to
+# the short host name at init; WRKSLOTS_MACHINE or --machine overrides it.
+machine: devbig014
+
+# Where slot directories live, relative to the project root. It says where live state is: never
+# change it while slots exist.
+worktrees_dir: worktrees/slots
+
+# nested (default when absent): <worktrees_dir>/<slot>/<repo>/. flat: each slot directory is its
+# single checkout.
+layout: flat
+
+# Remote whose landed ref decides whether published work is safe; `create --remote` overrides it
+# per checkout.
+default_remote: origin
+
+# Remote-tracking ref that counts as landed; must be under refs/remotes/<default_remote>/.
+default_landed_ref: refs/remotes/origin/main
+
+# Seconds a slot owner's heartbeat stays valid. Removal waits until the owner is proven dead and
+# this time-to-live has expired.
+heartbeat_ttl_seconds: 3600
+
+# Project-relative program run with the agent name. Exit 0: dead, 1: alive, 2: cannot tell.
+liveness_command: ci-hub/health/agent_liveness_probe.py
+
+# Slot-relative globs of regenerable caches that `clean-caches` may delete.
+cache_globs:
+  - node_modules
+  - target
+  - ignored/**/target
+  - ignored/**/target-debug
+  - ignored/**/components-target
+
+# Shell commands run, in order, in every new checkout.
+post_provision_hooks:
+  - git submodule update --init --recursive
+
+# Optional keys not set here (absent keeps their documented meaning): liveness_batch_command,
+# max_active_slots, repo_cache_globs, disk_advisory_bytes, disk_provisioning_floor_bytes,
+# disk_emergency_bytes, slot_representation, image, sandbox.

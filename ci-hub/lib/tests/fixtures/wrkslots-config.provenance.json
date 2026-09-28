@@ -1,0 +1,12 @@
+{
+  "contract": "wrkslots-config.json is the byte-identical tracked /.wrkslots.yml at source_commit; wrkslots-config.converted.yml is what agent-utils converter_commit wrote when run on a scratch copy of it, unedited",
+  "source_commit": "a8f0b83419f7b1c2549a2bff4cb4b3f2f584e03d",
+  "source_path": ".wrkslots.yml",
+  "converter_commit": "bada63e3054798ba22b17ca2b5018ca9f37f7119",
+  "converter_setup": "mkdir -p <scratch copy>/worktrees/slots <scratch copy>/ci-hub/health && touch <scratch copy>/ci-hub/health/agent_liveness_probe.py",
+  "converter_setup_reason": "the converter validates the whole configuration before writing and exits 3 without either: first 'configured worktrees directory is missing or unsafe' for worktrees_dir, then 'configured liveness command is missing, not runnable, or unsafe' for liveness_command (an empty, non-executable file satisfies it)",
+  "converter_command": "PYTHONPATH=<agent-utils>/py python3 -m wrkslots --project-root <scratch copy> config convert --to yaml",
+  "converter_output": "exit 0; rewrote <scratch copy>/.wrkslots.yml as the converted fixture and left the previous bytes, identical to the JSON fixture, in .wrkslots.yml.bak",
+  "json_sha256": "2f233b1fd2a330a7fe046af94ad1269f80b400f01fcd4c9184522a1bfa448581",
+  "converted_yaml_sha256": "9ccb37aeaff817a12bfc264d61de40b7ba74128566773a6dff727a8d9cae0c0c"
+}

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +155,111 @@ def read_registry(
     )
 
 
+def _refuse_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    document: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError(f"duplicate key {key!r}")
+        document[key] = value
+    return document
+
+
+def _load_yaml_refusing_duplicate_keys(path: Path, text: str) -> Any:
+    try:
+        import yaml
+    except ImportError as error:
+        raise RegistrySchemaError(
+            f"cannot read {path}: it is YAML, and PyYAML is not importable by "
+            f"{sys.executable} (install ci-hub/health/requirements.txt): {error}"
+        ) from error
+
+    class Loader(yaml.SafeLoader):
+        def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+            mapping = super().construct_mapping(node, deep=deep)
+            if len(mapping) != len(node.value):
+                seen: set[Any] = set()
+                for key_node, _ in node.value:
+                    key = self.construct_object(key_node, deep=deep)
+                    if key in seen:
+                        raise yaml.constructor.ConstructorError(
+                            "while constructing a mapping",
+                            node.start_mark,
+                            f"found duplicate key {key!r}",
+                            key_node.start_mark,
+                        )
+                    seen.add(key)
+            return mapping
+
+    try:
+        return yaml.load(text, Loader=Loader)
+    except yaml.YAMLError as error:
+        raise RegistrySchemaError(f"cannot read {path}: {error}") from error
+    except Exception as error:
+        # PyYAML builds values with plain Python and lets those errors escape:
+        # a plain `2026-13-45` raises ValueError (the date resolver matches,
+        # then datetime refuses month 13), `!!bool maybe` raises KeyError and
+        # `!!timestamp garbage` raises AttributeError. yaml.load reads nothing
+        # but this text, so any failure inside it means the file cannot be
+        # read as configuration. Letting it escape would turn a caller's
+        # "could not be determined" into a traceback: slot_agent_parity.py
+        # catches only RegistrySchemaError and an uncaught exception exits 1,
+        # its "actionable" verdict. The type name stays in the message so a
+        # loader bug is still recognisable.
+        raise RegistrySchemaError(
+            f"cannot read {path}: a value could not be constructed "
+            f"({type(error).__name__}: {error})"
+        ) from error
+
+
+def read_wrkslots_config(root: Path) -> Any:
+    """Decode ``.wrkslots.yml`` in either of the two forms wrkslots reads.
+
+    The file was historically JSON. ``wrkslots config convert --to yaml``
+    (agent-utils bada63e and later) rewrites it as literate YAML with the same
+    values. wrkslots itself decides by the first non-blank character: ``{`` is
+    JSON, anything else is YAML. This reader makes the same decision, so a
+    converted file keeps meaning what it meant.
+
+    Duplicate keys are refused in both forms. agent-utils bada63e's reader
+    refuses them too (``yamlconfig.loads_json`` for JSON, its YAML subset for
+    YAML). The wrkslots dev-hermit pinned when this was written, agent-utils
+    26dd3eaa (through hermit 10770b2f), reads only JSON and decodes it with a
+    plain ``json.load`` that keeps the last duplicate, so on the JSON path this
+    reader is stricter than that wrkslots. It errs toward refusing: picking one
+    of two ``machine`` values could select a shard wrkslots does not use.
+
+    PyYAML is imported only for the YAML form. It is already a ci-hub dependency
+    (ci-hub/health/requirements.txt), but callers that never meet a YAML file
+    must not start requiring it. PyYAML is not wrkslots' reader. It resolves
+    plain scalars by YAML 1.1 where wrkslots uses 1.2, so a plain ``yes``,
+    ``2026-09-28`` or ``1_000`` is a string to wrkslots and a bool, date or int
+    here; a caller that needs a string must refuse any other type, as
+    ``wrkslots_machine`` does. A plain scalar that matches the YAML 1.1 date
+    pattern but is not a real date (``2026-13-45``) is a string to wrkslots,
+    and bada63e's writer emits such strings unquoted, but PyYAML cannot
+    construct it, so the whole file is refused with "cannot read". The reverse
+    also exists for hand-written files: a plain ``1e5``, ``+.5``, ``0o17`` or
+    ``09`` is a number to wrkslots and a string here (the writer quotes such
+    strings, so a converted file does not contain them). PyYAML also accepts
+    syntax the wrkslots subset refuses (anchors, tags, block scalars, non-JSON
+    escapes), but wrkslots cannot operate on such a file at all. None of these
+    differences changes a value in dev-hermit's own converted file: its JSON
+    and YAML forms decode identically (ci-hub/lib/tests/fixtures/wrkslots-config.*).
+    """
+
+    path = root / RETIRED_PRODUCER_MARKER
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise RegistrySchemaError(f"cannot read {path}: {error}") from error
+    if text.lstrip().startswith("{"):
+        try:
+            return json.loads(text, object_pairs_hook=_refuse_duplicate_keys)
+        except (ValueError, RecursionError) as error:
+            raise RegistrySchemaError(f"cannot read {path}: {error}") from error
+    return _load_yaml_refusing_duplicate_keys(path, text)
+
+
 def wrkslots_machine(root: Path) -> str:
     """Return the configured machine shard without guessing between registries."""
 
@@ -161,10 +267,7 @@ def wrkslots_machine(root: Path) -> str:
     if override:
         return override
     path = root / RETIRED_PRODUCER_MARKER
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise RegistrySchemaError(f"cannot read {path}: {error}") from error
+    document = read_wrkslots_config(root)
     machine = document.get("machine") if isinstance(document, dict) else None
     if not isinstance(machine, str) or not machine:
         raise RegistrySchemaError(f"{path} records no machine shard")

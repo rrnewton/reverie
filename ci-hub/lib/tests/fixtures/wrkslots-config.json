@@ -1,0 +1,20 @@
+{
+  "cache_globs": [
+    "node_modules",
+    "target",
+    "ignored/**/target",
+    "ignored/**/target-debug",
+    "ignored/**/components-target"
+  ],
+  "default_landed_ref": "refs/remotes/origin/main",
+  "default_remote": "origin",
+  "heartbeat_ttl_seconds": 3600,
+  "layout": "flat",
+  "liveness_command": "ci-hub/health/agent_liveness_probe.py",
+  "machine": "devbig014",
+  "post_provision_hooks": [
+    "git submodule update --init --recursive"
+  ],
+  "schema": 2,
+  "worktrees_dir": "worktrees/slots"
+}
