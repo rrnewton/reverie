@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/reverie/contents/reverie-ptrace/src/task.rs?ref=4db9ddb68126ce97ff929c7f30b61a633e48513e"
+  ],
+  "started_utc": "2026-09-17T09:46:57.152477+00:00",
+  "ended_utc": "2026-09-17T09:46:57.623457+00:00",
+  "wall_seconds": 0.47100868890993297,
+  "exit_code": 0,
+  "stdout_bytes": 352152,
+  "stderr_bytes": 0,
+  "stdout_sha256": "578a1191cd62d94f714ecc167df83697c957e249f6ae1d78077e45437d8099b8"
+}

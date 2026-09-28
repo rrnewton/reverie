@@ -1,0 +1,6 @@
+{
+  "phase": "preparation only, before plan/caller or execution",
+  "error": "FileNotFoundError: prior full-library terminal record is TERMINAL-READBACK.json, not TERMINAL.json",
+  "source_change": false,
+  "test_execution": false
+}

@@ -1,0 +1,14 @@
+Pin read from checkout HEAD aa7ea4827b8328345e715d76518d7f2205e41110.
+Scope: 21 tracked Cargo metadata file(s) PLUS tracked submodule gitlinks; 5 git dependency/ies pinned. Untracked, generated and vendored copies are EXCLUDED by design.
+  OK    https://github.com/facebookexperimental/rust-shed  4 entries @ 84a82026bc1d
+  FLOAT https://github.com/facebookexperimental/rust-shed  tracked by branch=main -- KNOWN EXCEPTION: branch=main since before 2026-08-24; the manifests are autocargo-generated from Meta's internal Buck targets, so pinning it is an owner decision rather than a hand edit. Only the lockfile records what was built (84a82026 at time of writing). Filed separately.
+  OK    https://github.com/rr-debugger/rr  1 entry @ 39e5c18e7e43
+  OK    https://github.com/rrnewton/agent-utils  1 entry @ 2781b1054efc
+  OK    https://github.com/rrnewton/liteinst2  2 entries @ 95ee5e6917fa
+  OK    https://github.com/rrnewton/reverie  46 entries @ 596b9adee847
+check-git-pin-uniformity.rs: OK -- every REVISION-PINNED git dependency is pinned at exactly one revision
+  ⚠️ 1 dependency/ies are NOT PINNED AT ALL and were excluded from that statement, by approved exception: https://github.com/facebookexperimental/rust-shed
+  A BRANCH IS NOT A PIN -- it moves under you. Uniformity cannot be asserted over a dependency that names one.
+run-with-reverie-dbt-budget.sh: reverie-dbt-budget={pin:596b9adee8473dc0a7e62dce18580eead3d0c5c9,source:inherited-launch-cargo-build-jobs,raw-build-jobs:2,effective-cpus-source:child-nproc,effective-cpus:316,reverie-max-jobs:16,effective-native-jobs:2,effective-job-seconds:1050,max-elapsed-seconds:525,basis:github-portable-cold-miss-n3-affinity4,carried-to-pin-on-dynamorio-recipe-key:0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4}
+   Compiling hermit v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/hermit-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.03s

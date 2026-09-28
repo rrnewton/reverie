@@ -1,0 +1,82 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01H67V8YzDYLvpKsrfnL7fAg",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/fd.rs",
+    "offset": 315,
+    "limit": 70
+  }
+}
+
+Successful public tool result (exact text below):
+315	    /// the physical (scheduler) nonblocking state untouched. This lets a guest
+316	    /// clear O_NONBLOCK while Detcore keeps the fd physically nonblocking, which
+317	    /// the scheduler relies on for nonblockize-and-retry.
+318	    pub fn set_logical_nonblocking(&self, enabled: bool) {
+319	        let mut description = self.description();
+320	        if enabled {
+321	            description.status_flags |= OFlag::O_NONBLOCK.bits();
+322	        } else {
+323	            description.status_flags &= !OFlag::O_NONBLOCK.bits();
+324	        }
+325	    }
+326	
+327	    /// Stable identity shared by dup and fork aliases.
+328	    pub fn open_file_id(&self) -> OpenFileId {
+329	        self.description().id
+330	    }
+331	
+332	    /// Number of modeled descriptor slots that retain this open file description.
+333	    pub(crate) fn open_file_alias_count(&self) -> usize {
+334	        Arc::strong_count(&self.open_file)
+335	    }
+336	
+337	    /// File type attached to the open file description.
+338	    pub fn ty(&self) -> FdType {
+339	        self.description().ty
+340	    }
+341	
+342	    /// Record the process identity carried by a newly created pidfd.
+343	    pub(crate) fn set_pidfd_target(&self, target: DetPid) {
+344	        let mut description = self.description();
+345	        debug_assert_eq!(description.ty, FdType::Pidfd);
+346	        description.pidfd_target = Some(target);
+347	    }
+348	
+349	    /// Return the process identity carried by this pidfd, when known.
+350	    pub(crate) fn pidfd_target(&self) -> Option<DetPid> {
+351	        self.description().pidfd_target
+352	    }
+353	
+354	    /// Resource attached to the open file description.
+355	    pub fn resource(&self) -> Option<ResourceID> {
+356	        self.description().resource.clone()
+357	    }
+358	
+359	    // AUTONOMOUS-BOT-IMPLEMENTED
+360	    // TODO-HUMAN-REVIEW(PR-1096): Review canonical random-device cursor sharing.
+361	    /// Return the cursor shared by aliases of this random-device open file.
+362	    pub(crate) fn random_device_offset(&self) -> u64 {
+363	        self.description().random_device_offset
+364	    }
+365	
+366	    // AUTONOMOUS-BOT-IMPLEMENTED
+367	    // TODO-HUMAN-REVIEW(PR-1096): Review canonical random-device cursor sharing.
+368	    /// Advance the cursor shared by aliases of this random-device open file.
+369	    pub(crate) fn advance_random_device_offset(&self, count: usize) {
+370	        let mut description = self.description();
+371	        description.random_device_offset = description
+372	            .random_device_offset
+373	            .saturating_add(count as u64);
+374	    }
+375	
+376	    /// Path used to open this file description, when it was observable.
+377	    pub(crate) fn path(&self) -> Option<PathBuf> {
+378	        self.description().path.clone()
+379	    }
+380	
+381	    /// Record the resolved path used to open this file description.
+382	    pub(crate) fn set_path<P: AsRef<Path>>(&self, path: P) {
+383	        self.description().path = Some(path.as_ref().to_path_buf());
+384	    }

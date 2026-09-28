@@ -1,0 +1,600 @@
+{
+  "observation": "Time-bounded read-only queue snapshot; no TaskGraph authority query or acquisition",
+  "delta": {
+    "hermit": {
+      "old_count": 17,
+      "current_count": 19,
+      "added": [
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3077",
+          "number": 3077,
+          "state": "open",
+          "draft": false,
+          "title": "Retry the hermetic fetch so one network blip cannot discard a 270-node run",
+          "head": "552c68b8f763e4fc431928b44e637b61d5d5d83a",
+          "head_ref": "review-3069/bounded-fetch-retry",
+          "base_ref": "main",
+          "base_sha_returned": "6945e62a7f43610ac4c4559ceaae80110ad81794",
+          "updated_at": "2026-09-17T19:24:34Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3073",
+          "number": 3073,
+          "state": "open",
+          "draft": false,
+          "title": "Make a refused count say whether the tests it ran actually passed",
+          "head": "62cb9321b8c95cf184904d98cf03677fcbe8f2fb",
+          "head_ref": "assertions-3/count-refusal-says-what-ran",
+          "base_ref": "main",
+          "base_sha_returned": "f7e1d3ddecd57168245e60e232146acba5b1d677",
+          "updated_at": "2026-09-17T16:21:01Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3070",
+          "number": 3070,
+          "state": "open",
+          "draft": false,
+          "title": "Carry a scorecard write-back refusal's own words into the durable record",
+          "head": "cb7077228cb3308a1e2594d43add36100bab2232",
+          "head_ref": "review-3066/scorecard-refusal-carries-its-cause",
+          "base_ref": "main",
+          "base_sha_returned": "6bd63ef1740a7680adfd0a6b4585942ec06aa2b8",
+          "updated_at": "2026-09-17T16:00:39Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3069",
+          "number": 3069,
+          "state": "open",
+          "draft": false,
+          "title": "Bind a compared cell verdict to the exact attempt it was computed from",
+          "head": "9cec06dcc9d8acf4828b72f73d9bb1abd1f01ddc",
+          "head_ref": "review-3066/bind-cell-verdict-to-its-attempt",
+          "base_ref": "main",
+          "base_sha_returned": "6bd63ef1740a7680adfd0a6b4585942ec06aa2b8",
+          "updated_at": "2026-09-17T14:59:51Z",
+          "author": "rrnewton"
+        }
+      ],
+      "removed": [
+        {
+          "baseRefName": "main",
+          "headRefName": "recon-2/dbt-failure-diagnostics",
+          "headRefOid": "612d06ab9d047ef0583e5e91d44a3a5e84d3c0f8",
+          "isDraft": false,
+          "labels": [],
+          "number": 3058,
+          "title": "Show the guest's stderr when a backend launch fails its status assertion",
+          "updatedAt": "2026-09-17T10:09:50Z",
+          "url": "https://github.com/rrnewton/hermit/pull/3058"
+        },
+        {
+          "baseRefName": "main",
+          "headRefName": "dev-hermit/sabre-random-bootstrap-pin-20260917",
+          "headRefOid": "0ad33fe44e8354b882ed0e351d59e99bb96e6779",
+          "isDraft": true,
+          "labels": [
+            {
+              "id": "LA_kwDOIZiOrM8AAAACs6DTqA",
+              "name": "post-facto-human-review",
+              "description": "Landed under post-facto protocol; needs human review",
+              "color": "FFA500"
+            },
+            {
+              "id": "LA_kwDOIZiOrM8AAAACuEpO4w",
+              "name": "adversarial-review-codex1",
+              "description": "Codex adversarial review round 1 completed",
+              "color": "5319e7"
+            },
+            {
+              "id": "LA_kwDOIZiOrM8AAAACuEpO-g",
+              "name": "adversarial-review-claude1",
+              "description": "Adversarial review pass, claude lane (round 1)",
+              "color": "1D76DB"
+            },
+            {
+              "id": "LA_kwDOIZiOrM8AAAACuG_rFw",
+              "name": "passed-review-claude",
+              "description": "Claude adversarial review PASSED at current PR head",
+              "color": "0E8A16"
+            },
+            {
+              "id": "LA_kwDOIZiOrM8AAAACuHwd_w",
+              "name": "passed-review-codex",
+              "description": "Codex adversarial review PASSED at current PR head",
+              "color": "0E8A16"
+            }
+          ],
+          "number": 3054,
+          "title": "Preserve Detcore random state through SaBRe bootstrap",
+          "updatedAt": "2026-09-17T13:25:00Z",
+          "url": "https://github.com/rrnewton/hermit/pull/3054"
+        }
+      ],
+      "surviving_metadata_changes": [],
+      "all_open": [
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3077",
+          "number": 3077,
+          "state": "open",
+          "draft": false,
+          "title": "Retry the hermetic fetch so one network blip cannot discard a 270-node run",
+          "head": "552c68b8f763e4fc431928b44e637b61d5d5d83a",
+          "head_ref": "review-3069/bounded-fetch-retry",
+          "base_ref": "main",
+          "base_sha_returned": "6945e62a7f43610ac4c4559ceaae80110ad81794",
+          "updated_at": "2026-09-17T19:24:34Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3073",
+          "number": 3073,
+          "state": "open",
+          "draft": false,
+          "title": "Make a refused count say whether the tests it ran actually passed",
+          "head": "62cb9321b8c95cf184904d98cf03677fcbe8f2fb",
+          "head_ref": "assertions-3/count-refusal-says-what-ran",
+          "base_ref": "main",
+          "base_sha_returned": "f7e1d3ddecd57168245e60e232146acba5b1d677",
+          "updated_at": "2026-09-17T16:21:01Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3070",
+          "number": 3070,
+          "state": "open",
+          "draft": false,
+          "title": "Carry a scorecard write-back refusal's own words into the durable record",
+          "head": "cb7077228cb3308a1e2594d43add36100bab2232",
+          "head_ref": "review-3066/scorecard-refusal-carries-its-cause",
+          "base_ref": "main",
+          "base_sha_returned": "6bd63ef1740a7680adfd0a6b4585942ec06aa2b8",
+          "updated_at": "2026-09-17T16:00:39Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3069",
+          "number": 3069,
+          "state": "open",
+          "draft": false,
+          "title": "Bind a compared cell verdict to the exact attempt it was computed from",
+          "head": "9cec06dcc9d8acf4828b72f73d9bb1abd1f01ddc",
+          "head_ref": "review-3066/bind-cell-verdict-to-its-attempt",
+          "base_ref": "main",
+          "base_sha_returned": "6bd63ef1740a7680adfd0a6b4585942ec06aa2b8",
+          "updated_at": "2026-09-17T14:59:51Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3066",
+          "number": 3066,
+          "state": "open",
+          "draft": false,
+          "title": "Report a node whose required results were never written as undetermined",
+          "head": "b27530786ae57fb9cc43d9d49563ce8f02e64013",
+          "head_ref": "assertions-3/unwritten-report-is-undetermined",
+          "base_ref": "main",
+          "base_sha_returned": "7e317c09ff410fa1bd70506f336920e3992c6d7d",
+          "updated_at": "2026-09-17T15:33:06Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3030",
+          "number": 3030,
+          "state": "open",
+          "draft": true,
+          "title": "Run default compatibility checks in the pinned image",
+          "head": "934032fab5bcdde908bccdee6fd99effc6f15c35",
+          "head_ref": "dev-hermit/hermetic-v3-ready-20260916",
+          "base_ref": "main",
+          "base_sha_returned": "d0b1468b0964a16052bd32d90b9990aa0c9ace7a",
+          "updated_at": "2026-09-16T14:29:39Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3010",
+          "number": 3010,
+          "state": "open",
+          "draft": false,
+          "title": "Repair full-validation graph prerequisites",
+          "head": "1f26de2c6a8291076a87019c31fbb1037386282b",
+          "head_ref": "validation-prereq-series-rows-20260914",
+          "base_ref": "main",
+          "base_sha_returned": "0ac76b5e2fc0ec0711a88f78231d6fe1d67858da",
+          "updated_at": "2026-09-14T07:55:49Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/3009",
+          "number": 3009,
+          "state": "open",
+          "draft": false,
+          "title": "Preserve native diversity evidence",
+          "head": "e26c832e98e23eff3044c874467c0a991827c20f",
+          "head_ref": "preserve-native-attempt-observation-20260914",
+          "base_ref": "main",
+          "base_sha_returned": "0ac76b5e2fc0ec0711a88f78231d6fe1d67858da",
+          "updated_at": "2026-09-15T21:05:29Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2969",
+          "number": 2969,
+          "state": "open",
+          "draft": true,
+          "title": "Use harness-managed run evidence for verification",
+          "head": "e7af5cd8e5a80a0b74be5f44f26b33d4798c2697",
+          "head_ref": "feature/harness-managed-run-evidence-v1",
+          "base_ref": "main",
+          "base_sha_returned": "3111e75531c175e00dea7f6e1758bd9791019b82",
+          "updated_at": "2026-09-13T10:54:17Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2958",
+          "number": 2958,
+          "state": "open",
+          "draft": true,
+          "title": "Prepare harness-managed verify evidence",
+          "head": "f18b76cc464a3f8f7704f2d7abdbf53baff157e0",
+          "head_ref": "feature/verify-two-harness-managed-runs-v2",
+          "base_ref": "main",
+          "base_sha_returned": "500dded1b2c614694ba97bdafe2d196c8ed63eb4",
+          "updated_at": "2026-09-05T10:26:46Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2922",
+          "number": 2922,
+          "state": "open",
+          "draft": false,
+          "title": "Retain exact validation test results",
+          "head": "cefe94340d721d537f7afc9398eaa5a2285740a4",
+          "head_ref": "fix/retain-exact-per-test-receipt",
+          "base_ref": "main",
+          "base_sha_returned": "54ea4e3935a86cbb0257fcbe2debf4ba620e5035",
+          "updated_at": "2026-09-16T01:35:31Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2907",
+          "number": 2907,
+          "state": "open",
+          "draft": false,
+          "title": "demos: derive Demo 8's crash seed, and make a stale one say so",
+          "head": "68605f886745a060e0a2a8e24ab933815acc2d22",
+          "head_ref": "demo-08-derive-crash-seed",
+          "base_ref": "move-demos-directory-into-hermit",
+          "base_sha_returned": "1eef513dc8a9d97d910206fe3f72bfb28a67ea62",
+          "updated_at": "2026-09-16T02:00:10Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2904",
+          "number": 2904,
+          "state": "open",
+          "draft": false,
+          "title": "demos: move the unified suite into Hermit",
+          "head": "33a8f546deac001a2ae41f1a1706a0c9f9fc9b85",
+          "head_ref": "move-demos-directory-into-hermit",
+          "base_ref": "main",
+          "base_sha_returned": "6f2a46ffbf0854f99b10109f34b653ef86594cac",
+          "updated_at": "2026-09-16T23:57:11Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2836",
+          "number": 2836,
+          "state": "open",
+          "draft": false,
+          "title": "Apply SaBRe physical-exit reports during scheduler maintenance",
+          "head": "1948e95fe14cc95687e886704420a9922a1fe1cb",
+          "head_ref": "degraded-ci-hub/sabre-shutdown-order",
+          "base_ref": "main",
+          "base_sha_returned": "eec5e18affd17229f86b3943520ee2b9821a377d",
+          "updated_at": "2026-09-15T23:35:04Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2747",
+          "number": 2747,
+          "state": "open",
+          "draft": false,
+          "title": "Wait for physical thread exit before waking pthread joiners",
+          "head": "b3901a992c99b99a79e53adc877c8d4324b1e92e",
+          "head_ref": "hermit-125/pthread-exit-join",
+          "base_ref": "main",
+          "base_sha_returned": "bae4a34fec5bfe45dd8cad00adcd5b6ddb04abcc",
+          "updated_at": "2026-09-16T01:08:58Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2694",
+          "number": 2694,
+          "state": "open",
+          "draft": false,
+          "title": "Preserve inherited stdio flags and append writes across run and replay",
+          "head": "46670790208e71be0b1aa0e249297c0f4b38663a",
+          "head_ref": "fix/kvm-verify-stderr-oappend-leak",
+          "base_ref": "main",
+          "base_sha_returned": "24e15d63b2e356b878318faa968691ef3d5eb707",
+          "updated_at": "2026-09-16T01:47:32Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2368",
+          "number": 2368,
+          "state": "open",
+          "draft": true,
+          "title": "Revive the reproducible OSS Buck2 build",
+          "head": "26276e2b266e944bc02ff775b4ceb5cb0956019e",
+          "head_ref": "revive/buck2-oss-901",
+          "base_ref": "main",
+          "base_sha_returned": "d252f99acb2d790cc2f6ad2a2ed8c1c85d9ef7f7",
+          "updated_at": "2026-08-25T20:21:21Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/2302",
+          "number": 2302,
+          "state": "open",
+          "draft": true,
+          "title": "Land M2 canonical verification and fix remaining measured reds",
+          "head": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+          "head_ref": "codex/m2-sanity-driver",
+          "base_ref": "main",
+          "base_sha_returned": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+          "updated_at": "2026-09-13T11:20:36Z",
+          "author": "rrnewton"
+        },
+        {
+          "url": "https://github.com/rrnewton/hermit/pull/1689",
+          "number": 1689,
+          "state": "open",
+          "draft": true,
+          "title": "Honor DBT host log files across fork and exec",
+          "head": "96eeb0d603875e595f36d6ce97fc77a998ea53a2",
+          "head_ref": "dbi-honour-log-file",
+          "base_ref": "main",
+          "base_sha_returned": "1a679bf948dabc7a4b4233c921254d70d839e477",
+          "updated_at": "2026-09-16T02:00:09Z",
+          "author": "rrnewton"
+        }
+      ]
+    },
+    "reverie": {
+      "old_count": 1,
+      "current_count": 1,
+      "added": [],
+      "removed": [],
+      "surviving_metadata_changes": [],
+      "all_open": [
+        {
+          "url": "https://github.com/rrnewton/reverie/pull/467",
+          "number": 467,
+          "state": "open",
+          "draft": true,
+          "title": "Admit DBT threads before executing guest instructions",
+          "head": "51272804a0073c60d3dc73dbd396ba664f934bf9",
+          "head_ref": "salvage/scorecard-dirty-20260822",
+          "base_ref": "main",
+          "base_sha_returned": "0771253923fac12de6b1e1352227318548165c70",
+          "updated_at": "2026-09-14T20:42:58Z",
+          "author": "rrnewton"
+        }
+      ]
+    }
+  },
+  "new_candidate_scope": [
+    {
+      "metadata": {
+        "url": "https://github.com/rrnewton/hermit/pull/3077",
+        "number": 3077,
+        "state": "open",
+        "draft": false,
+        "title": "Retry the hermetic fetch so one network blip cannot discard a 270-node run",
+        "head": "552c68b8f763e4fc431928b44e637b61d5d5d83a",
+        "head_ref": "review-3069/bounded-fetch-retry",
+        "base_ref": "main",
+        "base_sha_returned": "6945e62a7f43610ac4c4559ceaae80110ad81794",
+        "updated_at": "2026-09-17T19:24:34Z",
+        "author": "rrnewton"
+      },
+      "changed_files": [
+        {
+          "filename": "Makefile",
+          "status": "modified",
+          "sha": "5ca7bd489b1627a65cdd5aa75d45dad55670c56a",
+          "additions": 1,
+          "deletions": 0
+        },
+        {
+          "filename": "ci/hermetic/retry-fetch.sh",
+          "status": "added",
+          "sha": "9a899fc28e12da1016996eaf401cb78bdc609c15",
+          "additions": 78,
+          "deletions": 0
+        },
+        {
+          "filename": "ci/hermetic/run-split-validate.sh",
+          "status": "modified",
+          "sha": "9aed63ded955a56665d5d5edf73233bbd4b36f20",
+          "additions": 14,
+          "deletions": 3
+        },
+        {
+          "filename": "ci/hermetic/tests/test-retry-fetch.sh",
+          "status": "added",
+          "sha": "6ce5ca252c2675326770928ac12ed7a98eb88bde",
+          "additions": 94,
+          "deletions": 0
+        }
+      ],
+      "scope": "Shared hermetic-fetch retry helper, three fetch call sites and its lint-runner self-test; no KVM runtime implementation path.",
+      "body_sha256": "2e98605d93d9484656a3758ef87478972564111cdb37d7f847598ed0de945323",
+      "disposition": "Existing shared validation work; retain root coordination. Scope classification only, no ownership acquisition or source/landing verdict."
+    },
+    {
+      "metadata": {
+        "url": "https://github.com/rrnewton/hermit/pull/3073",
+        "number": 3073,
+        "state": "open",
+        "draft": false,
+        "title": "Make a refused count say whether the tests it ran actually passed",
+        "head": "62cb9321b8c95cf184904d98cf03677fcbe8f2fb",
+        "head_ref": "assertions-3/count-refusal-says-what-ran",
+        "base_ref": "main",
+        "base_sha_returned": "f7e1d3ddecd57168245e60e232146acba5b1d677",
+        "updated_at": "2026-09-17T16:21:01Z",
+        "author": "rrnewton"
+      },
+      "changed_files": [
+        {
+          "filename": "ci/nextest-test-results.rs",
+          "status": "modified",
+          "sha": "c6400a5540b11dedc043ebdd4edbb23a6b5b52fa",
+          "additions": 10,
+          "deletions": 1
+        },
+        {
+          "filename": "ci/run-nextest-counted.sh",
+          "status": "modified",
+          "sha": "02f4fafecb74f760307df3d8dcfbea61513f6f1b",
+          "additions": 5,
+          "deletions": 0
+        }
+      ],
+      "scope": "Shared nextest executed-count refusal diagnostics and its self-test; no KVM runtime implementation path.",
+      "body_sha256": "b0f634ee3dc375736eb1ba9f1e3be576fdb7366836f48b22bfdd147fd92f8116",
+      "disposition": "Existing shared validation work; retain root coordination. Scope classification only, no ownership acquisition or source/landing verdict."
+    },
+    {
+      "metadata": {
+        "url": "https://github.com/rrnewton/hermit/pull/3070",
+        "number": 3070,
+        "state": "open",
+        "draft": false,
+        "title": "Carry a scorecard write-back refusal's own words into the durable record",
+        "head": "cb7077228cb3308a1e2594d43add36100bab2232",
+        "head_ref": "review-3066/scorecard-refusal-carries-its-cause",
+        "base_ref": "main",
+        "base_sha_returned": "6bd63ef1740a7680adfd0a6b4585942ec06aa2b8",
+        "updated_at": "2026-09-17T16:00:39Z",
+        "author": "rrnewton"
+      },
+      "changed_files": [
+        {
+          "filename": "scripts/validate.rs",
+          "status": "modified",
+          "sha": "72a2e65e5b0bcf73ea81afbe32e8397b8f3ca121",
+          "additions": 201,
+          "deletions": 5
+        }
+      ],
+      "scope": "Shared validate scorecard write-back refusal detail and controls; the body cites a KVM parity-history refusal, so this remains KVM-adjacent evidence work.",
+      "body_sha256": "38ca099d176e82a8bce3bb972823987dc99681d844b552d9e3c876959addf7f4",
+      "disposition": "Existing shared validation work; retain root coordination. Scope classification only, no ownership acquisition or source/landing verdict."
+    },
+    {
+      "metadata": {
+        "url": "https://github.com/rrnewton/hermit/pull/3069",
+        "number": 3069,
+        "state": "open",
+        "draft": false,
+        "title": "Bind a compared cell verdict to the exact attempt it was computed from",
+        "head": "9cec06dcc9d8acf4828b72f73d9bb1abd1f01ddc",
+        "head_ref": "review-3066/bind-cell-verdict-to-its-attempt",
+        "base_ref": "main",
+        "base_sha_returned": "6bd63ef1740a7680adfd0a6b4585942ec06aa2b8",
+        "updated_at": "2026-09-17T14:59:51Z",
+        "author": "rrnewton"
+      },
+      "changed_files": [
+        {
+          "filename": "ci/manifest-plan/src/ledger.rs",
+          "status": "modified",
+          "sha": "f1270da2d8d5609d94ec8f521ab45f2d98a67f63",
+          "additions": 467,
+          "deletions": 0
+        },
+        {
+          "filename": "ci/manifest-plan/src/ledger/schema10.rs",
+          "status": "modified",
+          "sha": "3e3c600c67263cf32ab5fb24729f5c48c4c676e3",
+          "additions": 170,
+          "deletions": 6
+        },
+        {
+          "filename": "ci/manifest-plan/src/ledger/schema10/tests.rs",
+          "status": "modified",
+          "sha": "9530e2b75226c1e8d33af79b9a19654495cbb317",
+          "additions": 134,
+          "deletions": 1
+        },
+        {
+          "filename": "scripts/lib/validate_cell_results.rs",
+          "status": "modified",
+          "sha": "c003af0d05cf97c6c41ae8294e0b569ec33872c5",
+          "additions": 65,
+          "deletions": 7
+        }
+      ],
+      "scope": "Shared cell-verdict/attempt identity in ledger schema 10 and validate producer; directly relevant to KVM scorecard provenance, separate from backend runtime.",
+      "body_sha256": "aee7cfdb228f3599d8fabda821e5132bfe6dabed4477800c6def24cd229bd404",
+      "disposition": "Existing shared validation work; retain root coordination. Scope classification only, no ownership acquisition or source/landing verdict."
+    }
+  ],
+  "verified_merged": [
+    {
+      "url": "https://github.com/rrnewton/hermit/pull/3054",
+      "number": 3054,
+      "state": "closed",
+      "draft": false,
+      "title": "Preserve guest randomness across SaBRe startup",
+      "head": "c0ca7a0666245ce0d71e8e9ca6ba338f2fa22452",
+      "head_ref": "dev-hermit/sabre-random-bootstrap-pin-20260917",
+      "base_ref": "main",
+      "base_sha_returned": "421e08cefb8a6dd84ffc0fcf4a7bcbf5f64803bd",
+      "updated_at": "2026-09-17T14:53:01Z",
+      "author": "rrnewton",
+      "merged": true,
+      "merged_at": "2026-09-17T14:37:28Z",
+      "merge_commit_sha": "6bd63ef1740a7680adfd0a6b4585942ec06aa2b8"
+    },
+    {
+      "url": "https://github.com/rrnewton/hermit/pull/3058",
+      "number": 3058,
+      "state": "closed",
+      "draft": false,
+      "title": "Show captured output when backend dispatch assertions fail",
+      "head": "ae27d95054e7a77bb6a9fea918fca90e812e3deb",
+      "head_ref": "recon-2/dbt-failure-diagnostics",
+      "base_ref": "main",
+      "base_sha_returned": "dc3a873b22bfb0a7c3b9577b91c1d4c9e364a37e",
+      "updated_at": "2026-09-17T14:14:04Z",
+      "author": "rrnewton",
+      "merged": true,
+      "merged_at": "2026-09-17T14:14:00Z",
+      "merge_commit_sha": "421e08cefb8a6dd84ffc0fcf4a7bcbf5f64803bd"
+    },
+    {
+      "url": "https://github.com/rrnewton/reverie/pull/578",
+      "number": 578,
+      "state": "closed",
+      "draft": false,
+      "title": "Preserve the original error after fatal child cancellation",
+      "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+      "head_ref": "codex/kvm-fatal-cleanup-20260917",
+      "base_ref": "main",
+      "base_sha_returned": "c8f4ca9d2e95460e027678ff23f6dec2529d255d",
+      "updated_at": "2026-09-17T18:48:15Z",
+      "author": "rrnewton",
+      "merged": true,
+      "merged_at": "2026-09-17T18:48:15Z",
+      "merge_commit_sha": "7d863ab3f02639731713a01467b2548c41e3dbfb"
+    }
+  ],
+  "no_own_open_reverie_pr": "Complete open list contains only the unchanged previously established foreign draft 467, not an inference from GitHub author/labels."
+}

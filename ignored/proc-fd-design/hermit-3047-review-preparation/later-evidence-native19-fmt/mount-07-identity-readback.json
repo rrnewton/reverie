@@ -1,0 +1,38 @@
+{
+  "name": "mount-07-identity",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2446241-1789626185744283110.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 0.16679,
+  "wall_seconds": 0.6016453239135444,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "d84b8f3bfd44e82872d15766badb81281787be5859885e8b6443b43cbac2d479",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "tool_global::tests::configured_mountinfo_order_refuses_new_namespace_ids",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 678
+    }
+  ]
+}

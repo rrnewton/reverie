@@ -1,0 +1,18 @@
+[
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "ci/dag/validate.json",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/runner-inputs/ci/dag/validate.json",
+    "bytes": 2858049,
+    "sha256": "c776274a95d165d40cce5212a4331240d55b6e90061962430f449b11ea010983"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "ci/manifest-plan/src/validation_dag_static.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/runner-inputs/ci/manifest-plan/src/validation_dag_static.rs",
+    "bytes": 349470,
+    "sha256": "29b449fa36f7eee28a8d264465c8bd8f86b4b4bd1777b46d5d7a179036945d7c"
+  }
+]

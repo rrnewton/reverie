@@ -1,0 +1,38 @@
+{
+  "name": "mount-14-identity",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2484433-1789626205174717875.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 0.206568,
+  "wall_seconds": 0.6067275460809469,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "d44c12cd1bf5075fc3fd1e812064538d959759dea6872a98f9a7b712bb3007f3",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "procfs::tests::fdinfo_mount_id_parser_refuses_missing_duplicate_or_malformed_ids",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 678
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/git-push-verified",
+    "origin",
+    "696f0476aa46cf29e31b947a89379d80b4542ce3:refs/heads/codex/kvm-proc-fd-identity-20260917"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 4.59334734803997,
+  "normal_push": true,
+  "force": false
+}

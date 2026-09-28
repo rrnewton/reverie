@@ -1,0 +1,1311 @@
+[
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/validate_b81ceab65609123303f94190",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/validate_b81ceab65609123303f94190",
+      "bytes": 7476408,
+      "mode": 493,
+      "sha256": "cf909a2c90ddbc060cf423c58ceda7db2b1320fef02a33c64546f2bf2186a1cb",
+      "device": 49,
+      "inode": 397411657,
+      "mtime_ns": 1789673637237888495,
+      "roles": [
+        "generated rust-script executable available for reuse"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/00/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8",
+      "bytes": 405568,
+      "mode": 493,
+      "sha256": "cbab828a392202f41872f655f867dfa30e87d5b152e734af6df87aaa74e6cfb4",
+      "device": 49,
+      "inode": 397354577,
+      "mtime_ns": 1789673133379422241,
+      "roles": [
+        "generated rust-script executable available for reuse"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/01/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build-script-build",
+      "bytes": 440976,
+      "mode": 493,
+      "sha256": "fa642215fad0d73594ef99696dd4a8e6873e2f478d05ddadc4408d6a0f96441f",
+      "device": 49,
+      "inode": 397391231,
+      "mtime_ns": 1789673535135795390,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/02/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build-script-build",
+      "bytes": 443720,
+      "mode": 493,
+      "sha256": "c49d9a7ee14845a47cf8814e59ff19156d204b23451b24e27fb0e42d228f940c",
+      "device": 49,
+      "inode": 397390234,
+      "mtime_ns": 1789673527362788038,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/03/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build-script-build",
+      "bytes": 354864,
+      "mode": 493,
+      "sha256": "a6545bfc72f67b7352ea8d4ab39c8ba8dc578713270e0650f53ea6111e51210d",
+      "device": 49,
+      "inode": 397393541,
+      "mtime_ns": 1789673546157805816,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/04/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build-script-build",
+      "bytes": 454968,
+      "mode": 493,
+      "sha256": "5821faf967b37db37831c823fb476a54a368e8cbb6ecac7c31865fd8fc2e823f",
+      "device": 49,
+      "inode": 397389818,
+      "mtime_ns": 1789673525679786446,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/05/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build-script-build",
+      "bytes": 520096,
+      "mode": 493,
+      "sha256": "a656e9910d6690095b089b22418467536f3f4d038acb22d5107950f7e3847123",
+      "device": 49,
+      "inode": 397390507,
+      "mtime_ns": 1789673530131790657,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/06/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build-script-build",
+      "bytes": 423864,
+      "mode": 493,
+      "sha256": "71b5dbc3f7150444e869d4fdfb24c0528dd7eb18f0cf738e542f2709eaede475",
+      "device": 49,
+      "inode": 397390664,
+      "mtime_ns": 1789673531468791922,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/07/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build-script-build",
+      "bytes": 520336,
+      "mode": 493,
+      "sha256": "4d81684c5f38df4f1067f7cffaecd2639957a3e653c71519eb2dbf1dabe34973",
+      "device": 49,
+      "inode": 397390776,
+      "mtime_ns": 1789673532112792531,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/08/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build-script-build",
+      "bytes": 406928,
+      "mode": 493,
+      "sha256": "b920d69c8ab74a899d7e69c871bb6d5fbae867e470c72b8be68b33a9f79a177f",
+      "device": 49,
+      "inode": 397390804,
+      "mtime_ns": 1789673532170792586,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/09/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build-script-build",
+      "bytes": 443920,
+      "mode": 493,
+      "sha256": "062be535c789af66a53d6a2b6646617d88f045882bd63907e793b3559be42eb2",
+      "device": 49,
+      "inode": 397389535,
+      "mtime_ns": 1789673523708784581,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/10/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build-script-build",
+      "bytes": 406656,
+      "mode": 493,
+      "sha256": "1f912142b6cfda0162e0453bada005d0a0abd495b31e8084724a4fe5faf537ad",
+      "device": 49,
+      "inode": 397389521,
+      "mtime_ns": 1789673523685784560,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/11/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build-script-build",
+      "bytes": 355512,
+      "mode": 493,
+      "sha256": "35fa2bed54efc3ea3344e8acd1c75109cf180ae5b126035d22976038e277af87",
+      "device": 49,
+      "inode": 397390814,
+      "mtime_ns": 1789673532179792594,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/12/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build-script-build",
+      "bytes": 445488,
+      "mode": 493,
+      "sha256": "b02e2e03c194dabfbb01223cb27828d668a3947a255ceac4c0f7c9f19953bba0",
+      "device": 49,
+      "inode": 397390161,
+      "mtime_ns": 1789673527187787872,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/13/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build-script-build",
+      "bytes": 423984,
+      "mode": 493,
+      "sha256": "22784ad1e2f684c55061a45598171a6f01f996dd13b19569c67cc1b72bb4997f",
+      "device": 49,
+      "inode": 397389782,
+      "mtime_ns": 1789673525546411655,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/14/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build-script-build",
+      "bytes": 426288,
+      "mode": 493,
+      "sha256": "5456f3a78acc83b3a17bb317d0e0fd2007b381cb2f06de390954f6f4675eca8c",
+      "device": 49,
+      "inode": 397389595,
+      "mtime_ns": 1789673523823162339,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/15/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build-script-build",
+      "bytes": 340592,
+      "mode": 493,
+      "sha256": "3f5a53716bf9d069c249052f4c6e2dafe82ec8d440a9b2642e0457838117e5a1",
+      "device": 49,
+      "inode": 397390854,
+      "mtime_ns": 1789673532217792630,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/16/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build-script-build",
+      "bytes": 332912,
+      "mode": 493,
+      "sha256": "c9ad05dd09478149b519aa6a44bb234450133739ed2b7a37ee97835e1d0a33bc",
+      "device": 49,
+      "inode": 397391248,
+      "mtime_ns": 1789673535177795430,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/17/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build-script-build",
+      "bytes": 340544,
+      "mode": 493,
+      "sha256": "82a17fbfc3b17a68b390997c309dfb66238d7a506f47cdf6332c2ef5368ecd44",
+      "device": 49,
+      "inode": 397390572,
+      "mtime_ns": 1789673531022791500,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/18/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build-script-build",
+      "bytes": 409840,
+      "mode": 493,
+      "sha256": "d1af90569b76850cfa43aae7db4f54920196ca6aa68d7b5216a5561f7166ff43",
+      "device": 49,
+      "inode": 397390604,
+      "mtime_ns": 1789673531119791592,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "interpreter": [
+      "/lib64/ld-linux-x86-64.so.2"
+    ],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/19/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libbincode_derive-624c3c3043c74fda.so",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libbincode_derive-624c3c3043c74fda.so",
+      "bytes": 782688,
+      "mode": 493,
+      "sha256": "b167834d6d6e912b6eda20ea3ce1ec38abec40f20d9051402f05747bd5dd2ec0",
+      "device": 49,
+      "inode": 397391875,
+      "mtime_ns": 1789673539683799692,
+      "roles": [
+        "existing proc-macro shared object used by compiler"
+      ]
+    },
+    "interpreter": [],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/20/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libclap_derive-c0101511bc61bfb9.so",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libclap_derive-c0101511bc61bfb9.so",
+      "bytes": 2707824,
+      "mode": 493,
+      "sha256": "8410030840cf86d0d6b387957068b9e110f0c9d86d7a22b368f61713ad1fcdd0",
+      "device": 49,
+      "inode": 397391778,
+      "mtime_ns": 1789673539409799433,
+      "roles": [
+        "existing proc-macro shared object used by compiler"
+      ]
+    },
+    "interpreter": [],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/21/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libderive_more_impl-048b71c754f27cdf.so",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libderive_more_impl-048b71c754f27cdf.so",
+      "bytes": 4325904,
+      "mode": 493,
+      "sha256": "d6a55feee4d72b92689e35df571dfff6dbca6f78c8cb2ed789b86c4660999371",
+      "device": 49,
+      "inode": 397391165,
+      "mtime_ns": 1789673534711794989,
+      "roles": [
+        "existing proc-macro shared object used by compiler"
+      ]
+    },
+    "interpreter": [],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/22/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libpaste-31c501312c153a28.so",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libpaste-31c501312c153a28.so",
+      "bytes": 515712,
+      "mode": 493,
+      "sha256": "86c319286669941d15afc9e7a6b3ce48c8c0ffc90a38bc5b4799704ddfa0b828",
+      "device": 49,
+      "inode": 397393156,
+      "mtime_ns": 1789673545123804838,
+      "roles": [
+        "existing proc-macro shared object used by compiler"
+      ]
+    },
+    "interpreter": [],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/23/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_derive-7e283c29f158dc09.so",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_derive-7e283c29f158dc09.so",
+      "bytes": 3185152,
+      "mode": 493,
+      "sha256": "a904ca799e8e2ec2f1519c8a104abf12dae77c805b113769f233e9c054cb79b2",
+      "device": 49,
+      "inode": 397390362,
+      "mtime_ns": 1789673527991788633,
+      "roles": [
+        "existing proc-macro shared object used by compiler"
+      ]
+    },
+    "interpreter": [],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/24/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_repr-6fe5845da9dcc335.so",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_repr-6fe5845da9dcc335.so",
+      "bytes": 1776488,
+      "mode": 493,
+      "sha256": "4e231c882ab8f0601e57a0fcbd9c03f47eec1bb3550d23710e67c8e7893c8320",
+      "device": 49,
+      "inode": 397390742,
+      "mtime_ns": 1789673532068792489,
+      "roles": [
+        "existing proc-macro shared object used by compiler"
+      ]
+    },
+    "interpreter": [],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/25/result.json",
+    "scope": "Static ELF metadata only"
+  },
+  {
+    "artifact": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libtracing_attributes-5fff14927471bb56.so",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libtracing_attributes-5fff14927471bb56.so",
+      "bytes": 2627752,
+      "mode": 493,
+      "sha256": "3edfa8cab7edbe76ea6de350630d5c7041470c6c6f3257de5de3eef4e5eaf2e5",
+      "device": 49,
+      "inode": 397393476,
+      "mtime_ns": 1789673546034805700,
+      "roles": [
+        "existing proc-macro shared object used by compiler"
+      ]
+    },
+    "interpreter": [],
+    "needed": [
+      {
+        "name": "libgcc_s.so.1",
+        "candidates": [
+          {
+            "path": "/lib64/libgcc_s.so.1",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      },
+      {
+        "name": "libc.so.6",
+        "candidates": [
+          {
+            "path": "/lib64/libc.so.6",
+            "cache_flags": "libc6,x86-64, OS ABI: Linux 3.2.0"
+          }
+        ]
+      },
+      {
+        "name": "ld-linux-x86-64.so.2",
+        "candidates": [
+          {
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "cache_flags": "libc6,x86-64"
+          }
+        ]
+      }
+    ],
+    "query": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/26/result.json",
+    "scope": "Static ELF metadata only"
+  }
+]

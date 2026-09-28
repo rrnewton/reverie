@@ -1,0 +1,1540 @@
+{
+  "method": "exact unified diff hunks applied to immutable 5bc Git blobs in memory; no fuzz, replacement of surrounding files, index/ref/worktree writes or product execution",
+  "original_preview_base": "8051335e87104f7cf832204f74920d38416393b2",
+  "composition_base": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+  "base_tree": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+  "expected_composed_tree": "597bad02a2a18bfb159ea65e191c76b88dd22c82",
+  "base_tree_entries": 1732,
+  "expected_tree_entries": 1733,
+  "changed_paths": [
+    "README.md",
+    "ci/compat-envelope/README.md",
+    "ci/configure-build-jobs.sh",
+    "demos/05-qemu-busybox.sh",
+    "demos/README.md",
+    "detcore/src/logdiff.rs",
+    "detcore/tests/testutils/src/lib.rs",
+    "docs/ERROR_CATALOG.md",
+    "docs/USER_GUIDE.md",
+    "hermit-cli/src/bin/hermit/analyze/phases.rs",
+    "hermit-cli/src/bin/hermit/backends.rs",
+    "hermit-cli/src/bin/hermit/logdiff.rs",
+    "hermit-cli/src/bin/hermit/record_start.rs",
+    "hermit-cli/src/bin/hermit/run.rs",
+    "hermit-cli/src/bin/hermit/verify.rs",
+    "hermit-cli/src/canonical_verdict.rs",
+    "hermit-cli/tests/verification_report_consumers.rs",
+    "hermit-verify/src/chaos_replay.rs",
+    "hermit-verify/src/common/verify.rs",
+    "hermit-verify/src/trace_replay.rs",
+    "hermit-verify/src/use_case.rs",
+    "hermit-verify/src/use_case/run_usecase.rs",
+    "scripts/lib/validate_cell_results.rs",
+    "scripts/lib/verified_command.rs",
+    "scripts/manifest-to-commands.rs",
+    "tests/backend-parity/README.md",
+    "tests/bin/README.md",
+    "tests/e2e/determinism-stress/README.md",
+    "tests/e2e/lib/applications/common.sh",
+    "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+    "tests/qemu-boot/strict_l2_test.sh",
+    "tests/reproducible-builds/README.md",
+    "tests/reproducible-builds/run.sh"
+  ],
+  "incoming_805_to_5bc_paths": [
+    "ci/compat/corpus-strict.json",
+    "ci/dag/validate.json",
+    "ci/manifest-plan/src/validation_dag_static.rs",
+    "ci/run-with-reverie-dbt-budget.sh",
+    "detcore/src/lib.rs",
+    "detcore/src/tool_global.rs",
+    "detcore/src/tool_global/tests/backend_failure_tests.rs",
+    "hermit-cli/src/kvm_failure_tests.rs",
+    "hermit-cli/src/lib.rs",
+    "scripts/validate.rs"
+  ],
+  "overlapping_changed_paths": [],
+  "all_unmodified_tree_entries_preserved": true,
+  "all33_composed_files_equal_v9_changed_previews": true,
+  "five_unchanged805_preview_files_not_copied": [
+    "hermit-cli/src/bin/hermit/main.rs",
+    "hermit-cli/src/lib.rs",
+    "hermit-cli/src/logdiff_report.rs",
+    "hermit-cli/src/metadata.rs",
+    "hermit-cli/tests/kvm_info_log_determinism.rs"
+  ],
+  "hunks": [
+    {
+      "path": "README.md",
+      "base_start": 137,
+      "base_lines": 11,
+      "output_start": 137,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "README.md",
+      "base_start": 158,
+      "base_lines": 7,
+      "output_start": 161,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "README.md",
+      "base_start": 209,
+      "base_lines": 7,
+      "output_start": 212,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "ci/compat-envelope/README.md",
+      "base_start": 88,
+      "base_lines": 11,
+      "output_start": 88,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "ci/configure-build-jobs.sh",
+      "base_start": 334,
+      "base_lines": 7,
+      "output_start": 334,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "demos/05-qemu-busybox.sh",
+      "base_start": 132,
+      "base_lines": 13,
+      "output_start": 132,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "demos/05-qemu-busybox.sh",
+      "base_start": 198,
+      "base_lines": 10,
+      "output_start": 195,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "demos/README.md",
+      "base_start": 54,
+      "base_lines": 9,
+      "output_start": 54,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "demos/README.md",
+      "base_start": 130,
+      "base_lines": 10,
+      "output_start": 132,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 15,
+      "base_lines": 14,
+      "output_start": 15,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 92,
+      "base_lines": 12,
+      "output_start": 89,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 135,
+      "base_lines": 22,
+      "output_start": 130,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 166,
+      "base_lines": 7,
+      "output_start": 153,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 193,
+      "base_lines": 10,
+      "output_start": 180,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 205,
+      "base_lines": 75,
+      "output_start": 188,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 290,
+      "base_lines": 9,
+      "output_start": 209,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 305,
+      "base_lines": 50,
+      "output_start": 222,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 360,
+      "base_lines": 64,
+      "output_start": 239,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 445,
+      "base_lines": 7,
+      "output_start": 266,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 491,
+      "base_lines": 10,
+      "output_start": 312,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 542,
+      "base_lines": 9,
+      "output_start": 359,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 735,
+      "base_lines": 70,
+      "output_start": 551,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 975,
+      "base_lines": 21,
+      "output_start": 727,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 1021,
+      "base_lines": 10,
+      "output_start": 758,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 1301,
+      "base_lines": 7,
+      "output_start": 1037,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 1350,
+      "base_lines": 7,
+      "output_start": 1086,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 1430,
+      "base_lines": 47,
+      "output_start": 1166,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 1544,
+      "base_lines": 17,
+      "output_start": 1239,
+      "output_lines": 15,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 1717,
+      "base_lines": 24,
+      "output_start": 1410,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 1756,
+      "base_lines": 8,
+      "output_start": 1439,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 1789,
+      "base_lines": 13,
+      "output_start": 1474,
+      "output_lines": 15,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2046,
+      "base_lines": 20,
+      "output_start": 1733,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2072,
+      "base_lines": 8,
+      "output_start": 1753,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2088,
+      "base_lines": 21,
+      "output_start": 1767,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2110,
+      "base_lines": 7,
+      "output_start": 1777,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2143,
+      "base_lines": 27,
+      "output_start": 1809,
+      "output_lines": 15,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2233,
+      "base_lines": 15,
+      "output_start": 1887,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2268,
+      "base_lines": 14,
+      "output_start": 1916,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2324,
+      "base_lines": 30,
+      "output_start": 1970,
+      "output_lines": 57,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2881,
+      "base_lines": 7,
+      "output_start": 2554,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2903,
+      "base_lines": 17,
+      "output_start": 2576,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 2934,
+      "base_lines": 23,
+      "output_start": 2598,
+      "output_lines": 27,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3156,
+      "base_lines": 29,
+      "output_start": 2824,
+      "output_lines": 19,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3334,
+      "base_lines": 116,
+      "output_start": 2992,
+      "output_lines": 72,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3456,
+      "base_lines": 30,
+      "output_start": 3070,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3509,
+      "base_lines": 22,
+      "output_start": 3099,
+      "output_lines": 20,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3605,
+      "base_lines": 7,
+      "output_start": 3193,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3620,
+      "base_lines": 84,
+      "output_start": 3207,
+      "output_lines": 53,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3714,
+      "base_lines": 28,
+      "output_start": 3270,
+      "output_lines": 17,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3744,
+      "base_lines": 21,
+      "output_start": 3289,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3767,
+      "base_lines": 23,
+      "output_start": 3305,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3794,
+      "base_lines": 19,
+      "output_start": 3323,
+      "output_lines": 17,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 3884,
+      "base_lines": 17,
+      "output_start": 3411,
+      "output_lines": 15,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 4275,
+      "base_lines": 59,
+      "output_start": 3800,
+      "output_lines": 99,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 4507,
+      "base_lines": 12,
+      "output_start": 4072,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 4521,
+      "base_lines": 7,
+      "output_start": 4082,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 4533,
+      "base_lines": 22,
+      "output_start": 4094,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_start": 4568,
+      "base_lines": 42,
+      "output_start": 4118,
+      "output_lines": 25,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "base_start": 792,
+      "base_lines": 8,
+      "output_start": 792,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "base_start": 823,
+      "base_lines": 6,
+      "output_start": 823,
+      "output_lines": 37,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "docs/ERROR_CATALOG.md",
+      "base_start": 120,
+      "base_lines": 7,
+      "output_start": 120,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "base_start": 181,
+      "base_lines": 12,
+      "output_start": 181,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "base_start": 205,
+      "base_lines": 9,
+      "output_start": 205,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "base_start": 290,
+      "base_lines": 11,
+      "output_start": 291,
+      "output_lines": 16,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "base_start": 327,
+      "base_lines": 13,
+      "output_start": 333,
+      "output_lines": 18,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "base_start": 276,
+      "base_lines": 7,
+      "output_start": 276,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "base_start": 286,
+      "base_lines": 14,
+      "output_start": 286,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "base_start": 77,
+      "base_lines": 8,
+      "output_start": 77,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "base_start": 707,
+      "base_lines": 11,
+      "output_start": 705,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "base_start": 1199,
+      "base_lines": 7,
+      "output_start": 1193,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "base_start": 1778,
+      "base_lines": 7,
+      "output_start": 1771,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 151,
+      "base_lines": 11,
+      "output_start": 151,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 195,
+      "base_lines": 7,
+      "output_start": 194,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 207,
+      "base_lines": 15,
+      "output_start": 206,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 269,
+      "base_lines": 15,
+      "output_start": 262,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 298,
+      "base_lines": 9,
+      "output_start": 288,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 396,
+      "base_lines": 8,
+      "output_start": 384,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 591,
+      "base_lines": 26,
+      "output_start": 578,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 627,
+      "base_lines": 19,
+      "output_start": 594,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 656,
+      "base_lines": 14,
+      "output_start": 613,
+      "output_lines": 15,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 783,
+      "base_lines": 7,
+      "output_start": 741,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_start": 1437,
+      "base_lines": 20,
+      "output_start": 1395,
+      "output_lines": 99,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_start": 54,
+      "base_lines": 7,
+      "output_start": 54,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_start": 271,
+      "base_lines": 22,
+      "output_start": 270,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_start": 503,
+      "base_lines": 13,
+      "output_start": 490,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_start": 567,
+      "base_lines": 7,
+      "output_start": 548,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_start": 733,
+      "base_lines": 7,
+      "output_start": 713,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_start": 844,
+      "base_lines": 7,
+      "output_start": 824,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_start": 69,
+      "base_lines": 6,
+      "output_start": 69,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_start": 551,
+      "base_lines": 21,
+      "output_start": 552,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_start": 1347,
+      "base_lines": 7,
+      "output_start": 1338,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_start": 1360,
+      "base_lines": 30,
+      "output_start": 1351,
+      "output_lines": 32,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_start": 2880,
+      "base_lines": 33,
+      "output_start": 2873,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_start": 2917,
+      "base_lines": 7,
+      "output_start": 2883,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_start": 5001,
+      "base_lines": 8,
+      "output_start": 4966,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 96,
+      "base_lines": 16,
+      "output_start": 96,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 275,
+      "base_lines": 72,
+      "output_start": 270,
+      "output_lines": 32,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 371,
+      "base_lines": 7,
+      "output_start": 326,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 807,
+      "base_lines": 12,
+      "output_start": 764,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 820,
+      "base_lines": 10,
+      "output_start": 776,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 855,
+      "base_lines": 7,
+      "output_start": 808,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 866,
+      "base_lines": 7,
+      "output_start": 818,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1190,
+      "base_lines": 11,
+      "output_start": 1142,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1234,
+      "base_lines": 12,
+      "output_start": 1183,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1255,
+      "base_lines": 21,
+      "output_start": 1203,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1627,
+      "base_lines": 47,
+      "output_start": 1562,
+      "output_lines": 28,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1678,
+      "base_lines": 14,
+      "output_start": 1594,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1695,
+      "base_lines": 7,
+      "output_start": 1609,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1711,
+      "base_lines": 7,
+      "output_start": 1624,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1723,
+      "base_lines": 20,
+      "output_start": 1635,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1875,
+      "base_lines": 13,
+      "output_start": 1781,
+      "output_lines": 13,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1908,
+      "base_lines": 7,
+      "output_start": 1814,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 1976,
+      "base_lines": 7,
+      "output_start": 1882,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2022,
+      "base_lines": 41,
+      "output_start": 1927,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2071,
+      "base_lines": 6,
+      "output_start": 1944,
+      "output_lines": 26,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2098,
+      "base_lines": 14,
+      "output_start": 1991,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2150,
+      "base_lines": 8,
+      "output_start": 2037,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2165,
+      "base_lines": 8,
+      "output_start": 2051,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2190,
+      "base_lines": 7,
+      "output_start": 2075,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2210,
+      "base_lines": 52,
+      "output_start": 2094,
+      "output_lines": 30,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2291,
+      "base_lines": 7,
+      "output_start": 2153,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2330,
+      "base_lines": 7,
+      "output_start": 2191,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2470,
+      "base_lines": 7,
+      "output_start": 2330,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2535,
+      "base_lines": 7,
+      "output_start": 2394,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2604,
+      "base_lines": 14,
+      "output_start": 2462,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2663,
+      "base_lines": 14,
+      "output_start": 2514,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2706,
+      "base_lines": 8,
+      "output_start": 2550,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2840,
+      "base_lines": 7,
+      "output_start": 2683,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2890,
+      "base_lines": 8,
+      "output_start": 2733,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2907,
+      "base_lines": 8,
+      "output_start": 2749,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 2961,
+      "base_lines": 8,
+      "output_start": 2802,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 3055,
+      "base_lines": 7,
+      "output_start": 2895,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 3090,
+      "base_lines": 14,
+      "output_start": 2929,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 3113,
+      "base_lines": 14,
+      "output_start": 2945,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 3255,
+      "base_lines": 7,
+      "output_start": 3085,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 3290,
+      "base_lines": 7,
+      "output_start": 3119,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 3321,
+      "base_lines": 7,
+      "output_start": 3149,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_start": 3343,
+      "base_lines": 9,
+      "output_start": 3170,
+      "output_lines": 22,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "base_start": 621,
+      "base_lines": 6,
+      "output_start": 621,
+      "output_lines": 21,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "base_start": 824,
+      "base_lines": 6,
+      "output_start": 839,
+      "output_lines": 31,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_start": 8,
+      "base_lines": 6,
+      "output_start": 8,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_start": 31,
+      "base_lines": 6,
+      "output_start": 34,
+      "output_lines": 18,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_start": 74,
+      "base_lines": 8,
+      "output_start": 89,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_start": 384,
+      "base_lines": 7,
+      "output_start": 399,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_start": 537,
+      "base_lines": 6,
+      "output_start": 552,
+      "output_lines": 44,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_start": 626,
+      "base_lines": 3,
+      "output_start": 679,
+      "output_lines": 342,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/chaos_replay.rs",
+      "base_start": 93,
+      "base_lines": 14,
+      "output_start": 93,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "base_start": 25,
+      "base_lines": 16,
+      "output_start": 25,
+      "output_lines": 6,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "base_start": 44,
+      "base_lines": 33,
+      "output_start": 34,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "base_start": 191,
+      "base_lines": 15,
+      "output_start": 160,
+      "output_lines": 25,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "base_start": 231,
+      "base_lines": 38,
+      "output_start": 210,
+      "output_lines": 44,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/trace_replay.rs",
+      "base_start": 119,
+      "base_lines": 30,
+      "output_start": 119,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/trace_replay.rs",
+      "base_start": 197,
+      "base_lines": 26,
+      "output_start": 178,
+      "output_lines": 22,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/use_case.rs",
+      "base_start": 24,
+      "base_lines": 23,
+      "output_start": 24,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/use_case.rs",
+      "base_start": 50,
+      "base_lines": 14,
+      "output_start": 36,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "hermit-verify/src/use_case/run_usecase.rs",
+      "base_start": 35,
+      "base_lines": 20,
+      "output_start": 35,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "scripts/lib/validate_cell_results.rs",
+      "base_start": 291,
+      "base_lines": 9,
+      "output_start": 291,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "scripts/lib/validate_cell_results.rs",
+      "base_start": 1405,
+      "base_lines": 6,
+      "output_start": 1403,
+      "output_lines": 58,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "scripts/lib/verified_command.rs",
+      "base_start": 0,
+      "base_lines": 0,
+      "output_start": 1,
+      "output_lines": 24,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "scripts/manifest-to-commands.rs",
+      "base_start": 17,
+      "base_lines": 6,
+      "output_start": 17,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "scripts/manifest-to-commands.rs",
+      "base_start": 28,
+      "base_lines": 6,
+      "output_start": 31,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "scripts/manifest-to-commands.rs",
+      "base_start": 365,
+      "base_lines": 7,
+      "output_start": 371,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/backend-parity/README.md",
+      "base_start": 11,
+      "base_lines": 12,
+      "output_start": 11,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/backend-parity/README.md",
+      "base_start": 38,
+      "base_lines": 9,
+      "output_start": 40,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/backend-parity/README.md",
+      "base_start": 181,
+      "base_lines": 18,
+      "output_start": 184,
+      "output_lines": 26,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/backend-parity/README.md",
+      "base_start": 507,
+      "base_lines": 9,
+      "output_start": 518,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/bin/README.md",
+      "base_start": 92,
+      "base_lines": 9,
+      "output_start": 92,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/determinism-stress/README.md",
+      "base_start": 1,
+      "base_lines": 14,
+      "output_start": 1,
+      "output_lines": 14,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/determinism-stress/README.md",
+      "base_start": 27,
+      "base_lines": 10,
+      "output_start": 27,
+      "output_lines": 11,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/determinism-stress/README.md",
+      "base_start": 100,
+      "base_lines": 6,
+      "output_start": 101,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/common.sh",
+      "base_start": 12,
+      "base_lines": 6,
+      "output_start": 12,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/common.sh",
+      "base_start": 58,
+      "base_lines": 6,
+      "output_start": 59,
+      "output_lines": 10,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/common.sh",
+      "base_start": 134,
+      "base_lines": 6,
+      "output_start": 139,
+      "output_lines": 12,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/common.sh",
+      "base_start": 203,
+      "base_lines": 6,
+      "output_start": 214,
+      "output_lines": 8,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "base_start": 25,
+      "base_lines": 6,
+      "output_start": 25,
+      "output_lines": 13,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "base_start": 40,
+      "base_lines": 6,
+      "output_start": 47,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "base_start": 69,
+      "base_lines": 6,
+      "output_start": 79,
+      "output_lines": 16,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "base_start": 80,
+      "base_lines": 7,
+      "output_start": 100,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "base_start": 91,
+      "base_lines": 13,
+      "output_start": 111,
+      "output_lines": 63,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_test.sh",
+      "base_start": 216,
+      "base_lines": 7,
+      "output_start": 216,
+      "output_lines": 7,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/reproducible-builds/README.md",
+      "base_start": 9,
+      "base_lines": 15,
+      "output_start": 9,
+      "output_lines": 20,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/reproducible-builds/README.md",
+      "base_start": 25,
+      "base_lines": 9,
+      "output_start": 30,
+      "output_lines": 9,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/reproducible-builds/run.sh",
+      "base_start": 5,
+      "base_lines": 11,
+      "output_start": 5,
+      "output_lines": 18,
+      "exact_context_and_positions": true
+    },
+    {
+      "path": "tests/reproducible-builds/run.sh",
+      "base_start": 67,
+      "base_lines": 11,
+      "output_start": 74,
+      "output_lines": 20,
+      "exact_context_and_positions": true
+    }
+  ]
+}

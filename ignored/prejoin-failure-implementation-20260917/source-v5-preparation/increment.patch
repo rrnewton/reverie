@@ -1,0 +1,12 @@
+--- previous/reverie-kvm/src/error.rs
++++ current/reverie-kvm/src/error.rs
+@@ -10,7 +10,8 @@
+ 
+ /// Errors produced by the KVM backend prototype.
+ #[derive(Debug, Error)]
+-pub enum Error {    /// A peer or the Tool scheduler has made this run terminal. This internal
++pub enum Error {
++    /// A peer or the Tool scheduler has made this run terminal. This internal
+     /// outcome is never a successful guest status or a syscall errno.
+     #[error("KVM execution stopped after a fatal run failure")]
+     RunAborted,

@@ -1,0 +1,38 @@
+{
+  "name": "mount-08-identity",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2449355-1789626188507859736.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 0.163433,
+  "wall_seconds": 0.5450833020731807,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "4bd5c9eb679c9c6add9c96c65649350f91a6c37f1e39ae9d0fdc413ca52faa14",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "tool_global::tests::fdinfo_mount_ids_refuse_malformed_configured_provenance",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 678
+    }
+  ]
+}

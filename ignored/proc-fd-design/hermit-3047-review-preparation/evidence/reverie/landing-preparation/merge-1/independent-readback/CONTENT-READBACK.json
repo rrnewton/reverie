@@ -1,0 +1,74 @@
+{
+  "utc": "2026-09-17T05:57:00.546347+00:00",
+  "pr": "https://github.com/rrnewton/reverie/pull/565",
+  "mergedAt": "2026-09-17T05:55:58Z",
+  "candidate": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "landed": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+  "parent": "4866241e15c18bdbd717865c504b9facdcaf1ae0",
+  "tree": "bb2c88a1f0b37e264535693f2b72d77b2502dc5f",
+  "entries": 2562,
+  "whole_union_equal": true,
+  "author_and_full_message_equal": true,
+  "required_pin_ancestor": "b3049e54c644e28e2894402a36bb65664ab4508b",
+  "six_files": {
+    "reverie-kvm/src/elf.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "7959e7780cec9d3b41a6cf13088e474e3b03c1bf"
+    },
+    "reverie-kvm/src/executor.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "44ee9f7c26dd71075291aad4446051eeee6eba02"
+    },
+    "reverie-kvm/src/fdinfo.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "2518463e81b35fb2c27ef823edc3d103ec3bba01"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "b0645d69507e33ca76880691ccb5c5f9c8d9d190"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "ce39403ae27b32ff5c0952868759951a10acbb40"
+    },
+    "reverie-kvm/src/proc_mounts.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "oid": "413c53832e52d380814741306e7a2ba528d78424"
+    }
+  },
+  "incoming_main_paths_preserved": [
+    "experimental/reverie-sabre-macros/src/expand.rs",
+    "experimental/reverie-sabre/src/bootstrap.rs",
+    "experimental/reverie-sabre/src/ffi/clone.rs",
+    "experimental/reverie-sabre/src/ffi/mod.rs",
+    "experimental/reverie-sabre/src/lib.rs",
+    "experimental/reverie-sabre/src/reverie_adapter.rs",
+    "experimental/reverie-sabre/src/tool.rs",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "experimental/reverie-sabre/tests/loader_bootstrap.c",
+    "experimental/reverie-sabre/tests/loader_bootstrap.rs",
+    "experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "experimental/reverie-sabre/vendor/sabre/includes/loader/bootstrap.h",
+    "experimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt",
+    "experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/loader.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/premain.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/rewriter.c",
+    "experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s"
+  ],
+  "source_head_unchanged": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "tree_manifest_sha256": "a028e90e707d77f86be7c9dbda40d0448f8a8c13393ce216fcb11aa89bc8bb9c",
+  "candidate_commit_sha256": "3ea7ffaaa7bf2ae99d58b1422f2075f76c0a22ba27136e89665afdf40e58b48e",
+  "landed_commit_sha256": "60148de27e146064f0fab66ce27291aab4a6bb11315bcf484c21c2cc14c63fe0"
+}

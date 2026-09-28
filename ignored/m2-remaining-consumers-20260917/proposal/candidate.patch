@@ -1,0 +1,263 @@
+diff --git a/hermit-cli/tests/verification_report_consumers.rs b/hermit-cli/tests/verification_report_consumers.rs
+index 6754b8336f3cc72175fbdad079a02877d4191340..b57c1b76ad2b0569b1c9a4921bbdaefa159f9589 100644
+--- a/hermit-cli/tests/verification_report_consumers.rs
++++ b/hermit-cli/tests/verification_report_consumers.rs
+@@ -59,26 +59,26 @@
+     },
+     Consumer {
+         path: "tests/e2e/lib/data-handling/common.bash",
+-        requirement: "matched",
+-        invocation: "\"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
+         minimum_invocations: 1,
+     },
+     Consumer {
+         path: "tests/e2e/lib/determinism-stress/common.sh",
+-        requirement: "matched",
+-        invocation: "\"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
+         minimum_invocations: 1,
+     },
+     Consumer {
+         path: "tests/e2e/lib/language-runtimes/run.sh",
+-        requirement: "matched",
+-        invocation: "\"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
+         minimum_invocations: 1,
+     },
+     Consumer {
+         path: "tests/e2e/lib/system-utils/_common.sh",
+-        requirement: "matched",
+-        invocation: "\"$VERIFICATION_REPORT_BIN\" matched \"$VERIFY_REPORT\"",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$VERIFY_REPORT\"",
+         minimum_invocations: 1,
+     },
+     Consumer {
+@@ -95,20 +95,20 @@
+     },
+     Consumer {
+         path: "tests/qemu-boot/strict_l2_userspace_test.sh",
+-        requirement: "matched",
+-        invocation: "\"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
+         minimum_invocations: 1,
+     },
+     Consumer {
+         path: "tests/standalone/strict_setitimer.sh",
+-        requirement: "matched",
+-        invocation: "\"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
+         minimum_invocations: 1,
+     },
+     Consumer {
+         path: "tests/standalone/strict_timer_create.sh",
+-        requirement: "matched",
+-        invocation: "\"$VERIFICATION_REPORT_BIN\" matched \"$verify_report\"",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
+         minimum_invocations: 1,
+     },
+ ];
+@@ -587,6 +587,96 @@
+                 String::from_utf8_lossy(&output.stderr)
+                     .contains("canonical match has unequal compared log-message counts: 123/124")
+             );
++        }
++    }
++    fs::remove_dir_all(temporary).unwrap();
++}
++
++#[test]
++fn remaining_shell_consumers_require_current_canonical_match_evidence() {
++    let selected_paths = [
++        "tests/e2e/lib/data-handling/common.bash",
++        "tests/e2e/lib/determinism-stress/common.sh",
++        "tests/e2e/lib/language-runtimes/run.sh",
++        "tests/e2e/lib/system-utils/_common.sh",
++        "tests/qemu-boot/strict_l2_userspace_test.sh",
++        "tests/standalone/strict_setitimer.sh",
++        "tests/standalone/strict_timer_create.sh",
++    ];
++    let temporary = temporary_directory();
++    let path = temporary.join("verify.json");
++    for selected_path in selected_paths {
++        let consumer = CONSUMERS
++            .iter()
++            .find(|consumer| consumer.path == selected_path)
++            .expect("retain every named shell consumer");
++        assert_eq!(consumer.requirement, "canonical-match", "{selected_path}");
++        let script = fs::read_to_string(root().join(selected_path)).unwrap();
++        assert_eq!(script.matches(consumer.invocation).count(), 1, "{selected_path}");
++        assert!(
++            !script.contains("\"$VERIFICATION_REPORT_BIN\" matched "),
++            "{selected_path} still admits the weaker requirement"
++        );
++        for case in [
++            "matched",
++            "stripped",
++            "no-log-comparison",
++            "zero-counts",
++            "unequal-counts",
++            "missing-report",
++            "invalid-json",
++            "missing-current-outputs",
++        ] {
++            let mut report = current_synthetic_match();
++            report["compared_log_messages"] =
++                serde_json::json!({"left": 123, "right": 123});
++            match case {
++                "stripped" => {
++                    report["comparison"]["strictness"] = serde_json::json!("stripped");
++                }
++                "no-log-comparison" => {
++                    report["comparison"]["compare_logs"] = serde_json::json!(false);
++                }
++                "zero-counts" => {
++                    report["compared_log_messages"] =
++                        serde_json::json!({"left": 0, "right": 0});
++                }
++                "unequal-counts" => {
++                    report["compared_log_messages"]["right"] = serde_json::json!(124);
++                }
++                "missing-current-outputs" => {
++                    report.as_object_mut().unwrap().remove("compared_outputs");
++                }
++                "matched" | "missing-report" | "invalid-json" => {}
++                _ => unreachable!(),
++            }
++            write_report(&path, &report);
++            let expected_status = match case {
++                "matched" => 0,
++                "missing-report" => {
++                    fs::remove_file(&path).unwrap();
++                    2
++                }
++                "invalid-json" => {
++                    fs::write(&path, b"{").unwrap();
++                    2
++                }
++                "missing-current-outputs" => 2,
++                _ => 1,
++            };
++            let output = verdict(consumer.requirement, &path);
++            assert_eq!(
++                output.status.code(),
++                Some(expected_status),
++                "{selected_path} {case}: {output:?}"
++            );
++            if case == "unequal-counts" {
++                assert!(
++                    String::from_utf8_lossy(&output.stderr)
++                        .contains("canonical match has unequal compared log-message counts: 123/124"),
++                    "{selected_path}: {output:?}"
++                );
++            }
+         }
+     }
+     fs::remove_dir_all(temporary).unwrap();
+diff --git a/tests/e2e/lib/data-handling/common.bash b/tests/e2e/lib/data-handling/common.bash
+index ab661db82d646555c91b8b525560666ac6542fc1..404c03606e198f6f24fe6e0192c676e02461e467 100644
+--- a/tests/e2e/lib/data-handling/common.bash
++++ b/tests/e2e/lib/data-handling/common.bash
+@@ -130,7 +130,7 @@
+         rm -rf -- "$evidence"
+         return 1
+     fi
+-    if ! "$VERIFICATION_REPORT_BIN" matched "$verify_report"; then
++    if ! "$VERIFICATION_REPORT_BIN" canonical-match "$verify_report"; then
+         echo "$label: typed verification report did not match" >&2
+         cat "$stdout" >&2
+         cat "$stderr" >&2
+diff --git a/tests/e2e/lib/determinism-stress/common.sh b/tests/e2e/lib/determinism-stress/common.sh
+index e835de91d9642874e8bb6c7e3cb9abe17b6c1e79..9a044b3a7a7b8891b3864195b9bab210a7ea3b6f 100755
+--- a/tests/e2e/lib/determinism-stress/common.sh
++++ b/tests/e2e/lib/determinism-stress/common.sh
+@@ -213,7 +213,7 @@
+       printf 'error: %s failed under hermit run --strict --verify\n' "$label" >&2
+       return 1
+     fi
+-    if ! "$VERIFICATION_REPORT_BIN" matched "$verify_report"; then
++    if ! "$VERIFICATION_REPORT_BIN" canonical-match "$verify_report"; then
+       cat "$stdout" >&2
+       tail -200 "$stderr" >&2
+       printf 'error: %s typed verification report did not match\n' "$label" >&2
+diff --git a/tests/e2e/lib/language-runtimes/run.sh b/tests/e2e/lib/language-runtimes/run.sh
+index 180688289e6ed4997a53c3f69b37cdb04076188e..725bb9f5b45041a23ba9e71e3b604ebfaf474d0c 100755
+--- a/tests/e2e/lib/language-runtimes/run.sh
++++ b/tests/e2e/lib/language-runtimes/run.sh
+@@ -82,7 +82,7 @@
+   fi
+ 
+   cat "$verify_output"
+-  if ! "$VERIFICATION_REPORT_BIN" matched "$verify_report"; then
++  if ! "$VERIFICATION_REPORT_BIN" canonical-match "$verify_report"; then
+     echo "FAIL: $label typed verification report did not match" >&2
+     return 1
+   fi
+diff --git a/tests/e2e/lib/system-utils/_common.sh b/tests/e2e/lib/system-utils/_common.sh
+index b83823ee638827d0196d9784c98088f724785c38..5614fbeba82cbf8b2228053d9c458c7078b4f283 100755
+--- a/tests/e2e/lib/system-utils/_common.sh
++++ b/tests/e2e/lib/system-utils/_common.sh
+@@ -171,7 +171,7 @@
+         fail "strict verification exited $status"
+     fi
+ 
+-    if ! "$VERIFICATION_REPORT_BIN" matched "$VERIFY_REPORT"; then
++    if ! "$VERIFICATION_REPORT_BIN" canonical-match "$VERIFY_REPORT"; then
+         cat "$VERIFY_STDOUT" >&2
+         tail -80 "$VERIFY_STDERR" >&2
+         fail "typed verification report did not match"
+@@ -203,7 +203,7 @@
+ 
+ pass_test() {
+     if [[ $SYSTEM_UTIL_BACKEND == kvm ]]; then
+-        printf 'PASS [%s/kvm]: strict --verify output/exit parity with INFO logging; internal trace comparison unavailable; relaxations=none\n' \
++        printf 'PASS [%s/kvm]: strict --verify canonical INFO and output/exit match; relaxations=none\n' \
+             "$SYSTEM_UTIL_TEST_NAME"
+     else
+         printf 'PASS [%s/%s]: L2 with INFO logging; relaxations=none\n' \
+diff --git a/tests/qemu-boot/strict_l2_userspace_test.sh b/tests/qemu-boot/strict_l2_userspace_test.sh
+index 8ab76a1f6dafb1eaf00d31661d52b2fbc5590cef..0937527d6a9607cff9218f27defbf39c3c1a0859 100755
+--- a/tests/qemu-boot/strict_l2_userspace_test.sh
++++ b/tests/qemu-boot/strict_l2_userspace_test.sh
+@@ -242,7 +242,7 @@
+   if ((status != 0)); then
+     fail "[$name] strict L2 verification exited with status $status"
+   fi
+-  "$VERIFICATION_REPORT_BIN" matched "$verify_report" || \
++  "$VERIFICATION_REPORT_BIN" canonical-match "$verify_report" || \
+     fail "[$name] typed verification report did not match"
+   stop_active_group
+ 
+diff --git a/tests/standalone/strict_setitimer.sh b/tests/standalone/strict_setitimer.sh
+index 28f25c66aa67b27ca8c3e93c8c0cbff11ee25672..37d1e5199e67f2fadf625aff60b31ac8129d5f65 100755
+--- a/tests/standalone/strict_setitimer.sh
++++ b/tests/standalone/strict_setitimer.sh
+@@ -99,7 +99,7 @@
+ verify_report="$work/verify.json"
+ verify_out="$("$hermit" run --strict --verify --verify-json "$verify_report" -- \
+     "$guest" < /dev/null 2>&1 || true)"
+-if "$VERIFICATION_REPORT_BIN" matched "$verify_report"; then
++if "$VERIFICATION_REPORT_BIN" canonical-match "$verify_report"; then
+     deterministic=1
+ else
+     deterministic=0
+diff --git a/tests/standalone/strict_timer_create.sh b/tests/standalone/strict_timer_create.sh
+index 0abd174fd14752ebebe9852585e2846a1c86fcec..78d8ba78b299d29e76809caecfabf8dbcbf80665 100755
+--- a/tests/standalone/strict_timer_create.sh
++++ b/tests/standalone/strict_timer_create.sh
+@@ -77,7 +77,7 @@
+         tail -20 "$verify_output"
+         exit 1
+     fi
+-    if ! "$VERIFICATION_REPORT_BIN" matched "$verify_report"; then
++    if ! "$VERIFICATION_REPORT_BIN" canonical-match "$verify_report"; then
+         echo "FAIL: $(basename "$guest") typed verification report did not match"
+         tail -20 "$verify_output"
+         exit 1

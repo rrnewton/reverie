@@ -1,0 +1,16 @@
+{
+  "static-elf": {
+    "original_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+    "retained_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v2/run-1/retained-elf-v14/static-elf",
+    "bytes": 147744264,
+    "mode": 493,
+    "sha256": "ae49cc82c2927910caf4920754f0f5bab8eb7cd90434393f2dbf8187b8c6414d"
+  },
+  "lib": {
+    "original_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+    "retained_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v2/run-1/retained-elf-v14/lib",
+    "bytes": 115041008,
+    "mode": 493,
+    "sha256": "a442ffc3ff2b33d6e3bcb2458e969a595d6c9a634750dfe5bc2cfa625660f4ae"
+  }
+}

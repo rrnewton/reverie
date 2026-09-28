@@ -1,0 +1,1 @@
+Publish fatal KVM Tool failures before joining children

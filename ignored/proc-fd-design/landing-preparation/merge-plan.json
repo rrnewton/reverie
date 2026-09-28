@@ -1,0 +1,44 @@
+{
+  "status": "PREPARED_NOT_EXECUTED",
+  "pr": "https://github.com/rrnewton/reverie/pull/565",
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/gh-merge-verified",
+    "565",
+    "--repo",
+    "rrnewton/reverie",
+    "--run-current-main-copy",
+    "--expect-head",
+    "696f0476aa46cf29e31b947a89379d80b4542ce3",
+    "--receipt",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-1/receipt.json",
+    "--",
+    "--rebase"
+  ],
+  "public_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "reviewed_main": "4866241e15c18bdbd717865c504b9facdcaf1ae0",
+  "expected_tree": "bb2c88a1f0b37e264535693f2b72d77b2502dc5f",
+  "expected_entries": 2562,
+  "required_ancestor": "b3049e54c644e28e2894402a36bb65664ab4508b",
+  "output_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-1",
+  "receipt": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-1/receipt.json",
+  "output_root_absent_at_preparation": true,
+  "attempts": 1,
+  "automatic_retry": false,
+  "post_merge_verification": [
+    "Read actual PR merge state and public head; preserve original branch.",
+    "Fetch actual landed main/merge commit, require exact expected whole tree and b304/main ancestry.",
+    "Require original author field/message and one ordered replay commit; preserve new committer/time separately.",
+    "Require verifier receipt resolves and corroborates exact696, all six changed entries arrived and no absent/moved-on entries.",
+    "If main/head or expected union changed, perform a bounded interaction review rather than infer unchanged approval."
+  ],
+  "pre_release_requirements": [
+    "Root reads prepared artifacts and explicitly releases publication/readiness/merge.",
+    "Actual external full-source final verdict approves the exact committed six-file source; no timeout or partial review counts.",
+    "Canonical native and external exact-head comments are published/read back with actual current GitHub actor permission; any true refusal must be resolved.",
+    "Read current PR state/head/base and main to confirm this prepared union still applies; PR must no longer be draft at merge.",
+    "Do not set GH_MERGE_VERIFIED_REMOTE, GH_MERGE_VERIFIED_SELFCHECK or any guard-bypass/fixture option."
+  ],
+  "admission_scope": "Current-main verifier checks its own source and canonical review authority; no whole-DAG receipt is introduced as a prerequisite. --expect-head corroborates the fetched PR head; the inspected version does not pass --match-head-commit to gh, so continued exclusive ownership/head freshness and post-merge content verification remain necessary."
+}

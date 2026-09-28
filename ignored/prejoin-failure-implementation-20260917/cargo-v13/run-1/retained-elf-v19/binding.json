@@ -1,0 +1,19 @@
+{
+  "source_binding_sha256": "5948a664efb812f47d3f0f607ec3926f07139f8d5faf21e2bda886533bab41ee",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+    "bytes": 115730656,
+    "mode": 493,
+    "sha256": "281cb551a07d1b255dfa3757a166b401f82769ce321390d93753d1de1a11a6dc",
+    "device": 48,
+    "inode": 797100321
+  },
+  "retained": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v13/run-1/retained-elf-v19/lib",
+    "bytes": 115730656,
+    "mode": 493,
+    "sha256": "281cb551a07d1b255dfa3757a166b401f82769ce321390d93753d1de1a11a6dc",
+    "device": 48,
+    "inode": 797101532
+  }
+}

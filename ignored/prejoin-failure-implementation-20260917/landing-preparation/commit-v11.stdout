@@ -1,0 +1,5 @@
+[codex/kvm-proc-fd-identity-20260917 d99853df] Publish fatal KVM Tool failures before joining children
+ 11 files changed, 2785 insertions(+), 446 deletions(-)
+ create mode 100644 reverie-kvm/src/failure.rs
+ create mode 100644 reverie-kvm/src/runtime/failure_tests.rs
+ create mode 100644 reverie-kvm/src/runtime/native_test_support.rs

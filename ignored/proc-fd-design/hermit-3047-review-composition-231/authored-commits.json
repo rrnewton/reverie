@@ -1,0 +1,60 @@
+{
+  "prior": [
+    {
+      "commit": "b40aeef7d9582117fde68b2270ddb2b45424cd84",
+      "parents": [
+        "158a89f6217b25db9540237f9c1e256cdbaf785c"
+      ],
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789614631 -0700",
+      "message": "Preserve ordinary inode identity when standard descriptors are reused\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nPlain Language Summary and Project Impact\nFiles and pipes reopened at descriptors 0 through 2 now use their ordinary\ninode identity. Fixed standard-stream inode values apply only while those\nslots contain inherited container streams. This repairs the measured KVM\nfstat versus empty-path stat disagreement after descriptor reuse.\n\nTask: kvm-lane-to-full-determinism-and-parity\n\nUse the same resource guard for fstat, fdinfo, maps and anonymous proc-fd\nreadlink metadata. Preserve inherited-stream slot outcomes and existing alias\nbehavior. Extend the existing resource tests and keep the original closed-stdin\ncat assertions first and unchanged, followed by descriptor-reuse controls on\nnative Linux, ptrace and KVM.\n\nThe fixture retains complete-stat-routes as a separate control. Its broader\nproc-fd failure remains unresolved; this change does not claim to repair that\nroute or prove the cause of the historical cat loader failure.\n",
+      "raw_commit_sha256": "8640baddd750971031ab15d78070f16a8f9ad7a825076beb4fc24ffcb8249a72"
+    },
+    {
+      "commit": "4cfbe917fa1131d928a69aea14e28089c9de1d87",
+      "parents": [
+        "b40aeef7d9582117fde68b2270ddb2b45424cd84"
+      ],
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789625771 -0700",
+      "message": "Bind KVM mount identities to the actual backend namespace\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nPlain Language Summary and Project Impact\nKVM now retains the real completed-container mount identity order and validates\nit against the namespace where the backend opens files. Public library callers\ncapture that same order before guest execution. This lets the shared Detcore\nfdinfo and mountinfo normalization use actual descriptor and mount identities.\n\nTask: kvm-lane-to-full-determinism-and-parity\n\nAdvance the maintained Reverie pin to landed 596b9adee8473dc0a7e62dce18580eead3d0c5c9,\nwhich preserves owned proc-fd metadata and fdinfo semantics. Carry the existing\nDBT 1050 effective-job-second threshold and 16-job clamp only after verifying\nall build/vendor/config inputs are unchanged. The first updater invocation\nretained its calibration refusal; the second completed the normal locked\nworkspace/all-target compile before applying this mount integration.\n\nRequire exact startup mount-order agreement before mutating captured config;\npreserve root rewrites and genuine unlisted mount provenance, and remove the\nobsolete synthetic 0:1 device mapping. Four focused config controls raise only\nthe two Hermit unit inventory declarations from 630 to 634. Generated commands,\nselected populations, dependencies and resources stay unchanged.\n\nThe existing descriptor-reuse, complete-stat-routes and original closed-stdin\nassertions remain unchanged. Their integrated runtime validation is pending;\nthis source change does not assert backend parity or discharge those checks.\n",
+      "raw_commit_sha256": "df69b5a82dee7eaa0acd6ba522e32fe6d0153a39f86f35a9e94e33d58db261dd"
+    },
+    {
+      "commit": "a88f948021a24c6a1ea808f868516c0691c8819a",
+      "parents": [
+        "4cfbe917fa1131d928a69aea14e28089c9de1d87"
+      ],
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789629276 -0700",
+      "message": "Isolate descriptor fixture backend working directories\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nPlain Language Summary and Project Impact\nRun the appended ptrace and KVM descriptor-reuse controls from the existing\nowned temporary directory, so a failing fixture does not write into the test\nharness working directory.\n\nTask: kvm-lane-to-full-determinism-and-parity\n\nPreserve every guest argument, status/stdout/stderr assertion and the original\nclosed-stdin /bin/cat prefix. CARGO_TARGET_TMPDIR continues to own fixture and\nwork-directory creation; the official HERMIT_E2E_EMPTY_WORKDIR=/test path still\nadds the same explicit private tmpfs and guest --workdir=/test. No test count,\nselection, comparison policy or resource limit changes.\n\nThis is a test-only follow-up to the external a9 source review. Its official\n24-method execution remains pending; prior aa7 descriptor/complete-mode results\nare retained with their original source attribution.\n",
+      "raw_commit_sha256": "9b93edff9d72f2eca8e004185a54facc0f123b42ddf9baf3af1ff05bb69e6f14"
+    }
+  ],
+  "actual": [
+    {
+      "commit": "1ad25c374a192d206e2bad1a35529aef0d1c4e3c",
+      "parents": [
+        "231228c010541561a81dcb1353ac200f5c791b1a"
+      ],
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789614631 -0700",
+      "message": "Preserve ordinary inode identity when standard descriptors are reused\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nPlain Language Summary and Project Impact\nFiles and pipes reopened at descriptors 0 through 2 now use their ordinary\ninode identity. Fixed standard-stream inode values apply only while those\nslots contain inherited container streams. This repairs the measured KVM\nfstat versus empty-path stat disagreement after descriptor reuse.\n\nTask: kvm-lane-to-full-determinism-and-parity\n\nUse the same resource guard for fstat, fdinfo, maps and anonymous proc-fd\nreadlink metadata. Preserve inherited-stream slot outcomes and existing alias\nbehavior. Extend the existing resource tests and keep the original closed-stdin\ncat assertions first and unchanged, followed by descriptor-reuse controls on\nnative Linux, ptrace and KVM.\n\nThe fixture retains complete-stat-routes as a separate control. Its broader\nproc-fd failure remains unresolved; this change does not claim to repair that\nroute or prove the cause of the historical cat loader failure.\n",
+      "raw_commit_sha256": "87f3e8aed6fe5cad1c43e19a99ebbc6c46e77ef2d0d73e729dfea37c095db3dc"
+    },
+    {
+      "commit": "dda0ebb22abb295a98e533ecda8e76dda5a9c3bc",
+      "parents": [
+        "1ad25c374a192d206e2bad1a35529aef0d1c4e3c"
+      ],
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789625771 -0700",
+      "message": "Bind KVM mount identities to the actual backend namespace\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nPlain Language Summary and Project Impact\nKVM now retains the real completed-container mount identity order and validates\nit against the namespace where the backend opens files. Public library callers\ncapture that same order before guest execution. This lets the shared Detcore\nfdinfo and mountinfo normalization use actual descriptor and mount identities.\n\nTask: kvm-lane-to-full-determinism-and-parity\n\nAdvance the maintained Reverie pin to landed 596b9adee8473dc0a7e62dce18580eead3d0c5c9,\nwhich preserves owned proc-fd metadata and fdinfo semantics. Carry the existing\nDBT 1050 effective-job-second threshold and 16-job clamp only after verifying\nall build/vendor/config inputs are unchanged. The first updater invocation\nretained its calibration refusal; the second completed the normal locked\nworkspace/all-target compile before applying this mount integration.\n\nRequire exact startup mount-order agreement before mutating captured config;\npreserve root rewrites and genuine unlisted mount provenance, and remove the\nobsolete synthetic 0:1 device mapping. Four focused config controls raise only\nthe two Hermit unit inventory declarations from 630 to 634. Generated commands,\nselected populations, dependencies and resources stay unchanged.\n\nThe existing descriptor-reuse, complete-stat-routes and original closed-stdin\nassertions remain unchanged. Their integrated runtime validation is pending;\nthis source change does not assert backend parity or discharge those checks.\n",
+      "raw_commit_sha256": "25931ee17217e1c8fefc4e32cd544fba4dc90eacbb051119a56b90520eb1bdd0"
+    },
+    {
+      "commit": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+      "parents": [
+        "dda0ebb22abb295a98e533ecda8e76dda5a9c3bc"
+      ],
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789629276 -0700",
+      "message": "Isolate descriptor fixture backend working directories\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nPlain Language Summary and Project Impact\nRun the appended ptrace and KVM descriptor-reuse controls from the existing\nowned temporary directory, so a failing fixture does not write into the test\nharness working directory.\n\nTask: kvm-lane-to-full-determinism-and-parity\n\nPreserve every guest argument, status/stdout/stderr assertion and the original\nclosed-stdin /bin/cat prefix. CARGO_TARGET_TMPDIR continues to own fixture and\nwork-directory creation; the official HERMIT_E2E_EMPTY_WORKDIR=/test path still\nadds the same explicit private tmpfs and guest --workdir=/test. No test count,\nselection, comparison policy or resource limit changes.\n\nThis is a test-only follow-up to the external a9 source review. Its official\n24-method execution remains pending; prior aa7 descriptor/complete-mode results\nare retained with their original source attribution.\n",
+      "raw_commit_sha256": "2e9b56bc0184b6ce38db4de3b935e5125c0ddec1e8b3782105c468106587bd2f"
+    }
+  ]
+}

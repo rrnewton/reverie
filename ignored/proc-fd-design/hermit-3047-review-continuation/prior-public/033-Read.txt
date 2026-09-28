@@ -1,0 +1,72 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01XGQoneYnBNm4BFASBPKb5H",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/lib.rs",
+    "offset": 3180,
+    "limit": 60
+  }
+}
+
+Successful public tool result (exact text below):
+3180	        let mut file = tempfile::NamedTempFile::new_in(self.data_dir.join("tmp"))?;
+3181	        write!(file, "{}", id)?;
+3182	        file.persist(self.data_dir.join("last"))?;
+3183	        Ok(())
+3184	    }
+3185	}
+3186	
+3187	/// Capture the current mount namespace's raw IDs in the exact row/parent order
+3188	/// used by Detcore's canonical mountinfo mapping.
+3189	pub fn capture_mountinfo_identity_order() -> Result<Vec<u64>, Error> {
+3190	    mountinfo_identity_order_from(&fs::read("/proc/self/mountinfo")?)
+3191	}
+3192	
+3193	fn mountinfo_identity_order_from(contents: &[u8]) -> Result<Vec<u64>, Error> {
+3194	    use std::collections::BTreeSet;
+3195	
+3196	    let rows = detcore_model::procfs::parse_mountinfo(contents)
+3197	        .ok_or_else(|| anyhow!("malformed /proc/self/mountinfo"))?;
+3198	    let mut visible = Vec::new();
+3199	    let mut parents = Vec::new();
+3200	    let mut seen = BTreeSet::new();
+3201	    for row in rows {
+3202	        seen.insert(row.raw_mount_id);
+3203	        visible.push(row.raw_mount_id);
+3204	        parents.push(row.raw_parent_id);
+3205	    }
+3206	    for parent in parents {
+3207	        if seen.insert(parent) {
+3208	            visible.push(parent);
+3209	        }
+3210	    }
+3211	    Ok(visible)
+3212	}
+3213	
+3214	impl<'a> From<Option<&'a PathBuf>> for HermitData {
+3215	    fn from(data_dir: Option<&'a PathBuf>) -> Self {
+3216	        data_dir.map_or_else(Self::new, Self::with_dir)
+3217	    }
+3218	}
+3219	
+3220	/// Records to the specified directory, which must already exist.
+3221	///
+3222	/// This low-level API supplies no pre-captured mount provenance. Detcore reads
+3223	/// the completed guest namespace after command mounts and stdio are installed.
+3224	/// Container-aware callers with producer-owned provenance must use
+3225	/// [`record_to_with_mountinfo`].
+3226	#[tokio::main(flavor = "current_thread")]
+3227	pub async fn record_to(command: Command, dir: &Path) -> Result<ExitStatus, Error> {
+3228	    record_to_async(command, dir, Vec::new(), None).await
+3229	}
+3230	
+3231	/// Records to the specified directory with exact mountinfo provenance.
+3232	#[tokio::main(flavor = "current_thread")]
+3233	pub async fn record_to_with_mountinfo(
+3234	    command: Command,
+3235	    dir: &Path,
+3236	    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+3237	) -> Result<ExitStatus, Error> {
+3238	    let mountinfo_mount_ids = capture_mountinfo_identity_order()?;
+3239	    record_to_async(

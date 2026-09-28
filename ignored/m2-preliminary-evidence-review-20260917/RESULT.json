@@ -1,0 +1,310 @@
+{
+  "scope": "Independent retained preliminary evidence audit; confirms failure as failure, not a product approval",
+  "checks": [
+    {
+      "check": "child packet REPORT.md",
+      "ok": true
+    },
+    {
+      "check": "child packet AUDIT.json",
+      "ok": true
+    },
+    {
+      "check": "child packet INPUTS.json",
+      "ok": true
+    },
+    {
+      "check": "child packet audit.py",
+      "ok": true
+    },
+    {
+      "check": "child no audit discrepancies",
+      "ok": true
+    },
+    {
+      "check": "compile/list no discrepancies",
+      "ok": true
+    },
+    {
+      "check": "native-m2-detcore actual ELF linkage",
+      "ok": true
+    },
+    {
+      "check": "native-m2-detcore actual emitted inventory subset",
+      "ok": true
+    },
+    {
+      "check": "native-m2-detcore frozen source linkage",
+      "ok": true
+    },
+    {
+      "check": "native-m2-detcore actual raw selected order",
+      "ok": true
+    },
+    {
+      "check": "native-m2-detcore actual raw outcomes match audit",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-reports actual ELF linkage",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-reports actual emitted inventory subset",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-reports frozen source linkage",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-reports actual raw selected order",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-reports actual raw outcomes match audit",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-comparators actual ELF linkage",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-comparators actual emitted inventory subset",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-comparators frozen source linkage",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-comparators actual raw selected order",
+      "ok": true
+    },
+    {
+      "check": "native-m2-hermit-comparators actual raw outcomes match audit",
+      "ok": true
+    },
+    {
+      "check": "original CLI cohort remains failed",
+      "ok": true
+    },
+    {
+      "check": "exact original panic retained",
+      "ok": true
+    },
+    {
+      "check": "no actual direct unit identity for logdiff_report::",
+      "ok": true
+    },
+    {
+      "check": "no actual direct unit identity for analyze::phases::",
+      "ok": true
+    },
+    {
+      "check": "failing source exact frozen manifest",
+      "ok": true
+    },
+    {
+      "check": "failing source assertion unchanged",
+      "ok": true
+    }
+  ],
+  "failures": [],
+  "compile_lists": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-preliminary-evidence-review-20260917/COMPILE-LISTS-READBACK.json",
+    "bytes": 318731,
+    "mode": 420,
+    "sha256": "37ec0bf73f59518aabf9b6bc49a3ff5b3cc4ced833b79c8e057cc4dfe1b6afef"
+  },
+  "native_crosscheck": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-preliminary-evidence-review-20260917/native-crosscheck/AUDIT.json",
+    "bytes": 119460,
+    "mode": 420,
+    "sha256": "ddcd99a4f405b9f49aa505138ba4c2619372546cfa72d933d55c6a90f61fdba6"
+  },
+  "native_packet": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-preliminary-evidence-review-20260917/native-crosscheck/PACKET.json",
+    "bytes": 545,
+    "mode": 420,
+    "sha256": "ee16b16d7d323b245da5ad8cee8082648375338f75c2c188f12af06acc378057"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v2/tracked-source-manifest.json",
+    "bytes": 285094,
+    "mode": 420,
+    "sha256": "e263883c153cf2ed59c81a939dda4a48c560f34f0561fe93e2a968308535ab63"
+  },
+  "source_copy": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/changed/hermit-cli/src/bin/hermit/logdiff.rs",
+    "bytes": 62818,
+    "mode": 420,
+    "sha256": "c5e1e50e8ce323d007ee827a51908c9738587f5748d8b10ac4132e82d50c2429"
+  },
+  "source_base": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+  "source_tree": "597bad02a2a18bfb159ea65e191c76b88dd22c82",
+  "native_results": [
+    {
+      "phase": "native-m2-detcore",
+      "counts": {
+        "ok": 76
+      },
+      "summary": [
+        "test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 626 filtered out; finished in 0.34s"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "comparison_eligible": true,
+      "cpu_seconds": 0.687357,
+      "observed_wall_seconds": 1.22284154,
+      "service": "safehermit-20260917T230659Z-3404300.service",
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/result.json",
+        "bytes": 9155,
+        "mode": 420,
+        "sha256": "723916d57cb56a69faef815a20b8696c9906351efe11d800651ebce9f29b150f"
+      },
+      "raw_stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/stdout",
+        "bytes": 5996,
+        "mode": 384,
+        "sha256": "d67ec17f57c20d62529aa01606087fee1bd6ae84ac818bb6d1b4abb297f85ce5"
+      },
+      "raw_stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/stderr",
+        "bytes": 3074,
+        "mode": 384,
+        "sha256": "6a5a038b3f5b0b021fa049b03efca7796c89974833d4d8027fa824b11d86933e"
+      },
+      "artifact": "detcore"
+    },
+    {
+      "phase": "native-m2-hermit-reports",
+      "counts": {
+        "ok": 18
+      },
+      "summary": [
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 367 filtered out; finished in 0.01s"
+      ],
+      "raw_status": 0,
+      "accepted": true,
+      "terminal_authenticated": true,
+      "comparison_eligible": true,
+      "cpu_seconds": 0.699037,
+      "observed_wall_seconds": 1.390606713,
+      "service": "safehermit-20260917T230735Z-3471741.service",
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/result.json",
+        "bytes": 5248,
+        "mode": 420,
+        "sha256": "3022f2d2d069a8887b40433f3f2a6307ac667ac05279154fdb8718b3d915903b"
+      },
+      "raw_stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/stdout",
+        "bytes": 1853,
+        "mode": 384,
+        "sha256": "0d71f46441a442f9a296e9db0c66b4dabc1c8d8b74457ce9b1083699c5107dce"
+      },
+      "raw_stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "artifact": "hermit"
+    },
+    {
+      "phase": "native-m2-hermit-comparators",
+      "counts": {
+        "ok": 175,
+        "FAILED": 1
+      },
+      "summary": [
+        "test result: FAILED. 175 passed; 1 failed; 0 ignored; 0 measured; 136 filtered out; finished in 10.77s"
+      ],
+      "raw_status": 101,
+      "accepted": false,
+      "terminal_authenticated": true,
+      "comparison_eligible": false,
+      "cpu_seconds": 1.572174,
+      "observed_wall_seconds": 12.070378026,
+      "service": "safehermit-20260917T230812Z-3535287.service",
+      "result": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/result.json",
+        "bytes": 2918,
+        "mode": 420,
+        "sha256": "cc6826c72389aa48529010654d69737d47bf5775631628bb8895c941fb4b2789"
+      },
+      "raw_stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/stdout",
+        "bytes": 13870,
+        "mode": 384,
+        "sha256": "4d4fe5500448eeef9bfe62e6e9be1b4d24167bf87c9c3cf2d7c8e659f3503381"
+      },
+      "raw_stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/stderr",
+        "bytes": 63881,
+        "mode": 384,
+        "sha256": "f1ab9856c6623d1dadfc37b2475e7354ee23a4ced7eb58961ef7d02856c278fd"
+      },
+      "artifact": "hermit-bin"
+    }
+  ],
+  "original_evidence": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/result.json",
+      "bytes": 9155,
+      "mode": 420,
+      "sha256": "723916d57cb56a69faef815a20b8696c9906351efe11d800651ebce9f29b150f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/stdout",
+      "bytes": 5996,
+      "mode": 384,
+      "sha256": "d67ec17f57c20d62529aa01606087fee1bd6ae84ac818bb6d1b4abb297f85ce5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/stderr",
+      "bytes": 3074,
+      "mode": 384,
+      "sha256": "6a5a038b3f5b0b021fa049b03efca7796c89974833d4d8027fa824b11d86933e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/result.json",
+      "bytes": 5248,
+      "mode": 420,
+      "sha256": "3022f2d2d069a8887b40433f3f2a6307ac667ac05279154fdb8718b3d915903b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/stdout",
+      "bytes": 1853,
+      "mode": 384,
+      "sha256": "0d71f46441a442f9a296e9db0c66b4dabc1c8d8b74457ce9b1083699c5107dce"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/stderr",
+      "bytes": 0,
+      "mode": 384,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/result.json",
+      "bytes": 2918,
+      "mode": 420,
+      "sha256": "cc6826c72389aa48529010654d69737d47bf5775631628bb8895c941fb4b2789"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/stdout",
+      "bytes": 13870,
+      "mode": 384,
+      "sha256": "4d4fe5500448eeef9bfe62e6e9be1b4d24167bf87c9c3cf2d7c8e659f3503381"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/stderr",
+      "bytes": 63881,
+      "mode": 384,
+      "sha256": "f1ab9856c6623d1dadfc37b2475e7354ee23a4ced7eb58961ef7d02856c278fd"
+    }
+  ]
+}

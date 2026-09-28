@@ -1,0 +1,222 @@
+{
+  "base_commit": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+  "scope": "tracked Cargo manifests within three path components declaring rrnewton/reverie; exact object preservation in complete expected tree",
+  "files": [
+    {
+      "path": "detcore-dbt/Cargo.toml",
+      "base_entry": {
+        "path": "detcore-dbt/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "b6e2675acdfbfaf50dfe5b287ad0b80536cfd782"
+      },
+      "expected_entry": {
+        "path": "detcore-dbt/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "b6e2675acdfbfaf50dfe5b287ad0b80536cfd782"
+      },
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/base-inputs/detcore-dbt/Cargo.toml",
+      "bytes": 955,
+      "sha256": "047585bedfa5d6a8068c594e00527bb6a534c5b79647253078b633c9e9ca02ee",
+      "matching_lines": [
+        {
+          "line": 18,
+          "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 19,
+          "text": "reverie-dbt = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\", default-features = false }"
+        }
+      ]
+    },
+    {
+      "path": "detcore-model/Cargo.toml",
+      "base_entry": {
+        "path": "detcore-model/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ab171e9a0d187148558451ed988f8c1352675c60"
+      },
+      "expected_entry": {
+        "path": "detcore-model/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ab171e9a0d187148558451ed988f8c1352675c60"
+      },
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/base-inputs/detcore-model/Cargo.toml",
+      "bytes": 1434,
+      "sha256": "9bdba687d1c9b824b7378eb49480fe8ce3314f728ce7eb54b13ac30c715b558d",
+      "matching_lines": [
+        {
+          "line": 20,
+          "text": "reverie-syscalls = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        }
+      ]
+    },
+    {
+      "path": "detcore-sabre/Cargo.toml",
+      "base_entry": {
+        "path": "detcore-sabre/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "6ca8c9f6c1c41fe4cd6f97770f826bc42b0515a3"
+      },
+      "expected_entry": {
+        "path": "detcore-sabre/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "6ca8c9f6c1c41fe4cd6f97770f826bc42b0515a3"
+      },
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/base-inputs/detcore-sabre/Cargo.toml",
+      "bytes": 1187,
+      "sha256": "5762246e20eec9a6e9995a234d68cdb8d1a83a9562424dee5c0702094d81f7ff",
+      "matching_lines": [
+        {
+          "line": 16,
+          "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 17,
+          "text": "reverie-memory = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 18,
+          "text": "reverie-rpc-transport = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 19,
+          "text": "reverie-sabre = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 20,
+          "text": "reverie-syscalls = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        }
+      ]
+    },
+    {
+      "path": "detcore/Cargo.toml",
+      "base_entry": {
+        "path": "detcore/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ecb6eb1372bb7123ab5a33fbce53132646fcd1d6"
+      },
+      "expected_entry": {
+        "path": "detcore/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ecb6eb1372bb7123ab5a33fbce53132646fcd1d6"
+      },
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/base-inputs/detcore/Cargo.toml",
+      "bytes": 4387,
+      "sha256": "976092b5e8576080f9d3870705fffc796c22dd1dc10e556b5795ac42ff81db29",
+      "matching_lines": [
+        {
+          "line": 75,
+          "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 88,
+          "text": "reverie-ptrace = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        }
+      ]
+    },
+    {
+      "path": "hermit-cli/Cargo.toml",
+      "base_entry": {
+        "path": "hermit-cli/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "c71ecb33ac773b2056c8c7550d325d872e02a902"
+      },
+      "expected_entry": {
+        "path": "hermit-cli/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "c71ecb33ac773b2056c8c7550d325d872e02a902"
+      },
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/base-inputs/hermit-cli/Cargo.toml",
+      "bytes": 4358,
+      "sha256": "b9b275fbe4280150a8baa334d4d698e8683bee978171db4640180b354cbfd744",
+      "matching_lines": [
+        {
+          "line": 58,
+          "text": "reverie = { package = \"reverie-core\", version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 59,
+          "text": "reverie-dbt = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\", default-features = false, optional = true }"
+        },
+        {
+          "line": 60,
+          "text": "reverie-kvm = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 61,
+          "text": "reverie-ptrace = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        },
+        {
+          "line": 62,
+          "text": "reverie-liteinst = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\", default-features = false }"
+        },
+        {
+          "line": 63,
+          "text": "reverie-rpc-transport = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        }
+      ]
+    },
+    {
+      "path": "hermit-install/Cargo.toml",
+      "base_entry": {
+        "path": "hermit-install/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "b31cb10722b3abdb3e4ee90b8704444a8d8101dc"
+      },
+      "expected_entry": {
+        "path": "hermit-install/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "b31cb10722b3abdb3e4ee90b8704444a8d8101dc"
+      },
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/base-inputs/hermit-install/Cargo.toml",
+      "bytes": 519,
+      "sha256": "99e8fab46d11f8e56b33c79e3db5f4933bfff3e7c1046052c696cc235e7ef943",
+      "matching_lines": [
+        {
+          "line": 13,
+          "text": "reverie-dbt = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\", default-features = false }"
+        },
+        {
+          "line": 14,
+          "text": "reverie-sabre = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\" }"
+        }
+      ]
+    },
+    {
+      "path": "liteinst-runtime-build/runtime/Cargo.toml",
+      "base_entry": {
+        "path": "liteinst-runtime-build/runtime/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "b03111c4229d9e6f6a5287e05b34cd8de5566a69"
+      },
+      "expected_entry": {
+        "path": "liteinst-runtime-build/runtime/Cargo.toml",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "b03111c4229d9e6f6a5287e05b34cd8de5566a69"
+      },
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/base-inputs/liteinst-runtime-build/runtime/Cargo.toml",
+      "bytes": 321,
+      "sha256": "4c706cee90f7276866c53d761bc24b4eb898c95616c9dc504b865e912a32ee78",
+      "matching_lines": [
+        {
+          "line": 8,
+          "text": "reverie-liteinst = { version = \"0.2.0\", git = \"https://github.com/rrnewton/reverie.git\", rev = \"7d863ab3f02639731713a01467b2548c41e3dbfb\", default-features = false, features = [\"preload-constructor\"] }"
+        }
+      ]
+    }
+  ]
+}

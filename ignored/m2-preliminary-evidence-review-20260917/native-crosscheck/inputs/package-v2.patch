@@ -1,0 +1,39 @@
+--- prepare-package.py
++++ prepare-package-v2.py
+@@ -11,9 +11,9 @@
+ PREVIOUS = REPO / 'ignored/m2-callers-v1'
+ COHORTS = [
+     ('native-m2-detcore', 'detcore', ['logdiff::']),
+-    ('native-m2-hermit-reports', 'hermit', ['canonical_verdict::', 'logdiff_report::']),
++    ('native-m2-hermit-reports', 'hermit', ['canonical_verdict::']),
+     ('native-m2-hermit-comparators', 'hermit-bin',
+-     ['verify::', 'run::', 'record_start::', 'logdiff::', 'backends::', 'analyze::phases::']),
++     ['verify::', 'run::', 'record_start::', 'logdiff::', 'backends::']),
+ ]
+ 
+ 
+@@ -32,6 +32,16 @@
+         inventory_records.append(record)
+         inventories[key] = result['readback']['actual_names']
+         check_file(compiled['readback']['artifacts'][key]['retained'], executable=True)
++    missing_modules = []
++    for key, prefix, path in [
++        ('hermit', 'logdiff_report::', 'hermit-cli/src/logdiff_report.rs'),
++        ('hermit-bin', 'analyze::phases::', 'hermit-cli/src/bin/hermit/analyze/phases.rs'),
++    ]:
++        require(not any(name.startswith(prefix) for name in inventories[key]), 'previously absent unit prefix appeared')
++        source = read(REPO / path).decode()
++        require('#[test]' not in source and '#[tokio::test' not in source, 'source declares an unaccounted unit test')
++        missing_modules.append({'prefix': prefix, 'source': file_record(REPO / path),
++                                'meaning': 'No standalone methods in this unit harness; existing integration/actual-analyze qualification remains separate.'})
+     old_template = json_read(REPO / 'ignored/prejoin-main-integration-plan-v2/sequence-template.json')
+     native = next(row for row in old_template['phase_order'] if row['name'] == 'native-hermit')
+     phases, selected = [], {}
+@@ -79,6 +89,7 @@
+     write_new(HERE / 'COHORTS.json', {
+         'source': context['source_manifest'], 'context': context_record, 'compile': compiled_record,
+         'all_inventory_records': inventory_records, 'selected': selected,
++        'absent_unit_modules': missing_modules,
+         'scope': 'Native method execution only. No VM, actual traced guest, shell-consumer or complete recurring-node claim.'})
+     print({name: len(row['names']) for name, row in selected.items()})
+ 

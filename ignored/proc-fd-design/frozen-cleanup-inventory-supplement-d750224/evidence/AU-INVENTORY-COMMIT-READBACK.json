@@ -1,0 +1,35 @@
+{
+  "commit": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "parent": "1145835fc804f47ae48b29b89009e6937184175a",
+  "branch": "codex/kvm-frozen-cleanup-agent-utils-20260917",
+  "message": "wrkslots: count added frozen validation preservation tests\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nKeep the exact lifecycle inventory aligned with the 143 added cases from\neight preservation test methods. Independent collection of the before and\nafter source preserves all 654 old identities. Total cases increase to 797\nand ordinary-environment cases to 241; all 556 mapped cases and both mapped\nroot identities stay unchanged.\n\nRetain the disjointness, complete union, exact counts and exact method-name\nchecks. The directly affected inventory test passes. The original normal\nvalidation failure at the stale total count remains recorded; normal\nvalidation is rerun after this correction.\n",
+  "source_files": [
+    {
+      "path": "py/wrkslots/cli.py",
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6"
+    },
+    {
+      "path": "py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 807373,
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601"
+    },
+    {
+      "path": "py/tests/test_packaging_infrastructure.py",
+      "bytes": 21532,
+      "sha256": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b"
+    }
+  ],
+  "patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0",
+  "normal_commit_exit": 0,
+  "hooks": "normal; no bypass; sample hooks only",
+  "direct_inventory_test": {
+    "passed": 1,
+    "seconds": 1.98,
+    "exit": 0
+  },
+  "inventory_proof_sha256": "cec98ff6fc0a04d57241feff5f456de54787c979dd3685dc843902e2a59205b3",
+  "normal_validate": "fresh run pending; original exit2 retained unchanged",
+  "public_push": "held for root review"
+}

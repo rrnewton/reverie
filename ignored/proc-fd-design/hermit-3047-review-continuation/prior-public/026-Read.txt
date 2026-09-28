@@ -1,0 +1,162 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01Nou8M9HDxneMeAcoXWHhwq",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/lib.rs",
+    "offset": 2079,
+    "limit": 150
+  }
+}
+
+Successful public tool result (exact text below):
+2079	    backend
+2080	        .install_static_elf_with_context(&image, &argv, &envp, &cwd)
+2081	        .map_err(|error| anyhow!("failed to load KVM guest executable {program:?}: {error}"))?;
+2082	    backend
+2083	        .set_random_seed(random_seed)
+2084	        .map_err(|error| anyhow!("failed to configure KVM guest random seed: {error}"))?;
+2085	    // The KVM backend now defaults to Tool-owned guest threads: CLONE_THREAD
+2086	    // workers are driven through the Detcore tool loop and their futex/CLEARTID
+2087	    // synchronization routes to Detcore, matching the golden ptrace model
+2088	    // ("follow children"). Detcore's own clone logic treats a CLONE_THREAD as
+2089	    // backend-uninstrumented iff `backend_dispatches_thread_tools` is false (see
+2090	    // detcore/src/syscalls/threads.rs), so in exactly that case opt the backend
+2091	    // out to host-owned threads to keep worker execution and futex ownership in
+2092	    // one synchronization domain (mixing them deadlocks pthread_join). In the
+2093	    // default (true) case the backend already follows children, so no call is
+2094	    // needed.
+2095	    if !config.backend_dispatches_thread_tools {
+2096	        backend.unmonitored_threads();
+2097	    }
+2098	
+2099	    let execution_started = Instant::now();
+2100	    let (global_state, code, stdout, stderr) = backend
+2101	        .run_static_elf_with_tool::<Detcore>(config, capture_output)
+2102	        .await
+2103	        .map_err(|error| anyhow!("KVM guest execution failed: {error}"))?;
+2104	    let cleanup_started = Instant::now();
+2105	    global_state
+2106	        .clean_up(print_summary, print_summary_to_json_file)
+2107	        .await;
+2108	    let teardown_started = Instant::now();
+2109	    // Drop explicitly so the host's KVM VM teardown cost remains observable.
+2110	    drop(backend);
+2111	    let teardown_finished = Instant::now();
+2112	
+2113	    // Every field below is a host wall-clock duration. Keep this diagnostic at
+2114	    // DEBUG so it remains available for backend profiling without entering the
+2115	    // INFO stream exposed to canonical comparison. KVM's built-in verification
+2116	    // is still output/status-only; this classification does not claim KVM L2.
+2117	    tracing::debug!(
+2118	        target: "hermit::kvm",
+2119	        prepare_us = setup_started.duration_since(dispatch_started).as_micros() as u64,
+2120	        setup_us = execution_started.duration_since(setup_started).as_micros() as u64,
+2121	        execution_us = cleanup_started.duration_since(execution_started).as_micros() as u64,
+2122	        cleanup_us = teardown_started.duration_since(cleanup_started).as_micros() as u64,
+2123	        teardown_us = teardown_finished.duration_since(teardown_started).as_micros() as u64,
+2124	        lifecycle_us = teardown_finished.duration_since(dispatch_started).as_micros() as u64,
+2125	        "reverie-kvm lifecycle phase timings",
+2126	    );
+2127	
+2128	    if !capture_output {
+2129	        std::io::stdout().write_all(&stdout)?;
+2130	        std::io::stderr().write_all(&stderr)?;
+2131	    }
+2132	
+2133	    Ok(Output {
+2134	        status: ExitStatus::Exited(code),
+2135	        stdout,
+2136	        stderr,
+2137	    })
+2138	}
+2139	
+2140	// TODO-HUMAN-REVIEW(PR-743): Review bounded relaunch before DBT guest execution.
+2141	#[cfg(feature = "dbt")]
+2142	fn dbt_client_thread_start_failed(status: &std::process::ExitStatus) -> bool {
+2143	    status.code() == Some(reverie_dbt::CLIENT_THREAD_START_FAILURE_EXIT_CODE)
+2144	}
+2145	
+2146	// AUTONOMOUS-BOT-IMPLEMENTED
+2147	// TODO-HUMAN-REVIEW(PR-737): Review public DBT dispatch and child environment ownership.
+2148	/// Dispatch a command onto the Detcore-linked reverie-dbt runtime.
+2149	#[cfg(feature = "dbt")]
+2150	async fn run_dbt(
+2151	    command: Command,
+2152	    config: DetConfig,
+2153	    print_summary: bool,
+2154	    capture_output: bool,
+2155	) -> Result<Output, Error> {
+2156	    if !config.sequentialize_threads {
+2157	        return Err(anyhow!(
+2158	            "the dbt backend requires sequentialized threads; remove \
+2159	             --no-sequentialize-threads (or --strace-only) to run under --backend dbt"
+2160	        ));
+2161	    }
+2162	
+2163	    let config_json = serde_json::to_string(&config)
+2164	        .map_err(|error| anyhow!("failed to serialize the Detcore config for DBT: {error}"))?;
+2165	    let panic_on_unsupported_syscalls = config.panic_on_unsupported_syscalls;
+2166	    let (drrun, client) = detcore_dbt::prepare_native_client()
+2167	        .map_err(|error| anyhow!("failed to prepare the Detcore DynamoRIO client: {error}"))?;
+2168	    let mut runner = reverie_dbt::DbtRunner::new(&drrun, &client)
+2169	        .map_err(|error| {
+2170	            anyhow!(
+2171	                "failed to configure the DynamoRIO DBT runner (drrun={}, client={}): {error}",
+2172	                drrun.display(),
+2173	                client.display()
+2174	            )
+2175	        })?
+2176	        .summary(print_summary)
+2177	        .isolated_process_group(panic_on_unsupported_syscalls);
+2178	    if panic_on_unsupported_syscalls {
+2179	        runner = runner.client_argument("-panic-on-unsupported-syscalls");
+2180	    }
+2181	
+2182	    let program = command.get_program().to_owned();
+2183	    let mut environment = command.get_captured_envs();
+2184	    environment.insert(detcore_dbt::DETCONFIG_ENV.into(), config_json.into());
+2185	    let guest = command.into_std_lossy();
+2186	    tracing::info!(
+2187	        target: "hermit::dbt",
+2188	        program = ?program,
+2189	        drrun = %drrun.display(),
+2190	        client = %client.display(),
+2191	        "launching guest through reverie-dbt with Detcore<DbtGuest>",
+2192	    );
+2193	
+2194	    let (status, stdout, stderr, mut global) = if capture_output {
+2195	        let launch = || {
+2196	            runner.output_with_environment_and_global::<detcore::GlobalState>(
+2197	                &guest,
+2198	                &environment,
+2199	                config.clone(),
+2200	            )
+2201	        };
+2202	        let (mut output, mut global) = launch()
+2203	            .await
+2204	            .map_err(|error| anyhow!("failed to launch drrun ({}): {error}", drrun.display()))?;
+2205	        if dbt_client_thread_start_failed(&output.status) {
+2206	            tracing::warn!(
+2207	                target: "hermit::dbt",
+2208	                "DynamoRIO client thread failed before guest start; retrying once",
+2209	            );
+2210	            global.force_shutdown_with_error();
+2211	            global.cancel_internal_scheduler().await;
+2212	            global.clean_up(false, &None).await;
+2213	            (output, global) = launch().await.map_err(|error| {
+2214	                anyhow!("failed to launch drrun ({}): {error}", drrun.display())
+2215	            })?;
+2216	        }
+2217	        (output.status, output.stdout, output.stderr, global)
+2218	    } else {
+2219	        let launch = || {
+2220	            runner.status_with_environment_and_global::<detcore::GlobalState>(
+2221	                &guest,
+2222	                &environment,
+2223	                config.clone(),
+2224	            )
+2225	        };
+2226	        let (mut status, mut global) = launch()
+2227	            .await
+2228	            .map_err(|error| anyhow!("failed to launch drrun ({}): {error}", drrun.display()))?;

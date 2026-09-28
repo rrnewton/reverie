@@ -1,0 +1,7 @@
+# Reverie final-expression formatting correction
+
+Source-v11 differs from source-v10 only by rustfmt's displayed removal of the unnecessary block enclosing the initial exec RunFailed final Err expression. The first-error publication, ownership, cleanup, normal cancellation, test selectors and bounds are unchanged. The complete earlier source report remains under source-v9-preparation and source-v10-preparation.
+
+The lint-v3 workspace Clippy command passed on source-v10 with --locked --offline --workspace --all-targets --all-features -- -D warnings: 209.807869 aggregate CPU seconds and 78.499523716 wall seconds. The format check failed only for this exact expression formatting, at 1.703727 CPU seconds and 2.460991403 wall seconds. Both had complete uncapped accounting and independently inactive, empty services. All input and lock checks passed after those checks, before this edit. The prior native 34-pass and three-VM-control result stays bound to source-v9, as do the completed Hermit integration and qualification-build artifacts; it has not been relabelled as source-v10 or source-v11.
+
+A new final format/Clippy check and normal follow-up Hermit qualification build will bind this candidate. No executed result is claimed by this source preparation. Original retained whole-suite fatal_worker_ro_delayed_waiter failure, the separate real Hermit initialized-VM setup and pthread qualification obligations, the virtual-PID SIGCHLD defect, and the base scratch-hide/callback dual-error limitation remain explicitly separate.

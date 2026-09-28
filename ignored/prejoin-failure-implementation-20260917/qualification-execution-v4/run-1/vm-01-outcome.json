@@ -1,0 +1,19 @@
+{
+  "stage": "vm-01",
+  "test": "vm::tests::nested_host_fork_failure_uses_descendant_process_and_worker_identity",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "452"
+    ]
+  ],
+  "stdout_sha256": "b7c633199b4101475c71fe688331f991a73c56f18f6e887435c43fdeca6ba007",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "02eef641d85c2010386c09bd37d7bf1311fb5cf7e5554d0936c302093e495f65",
+  "cpu_nsec": 279062000,
+  "wall_seconds": 1.042331655
+}

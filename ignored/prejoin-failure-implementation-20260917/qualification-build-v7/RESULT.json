@@ -1,0 +1,297 @@
+{
+  "status": "passed",
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "source_binding_sha256": "aa5fecbfa4360cc8bcc55a6df50c7e2e47e1d0d99e9551a9516c8037d0edd5ff",
+  "plan_sha256": "1b43c8ab82248ffc2645f1673a22bb7c2fc9c1abffe12296d9862bf71194a2e3",
+  "caller_sha256": "f5d06e5f5931ee60295d1fd4b19fa2f9f18e6118ecb2fe3a3d4223cd7a08c6ed",
+  "launch_sha256": "e1426ff10719b5283813f77ebbf842f3b419dc0eaaca6d80eedcb8580b7f2f0e",
+  "stages": [
+    {
+      "stage": "compile",
+      "payload": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "reverie-kvm",
+        "--lib",
+        "--test",
+        "static_elf",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "cpu_seconds": 21.760329,
+      "wall_seconds": 10.537082949,
+      "service": {
+        "unit": "safehermit-20260917T182732Z-876220.service",
+        "initial_properties": {
+          "Id": "safehermit-20260917T182732Z-876220.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182732Z-876220.service",
+          "MainPID": 877629,
+          "ExecMainPID": 877629,
+          "ExecMainCode": 0,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1828581557894,
+          "CPUUsageNSec": 4796000,
+          "RuntimeMaxUSec": 900000000,
+          "MemoryMax": 17179869184,
+          "MemorySwapMax": 0,
+          "IgnoreSIGPIPE": 1,
+          "ExecStart": {
+            "value": {
+              "type": "a(sasbttttuii)",
+              "data": [
+                [
+                  "/usr/bin/python3",
+                  [
+                    "/usr/bin/python3",
+                    "-B",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/compile/before-exec.json",
+                    "61a1c50252d4ec34a08e3d412a9cd9ab9b12762e394e8c552fe38e70bd19298f"
+                  ],
+                  false,
+                  1789669652799665,
+                  1828581557894,
+                  0,
+                  0,
+                  877629,
+                  0,
+                  0
+                ]
+              ]
+            },
+            "query_argv": [
+              "/usr/bin/busctl",
+              "--user",
+              "--json=short",
+              "get-property",
+              "org.freedesktop.systemd1",
+              "/org/freedesktop/systemd1/unit/safehermit_2d20260917T182732Z_2d876220_2eservice",
+              "org.freedesktop.systemd1.Service",
+              "ExecStart"
+            ],
+            "stdout_sha256": "9e4a700b30952c1f2ff918ba66c85c80a4d9cf9fab529bb9d83fb11a0b823d51",
+            "raw_stdout": "{\"type\":\"a(sasbttttuii)\",\"data\":[[\"/usr/bin/python3\",[\"/usr/bin/python3\",\"-B\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/compile/before-exec.json\",\"61a1c50252d4ec34a08e3d412a9cd9ab9b12762e394e8c552fe38e70bd19298f\"],false,1789669652799665,1828581557894,0,0,877629,0,0]]}\n",
+            "returncode": 0
+          }
+        },
+        "main_process": {
+          "pid": 877629,
+          "start_ticks": 182858155,
+          "parent_pid": 32320,
+          "state": "R",
+          "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182732Z-876220.service"
+        },
+        "cgroup_inode": 39584801,
+        "cgroup_device": 27
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/compile/result.json",
+      "result_sha256": "c5787bf7cddab6ad4664215c844113e4df5f5803c9071e1bbf405ba87564bb54",
+      "stdout_sha256": "889a4c928642f7569861a2fd43ccd8a86b6651bb4ec2def0d9f464a551ad79f5",
+      "stderr_sha256": "b586950fa71cb194f1a1f3b3a0c1ab2c0bcc58d05148aa9ca9d499798f4e1677",
+      "stdout_bytes": 127490,
+      "stderr_bytes": 194
+    },
+    {
+      "stage": "list-lib",
+      "payload": [
+        "<verified-compiled-test-executable>",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "cpu_seconds": 0.215416,
+      "wall_seconds": 1.029580217,
+      "service": {
+        "unit": "safehermit-20260917T182745Z-906430.service",
+        "initial_properties": {
+          "Id": "safehermit-20260917T182745Z-906430.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182745Z-906430.service",
+          "MainPID": 906996,
+          "ExecMainPID": 906996,
+          "ExecMainCode": 0,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1828594718707,
+          "CPUUsageNSec": 3885000,
+          "RuntimeMaxUSec": 15000000,
+          "MemoryMax": 17179869184,
+          "MemorySwapMax": 0,
+          "IgnoreSIGPIPE": 1,
+          "ExecStart": {
+            "value": {
+              "type": "a(sasbttttuii)",
+              "data": [
+                [
+                  "/usr/bin/python3",
+                  [
+                    "/usr/bin/python3",
+                    "-B",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/list-lib/before-exec.json",
+                    "8e239439f8afa559243b2c9a8862a7975dcf28a1e323eea3ca82131b06fb8c25"
+                  ],
+                  false,
+                  1789669665960478,
+                  1828594718707,
+                  0,
+                  0,
+                  906996,
+                  0,
+                  0
+                ]
+              ]
+            },
+            "query_argv": [
+              "/usr/bin/busctl",
+              "--user",
+              "--json=short",
+              "get-property",
+              "org.freedesktop.systemd1",
+              "/org/freedesktop/systemd1/unit/safehermit_2d20260917T182745Z_2d906430_2eservice",
+              "org.freedesktop.systemd1.Service",
+              "ExecStart"
+            ],
+            "stdout_sha256": "4bb6b71c36fe9ea551eff58c03503922a253218af09a0cc1f6219db948989eab",
+            "raw_stdout": "{\"type\":\"a(sasbttttuii)\",\"data\":[[\"/usr/bin/python3\",[\"/usr/bin/python3\",\"-B\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/list-lib/before-exec.json\",\"8e239439f8afa559243b2c9a8862a7975dcf28a1e323eea3ca82131b06fb8c25\"],false,1789669665960478,1828594718707,0,0,906996,0,0]]}\n",
+            "returncode": 0
+          }
+        },
+        "main_process": {
+          "pid": 906996,
+          "start_ticks": 182859471,
+          "parent_pid": 32320,
+          "state": "R",
+          "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182745Z-906430.service"
+        },
+        "cgroup_inode": 39585155,
+        "cgroup_device": 27
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/list-lib/result.json",
+      "result_sha256": "56618df077a0fb123a55bc2a79a7d79722bacb1aed98115265b4b20715a3916e",
+      "stdout_sha256": "7a9b44f4288acd8715c5a4ca00f461a43be07c40734a80047f9514ae6ce179cf",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 35628,
+      "stderr_bytes": 0
+    },
+    {
+      "stage": "list-static-elf",
+      "payload": [
+        "<verified-compiled-test-executable>",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "cpu_seconds": 0.265595,
+      "wall_seconds": 0.997331147,
+      "service": {
+        "unit": "safehermit-20260917T182749Z-913050.service",
+        "initial_properties": {
+          "Id": "safehermit-20260917T182749Z-913050.service",
+          "LoadState": "loaded",
+          "ActiveState": "active",
+          "SubState": "running",
+          "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182749Z-913050.service",
+          "MainPID": 913962,
+          "ExecMainPID": 913962,
+          "ExecMainCode": 0,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1828598245365,
+          "CPUUsageNSec": 2887000,
+          "RuntimeMaxUSec": 15000000,
+          "MemoryMax": 17179869184,
+          "MemorySwapMax": 0,
+          "IgnoreSIGPIPE": 1,
+          "ExecStart": {
+            "value": {
+              "type": "a(sasbttttuii)",
+              "data": [
+                [
+                  "/usr/bin/python3",
+                  [
+                    "/usr/bin/python3",
+                    "-B",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+                    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/list-static-elf/before-exec.json",
+                    "4e37353cde13ce235c9abc1b9867a83143658fac40bbf7ff6e853e0e38440a61"
+                  ],
+                  false,
+                  1789669669487136,
+                  1828598245365,
+                  0,
+                  0,
+                  913962,
+                  0,
+                  0
+                ]
+              ]
+            },
+            "query_argv": [
+              "/usr/bin/busctl",
+              "--user",
+              "--json=short",
+              "get-property",
+              "org.freedesktop.systemd1",
+              "/org/freedesktop/systemd1/unit/safehermit_2d20260917T182749Z_2d913050_2eservice",
+              "org.freedesktop.systemd1.Service",
+              "ExecStart"
+            ],
+            "stdout_sha256": "2ac727a7e1d46114c33c45934dff3daaab9fd35edbff7d8335778ff0074754d9",
+            "raw_stdout": "{\"type\":\"a(sasbttttuii)\",\"data\":[[\"/usr/bin/python3\",[\"/usr/bin/python3\",\"-B\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/list-static-elf/before-exec.json\",\"4e37353cde13ce235c9abc1b9867a83143658fac40bbf7ff6e853e0e38440a61\"],false,1789669669487136,1828598245365,0,0,913962,0,0]]}\n",
+            "returncode": 0
+          }
+        },
+        "main_process": {
+          "pid": 913962,
+          "start_ticks": 182859824,
+          "parent_pid": 32320,
+          "state": "R",
+          "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T182749Z-913050.service"
+        },
+        "cgroup_inode": 39585277,
+        "cgroup_device": 27
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-build-v7/list-static-elf/result.json",
+      "result_sha256": "349e87128745473fab288d1201bac76c6e71e46e4a37b5ab073b89d3a35207fa",
+      "stdout_sha256": "bd38731ea2425cf485118485434e9b99666d1a6e1f6b849f951aff03df291f7f",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_bytes": 15301,
+      "stderr_bytes": 0
+    }
+  ],
+  "terminal_sha256": "ff632b4abdd162473062616781d15059e3d10d72ad73444581e0e201db1d457d",
+  "full_source_and_inputs_verified": true,
+  "input_count": 75,
+  "inventories": {
+    "lib": 454,
+    "static-elf": 288
+  },
+  "compiler_diagnostics": [],
+  "retained": {
+    "lib": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v7/run-1/retained-elf-v25/lib",
+      "bytes": 116339104,
+      "mode": 493,
+      "sha256": "c4041efdbb201f25ab0a8e1fa771dafba6d23e7bc761fd2bc8cdd11d45534a5a",
+      "separate_inode": true,
+      "emitted_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a"
+    },
+    "static-elf": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v7/run-1/retained-elf-v25/static-elf",
+      "bytes": 148700208,
+      "mode": 493,
+      "sha256": "df5c522c1f51f8337c964c0f092155d0e818e37041ee6d385b8f0cd1a6cf0a0b",
+      "separate_inode": true,
+      "emitted_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592"
+    }
+  },
+  "retained_elf_binding_sha256": "ac18848c131bb8af7daac9a36986f34220d71977542430ac9b850518d3871ead",
+  "scope": "Compile and complete actual inventories only. No test or VM execution."
+}

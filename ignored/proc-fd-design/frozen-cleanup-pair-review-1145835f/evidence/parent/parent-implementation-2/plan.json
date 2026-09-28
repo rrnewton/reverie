@@ -1,0 +1,28 @@
+{
+  "argv": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "180s",
+    "python3",
+    "-m",
+    "unittest",
+    "-v",
+    "test_start_unit.StartUnitTest.test_frozen_receipt_cleanup_routes_preserve_provider_refusal",
+    "test_start_unit.StartUnitTest.test_frozen_cleanup_refuses_missing_record_and_wrong_roots",
+    "test_start_unit.StartUnitTest.test_frozen_cleanup_rejects_provider_success_with_retained_path",
+    "test_start_unit.StartUnitTest.test_frozen_inner_refusal_threads_actual_record_from_worker_slot"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/tests",
+  "source": {
+    "ci-hub/validate/start_unit.py": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+    "ci-hub/validate/tests/test_start_unit.py": "f281db2f1cbb551308ac6c684b75261fca5f423193359356ccd36b16e18d3b1d"
+  },
+  "patch_sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12",
+  "bounds": {
+    "cpu_seconds": 120,
+    "wall_seconds": 180,
+    "address_space_bytes": 4294967296,
+    "output_file_bytes": 16777216
+  }
+}

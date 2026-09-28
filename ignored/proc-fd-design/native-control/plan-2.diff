@@ -1,0 +1,87 @@
+--- plan.json
++++ plan-2.json
+@@ -5,9 +5,9 @@
+   "observer_sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6",
+   "original_supervision_binding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/source-inputs.json",
+   "original_supervision_binding_sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7",
+-  "run_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1",
+-  "native_workdir": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/workdir",
+-  "fixture_elf": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/fdinfo_observation",
++  "run_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2",
++  "native_workdir": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/workdir",
++  "fixture_elf": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation",
+   "fixture_source_sha256": "c202622d6f5b5255fde87a5fb4b105bdaedc9628dd0681779f4d7f807114e865",
+   "inputs": [
+     {
+@@ -121,7 +121,7 @@
+       "name": "compile",
+       "cpu_usec": 30000000,
+       "wall_seconds": 60,
+-      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/compile",
++      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/compile",
+       "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control",
+       "binary": "/usr/bin/cc",
+       "arguments": [
+@@ -131,14 +131,14 @@
+         "-Werror",
+         "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+         "-o",
+-        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/fdinfo_observation"
++        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation"
+       ],
+       "argv": [
+         "/usr/bin/python3",
+         "-B",
+         "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+         "--out",
+-        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/compile",
++        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/compile",
+         "--cpu-usec",
+         "30000000",
+         "--wall-seconds",
+@@ -152,30 +152,30 @@
+         "-Werror",
+         "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+         "-o",
+-        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/fdinfo_observation"
++        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation"
+       ]
+     },
+     {
+       "name": "native",
+       "cpu_usec": 5000000,
+       "wall_seconds": 15,
+-      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/native",
+-      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/workdir",
+-      "binary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/fdinfo_observation",
++      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native",
++      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/workdir",
++      "binary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation",
+       "arguments": [],
+       "argv": [
+         "/usr/bin/python3",
+         "-B",
+         "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+         "--out",
+-        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/native",
++        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native",
+         "--cpu-usec",
+         "5000000",
+         "--wall-seconds",
+         "15",
+         "--log-bytes",
+         "1048576",
+-        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-1/fdinfo_observation"
++        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation"
+       ]
+     }
+   ],
+@@ -221,7 +221,7 @@
+   "execution": [
+     "/usr/bin/python3",
+     "-B",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/launch.py"
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/launch-2.py"
+   ],
+   "scope": "One compile and one native fixture with one fork child. No Hermit/KVM invocation, runtime retry, backend patch or parity qualification.",
+   "post_execution_required": [

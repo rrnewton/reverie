@@ -1,0 +1,50 @@
+{
+  "files": {
+    "/home/newton/work/dev-hermit/ignored/validate/runs/validate-kvm-closed-stdin-a88f9480-frozen.json": {
+      "dev": 48,
+      "ino": 790858312,
+      "mode": 33152,
+      "size": 2941,
+      "mtime_ns": 1789630627533588922,
+      "ctime_ns": 1789630627534211587,
+      "sha256": "fee1158194a7cb4d0b7c6163322d22126ab2fb92271ade05f1b7a2c9ba51b1dc"
+    },
+    "/home/newton/work/dev-hermit/ignored/validate/runs/validate-kvm-closed-stdin-a88f9480-frozen.service-result.json": {
+      "dev": 48,
+      "ino": 790858200,
+      "mode": 33152,
+      "size": 555,
+      "mtime_ns": 1789630622755584623,
+      "ctime_ns": 1789630622756218920,
+      "sha256": "bf780df553c03a0245e65da75f600d7b7949864b24ff7b620fe0b6bf47e10fce"
+    },
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/HANDOFF.md": {
+      "dev": 48,
+      "ino": 791089365,
+      "mode": 33188,
+      "size": 2107,
+      "mtime_ns": 1789632021881712218,
+      "ctime_ns": 1789632021881712218,
+      "sha256": "f3d4023258cb7644c9a919b07a99f3c7fa0aec330f246b010c2406aa4c07bd3c"
+    }
+  },
+  "clone_dir": {
+    "dev": 48,
+    "ino": 790627549,
+    "mode": 16832
+  },
+  "clone_head": "a88f948021a24c6a1ea808f868516c0691c8819a",
+  "clone_tree": "cf2185e73d2335ddd70162e336b27440df5bf3d8",
+  "source_head": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+  "source_index": {
+    "dev": 48,
+    "ino": 791215936,
+    "mode": 33188,
+    "size": 192498,
+    "mtime_ns": 1789632763035298569,
+    "ctime_ns": 1789632763036514078,
+    "sha256": "79823394f7af578232da003fc70a976d3a2abf69be93e80164c67cca2345c1b8"
+  },
+  "au_head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "au_tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a"
+}

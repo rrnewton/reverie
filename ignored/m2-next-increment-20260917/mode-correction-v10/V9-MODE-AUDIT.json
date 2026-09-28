@@ -1,0 +1,272 @@
+{
+  "scope": "read-only mode and byte audit of all frozen v9 preview files",
+  "base_commit": "8051335e87104f7cf832204f74920d38416393b2",
+  "files": [
+    {
+      "path": "README.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "ci/compat-envelope/README.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "ci/configure-build-jobs.sh",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o755",
+      "mode_matches": false
+    },
+    {
+      "path": "demos/05-qemu-busybox.sh",
+      "tracked_mode": "100755",
+      "expected_mode": "0o755",
+      "preview_mode": "0o755",
+      "mode_matches": true
+    },
+    {
+      "path": "demos/README.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "docs/ERROR_CATALOG.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/main.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/logdiff_report.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/metadata.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/tests/kvm_info_log_determinism.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/chaos_replay.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/trace_replay.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/use_case.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/use_case/run_usecase.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "scripts/lib/validate_cell_results.rs",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "scripts/lib/verified_command.rs",
+      "tracked_mode": null,
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "scripts/manifest-to-commands.rs",
+      "tracked_mode": "100755",
+      "expected_mode": "0o755",
+      "preview_mode": "0o755",
+      "mode_matches": true
+    },
+    {
+      "path": "tests/backend-parity/README.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "tests/bin/README.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "tests/e2e/determinism-stress/README.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/common.sh",
+      "tracked_mode": "100755",
+      "expected_mode": "0o755",
+      "preview_mode": "0o755",
+      "mode_matches": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "tracked_mode": "100755",
+      "expected_mode": "0o755",
+      "preview_mode": "0o755",
+      "mode_matches": true
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_test.sh",
+      "tracked_mode": "100755",
+      "expected_mode": "0o755",
+      "preview_mode": "0o755",
+      "mode_matches": true
+    },
+    {
+      "path": "tests/reproducible-builds/README.md",
+      "tracked_mode": "100644",
+      "expected_mode": "0o644",
+      "preview_mode": "0o644",
+      "mode_matches": true
+    },
+    {
+      "path": "tests/reproducible-builds/run.sh",
+      "tracked_mode": "100755",
+      "expected_mode": "0o755",
+      "preview_mode": "0o755",
+      "mode_matches": true
+    }
+  ]
+}

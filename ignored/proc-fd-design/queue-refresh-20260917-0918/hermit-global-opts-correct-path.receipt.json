@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/hermit/contents/hermit-cli/src/bin/hermit/global_opts.rs?ref=31289f45984e4f9de29e25a4463d0936976e8b5d"
+  ],
+  "started_utc": "2026-09-17T09:49:28.449076+00:00",
+  "ended_utc": "2026-09-17T09:49:28.813547+00:00",
+  "exit_code": 0,
+  "wall_seconds": 0.36450132192112505,
+  "stdout_bytes": 13788,
+  "stderr_bytes": 0
+}

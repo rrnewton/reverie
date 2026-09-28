@@ -1,0 +1,12 @@
+{
+  "configured_dispatcher": "/home/newton/work/dev-hermit/.git/modules/reverie/dev-hermit-hooks",
+  "dispatcher_sha256": "d2ff8d40b41101febfb1bb6d3504c31b4a89549bcd0813d6e65b15c19e223f32",
+  "checked_hooks": [
+    "pre-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit"
+  ],
+  "repo_hook_files_absent_and_untracked": true,
+  "source_behavior": "Dispatcher exits0 when .githooks/<name> is absent and untracked. No repository check is inferred from the normal commit exit0. Independent native, Clippy and formatting evidence is reported separately."
+}

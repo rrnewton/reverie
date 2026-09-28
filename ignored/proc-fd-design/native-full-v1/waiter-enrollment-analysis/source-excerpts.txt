@@ -1,0 +1,545 @@
+696f0476aa46cf29e31b947a89379d80b4542ce3:reverie-kvm/src/vm.rs:1853-1878
+1853:     fn finish_tool_process_action_at_boundary(
+1854:         &mut self,
+1855:         executor: &mut ElfExecutor,
+1856:         starts: &SharedChildStarts,
+1857:         continuation: ProcessActionContinuation,
+1858:         action_result: Result<ProcessActionOutcome>,
+1859:     ) -> Result<ProcessActionOutcome> {
+1860:         match continuation.finish(self, action_result) {
+1861:             Ok(outcome) => Ok(outcome),
+1862:             Err(action_error) => Err(self.cleanup_unstarted_tool_children_after_error(
+1863:                 executor,
+1864:                 starts,
+1865:                 action_error,
+1866:             )),
+1867:         }
+1868:     }
+1869: 
+1870:     pub(crate) fn start_pending_tool_children(
+1871:         &mut self,
+1872:         executor: &mut ElfExecutor,
+1873:         starts: &SharedChildStarts,
+1874:     ) -> Result<()> {
+1875:         if let Err(error) = crate::runtime::start_pending_children(starts) {
+1876:             return Err(self.cleanup_unstarted_tool_children_after_error(executor, starts, error));
+1877:         }
+1878:         Ok(())
+
+696f0476aa46cf29e31b947a89379d80b4542ce3:reverie-kvm/src/vm.rs:2199-2256
+2199:                 let pending_child_starts = context.pending_child_starts;
+2200:                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
+2201:                 let start_gate = ChildStartGate::new(start_sender);
+2202:                 let handle = std::thread::Builder::new()
+2203:                     .name(format!("reverie-kvm-guest-{child_tid}"))
+2204:                     .spawn(move || {
+2205:                         let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+2206:                             match start_receiver.recv() {
+2207:                                 Ok(ChildStartCommand::Start) => {}
+2208:                                 Ok(ChildStartCommand::Cancel) => {
+2209:                                     return Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()));
+2210:                                 }
+2211:                                 Err(_) => {
+2212:                                     panic!("KVM guest thread {child_tid} lost its parent start gate")
+2213:                                 }
+2214:                             }
+2215:                             let result =
+2216:                                 futures::executor::block_on(child.run_static_elf_process_with_tool(
+2217:                                     &mut child_executor,
+2218:                                     tgid,
+2219:                                     child_tid_pid,
+2220:                                     child_tool,
+2221:                                     child_thread_state,
+2222:                                     global_state,
+2223:                                     &config,
+2224:                                     &subscriptions,
+2225:                                     false,
+2226:                                 ));
+2227:                             child.release_thread_slot();
+2228:                             clear_tid_and_wake(
+2229:                                 &mut child.memory,
+2230:                                 child_executor.take_clear_child_tid(),
+2231:                             );
+2232:                             if result.is_err() {
+2233:                                 child_executor.retire_failed_thread();
+2234:                                 child.thread_group.record_worker_failure(child_tid);
+2235:                             }
+2236:                             if let Err(error) = &result
+2237:                                 && child.thread_group.take_worker_error_report(child_tid)
+2238:                             {
+2239:                                 eprintln!(
+2240:                                     "reverie-kvm guest thread {child_tid} tool loop failed: {error}"
+2241:                                 );
+2242:                             }
+2243:                             result
+2244:                         }));
+2245:                         match execution {
+2246:                             Ok(result) => result,
+2247:                             Err(payload) => child.finish_panicked_guest_worker(&mut child_executor, child_tid, payload),
+2248:                         }
+2249:                     })?;
+2250:                 self.thread_group
+2251:                     .add_unstarted_worker(child_tid, start_gate.clone(), handle);
+2252:                 pending_child_starts
+2253:                     .lock()
+2254:                     .expect("KVM child-start lock poisoned")
+2255:                     .push(PendingChildStart::tool_thread(child_tid, start_gate));
+2256:                 Ok(ProcessActionOutcome::returned(i64::from(child_tid)))
+
+696f0476aa46cf29e31b947a89379d80b4542ce3:reverie-kvm/src/vm.rs:2264-2287
+2264:     pub(crate) async fn run_process_action_with_tool_at_boundary<T>(
+2265:         &mut self,
+2266:         executor: &mut ElfExecutor,
+2267:         action: ProcessAction,
+2268:         context: ToolContext<'_, T>,
+2269:         continuation: ProcessActionContinuation,
+2270:     ) -> Result<ProcessActionOutcome>
+2271:     where
+2272:         T: Tool + 'static,
+2273:         T::ThreadState: 'static,
+2274:         T::GlobalState: 'static,
+2275:         <T::GlobalState as GlobalTool>::Config: 'static,
+2276:     {
+2277:         let pending_child_starts = context.pending_child_starts.clone();
+2278:         let action_result = self
+2279:             .run_process_action_with_tool_inner(executor, action, true, context, None)
+2280:             .await;
+2281:         self.finish_tool_process_action_at_boundary(
+2282:             executor,
+2283:             &pending_child_starts,
+2284:             continuation,
+2285:             action_result,
+2286:         )
+2287:     }
+
+696f0476aa46cf29e31b947a89379d80b4542ce3:reverie-kvm/src/vm.rs:5075-5423
+5075:     #[derive(Default)]
+5076:     struct FatalWorkerMemoryLog {
+5077:         memory: Mutex<Option<GuestMemory>>,
+5078:         group: Mutex<Option<Arc<GuestThreadGroup>>>,
+5079:         address: Mutex<u64>,
+5080:         observations: Mutex<Vec<(i32, usize, Vec<u8>)>>,
+5081:         start_ready: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+5082:         start_release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+5083:         wake_observed: Mutex<Option<std::sync::mpsc::Receiver<Option<usize>>>>,
+5084:         wake_slots: Mutex<Vec<Option<usize>>>,
+5085:     }
+5086: 
+5087:     #[reverie::global_tool]
+5088:     impl GlobalTool for FatalWorkerMemoryLog {
+5089:         type Request = i32;
+5090:         type Response = ();
+5091:         type Config = bool;
+5092: 
+5093:         async fn receive_rpc(&self, _from: Pid, status: i32) {
+5094:             if status == -1 {
+5095:                 if let Some(sender) = self.start_ready.lock().unwrap().take() {
+5096:                     sender.send(()).unwrap();
+5097:                     self.start_release
+5098:                         .lock()
+5099:                         .unwrap()
+5100:                         .take()
+5101:                         .unwrap()
+5102:                         .recv_timeout(std::time::Duration::from_secs(2))
+5103:                         .unwrap();
+5104:                 }
+5105:                 return;
+5106:             }
+5107:             if let Some(receiver) = self.wake_observed.lock().unwrap().take() {
+5108:                 self.wake_slots.lock().unwrap().push(
+5109:                     receiver
+5110:                         .recv_timeout(std::time::Duration::from_secs(2))
+5111:                         .unwrap_or(None),
+5112:                 );
+5113:             }
+5114:             let group = self.group.lock().unwrap().as_ref().unwrap().clone();
+5115:             let slot = group.reserve_transport_slot(3).unwrap();
+5116:             group.release_transport_slot(slot);
+5117:             let mut memory = self.memory.lock().unwrap();
+5118:             let memory = memory.as_mut().unwrap();
+5119:             let mut bytes = vec![0; 8192];
+5120:             memory.read_raw(0x80_0000, &mut bytes).unwrap();
+5121:             self.observations
+5122:                 .lock()
+5123:                 .unwrap()
+5124:                 .push((status, slot, bytes));
+5125:             memory
+5126:                 .write_raw(
+5127:                     *self.address.lock().unwrap(),
+5128:                     &0x6b6b_6b6b_i32.to_ne_bytes(),
+5129:                 )
+5130:                 .unwrap();
+5131:         }
+5132:     }
+5133: 
+5134:     #[derive(Clone, Copy, Debug, Default)]
+5135:     struct FatalWorkerMemoryTool {
+5136:         fail_callback: bool,
+5137:     }
+5138: 
+5139:     #[reverie::tool]
+5140:     impl Tool for FatalWorkerMemoryTool {
+5141:         type GlobalState = FatalWorkerMemoryLog;
+5142:         type ThreadState = ();
+5143: 
+5144:         fn new(_pid: Pid, fail_callback: &bool) -> Self {
+5145:             Self {
+5146:                 fail_callback: *fail_callback,
+5147:             }
+5148:         }
+5149: 
+5150:         async fn handle_thread_start<G: reverie::Guest<Self>>(
+5151:             &self,
+5152:             guest: &mut G,
+5153:         ) -> std::result::Result<(), reverie::Error> {
+5154:             guest.send_rpc(-1).await;
+5155:             Ok(())
+5156:         }
+5157: 
+5158:         async fn on_exit_thread<G: reverie::GlobalRPC<Self::GlobalState>>(
+5159:             &self,
+5160:             _tid: Pid,
+5161:             global: &G,
+5162:             _state: (),
+5163:             status: ExitStatus,
+5164:         ) -> std::result::Result<(), reverie::Error> {
+5165:             global.send_rpc(status.into_raw()).await;
+5166:             if self.fail_callback {
+5167:                 return Err(reverie::syscalls::Errno::EIO.into());
+5168:             }
+5169:             Ok(())
+5170:         }
+5171:     }
+5172: 
+5173:     fn qualify_waiter_enrollment(
+5174:         host: u64,
+5175:         result_receiver: &std::sync::mpsc::Receiver<(i64, Option<i32>)>,
+5176:     ) {
+5177:         // This additional wait only obtains diagnostics after enrollment has
+5178:         // already failed. It never retries or extends the futex's own bound.
+5179:         let waiter_result = || result_receiver.recv_timeout(std::time::Duration::from_secs(1));
+5180:         let parking = std::sync::atomic::AtomicI32::new(0);
+5181:         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+5182:         loop {
+5183:             let moved = unsafe {
+5184:                 libc::syscall(
+5185:                     libc::SYS_futex,
+5186:                     host,
+5187:                     libc::FUTEX_CMP_REQUEUE,
+5188:                     0,
+5189:                     1_usize,
+5190:                     parking.as_ptr(),
+5191:                     0x5a5a_5a5a_i32,
+5192:                 )
+5193:             };
+5194:             assert!(
+5195:                 (0..=1).contains(&moved),
+5196:                 "futex enrollment returned {moved}: {}; waiter result: {:?}",
+5197:                 std::io::Error::last_os_error(),
+5198:                 waiter_result()
+5199:             );
+5200:             if moved == 1 {
+5201:                 break;
+5202:             }
+5203:             assert!(
+5204:                 std::time::Instant::now() < deadline,
+5205:                 "waiter did not enroll; waiter result: {:?}",
+5206:                 waiter_result()
+5207:             );
+5208:             std::thread::yield_now();
+5209:         }
+5210:         let returned = unsafe {
+5211:             libc::syscall(
+5212:                 libc::SYS_futex,
+5213:                 parking.as_ptr(),
+5214:                 libc::FUTEX_CMP_REQUEUE,
+5215:                 0,
+5216:                 1_usize,
+5217:                 host,
+5218:                 0,
+5219:             )
+5220:         };
+5221:         assert_eq!(
+5222:             returned,
+5223:             1,
+5224:             "waiter must be queued at its original word; waiter result: {:?}",
+5225:             waiter_result()
+5226:         );
+5227:         assert_eq!(parking.load(Ordering::Relaxed), 0);
+5228:     }
+5229: 
+5230:     fn check_fatal_worker_memory(mode: u8, fail_callback: bool, cancel_before_start: bool) {
+5231:         check_fatal_worker_memory_with_waiter_delay(
+5232:             mode,
+5233:             fail_callback,
+5234:             cancel_before_start,
+5235:             std::time::Duration::ZERO,
+5236:         );
+5237:     }
+5238: 
+5239:     fn check_fatal_worker_memory_with_waiter_delay(
+5240:         mode: u8,
+5241:         fail_callback: bool,
+5242:         cancel_before_start: bool,
+5243:         waiter_delay: std::time::Duration,
+5244:     ) {
+5245:         let Some((mut parent, mut executor, boundary)) = backend_at_completed_tool_boundary()
+5246:         else {
+5247:             return;
+5248:         };
+5249:         let mut code = vec![0x31, 0xe4, 0xb8];
+5250:         code.extend_from_slice(&(libc::SYS_rt_sigreturn as u32).to_le_bytes());
+5251:         code.extend_from_slice(&[0x0f, 0x05, 0x0f, 0x0b]);
+5252:         let registers = process_syscall_return_registers(
+5253:             &parent.memory,
+5254:             parent.vcpu.get_regs().unwrap(),
+5255:             boundary.frame_address,
+5256:             0,
+5257:             None,
+5258:         )
+5259:         .unwrap();
+5260:         parent.memory.write_raw(registers.rip, &code).unwrap();
+5261:         parent
+5262:             .memory
+5263:             .map_user_permissions(0x80_0000, 8192, true, true)
+5264:             .unwrap();
+5265:         parent.memory.write(0x80_0000, &[0x5a; 8192]).unwrap();
+5266:         let offset = if mode == 3 { 4094 } else { 64 };
+5267:         let address = 0x80_0000 + offset;
+5268:         match mode {
+5269:             0 => {}
+5270:             1 => parent
+5271:                 .memory
+5272:                 .map_user_permissions(0x80_0000, 4096, true, false)
+5273:                 .unwrap(),
+5274:             2 => parent
+5275:                 .memory
+5276:                 .map_user_permissions(0x80_0000, 4096, false, false)
+5277:                 .unwrap(),
+5278:             3 => parent
+5279:                 .memory
+5280:                 .map_user_permissions(0x80_1000, 4096, true, false)
+5281:                 .unwrap(),
+5282:             _ => unreachable!(),
+5283:         }
+5284:         let log = Arc::new(FatalWorkerMemoryLog::default());
+5285:         *log.memory.lock().unwrap() = Some(parent.memory.clone());
+5286:         *log.group.lock().unwrap() = Some(parent.thread_group.clone());
+5287:         *log.address.lock().unwrap() = address;
+5288:         let (started_sender, started_receiver) = std::sync::mpsc::channel();
+5289:         let (release_sender, release_receiver) = std::sync::mpsc::channel();
+5290:         if cancel_before_start {
+5291:             *log.start_ready.lock().unwrap() = Some(started_sender);
+5292:             *log.start_release.lock().unwrap() = Some(release_receiver);
+5293:         }
+5294:         let starts = Arc::new(Mutex::new(Vec::new()));
+5295:         parent.thread_ownership = ThreadOwnership::Tool;
+5296:         let context = ToolContext::<FatalWorkerMemoryTool> {
+5297:             process_state: Arc::new(FatalWorkerMemoryTool { fail_callback }),
+5298:             pid: Pid::from_raw(1),
+5299:             tid: Pid::from_raw(1),
+5300:             thread_state: &(),
+5301:             global_state: Some(log.clone()),
+5302:             config: fail_callback,
+5303:             subscriptions: reverie::Subscription::none(),
+5304:             pending_child_starts: starts.clone(),
+5305:         };
+5306:         let action = ProcessAction::Thread {
+5307:             child_tid: 2,
+5308:             child_stack: registers.rsp,
+5309:             parent_tid: None,
+5310:             child_tid_address: None,
+5311:             clear_child_tid: Some(address),
+5312:             tls: None,
+5313:         };
+5314:         let outcome = futures::executor::block_on(parent.run_process_action_with_tool_at_boundary(
+5315:             &mut executor,
+5316:             action,
+5317:             context,
+5318:             ProcessActionContinuation::Restore(Box::new(boundary)),
+5319:         ))
+5320:         .unwrap();
+5321:         assert_eq!(outcome, ProcessActionOutcome::returned(2));
+5322:         let waiter = if mode < 2 {
+5323:             let memory = parent.memory.clone();
+5324:             let group = parent.thread_group.clone();
+5325:             let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+5326:             let (wake_sender, wake_receiver) = std::sync::mpsc::channel();
+5327:             let (result_sender, result_receiver) = std::sync::mpsc::channel();
+5328:             *log.wake_observed.lock().unwrap() = Some(wake_receiver);
+5329:             let waiter = std::thread::spawn(move || {
+5330:                 let host = memory.host_address() + address - memory.guest_base();
+5331:                 let bound = libc::timespec {
+5332:                     tv_sec: 1,
+5333:                     tv_nsec: 0,
+5334:                 };
+5335:                 ready_sender.send(()).unwrap();
+5336:                 std::thread::sleep(waiter_delay);
+5337:                 let result = unsafe {
+5338:                     libc::syscall(
+5339:                         libc::SYS_futex,
+5340:                         host,
+5341:                         libc::FUTEX_WAIT,
+5342:                         0x5a5a_5a5a_i32,
+5343:                         &bound,
+5344:                         0,
+5345:                         0,
+5346:                     )
+5347:                 };
+5348:                 let error = if result < 0 {
+5349:                     std::io::Error::last_os_error().raw_os_error()
+5350:                 } else {
+5351:                     None
+5352:                 };
+5353:                 // Retain the exact syscall result even when enrollment fails
+5354:                 // before the test reaches JoinHandle::join below.
+5355:                 let _ = result_sender.send((result, error));
+5356:                 let slot = if result == 0 {
+5357:                     let slot = group.reserve_transport_slot(4).unwrap();
+5358:                     group.release_transport_slot(slot);
+5359:                     Some(slot)
+5360:                 } else {
+5361:                     None
+5362:                 };
+5363:                 wake_sender.send(slot).unwrap();
+5364:                 (result, error)
+5365:             });
+5366:             ready_receiver
+5367:                 .recv_timeout(std::time::Duration::from_secs(1))
+5368:                 .unwrap();
+5369:             qualify_waiter_enrollment(
+5370:                 parent.memory.host_address() + address - parent.memory.guest_base(),
+5371:                 &result_receiver,
+5372:             );
+5373:             Some(waiter)
+5374:         } else {
+5375:             None
+5376:         };
+5377:         crate::runtime::start_pending_children(&starts).unwrap();
+5378:         if cancel_before_start {
+5379:             started_receiver
+5380:                 .recv_timeout(std::time::Duration::from_secs(2))
+5381:                 .unwrap();
+5382:             parent.thread_group.cancel_workers();
+5383:             release_sender.send(()).unwrap();
+5384:         }
+5385:         parent.thread_group.join_workers();
+5386:         let wake = waiter.map(|waiter| waiter.join().unwrap());
+5387:         let observations = log.observations.lock().unwrap().clone();
+5388:         let mut expected = vec![0x5a; 8192];
+5389:         if mode == 0 {
+5390:             expected[offset as usize..offset as usize + 4].fill(0);
+5391:         }
+5392:         let expected_status = if cancel_before_start {
+5393:             0
+5394:         } else {
+5395:             libc::SIGSEGV | 0x80
+5396:         };
+5397:         assert_eq!(observations, vec![(expected_status, 0, expected.clone())]);
+5398:         expected[offset as usize..offset as usize + 4].fill(0x6b);
+5399:         let mut actual = vec![0; 8192];
+5400:         parent.memory.read_raw(0x80_0000, &mut actual).unwrap();
+5401:         assert_eq!(actual, expected);
+5402:         if mode < 2 {
+5403:             assert_eq!(wake, Some((0, None)));
+5404:             assert_eq!(*log.wake_slots.lock().unwrap(), vec![Some(0)]);
+5405:         }
+5406:     }
+5407: 
+5408:     #[test]
+5409:     fn fatal_worker_rw_store_wake_and_slot_release() {
+5410:         check_fatal_worker_memory(0, false, false);
+5411:     }
+5412:     #[test]
+5413:     fn fatal_worker_ro_failed_store_still_wakes() {
+5414:         check_fatal_worker_memory(1, false, false);
+5415:     }
+5416:     #[test]
+5417:     fn fatal_worker_ro_delayed_waiter_qualifies() {
+5418:         check_fatal_worker_memory_with_waiter_delay(
+5419:             1,
+5420:             false,
+5421:             false,
+5422:             std::time::Duration::from_millis(150),
+5423:         );
+
+696f0476aa46cf29e31b947a89379d80b4542ce3:reverie-kvm/src/vm.rs:5572-5607
+5572:     fn backend_at_completed_tool_boundary()
+5573:     -> Option<(KvmBackend, ElfExecutor, CompletedSyscallBoundary)> {
+5574:         const MEMORY_SIZE: usize = 16 * 1024 * 1024;
+5575:         let mut backend = match KvmBackend::new(MEMORY_SIZE) {
+5576:             Ok(backend) => backend,
+5577:             Err(error) => {
+5578:                 if std::env::var_os("REVERIE_REQUIRE_KVM").is_some() {
+5579:                     panic!("KVM is required: {error}");
+5580:                 }
+5581:                 eprintln!("skipping production-boundary cleanup KVM test: {error}");
+5582:                 return None;
+5583:             }
+5584:         };
+5585:         let mut code = vec![0xb8]; // mov eax, SYS_getpid
+5586:         code.extend_from_slice(&(libc::SYS_getpid as u32).to_le_bytes());
+5587:         code.extend_from_slice(&[0x0f, 0x05, HLT]); // syscall; hlt
+5588:         backend
+5589:             .install_static_elf(&minimal_test_elf(&code), "/bin/boundary-cleanup-test")
+5590:             .unwrap();
+5591:         // This fixture later enters Tool lifecycle hooks. Start accounting
+5592:         // before its manual first guest entry, just as the production runner does.
+5593:         backend.vcpu.track_clock().unwrap();
+5594:         let mut executor = ElfExecutor::new(backend.static_elf.take().unwrap(), false);
+5595:         let frame_address = match backend.vcpu.run().unwrap() {
+5596:             VcpuExit::Hypercall(exit) => {
+5597:                 assert_eq!(exit.nr, VMCALL_SYSCALL_TRANSPORT);
+5598:                 *exit.ret = 0;
+5599:                 exit.args[0]
+5600:             }
+5601:             exit => panic!("expected syscall hypercall, got {exit:?}"),
+5602:         };
+5603:         let boundary = CompletedSyscallBoundary::capture(&backend, frame_address, None).unwrap();
+5604:         // Keep the executor mutable in the return type to emphasize that the
+5605:         // wrapper owns both action registration and its rollback.
+5606:         executor.set_current_user_stack_pointer(boundary.registers.rsp);
+5607:         Some((backend, executor, boundary))
+
+696f0476aa46cf29e31b947a89379d80b4542ce3:reverie-kvm/src/runtime.rs:96-118
+96: pub(crate) struct PendingChildStart {
+97:     child: PendingChildKind,
+98:     start: ChildStartGate,
+99: }
+100: 
+101: impl PendingChildStart {
+102:     pub(crate) fn fork_process(pid: i32, start: ChildStartGate) -> Self {
+103:         Self {
+104:             child: PendingChildKind::ForkProcess(pid),
+105:             start,
+106:         }
+107:     }
+108: 
+109:     pub(crate) fn tool_thread(tid: i32, start: ChildStartGate) -> Self {
+110:         Self {
+111:             child: PendingChildKind::ToolThread(tid),
+112:             start,
+113:         }
+114:     }
+115: 
+116:     fn start(&self) -> std::result::Result<(), std::sync::mpsc::SendError<()>> {
+117:         self.start.start().map(|_| ())
+118:     }
+
+696f0476aa46cf29e31b947a89379d80b4542ce3:reverie-kvm/src/runtime.rs:1127-1142
+1127: pub(crate) fn start_pending_children(pending_child_starts: &SharedChildStarts) -> Result<()> {
+1128:     let mut starts = pending_child_starts
+1129:         .lock()
+1130:         .expect("KVM child-start lock poisoned");
+1131:     for start in starts.iter() {
+1132:         // Both fork and Tool-thread workers block on this receiver as their
+1133:         // first operation after a successful host spawn. A disconnected
+1134:         // receiver therefore indicates an internal registration invariant
+1135:         // violation rather than a guest-visible failure.
+1136:         start.start().map_err(|_| {
+1137:             Error::UnexpectedVcpuExit("registered KVM child lost its parent start gate".to_owned())
+1138:         })?;
+1139:     }
+1140:     starts.clear();
+1141:     Ok(())
+1142: }

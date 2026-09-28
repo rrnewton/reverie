@@ -1,0 +1,95 @@
+{
+  "scope": "immutable supporting source; no execution",
+  "files": [
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "scripts/validate.rs",
+      "git_mode": "100755",
+      "git_blob": "fbd075e39306f632e9f27cfe60eb09f0600806b2",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/scripts/validate.rs",
+      "bytes": 1002474,
+      "sha256": "16128aad4b5f1761713ee595029b6daf5e298d11a7fcd8df3279c8dfca882a26"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "ci/dag/validate.json",
+      "git_mode": "100644",
+      "git_blob": "7133f77f8d837ff28ffa056e52ee314db4751e82",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/ci/dag/validate.json",
+      "bytes": 2857381,
+      "sha256": "2f0c19f819a98695889b32995f519a2b3e1a581bd187f10ab65d40a101c9673c"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/backend-parity/e9patch_corpus.py",
+      "git_mode": "100644",
+      "git_blob": "dae44c680857a9f08d8a79f866593bf81485fc5b",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/tests/backend-parity/e9patch_corpus.py",
+      "bytes": 16102,
+      "sha256": "8e6e1aebf8796c84c37d39d97b5950cbe02dde085f96b72856ae6aeec4593266"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/e2e/lib/data-handling/common.bash",
+      "git_mode": "100644",
+      "git_blob": "ab661db82d646555c91b8b525560666ac6542fc1",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/tests/e2e/lib/data-handling/common.bash",
+      "bytes": 4684,
+      "sha256": "329e9bcd8931a6394938dec57678f15a0cb91221c0c6cd1a0ee81ac9f07336c9"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/e2e/lib/determinism-stress/common.sh",
+      "git_mode": "100755",
+      "git_blob": "e835de91d9642874e8bb6c7e3cb9abe17b6c1e79",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/tests/e2e/lib/determinism-stress/common.sh",
+      "bytes": 8569,
+      "sha256": "38a70abc0078e6dd718ac2a8d75b61a1058d341b09ffdac19cf893e82fbdcf26"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/e2e/lib/language-runtimes/run.sh",
+      "git_mode": "100755",
+      "git_blob": "180688289e6ed4997a53c3f69b37cdb04076188e",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/tests/e2e/lib/language-runtimes/run.sh",
+      "bytes": 4347,
+      "sha256": "9fa2cd462f1dbc358e90dffc3a61dafa589f5bf212070873c7f9a650dff32e57"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/e2e/lib/system-utils/_common.sh",
+      "git_mode": "100755",
+      "git_blob": "b83823ee638827d0196d9784c98088f724785c38",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/tests/e2e/lib/system-utils/_common.sh",
+      "bytes": 7120,
+      "sha256": "cd08a5a44c22757ac73ad106a968dab330163fa116d94d69d377e7280df48864"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/qemu-boot/strict_l2_userspace_test.sh",
+      "git_mode": "100755",
+      "git_blob": "8ab76a1f6dafb1eaf00d31661d52b2fbc5590cef",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/tests/qemu-boot/strict_l2_userspace_test.sh",
+      "bytes": 10833,
+      "sha256": "e75fca3a7bc832db83d80a3415c116752d4552b8a562d3e9c9e6f96a29ed15d1"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/standalone/strict_setitimer.sh",
+      "git_mode": "100755",
+      "git_blob": "28f25c66aa67b27ca8c3e93c8c0cbff11ee25672",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/tests/standalone/strict_setitimer.sh",
+      "bytes": 5976,
+      "sha256": "d7c1bcf30860624fed6cebde51e7243b37833921e60e5dcbc522b2071faa05fa"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/standalone/strict_timer_create.sh",
+      "git_mode": "100755",
+      "git_blob": "0abd174fd14752ebebe9852585e2846a1c86fcec",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/tests/standalone/strict_timer_create.sh",
+      "bytes": 3309,
+      "sha256": "ba8a6d49595c4e02d578369814d554c2e350956baafa9e53e138a1cdd62ccb57"
+    }
+  ]
+}

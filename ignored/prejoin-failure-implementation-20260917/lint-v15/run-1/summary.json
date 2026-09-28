@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "outcomes": [
+    {
+      "stage": "format",
+      "status": "passed"
+    },
+    {
+      "stage": "clippy",
+      "status": "passed"
+    }
+  ],
+  "scope": "Read-only workspace format and all-target/all-feature Clippy checks on final committed 12d4ce8c cleanup correction, under unchanged observer/resource bounds and separate owned cache. No test or VM execution."
+}

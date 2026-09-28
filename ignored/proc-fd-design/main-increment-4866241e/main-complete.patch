@@ -1,0 +1,1900 @@
+diff --git a/experimental/reverie-sabre-macros/src/expand.rs b/experimental/reverie-sabre-macros/src/expand.rs
+index be6db6bed8f0b0605b3f50d21df8e27660201b57..3a36474e7bf3fc419be1f651f583df158aa07a4e 100644
+--- a/experimental/reverie-sabre-macros/src/expand.rs
++++ b/experimental/reverie-sabre-macros/src/expand.rs
+@@ -126,6 +126,19 @@ impl ToTokens for Tool {
+ 
+         // Implement the entry point for our plugin.
+         tokens.extend(quote! {
++            #[no_mangle]
++            pub unsafe extern "C" fn reverie_sabre_install_loader_bootstrap_v1(
++                callback: ::reverie_sabre::bootstrap::TakeStateFn,
++            ) -> i32 {
++                if !<#ty as ::reverie_sabre::Tool>::supports_loader_bootstrap() {
++                    return -libc::ENOTSUP;
++                }
++                match unsafe { ::reverie_sabre::bootstrap::install(callback) } {
++                    Ok(()) => 0,
++                    Err(error) => -error.into_raw(),
++                }
++            }
++
+             #[no_mangle]
+             pub extern "C" fn sbr_init(
+                 argc: *mut i32,
+diff --git a/experimental/reverie-sabre/src/bootstrap.rs b/experimental/reverie-sabre/src/bootstrap.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e8795b3fec2aa840b0eebee035bd97e83ce819d2
+--- /dev/null
++++ b/experimental/reverie-sabre/src/bootstrap.rs
+@@ -0,0 +1,130 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! Optional loader-to-tool bootstrap state transfer.
++//!
++//! The supervisor owns the meaning of the opaque state. A consumer must bind
++//! its schema, config, owner and image generation before applying it to its
++//! normally initialized thread. This interface neither creates ThreadState nor
++//! sends an RPC, so it cannot mark coordinator RPC readiness.
++
++use std::sync::atomic::AtomicUsize;
++use std::sync::atomic::Ordering;
++
++use syscalls::Errno;
++
++/// Maximum opaque handoff; this is also fixed in the loader protocol.
++pub const MAX_STATE_BYTES: usize = 4096;
++
++/// Launch-side private loader opt-in. Its original string bytes are scrubbed
++/// and its pointer removed before plugin initialization. Consumers therefore
++/// cannot negotiate with `getenv`; [`take_state`] reports the installed
++/// callback's presence (`None` means no negotiation) or an explicit error.
++pub const ENVIRONMENT: &str = "REVERIE_SABRE_BOOTSTRAP_V1";
++/// Invalid ordinary `prctl` option used by the authenticated loader site.
++pub const PRCTL_OPTION: u64 = 0x5342_5242;
++/// Version passed by IMAGE and TAKE_STATE requests.
++pub const VERSION: u64 = 1;
++/// ELF symbol on the request's actual syscall instruction, not its wrapper.
++pub const SYSCALL_SYMBOL: &str = "sbr_bootstrap_syscall_v1";
++/// Bind the real final initial-image stack before entering its dynamic linker.
++pub const IMAGE: u64 = 1;
++/// Service one original early guest getrandom request.
++pub const GETRANDOM: u64 = 2;
++/// Take the opaque state once into the initialized consumer.
++pub const TAKE_STATE: u64 = 3;
++
++/// Loader-owned callback. It writes at most `capacity` bytes and returns their
++/// count, or a negative Linux errno. It consumes the handoff only on success.
++pub type TakeStateFn = unsafe extern "C" fn(*mut u8, usize) -> libc::c_long;
++
++static CALLBACK: AtomicUsize = AtomicUsize::new(0);
++
++/// Installs the optional callback before tool construction.
++///
++/// # Safety
++/// The callback must belong to the loaded, lifetime-stable SaBRe loader and
++/// obey `TakeStateFn`'s memory contract. This is called only by the loader's
++/// optional symbol negotiation, never from an environment-supplied address.
++#[doc(hidden)]
++pub unsafe fn install(callback: TakeStateFn) -> Result<(), Errno> {
++    CALLBACK
++        .compare_exchange(0, callback as usize, Ordering::Release, Ordering::Relaxed)
++        .map(|_| ())
++        .map_err(|_| Errno::EPROTO)
++}
++
++/// Takes the supervisor's opaque state once, without issuing a normal RPC.
++/// `None` means this loader did not negotiate bootstrap; a refused transfer is
++/// an error and must not be converted to a newly seeded thread.
++pub fn take_state(destination: &mut [u8]) -> Result<Option<usize>, Errno> {
++    let callback = CALLBACK.load(Ordering::Acquire);
++    if callback == 0 {
++        return Ok(None);
++    }
++    // SAFETY: install accepts only the lifetime-stable loader callback.
++    let callback: TakeStateFn = unsafe { std::mem::transmute(callback) };
++    take_with(callback, destination).map(Some)
++}
++
++fn take_with(callback: TakeStateFn, destination: &mut [u8]) -> Result<usize, Errno> {
++    if destination.is_empty() || destination.len() > MAX_STATE_BYTES {
++        return Err(Errno::EINVAL);
++    }
++    // SAFETY: the slice is writable for its exact capacity, and the installed
++    // loader callback promises not to exceed it.
++    let result = unsafe { callback(destination.as_mut_ptr(), destination.len()) };
++    let count = Errno::from_ret(result as usize)?;
++    if count == 0 || count > destination.len() {
++        return Err(Errno::EPROTO);
++    }
++    Ok(count)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    unsafe extern "C" fn refused(_: *mut u8, _: usize) -> libc::c_long {
++        -(Errno::ESTALE.into_raw() as libc::c_long)
++    }
++
++    unsafe extern "C" fn too_long(_: *mut u8, capacity: usize) -> libc::c_long {
++        capacity as libc::c_long + 1
++    }
++
++    unsafe extern "C" fn empty(_: *mut u8, _: usize) -> libc::c_long {
++        0
++    }
++
++    #[test]
++    fn refused_or_invalid_handoff_cannot_become_an_empty_fresh_state() {
++        let mut bytes = [0xa5; 32];
++        assert_eq!(take_with(refused, &mut bytes), Err(Errno::ESTALE));
++        assert_eq!(take_with(too_long, &mut bytes), Err(Errno::EPROTO));
++        assert_eq!(take_with(empty, &mut bytes), Err(Errno::EPROTO));
++        assert_eq!(bytes, [0xa5; 32]);
++        assert_eq!(take_with(refused, &mut []), Err(Errno::EINVAL));
++        assert_eq!(
++            take_with(refused, &mut [0xa5; MAX_STATE_BYTES + 1]),
++            Err(Errno::EINVAL)
++        );
++    }
++
++    #[test]
++    fn optional_callback_is_absent_until_installed_and_cannot_be_replaced() {
++        let mut bytes = [0xa5; 32];
++        assert_eq!(take_state(&mut bytes), Ok(None));
++        // SAFETY: both test callbacks are lifetime-stable and obey the
++        // callback's bounded-write contract (neither writes any bytes).
++        unsafe {
++            assert_eq!(install(refused), Ok(()));
++            assert_eq!(install(empty), Err(Errno::EPROTO));
++        }
++        assert_eq!(take_state(&mut bytes), Err(Errno::ESTALE));
++        assert_eq!(bytes, [0xa5; 32]);
++    }
++}
+diff --git a/experimental/reverie-sabre/src/ffi/clone.rs b/experimental/reverie-sabre/src/ffi/clone.rs
+index c2fb173b8e5de755084f2df8c7856cfeeb01b351..14a9e407200594d7502f26c51371ad9c9ee713c5 100644
+--- a/experimental/reverie-sabre/src/ffi/clone.rs
++++ b/experimental/reverie-sabre/src/ffi/clone.rs
+@@ -122,8 +122,9 @@ pub unsafe fn clone_syscall(
+ ///
+ /// This routine instead reproduces SaBRe's normal `handle_syscall` epilogue for
+ /// the child: it restores the guest's saved general-purpose registers and its
+-/// original `%rsp` (`wrapper_sp + 0x88`) from the syscall frame, then jumps to
+-/// the saved return address with `%rax = 0`.
++/// scratch-continuation stack pointer from the syscall frame, then resumes the
++/// saved continuation with `%rax = 0` and the original guest RFLAGS. The
++/// continuation restores the reserved red zone and runs displaced instructions.
+ ///
+ /// # Safety
+ ///
+@@ -163,27 +164,10 @@ pub unsafe fn fork_syscall(
+         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
+         "4:",
+         "call qword ptr [rip + exit_plugin@GOTPCREL]",
+-        "mov rdi, r12",                     // rdi = wrapper_sp (frame base)
+-        // Restore the guest's saved registers from the frame, mirroring the
+-        // pops in SaBRe's handle_syscall.S epilogue. rcx/r11 were clobbered by
+-        // the guest's own syscall, and r11 is reused below as the jump target.
+-        "mov r15, qword ptr [rdi + 0x8]",
+-        "mov r14, qword ptr [rdi + 0x10]",
+-        "mov r13, qword ptr [rdi + 0x18]",
+-        "mov r10, qword ptr [rdi + 0x30]",
+-        "mov r9,  qword ptr [rdi + 0x38]",
+-        "mov r8,  qword ptr [rdi + 0x40]",
+-        "mov rsi, qword ptr [rdi + 0x50]",
+-        "mov rdx, qword ptr [rdi + 0x58]",
+-        "mov rcx, qword ptr [rdi + 0x60]",
+-        "mov rbx, qword ptr [rdi + 0x68]",
+-        "mov rbp, qword ptr [rdi + 0x70]",
+-        "mov r12, qword ptr [rdi + 0x20]",  // restore guest r12 (held wrapper_sp)
+-        "mov r11, qword ptr [rdi + 0x80]",  // guest return RIP -> jump target
+-        "lea rsp, [rdi + 0x88]",            // guest's original %rsp
+-        "mov rdi, qword ptr [rdi + 0x48]",  // guest rdi (final use of frame base)
+-        "xor eax, eax",                     // fork/clone returns 0 in the child
+-        "jmp r11",
++        "mov rdi, r12",
++        // This is an ordinary extern-C function: CALL supplies its ABI entry
++        // return word. It never returns and replaces RSP with the saved frame.
++        "call {resume_child}",
+ 
+         // ---- Parent ----
+         "2:",
+@@ -196,6 +180,7 @@ pub unsafe fn fork_syscall(
+         in("r8") tls,
+         in("r12") wrapper_sp,
+         in("xmm0") vfork_slot,
++        resume_child = sym resume_fork_child,
+         clone_vm = const libc::CLONE_VM,
+         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
+         // syscall instructions clobber rcx and r11
+@@ -342,24 +327,10 @@ pub unsafe fn clone3_fork_syscall(
+         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
+         "4:",
+         "call qword ptr [rip + exit_plugin@GOTPCREL]",
+-        "mov rdi, r12",                     // rdi = wrapper_sp (frame base)
+-        "mov r15, qword ptr [rdi + 0x8]",
+-        "mov r14, qword ptr [rdi + 0x10]",
+-        "mov r13, qword ptr [rdi + 0x18]",
+-        "mov r10, qword ptr [rdi + 0x30]",
+-        "mov r9,  qword ptr [rdi + 0x38]",
+-        "mov r8,  qword ptr [rdi + 0x40]",
+-        "mov rsi, qword ptr [rdi + 0x50]",
+-        "mov rdx, qword ptr [rdi + 0x58]",
+-        "mov rcx, qword ptr [rdi + 0x60]",
+-        "mov rbx, qword ptr [rdi + 0x68]",
+-        "mov rbp, qword ptr [rdi + 0x70]",
+-        "mov r12, qword ptr [rdi + 0x20]",
+-        "mov r11, qword ptr [rdi + 0x80]",
+-        "lea rsp, [rdi + 0x88]",
+-        "mov rdi, qword ptr [rdi + 0x48]",
+-        "xor eax, eax",
+-        "jmp r11",
++        "mov rdi, r12",
++        // This is an ordinary extern-C function: CALL supplies its ABI entry
++        // return word. It never returns and replaces RSP with the saved frame.
++        "call {resume_child}",
+ 
+         // ---- Parent ----
+         "2:",
+@@ -373,6 +344,7 @@ pub unsafe fn clone3_fork_syscall(
+         in("r12") wrapper_sp,
+         in("xmm0") clone_flags,
+         in("xmm1") vfork_slot,
++        resume_child = sym resume_fork_child,
+         clone_vm = const libc::CLONE_VM,
+         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
+         lateout("rcx") _,
+@@ -394,43 +366,41 @@ pub unsafe fn clone3_fork_syscall(
+ /// current guest thread.
+ pub unsafe extern "C" fn vfork_return_from_child(wrapper_sp: *const syscall_stackframe) -> ! {
+     super::exit_plugin();
++    resume_fork_child(wrapper_sp)
++}
+ 
++/// Complete the actual handle_syscall epilogue on the copied guest frame.
++/// All fork-form child paths abandon their intervening Rust frames here.
++unsafe extern "C" fn resume_fork_child(wrapper_sp: *const syscall_stackframe) -> ! {
+     core::arch::asm! {
+-        // Load registers from the syscall_stackframe struct. These are all
+-        // offsets into the struct.
+-        //
+-        // FIXME: Don't hard code these struct field offsets.
+-        "mov r15, qword ptr [rdi + 0x8]",
+-        "mov r14, qword ptr [rdi + 0x10]",
+-        "mov r13, qword ptr [rdi + 0x18]",
+-        "mov r12, qword ptr [rdi + 0x20]",
+-        "mov r11, qword ptr [rdi + 0x28]",
+-        "mov r10, qword ptr [rdi + 0x30]",
+-        "mov r9, qword ptr [rdi + 0x38]",
+-        "mov r8, qword ptr [rdi + 0x40]",
+-        // Skip rdi because we are reading it for the pointer offset.
+-        "mov rsi, qword ptr [rdi + 0x50]",
+-        "mov rdx, qword ptr [rdi + 0x58]",
+-        "mov rcx, qword ptr [rdi + 0x60]",
+-        "mov rbx, qword ptr [rdi + 0x68]",
+-        "mov rbp, qword ptr [rdi + 0x70]",
+-
+-        // Its safe to clobber r11 to load *ret.
+-        "mov r11, qword ptr [rdi + 0x80]",
+-
+-        // Finally, set rdi.
+-        "mov rdi, qword ptr [rdi + 0x48]",
+-
+-        // The child always returns 0.
+-        "mov rax, 0",
+-
+-        "sub rsp, 0x80",
+-
+-        // Jump back to the client.
+-        "jmp r11",
+-
++        "lea rsp, [rdi + {saved_registers}]",
++        "pop r15",
++        "pop r14",
++        "pop r13",
++        "pop r12",
++        "pop r11",
++        "pop r10",
++        "pop r9",
++        "pop r8",
++        "pop rdi",
++        "pop rsi",
++        "pop rdx",
++        "pop rcx",
++        "pop rbx",
++        "pop rbp",
++        // MOV does not change RFLAGS. Restore flags only after all work that
++        // might change them, then skip the architectural return and RET into
++        // the scratch continuation exactly as the normal wrapper does.
++        "mov eax, 0",
++        "popfq",
++        "lea rsp, [rsp + {skip_fake_return}]",
++        "ret",
++        saved_registers = const std::mem::offset_of!(syscall_stackframe, r15),
++        skip_fake_return = const (
++            std::mem::offset_of!(syscall_stackframe, ret)
++                - std::mem::offset_of!(syscall_stackframe, fake_ret)
++        ),
+         in("rdi") wrapper_sp,
+-
+         options(noreturn),
+     }
+ }
+diff --git a/experimental/reverie-sabre/src/ffi/mod.rs b/experimental/reverie-sabre/src/ffi/mod.rs
+index 8b84d377bdf9e33bc61e37733c562f6fd28d48b6..3d6385688d4f03238acccd5c2b673a33e8e36e21 100644
+--- a/experimental/reverie-sabre/src/ffi/mod.rs
++++ b/experimental/reverie-sabre/src/ffi/mod.rs
+@@ -88,6 +88,8 @@ pub struct syscall_stackframe {
+     pub rcx: *mut libc::c_void,
+     pub rbx: *mut libc::c_void,
+     pub rbp_prologue: *mut libc::c_void,
++    /// Original guest RFLAGS, saved separately from the writable r11 register.
++    pub rflags: u64,
+     /// Architectural guest return address after the patched syscall. SaBRe's
+     /// assembly calls this the fake return because the handler discards this
+     /// stack slot before returning through the scratch trampoline.
+@@ -97,6 +99,13 @@ pub struct syscall_stackframe {
+     pub ret: *mut libc::c_void,
+ }
+ 
++impl syscall_stackframe {
++    /// The rewrite reserves the x86-64 red zone before pushing its two returns.
++    pub(crate) fn guest_stack_pointer(&self) -> u64 {
++        self as *const Self as u64 + std::mem::size_of::<Self>() as u64 + 0x80
++    }
++}
++
+ pub type handle_syscall_fn = extern "C" fn(
+     syscall: isize,
+     arg1: usize,
+diff --git a/experimental/reverie-sabre/src/lib.rs b/experimental/reverie-sabre/src/lib.rs
+index 2c6af9d8c6723e82d18e4c88db5471c458b3d882..fb4bd1c602591d4d651c701802a07abc9635d46d 100644
+--- a/experimental/reverie-sabre/src/lib.rs
++++ b/experimental/reverie-sabre/src/lib.rs
+@@ -9,6 +9,7 @@
+ //! This library provides an ergonomic interface writing SaBRe plugins with
+ //! Rust.
+ 
++pub mod bootstrap;
+ mod callbacks;
+ pub mod ffi;
+ #[doc(hidden)]
+diff --git a/experimental/reverie-sabre/src/reverie_adapter.rs b/experimental/reverie-sabre/src/reverie_adapter.rs
+index 1636fa5b4fab512c66a37fe8f5f6c3d0db7c09f8..143ef45757b546773aea32aade7e8901a3f1ae3e 100644
+--- a/experimental/reverie-sabre/src/reverie_adapter.rs
++++ b/experimental/reverie-sabre/src/reverie_adapter.rs
+@@ -413,14 +413,46 @@ where
+     /// Connects the root guest thread and constructs the process-local tool
+     /// from the coordinator's config handshake.
+     pub fn connect(socket_path: impl AsRef<Path>) -> Result<Self, RpcError> {
++        Self::connect_with_root_initializer(socket_path, |_, _, _| Ok(()))
++    }
++
++    /// Applies an explicit state handoff to a normally initialized root before
++    /// any thread callback. An inherited fork state keeps its existing path
++    /// and does not run this initializer. A loader bootstrap consumer takes
++    /// its opaque payload inside this initializer, after that fork decision.
++    /// The normal config handshake happens first; no typed tool RPC or thread
++    /// callback has run. The initializer receives no RPC client and must not
++    /// publish readiness. In particular, bootstrap is not evidence for the
++    /// first-request readiness reported by `RpcServer::bind_with_readiness`.
++    ///
++    /// Consumers own the payload type/config/image checks and must only change
++    /// their declared fields (for example PRNG state and an auxv completion
++    /// fact), retaining clocks, metadata and other unrelated initialized state.
++    pub fn connect_with_root_initializer<F>(
++        socket_path: impl AsRef<Path>,
++        initialize: F,
++    ) -> Result<Self, RpcError>
++    where
++        F: FnOnce(
++            &<T::GlobalState as GlobalTool>::Config,
++            Pid,
++            &mut T::ThreadState,
++        ) -> Result<(), RpcError>,
++    {
+         let _ = root_process_pid();
+         let socket_path = socket_path.as_ref().to_path_buf();
+         let tid = current_tid();
+         let rpc = protect_with(|| BlockingRpcClient::<T::GlobalState>::connect(&socket_path, tid))?;
+         let config = rpc.as_ref().config().clone();
+         let tool = T::new(current_pid(), &config);
+-        let thread_state = take_process_fork_handoff(&tool, tid)?
+-            .unwrap_or_else(|| tool.init_thread_state(tid, None));
++        let thread_state = match take_process_fork_handoff(&tool, tid)? {
++            Some(inherited) => inherited,
++            None => {
++                let mut state = tool.init_thread_state(tid, None);
++                initialize(&config, tid, &mut state)?;
++                state
++            }
++        };
+         let syscall_subscriptions = T::subscriptions(&config).iter_syscalls().collect();
+         let mut thread_states = HashMap::new();
+         thread_states.insert(
+@@ -1196,7 +1228,8 @@ where
+         regs.rsi = frame.rsi as u64;
+         regs.rdi = frame.rdi as u64;
+         regs.rip = frame.fake_ret as u64;
+-        regs.rsp = unsafe { (frame as *const crate::ffi::syscall_stackframe).add(1) as u64 };
++        regs.rsp = frame.guest_stack_pointer();
++        regs.eflags = frame.rflags;
+         regs
+     }
+ 
+@@ -2018,6 +2051,9 @@ mod tests {
+             assert_eq!(regs.rsi, 20);
+             assert_eq!(regs.rdx, 30);
+             assert_eq!(regs.rip, 0xf00d);
++            assert_eq!(regs.eflags, 0x647);
++            let frame = crate::callbacks::current_syscall_frame().unwrap();
++            assert_eq!(regs.rsp, frame as u64 + 0x90 + 0x80);
+             assert_eq!(guest.backtrace().unwrap().iter().next().unwrap().ip, 0xf00d);
+ 
+             let mut unsupported_rsp = regs;
+@@ -2028,6 +2064,10 @@ mod tests {
+             unsupported_rip.rip = 0xbeef;
+             assert!(guest.set_regs(unsupported_rip).await.is_err());
+ 
++            let mut unsupported_flags = regs;
++            unsupported_flags.eflags ^= 1;
++            assert!(guest.set_regs(unsupported_flags).await.is_err());
++
+             regs.r15 = 1515;
+             regs.rcx = 0xcafe;
+             regs.r11 = 0x202;
+@@ -2048,6 +2088,7 @@ mod tests {
+         frame.rdx = 30usize as *mut libc::c_void;
+         frame.fake_ret = 0xf00dusize as *mut libc::c_void;
+         frame.ret = 0xdeadusize as *mut libc::c_void;
++        frame.rflags = 0x647;
+ 
+         assert!(crate::callbacks::current_syscall_frame().is_none());
+         {
+@@ -2063,6 +2104,7 @@ mod tests {
+         assert_eq!(frame.r11 as usize, 0x202);
+         assert_eq!(frame.fake_ret as usize, 0xf00d);
+         assert_eq!(frame.ret as usize, 0xdead);
++        assert_eq!(frame.rflags, 0x647);
+     }
+ 
+     #[derive(Default)]
+@@ -2107,6 +2149,104 @@ mod tests {
+         }
+     }
+ 
++    #[derive(Default)]
++    struct InitializedRootTool;
++
++    #[derive(Clone, serde::Serialize, serde::Deserialize)]
++    struct InitializedRoot {
++        random: u64,
++        unrelated: (u64, i32),
++    }
++
++    impl Default for InitializedRoot {
++        fn default() -> Self {
++            Self {
++                random: 7,
++                unrelated: (93, current_pid().as_raw()),
++            }
++        }
++    }
++
++    #[reverie::tool]
++    impl ReverieTool for InitializedRootTool {
++        type GlobalState = RemoteCounter;
++        type ThreadState = InitializedRoot;
++
++        async fn handle_syscall_event<G: Guest<Self>>(
++            &self,
++            guest: &mut G,
++            _syscall: Syscall,
++        ) -> Result<i64, Error> {
++            assert_eq!(guest.thread_state().unrelated, (93, current_pid().as_raw()));
++            Ok(guest.thread_state().random as i64)
++        }
++    }
++
++    #[test]
++    fn root_initializer_preserves_normal_state_and_refuses_failed_transfer() {
++        for transfer in [false, true] {
++            let global = Arc::new(RemoteCounter::default());
++            let server_global = global.clone();
++            let rpc_ready = Arc::new(AtomicBool::new(false));
++            let server_ready = rpc_ready.clone();
++            let path = std::path::Path::new("/tmp").join(format!(
++                "reverie-sabre-root-{}-{}.sock",
++                std::process::id(),
++                RPC_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
++            ));
++            let server_path = path.clone();
++            let (ready_tx, ready_rx) = mpsc::sync_channel(0);
++            let server_thread = thread::spawn(move || {
++                tokio::runtime::Builder::new_current_thread()
++                    .enable_all()
++                    .build()
++                    .unwrap()
++                    .block_on(async move {
++                        let server = reverie_rpc_transport::RpcServer::bind_with_readiness(
++                            &server_path,
++                            server_global,
++                            "image-config".to_string(),
++                            server_ready,
++                        )
++                        .unwrap();
++                        ready_tx.send(()).unwrap();
++                        server.serve_one().await
++                    })
++            });
++            ready_rx.recv().unwrap();
++            let calls = AtomicUsize::new(0);
++            let result = RemoteReverieAdapter::<InitializedRootTool>::connect_with_root_initializer(
++                &path,
++                |config, tid, state| {
++                    assert_eq!(config, "image-config");
++                    assert_eq!(tid, current_tid());
++                    assert_eq!(state.random, 7);
++                    assert_eq!(state.unrelated, (93, current_pid().as_raw()));
++                    assert!(!rpc_ready.load(Ordering::Acquire));
++                    calls.fetch_add(1, Ordering::SeqCst);
++                    if !transfer {
++                        return Err(io::Error::from_raw_os_error(libc::ESTALE).into());
++                    }
++                    state.random = 41;
++                    Ok(())
++                },
++            );
++            assert_eq!(calls.load(Ordering::SeqCst), 1);
++            if transfer {
++                let adapter = result.unwrap();
++                let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
++                assert_eq!(adapter.handle_syscall(syscall), Ok(41));
++                drop(adapter);
++            } else {
++                assert!(matches!(result, Err(RpcError::Io(error))
++                    if error.raw_os_error() == Some(libc::ESTALE)));
++            }
++            assert!(server_thread.join().unwrap().is_ok());
++            assert_eq!(global.total.load(Ordering::SeqCst), 0);
++            assert!(!rpc_ready.load(Ordering::Acquire));
++        }
++    }
++
+     #[test]
+     fn remote_adapter_routes_tool_rpc_over_real_uds_on_first_poll() {
+         let global = Arc::new(RemoteCounter::default());
+diff --git a/experimental/reverie-sabre/src/tool.rs b/experimental/reverie-sabre/src/tool.rs
+index 52bbc2aacc49b9e1839c1787b68667a8dacb938f..f7c26eea7c582181b58d5754792edf26e1078e72 100644
+--- a/experimental/reverie-sabre/src/tool.rs
++++ b/experimental/reverie-sabre/src/tool.rs
+@@ -56,6 +56,16 @@ pub trait Tool {
+     {
+         None
+     }
++
++    /// Opts into the supervised initial-image bootstrap protocol. The tool
++    /// must consume and validate its opaque state before guest callbacks use
++    /// newly initialized thread state. Existing tools are unchanged by default.
++    fn supports_loader_bootstrap() -> bool
++    where
++        Self: Sized,
++    {
++        false
++    }
+     /// This is called in place of a system call. For example, if the program
+     /// called the `open` syscall, this callback would be called instead. By
+     /// default, the real syscall is simply called.
+diff --git a/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbfb497cdf5c545e2ce097b483a944820538d41a
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S
+@@ -0,0 +1,82 @@
++#include "frame_probe.h"
++  .text
++  .globl frame_probe
++  .type frame_probe,@function
++frame_probe:
++  push %rbp
++  push %rbx
++  push %r12
++  push %r13
++  push %r14
++  push %r15
++  mov %rdi,%r15
++  mov %rsp,SLOT(ORIGINAL_RSP)(%r15)
++  pushq SLOT(EXPECTED_FLAGS)(%r15)
++  popfq
++  pushfq
++  pop %r11
++  movabs $0x718293a4b5c6d7e8,%rax
++  .irp distance,8,16,24,32,40,48,56,64,72,80,88,96,104,112,120,128
++  mov %rax,-\distance(%rsp)
++  .endr
++  mov $0xb0b0,%ebp
++  mov $0xbbbb,%ebx
++  mov $0x1212,%r12d
++  mov $0x3131,%r13d
++  mov $0x1414,%r14d
++  mov $0x9999,%r9d
++  mov $0x8888,%r8d
++  mov $0xaaaa,%r10d
++  mov $17,%edi
++  mov $0,%esi
++  mov $0,%edx
++  # Same entry contract as the real rewriter: reserve red zone, push scratch
++  # continuation and architectural return, and enter the actual wrapper.
++  # These instructions deliberately leave the selected flags unchanged.
++  lea -0x80(%rsp),%rsp
++  lea probe_scratch(%rip),%rcx
++  push %rcx
++  lea probe_after(%rip),%rcx
++  push %rcx
++  mov $56,%eax
++  jmp *probe_handler(%rip)
++  .globl probe_scratch
++probe_scratch:
++  lea 0x80(%rsp),%rsp
++  movq $1,SLOT(SCRATCH_SEEN)(%r15)
++  # A displaced instruction that must execute exactly once.
++  lea 0x10(%r12),%r12
++  .globl probe_after
++probe_after:
++  mov %rax,SLOT(RESULT_RAX)(%r15)
++  mov %rsp,SLOT(RETURNED_RSP)(%r15)
++  mov %r11,SLOT(RESULT_R11)(%r15)
++  mov %r12,SLOT(RESULT_R12)(%r15)
++  mov %rbp,SLOT(RESULT_RBP)(%r15)
++  mov %r15,SLOT(RESULT_R15)(%r15)
++  mov %r13,SLOT(RESULT_R13)(%r15)
++  mov %rcx,SLOT(RESULT_RCX)(%r15)
++  mov SLOT(ORIGINAL_RSP)(%r15),%rcx
++  # Read the whole protected red zone before PUSHFQ consumes one stack word.
++  .set probe_index,0
++  .irp distance,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8
++  mov -\distance(%rcx),%rax
++  mov %rax,(SLOT(REDZONE_START)+probe_index*8)(%r15)
++  .set probe_index,probe_index+1
++  .endr
++  pushfq
++  pop %rax
++  mov %rax,SLOT(RESULT_FLAGS)(%r15)
++  cld
++  # Always recover the fixture's own caller stack so a wrong child offset is
++  # an explicit failed observation, rather than hiding it in a secondary RET.
++  mov SLOT(ORIGINAL_RSP)(%r15),%rsp
++  pop %r15
++  pop %r14
++  pop %r13
++  pop %r12
++  pop %rbx
++  pop %rbp
++  ret
++  .size frame_probe,.-frame_probe
++  .section .note.GNU-stack,"",@progbits
+diff --git a/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7454a2380c5ddfb24945be018a55a9a9b3b939c
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c
+@@ -0,0 +1,149 @@
++#define _GNU_SOURCE
++#include "frame_probe.h"
++#include <errno.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/syscall.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++extern void handle_syscall(void);
++extern void handle_syscall_loader(void);
++extern void frame_probe(uint64_t *) __attribute__((returns_twice));
++extern void probe_scratch(void);
++extern void probe_after(void);
++extern void *get_syscall_return_address(void *);
++extern size_t get_offsetof_syscall_return_address(void);
++extern long vfork_return_from_child(void *);
++void (*probe_handler)(void);
++static uint64_t *active;
++static int mode;
++typedef long (*rust_router_fn)(int, void *, uint64_t *);
++static rust_router_fn rust_router;
++
++long runtime_syscall_router(long sc, long a, long b, long c, long d, long e,
++                            long f, void *frame) {
++  (void)sc; (void)a; (void)b; (void)c; (void)d; (void)e; (void)f;
++  active[FRAME_BASE] = (uintptr_t)frame;
++  active[FRAME_RETURN] = (uintptr_t)get_syscall_return_address(frame);
++  active[FRAME_RETURN_OFFSET] = get_offsetof_syscall_return_address();
++  if (rust_router != NULL) return rust_router(mode, frame, active);
++  if (mode == 1) {
++    long child = syscall(SYS_clone, SIGCHLD, 0, 0, 0, 0);
++    if (child != 0) return child;
++  } else if (mode == 0) {
++    return 0x55;
++  }
++  vfork_return_from_child(frame);
++  _exit(98);
++}
++
++long ld_sc_handler(long sc, long a, long b, long c, long d, long e, long f,
++                   void *frame) {
++  return runtime_syscall_router(sc, a, b, c, d, e, f, frame);
++}
++
++static unsigned check(const uint64_t *p, int child) {
++  unsigned failures = 0;
++  failures |= p[RETURNED_RSP] != p[ORIGINAL_RSP] ? 1 : 0;
++  failures |= p[FRAME_RETURN] != (uintptr_t)probe_scratch ? 2 : 0;
++  failures |= p[FRAME_RETURN_OFFSET] != 0x88 ? 4 : 0;
++  failures |= p[FRAME_BASE] + 0x90 + 0x80 != p[ORIGINAL_RSP] ? 8 : 0;
++  failures |= p[SCRATCH_SEEN] != 1 || p[RESULT_R12] != 0x1222 ? 16 : 0;
++  failures |= ((p[RESULT_FLAGS] ^ p[EXPECTED_FLAGS]) & 0xcd5) != 0 ? 32 : 0;
++  failures |= p[RESULT_R11] != p[EXPECTED_FLAGS] ? 64 : 0;
++  failures |= p[RESULT_RBP] != 0xb0b0 || p[RESULT_R13] != 0x3131 ? 128 : 0;
++  failures |= p[RESULT_RCX] != (uintptr_t)probe_after ? 256 : 0;
++  failures |= child && p[RESULT_RAX] != 0 ? 512 : 0;
++  for (size_t i = REDZONE_START; i < REDZONE_END; ++i)
++    failures |= p[i] != UINT64_C(0x718293a4b5c6d7e8) ? 1024 : 0;
++  if (rust_router != NULL) {
++    failures |= p[RUST_FRAME_RETURN] != (uintptr_t)probe_scratch ? 8192 : 0;
++    failures |= p[RUST_FRAME_FAKE_RETURN] != (uintptr_t)probe_after ? 16384 : 0;
++    failures |= p[RUST_GUEST_RSP] != p[ORIGINAL_RSP] ? 32768 : 0;
++  }
++  return failures;
++}
++
++static int transfer(int fd, void *buffer, size_t length, int sending) {
++  size_t done = 0;
++  while (done < length) {
++    ssize_t n = sending ? write(fd, (char *)buffer + done, length - done)
++                        : read(fd, (char *)buffer + done, length - done);
++    if (n < 0 && errno == EINTR) continue;
++    if (n <= 0) return -1;
++    done += (size_t)n;
++  }
++  return 0;
++}
++
++int frame_probe_run(int requested_mode, int loader_entry, unsigned long flags,
++                    rust_router_fn callback) {
++  if (requested_mode < 0 || requested_mode > 2 ||
++      (flags != 0x647 && flags != 0xa96)) return 2;
++  mode = requested_mode;
++  rust_router = callback;
++  probe_handler = loader_entry ? handle_syscall_loader : handle_syscall;
++  uint64_t result[PROBE_WORDS] = {0};
++  active = result;
++  result[EXPECTED_FLAGS] = flags;
++  int pipefd[2];
++  if (pipe(pipefd) != 0) return 2;
++  frame_probe(result);
++  if (mode == 1 && result[RESULT_RAX] == 0) {
++    close(pipefd[0]);
++    int rc = transfer(pipefd[1], result, sizeof(result), 1);
++    _exit(rc == 0 ? (check(result, 1) != 0) : 2);
++  }
++  close(pipefd[1]);
++  unsigned failures = check(result, mode == 2);
++  int child_status = -1;
++  uint64_t child[PROBE_WORDS] = {0};
++  if (mode == 1) {
++    pid_t pid = (pid_t)result[RESULT_RAX];
++    if (pid <= 0) return 2;
++    int captured = transfer(pipefd[0], child, sizeof(child), 0);
++    pid_t reaped;
++    do { reaped = waitpid(pid, &child_status, 0); } while (reaped < 0 && errno == EINTR);
++    if (reaped != pid) return 2;
++    // A failed capture must still reap this exact child and retain its status.
++    failures |= captured != 0 ? 65536 : 0;
++    failures |= check(child, 1);
++    failures |= !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0
++                    ? 2048 : 0;
++  } else if (mode == 0 && result[RESULT_RAX] != 0x55) failures |= 4096;
++  close(pipefd[0]);
++  printf("{\"mode\":\"%s\",\"entry\":\"%s\",\"failures\":%u,"
++         "\"child_status\":%d,\"parent\":[", mode == 0 ? "normal" : (mode == 1 ? "fork" : "restore"),
++         loader_entry ? "loader" : "guest", failures,
++         child_status);
++  for (size_t i = 0; i < PROBE_WORDS; ++i)
++    printf("%s%lu", i ? "," : "", result[i]);
++  printf("],\"child\":[");
++  for (size_t i = 0; i < PROBE_WORDS; ++i)
++    printf("%s%lu", i ? "," : "", child[i]);
++  printf("]}\n");
++  fflush(stdout);
++  return failures != 0;
++}
++
++#ifndef FRAME_PROBE_LIBRARY
++int main(int argc, char **argv) {
++  if (argc != 4) return 2;
++  int requested_mode;
++  if (strcmp(argv[1], "normal") == 0) requested_mode = 0;
++  else if (strcmp(argv[1], "fork") == 0) requested_mode = 1;
++  else if (strcmp(argv[1], "restore") == 0) requested_mode = 2;
++  else return 2;
++  int loader_entry;
++  if (strcmp(argv[2], "guest") == 0) loader_entry = 0;
++  else if (strcmp(argv[2], "loader") == 0) loader_entry = 1;
++  else return 2;
++  char *end = NULL;
++  unsigned long flags = strtoul(argv[3], &end, 16);
++  if (*end) return 2;
++  return frame_probe_run(requested_mode, loader_entry, flags, NULL);
++}
++#endif
+diff --git a/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa1097a6e25bacfd1a58d8fc594c235ba90c2ed1
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h
+@@ -0,0 +1,25 @@
++#ifndef FRAME_PROBE_H
++#define FRAME_PROBE_H
++#define ORIGINAL_RSP 0
++#define RETURNED_RSP 1
++#define RESULT_RAX 2
++#define RESULT_FLAGS 3
++#define RESULT_R11 4
++#define RESULT_R12 5
++#define RESULT_RBP 6
++#define RESULT_R15 7
++#define FRAME_BASE 8
++#define EXPECTED_FLAGS 9
++#define FRAME_RETURN 10
++#define FRAME_RETURN_OFFSET 11
++#define SCRATCH_SEEN 12
++#define RESULT_R13 13
++#define RESULT_RCX 14
++#define REDZONE_START 16
++#define RUST_FRAME_RETURN 32
++#define RUST_FRAME_FAKE_RETURN 33
++#define RUST_GUEST_RSP 34
++#define PROBE_WORDS 35
++#define REDZONE_END 32
++#define SLOT(n) ((n) * 8)
++#endif
+diff --git a/experimental/reverie-sabre/tests/loader_bootstrap.c b/experimental/reverie-sabre/tests/loader_bootstrap.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c0ccad1f00a0a74e2a031bd67dd81af76f6edc0
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/loader_bootstrap.c
+@@ -0,0 +1,273 @@
++/* Native protocol control: link the actual loader bootstrap implementation.
++ * This is not a PRNG or Hermit syscall oracle. The supervisor writes explicit
++ * transport sentinels, and the child must observe them at the real boundary.
++ */
++#define _GNU_SOURCE
++#include "bootstrap.h"
++#include <assert.h>
++#include <elf.h>
++#include <errno.h>
++#include <signal.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ptrace.h>
++#include <sys/syscall.h>
++#include <sys/uio.h>
++#include <sys/user.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++extern const unsigned char sbr_bootstrap_syscall_v1[];
++static unsigned char aux_random[16];
++static uintptr_t stack_words[13];
++static char private_option[] = SBR_BOOTSTRAP_ENV "=1";
++static char *option_string;
++static bool raw_environment;
++
++static void check_raw_environment(bool present) {
++  unsigned char bytes[1024];
++  FILE *file = fopen("/proc/self/environ", "rb");
++  assert(file != NULL);
++  size_t length = fread(bytes, 1, sizeof(bytes), file);
++  assert(length < sizeof(bytes) && feof(file) && !ferror(file));
++  assert(fclose(file) == 0);
++  assert((memmem(bytes, length, SBR_BOOTSTRAP_ENV "=1",
++                 sizeof(SBR_BOOTSTRAP_ENV "=1") - 1) != NULL) == present);
++  assert(memmem(bytes, length, "BEFORE=unchanged", 16) != NULL);
++  assert(memmem(bytes, length, "AFTER=unchanged", 15) != NULL);
++}
++
++static void prepare_stack(void) {
++  memcpy(private_option, SBR_BOOTSTRAP_ENV "=1", sizeof(private_option));
++  option_string = private_option;
++  if (raw_environment) {
++    char *value = getenv(SBR_BOOTSTRAP_ENV);
++    assert(value != NULL && strcmp(value, "1") == 0);
++    option_string = value - sizeof(SBR_BOOTSTRAP_ENV);
++    assert(strcmp(option_string, SBR_BOOTSTRAP_ENV "=1") == 0);
++    check_raw_environment(true);
++  }
++  uintptr_t initial[] = {
++      1, (uintptr_t)"native-client", 0, (uintptr_t)"BEFORE=unchanged",
++      (uintptr_t)option_string, (uintptr_t)"AFTER=unchanged", 0,
++      AT_RANDOM, (uintptr_t)aux_random, AT_ENTRY, (uintptr_t)prepare_stack,
++      AT_NULL, 0};
++  memcpy(stack_words, initial, sizeof(initial));
++  memset(aux_random, 0x55, sizeof(aux_random));
++}
++
++static void child_body(bool fail_after_take) {
++  alarm(8);
++  if (!raw_environment)
++    assert(setenv(SBR_BOOTSTRAP_ENV, "1", 1) == 0);
++  sbr_bootstrap_configure();
++  assert(sbr_bootstrap_enabled());
++  prepare_stack();
++  assert(ptrace(PTRACE_TRACEME, 0, NULL, NULL) == 0);
++  assert(raise(SIGSTOP) == 0);
++  sbr_bootstrap_image(stack_words, prepare_stack);
++  assert(stack_words[0] == 1 && stack_words[2] == 0);
++  assert(strcmp((char *)stack_words[3], "BEFORE=unchanged") == 0);
++  assert(strcmp((char *)stack_words[4], "AFTER=unchanged") == 0);
++  assert(stack_words[5] == 0 && stack_words[6] == AT_RANDOM);
++  assert(stack_words[7] == (uintptr_t)aux_random);
++  assert(stack_words[8] == AT_ENTRY && stack_words[10] == AT_NULL);
++  if (raw_environment)
++    check_raw_environment(false);
++  for (size_t i = 0; i < sizeof(private_option); ++i)
++    assert(option_string[i] == 0);
++  for (size_t i = 0; i < sizeof(aux_random); ++i)
++    assert(aux_random[i] == 0xa0 + i);
++
++  unsigned char output[32];
++  memset(output, 0x5a, sizeof(output));
++  uintptr_t wrapper = 0x12345678;
++  assert(sbr_bootstrap_getrandom((long)output, 16, 0x80000001, &wrapper) ==
++         -EINVAL);
++  for (size_t i = 0; i < sizeof(output); ++i)
++    assert(output[i] == 0x5a);
++  assert(sbr_bootstrap_getrandom((long)output, 8, 1, &wrapper) == 8);
++  assert(memcmp(output, "12345678", 8) == 0 && output[8] == 0x5a);
++  assert(sbr_bootstrap_getrandom((long)output, 16, 0, &wrapper) == 16);
++  assert(memcmp(output, "abcdefghijklmnop", 16) == 0 && output[16] == 0x5a);
++  assert(sbr_bootstrap_take_state(output, 4) == -EMSGSIZE);
++  assert(sbr_bootstrap_take_state(output, sizeof(output)) == 16);
++  assert(memcmp(output, "opaque-state-once", 16) == 0 && output[16] == 0x5a);
++  assert(sbr_bootstrap_take_state(output, sizeof(output)) == -EPROTO);
++  if (fail_after_take) {
++    sbr_bootstrap_getrandom((long)output, 8, 1, &wrapper);
++    _exit(99);
++  }
++  _exit(0);
++}
++
++static void read_memory(pid_t child, uintptr_t remote, void *local, size_t len) {
++  struct iovec here = {local, len}, there = {(void *)remote, len};
++  assert(process_vm_readv(child, &here, 1, &there, 1, 0) == (ssize_t)len);
++}
++
++static void write_memory(pid_t child, uintptr_t remote, const void *local,
++                         size_t len) {
++  struct iovec here = {(void *)local, len}, there = {(void *)remote, len};
++  assert(process_vm_writev(child, &here, 1, &there, 1, 0) == (ssize_t)len);
++}
++
++static void supervised_control(bool fail_after_take) {
++  pid_t child = fork();
++  assert(child >= 0);
++  if (child == 0)
++    child_body(fail_after_take);
++  int status;
++  assert(waitpid(child, &status, 0) == child);
++  assert(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
++  assert(ptrace(PTRACE_SETOPTIONS, child, NULL,
++                PTRACE_O_EXITKILL | PTRACE_O_TRACESYSGOOD) == 0);
++  unsigned requests = 0;
++  long pending = 0;
++  int entering = 1;
++  int handled = 0;
++  for (unsigned stops = 0; stops < 100; ++stops) {
++    assert(ptrace(PTRACE_SYSCALL, child, NULL, NULL) == 0);
++    assert(waitpid(child, &status, 0) == child);
++    if (WIFEXITED(status)) {
++      assert(WEXITSTATUS(status) == (fail_after_take ? EXIT_FAILURE : 0));
++      assert(requests == 6 && !handled);
++      return;
++    }
++    assert(WIFSTOPPED(status) && WSTOPSIG(status) == (SIGTRAP | 0x80));
++    struct user_regs_struct regs;
++    assert(ptrace(PTRACE_GETREGS, child, NULL, &regs) == 0);
++    if (entering && regs.orig_rax == SYS_prctl &&
++        regs.rdi == SBR_BOOTSTRAP_OPTION) {
++      assert(regs.rip == (uintptr_t)sbr_bootstrap_syscall_v1 + 2);
++      assert(sbr_bootstrap_syscall_v1[0] == 0x0f &&
++             sbr_bootstrap_syscall_v1[1] == 0x05);
++      ++requests;
++      if (requests == 1) {
++        assert(regs.rsi == SBR_BOOTSTRAP_IMAGE);
++        assert(regs.rdx == (uintptr_t)stack_words);
++        assert(regs.r10 == (uintptr_t)prepare_stack);
++        assert(regs.r8 == SBR_BOOTSTRAP_VERSION && regs.r9 == 0);
++        uintptr_t actual[12];
++        read_memory(child, regs.rdx, actual, sizeof(actual));
++        assert(actual[6] == AT_RANDOM && actual[7] == (uintptr_t)aux_random);
++        unsigned char bytes[16];
++        for (size_t i = 0; i < sizeof(bytes); ++i)
++          bytes[i] = 0xa0 + i;
++        write_memory(child, actual[7], bytes, sizeof(bytes));
++        pending = 0;
++      } else if (requests <= 4) {
++        assert(regs.rsi == SBR_BOOTSTRAP_GETRANDOM);
++        uintptr_t wrapper;
++        read_memory(child, regs.r9, &wrapper, sizeof(wrapper));
++        assert(wrapper == 0x12345678);
++        if (requests == 2) {
++          assert(regs.r10 == 16 && regs.r8 == 0x80000001);
++          pending = -EINVAL;
++        } else {
++          assert(regs.r10 == (requests == 3 ? 8 : 16));
++          assert(regs.r8 == (requests == 3 ? 1 : 0));
++          write_memory(child, regs.rdx,
++                       requests == 3 ? "12345678" : "abcdefghijklmnop",
++                       regs.r10);
++          pending = regs.r10;
++        }
++      } else {
++        assert(regs.rsi == SBR_BOOTSTRAP_TAKE_STATE);
++        assert(regs.r8 == SBR_BOOTSTRAP_VERSION && regs.r9 == 0);
++        if (requests == 5) {
++          assert(regs.r10 == 4);
++          pending = -EMSGSIZE;
++        } else {
++          assert(regs.r10 == 32);
++          write_memory(child, regs.rdx, "opaque-state-once", 16);
++          pending = 16;
++        }
++      }
++      handled = 1;
++      regs.orig_rax = -1;
++      assert(ptrace(PTRACE_SETREGS, child, NULL, &regs) == 0);
++    } else if (!entering && handled) {
++      regs.rax = pending;
++      assert(ptrace(PTRACE_SETREGS, child, NULL, &regs) == 0);
++      handled = 0;
++    }
++    entering = !entering;
++  }
++  assert(!"native protocol control exceeded stop bound");
++}
++
++static void absent_supervisor_control(void) {
++  pid_t child = fork();
++  assert(child >= 0);
++  if (child == 0) {
++    assert(setenv(SBR_BOOTSTRAP_ENV, "1", 1) == 0);
++    sbr_bootstrap_configure();
++    prepare_stack();
++    sbr_bootstrap_image(stack_words, prepare_stack);
++    _exit(99);
++  }
++  int status;
++  assert(waitpid(child, &status, 0) == child);
++  assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
++}
++
++static void uninitialized_phase_control(void) {
++  pid_t child = fork();
++  assert(child >= 0);
++  if (child == 0) {
++    assert(setenv(SBR_BOOTSTRAP_ENV, "1", 1) == 0);
++    sbr_bootstrap_configure();
++    sbr_bootstrap_getrandom(0, 0, 0, NULL);
++    _exit(99);
++  }
++  int status;
++  assert(waitpid(child, &status, 0) == child);
++  assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
++}
++
++static void raw_environment_control(void) {
++  pid_t child = fork();
++  assert(child >= 0);
++  if (child == 0) {
++    char *args[] = {"loader-bootstrap-control", "raw-environment", NULL};
++    char *env[] = {"BEFORE=unchanged", SBR_BOOTSTRAP_ENV "=1",
++                   "AFTER=unchanged", NULL};
++    /* exec makes these the kernel's actual raw environment bytes. The
++     * ordinary supervised control then checks them before and after IMAGE.
++     */
++    execve("/proc/self/exe", args, env);
++    _exit(99);
++  }
++  int status;
++  assert(waitpid(child, &status, 0) == child);
++  assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++}
++
++int main(int argc, char **argv) {
++  alarm(10);
++  if (argc == 2 && strcmp(argv[1], "raw-environment") == 0) {
++    raw_environment = true;
++    supervised_control(false);
++    return 0;
++  }
++  assert(argc == 1);
++  assert(unsetenv(SBR_BOOTSTRAP_ENV) == 0);
++  sbr_bootstrap_configure();
++  assert(!sbr_bootstrap_enabled());
++  sbr_bootstrap_image(NULL, NULL);
++  assert(sbr_bootstrap_take_state(NULL, 0) == -EPROTO);
++  supervised_control(false);
++  supervised_control(true);
++  uninitialized_phase_control();
++  absent_supervisor_control();
++  raw_environment_control();
++  printf("protocol=%lu version=%lu ops=%u,%u,%u max=%lu\n",
++         SBR_BOOTSTRAP_OPTION, SBR_BOOTSTRAP_VERSION, SBR_BOOTSTRAP_IMAGE,
++         SBR_BOOTSTRAP_GETRANDOM, SBR_BOOTSTRAP_TAKE_STATE,
++         SBR_BOOTSTRAP_MAX_STATE);
++  puts("PASS: real IMAGE/auxv, original requests, refusal, once-only handoff; disabled compatibility; raw environment scrubbed");
++  return 0;
++}
+diff --git a/experimental/reverie-sabre/tests/loader_bootstrap.rs b/experimental/reverie-sabre/tests/loader_bootstrap.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6b2c9b21a2bad46f1110a82598f881cdfaeeaacf
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/loader_bootstrap.rs
+@@ -0,0 +1,46 @@
++#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
++
++use std::process::Command;
++
++#[test]
++fn actual_loader_bootstrap_protocol_is_supervised_and_once_only() {
++    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
++    let out = std::env::temp_dir().join(format!("reverie-loader-bootstrap-{}", std::process::id()));
++    std::fs::create_dir(&out).unwrap();
++    let binary = out.join("protocol");
++    let compiler = cc::Build::new()
++        .cargo_metadata(false)
++        .opt_level(2)
++        .host("x86_64-unknown-linux-gnu")
++        .target("x86_64-unknown-linux-gnu")
++        .get_compiler();
++    let output = compiler
++        .to_command()
++        // Appended after cc's inherited CFLAGS: native assertions are the
++        // control's oracle and must remain enabled even with -DNDEBUG.
++        .args(["-std=gnu99", "-Wall", "-Wextra", "-Werror", "-UNDEBUG"])
++        .arg("-I")
++        .arg(source.join("vendor/sabre/includes/loader"))
++        .arg(source.join("vendor/sabre/loader/bootstrap.c"))
++        .arg(source.join("tests/loader_bootstrap.c"))
++        .arg("-o")
++        .arg(&binary)
++        .output()
++        .unwrap();
++    assert!(output.status.success(), "{output:?}");
++    let output = Command::new(&binary).output().unwrap();
++    assert!(output.status.success(), "{output:?}");
++    use reverie_sabre::bootstrap;
++    let contract = format!(
++        "protocol={} version={} ops={},{},{} max={}\n",
++        bootstrap::PRCTL_OPTION,
++        bootstrap::VERSION,
++        bootstrap::IMAGE,
++        bootstrap::GETRANDOM,
++        bootstrap::TAKE_STATE,
++        bootstrap::MAX_STATE_BYTES,
++    );
++    assert!(output.stdout.starts_with(contract.as_bytes()), "{output:?}");
++    std::fs::remove_file(&binary).unwrap();
++    std::fs::remove_dir(&out).unwrap();
++}
+diff --git a/experimental/reverie-sabre/tests/syscall_frame_abi.rs b/experimental/reverie-sabre/tests/syscall_frame_abi.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4a430d6935e87f4ccffd251b1b85e81719b1841
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/syscall_frame_abi.rs
+@@ -0,0 +1,145 @@
++//! Execute the production x86 wrappers and Rust child-return helpers against a
++//! scratch continuation, displaced instruction, and full red-zone sentinel.
++
++#![cfg(target_arch = "x86_64")]
++
++use std::ffi::CString;
++use std::path::PathBuf;
++use std::process::Command;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicUsize;
++use std::sync::atomic::Ordering;
++
++use reverie_sabre::ffi;
++
++static NEXT: AtomicUsize = AtomicUsize::new(0);
++static SERIAL: Mutex<()> = Mutex::new(());
++
++type Router = unsafe extern "C" fn(i32, *mut libc::c_void, *mut u64) -> libc::c_long;
++type Probe = unsafe extern "C" fn(i32, i32, libc::c_ulong, Option<Router>) -> i32;
++
++struct Library {
++    handle: *mut libc::c_void,
++    run: Probe,
++}
++
++impl Library {
++    fn build() -> Self {
++        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
++        let fixture = manifest.join("tests/fixtures/syscall_frame");
++        let vendor = manifest.join("vendor/sabre");
++        let output = std::env::temp_dir().join(format!(
++            "reverie-sabre-frame-{}-{}",
++            std::process::id(),
++            NEXT.fetch_add(1, Ordering::Relaxed)
++        ));
++        std::fs::create_dir(&output).expect("create private ABI fixture directory");
++        let library = output.join("frame_probe.so");
++        let mut command = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
++        command.args([
++            "-std=c11",
++            "-O2",
++            "-Wall",
++            "-Wextra",
++            "-Werror",
++            "-fno-omit-frame-pointer",
++            "-fPIC",
++            "-shared",
++            "-Wl,-Bsymbolic",
++            "-Wl,-z,defs",
++            "-DFRAME_PROBE_LIBRARY",
++        ]);
++        command.arg("-I").arg(&fixture);
++        command.arg("-I").arg(vendor.join("includes"));
++        command.arg("-I").arg(vendor.join("includes/arch"));
++        for file in [
++            fixture.join("frame_probe.c"),
++            fixture.join("frame_probe.S"),
++            vendor.join("arch/x86_64/handle_syscall.S"),
++            vendor.join("arch/x86_64/handle_syscall_loader.s"),
++            vendor.join("arch/x86_64/syscall_stackframe.c"),
++            vendor.join("plugin_api/arch/x86_64/vfork_return_from_child.s"),
++            manifest.join("src/ffi/recursion_protector.c"),
++        ] {
++            command.arg(file);
++        }
++        command.arg("-o").arg(&library);
++        let result = command
++            .output()
++            .expect("compile actual SaBRe frame producers");
++        std::fs::write(output.join("compile.stdout"), &result.stdout).unwrap();
++        std::fs::write(output.join("compile.stderr"), &result.stderr).unwrap();
++        eprintln!("ABI fixture retained at {}", output.display());
++        assert!(result.status.success(), "{command:?}: {result:?}");
++        let path = CString::new(library.as_os_str().as_encoded_bytes()).unwrap();
++        unsafe {
++            let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
++            assert!(!handle.is_null(), "load compiled ABI fixture");
++            let symbol = libc::dlsym(handle, c"frame_probe_run".as_ptr());
++            assert!(!symbol.is_null(), "resolve ABI fixture entry");
++            Self {
++                handle,
++                run: std::mem::transmute::<*mut libc::c_void, Probe>(symbol),
++            }
++        }
++    }
++}
++
++impl Drop for Library {
++    fn drop(&mut self) {
++        unsafe {
++            libc::dlclose(self.handle);
++        }
++    }
++}
++
++unsafe extern "C" fn route(mode: i32, raw: *mut libc::c_void, output: *mut u64) -> libc::c_long {
++    let frame = &*raw.cast::<ffi::syscall_stackframe>();
++    // The C fixture obtains its return through the actual C accessor. These
++    // independently observed Rust fields must name the same live frame slots.
++    *output.add(32) = frame.ret as u64;
++    *output.add(33) = frame.fake_ret as u64;
++    *output.add(34) = raw as u64 + std::mem::size_of::<ffi::syscall_stackframe>() as u64 + 0x80;
++    match mode {
++        0 => 0x55,
++        1 => ffi::fork_syscall(
++            libc::SIGCHLD as usize,
++            std::ptr::null_mut(),
++            std::ptr::null_mut(),
++            0,
++            frame,
++            usize::MAX as u64,
++        ) as libc::c_long,
++        2 => ffi::vfork_return_from_child(frame),
++        _ => libc::_exit(97),
++    }
++}
++
++fn exercise(mode: i32) {
++    // A forked child exits inside the C fixture after writing its fixed-size
++    // capture; only the original parent returns to libtest. No broad wait or
++    // process cleanup domain is adopted, even under concurrent cargo test.
++    let _guard = SERIAL.lock().unwrap();
++    let fixture = Library::build();
++    for loader in [0, 1] {
++        for flags in [0x647, 0xa96] {
++            let result = unsafe { (fixture.run)(mode, loader, flags, Some(route)) };
++            assert_eq!(result, 0, "mode={mode}, loader={loader}, flags={flags:#x}");
++        }
++    }
++}
++
++#[test]
++fn rust_frame_matches_both_actual_wrapper_entries() {
++    exercise(0);
++}
++
++#[test]
++fn fork_child_runs_scratch_and_preserves_flags_stack_and_red_zone() {
++    exercise(1);
++}
++
++#[test]
++fn vfork_return_restores_the_same_actual_frame() {
++    exercise(2);
++}
+diff --git a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s
+index 8ab40b5631f9460af45c56847eb55af966875d8f..b3c680b41bfdc715a7984bd8713d2d8d222c1dfe 100644
+--- a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s
++++ b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s
+@@ -15,7 +15,13 @@ handle_syscall_loader:
+   .cfi_startproc
+   .cfi_def_cfa rsp, 0x88
+   .cfi_offset rip, -0x88
++
++  # The rewriter captured the guest flags in r11. Use the same frame as
++  # handle_syscall: ld_sc_handler may forward it to the plugin router.
++  pushq %r11
++  .cfi_adjust_cfa_offset 8
+   .cfi_remember_state
++  cld
+ 
+   # Prologue
+   push %rbp
+@@ -31,6 +37,7 @@ handle_syscall_loader:
+   pushq %rsi
+   pushq %rdi
+   pushq %r8
++  pushq %r9
+   pushq %r10
+   pushq %r11
+   pushq %r12
+@@ -41,13 +48,12 @@ handle_syscall_loader:
+   # Align the stack on a 16-byte boundary before the call
+   push %rbp
+   mov %rsp, %rbp
+-  .cfi_adjust_cfa_offset 0x68
++  .cfi_adjust_cfa_offset 0x70
+   and $0xfffffffffffffff0, %rsp
+ 
+   # Adjust the arguments
+-  pushq %rsp         # reserve space for wrapper_sp
++  pushq %rbp         # wrapper_sp
+   pushq %r9          # arg6
+-  movq %rsp, 8(%rsp) # wrapper_sp
+   movq %r8, %r9      # arg5
+   movq %r10, %r8     # arg4
+   movq %rdx, %rcx    # arg3
+@@ -74,6 +80,7 @@ handle_syscall_loader:
+   popq %r12
+   popq %r11
+   popq %r10
++  popq %r9
+   popq %r8
+   popq %rdi
+   popq %rsi
+@@ -84,7 +91,9 @@ handle_syscall_loader:
+   # Epilogue
+   pop %rbp
+   .cfi_restore_state
+-  addq $8, %rsp	# drop fake return address
++  popfq
++  .cfi_adjust_cfa_offset -8
++  leaq 8(%rsp), %rsp # drop fake return without changing RFLAGS
+   .cfi_undefined rip
+   ret
+   .cfi_endproc
+diff --git a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c
+index b5c0a8b83ae4ce22d43ac05483ce6c1827e1911b..9118bd8492b3af2e3d3bdffdc11db75870580fc6 100644
+--- a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c
++++ b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c
+@@ -8,6 +8,7 @@
+ #include "syscall_stackframe.h"
+ 
+ #include <stddef.h>
++#include <stdint.h>
+ 
+ struct syscall_stackframe {
+   void *rbp_stackalign;
+@@ -25,11 +26,30 @@ struct syscall_stackframe {
+   void *rcx;
+   void *rbx;
+   void *rbp_prologue;
++  unsigned long rflags;
+   // trampoline
+   void *fake_ret;
+   void *ret;
+ } __packed;
+ 
++/* Optional initial-image supervisor ABI. Read-only integer data avoids
++ * linking the plugin runtime/allocator into the coordinator. Keep this in the
++ * translation unit that defines the actual frame: no duplicated offsets.
++ * This describes a full assembly frame, never the SIGILL return-only shim.
++ */
++__attribute__((used, visibility("default")))
++const uint64_t sbr_bootstrap_frame_layout_v1[9] = {
++    1,
++    sizeof(struct syscall_stackframe),
++    offsetof(struct syscall_stackframe, rdi),
++    offsetof(struct syscall_stackframe, rsi),
++    offsetof(struct syscall_stackframe, rdx),
++    offsetof(struct syscall_stackframe, fake_ret),
++    offsetof(struct syscall_stackframe, ret),
++    sizeof(uintptr_t),
++    9,
++};
++
+ void *get_syscall_return_address(struct syscall_stackframe *stack_frame) {
+   return stack_frame->ret;
+ }
+diff --git a/experimental/reverie-sabre/vendor/sabre/includes/loader/bootstrap.h b/experimental/reverie-sabre/vendor/sabre/includes/loader/bootstrap.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5dee4c484e86a7bccc74e9e508e9ace30acacee
+--- /dev/null
++++ b/experimental/reverie-sabre/vendor/sabre/includes/loader/bootstrap.h
+@@ -0,0 +1,60 @@
++/* Copyright (c) Meta Platforms, Inc. and affiliates.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++#ifndef SBR_BOOTSTRAP_H
++#define SBR_BOOTSTRAP_H
++
++#include <stdbool.h>
++#include <stddef.h>
++
++/* Optional supervisor protocol. An ordinary kernel rejects this prctl option.
++ * The supervisor must authenticate this instruction in the exact launched
++ * loader, the stopped thread/image generation, and every pointed-to extent.
++ * Neither the option number nor a request's argument shape is authority.
++ * IMAGE is an acknowledgement only after the supervisor validates the real
++ * final stack/auxv, finds exactly one writable 16-byte AT_RANDOM target, and
++ * completes its initialization there. The loader does not validate auxv.
++ *
++ * Enabled execution must make no rewritten non-plugin getrandom call before
++ * IMAGE. That includes loader-internal code between the initial rewrite and
++ * the IMAGE stop; a future such call is a fatal unsupported phase, never a
++ * fallback to host entropy. The native phase control checks that such a call
++ * is fatal; it does not establish that no loader-internal caller exists.
++ *
++ * The supervisor must write no more than TAKE's capacity, retire the state
++ * only after a successful bounded write, and reject subsequent takes (for
++ * example with ESTALE). A failed/short-capacity transfer must not consume it.
++ * A zero/oversized success violates the protocol: the consumer must fail,
++ * never retry by constructing fresh state or replaying random requests.
++ */
++#define SBR_BOOTSTRAP_OPTION 0x53425242UL
++#define SBR_BOOTSTRAP_VERSION 1UL
++#define SBR_BOOTSTRAP_MAX_STATE 4096UL
++#define SBR_BOOTSTRAP_ENV "REVERIE_SABRE_BOOTSTRAP_V1"
++
++enum sbr_bootstrap_operation {
++  SBR_BOOTSTRAP_IMAGE = 1,
++  SBR_BOOTSTRAP_GETRANDOM = 2,
++  SBR_BOOTSTRAP_TAKE_STATE = 3,
++};
++
++typedef long (*sbr_bootstrap_take_fn)(void *, size_t);
++typedef int (*sbr_bootstrap_install_fn)(sbr_bootstrap_take_fn);
++
++void sbr_bootstrap_configure(void);
++bool sbr_bootstrap_enabled(void);
++void sbr_bootstrap_image(void *stack, void *entry);
++long sbr_bootstrap_getrandom(long buffer, long length, long flags,
++                             void *wrapper_sp);
++long sbr_bootstrap_take_state(void *buffer, size_t capacity);
++
++/* A single exported, non-inlined syscall site for all three operations. IMAGE
++ * carries final stack/entry/version/zero; GETRANDOM carries the original
++ * buffer/length/flags/wrapper; TAKE carries output/capacity/version/zero.
++ * There is no new IPC service, libc call, allocation, or TLS access here.
++ */
++long sbr_bootstrap_request_v1(unsigned long operation, unsigned long arg1,
++                              unsigned long arg2, unsigned long arg3,
++                              unsigned long arg4);
++
++#endif
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt b/experimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt
+index fc5a43a657edb7807bd16a2dad75187e7dd5125c..903012a419ec3007c2e9c410ad48ef314acf0737 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt
++++ b/experimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt
+@@ -10,6 +10,7 @@ list(APPEND SABRE_COMPONENT_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/includes/loader)
+ sabre_add_component(
+   loader
+   backend_stats.c
++  bootstrap.c
+   elf_loading.c
+   ld_sc_handler.c
+   loader.c
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c b/experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..f0176197cbf9bb77029287e6d881ab942c8e0230
+--- /dev/null
++++ b/experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c
+@@ -0,0 +1,161 @@
++/* Copyright (c) Meta Platforms, Inc. and affiliates.
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++#include "bootstrap.h"
++
++#include <elf.h>
++#include <err.h>
++#include <errno.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/syscall.h>
++
++static bool requested;
++static bool image_bound;
++static bool state_taken;
++
++/* A protocol violation is not a getrandom errno that guest libc may ignore
++ * or handle by trying another entropy path. This can run before client TLS
++ * and libc initialization, so use only raw syscalls and constant storage.
++ */
++__attribute__((noreturn)) static void invalid_random_phase(void) {
++#ifdef __x86_64__
++  static const char message[] =
++      "SaBRe: getrandom outside initialized loader bootstrap phase\n";
++  long ignored;
++  __asm__ volatile("syscall"
++                   : "=a"(ignored)
++                   : "0"(SYS_write), "D"(2), "S"(message),
++                     "d"(sizeof(message) - 1)
++                   : "rcx", "r11", "memory");
++  __asm__ volatile("syscall"
++                   : "=a"(ignored)
++                   : "0"(SYS_exit_group), "D"(EXIT_FAILURE)
++                   : "rcx", "r11", "memory");
++  __builtin_unreachable();
++#else
++  abort();
++#endif
++}
++
++void sbr_bootstrap_configure(void) {
++  const char *value = getenv(SBR_BOOTSTRAP_ENV);
++  if (value == NULL)
++    return;
++  if (strcmp(value, "1") != 0)
++    errx(EXIT_FAILURE, "invalid " SBR_BOOTSTRAP_ENV);
++#ifndef __x86_64__
++  errx(EXIT_FAILURE, "loader bootstrap requires x86-64");
++#endif
++  requested = true;
++}
++
++bool sbr_bootstrap_enabled(void) { return requested; }
++
++/* This exported instruction must have one address even under IPA/LTO. GCC's
++ * noclone and Clang's optnone prevent specialized copies of the inline asm.
++ */
++#ifdef __clang__
++__attribute__((optnone))
++#else
++__attribute__((noclone))
++#endif
++__attribute__((noinline, used, visibility("default"))) long
++sbr_bootstrap_request_v1(unsigned long operation, unsigned long arg1,
++                         unsigned long arg2, unsigned long arg3,
++                         unsigned long arg4) {
++#ifdef __x86_64__
++  register unsigned long r10 __asm__("r10") = arg2;
++  register unsigned long r8 __asm__("r8") = arg3;
++  register unsigned long r9 __asm__("r9") = arg4;
++  long result;
++  __asm__ volatile(".global sbr_bootstrap_syscall_v1\n"
++                   "sbr_bootstrap_syscall_v1:\n"
++                   "syscall"
++                   : "=a"(result)
++                   : "0"(SYS_prctl), "D"(SBR_BOOTSTRAP_OPTION), "S"(operation),
++                     "d"(arg1), "r"(r10), "r"(r8), "r"(r9)
++                   : "rcx", "r11", "memory");
++  return result;
++#else
++  (void)operation;
++  (void)arg1;
++  (void)arg2;
++  (void)arg3;
++  (void)arg4;
++  return -ENOSYS;
++#endif
++}
++
++void sbr_bootstrap_image(void *stack, void *entry) {
++  if (!requested)
++    return;
++  if (image_bound || state_taken)
++    errx(EXIT_FAILURE, "duplicate loader bootstrap image");
++
++  /* unsetenv before load's find_auxv would shorten the environment without
++   * moving auxv and make the original stack unparsable. Consume the private
++   * option only once the final guest stack exists, moving the complete auxv
++   * together with the remaining environment. The guest stack pointer and its
++   * alignment, argv, and all other environment strings are unchanged. Erase
++   * the original string too: the kernel's raw /proc/self/environ range still
++   * contains it after the pointer array has been compacted.
++   */
++  uintptr_t *words = stack;
++  uintptr_t *env = words + 1 + words[0] + 1;
++  uintptr_t *option = NULL;
++  uintptr_t *end = env;
++  for (; *end != 0; ++end) {
++    const char *value = (const char *)*end;
++    if (strncmp(value, SBR_BOOTSTRAP_ENV "=", sizeof(SBR_BOOTSTRAP_ENV)) == 0) {
++      if (option != NULL || strcmp(value, SBR_BOOTSTRAP_ENV "=1") != 0)
++        errx(EXIT_FAILURE, "ambiguous private loader bootstrap environment");
++      option = end;
++    }
++  }
++  if (option == NULL)
++    errx(EXIT_FAILURE,
++         "private loader bootstrap environment missing from stack");
++  ++end;
++  while (end[0] != AT_NULL)
++    end += 2;
++  end += 2;
++  memset((char *)*option, 0, strlen((char *)*option));
++  memmove(option, option + 1, (char *)end - (char *)(option + 1));
++
++  long result =
++      sbr_bootstrap_request_v1(SBR_BOOTSTRAP_IMAGE, (unsigned long)stack,
++                               (unsigned long)entry, SBR_BOOTSTRAP_VERSION, 0);
++  if (result != 0)
++    errx(EXIT_FAILURE, "loader bootstrap image refused: %ld", result);
++  image_bound = true;
++}
++
++long sbr_bootstrap_getrandom(long buffer, long length, long flags,
++                             void *wrapper_sp) {
++  if (!requested)
++    return -EPROTO;
++  if (!image_bound || state_taken)
++    invalid_random_phase();
++  return sbr_bootstrap_request_v1(SBR_BOOTSTRAP_GETRANDOM, buffer, length,
++                                  flags, (unsigned long)wrapper_sp);
++}
++
++long sbr_bootstrap_take_state(void *buffer, size_t capacity) {
++  if (!requested || !image_bound || state_taken)
++    return -EPROTO;
++  if (buffer == NULL || capacity == 0 || capacity > SBR_BOOTSTRAP_MAX_STATE)
++    return -EINVAL;
++  long result =
++      sbr_bootstrap_request_v1(SBR_BOOTSTRAP_TAKE_STATE, (unsigned long)buffer,
++                               capacity, SBR_BOOTSTRAP_VERSION, 0);
++  if (result > 0 && (unsigned long)result <= capacity) {
++    state_taken = true;
++    return result;
++  }
++  /* A rejected or short-capacity request must not retire the supervisor's
++   * state. An invalid successful response is never treated as an empty state.
++   */
++  return result < 0 ? result : -EPROTO;
++}
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c b/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
+index d6565362a660e78e7f390ad58947ff7bee8f5a9c..a0f22a06efe2f837b6520737ebfd9816e437a615 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
+@@ -21,6 +21,7 @@
+ #include <sys/mman.h>
+ #include <sys/syscall.h>
+ 
++#include "bootstrap.h"
+ #include "compiler.h"
+ #include "global_vars.h"
+ #include "ld_sc_handler.h"
+@@ -536,6 +537,14 @@ long runtime_syscall_router(long sc_no, long arg1, long arg2, long arg3,
+   // .preinit_array might actually run second as pthreads need to initialize
+   // locks etc. While pthreads is initializing, calling_from_plugin is NULL.
+   // Look: https://code.woboq.org/userspace/glibc/elf/dl-init.c.html#84
++  if (calling_from_plugin == NULL && sbr_bootstrap_enabled() &&
++      sc_no == SYS_getrandom) {
++    /* This is a real rewritten client request before plugin initialization,
++     * not a loader/plugin-native request inferred from its length or flags.
++     * Keep its original frame so the supervisor can authenticate provenance.
++     */
++    return sbr_bootstrap_getrandom(arg1, arg2, arg3, wrapper_sp);
++  }
+   if (calling_from_plugin == NULL || calling_from_plugin()) {
+     if (sc_no == SYS_clone && arg2 != 0) { // clone
+       void *ret_addr = get_syscall_return_address(wrapper_sp);
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/loader.c b/experimental/reverie-sabre/vendor/sabre/loader/loader.c
+index 2afe1e5ea507b5dfd255178203f63c4d8a9e85e7..f8fb0334ec9ff101d1f84cad7b7a68d33fdae2b0 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/loader.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/loader.c
+@@ -29,6 +29,7 @@
+ 
+ #include "arch/handle_syscall.h"
+ #include "arch/rewriter_tools.h"
++#include "bootstrap.h"
+ #include "compiler.h"
+ #include "elf_loading.h"
+ #include "global_vars.h"
+@@ -275,6 +276,7 @@ static int parse_shebang(const char *client_path,
+ // Returns the address of entry point and also populates a pointer
+ // for the top of the new stack
+ void load(int argc, char *argv[], void **new_entry, void **new_stack_top) {
++  sbr_bootstrap_configure();
+   int process_argc = argc;
+   char **process_argv = argv;
+   if (argc < 4) {
+@@ -419,6 +421,8 @@ void load(int argc, char *argv[], void **new_entry, void **new_stack_top) {
+     const char *libs[] = {"ld", NULL};
+     memorymaps_rewrite_all(libs, client_path, true);
+   } else {
++    if (sbr_bootstrap_enabled())
++      errx(EXIT_FAILURE, "loader bootstrap does not support static images");
+ #ifdef __x86_64__
+     if (first_region(abs_plugin_path) == 0)
+       reexec_static_client_with_plugin(process_argc, process_argv);
+@@ -471,4 +475,9 @@ void load(int argc, char *argv[], void **new_entry, void **new_stack_top) {
+   _nx_debug_printf("done rewriting stack\n");
+ 
+   *new_entry = (void *)entry;
++  /* The manually loaded guest's final stack and auxv now exist. The initial
++   * kernel exec stop belonged to SaBRe, not this image. Do not enter the guest
++   * dynamic linker until the supervisor has initialized the real AT_RANDOM.
++   */
++  sbr_bootstrap_image(*new_stack_top, *new_entry);
+ }
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/premain.c b/experimental/reverie-sabre/vendor/sabre/loader/premain.c
+index 24b3df774052227ca3585cc41f31d3d6e6354022..c7b7d4b41530a5dfd72808f7a70ab80d29dd03d9 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/premain.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/premain.c
+@@ -17,6 +17,7 @@
+ #include <sys/mman.h>
+ #include <syscall.h>
+ 
++#include "bootstrap.h"
+ #include "elf_loading.h"
+ #include "global_vars.h"
+ #include "ld_sc_handler.h"
+@@ -61,6 +62,15 @@ static void init_sbr_plugin(bool switch_client_tls) {
+   assert(valid == true && "No symbol 'sbr_init'");
+   sbr_init_fn plugin_init = (void *)lib_base + sym_addr;
+ 
++  sbr_bootstrap_install_fn install_bootstrap = NULL;
++  if (sbr_bootstrap_enabled()) {
++    sym_addr = addr_of_elf_symbol(
++        abs_plugin_path, "reverie_sabre_install_loader_bootstrap_v1", &valid);
++    if (!valid)
++      errx(EXIT_FAILURE, "plugin does not support loader bootstrap");
++    install_bootstrap = (void *)lib_base + sym_addr;
++  }
++
+   sym_addr = addr_of_elf_symbol(abs_plugin_path, "calling_from_plugin", &valid);
+   assert(valid == true && "No symbol 'calling_from_plugin'");
+   calling_from_plugin = (void *)lib_base + sym_addr;
+@@ -87,6 +97,14 @@ static void init_sbr_plugin(bool switch_client_tls) {
+   // TODO(andronat): Support client argv editing.
+   enter_plugin();
+ 
++  /* Optional, separate symbol: the existing sbr_init ABI is unchanged, and
++   * old loaders/plugins continue to work without the explicit opt-in.
++   * This setter only installs a callback; it cannot construct the Rust tool.
++   */
++  if (install_bootstrap != NULL &&
++      install_bootstrap(sbr_bootstrap_take_state) != 0)
++    errx(EXIT_FAILURE, "plugin refused loader bootstrap callback");
++
+   // char **orig_plugin_argv = plugin_argv; // Read below.
+   sbr_post_load_fn post_load = NULL;
+   sbr_icept_vdso_callback_fn plugin_vdso_callback = NULL;
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c b/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c
+index 7a4c65b2200722325ba600b231753e0660b41613..4f34dab37164692f70b88419ecad41a8df25b281 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c
+@@ -12,6 +12,7 @@
+ 
+ #include "rewriter.h"
+ 
++#include "bootstrap.h"
+ #include "debuginfo.h"
+ #include "elf_loading.h"
+ #include "global_vars.h"
+@@ -444,6 +445,20 @@ static void patch_vdso(struct library *lib) {
+                 SYS_clock_gettime, &extra_space, &extra_len);
+   }
+ 
++  if (sbr_bootstrap_enabled()) {
++    /* Keep the vDSO's five-argument getrandom ABI and ChaCha/state algorithm.
++     * Only its actual kernel syscall instructions enter the ordinary router.
++     * Do this once in the initial rewrite, never by rewriting an already
++     * detoured library again after plugin registration.
++     */
++    sym = symbol_find(lib->symbol_hash, "__vdso_getrandom");
++    if (sym != NULL && sym->sym.st_value != 0 && sym->sym.st_size != 0) {
++      char *start = lib->asr_offset + sym->sym.st_value;
++      patch_syscalls_in_range(lib, start, start + sym->sym.st_size,
++                              &extra_space, &extra_len, false);
++    }
++  }
++
+   if (extra_space != NULL) {
+     // Mark our scratch space as write-protected and executable.
+     mprotect(extra_space, 0x1000, PROT_READ | PROT_EXEC);
+diff --git a/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s b/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s
+index 9db9090294ad02348c362aacc0dd9ec85d83d300..a83f7f128f5cd784e6898ce8a95cb084b6ffedca 100644
+--- a/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s
++++ b/experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s
+@@ -21,34 +21,27 @@ vfork_return_from_child:
+   call *exit_plugin@GOTPCREL(%rip)
+   popq %rdi
+ 
+-  movq 0x8(%rdi), %r15
+-  movq 0x10(%rdi), %r14
+-  movq 0x18(%rdi), %r13
+-  movq 0x20(%rdi), %r12
+-  movq 0x28(%rdi), %r11
+-  movq 0x30(%rdi), %r10
+-  movq 0x38(%rdi), %r9
+-  movq 0x40(%rdi), %r8
+-  # Skip %rdi because we are reading it.
+-  movq 0x50(%rdi), %rsi
+-  movq 0x58(%rdi), %rdx
+-  movq 0x60(%rdi), %rcx
+-  movq 0x68(%rdi), %rbx
+-  movq 0x70(%rdi), %rbp
+-
+-  # It's safe to clobber %r11 to load *ret.
+-  # *ret will jump back to the trampoline
+-  # and then in the first instruction after
+-  # the vfork syscall.
+-  movq 0x80(%rdi), %r11
+-
+-  movq 0x48(%rdi), %rdi
+-
+-  # The child always returns 0.
++  # Resume from the saved registers, then flags and the scratch continuation,
++  # matching handle_syscall's epilogue. The first frame word is stack alignment.
++  leaq 8(%rdi), %rsp
++  popq %r15
++  popq %r14
++  popq %r13
++  popq %r12
++  popq %r11
++  popq %r10
++  popq %r9
++  popq %r8
++  popq %rdi
++  popq %rsi
++  popq %rdx
++  popq %rcx
++  popq %rbx
++  popq %rbp
+   movq $0, %rax
+-
+-  subq $0x80, %rsp
+-  jmp *%r11 # We are going back to the client.
++  popfq
++  leaq 8(%rsp), %rsp
++  ret
+ 
+   .size vfork_return_from_child, .-vfork_return_from_child
+   .section .note.GNU-stack,"",@progbits

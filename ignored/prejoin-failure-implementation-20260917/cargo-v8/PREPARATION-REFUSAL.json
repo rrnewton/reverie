@@ -1,0 +1,6 @@
+{
+  "status": "unexecuted preparation refused",
+  "script_sha256": "200605eef4708cbb9585b5725568d855a4e4a998de3b3264c69cb0d8e28cb40f",
+  "cause": "payload/argv consistency assertion used index 12; reviewed observer payload starts at index 11",
+  "execution": "No plan/caller was emitted and no command was launched. Source-v12 unchanged."
+}

@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-13",
+  "test": "leader_exit::pthread_exit_preserves_worker_direct",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "4aef068ea0e3238235ec842981dfc2ba1ae58d06bc9edb9725bf8d5e4027aaf6",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "6f2036c2debe6e30e5d09604f3fecb9398bdbb985ccd9d11e653e66278323469",
+  "cpu_nsec": 379992000,
+  "wall_seconds": 1.31674957
+}

@@ -1,0 +1,178 @@
+{
+  "base_commit": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+  "files": [
+    {
+      "path": "detcore/src/lib.rs",
+      "before": {
+        "bytes": 162820,
+        "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+        "mode": "0o644",
+        "git_blob": "0b80163383d2fe770bfd4652e798d1f1b4cd9569",
+        "git_mode": "100644"
+      },
+      "after": {
+        "bytes": 163666,
+        "sha256": "561f3a802fceea2a3a223f025b3440f15009ebbf5d846daf1b9f03f14466c43b",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "detcore/src/scheduler/test/kvm_signal_tests.rs",
+      "before": null,
+      "after": {
+        "bytes": 9032,
+        "sha256": "0c0991ab1eb19bb4e6dbbb6271344b3fd0ea6d3bad0eede6e39f4b5b5d43cf4a",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [
+        "kvm_signal_refusal_precedes_both_host_delivery_paths_and_preserves_first_cause",
+        "kvm_signal_guard_preserves_an_existing_backend_failure",
+        "native_signal_delivery_still_reaches_owned_raw_and_pidfd_targets",
+        "due_kvm_child_signal_stops_ready_io_and_deferred_admissions_without_freezing_time",
+        "empty_queue_kvm_signal_refusal_keeps_the_reached_deadline_and_stops_the_turn"
+      ],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "detcore/src/scheduler.rs",
+      "before": {
+        "bytes": 353840,
+        "sha256": "d9b94c41fb688d46bfae5420bb0319a8ad26249f39691f11d2dec908394da358",
+        "mode": "0o644",
+        "git_blob": "466b0e8957223da6be5742f0ab226aa6ffa216a7",
+        "git_mode": "100644"
+      },
+      "after": {
+        "bytes": 355776,
+        "sha256": "0ff20ec6d8fa0183d89e5ec1910c957998ccd859ce149a7bd574ffdb44d7409c",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "detcore/src/signal_test_support.rs",
+      "before": null,
+      "after": {
+        "bytes": 2831,
+        "sha256": "f9886a16410be9b136fdc32d9496ec103666e1ed6c36ddf56a1eff5db1ec0c77",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "detcore/src/tool_global/tests/kvm_signal_tests.rs",
+      "before": null,
+      "after": {
+        "bytes": 7356,
+        "sha256": "63144b58661970d28a558d2575a784c25f392610f4741c953a574b364ce2f4c3",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [
+        "kvm_stacktrace_refusal_retains_named_and_realtime_signals_and_blocks_later_rpc_time",
+        "native_stacktrace_named_and_realtime_signals_still_deliver_and_reply",
+        "kvm_stacktrace_refusal_closes_a_selected_transaction_before_waking_the_daemon",
+        "kvm_signal_refusal_survives_natural_join_and_partial_recording_cleanup",
+        "kvm_signal_refusal_does_not_replace_scheduler_or_recording_failure"
+      ],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "detcore/src/tool_global.rs",
+      "before": {
+        "bytes": 254033,
+        "sha256": "a8d1df963c23b7143346f080c5eabc0bbcf3db81c977fcf4d8e994231aa66e61",
+        "mode": "0o644",
+        "git_blob": "8d0c19e140d5fb190467f6e1c14ef25231f3f3f8",
+        "git_mode": "100644"
+      },
+      "after": {
+        "bytes": 255915,
+        "sha256": "6cc2a059a28c8360379afb7ff0d37bf1facb828e90704297037baae5d40313fe",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "detcore-model/src/config.rs",
+      "before": {
+        "bytes": 73871,
+        "sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37",
+        "mode": "0o644",
+        "git_blob": "6205e6751fb0256d363214404e37e17d420e384b",
+        "git_mode": "100644"
+      },
+      "after": {
+        "bytes": 74636,
+        "sha256": "c474b06a18d406543b3a4d8a4f0281482c1fcc34f67bee608b3fdd98f327153f",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [
+        "missing_backend_signal_refusal_setting_defaults_to_false"
+      ],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "hermit-cli/src/error.rs",
+      "before": {
+        "bytes": 10782,
+        "sha256": "0e4000c69950253b645040a870fc467d1e72745d276c79f28e50be2352d06b09",
+        "mode": "0o644",
+        "git_blob": "07061315058c483ffa43d688ac34c44dda83aa23",
+        "git_mode": "100644"
+      },
+      "after": {
+        "bytes": 13622,
+        "sha256": "cb40429449d1f8c7961f869d039245352af594452d1a540cfb193c700b86aa50",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [
+        "kvm_signal_refusal_is_classified_through_typed_and_transparent_wrappers"
+      ],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "hermit-cli/src/kvm_failure_tests.rs",
+      "before": {
+        "bytes": 22390,
+        "sha256": "dcb2ec5d59dfe9c6ab599895dc5701c6dd7bacd63a60c5fd0a2978048164ecab",
+        "mode": "0o644",
+        "git_blob": "42b14d13641ea672efd352a270545eeab9106aa0",
+        "git_mode": "100644"
+      },
+      "after": {
+        "bytes": 26883,
+        "sha256": "e0ec9384eed8cf4c5b97fe815ec2a205526ee649e372502be78807aa7d541e17",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [
+        "kvm_signal_completion_retains_refusal_backend_and_independent_cleanup",
+        "kvm_successful_backend_with_failed_scheduler_retains_real_join_error"
+      ],
+      "removed_source_test_names": []
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "before": {
+        "bytes": 205203,
+        "sha256": "2c354a05de69312b0c2ccebecfc2b023d5fc3d8de6f06704b1e8d2bcd63eade0",
+        "mode": "0o644",
+        "git_blob": "771ee698016eaca572a347de236903a3459339ac",
+        "git_mode": "100644"
+      },
+      "after": {
+        "bytes": 209051,
+        "sha256": "4a4df491a07f90b41e44714e56be9dcea40b02eaeb7ae81c1f361e2efabaa81a",
+        "mode": "0o644"
+      },
+      "new_source_test_names": [
+        "backend_host_signal_refusal_contract_is_normalized"
+      ],
+      "removed_source_test_names": []
+    }
+  ]
+}

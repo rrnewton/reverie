@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/reverie/pulls/565/files",
+    "--paginate"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 0.47219363087788224,
+  "stderr": ""
+}

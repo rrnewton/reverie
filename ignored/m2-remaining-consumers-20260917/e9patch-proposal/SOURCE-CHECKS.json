@@ -1,0 +1,32 @@
+{
+  "method": "static syntax/literal/byte analysis only; no code import or execution",
+  "syntax_parse_success": true,
+  "exact_reverse_delta_equal_original": true,
+  "corpus_entries": 20,
+  "corpus_ast_unchanged": true,
+  "all_corpus_expected_exits_zero": true,
+  "unchanged_complete_functions_and_classes": [
+    "CorpusError",
+    "compile_guest",
+    "hermit_command",
+    "run",
+    "detlog_syscalls",
+    "e9patch_engagement",
+    "verification_report_bin",
+    "e9patch_feature_from_build_info",
+    "hermit_has_e9patch_feature",
+    "prerequisites",
+    "parse_args",
+    "main"
+  ],
+  "control_source_names": [
+    "test_canonical_operands_and_independent_oracles_qualify",
+    "test_valid_reports_do_not_excuse_either_failed_verification_process",
+    "test_both_operands_require_current_canonical_evidence",
+    "test_canonical_reports_do_not_excuse_plain_status_or_stdout_failures",
+    "test_canonical_reports_do_not_excuse_missing_coverage_or_fallback",
+    "test_canonical_reports_do_not_excuse_the_existing_tail_mismatch"
+  ],
+  "control_names_are_not_emitted_inventory": true,
+  "test_executed": false
+}

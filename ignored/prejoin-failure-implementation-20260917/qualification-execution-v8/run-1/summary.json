@@ -1,0 +1,463 @@
+{
+  "status": "passed",
+  "completed": [
+    {
+      "stage": "static-elf-07",
+      "test": "leader_exit::later_group_exit_preserves_worker_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "1ab7d45d6185ffb8961a6dd0151a2409d5f7661c15e5a04cb4addc89ca3289e3",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "421b408e8fe6a6a21af2d8f9de39fd5568c0c6ae59e26809fbe01a33cba77505",
+      "cpu_nsec": 322970000,
+      "wall_seconds": 1.056580802
+    },
+    {
+      "stage": "static-elf-08",
+      "test": "leader_exit::leader_exit_preserves_pending_worker_start_callback",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "667c387c0fb09e5957f0eedd6bd2688b54bf6d6606865a14d1e9618a7bf12cb8",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "c5a1248afc618e0ce76c180901b6470abd9e8045f044ac1ebda804218b19396c",
+      "cpu_nsec": 327509000,
+      "wall_seconds": 1.189504177
+    },
+    {
+      "stage": "static-elf-09",
+      "test": "leader_exit::panicked_worker_interrupts_natural_join_without_losing_panic",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "2230dc73a7a9d0fa5c4eaef665698f37d33afd03709eac4f948e95a52b534215",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "01b00109bcdd79f3bc42950ce870449495d515f27e4e8e304c8af49153fae140",
+      "cpu_nsec": 378393000,
+      "wall_seconds": 0.953247292
+    },
+    {
+      "stage": "static-elf-10",
+      "test": "leader_exit::parent_wait_observes_final_worker_status_after_direct_child_completion",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "aaa028339c2ef1c8153f7875f9c37aa22259bfcc7d992df576d4997189ab2ed4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "1680a5fad505dc3a17cd645bc3192178c3c5c4b19921b62641a696168f83ac2f",
+      "cpu_nsec": 375639000,
+      "wall_seconds": 1.313426284
+    },
+    {
+      "stage": "static-elf-11",
+      "test": "leader_exit::parent_wait_observes_final_worker_status_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "7f6b5ce23ea8d18a8f4f80f2e318e60aced12a5b960d08e77feb102d96eef862",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "4ff832e136afc8591f19b2af415deb4b68f183b42bc082bdb3915754faa77ab9",
+      "cpu_nsec": 373654000,
+      "wall_seconds": 0.944336105
+    },
+    {
+      "stage": "static-elf-12",
+      "test": "leader_exit::process_status_precedes_host_join_order",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "738667a74932fe056244692c4fbb0ad4dd8b2159b62e236f9b3dbe16f08d12a7",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "6527b67d8fb7117c62a476321b37109c93179c17038dfb2debe85f094c578f6a",
+      "cpu_nsec": 383763000,
+      "wall_seconds": 1.361088767
+    },
+    {
+      "stage": "static-elf-13",
+      "test": "leader_exit::pthread_exit_preserves_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "3fef46ce2420dabe87dad9048e6264ed6f29af83b2436a6d65a981e9c814b623",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "0b1f4d02cd36bb9dc08cee85fcc89cd044e35630017fc23d097b93fb9a1acb71",
+      "cpu_nsec": 369290000,
+      "wall_seconds": 1.253721791
+    },
+    {
+      "stage": "static-elf-14",
+      "test": "leader_exit::pthread_exit_preserves_worker_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "2479f4456bf79e3d9f5f54d39b9b63bf5f68b31aff722633067a5fe23bdd3753",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "455ef4c08d93954d9147026cffa3d9e89767fa4bcc9bc4bec32031a3d51fcd54",
+      "cpu_nsec": 405312000,
+      "wall_seconds": 0.952788793
+    },
+    {
+      "stage": "static-elf-15",
+      "test": "leader_exit::raw_exit_drains_nested_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "6c4554b031fc0605f376004f6e402a1be3b28acb9d02aa8f274c34e3f0bef0f9",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "cf43e201c89c2ac6923e15a6655b700bf7c7ea5b20f8f02edde9d3c9d4ab993d",
+      "cpu_nsec": 408311000,
+      "wall_seconds": 1.042143139
+    },
+    {
+      "stage": "static-elf-16",
+      "test": "leader_exit::raw_exit_drains_nested_worker_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "ffebac2f8d2e7e1a225724bff478e54873fd2241aa3d1b8d62503c19c6091049",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "f471ee25e9ba6bdaf67191e5d1b2f9d512e4190ea760b0e0d1e4133b78006ad2",
+      "cpu_nsec": 410742000,
+      "wall_seconds": 0.973926788
+    },
+    {
+      "stage": "static-elf-17",
+      "test": "leader_exit::raw_exit_preserves_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "ccee4d4b73c0ba76fc7a593ea43cfc8ca6ccec7680c379f190a45b3cc862c7f9",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "bf85fe734e1c2406a73cd72ab4424594effc0a0fbd5664b7981ec20c79a2368e",
+      "cpu_nsec": 314717000,
+      "wall_seconds": 0.992926301
+    },
+    {
+      "stage": "static-elf-18",
+      "test": "leader_exit::raw_exit_preserves_worker_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "e1df7ef67fb7d3e3f9190bb0608dcadf9e38c3c739974cf100dbae0c59943775",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "0a8b7ab3b7f169bfa356a3aadeb71a91f237d41bd8b492b99976b1d2a1b0a2bc",
+      "cpu_nsec": 318968000,
+      "wall_seconds": 0.848627864
+    },
+    {
+      "stage": "static-elf-19",
+      "test": "terminal_fork::backend_exec_failure_joins_live_fork",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ],
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "a179a238c0a4fc0c060b1ada804a462d5308bf6633aefd1b4538161603541a89",
+      "stderr_sha256": "cc5879b0dca40d5df38db7ec79a0ca538cfceebd10571c5ffaadc82fa742350d",
+      "admission_sha256": "a4a805ba039048775f347fcfc324646fe4599640462a7b8849843485e8488eb1",
+      "cpu_nsec": 373610000,
+      "wall_seconds": 0.971435757
+    },
+    {
+      "stage": "static-elf-20",
+      "test": "terminal_fork::backend_exec_failure_preserves_child_and_owner_errors",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ],
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "aacf5db90ceacaad02912736a8be300aae1271a37460ee4b8d44c5dcec77800c",
+      "stderr_sha256": "b4c773f366da4407785797979f0835a952bea3623c86e92b51d2b0dab5f2d7cd",
+      "admission_sha256": "35af16f32df4d8b280b40215149c87b376bedf1e8df223c0e1235d8ad961feaa",
+      "cpu_nsec": 377294000,
+      "wall_seconds": 0.993043087
+    },
+    {
+      "stage": "static-elf-21",
+      "test": "terminal_fork::injected_exec_failure_joins_live_fork",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ],
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "042d541e835af8971e9c6bf80530624bcadbc6693b99dc771eea5d17e24d73a1",
+      "stderr_sha256": "867e9c9cfdad2f745ad1e2c72bb3d3935bb83575d35f2b7dbebb8c6ec9713f46",
+      "admission_sha256": "9a037cfff9f76915569f97d82e01d2e468bf92e34e431673159838c0a1904d6e",
+      "cpu_nsec": 370461000,
+      "wall_seconds": 1.030259591
+    },
+    {
+      "stage": "static-elf-22",
+      "test": "terminal_fork::injected_exec_failure_preserves_child_and_owner_errors",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ],
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "c6e7ac4979c1a443de1c04650fe7705037f42813ab7acba6cc0c12d5e6bbfdda",
+      "stderr_sha256": "a5409ac29d8d967d39271aad10c165f0eb2d42791405b58244cf144cdf49beea",
+      "admission_sha256": "527939d4b8beb8358482eb982f69b6e614ac5b1bd8f6a477342c4e301a69e513",
+      "cpu_nsec": 367136000,
+      "wall_seconds": 1.006835154
+    }
+  ],
+  "continuation": {
+    "original_plan": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v7/plan.json",
+    "original_summary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v7/run-1/summary.json",
+    "accepted_prefix_count": 6,
+    "retry_stage": "static-elf-07",
+    "retry_test": "leader_exit::later_group_exit_preserves_worker_tool",
+    "remaining_first_attempts": 15,
+    "preserve_refusal": true
+  },
+  "prior_accepted": [
+    {
+      "stage": "static-elf-01",
+      "test": "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "860cd9f464b2699e127e8336df1a26cc5f10cfb66ad075da316e949f37f1d4a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "37809ea44681e946c6d28e155f7e3a86069913168cdaf6b452d7a6e8f18a2de7",
+      "cpu_nsec": 582214000,
+      "wall_seconds": 2.027395247
+    },
+    {
+      "stage": "static-elf-02",
+      "test": "leader_exit::exec_rearms_worker_survival_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "91231a096312b7eb4c37992018064590e29df449da3bfc1efe046419717540f6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "ce265fdd21f03fd824069c79132227c58b439f910edee1b355e16cb660687663",
+      "cpu_nsec": 406277000,
+      "wall_seconds": 1.491914045
+    },
+    {
+      "stage": "static-elf-03",
+      "test": "leader_exit::exec_rearms_worker_survival_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "5127b7d3d9a1fbd92a9ba4edd5900a980f3a4a6caa4f8ba514c604eb3a973f67",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "c60fd9bb3750ff0b2c4e1291ce1d424c74000eb6d3bd4d5b3a71d65ce468d872",
+      "cpu_nsec": 418192000,
+      "wall_seconds": 1.346835927
+    },
+    {
+      "stage": "static-elf-04",
+      "test": "leader_exit::failed_worker_cancels_live_sibling_after_leader_exit",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "995cb7cdcab56f4d3fa15d0bc5c42436d81b17875d638077caa93ec3b4de97cb",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "b26c717b1d2fb2815525d2c9ae4e58ca6ad70e2fa73fe9e1a49769fa0383c8c1",
+      "cpu_nsec": 391521000,
+      "wall_seconds": 1.089669714
+    },
+    {
+      "stage": "static-elf-05",
+      "test": "leader_exit::failed_worker_preserves_execution_and_cleanup_errors",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "8d39503a0e63e20466ac04394c726449dbf10ec15b499dacb98c3b70e4ce2f0e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "5682fa8290e6c6846f1e62a367327ed2d99bc422927d7a5ea9c72e7d4ddb41e6",
+      "cpu_nsec": 386830000,
+      "wall_seconds": 1.347582228
+    },
+    {
+      "stage": "static-elf-06",
+      "test": "leader_exit::later_group_exit_preserves_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "408ca8132c7d5956b9d4a782362198030148141aede32c41b75cdd95482cbd62",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "fc24b10c13345c5dcabf02c788d7aa46b522bc499f364575bbe14f739701e50b",
+      "cpu_nsec": 347672000,
+      "wall_seconds": 1.024105703
+    }
+  ],
+  "scope": "Authorized same-source continuation after observer accounting refusal: retry original static-elf-07 exactly once, then original 08\u201322 first attempts only if accepted. Preserve six accepted first attempts and the original stage 07 refusal. Same final committed 12d4ce8c source, actual ELF, full-library prerequisite, helpers, environment, original order/assertions and resource limits. Stop at first unexpected outcome; no observer change or automatic retry."
+}

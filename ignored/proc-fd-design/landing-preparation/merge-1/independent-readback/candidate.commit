@@ -1,0 +1,36 @@
+tree b86bfdb0703e96d377007c102eccfa57ba362396
+parent 24cd5bb518b027eddb62a226805210d74d31c3d8
+author Ryan Newton <rrnewton@gmail.com> 1789621856 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789621856 -0700
+
+Preserve KVM proc descriptor metadata and fdinfo semantics
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Task: kvm-lane-to-full-determinism-and-parity
+
+Plain Language Summary:
+Use the guest-owned object for ordinary proc descriptor stat and anonymous
+readlink results. Serve fdinfo through the original guest task and descriptor
+table, observing its current offset, status flags and descriptor close-on-exec
+bit. Preserve Linux sequence-file behavior across partial reads, pread, shared
+aliases, seek, target closure and descriptor reuse.
+
+Project Impact:
+Ordinary proc descriptor paths now agree with direct fstat. Descriptor metadata
+retains actual mount identity and uses the backend's captured mount namespace.
+Fdinfo for private and captured carriers remains explicitly unsupported. The
+counted guest copy keeps partial-copy accounting and existing scalar-copy error
+behavior intact.
+Native controls cover owned-object identity, lifetime, flags, partial faults,
+mount snapshot bounds and supervisor isolation. Hermit end-to-end measurements
+and backend parity qualification remain separate work.
+
+Validation:
+All 37 selected native executor/memory/mount controls passed, including the
+existing executable-link replacement/deletion control. Pinned-toolchain Clippy
+passed with --locked --offline -p reverie-kvm --lib --tests -- -D warnings;
+formatting and diff checks passed. Native execution used 0.228809 CPU seconds
+and 1.016614923 wall seconds; Clippy used 40.80786 CPU seconds and
+22.047195164 wall seconds. Prior compilation and private-versus-visible
+identity assertion failures remain retained with their original results.

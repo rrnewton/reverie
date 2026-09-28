@@ -1,0 +1,72 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_016c6asmmpCxwHjdFBbxBSCz",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/files.rs",
+    "offset": 4630,
+    "limit": 60
+  }
+}
+
+Successful public tool result (exact text below):
+4630	            device: 11,
+4631	            inode: 22,
+4632	        };
+4633	        assert_eq!(
+4634	            classify_timer_slack_binding(binding, Some((11, 22)), 202),
+4635	            Ok(())
+4636	        );
+4637	        assert_eq!(
+4638	            classify_timer_slack_binding(binding, Some((11, 22)), 303),
+4639	            Err(Errno::EPERM)
+4640	        );
+4641	        assert_eq!(
+4642	            classify_timer_slack_binding(binding, None, 202),
+4643	            Err(Errno::ESRCH)
+4644	        );
+4645	        assert_eq!(
+4646	            classify_timer_slack_binding(binding, Some((11, 23)), 202),
+4647	            Err(Errno::ESRCH),
+4648	            "a recycled numeric TID must not revive an old proc inode"
+4649	        );
+4650	    }
+4651	
+4652	    #[test]
+4653	    fn only_inherited_container_output_is_nonseekable() {
+4654	        assert!(is_inherited_container_output(Some(ResourceID::Device(
+4655	            Device::ContainerStdout
+4656	        ))));
+4657	        assert!(is_inherited_container_output(Some(ResourceID::Device(
+4658	            Device::ContainerStderr
+4659	        ))));
+4660	        assert!(!is_inherited_container_output(Some(ResourceID::Device(
+4661	            Device::ContainerStdin
+4662	        ))));
+4663	        assert!(!is_inherited_container_output(None));
+4664	    }
+4665	
+4666	    #[test]
+4667	    fn unix_autobind_address_matches_linux_shape() {
+4668	        let address = unix_autobind_address(0x2af);
+4669	        assert_eq!(address.sun_family, libc::AF_UNIX as libc::sa_family_t);
+4670	        assert_eq!(address.sun_path[0], 0);
+4671	        let name = address.sun_path[1..UNIX_AUTOBIND_NAME_LEN]
+4672	            .iter()
+4673	            .map(|byte| *byte as u8)
+4674	            .collect::<Vec<_>>();
+4675	        assert_eq!(name, b"002af");
+4676	        assert_eq!(
+4677	            unix_autobind_addrlen() as usize,
+4678	            std::mem::offset_of!(libc::sockaddr_un, sun_path) + UNIX_AUTOBIND_NAME_LEN
+4679	        );
+4680	    }
+4681	
+4682	    #[test]
+4683	    fn tcp_info_retains_only_logical_connection_header() {
+4684	        let mut info = [0xff; 16];
+4685	        canonicalize_tcp_info(&mut info);
+4686	
+4687	        for (offset, byte) in info.into_iter().enumerate() {
+4688	            let expected = if matches!(offset, 0 | 1 | 5 | 6) {
+4689	                0xff

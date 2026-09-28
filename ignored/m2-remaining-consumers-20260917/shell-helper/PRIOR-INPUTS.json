@@ -1,0 +1,32 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/OTHER-MATCHED-CONSUMERS-v9.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/OTHER-MATCHED-CONSUMERS-v9.md",
+    "bytes": 3454,
+    "sha256": "2e9205bb52ae594562990a05089412ce0f54b71893fa4d1d48d34c5fcf0fcaaf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/OTHER-CONSUMERS-v8.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/OTHER-CONSUMERS-v8.md",
+    "bytes": 6299,
+    "sha256": "15f5a900cc735ac2302a791ec5fbe3df0d030059613e4f58ef7c582513a37fd0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/REPORT-v10.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/REPORT-v10.md",
+    "bytes": 2491,
+    "sha256": "b78a07d7c7343db34761b5962795a3a8dd8a78c19a1745763cef997f05be26bf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/PREVIEW-MANIFEST-v10.json",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/PREVIEW-MANIFEST-v10.json",
+    "bytes": 23687,
+    "sha256": "0764a3c8f62486daf7eebd81e38029eecc6341911442ce1192c823bc7b9eadb4"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/PACKET-v10.json",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/prior-inputs/PACKET-v10.json",
+    "bytes": 3100,
+    "sha256": "b6a893869b922e911260a8620cb983b89a7e6ff6a810d1e0e7b7eddde9f35620"
+  }
+]

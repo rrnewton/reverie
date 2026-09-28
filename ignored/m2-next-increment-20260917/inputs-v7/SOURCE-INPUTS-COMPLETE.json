@@ -1,0 +1,121 @@
+{
+  "base_commit": "8051335e87104f7cf832204f74920d38416393b2",
+  "scope": "immutable current source copies; no resolution/build/execution",
+  "files": [
+    {
+      "path": ".github/workflows/ci-portable.yml",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/.github/workflows/ci-portable.yml",
+      "bytes": 65813,
+      "sha256": "207b1b6c7c7baf399d9a9ef4934129aa879d7e58b27c6b14fb629aa83af113eb"
+    },
+    {
+      "path": "ci/check-shard-coverage.sh",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/ci/check-shard-coverage.sh",
+      "bytes": 25561,
+      "sha256": "b1936bd633debf15a773d6120e38e85f5e3c579d497fce5f21c59ecd167b218a"
+    },
+    {
+      "path": "ci/manifest-plan/Cargo.toml",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/ci/manifest-plan/Cargo.toml",
+      "bytes": 453,
+      "sha256": "98bc9c24e4c0deef113140e961c04d332dc96ec7767802454de716d146459d0c"
+    },
+    {
+      "path": "ci/publish-hermit-e2e-artifact.sh",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/ci/publish-hermit-e2e-artifact.sh",
+      "bytes": 4801,
+      "sha256": "a7af5922cfeeb4f3603760a30764afc513cdcb8cb86baf298d47e6f74b3edf3c"
+    },
+    {
+      "path": "ci/run-with-hermit-e2e-artifact.sh",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/ci/run-with-hermit-e2e-artifact.sh",
+      "bytes": 1139,
+      "sha256": "c2c90ff03c6ad120ec09b9452accd98ae41f1240a3aafce697b0070987ffd1de"
+    },
+    {
+      "path": "ci/verify-hermit-e2e-artifact.sh",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/ci/verify-hermit-e2e-artifact.sh",
+      "bytes": 3771,
+      "sha256": "23860edd156787004d92ba30a23ee0bccc7cf04dd994ae1115c980af7189fcfb"
+    },
+    {
+      "path": "hermit-cli/Cargo.toml",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/hermit-cli/Cargo.toml",
+      "bytes": 4358,
+      "sha256": "b9b275fbe4280150a8baa334d4d698e8683bee978171db4640180b354cbfd744"
+    },
+    {
+      "path": "hermit-cli/src/bin/verification-report.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/hermit-cli/src/bin/verification-report.rs",
+      "bytes": 5310,
+      "sha256": "9eb5082f3363fc223330c5404fe98cdfd7d58079d33aa1e51045df1be4d36d46"
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/hermit-cli/src/canonical_verdict.rs",
+      "bytes": 58894,
+      "sha256": "3e952d654e4466e498e77d11fe4c8ee7918ad5d556f318be2e32c45c8fdc65e1"
+    },
+    {
+      "path": "hermit-cli/tests/app_strict_verify.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/hermit-cli/tests/app_strict_verify.rs",
+      "bytes": 56970,
+      "sha256": "0e88e9c2fde2ceba40bfd3483c5ad6ab40a5d71d4153608cc6c87dc2a64756f2"
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_cli.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/hermit-cli/tests/verification_report_cli.rs",
+      "bytes": 5668,
+      "sha256": "48cc9195fc03951648e81251157496e9df5f2e518e402105c319ee07dd04d804"
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/hermit-cli/tests/verification_report_consumers.rs",
+      "bytes": 24973,
+      "sha256": "5f79232ebbf264f59d9faa6d9808055a02f1d74c2d1804fdb30e752c9a306669"
+    },
+    {
+      "path": "scripts/manifest-to-commands.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/scripts/manifest-to-commands.rs",
+      "bytes": 45562,
+      "sha256": "aa834d4f47a64e80fae94bdd62871b76979b609cdd4375b577e3a412d48f3dff"
+    },
+    {
+      "path": "tests/backend-parity/run_matrix.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/tests/backend-parity/run_matrix.py",
+      "bytes": 84430,
+      "sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024"
+    },
+    {
+      "path": "tests/e2e/lib/applications/common.sh",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/tests/e2e/lib/applications/common.sh",
+      "bytes": 11808,
+      "sha256": "8fbdc2ebf414e761d4b75207dd69b1ba97bb4f0ea4c590707e4733210140ba06"
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "bytes": 6992,
+      "sha256": "348d1720ae72d00fdd7e24025525de6330e3a9610b70dcc19c431940e2cbbd9f"
+    },
+    {
+      "path": "tests/e2e/lib/data-handling/common.bash",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/tests/e2e/lib/data-handling/common.bash",
+      "bytes": 4684,
+      "sha256": "329e9bcd8931a6394938dec57678f15a0cb91221c0c6cd1a0ee81ac9f07336c9"
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_test.sh",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/tests/qemu-boot/strict_l2_test.sh",
+      "bytes": 6299,
+      "sha256": "73c078b4a0c3fc5113a5dedb8fc5a2d09ebb633d39a71307f4feb4f55ec4195a"
+    },
+    {
+      "path": "tests/reproducible-builds/run.sh",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v7/tests/reproducible-builds/run.sh",
+      "bytes": 2892,
+      "sha256": "7839a4623a577c422b09b226347877855d5eb0a7a3df868b619b95491281f96a"
+    }
+  ],
+  "earlier_unavailable_path": "tests/e2e/lib/qemu/strict-boot.sh is absent at this base; actual existing tests/qemu-boot/strict_l2_test.sh is separately bound, no substitution/execution claimed"
+}

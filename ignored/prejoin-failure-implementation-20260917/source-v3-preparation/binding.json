@@ -1,0 +1,82 @@
+{
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "base_tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "bytes": 9168,
+      "sha256": "b59708a61dd1534c8bf1179af37aa51f6a6eb185ad5115213faca75f37756214",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "bytes": 1396787,
+      "sha256": "9f06593fe73f6082d638eddf43d54826808f5fad04c68ba7de2a341016650b4d",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "bytes": 14827,
+      "sha256": "a2553da2adafe3decc18f662fa06ccf74a0a6e8b4189ae7d98bfd1e5048d2bf9",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "bytes": 1721,
+      "sha256": "3438c724c266568bd175451c32ce5b297872dab69abcad0a1a146d4872e78650",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "bytes": 155375,
+      "sha256": "471140dfd7cd94cce0b6feaf579e1454233886a5a05fda5f9d506933b01f002b",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "bytes": 22517,
+      "sha256": "0ecae79deb007f9a77de3f4e5b6323ccadcd63e1bc48c691c73750d29d6e8aaa",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "bytes": 287797,
+      "sha256": "5d68ca93b90a49cd0c63727128d2fa5380c4ed3da289588e1023cbd935c0419f",
+      "mode": "644"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "bytes": 22113,
+      "sha256": "47199a5de83f5e8d94f883ac5909ee1de24aa1820774be61555d211a4844d85a",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340",
+      "mode": "644"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/native_test_support.rs",
+      "bytes": 15038,
+      "sha256": "f80a82fe7666f4c5edb06534ce7ffd3eeed26cfbb5a603a7c5cdce2194996d98",
+      "mode": "644"
+    }
+  ],
+  "patch_sha256": "cbcdaae33048df1afb4033d3453aa7dff2f6bba8fdbc563bcfb70c44f0fdfa9e",
+  "patch_bytes": 146598,
+  "source_v2_binding_sha256": "fba65b3fa1797f33a7598687a245603727b0e03ee0fcd03f9c77d38bf77dbbc4",
+  "independent_report_sha256": "d559f0ff60d0c38a5e5cbf32e8918a946de2a31d2fd9be380a220c6d888e69fe",
+  "feature": "native-test-support (nondefault)",
+  "added_test_selectors": 7,
+  "retained_test_selectors": 27,
+  "selected_count": 34,
+  "validation": "Source preparation and manual source read only. No rustfmt, diff check, build, test, guest, network, commit, pin or public operation."
+}

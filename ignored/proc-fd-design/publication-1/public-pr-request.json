@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "view",
+    "565",
+    "--repo",
+    "rrnewton/reverie",
+    "--json",
+    "url,number,title,body,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,mergeable,reviewDecision"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 0.4786844609770924,
+  "stderr": ""
+}

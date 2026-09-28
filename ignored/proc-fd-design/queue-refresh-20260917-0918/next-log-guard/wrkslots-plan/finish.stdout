@@ -1,0 +1,16 @@
+usage: wrkslots finish [-h] --agent AGENT --owner-pid PID --expected-generation N --validation TEXT
+                       [--limitation TEXT]
+                       slot
+
+Run while the recorded owner is still alive. Verify every checkout is clean, has no unfinished Git operation, is published to its recorded remote, and is contained by the landed ref; then retain the slot and record the handoff. finish never deletes.
+
+positional arguments:
+  slot                     active slot name
+
+options:
+  -h, --help               show this help message and exit
+  --agent AGENT            recorded agent name
+  --owner-pid PID          recorded live owner PID
+  --expected-generation N  current slot generation
+  --validation TEXT        command and result evidence (repeatable)
+  --limitation TEXT        known limitation to retain (repeatable)

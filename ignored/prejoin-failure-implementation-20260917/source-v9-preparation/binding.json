@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "base_tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "mode": "644",
+      "bytes": 9168,
+      "sha256": "b59708a61dd1534c8bf1179af37aa51f6a6eb185ad5115213faca75f37756214"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "mode": "644",
+      "bytes": 1396828,
+      "sha256": "3c3e312ccd297d93ba0cd6971156b00a5a47eb543d81f729a9002b1ffdf1d74b"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "mode": "644",
+      "bytes": 15362,
+      "sha256": "3762b232dab8a54b7631376263e4b0d12e8e9c50789eb168ba9fda3d93f8451b"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "mode": "644",
+      "bytes": 1721,
+      "sha256": "3438c724c266568bd175451c32ce5b297872dab69abcad0a1a146d4872e78650"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "mode": "644",
+      "bytes": 155487,
+      "sha256": "23723cc42b72e0e94533dac0b7b34cec3c33bcee22089175762de11ffd235cc6"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "mode": "644",
+      "bytes": 23950,
+      "sha256": "476830f40e36166ee1fc0eca6dcf348b0eafc7d7e7b1f225aa5866232dd7582c"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "mode": "644",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "mode": "644",
+      "bytes": 291904,
+      "sha256": "877f28d0d03dc1da15787894724721a84bad73d514e71631e3f6c0e5bea19081"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "mode": "644",
+      "bytes": 22113,
+      "sha256": "47199a5de83f5e8d94f883ac5909ee1de24aa1820774be61555d211a4844d85a"
+    },
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "mode": "644",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/native_test_support.rs",
+      "mode": "644",
+      "bytes": 17168,
+      "sha256": "18254f2722d63957d5c28c7952ad9aa1761645f5984b1c0e1672bf8f74353d2c"
+    }
+  ],
+  "patch_sha256": "e1b3f51e6c9e08eb2ba9111a2f4d443d3906db7c2dfc20293e559f16a0d69506",
+  "patch_bytes": 153779,
+  "report_sha256": "032dea06398b398fe307a4b28507b9f8fcaae7ba10cb820c8bd8adc95894bcfd",
+  "source_manifest_sha256": "c5e2cb5adc5f8d924dafd90fe99b5de781e439d6fe83288655faca84149a27f2",
+  "selected_tests_sha256": "befc2fa75c5f82f85d3f6abe5723806278ee1e6aed23b991d0fbb0f09d19cf3f",
+  "increment_sha256": "af9947cc6938fd4edf6414af7d287f4a3a0976d017fed7e725d41d7c8b523129",
+  "previous_binding_sha256": "e015c4c08726bf6137f686876490f3c887afe4bbad5642da7b13a473f5d78389",
+  "previous_actual_patch_sha256": "3fa6b07c789b5aded1d022cd4eb07b52fc2e6c363f7d4e12a9b4bab5d1f6f916",
+  "feature": "native-test-support (nondefault)",
+  "retained_no_vm_selected_count": 34,
+  "added_kvm_construction_selector_count": 1,
+  "source_preparation": "Only the Tool fork child unused mut removed since source-v7; source-v8 incorrect preparation retained, never executed.",
+  "metadata_correction": "All current artifact identities derived from adjacent files."
+}

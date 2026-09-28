@@ -1,0 +1,169 @@
+{
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/PREPARATION.json",
+      "bytes": 2634,
+      "sha256": "92277f834b6b65d8dbd22b270aeb42e08ab61e79877e6fb32c85574f3fc75b49"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/QUEUE-DELTA.json",
+      "bytes": 12886,
+      "sha256": "9d49ca382729644c81ab7dab6063ee75237959ffff6560cb61346fb6bb761536"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/READBACK.json",
+      "bytes": 3011,
+      "sha256": "50aa25ef60839e9f4e61c916e04f228df4df56f4eebd2c46fde116ea8095693b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/REPORT.md",
+      "bytes": 10669,
+      "sha256": "a4830b88c88fc3026804a7320500604f9680c53308a981daec605f7de624f3f9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/finish_report.py",
+      "bytes": 9276,
+      "sha256": "3f6026c47a6a7bfa66584d1103fb39601b7547ee6fe06e72f68fe4df55dac9b3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3066-files.receipt.json",
+      "bytes": 883,
+      "sha256": "b60e8aed32f90a53efd23939cc15db36fd9e61c544f09d8ab257f3bb57bd5791"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3066-files.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3066-files.stdout",
+      "bytes": 19412,
+      "sha256": "19247c0d77702814b204afa457ab030b700cf0d5e65a4eb08c8c57f0517ac6d2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3066.receipt.json",
+      "bytes": 864,
+      "sha256": "30bbcd7bcfc61fd9d853e2c47f68c3c049dcb6b5f0c483ed50bbb83249265093"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3066.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3066.stdout",
+      "bytes": 21224,
+      "sha256": "10e6c3781f982f4a1956460e967e9b01ebf828413c5f3acc750c87fbfe9420eb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3069-files.receipt.json",
+      "bytes": 883,
+      "sha256": "6f92edea127eaefdc66f6a7c63f06c5cabf126cfc85f6d498dfdfccd58ce43f9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3069-files.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3069-files.stdout",
+      "bytes": 50406,
+      "sha256": "2a430b049e5bda70ff4bd8f5418dc6ac0007435df83fe87a520f14cf045b92a4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3069.receipt.json",
+      "bytes": 864,
+      "sha256": "8be2ed0ad5d990cbd4a647dd6a4a074f8612550818a2e01c93eb5c50ee03703b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3069.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-3069.stdout",
+      "bytes": 24182,
+      "sha256": "bdb5d5454fa3a7e8c163cba2462e23bdbbd1c4bc0c6a85c0f973910aa9bb2e9b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-main.receipt.json",
+      "bytes": 871,
+      "sha256": "b30c4878864ad7d4cbc08dcb1d8cbc47adff057d130e0566ab59a6b66ecbec0e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-main.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-main.stdout",
+      "bytes": 328,
+      "sha256": "8b3f6ca21b9f9fe2293b44a372984e123c9c6c58b77c855b854b3b9d7551860f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-open.receipt.json",
+      "bytes": 912,
+      "sha256": "7e21efda101be15ac56fd19d234039a7d4d2323f1ca6a5d4405bb6d978ea3da6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-open.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/hermit-open.stdout",
+      "bytes": 397135,
+      "sha256": "6a56255832f8f1c0287eb7d7240f2b0a65d9fe75499408471822eb6777c6ec45"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/read_operation.py",
+      "bytes": 2819,
+      "sha256": "390aed3ddf935a56dac3903c534123c7234f6483a0d684e2cf92240b1f4f5422"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-578.receipt.json",
+      "bytes": 864,
+      "sha256": "d7fe80c1e9e3a147d65a024639a45527ea7e797e3f5d536690a2a00cc5cb6b4b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-578.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-578.stdout",
+      "bytes": 23037,
+      "sha256": "dcba6bc510085e50a7de8ae91f7de7874ccdf57d6e9e63b923968fa460153fa7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-main.receipt.json",
+      "bytes": 870,
+      "sha256": "e82e91c84cbee62839c8be7086db0bb237115312c04d4f63be14e49d96525157"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-main.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-main.stdout",
+      "bytes": 330,
+      "sha256": "68711641232076395f0c266fcb19e3cea20a8bbfac4f3e3f1c633b5048c440a3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-open.receipt.json",
+      "bytes": 912,
+      "sha256": "47ca789fafbe90f3692630734f4507069d1e46330194da09ec8ae1c3b67141a0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-open.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3/reverie-open.stdout",
+      "bytes": 24618,
+      "sha256": "b8300814a64c9342161abf5925cdff1721729d496970b020f259f848344a6d8b"
+    }
+  ]
+}

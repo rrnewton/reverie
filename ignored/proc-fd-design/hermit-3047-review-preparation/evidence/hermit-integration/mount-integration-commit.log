@@ -1,0 +1,31 @@
+Scope: scanned 18 tracked Cargo.toml and 3 tracked Cargo.lock files; 10 files contain 46 Reverie revision entries.
+Scope exclusions: non-Cargo tracked files, untracked/generated files, and nested submodule contents; tracked vendored Cargo metadata is included.
+Pin read from checkout HEAD df8f668f9956797ffaeb72a26a938619c0be5df9.
+LiteInst cache keys: 0 revision-keyed token(s) all track the pin (596b9ad).
+DBT budget bindings: 3 binding(s) all equal the pin (596b9ad).
+Reverie pin is locally consistent: 596b9adee8473dc0a7e62dce18580eead3d0c5c9 (46 revision entries across 10 tracked Cargo metadata files; remote policy not evaluated, --offline)
+Scope: 21 tracked Cargo metadata file(s) PLUS tracked submodule gitlinks; 5 git dependency/ies pinned. Untracked, generated and vendored copies are EXCLUDED by design.
+  OK    https://github.com/facebookexperimental/rust-shed  4 entries @ 84a82026bc1d
+  FLOAT https://github.com/facebookexperimental/rust-shed  tracked by branch=main -- KNOWN EXCEPTION: branch=main since before 2026-08-24; the manifests are autocargo-generated from Meta's internal Buck targets, so pinning it is an owner decision rather than a hand edit. Only the lockfile records what was built (84a82026 at time of writing). Filed separately.
+  OK    https://github.com/rr-debugger/rr  1 entry @ 39e5c18e7e43
+  OK    https://github.com/rrnewton/agent-utils  1 entry @ 2781b1054efc
+  OK    https://github.com/rrnewton/liteinst2  2 entries @ 95ee5e6917fa
+  OK    https://github.com/rrnewton/reverie  46 entries @ 596b9adee847
+check-git-pin-uniformity.rs: OK -- every REVISION-PINNED git dependency is pinned at exactly one revision
+  ⚠️ 1 dependency/ies are NOT PINNED AT ALL and were excluded from that statement, by approved exception: https://github.com/facebookexperimental/rust-shed
+  A BRANCH IS NOT A PIN -- it moves under you. Uniformity cannot be asserted over a dependency that names one.
+======================================================================
+REVERIE PIN LINT: REVERIE PIN ADVANCED BELOW THE MAIN TIP - ACKNOWLEDGEMENT
+======================================================================
+Previous pin: b3049e54c644e28e2894402a36bb65664ab4508b
+This commit:  596b9adee8473dc0a7e62dce18580eead3d0c5c9
+Reverie main: ca4e61a9384252c9cf8925fad44f09e3a6c2411f  (2 commit(s) ahead of this commit's pin)
+
+You are deliberately moving the pin but not selecting the Reverie main tip.
+That is policy-compliant: the pin is on main history and moves forward.
+Pinning below a known-bad newer commit, or below a main tip that does not
+build yet, are legitimate reasons; this advisory only asks that it be a choice.
+
+Go all the way:      with-proxy ./ci/run-reverie-pin-check.sh --update-to-latest
+Or acknowledge:      HERMIT_PIN_BELOW_MASTER_ACK=1 git commit ...
+  (The environment variable keeps its historical name for compatibility.)

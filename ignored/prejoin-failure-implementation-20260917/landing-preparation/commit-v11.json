@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "commit",
+    "-F",
+    "ignored/prejoin-failure-implementation-20260917/landing-preparation/commit-v11.txt"
+  ],
+  "exit": 0,
+  "stdout_sha256": "420f16cab5827625212fde5ba86e37a4fb1bf90a4ac9456f29ae8bf82cc39e05",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

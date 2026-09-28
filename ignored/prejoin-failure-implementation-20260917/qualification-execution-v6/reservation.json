@@ -1,0 +1,24 @@
+{
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/plan.json",
+    "bytes": 144576,
+    "mode": 420,
+    "sha256": "88d3c517941d7bf46187e71532dc23589d53e0cdb95a966f92dffb49fec185fa"
+  },
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/launch.py",
+    "bytes": 9271,
+    "mode": 420,
+    "sha256": "057713080d94f9d1b4ca23b2abc284ac84fc0431e64e859e99ced404199bb4dd"
+  },
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v6/launch.py"
+  ],
+  "inputs": 86,
+  "selected_count": 26,
+  "status": "Prepared, not executed."
+}

@@ -1,0 +1,346 @@
+{
+  "ancestry_checks": "2781 ancestor of 872; 872 ancestor of d750; exact committed objects read",
+  "artifacts": {
+    "FUNCTION-COMPARISON.json": {
+      "bytes": 237000,
+      "sha256": "d79f8433e8e28ae7cf9042ee3b491a16e74cf10eca6e8564c2bc68af45a458dc"
+    },
+    "PATHS.json": {
+      "bytes": 15733,
+      "sha256": "5b5fc7624c7bfa685357383f6040c76a3f187f7e0a34a3a9cfe7f28df95e48e4"
+    },
+    "PROTECTED-FUNCTIONS.json": {
+      "bytes": 4725,
+      "sha256": "778fd612bd8b4352ac685bf146ffbbf21fafb46ed399f0b9b3f780a63eced92e"
+    },
+    "UNCHANGED-CONSUMER-INPUTS.json": {
+      "bytes": 5736,
+      "sha256": "6ac311a1741473e62a61b175fc555edca2064768c25cba61675e2b3424de590b"
+    },
+    "commits/3bdf5a78570494dcd8d82efae742c73261c07fbb.txt": {
+      "bytes": 4375,
+      "sha256": "40b7c39a3a738ee75f1dfbb42db4118d874efba665823475790ce27a512cb0bc"
+    },
+    "commits/522d4c3c7a6df8dace152926c8457a9a84354a52.txt": {
+      "bytes": 994,
+      "sha256": "7a46f21f328e456f03211e1d8bd7d4c376bf7afd57ec1ae73c696fbc0e430814"
+    },
+    "commits/70f4918f0fa009260a95c2fe08d49e0bf49ff0fe.txt": {
+      "bytes": 2942,
+      "sha256": "f9bcf46664cbc719e2373629bd558a63820bd7dc81949cbfb9d5737e876d6de4"
+    },
+    "commits/86bedda5a899bee8f49f15734ebdfde3dc553a32.txt": {
+      "bytes": 2274,
+      "sha256": "102330984f68cb6d84b266b07fe0e49a4c1bbae554fc0719c80a3c60def2acdf"
+    },
+    "commits/8720799f78f8ef56d796723dbc473a9171a4f4eb.txt": {
+      "bytes": 748,
+      "sha256": "d3d68500a1dade197ecfd38b7c03de28d357c62f86074e6b8407e765e0daa5a4"
+    },
+    "commits/ae7b8682d3a2043b19ac44c6511bde9959f29150.txt": {
+      "bytes": 903,
+      "sha256": "3c268d4ff25287d4fc8ab5e6a7d3f22a86d4939b188557e40b630e0f5a9e4ec9"
+    },
+    "commits/c2c2991bf42281936d7e86ce3f7da5a388eb332d.txt": {
+      "bytes": 780,
+      "sha256": "48cbfbbce49d623a86d340ea380854c3e43e0e1e3f6058fa290a455363fc4110"
+    },
+    "commits/dcd73b31ec7447928c0d7864a843a251c0ec4d3b.txt": {
+      "bytes": 1058,
+      "sha256": "164bcd56ea3bfb54785f1b3e8df1e14aa5ae5fcbb0ae2bc3f0887cd480e82de6"
+    },
+    "consumers/hermit-cdf/Cargo.toml": {
+      "bytes": 2117,
+      "sha256": "61fe9f5c4a726beb73ac4117c0ca2a3b6604e115cf8cbdf3bc36889e9265b3b4"
+    },
+    "consumers/hermit-cdf/ci/run-dag.sh": {
+      "bytes": 8653,
+      "sha256": "946b515cfcf952cb6ba321bdf82d17b9e1eff3420ae1f54310c5595d38611654"
+    },
+    "consumers/hermit-cdf/scripts/check-dagrun-naming.sh": {
+      "bytes": 6251,
+      "sha256": "9db6acc8b375dc82349b0867dea3c946ae9cceefd34d59a3ae7015a7e7899613"
+    },
+    "consumers/hermit-cdf/scripts/lib/validate_plan.rs": {
+      "bytes": 34905,
+      "sha256": "1a59d818016e5234be699e1849d9b9d5328e91528c3fb01576a105c5dd7f7e23"
+    },
+    "consumers/hermit-cdf/scripts/validate.rs": {
+      "bytes": 996482,
+      "sha256": "093a91838ec43a0e5490947ed6058142602ad0d59599b08321437e244ff004f3"
+    },
+    "consumers/parent-55d/ci-hub/bin/wrkslots": {
+      "bytes": 11327,
+      "sha256": "56ae5c51026575f4d32b455785e4904b10b60d18ddab028b6337318e654a3c10"
+    },
+    "consumers/parent-55d/ci-hub/health/unpushed_parent_commits.py": {
+      "bytes": 25670,
+      "sha256": "fc8fbaa24ea87a9d237cd983ebf439ec3447f1cc74127cef47a7a9444d790efc"
+    },
+    "consumers/parent-55d/ci-hub/health/wrkslots_audit_contract.py": {
+      "bytes": 14166,
+      "sha256": "94562f0f14faa073a44a8bb52a1cc33eb043a5762ae816fb909735c4aa7dbf7d"
+    },
+    "consumers/parent-55d/ci-hub/validate/pane_lifecycle.py": {
+      "bytes": 16669,
+      "sha256": "57facb123b2e23c54b6515d263e7266ad7331db3406fa1bb493cc6b256885239"
+    },
+    "consumers/parent-55d/ci-hub/validate/start_unit.py": {
+      "bytes": 296894,
+      "sha256": "1307627c184d99fde9e9c5368d3a5a4015ef7fb5bccaee1dc494c29f3b2ffa28"
+    },
+    "public-eight-commits.patch": {
+      "bytes": 640066,
+      "sha256": "015c18da178f5fcd331452ea06fd31f331f3ac540ff1753ad743ad9e52916caf"
+    },
+    "public-eight-commits.txt": {
+      "bytes": 14526,
+      "sha256": "18f4c8684fdd3444152348fc5a65ef8d5383508e15b88eb0ad5386f7b6a77e05"
+    },
+    "public-eight-stat.txt": {
+      "bytes": 3968,
+      "sha256": "a0532ce89ac68fd9d9b96b29467dfbf1bf815fd67f0773ba0f6f4fe33a74f634"
+    },
+    "source/2781/py/wrkslots/cli.py": {
+      "bytes": 1031105,
+      "sha256": "0edcaa5f5d00ce875cef41518216842609a045e6926a9f6d9c9eb56322ac8745"
+    },
+    "source/8720/cross/herdr_agent_differential.py": {
+      "bytes": 41944,
+      "sha256": "988d4461dbdb9562bd406c427ff63e2af89663a42982626933653681ed2c9667"
+    },
+    "source/8720/py/herdr_run/agent.py": {
+      "bytes": 30884,
+      "sha256": "6570e53286c00d96f5f95c04e2918da0b8abcc544acecffbd2b79efec864d5da"
+    },
+    "source/8720/py/herdr_run/agent_cli.py": {
+      "bytes": 11769,
+      "sha256": "ccd1ea1239525bdf3790c975f468c31955c35a25e5f488b31331f72125533169"
+    },
+    "source/8720/py/herdr_run/client.py": {
+      "bytes": 33562,
+      "sha256": "33a839cc851ba3093ee42238e963645f3a2d33c9de32cf94c7ebc5a7a30dce8b"
+    },
+    "source/8720/py/herdr_run/pyproject.toml": {
+      "bytes": 1371,
+      "sha256": "724dfd7ce195bc5406baccde65b14413556125b4a9247549fc258158ee74b350"
+    },
+    "source/8720/py/tests/test_packaging_infrastructure.py": {
+      "bytes": 20896,
+      "sha256": "49fae7da74a5ecb42682352ef4fe656eedddf88d617a0b31bb9c38db0e4ce810"
+    },
+    "source/8720/py/wrkslots/cli.py": {
+      "bytes": 1041325,
+      "sha256": "d7018b96ded39083a6236cfb5140e1c907fdbb0f1c7500bfdbc5e5c04d166d25"
+    },
+    "source/8720/py/wrkslots/tests/test_lifecycle.py": {
+      "bytes": 786856,
+      "sha256": "5c32f4ddebce138685bf330ad467e6f3ef46cebb80790277c944a3184afd20ab"
+    },
+    "source/8720/py/wrkslots/tests/test_proc_status.py": {
+      "bytes": 15098,
+      "sha256": "c38d30b730fa6ca0b588b5be3968fff1ec8a5446ad2470e747bd40f330f652a1"
+    },
+    "source/8720/rs/herdr-run/src/agent.rs": {
+      "bytes": 78149,
+      "sha256": "3fb408c080fe9c95d5529fe73602f73fc033809ff2eced2c233fd1053a411a08"
+    },
+    "source/8720/rs/herdr-run/src/client.rs": {
+      "bytes": 66102,
+      "sha256": "423055b903f84eaa6f026043f85a8ac797f62c1f73b18e63b7d428f0d0c8fedf"
+    },
+    "source/d750/py/wrkslots/cli.py": {
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6"
+    }
+  },
+  "au_repo": "/tmp/kvm-frozen-cleanup-au-landing-20260917-d750224",
+  "commits": [
+    {
+      "changed_paths": [
+        "py/wrkslots/cli.py",
+        "py/wrkslots/tests/test_lifecycle.py",
+        "py/wrkslots/tests/test_proc_status.py"
+      ],
+      "commit": "3bdf5a78570494dcd8d82efae742c73261c07fbb",
+      "raw_sha256": "40b7c39a3a738ee75f1dfbb42db4118d874efba665823475790ce27a512cb0bc",
+      "tree": "76e4fb00a377f628ea34206aeed8bb747118ef73"
+    },
+    {
+      "changed_paths": [
+        "py/wrkslots/cli.py",
+        "py/wrkslots/tests/test_lifecycle.py",
+        "py/wrkslots/tests/test_proc_status.py"
+      ],
+      "commit": "70f4918f0fa009260a95c2fe08d49e0bf49ff0fe",
+      "raw_sha256": "f9bcf46664cbc719e2373629bd558a63820bd7dc81949cbfb9d5737e876d6de4",
+      "tree": "2e544c5cebd4c4749fd4fb943c6c92906f6b3b6b"
+    },
+    {
+      "changed_paths": [
+        "py/wrkslots/cli.py",
+        "py/wrkslots/tests/test_proc_status.py"
+      ],
+      "commit": "86bedda5a899bee8f49f15734ebdfde3dc553a32",
+      "raw_sha256": "102330984f68cb6d84b266b07fe0e49a4c1bbae554fc0719c80a3c60def2acdf",
+      "tree": "169a854b61f09e470fbd5129f6ee96bf8fccc960"
+    },
+    {
+      "changed_paths": [
+        ".gitignore",
+        "README.md",
+        "common/bin/herdr-chat",
+        "common/bin/herdr-subagents",
+        "common/docs/herdr-run/AGENT_USER_GUIDE.md",
+        "common/docs/herdr-run/CHAT_USER_GUIDE.md",
+        "common/docs/herdr-run/FOREIGN_USER_GUIDE.md",
+        "common/docs/herdr-run/fragments/python/README.md",
+        "common/docs/herdr-run/rendered/python/README.md",
+        "cross/herdr_agent_differential.py",
+        "py/bin/herdr-chat",
+        "py/bin/herdr-subagents",
+        "py/herdr_run/CHAT_USER_GUIDE.md",
+        "py/herdr_run/FOREIGN_USER_GUIDE.md",
+        "py/herdr_run/agent.py",
+        "py/herdr_run/agent_cli.py",
+        "py/herdr_run/chat.py",
+        "py/herdr_run/client.py",
+        "py/herdr_run/codex_goal.py",
+        "py/herdr_run/foreign/__init__.py",
+        "py/herdr_run/foreign/__main__.py",
+        "py/herdr_run/foreign/agent_backend.py",
+        "py/herdr_run/foreign/agent_down.py",
+        "py/herdr_run/foreign/agent_inbox.py",
+        "py/herdr_run/foreign/agent_keeper.py",
+        "py/herdr_run/foreign/agent_migrate.py",
+        "py/herdr_run/foreign/agent_read.py",
+        "py/herdr_run/foreign/agent_reset.py",
+        "py/herdr_run/foreign/agent_runner.py",
+        "py/herdr_run/foreign/agent_send.py",
+        "py/herdr_run/foreign/agent_status.py",
+        "py/herdr_run/foreign/agent_turn.py",
+        "py/herdr_run/foreign/agent_up.py",
+        "py/herdr_run/foreign/cli.py",
+        "py/herdr_run/foreign/lib.py",
+        "py/herdr_run/foreign/mcp/__init__.py",
+        "py/herdr_run/foreign/mcp/adapter.py",
+        "py/herdr_run/foreign/mcp/server.py",
+        "py/herdr_run/foreign/policy.py",
+        "py/herdr_run/foreign/tests/test_agent_runner.py",
+        "py/herdr_run/foreign/tests/test_backends.py",
+        "py/herdr_run/foreign/tests/test_mcp_server.py",
+        "py/herdr_run/pyproject.toml",
+        "py/herdr_run/subagents.py",
+        "py/tests/test_herdr_chat.py",
+        "py/tests/test_herdr_chat_transport.py",
+        "py/tests/test_herdr_codex_goal.py",
+        "py/tests/test_herdr_run_client.py",
+        "py/tests/test_herdr_subagents.py",
+        "rs/herdr-run/src/agent.rs",
+        "rs/herdr-run/src/agent_cli.rs",
+        "rs/herdr-run/src/client.rs",
+        "rs/herdr-run/src/codex_goal.rs",
+        "rs/herdr-run/src/lib.rs",
+        "rs/herdr-run/src/subagents.rs",
+        "scripts/check_deps.py",
+        "scripts/check_python_packages.py",
+        "scripts/embed_userguides.py"
+      ],
+      "commit": "522d4c3c7a6df8dace152926c8457a9a84354a52",
+      "raw_sha256": "7a46f21f328e456f03211e1d8bd7d4c376bf7afd57ec1ae73c696fbc0e430814",
+      "tree": "b4abffab9a8d4e981a978ec28213c5be6a44141d"
+    },
+    {
+      "changed_paths": [
+        "README.md",
+        "common/docs/herdr-run/AGENT_USER_GUIDE.md",
+        "common/docs/herdr-run/CHAT_USER_GUIDE.md",
+        "common/docs/herdr-run/FOREIGN_USER_GUIDE.md",
+        "cross/herdr_agent_differential.py",
+        "py/herdr_run/agent.py",
+        "py/herdr_run/chat.py",
+        "py/herdr_run/client.py",
+        "py/herdr_run/foreign/agent_runner.py",
+        "py/herdr_run/foreign/lib.py",
+        "py/herdr_run/foreign/tests/test_backends.py",
+        "py/herdr_run/foreign/tests/test_mcp_server.py",
+        "py/herdr_run/subagents.py",
+        "py/tests/test_herdr_agent.py",
+        "py/tests/test_herdr_chat.py",
+        "py/tests/test_herdr_chat_transport.py",
+        "py/tests/test_herdr_run_client.py",
+        "py/tests/test_herdr_subagents.py",
+        "rs/herdr-run/src/agent.rs",
+        "rs/herdr-run/src/client.rs"
+      ],
+      "commit": "dcd73b31ec7447928c0d7864a843a251c0ec4d3b",
+      "raw_sha256": "164bcd56ea3bfb54785f1b3e8df1e14aa5ae5fcbb0ae2bc3f0887cd480e82de6",
+      "tree": "afa0f2c574dcc792638b3121660b5be225b3d407"
+    },
+    {
+      "changed_paths": [
+        "py/herdr_run/foreign/lib.py",
+        "py/herdr_run/foreign/tests/test_agent_runner.py",
+        "py/herdr_run/foreign/tests/test_backends.py"
+      ],
+      "commit": "c2c2991bf42281936d7e86ce3f7da5a388eb332d",
+      "raw_sha256": "48cbfbbce49d623a86d340ea380854c3e43e0e1e3f6058fa290a455363fc4110",
+      "tree": "96fd8a370296d5bf57b419fea26742aba3da45a2"
+    },
+    {
+      "changed_paths": [
+        "py/bin/herdr-subagents",
+        "py/herdr_run/codex_goal.py",
+        "py/herdr_run/foreign_cli.py",
+        "py/herdr_run/pyproject.toml",
+        "py/tests/test_herdr_codex_goal.py",
+        "py/tests/test_packaging_infrastructure.py",
+        "py/tests/test_repo_dispatch_wiring.py"
+      ],
+      "commit": "ae7b8682d3a2043b19ac44c6511bde9959f29150",
+      "raw_sha256": "3c268d4ff25287d4fc8ab5e6a7d3f22a86d4939b188557e40b630e0f5a9e4ec9",
+      "tree": "ba6b3c55c9faeb823698b99b4c25fbfc4f9f5c7a"
+    },
+    {
+      "changed_paths": [
+        "py/wrkslots/tests/test_lifecycle.py"
+      ],
+      "commit": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "raw_sha256": "d3d68500a1dade197ecfd38b7c03de28d357c62f86074e6b8407e765e0daa5a4",
+      "tree": "7a9a784258398e836f7cc18c346b4f05694b6754"
+    }
+  ],
+  "created_utc": "2026-09-17T09:18:45.201584+00:00",
+  "function_change_summary": {
+    "added": [
+      "_first_seen_names",
+      "_owner_cgroup_is_evidence",
+      "_owner_record_is_absent"
+    ],
+    "changed": [
+      "_ProcessPathCensus.assert_slot_unused",
+      "_assert_absent_agent_liveness",
+      "_assert_slot_unused",
+      "_cmd_audit",
+      "_cmd_remove",
+      "_read_process_identity"
+    ],
+    "removed": [],
+    "unchanged_count": 572
+  },
+  "future_target": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "hermit_consumer": {
+    "agent_utils_gitlink": "160000 commit 2781b1054efc3a9c561dbed35584a6fca1ed8676\tagent-utils",
+    "commit": "cdf828ddeb381a51e493b65c1f348f0dae2135e3"
+  },
+  "old_pin": "2781b1054efc3a9c561dbed35584a6fca1ed8676",
+  "parent_consumer": {
+    "commit": "55d1426b1614419df3fe623a3d1aab8d1724f724",
+    "tree": "18f30b326a2ed4e2aff04f65f3cdcc309e58b331"
+  },
+  "public_changed_path_count": 65,
+  "public_head": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+  "public_head_tree": "7a9a784258398e836f7cc18c346b4f05694b6754",
+  "scope": "read-only eight public commits; no tests/runtime/fetch/ref/source changes; report files only",
+  "target_tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a"
+}

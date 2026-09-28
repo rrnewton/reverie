@@ -1,0 +1,15 @@
+{
+  "pull_request": "https://github.com/rrnewton/hermit/pull/3047",
+  "head_before": "a88f948021a24c6a1ea808f868516c0691c8819a",
+  "head_after": "a88f948021a24c6a1ea808f868516c0691c8819a",
+  "comment_url": "https://github.com/rrnewton/hermit/pull/3047#issuecomment-5710693759",
+  "comment_id": 5710693759,
+  "complete_body_bytes_equal": true,
+  "body_bytes": 16340,
+  "body_sha256": "296ea4dbe8509276f3ef67962cfe8861c4660a887d5cb4d71f2e567023cd3a37",
+  "canonical_marker": "APPROVED-AT: claude a88f948021a24c6a1ea808f868516c0691c8819a",
+  "literal_review_suffix_unchanged": true,
+  "posted_exactly_once": true,
+  "no_ready_merge_or_source_or_ref_operation": true,
+  "finished_at": "2026-09-17T07:30:31.419223+00:00"
+}

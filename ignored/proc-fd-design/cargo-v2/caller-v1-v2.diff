@@ -1,0 +1,91 @@
+--- cargo-v1/launch.py
++++ cargo-v2/launch.py
+@@ -10,7 +10,7 @@
+ 
+ HERE = Path(__file__).resolve().parent
+ PLAN = HERE / 'plan.json'
+-PLAN_SHA256 = '465afcfc42cd95f78b86fa163e5e14ef5bcab1674d56b33ba78cd9284151c554'
++PLAN_SHA256 = '4b8f799d674f2af53f86d319669cf65912a1d6bcc1168bf19def99c11db6e97e'
+ 
+ 
+ def require(condition, message):
+@@ -131,6 +131,48 @@
+             and digest(path) == artifact['sha256'], 'compiled test executable changed')
+ 
+ 
++def check_prior_compile(plan, environment):
++    prior = plan['prior_compile']
++    prior_plan = json.loads(read_bounded(prior['plan'], 1024**2))
++    prior_readback = json.loads(read_bounded(prior['readback'], 1024**2))
++    prior_result = json.loads(read_bounded(prior['result'], 1024**2))
++    prior_summary = json.loads(read_bounded(prior['summary'], 1024**2))
++    require(prior_plan['target_dir'] == plan['target_dir']
++            == plan['environment_fixed']['CARGO_TARGET_DIR'], 'cache is not the previously owned target')
++    target = Path(plan['target_dir'])
++    require(not target.is_symlink() and target.is_dir()
++            and target.resolve(strict=True) == target and target.stat().st_uid == os.getuid(),
++            'target cache is not an owned, unredirected directory')
++    require(prior['expected_exit'] == 101 and prior_result['wrapper_exit_code'] == 101
++            and prior_readback['cargo_exit'] == 101, 'prior failed compile identity changed')
++    require(prior_summary['status'] == 'failed' and prior_summary['active_stage'] == 'compile'
++            and prior_summary['retained_stages'] == ['compile'] and prior_summary['artifact'] is None,
++            'prior sequence did not stop at compilation')
++    require(prior_readback['listed_or_executed_test_names'] == []
++            and prior_readback['kvm_library_test_executables'] == [], 'prior native execution differs')
++    require(prior_result['accounting_complete'] is True
++            and prior_result['final_accounting']['cgroup_empty'] is True
++            and prior_result['observer_error'] is None and prior_result['stop_reason'] is None,
++            'prior compile lacks complete, empty terminal accounting')
++    props = prior_result['final_accounting']['properties']
++    require(props['ActiveState'] == 'inactive' and props['MainPID'] == 0
++            and props['ControlGroup'] == '', 'prior compile retained processes')
++    unit = props['Id']
++    require(re.fullmatch(r'safehermit-[A-Za-z0-9T_-]+\.service', unit), 'unexpected prior service name')
++    command = ['/usr/bin/systemctl', '--user', 'show', unit,
++               '--property=LoadState,ActiveState,SubState,MainPID,ControlGroup']
++    post = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL,
++                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
++    require(len(post.stdout) <= 8192 and len(post.stderr) <= 8192, 'unexpected prior service output size')
++    fields = dict(line.split('=', 1) for line in post.stdout.decode().splitlines() if '=' in line)
++    require(post.returncode == 0 and fields.get('ActiveState') == 'inactive'
++            and fields.get('MainPID') == '0' and fields.get('ControlGroup') == '',
++            'prior service is no longer inactive and empty')
++    return {'argv': command, 'exit': post.returncode, 'properties': fields,
++            'stderr': post.stderr.decode(errors='replace'), 'target_dir': str(target),
++            'scope': 'Prior owned cache reuse; source and actual Cargo artifact remain independently verified.'}
++
++
+ def main():
+     require(digest(PLAN) == PLAN_SHA256, 'concrete execution plan changed')
+     plan = json.loads(read_bounded(PLAN, 1024**2))
+@@ -138,13 +180,15 @@
+     require([step['name'] for step in plan['stages']] == ['compile', 'list', 'native'], 'unexpected stage order')
+     require(plan['required_count'] == 36 and len(set(plan['selected_tests'])) == 36, 'selected population changed')
+     root = Path(plan['run_root'])
+-    for path in [root, Path(plan['observer_root']), Path(plan['target_dir'])]:
++    for path in [root, Path(plan['observer_root'])]:
+         require(not path.exists() and not path.is_symlink(), 'retain every earlier attempt: ' + str(path))
+     check_inputs(plan)
++    environment = {key: os.environ[key] for key in plan['environment_keys'] if key in os.environ}
++    environment.update(plan['environment_fixed'])
++    prior_terminal = check_prior_compile(plan, environment)
+     root.mkdir(mode=0o700)
+     Path(plan['tmpdir']).mkdir(mode=0o700)
+-    environment = {key: os.environ[key] for key in plan['environment_keys'] if key in os.environ}
+-    environment.update(plan['environment_fixed'])
++    write_new(root / 'prior-compile-terminal-readback.json', prior_terminal)
+     write_new(root / 'launch.json', {'plan_sha256': PLAN_SHA256, 'caller_sha256': digest(__file__),
+               'environment': environment, 'source_binding_sha256': digest(plan['source_binding']),
+               'scope': 'One native KVM library build/list/selected run; no Hermit or KVM guest.'})
+@@ -185,8 +229,9 @@
+                 artifact = select_executable(raw, plan)
+                 write_new(root / 'compiled-executable.json', artifact)
+                 lockfile = Path(plan['source_root']) / 'Cargo.lock'
+-                require(lockfile.is_file(), 'Cargo did not retain its dependency lock')
+-                write_new(root / 'generated-lockfile.json', {'path': str(lockfile),
++                require(lockfile.is_file() and digest(lockfile) == plan['dependency_lockfile']['sha256'],
++                        'Cargo changed the bound dependency lock')
++                write_new(root / 'dependency-lockfile.json', {'path': str(lockfile),
+                           'bytes': lockfile.stat().st_size, 'sha256': digest(lockfile)})
+             elif active_stage == 'list':
+                 listed = [line[:-6] for line in raw.decode().splitlines() if line.endswith(': test')]

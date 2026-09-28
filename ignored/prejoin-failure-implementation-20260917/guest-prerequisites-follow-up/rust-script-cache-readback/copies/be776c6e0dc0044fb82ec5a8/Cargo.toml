@@ -1,0 +1,14 @@
+[[bin]]
+name = "check-nested-lockfiles_be776c6e0dc0044fb82ec5a8"
+path = "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/check-nested-lockfiles.rs"
+
+[dependencies]
+
+[package]
+authors = ["Anonymous"]
+edition = "2021"
+name = "check-nested-lockfiles_be776c6e0dc0044fb82ec5a8"
+version = "0.1.0"
+
+[profile.release]
+strip = true

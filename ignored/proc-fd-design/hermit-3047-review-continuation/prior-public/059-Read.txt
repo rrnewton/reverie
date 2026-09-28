@@ -1,0 +1,192 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01VPxFMajFgEh6iT7NBNeJa5",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs",
+    "offset": 1340,
+    "limit": 180
+  }
+}
+
+Successful public tool result (exact text below):
+1340	    }
+1341	}
+1342	
+1343	fn fdinfo_private_carrier_error(
+1344	    state: &LoadedStaticElf,
+1345	    number: u64,
+1346	    args: &[u64; 6],
+1347	) -> Option<i64> {
+1348	    let is_fdinfo = |raw: u64| state.fdinfo_files.contains_key(&(raw as libc::c_int));
+1349	    // The backing memfd is never a readable payload for kernel transfer or
+1350	    // mmap operations. Scalar read/pread/lseek use seq; vectors retain the
+1351	    // existing proc-file ENOSYS boundary in vectored_io.
+1352	    if (number == libc::SYS_sendfile as u64 && (is_fdinfo(args[0]) || is_fdinfo(args[1])))
+1353	        || (number == libc::SYS_mmap as u64
+1354	            && args[3] & libc::MAP_ANONYMOUS as u64 == 0
+1355	            && is_fdinfo(args[4]))
+1356	        || (matches!(number, n if n == libc::SYS_ioctl as u64
+1357	            || n == libc::SYS_fstatfs as u64 || n == libc::SYS_fsync as u64
+1358	            || n == libc::SYS_fdatasync as u64 || n == libc::SYS_readahead as u64
+1359	            || n == libc::SYS_sync_file_range as u64 || n == libc::SYS_fchmod as u64
+1360	            || n == libc::SYS_fchown as u64)
+1361	            && is_fdinfo(args[0]))
+1362	    {
+1363	        return Some(negative_errno(libc::ENOSYS));
+1364	    }
+1365	    if number == libc::SYS_fcntl as u64
+1366	        && is_fdinfo(args[0])
+1367	        && !matches!(
+1368	            args[1] as libc::c_int,
+1369	            libc::F_DUPFD
+1370	                | libc::F_DUPFD_CLOEXEC
+1371	                | libc::F_GETFD
+1372	                | libc::F_SETFD
+1373	                | libc::F_GETFL
+1374	                | libc::F_SETFL
+1375	        )
+1376	    {
+1377	        return Some(negative_errno(libc::ENOSYS));
+1378	    }
+1379	    None
+1380	}
+1381	
+1382	fn ensure_fdinfo_object(host_fd: RawFd) -> Result<(), i64> {
+1383	    if !matches!(
+1384	        fd_mode(host_fd)? & libc::S_IFMT,
+1385	        libc::S_IFREG
+1386	            | libc::S_IFDIR
+1387	            | libc::S_IFCHR
+1388	            | libc::S_IFBLK
+1389	            | libc::S_IFIFO
+1390	            | libc::S_IFSOCK
+1391	    ) {
+1392	        return Err(negative_errno(libc::ENOSYS));
+1393	    }
+1394	    Ok(())
+1395	}
+1396	
+1397	fn read_owned_fdinfo(file: &std::fs::File) -> Result<Vec<u8>, i64> {
+1398	    // Explicit capacity for one raw record, not a truncated success. The owned
+1399	    // source remains live for the whole read, so its number cannot be reused.
+1400	    const LIMIT: u64 = 1024 * 1024;
+1401	    let source =
+1402	        std::fs::File::open(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).map_err(io_error)?;
+1403	    read_fdinfo_bytes(source, LIMIT)
+1404	}
+1405	
+1406	fn read_fdinfo_bytes(source: impl std::io::Read, limit: u64) -> Result<Vec<u8>, i64> {
+1407	    let mut bytes = Vec::new();
+1408	    let mut bounded = std::io::Read::take(source, limit + 1);
+1409	    std::io::Read::read_to_end(&mut bounded, &mut bytes).map_err(io_error)?;
+1410	    if bytes.len() as u64 > limit {
+1411	        return Err(negative_errno(libc::EOVERFLOW));
+1412	    }
+1413	    Ok(bytes)
+1414	}
+1415	
+1416	fn replace_fdinfo_flags(bytes: &[u8], flags: libc::c_int) -> Result<Vec<u8>, i64> {
+1417	    let mut result = Vec::with_capacity(bytes.len());
+1418	    let mut found = false;
+1419	    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+1420	        if line.starts_with(b"flags:") {
+1421	            if found || !line.ends_with(b"\n") {
+1422	                return Err(negative_errno(libc::EIO));
+1423	            }
+1424	            let value = std::str::from_utf8(&line[b"flags:".len()..])
+1425	                .map_err(|_| negative_errno(libc::EIO))?
+1426	                .trim();
+1427	            u64::from_str_radix(value, 8).map_err(|_| negative_errno(libc::EIO))?;
+1428	            result.extend_from_slice(format!("flags:\t0{flags:o}\n").as_bytes());
+1429	            found = true;
+1430	        } else {
+1431	            result.extend_from_slice(line);
+1432	        }
+1433	    }
+1434	    if !found {
+1435	        return Err(negative_errno(libc::EIO));
+1436	    }
+1437	    Ok(result)
+1438	}
+1439	
+1440	/// Recognize only current-process spellings. The selected task is retained;
+1441	/// /proc/self is the leader even when a live worker opens the file.
+1442	fn fdinfo_path_target(state: &LoadedStaticElf, path: &[u8]) -> Option<Result<(i32, i32), i64>> {
+1443	    let rest = path.strip_prefix(b"/proc/")?;
+1444	    let slash = rest.iter().position(|byte| *byte == b'/')?;
+1445	    let suffix = rest[slash + 1..].strip_prefix(b"fdinfo/")?;
+1446	    let task = &rest[..slash];
+1447	    let target = if task == b"self" {
+1448	        state.pid
+1449	    } else if task == b"thread-self" {
+1450	        state.tid
+1451	    } else {
+1452	        match std::str::from_utf8(task)
+1453	            .ok()
+1454	            .and_then(|s| s.parse::<i32>().ok())
+1455	        {
+1456	            Some(tid)
+1457	                if (tid == state.pid || tid == state.tid) && tid.to_string().as_bytes() == task =>
+1458	            {
+1459	                tid
+1460	            }
+1461	            _ => return Some(Err(negative_errno(libc::ENOENT))),
+1462	        }
+1463	    };
+1464	    let fd = match std::str::from_utf8(suffix)
+1465	        .ok()
+1466	        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+1467	        .and_then(|s| s.parse::<i32>().ok())
+1468	    {
+1469	        Some(fd) if fd < GUEST_NOFILE_LIMIT && fd.to_string().as_bytes() == suffix => fd,
+1470	        _ => return Some(Err(negative_errno(libc::ENOENT))),
+1471	    };
+1472	    Some(Ok((target, fd)))
+1473	}
+1474	
+1475	fn fdinfo_target_generation(
+1476	    state: &LoadedStaticElf,
+1477	    tid: i32,
+1478	    fd: i32,
+1479	    capture_output: bool,
+1480	) -> Result<u64, i64> {
+1481	    let generation = state
+1482	        .task_lifecycle
+1483	        .lock()
+1484	        .expect("KVM lifecycle lock poisoned")
+1485	        .get(tid)
+1486	        .map(|task| task.generation)
+1487	        .ok_or_else(|| negative_errno(libc::ENOENT))?;
+1488	    let host = host_fd(state, fd).ok_or_else(|| negative_errno(libc::ENOENT))?;
+1489	    if state.proc_files.contains_key(&fd)
+1490	        || state.random_device_fds.contains(&fd)
+1491	        || signalfd_mask(state, fd).is_some()
+1492	        || (capture_output && output_alias(state, fd).is_some())
+1493	    {
+1494	        return Err(negative_errno(libc::ENOSYS));
+1495	    }
+1496	    ensure_fdinfo_object(host)?;
+1497	    Ok(generation)
+1498	}
+1499	
+1500	fn open_fdinfo(
+1501	    state: &mut LoadedStaticElf,
+1502	    target: (i32, i32),
+1503	    flags: u64,
+1504	    capture_output: bool,
+1505	) -> i64 {
+1506	    let generation = match fdinfo_target_generation(state, target.0, target.1, capture_output) {
+1507	        Ok(generation) => generation,
+1508	        Err(error) => return error,
+1509	    };
+1510	    if flags & libc::O_DIRECTORY as u64 != 0 {
+1511	        return negative_errno(libc::ENOTDIR);
+1512	    }
+1513	    if flags
+1514	        & (libc::O_PATH
+1515	            | libc::O_CREAT
+1516	            | libc::O_TRUNC
+1517	            | libc::O_DIRECT
+1518	            | libc::O_NOATIME
+1519	            | libc::O_ASYNC) as u64

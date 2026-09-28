@@ -1,0 +1,70 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x27050
+There are 11 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x021fe0 0x021fe0 R   0x1000
+  LOAD           0x022000 0x0000000000022000 0x0000000000022000 0x069b95 0x069b95 R E 0x1000
+  LOAD           0x08c000 0x000000000008c000 0x000000000008c000 0x03e07c 0x03e07c R   0x1000
+  LOAD           0x0ca528 0x00000000000cb528 0x00000000000cb528 0x00ead0 0x00ede8 RW  0x1000
+  DYNAMIC        0x0d6860 0x00000000000d7860 0x00000000000d7860 0x000270 0x000270 RW  0x8
+  NOTE           0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000020 0x000020 R   0x8
+  NOTE           0x0002c8 0x00000000000002c8 0x00000000000002c8 0x000024 0x000024 R   0x4
+  GNU_PROPERTY   0x0002a8 0x00000000000002a8 0x00000000000002a8 0x000020 0x000020 R   0x8
+  GNU_EH_FRAME   0x0b6070 0x00000000000b6070 0x00000000000b6070 0x002a84 0x002a84 R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x0ca528 0x00000000000cb528 0x00000000000cb528 0x00dad8 0x00dad8 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     .note.gnu.property .note.gnu.build-id .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_d .gnu.version_r .rela.dyn .rela.plt 
+   01     .init .plt .plt.sec .text .fini 
+   02     .rodata .eh_frame_hdr .eh_frame 
+   03     .init_array .fini_array .data.rel.ro .dynamic .got .data .bss 
+   04     .dynamic 
+   05     .note.gnu.property 
+   06     .note.gnu.build-id 
+   07     .note.gnu.property 
+   08     .eh_frame_hdr 
+   09     
+   10     .init_array .fini_array .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0xd6860 contains 35 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libk5crypto.so.3]
+ 0x0000000000000001 (NEEDED)             Shared library: [libcom_err.so.2]
+ 0x0000000000000001 (NEEDED)             Shared library: [libkrb5support.so.0]
+ 0x0000000000000001 (NEEDED)             Shared library: [libkeyutils.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libcrypto.so.3]
+ 0x0000000000000001 (NEEDED)             Shared library: [libresolv.so.2]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000e (SONAME)             Library soname: [libkrb5.so.3]
+ 0x000000000000000c (INIT)               0x22000
+ 0x000000000000000d (FINI)               0x8bb88
+ 0x0000000000000019 (INIT_ARRAY)         0xcb528
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0xcb530
+ 0x000000000000001c (FINI_ARRAYSZ)       16 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x2f0
+ 0x0000000000000005 (STRTAB)             0x6e10
+ 0x0000000000000006 (SYMTAB)             0x1770
+ 0x000000000000000a (STRSZ)              19241 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000003 (PLTGOT)             0xd7ad0
+ 0x0000000000000002 (PLTRELSZ)           15384 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x1e3c8
+ 0x0000000000000007 (RELA)               0xc230
+ 0x0000000000000008 (RELASZ)             74136 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000006ffffffc (VERDEF)             0xc078
+ 0x000000006ffffffd (VERDEFNUM)          3
+ 0x0000000000000018 (BIND_NOW)           
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW
+ 0x000000006ffffffe (VERNEED)            0xc0d0
+ 0x000000006fffffff (VERNEEDNUM)         5
+ 0x000000006ffffff0 (VERSYM)             0xb93a
+ 0x000000006ffffff9 (RELACOUNT)          3052
+ 0x0000000000000000 (NULL)               0x0

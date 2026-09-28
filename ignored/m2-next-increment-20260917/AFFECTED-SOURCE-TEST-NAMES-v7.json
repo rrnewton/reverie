@@ -1,0 +1,49 @@
+{
+  "scope": "source declarations only; no emitted inventory or execution counts",
+  "inherited_v5": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/AFFECTED-SOURCE-TEST-NAMES-v5.json",
+    "sha256": "d47adaee707b5f3e97a5708a6a3accba39839da6f63d69666304652206410673"
+  },
+  "unchanged_manifest_script_functions": [
+    "manifest",
+    "declared_guest_args_are_appended_and_quoted",
+    "guest_args_are_resolved_per_backend",
+    "undeclared_guest_args_leave_the_guest_word_untouched",
+    "string_direct_commands_are_one_line_and_preserve_exact_arguments",
+    "program_commands_are_one_line_and_preserve_exact_arguments",
+    "naked_command_appends_native_guest_arguments",
+    "enabled_backend_absent_from_guest_args_gets_none",
+    "guest_args_json_lines_emit_one_sorted_record_per_declaring_cell",
+    "guest_args_json_lines_reject_a_globally_unknown_disabled_backend",
+    "guest_args_json_lines_accept_native_only_for_naked_mode",
+    "guest_args_json_lines_preserve_empty_vectors_and_special_arguments",
+    "generated_mode_commands_match_the_harness_contract",
+    "one_chaos_seed_emits_one_internally_verified_command",
+    "chaos_seeds_share_one_outer_cell_timeout",
+    "generated_commands_use_the_inherited_and_exact_cell_timeouts"
+  ],
+  "consumer_test_file": "hermit-cli/tests/verification_report_consumers.rs",
+  "all_prior_consumer_functions": [
+    "root",
+    "temporary_directory",
+    "write_executable",
+    "run_artifact_consumer",
+    "copy_binary_only_bundle",
+    "immutable_artifact_controls_a_real_integration_consumer",
+    "measured_match",
+    "current_synthetic_match",
+    "write_report",
+    "verdict",
+    "every_named_consumer_delegates_to_the_shared_typed_reader",
+    "current_match_and_a_typed_verdict_mutation_bracket_every_consumer",
+    "current_shape_and_canonical_evidence_fail_by_name",
+    "json_output_retains_failure_evidence_without_satisfying_a_match_requirement"
+  ],
+  "new_test_declarations": [
+    "generated_verification_commands_validate_fresh_evidence_before_guest_status",
+    "application_shell_consumer_uses_the_real_typed_reader",
+    "reproducible_build_consumer_keeps_artifact_and_typed_verdict_requirements"
+  ],
+  "actual_production_shell_control": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+  "original_fixture_assertions_retained": true
+}

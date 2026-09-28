@@ -1,0 +1,98 @@
+[
+  {
+    "revision": "8051335e87104f7cf832204f74920d38416393b2",
+    "path": "scripts/manifest-to-commands.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/scripts/manifest-to-commands.rs",
+    "bytes": 45562,
+    "sha256": "aa834d4f47a64e80fae94bdd62871b76979b609cdd4375b577e3a412d48f3dff",
+    "blob": "70fdb5dce690ec2fa96356bfc787b5e511523ca4"
+  },
+  {
+    "revision": "8051335e87104f7cf832204f74920d38416393b2",
+    "path": "tests/e2e/lib/applications/common.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/e2e/lib/applications/common.sh",
+    "bytes": 11808,
+    "sha256": "8fbdc2ebf414e761d4b75207dd69b1ba97bb4f0ea4c590707e4733210140ba06",
+    "blob": "cf0fc07d8df293bbb9afd3a262d12f2d0da85dba"
+  },
+  {
+    "revision": "8051335e87104f7cf832204f74920d38416393b2",
+    "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/e2e/lib/applications/test_verdict_discrimination.sh",
+    "bytes": 6992,
+    "sha256": "348d1720ae72d00fdd7e24025525de6330e3a9610b70dcc19c431940e2cbbd9f",
+    "blob": "d94b17f139fcb1af428fac88fd16b5fab258b016"
+  },
+  {
+    "revision": "8051335e87104f7cf832204f74920d38416393b2",
+    "path": "tests/reproducible-builds/run.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/reproducible-builds/run.sh",
+    "bytes": 2892,
+    "sha256": "7839a4623a577c422b09b226347877855d5eb0a7a3df868b619b95491281f96a",
+    "blob": "94a919147ba8ebfb711f168476096315bfa62c8c"
+  },
+  {
+    "revision": "8051335e87104f7cf832204f74920d38416393b2",
+    "path": "tests/qemu-boot/strict_l2_test.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/qemu-boot/strict_l2_test.sh",
+    "bytes": 6299,
+    "sha256": "73c078b4a0c3fc5113a5dedb8fc5a2d09ebb633d39a71307f4feb4f55ec4195a",
+    "blob": "c53deb6ddeb9b8a33c250210fc680e63e2ac66fc"
+  },
+  {
+    "revision": "8051335e87104f7cf832204f74920d38416393b2",
+    "path": "tests/backend-parity/run_matrix.py",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/backend-parity/run_matrix.py",
+    "bytes": 84430,
+    "sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024",
+    "blob": "06e87de2267ef2376d235312dc6d0441273234a9"
+  },
+  {
+    "revision": "d601651a3a0f4865b72af50a9c5967eaf60c351a",
+    "path": "scripts/manifest-to-commands.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/scripts/manifest-to-commands.rs",
+    "bytes": 30344,
+    "sha256": "44b7a590db84503e85e2812c371037f295e3fbbc16693c713856490d80849272",
+    "blob": "83362690768f054705cdf5f918d7576658c2a973"
+  },
+  {
+    "revision": "d601651a3a0f4865b72af50a9c5967eaf60c351a",
+    "path": "tests/e2e/lib/applications/common.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/e2e/lib/applications/common.sh",
+    "bytes": 11210,
+    "sha256": "79d1a57f655bd11d95ea40d074580e2249af73acffad280fc697a61ab5abb2d1",
+    "blob": "e934520c6a91b63af8eeeaac2608029c741d6596"
+  },
+  {
+    "revision": "d601651a3a0f4865b72af50a9c5967eaf60c351a",
+    "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/e2e/lib/applications/test_verdict_discrimination.sh",
+    "bytes": 6245,
+    "sha256": "112c09951b452c6497c858ab849842a3f014f999071210e63bb3267bb97c3448",
+    "blob": "33a6fa57fc2d9567f872695e79818214a2b0e1cb"
+  },
+  {
+    "revision": "d601651a3a0f4865b72af50a9c5967eaf60c351a",
+    "path": "tests/reproducible-builds/run.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/reproducible-builds/run.sh",
+    "bytes": 3258,
+    "sha256": "d976e5f7534de5416dddeb168857a49da1fa22049525e02ca10238aacfc7316c",
+    "blob": "22ceae901f10cd93d52ff59f59ca5f1936ec6c3b"
+  },
+  {
+    "revision": "d601651a3a0f4865b72af50a9c5967eaf60c351a",
+    "path": "tests/qemu-boot/strict_l2_test.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/qemu-boot/strict_l2_test.sh",
+    "bytes": 6340,
+    "sha256": "401d465e981a2106036cec2bda22661b820e2823280d6955667b0e92dea04c23",
+    "blob": "ba79262b82041a08bac50d868823d98eae7a356b"
+  },
+  {
+    "revision": "d601651a3a0f4865b72af50a9c5967eaf60c351a",
+    "path": "tests/backend-parity/run_matrix.py",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/backend-parity/run_matrix.py",
+    "bytes": 60760,
+    "sha256": "6f96e4e797b182b6cc293108eea16ce332cec5ac2ec0ece42c01bc1589cf8a7a",
+    "blob": "3e19b62882b18881074a924ace08a1537411c631"
+  }
+]

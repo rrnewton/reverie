@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-03",
+  "test": "leader_exit::exec_rearms_worker_survival_tool",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "2651c99bf73f17d29bf10d1c63cecc5a36e4772268c4146e9b0511f8ab709209",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "387b8e334be877bfd8d309761a39ce41bf8154e88693f14be6e7a949e7c0ad16",
+  "cpu_nsec": 391436000,
+  "wall_seconds": 0.870280071
+}

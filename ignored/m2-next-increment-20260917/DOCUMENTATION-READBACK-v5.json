@@ -1,0 +1,11 @@
+{
+  "rust_preview_entries_byte_identical_to_v4": 19,
+  "documentation_or_comment_changes_only": [
+    "docs/USER_GUIDE.md",
+    "docs/ERROR_CATALOG.md",
+    "demos/05-qemu-busybox.sh"
+  ],
+  "demo_noncomment_bytes_identical": true,
+  "demo_noncomment_sha256": "ce7dd4b3756ad0897f4fa1989607b867eb6b968ed1180fe461f3e4bb347e9173",
+  "scope": "source comparison only; no script or guest executed"
+}

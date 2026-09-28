@@ -1,0 +1,56 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01PX1kRyBHcARUrXHpjSVgc6",
+  "name": "Grep",
+  "input": {
+    "pattern": "1050|MAX_PARALLEL_JOBS|MAX_BUILD_EFFECTIVE_JOB_SECONDS|clamp|16",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/configure-build-jobs.sh",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 40
+  }
+}
+
+Successful public tool result (exact text below):
+5:# use every granted core. On the 316-CPU validation host that inference produced
+33:    unset REVERIE_DBT_MAX_PARALLEL_JOBS
+35:    unset REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS
+43:    unset CI_DAG_REVERIE_DBT_MAX_PARALLEL_JOBS
+45:    unset CI_DAG_REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS
+46:    unset REVERIE_DBT_PINNED_MAX_PARALLEL_JOBS
+94:# here; a pin bump cannot silently retain the old clamp or threshold.
+100:# CMAKE_GENERATOR are unchanged, so the measured 1050 effective-job-second
+101:# budget and MAX_PARALLEL_JOBS=16 carry unchanged. Fresh validation remains
+104:# CARRY TO 200439dc (2026-08-26): a16e3c46..200439dc changes only
+108:# remains install key 132d77130980c546c8867fc196d97e664bc4816b1dfa9ea9c18de4a94d109c4d.
+109:# The 1050 effective-job-second budget and MAX_PARALLEL_JOBS=16 carry unchanged.
+120:# no reverie-dbt Rust change to argue about at all. MAX_PARALLEL_JOBS=16 is
+128:# effective-job-seconds budget and MAX_PARALLEL_JOBS=16 carry unchanged.
+148:# and the native source build took 33.38s at jobs=16, or 534.08 effective
+149:# job-seconds. The existing 1050 effective-job-second threshold remains above
+153:# CARRY TO 1645b64b (2026-08-27): the three source_recipe_key repository
+229:# CMAKE and CMAKE_GENERATOR selection is unchanged. The existing 16-job clamp
+230:# and 1050 effective-job-second threshold carry at recipe key
+234:# CARRY TO d87a03a3 (2026-09-16): the native-build inputs remain identical
+241:# The 16-job clamp and 1050 effective-job-second threshold carry unchanged
+248:# core/unix/loader.c; build.rs, CMake targets/options and MAX_PARALLEL_JOBS=16
+252:# under 4 CPU / 8 GiB bounds. This supports retaining the existing 1050
+253:# effective-job-second threshold and 16-job clamp; it is not a replacement
+261:# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+268:# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+305:# Reverie 9470712's DynamoRIO build.rs clamps Cargo NUM_JOBS to 16 before
+309:#   effective native jobs = min(requested jobs, child CPUs, Reverie clamp)
+315:# i.e. 463.28, 513.08, and 524.84 effective-job-seconds at min(8, 4, 16)=4.
+317:# observations; applying that policy and rounding up gives 1050
+332:# 158.32 / 164.04). The new pin's slowest sample is 3% faster than the old
+338:# MAX_PARALLEL_JOBS is still 16.
+342:# DynamoRIO tree, build commands, MAX_PARALLEL_JOBS=16 clamp, and
+353:# MAX_PARALLEL_JOBS=16 clamp are byte-identical, so source_recipe_key() remains
+361:# MAX_PARALLEL_JOBS=16 clamp remain byte-identical. The DBT recipe identity
+379:# the MAX_PARALLEL_JOBS=16 clamp still applies. The hosted-runner budget
+398:# MAX_PARALLEL_JOBS=16 clamp (reverie-dbt/build.rs:25) still applies, so the
+420:# MAX_PARALLEL_JOBS=16 clamp still applies, and the measured MISS cost is
+440:# MAX_PARALLEL_JOBS=16 clamp still applies, and the measured MISS cost cannot
+443:# Those 2026-08-05 samples deliberately do NOT replace 1050. They come from a
+
+[Showing results with pagination = limit: 40]

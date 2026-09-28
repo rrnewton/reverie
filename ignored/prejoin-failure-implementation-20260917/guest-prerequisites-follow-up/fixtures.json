@@ -1,0 +1,77 @@
+[
+  {
+    "name": "exact-child-waits",
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/c/kvm_exact_child_waits.c",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/kvm_exact_child_waits.c",
+    "sha256": "4892bd4cbedaa4ff14b32fd674cc616a3965bbf290c455c33becbeefdb580bc7",
+    "flags": [
+      "-O0",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ],
+    "kind": "repository_fixture"
+  },
+  {
+    "name": "cpuid",
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/backend-parity/fixtures/cpuid_probe.c",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/cpuid_probe.c",
+    "sha256": "c64474d025814e29089584ecaf1271ded6bf8e39a846d660c47b37d2f9cb0eeb",
+    "flags": [
+      "-O2",
+      "-g",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ],
+    "kind": "repository_fixture"
+  },
+  {
+    "name": "pthread",
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/backend-parity/fixtures/pthread_lifecycle.c",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/pthread_lifecycle.c",
+    "sha256": "060e698e06919066bc7c2f2e0aab0563696ad762beabfb6c06c7e74c734667cd",
+    "flags": [
+      "-std=c11",
+      "-O2",
+      "-g",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread"
+    ],
+    "kind": "repository_fixture"
+  },
+  {
+    "name": "pipe",
+    "source_method": "run_kvm_pipe_pipe2_and_getgroups_round_trip",
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-guest-plan-v1/source/hermit-cli/tests/cli.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/pipe_roundtrip.c",
+    "sha256": "a981b7ebb91fcb2ae46a7d10185c651d42709ea9098653e6cf0f376c7472ed29",
+    "flags": [
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ],
+    "kind": "exact_inline_bytes",
+    "original_order": "flags -o GENERATED_BINARY GENERATED_SOURCE"
+  },
+  {
+    "name": "random-device",
+    "source_method": "run_kvm_random_device_lseek_matches_linux",
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-guest-plan-v1/source/hermit-cli/tests/cli.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/random_device_lseek.c",
+    "sha256": "d34eaa20a8c700da6a37dabd10d6f6142705a4e2a0efc34eaa2427d66ef021b5",
+    "flags": [
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ],
+    "kind": "exact_inline_bytes",
+    "original_order": "flags -o GENERATED_BINARY GENERATED_SOURCE"
+  }
+]

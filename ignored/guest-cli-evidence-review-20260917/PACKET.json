@@ -1,0 +1,65 @@
+{
+  "scope": "read-only original 24 KVM CLI and v2 addendum evidence review",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/REPORT.md",
+      "bytes": 6126,
+      "mode": 420,
+      "sha256": "d83ae60f412938e71e9d0e5cf949d5dbff75d21f6cf7005e2927aec2b6e92919"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/readback-v2.py",
+      "bytes": 13744,
+      "mode": 420,
+      "sha256": "e6441fe43287c404dd21243a3faf62bdf8bc07ad34b7d5ef71a2acc753cc550b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/readback-v3.py",
+      "bytes": 14160,
+      "mode": 420,
+      "sha256": "8638292bf56cdf719e2048dfa5ffb8cf71e6b2c108510ad037b554c969314971"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/READBACK-v2.json",
+      "bytes": 42428875,
+      "mode": 420,
+      "sha256": "52cc7c953a360f3bfddc6f12d258218fd150ba65c1efe2cbc1ae36a509e62c48"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/attempt-2/READBACK-v3.json",
+      "bytes": 7700502,
+      "mode": 420,
+      "sha256": "8ca677e87bb1ddceb9e753871e3096ef08bf0fcacdc112bb440200603e6c9ebc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/COMPLETED-ADDENDUM-READBACK.json",
+      "bytes": 424783,
+      "mode": 420,
+      "sha256": "f90eb407a81bc68b8e780a0f9c0db158415769e27f8e0859ba063fa9095f557e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/attempt-2/readback-guest-cli-v1.py",
+      "bytes": 11807,
+      "mode": 420,
+      "sha256": "cb07659afd656d90e08c03d8c27874656d940995cadfdfecc8a883e2e2051ee6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/attempt-2/readback-guest-cli-v2.py",
+      "bytes": 13186,
+      "mode": 420,
+      "sha256": "f6228effef242c3d2934e4a829a9205cd0a1ab8a6089df8918a2347e370771ad"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/attempt-2/guest-cli-readback-v2-binding.json",
+      "bytes": 49301,
+      "mode": 420,
+      "sha256": "b027c2c0688fb22426083b7e36fcfa4f6610c1797c40e616eb94526aa6a38cd7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/guest-cli-evidence-review-20260917/attempt-2/guest-cli-readback-v2.patch",
+      "bytes": 2949,
+      "mode": 420,
+      "sha256": "ee2e7a7a42a321dea85ea8db8472f59b5549a4f2b38b2b05492be6e9c0d13e5f"
+    }
+  ]
+}

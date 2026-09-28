@@ -1,0 +1,19 @@
+{
+  "stage": "vm-04",
+  "test": "vm::tests::fatal_worker_rw_store_wake_and_slot_release",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "452"
+    ]
+  ],
+  "stdout_sha256": "ec83a5b25a15f5b7c8d755fa412226d466d873881d8d58c8cf484f91452e23b4",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "675c58322e7bb688680146fff4d525367846ba8bbe66544ef9243c1c41d09853",
+  "cpu_nsec": 320440000,
+  "wall_seconds": 4.031627177
+}

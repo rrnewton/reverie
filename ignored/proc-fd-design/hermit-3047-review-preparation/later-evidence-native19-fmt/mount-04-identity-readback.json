@@ -1,0 +1,38 @@
+{
+  "name": "mount-04-identity",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2423911-1789626167999162114.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 0.181787,
+  "wall_seconds": 0.5644387400243431,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "2491974003b1b10e04404a14179b1669571c24e791051c4435133dd30397c4e7",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "tool_global::tests::fdinfo_mount_ids_seed_from_low_level_snapshot_and_refuse_drift",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 678
+    }
+  ]
+}

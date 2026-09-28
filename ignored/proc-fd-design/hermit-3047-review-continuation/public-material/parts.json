@@ -1,0 +1,135 @@
+[
+  {
+    "path": "public-material/part-01.txt",
+    "bytes": 32253,
+    "sha256": "dc849f30250b7aa91596c4a40c702a596358d4223ce9456e5d04c2393c23fd69",
+    "public_blocks": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ]
+  },
+  {
+    "path": "public-material/part-02.txt",
+    "bytes": 33420,
+    "sha256": "d41897a9e93fe6a99d81eab43b308b8f571f0f176c472321d3be56e6aac88e8c",
+    "public_blocks": [
+      8
+    ]
+  },
+  {
+    "path": "public-material/part-03.txt",
+    "bytes": 57777,
+    "sha256": "e17ab68e77bfe5762455c6d90628f2ba4364cbafc9d42607eb5526fbcecada01",
+    "public_blocks": [
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ]
+  },
+  {
+    "path": "public-material/part-04.txt",
+    "bytes": 53076,
+    "sha256": "f485b937eaab4e5c353f76a12e3e0e3852a05f54c6b048786b40088d269d3385",
+    "public_blocks": [
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23
+    ]
+  },
+  {
+    "path": "public-material/part-05.txt",
+    "bytes": 54361,
+    "sha256": "6b16d830140de01831f48d0013f74260f9e85405480f02dccd9d9906210dc815",
+    "public_blocks": [
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33
+    ]
+  },
+  {
+    "path": "public-material/part-06.txt",
+    "bytes": 58440,
+    "sha256": "5f852e0b4eba975dfb351a581240774a2826395d383420b40231213a2dee0017",
+    "public_blocks": [
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51
+    ]
+  },
+  {
+    "path": "public-material/part-07.txt",
+    "bytes": 57779,
+    "sha256": "36bec11cd5bc58f6db184edefdde11d56dc3e2c3f8ad0d782552ff1602963730",
+    "public_blocks": [
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68
+    ]
+  },
+  {
+    "path": "public-material/part-08.txt",
+    "bytes": 33174,
+    "sha256": "b608c4d19c454388dcd3eaefa86aeaed37e0a1e6cb4fc7860791503d01062d69",
+    "public_blocks": [
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77
+    ]
+  }
+]

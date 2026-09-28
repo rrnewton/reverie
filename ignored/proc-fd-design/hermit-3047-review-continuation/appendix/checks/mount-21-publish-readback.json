@@ -1,0 +1,23 @@
+{
+  "name": "mount-21-publish",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2824039-1789626529018441618.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 1.74624,
+  "wall_seconds": 2.0920660712290555,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "cec0b9eee5126586e7f0cdeef90719fc31da512aac1201ea3d228640e8524870",
+  "full_source_snapshots_equal": true,
+  "expected_method_names_equal": true
+}

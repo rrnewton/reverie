@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "fetch",
+    "origin",
+    "main"
+  ],
+  "exit": 0
+}

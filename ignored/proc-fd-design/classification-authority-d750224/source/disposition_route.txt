@@ -1,0 +1,65 @@
+17765: def _frozen_no_proof_disposition(
+17766:     config: Config,
+17767:     checkout: Path,
+17768:     raw_record: str,
+17769:     raw_repository: str,
+17770:     *,
+17771:     batch_cleanup: _OwnerlessValidationBatchContext,
+17772: ) -> _FrozenNoProofClassification:
+17773:     """Prove one supported frozen run is inert without authorizing its deletion.
+17774: 
+17775:     Historical schema-2/3 producers did not retain the four-artifact removal
+17776:     proof required by current cleanup.  Such a checkout must remain on disk,
+17777:     but it need not prevent an unrelated validation from starting when every
+17778:     fact other than deletion authority is still readable and exact.  The
+17779:     distinct legacy result-source case keeps its existing recovery behavior;
+17780:     current incomplete results have a separate stricter preservation path;
+17781:     other current and malformed shapes block entry. This is a read-only
+17782:     classification: it neither creates a proof nor grants authority to remove
+17783:     the checkout or qualify the historical result.
+17784:     """
+17785: 
+17786:     record_relative, record_path = _validation_run_record_argument(
+17787:         config, raw_record
+17788:     )
+17789:     record_contents, record_identity = _read_regular_file_identity(
+17790:         record_path,
+17791:         "historical frozen validation run-record",
+17792:         _VALIDATION_REMOVAL_ARTIFACT_BYTES_LIMIT,
+17793:     )
+17794:     record = _strict_json_object(
+17795:         record_contents, "historical frozen validation run-record"
+17796:     )
+17797:     _repository_relative, repository = _repository_path(
+17798:         config, raw_repository, allow_managed=True
+17799:     )
+17800:     schema = record.get("service_result_schema")
+17801:     result_source = record.get("result_source")
+17802:     if (
+17803:         type(schema) is int
+17804:         and schema in {1, 2, 3}
+17805:         and result_source == "validation-service-result"
+17806:     ):
+17807:         return _FrozenNoProofClassification(
+17808:             _FrozenNoProofDisposition.LEGACY_RECOVERY
+17809:         )
+17810:     if (
+17811:         type(schema) is not int
+17812:         or schema not in {2, 3}
+17813:         or result_source != "historical-validation-service-result"
+17814:     ):
+17815:         _terminal_validation_record(
+17816:             config,
+17817:             record_relative,
+17818:             checkout,
+17819:             "frozen-checkout",
+17820:             repository=repository,
+17821:         )
+17822:         if _current_incomplete_frozen_result(record):
+17823:             return _current_incomplete_frozen_retention(
+17824:                 config, checkout, record_path, record_contents, record_identity,
+17825:                 repository, batch_cleanup=batch_cleanup,
+17826:             )
+17827:         return _FrozenNoProofClassification(
+17828:             _FrozenNoProofDisposition.BLOCKS_ENTRY
+17829:         )

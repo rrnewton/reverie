@@ -1,0 +1,77 @@
+[
+  {
+    "path": "REPORT.md",
+    "bytes": 7524,
+    "sha256": "8646b104262b4224116c66008c75cda4d7b350e61a9f6a3bbda345988fae2277"
+  },
+  {
+    "path": "BASE.json",
+    "bytes": 797,
+    "sha256": "eebbde6060a5e65246083f0e5d104acdb41e0a1eade8a871f0ff3b39945315d7"
+  },
+  {
+    "path": "FILES.json",
+    "bytes": 864,
+    "sha256": "f03ce437ec913a6452ad27004cfd1a1b088888ea3d68b117986e7c88a846349c"
+  },
+  {
+    "path": "candidate.patch",
+    "bytes": 16824,
+    "sha256": "1f31b460d84dedefe9b0efabe81bb09501712fdc61da7999e90b9fd1a9db2c91"
+  },
+  {
+    "path": "READBACK.json",
+    "bytes": 1360,
+    "sha256": "c88df2017016cddc5b81da77c5cd3d08b8c7d10cd2671ddef235bd900e8f7d71"
+  },
+  {
+    "path": "prepare.py",
+    "bytes": 14414,
+    "sha256": "dbe2205d90e4121daa1039bbabdefd9183b87da80ade2c683ab995c33ad7575e"
+  },
+  {
+    "path": "finalize.py",
+    "bytes": 4437,
+    "sha256": "1433f35e4f75316615e1858473360feb79308391a7346622b8ea4863ddc36ac2"
+  },
+  {
+    "path": "authenticate.py",
+    "bytes": 2962,
+    "sha256": "e95869f997cae33f880e1a1d0ee2a1b2e7fc5335fcb5ab9408bfaccf4c9c48c3"
+  },
+  {
+    "path": "base/AGENTS.md",
+    "bytes": 34047,
+    "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc"
+  },
+  {
+    "path": "base/hermit-cli/src/lib.rs",
+    "bytes": 205203,
+    "sha256": "2c354a05de69312b0c2ccebecfc2b023d5fc3d8de6f06704b1e8d2bcd63eade0"
+  },
+  {
+    "path": "base/hermit-cli/src/error.rs",
+    "bytes": 10782,
+    "sha256": "0e4000c69950253b645040a870fc467d1e72745d276c79f28e50be2352d06b09"
+  },
+  {
+    "path": "base/hermit-cli/src/kvm_failure_tests.rs",
+    "bytes": 22390,
+    "sha256": "dcb2ec5d59dfe9c6ab599895dc5701c6dd7bacd63a60c5fd0a2978048164ecab"
+  },
+  {
+    "path": "changed/hermit-cli/src/lib.rs",
+    "bytes": 209051,
+    "sha256": "4a4df491a07f90b41e44714e56be9dcea40b02eaeb7ae81c1f361e2efabaa81a"
+  },
+  {
+    "path": "changed/hermit-cli/src/error.rs",
+    "bytes": 13622,
+    "sha256": "cb40429449d1f8c7961f869d039245352af594452d1a540cfb193c700b86aa50"
+  },
+  {
+    "path": "changed/hermit-cli/src/kvm_failure_tests.rs",
+    "bytes": 26883,
+    "sha256": "e0ec9384eed8cf4c5b97fe815ec2a205526ee649e372502be78807aa7d541e17"
+  }
+]

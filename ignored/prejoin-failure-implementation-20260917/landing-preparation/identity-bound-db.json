@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/ci-hub/bin/who-am-i",
+    "--tag",
+    "--role",
+    "impl",
+    "--task",
+    "kvm-lane-to-full-determinism-and-parity",
+    "--db",
+    "/home/newton/.tg/hermit2.db",
+    "--diagnostics"
+  ],
+  "status": 0
+}

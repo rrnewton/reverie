@@ -1,0 +1,12 @@
+tree b4abffab9a8d4e981a978ec28213c5be6a44141d
+parent 86bedda5a899bee8f49f15734ebdfde3dc553a32
+author Ryan Newton <rrnewton@gmail.com> 1789594796 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789599082 -0700
+predecessor 88af8fd07b2d3ce95910f793bb24cc8d8550c82a
+predecessor-op rebase
+
+herdr-run: manage persistent foreign agents and bridge native coordinators to chat
+
+[gpt-6-astra] Extract reusable foreign-agent backends, lifecycle commands, and MCP tools behind configurable project policy. Add named Herdr-managed Codex and Claude workers, durable delivery, and native Codex goal inspection and updates in both implementations.
+
+Add a Google Chat coordinator bridge with sender authorization, replay-safe replies, transport adapters, and packaged guides. Verified live Codex and Claude Chat round trips, Codex worker delegation, and native goal completion/replacement. Focused Python, Rust, differential, and typing checks pass; the complete repository validator runs before publication.

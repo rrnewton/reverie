@@ -1,0 +1,1137 @@
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01LqGZw7cqRMMqmDN1hJmfhB",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/bin/hermit/run.rs",
+    "offset": 4860,
+    "limit": 150
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+4860	             dbt did not stop the run at all. Use an outer bound (the cell's \
+4861	             `timeout_seconds`, or `bin/safehermit --sh-deadline`) on this backend, and see \
+4862	             docs/TIMEOUT_LADDER.md."
+4863	        )))
+4864	    }
+4865	
+4866	    fn run_in_container(
+4867	        &self,
+4868	        global: &GlobalOpts,
+4869	        capture_output: bool,
+4870	        guest_capture: Option<&GuestRunCaptureSession>,
+4871	        identity_sources: Option<&IdentityGuard>,
+4872	    ) -> Result<(ExitStatus, Option<Output>), Error> {
+4873	        let _guard = global.init_tracing();
+4874	
+4875	        if capture_output && guest_capture.is_some() {
+4876	            anyhow::bail!("internal output capture cannot be combined with harness guest capture");
+4877	        }
+4878	        let backend = self.runtime_backend();
+4879	        let mut command = self.guest_command()?;
+4880	        if let Some(capture) = guest_capture.filter(|_| backend != Backend::Kvm) {
+4881	            let stderr_fd = capture.stderr_fd_for_guest();
+4882	            command.stdout(capture.stdout_for_guest()?);
+4883	            // The pinned reverie-process `spawn_with` currently constructs
+4884	            // child stderr from its stdout configuration. Restore the distinct
+4885	            // harness-owned stderr descriptor after Reverie's stdio setup and
+4886	            // before exec. The held descriptor survives fork despite CLOEXEC;
+4887	            // dup2 both selects fd 2 and clears CLOEXEC on the new descriptor.
+4888	            //
+4889	            // SAFETY: this callback runs after fork. It captures one integer and
+4890	            // calls only async-signal-safe dup2, without allocation or locks.
+4891	            unsafe {
+4892	                command.pre_exec(move || {
+4893	                    if libc::dup2(stderr_fd, libc::STDERR_FILENO) == -1 {
+4894	                        return Err(Errno::last());
+4895	                    }
+4896	                    Ok(())
+4897	                });
+4898	            }
+4899	        }
+4900	
+4901	        let mut config = self.effective_det_config();
+4902	        config.mountinfo_root_rewrites = identity_sources
+4903	            .map(IdentityGuard::mountinfo_root_rewrites)
+4904	            .transpose()?
+4905	            .unwrap_or_default();
+4906	        let mountinfo_order = identity_sources
+4907	            .map(IdentityGuard::mountinfo_identity_order)
+4908	            .transpose()?
+4909	            .unwrap_or_default();
+4910	        config.mountinfo_mount_ids = mountinfo_order;
+4911	        config.mountinfo_mount_ids_captured = identity_sources.is_some();
+4912	        config.fdinfo_unlisted_mount_ids.clear();
+4913	        self.save_config_to_disk()?;
+4914	
+4915	        let timeout = self.run_timeout();
+4916	        if capture_output || (guest_capture.is_some() && backend == Backend::Kvm) {
+4917	            let out = hermit::run_with_output_backend_timeout(
+4918	                command,
+4919	                config,
+4920	                self.summary,
+4921	                &self.summary_json,
+4922	                backend,
+4923	                timeout,
+4924	            )?;
+4925	            if let Some(capture) = guest_capture {
+4926	                capture.write_kvm_virtual_console(&out.stdout, &out.stderr)?;
+4927	                Ok((out.status, None))
+4928	            } else {
+4929	                Ok((out.status, Some(out)))
+4930	            }
+4931	        } else {
+4932	            let status = hermit::run_with_backend_timeout(
+4933	                command,
+4934	                config,
+4935	                self.summary,
+4936	                &self.summary_json,
+4937	                backend,
+4938	                timeout,
+4939	            )?;
+4940	            Ok((status, None))
+4941	        }
+4942	    }
+4943	
+4944	    fn run_verify_in_container(
+4945	        &self,
+4946	        log_file: &mut Option<fs::File>,
+4947	        global: &GlobalOpts,
+4948	        identity_sources: Option<&IdentityGuard>,
+4949	    ) -> Result<(Output, u64), Error> {
+4950	        // HACK: Use interior mutability to workaround not being able to pass
+4951	        // `log_file` by value. Guaranteed by caller to never panic.
+4952	        let log_file = log_file.take().unwrap();
+4953	
+4954	        let strictness = self.verification_strictness();
+4955	        let level = verification_log_level(global.log, strictness, self.verify_verbose);
+4956	
+4957	        // Bound this log too. `hermit run --verify` opens its own file and
+4958	        // calls `init_file_tracing` directly instead of going through
+4959	        // `GlobalOpts::init_tracing`, so without this wrapper the bound that
+4960	        // was measured on exactly these `--verify` comparison logs would not
+4961	        // apply to the path that produces them: a livelocked run here could
+4962	        // still fill the disk.
+4963	        let limit = log_max_bytes().map_err(Error::msg)?;
+4964	        // SYNCHRONOUS, so a fatal diagnostic in the tail survives the run that
+4965	        // emitted it. The non-blocking appender loses whatever has not drained
+4966	        // when a fail-closed guest dies, which is precisely the line naming the
+4967	        // cause -- measured 0 of 18 runs versus 4 of 4. See
+4968	        // `init_sync_file_tracing`.
+4969	        let _guard = init_sync_file_tracing(Some(level), BoundedWriter::new(log_file, limit));
+4970	
+4971	        let command = self.guest_command()?;
+4972	
+4973	        let mut config = self.effective_det_config();
+4974	        config.mountinfo_root_rewrites = identity_sources
+4975	            .map(IdentityGuard::mountinfo_root_rewrites)
+4976	            .transpose()?
+4977	            .unwrap_or_default();
+4978	        let mountinfo_order = identity_sources
+4979	            .map(IdentityGuard::mountinfo_identity_order)
+4980	            .transpose()?
+4981	            .unwrap_or_default();
+4982	        config.mountinfo_mount_ids = mountinfo_order;
+4983	        config.mountinfo_mount_ids_captured = identity_sources.is_some();
+4984	        config.fdinfo_unlisted_mount_ids.clear();
+4985	        self.save_config_to_disk()?;
+4986	
+4987	        hermit::run_with_output_backend_timeout_and_skid_overshoots(
+4988	            command,
+4989	            config,
+4990	            self.summary,
+4991	            &self.summary_json,
+4992	            self.runtime_backend(),
+4993	            None,
+4994	        )
+4995	    }
+4996	}
+4997	
+4998	/// Represents a tmpfs location. There are different ways to construct `/tmp` for
+4999	/// the container and this encapsulates all of them.
+5000	enum Tmpfs<'a> {
+5001	    /// Use an existing path as `/tmp`.
+5002	    Path(&'a Path),
+5003	
+5004	    /// Use a new temporary directory as `/tmp`.
+5005	    Temp(tempfile::TempDir),
+5006	}
+5007	
+5008	impl<'a> Tmpfs<'a> {
+5009	    /// Returns the path to `/tmp`.
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_012CsNoJE7uEtava7U85Ent1",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/bin/hermit/container.rs",
+    "offset": 225,
+    "limit": 180
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+225	    }
+226	}
+227	
+228	// Bind mount sources must outlive Reverie's pre-exec container setup, which
+229	// applies the mounts in the forked child before exec. Hold this guard in the
+230	// caller until after `Container::run` returns so the backing temp files still
+231	// exist when the child binds them.
+232	pub(super) struct IdentityGuard {
+233	    _group_file: Option<tempfile::NamedTempFile>,
+234	    _nscd_dir: Option<tempfile::TempDir>,
+235	    mountinfo_roots: Vec<MountInfoRootSource>,
+236	    user_mount_targets: Vec<PathBuf>,
+237	}
+238	
+239	impl IdentityGuard {
+240	    /// A guard that owns no backing temp files, for container configurations
+241	    /// (e.g. `--image`) that supply their filesystem from another source and do
+242	    /// not use the frozen-identity bind mounts.
+243	    pub(super) fn empty() -> Self {
+244	        Self {
+245	            _group_file: None,
+246	            _nscd_dir: None,
+247	            mountinfo_roots: Vec::new(),
+248	            user_mount_targets: Vec::new(),
+249	        }
+250	    }
+251	
+252	    /// Include an automatically-created private `/tmp` in mountinfo provenance.
+253	    /// User-supplied `--tmp` paths deliberately do not call this method.
+254	    pub(super) fn add_private_tmp(&mut self, source: &Path) -> Result<(), Error> {
+255	        self.mountinfo_roots
+256	            .push(MountInfoRootSource::private_tmp(source)?);
+257	        Ok(())
+258	    }
+259	
+260	    /// Translate the internal staging path used for an explicit user mount at
+261	    /// `/tmp`, without rewriting the user mount's root or claiming it as a
+262	    /// Hermit-owned filesystem.
+263	    pub(super) fn add_translated_tmp_mountpoint(&mut self, staging_path: &Path) {
+264	        self.mountinfo_roots
+265	            .push(MountInfoRootSource::translated_tmp_mountpoint(staging_path));
+266	    }
+267	
+268	    /// Drop provenance for a Hermit mount hidden by an explicit user mount.
+269	    /// The hidden mount must also be omitted from the mount plan: otherwise its
+270	    /// private root would remain visible as a lower stacked mountinfo row even
+271	    /// though no pathname could reopen that exact layer afterward.
+272	    pub(super) fn discard_mounts_shadowed_by(
+273	        &mut self,
+274	        mounts: &mut Vec<Mount>,
+275	        overriding_target: &Path,
+276	    ) {
+277	        // Host canonicalization describes the namespace only until the first
+278	        // user mount that can replace an ancestor of this target. After that,
+279	        // pathname resolution must follow the ordered mount plan rather than
+280	        // the launcher's host tree. For example, mounting a new `/var` changes
+281	        // what a later `/var/run/nscd` names and must not remove the earlier
+282	        // hardening mount installed at the host-resolved `/run/nscd`.
+283	        let resolution_changed = self
+284	            .user_mount_targets
+285	            .iter()
+286	            .any(|earlier| overriding_target.starts_with(earlier));
+287	        let resolved_override = if resolution_changed {
+288	            overriding_target.to_path_buf()
+289	        } else {
+290	            canonical_mount_target(overriding_target)
+291	        };
+292	        mounts.retain(|mount| {
+293	            !canonical_mount_target(mount.get_target()).starts_with(&resolved_override)
+294	        });
+295	        self.mountinfo_roots.retain(|source| {
+296	            !canonical_mount_target(&source.target).starts_with(&resolved_override)
+297	        });
+298	        self.user_mount_targets
+299	            .push(overriding_target.to_path_buf());
+300	    }
+301	
+302	    /// Resolve proven source objects to exact mount IDs in the completed guest
+303	    /// namespace.  This runs after all mounts are installed and before the guest
+304	    /// starts, while the namespace is quiescent.  Held source and target
+305	    /// descriptors plus the target fd's `mnt_id` avoid both pathname TOCTOU and
+306	    /// ambiguity from stacked mounts sharing one textual mountpoint.
+307	    pub(super) fn mountinfo_root_rewrites(&self) -> Result<Vec<MountInfoRootRewrite>, Error> {
+308	        self.mountinfo_roots
+309	            .iter()
+310	            .map(MountInfoRootSource::resolve)
+311	            .collect()
+312	    }
+313	
+314	    /// Capture the exact raw mount-ID order used by Detcore's snapshot-local
+315	    /// canonicalizer. This runs in the completed, quiescent guest namespace.
+316	    pub(super) fn mountinfo_identity_order(&self) -> Result<Vec<u64>, Error> {
+317	        capture_mountinfo_identity_order()
+318	            .context("Failed to capture guest mountinfo identity order")
+319	    }
+320	}
+321	
+322	fn canonical_mount_target(path: &Path) -> PathBuf {
+323	    for ancestor in path.ancestors() {
+324	        if let Ok(mut canonical) = fs::canonicalize(ancestor)
+325	            && let Ok(suffix) = path.strip_prefix(ancestor)
+326	        {
+327	            canonical.push(suffix);
+328	            return canonical;
+329	        }
+330	    }
+331	    path.to_path_buf()
+332	}
+333	
+334	#[cfg(test)]
+335	pub(super) fn mount_target_is_shadowed(target: &Path, overriding_target: &Path) -> bool {
+336	    canonical_mount_target(target).starts_with(canonical_mount_target(overriding_target))
+337	}
+338	
+339	/// Snapshot the host group database into a private temp file, appending a
+340	/// synthetic overflow group (`nobody:x:65534`) when the host lacks one. Binding
+341	/// this frozen copy read-only over `/etc/group` keeps guest group-name
+342	/// resolution stable across otherwise-identical runs.
+343	fn frozen_group_file() -> Result<tempfile::NamedTempFile, Error> {
+344	    let mut contents = fs::read_to_string(GROUP_FILE)
+345	        .context("Failed to read the host group database for the guest")?;
+346	    let has_overflow_group = contents.lines().any(|line| {
+347	        line.split(':')
+348	            .nth(2)
+349	            .is_some_and(|gid| gid == OVERFLOW_GID)
+350	    });
+351	    if !has_overflow_group {
+352	        if !contents.ends_with('\n') {
+353	            contents.push('\n');
+354	        }
+355	        contents.push_str("nobody:x:");
+356	        contents.push_str(OVERFLOW_GID);
+357	        contents.push_str(":\n");
+358	    }
+359	
+360	    let mut group_file = tempfile::NamedTempFile::new()
+361	        .context("Failed to create the frozen group database for the guest")?;
+362	    group_file
+363	        .write_all(contents.as_bytes())
+364	        .context("Failed to populate the frozen group database for the guest")?;
+365	    group_file
+366	        .as_file()
+367	        .set_permissions(fs::Permissions::from_mode(0o644))
+368	        .context("Failed to set permissions on the frozen guest group database")?;
+369	    Ok(group_file)
+370	}
+371	
+372	/// Deterministic identity-resolution mounts shared by `run`, `record`, and
+373	/// `replay`: a frozen `/etc/group` and an empty directory over the host nscd
+374	/// cache. These keep guest NSS lookups from reaching nondeterministic host
+375	/// state (the nscd cache and the systemd-userdb socket), so record/replay
+376	/// reproduce the same group/user resolution that `run` mode already enforces.
+377	/// Returns the mounts plus a guard that must outlive container setup.
+378	pub(super) fn identity_hardening_mounts() -> Result<(Vec<Mount>, IdentityGuard), Error> {
+379	    let group_file = frozen_group_file()?;
+380	    let mut mountinfo_roots = vec![MountInfoRootSource::new(
+381	        group_file.path(),
+382	        Path::new(GROUP_FILE),
+383	        DETERMINISTIC_GROUP_ROOT,
+384	    )?];
+385	    let mut mounts = vec![Mount::bind(group_file.path(), GROUP_FILE).readonly()];
+386	
+387	    // Host nscd cache readiness is external state and can differ between runs.
+388	    let nscd_dir = if Path::new(NSCD_DIR).is_dir() {
+389	        let directory =
+390	            tempfile::TempDir::new().context("Failed to create the empty guest nscd directory")?;
+391	        // Preserve Linux pathname resolution: on distributions where
+392	        // /var/run is a symlink to /run, mounting the hardening directory at
+393	        // the resolved target keeps it reachable even if a user later mounts
+394	        // an unrelated /var tree.
+395	        let target = canonical_mount_target(Path::new(NSCD_DIR));
+396	        mountinfo_roots.push(MountInfoRootSource::new(
+397	            directory.path(),
+398	            &target,
+399	            DETERMINISTIC_NSCD_ROOT,
+400	        )?);
+401	        mounts.push(Mount::bind(directory.path(), target).readonly());
+402	        Some(directory)
+403	    } else {
+404	        None
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01PBQ4VtQMEvEBitEkXcF8YD",
+  "name": "Grep",
+  "input": {
+    "pattern": "run_in_container|\\.run\\(\\|\\||container\\.run|Container::run",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/bin/hermit/run.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-C": 6
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+4064-        guest_capture: Option<&GuestRunCaptureSession>,
+4065-    ) -> Result<(ExitStatus, Option<Output>), Error> {
+4066-        if self.no_namespace {
+4067-            let mut process = Container::new();
+4068-            apply_affinity(&mut process, self.pin_threads);
+4069-            return with_container(&mut process, || {
+4070:                self.run_in_container(global, capture_output, guest_capture, None)
+4071-            });
+4072-        }
+4073-
+4074-        let tmpfs = self.tmpfs()?;
+4075-
+4076-        let (mut container, identity_sources) = self.container(tmpfs.path())?;
+4077-
+4078-        with_container(&mut container, || {
+4079:            self.run_in_container(
+4080-                global,
+4081-                capture_output,
+4082-                guest_capture,
+4083-                Some(&identity_sources),
+4084-            )
+4085-        })
+--
+4860-             dbt did not stop the run at all. Use an outer bound (the cell's \
+4861-             `timeout_seconds`, or `bin/safehermit --sh-deadline`) on this backend, and see \
+4862-             docs/TIMEOUT_LADDER.md."
+4863-        )))
+4864-    }
+4865-
+4866:    fn run_in_container(
+4867-        &self,
+4868-        global: &GlobalOpts,
+4869-        capture_output: bool,
+4870-        guest_capture: Option<&GuestRunCaptureSession>,
+4871-        identity_sources: Option<&IdentityGuard>,
+4872-    ) -> Result<(ExitStatus, Option<Output>), Error> {
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_016ydygYyHoDuGhtsxx9hmjM",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/lib.rs",
+    "offset": 1900,
+    "limit": 180
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1900	/// be tidy. `fs::canonicalize` runs after the container's mounts are applied, and
+1901	/// the container bind-mounts a fresh empty tmpfs over `/tmp`
+1902	/// (`bin/hermit/container.rs`). So a cwd beneath `/tmp` is genuinely absent from
+1903	/// the guest's mount namespace and `canonicalize` returns a perfectly correct
+1904	/// `NotFound` -- for a directory the user can `ls`.
+1905	///
+1906	/// Reported 2026-08-25 as "run_kvm_ cli tests fail from a git worktree". They do
+1907	/// not. Measured across five working directories with one binary: a PLAIN
+1908	/// directory under `/tmp` with no git in it FAILS, and a linked git worktree
+1909	/// under `/home` WORKS. The only property that tracks the failure is "the cwd is
+1910	/// under /tmp"; `/tmp` itself resolves because the mount POINT exists. The git
+1911	/// hypothesis cost real investigation time, and it came from this message saying
+1912	/// only "No such file or directory".
+1913	///
+1914	/// It mattered more than a stray report because the historical landing recipe
+1915	/// placed detached worktrees below `/tmp`, exactly where this fires. Current
+1916	/// dev-hermit worktrees are created through wrkslots below `worktrees/`, but the
+1917	/// diagnostic remains necessary for arbitrary callers and older checkouts.
+1918	///
+1919	/// The message names the mechanism and both ways out. It deliberately does NOT
+1920	/// silently fall back to `/`: changing the guest's working directory out from
+1921	/// under a caller who asked for a specific one would trade a loud, correct
+1922	/// failure for a quiet, wrong success.
+1923	fn kvm_cwd_resolution_error(requested_cwd: &Path, error: &std::io::Error) -> Error {
+1924	    let under_replaced_tmp = requested_cwd.starts_with(CONTAINER_REPLACED_TMP)
+1925	        && requested_cwd != Path::new(CONTAINER_REPLACED_TMP);
+1926	    if error.kind() == std::io::ErrorKind::NotFound && under_replaced_tmp {
+1927	        anyhow!(
+1928	            "failed to resolve KVM guest working directory {:?}: {error}\n\
+1929	             \n\
+1930	             This directory may well exist on the host. The container replaces \
+1931	             {CONTAINER_REPLACED_TMP} with a private, empty tmpfs, so nothing beneath \
+1932	             {CONTAINER_REPLACED_TMP} is visible to the guest, and resolving the working \
+1933	             directory happens inside that mount namespace.\n\
+1934	             Either run from a directory outside {CONTAINER_REPLACED_TMP}, or pass \
+1935	             --workdir with a path that exists inside the guest.",
+1936	            requested_cwd
+1937	        )
+1938	    } else {
+1939	        anyhow!(
+1940	            "failed to resolve KVM guest working directory {:?}: {error}",
+1941	            requested_cwd
+1942	        )
+1943	    }
+1944	}
+1945	
+1946	/// Bind KVM's raw mountinfo and fdinfo to the same filesystem namespace.
+1947	///
+1948	/// The CLI supplies IdentityGuard provenance from the completed container.
+1949	/// Recapture that full row/parent order before ELF installation, which snapshots
+1950	/// the same namespace in the backend, and refuse stale producer provenance.
+1951	/// Library and no-namespace callers without provenance retain this capture.
+1952	/// KVM does not permit guest namespace changes. Later guest-visible mountinfo
+1953	/// views still use Detcore's existing ordered-subset validation.
+1954	fn prepare_kvm_mountinfo_config(
+1955	    config: &mut DetConfig,
+1956	    capture: impl FnOnce() -> Result<Vec<u64>, Error>,
+1957	) -> Result<(), Error> {
+1958	    if !config.mountinfo_mount_ids_captured
+1959	        && (!config.mountinfo_mount_ids.is_empty() || !config.fdinfo_unlisted_mount_ids.is_empty())
+1960	    {
+1961	        anyhow::bail!("KVM mount identities have no producer-captured namespace");
+1962	    }
+1963	    let order = capture().context("failed to capture the KVM backend mount namespace")?;
+1964	    if config.mountinfo_mount_ids_captured {
+1965	        if config.mountinfo_mount_ids != order {
+1966	            anyhow::bail!(
+1967	                "KVM producer-captured mount identities do not match the backend namespace"
+1968	            );
+1969	        }
+1970	    } else {
+1971	        config.mountinfo_mount_ids = order;
+1972	        config.mountinfo_mount_ids_captured = true;
+1973	    }
+1974	    // The backend now exposes the actual namespace's devices. There is no
+1975	    // synthetic 0:1 root device to translate; stat and mountinfo use the same
+1976	    // raw identities before entering Detcore's shared DevicePool.
+1977	    config.mountinfo_device_rewrites.clear();
+1978	    Ok(())
+1979	}
+1980	
+1981	/// Dispatch a command onto the real reverie-kvm Tool runtime.
+1982	async fn run_kvm(
+1983	    command: &Command,
+1984	    mut config: DetConfig,
+1985	    print_summary: bool,
+1986	    print_summary_to_json_file: &Option<PathBuf>,
+1987	    capture_output: bool,
+1988	) -> Result<Output, Error> {
+1989	    let dispatch_started = Instant::now();
+1990	    prepare_kvm_mountinfo_config(&mut config, capture_mountinfo_identity_order)?;
+1991	    let stdin = if capture_output {
+1992	        let (snapshot_reserved, snapshot) = output_backend_stdin_reservation()?;
+1993	        if snapshot_reserved {
+1994	            snapshot
+1995	        } else {
+1996	            // Public KVM output-capture callers do not pass through the CLI's
+1997	            // verify setup. Preserve their existing stdin behavior instead of
+1998	            // silently replacing it with /dev/null merely because output is
+1999	            // captured.
+2000	            reserved_kvm_stdin()?
+2001	        }
+2002	    } else {
+2003	        reserved_kvm_stdin()?
+2004	    };
+2005	    let requested_cwd = command
+2006	        .get_current_dir()
+2007	        .map(Path::to_owned)
+2008	        .unwrap_or(std::env::current_dir()?);
+2009	    let cwd = fs::canonicalize(&requested_cwd)
+2010	        .map_err(|error| kvm_cwd_resolution_error(&requested_cwd, &error))?;
+2011	    let program = command
+2012	        .get_program()
+2013	        .to_str()
+2014	        .ok_or_else(|| anyhow!("KVM guest executable path is not valid UTF-8"))?
+2015	        .to_owned();
+2016	    if !cwd.is_dir() {
+2017	        return Err(anyhow!(
+2018	            "KVM guest working directory is not a directory: {:?}",
+2019	            cwd
+2020	        ));
+2021	    }
+2022	    let resolved_program = command.find_program().map_err(|error| {
+2023	        anyhow!("failed to resolve KVM guest executable {program:?} in the guest PATH: {error}")
+2024	    })?;
+2025	    let mut argv = Vec::with_capacity(1 + command.get_args().count());
+2026	    argv.push(program.clone());
+2027	    for argument in command.get_args() {
+2028	        argv.push(
+2029	            argument
+2030	                .to_str()
+2031	                .ok_or_else(|| anyhow!("KVM guest argument is not valid UTF-8"))?
+2032	                .to_owned(),
+2033	        );
+2034	    }
+2035	
+2036	    // Rewrite `#!`-scripts to their interpreter before the ELF loader sees them.
+2037	    let (_interpreter_path, argv, image) = resolve_kvm_shebang(&resolved_program, argv)?;
+2038	    // After shebang resolution the executable is the interpreter (argv[0]).
+2039	    let program = argv.first().cloned().unwrap_or(program);
+2040	    let envp = command
+2041	        .get_captured_envs()
+2042	        .into_iter()
+2043	        .map(|(key, value)| {
+2044	            let key = key
+2045	                .to_str()
+2046	                .ok_or_else(|| anyhow!("KVM guest environment key is not valid UTF-8"))?;
+2047	            let value = value
+2048	                .to_str()
+2049	                .ok_or_else(|| anyhow!("KVM guest environment value is not valid UTF-8"))?;
+2050	            Ok(format!("{key}={value}"))
+2051	        })
+2052	        .collect::<Result<Vec<_>, Error>>()?;
+2053	    tracing::info!(
+2054	        target: "hermit::kvm",
+2055	        program = %program,
+2056	        argv = ?argv,
+2057	        cwd = %cwd.display(),
+2058	        env_count = envp.len(),
+2059	        "launching guest through reverie-kvm",
+2060	    );
+2061	    let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
+2062	    let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
+2063	
+2064	    let setup_started = Instant::now();
+2065	    config.cpuid_virtualized_by_backend = true;
+2066	    config.backend_supports_madvise = false;
+2067	    // KVM does not enter Hermit's UTS namespace, so Detcore must provide the
+2068	    // same synthetic identity that the namespace-backed ptrace path exposes.
+2069	    // TODO-HUMAN-REVIEW(PR-998): Review KVM UTS namespace parity.
+2070	    config.has_uts_namespace = false;
+2071	    let random_seed = config.rng_seed();
+2072	    let mut backend = reverie_kvm::KvmBackend::new_with_stdin(KVM_GUEST_MEMORY_BYTES, stdin)
+2073	        .map_err(|error| anyhow!("failed to initialize reverie-kvm: {error}"))?;
+2074	    // AUTONOMOUS-BOT-IMPLEMENTED
+2075	    // TODO-HUMAN-REVIEW(PR-1120): Review KVM's canonical Detcore root identity.
+2076	    backend
+2077	        .set_root_pid(detcore::ROOT_DETPID.as_raw())
+2078	        .map_err(|error| anyhow!("failed to configure KVM root PID: {error}"))?;
+2079	    backend
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01Nou8M9HDxneMeAcoXWHhwq",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/lib.rs",
+    "offset": 2079,
+    "limit": 150
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+2079	    backend
+2080	        .install_static_elf_with_context(&image, &argv, &envp, &cwd)
+2081	        .map_err(|error| anyhow!("failed to load KVM guest executable {program:?}: {error}"))?;
+2082	    backend
+2083	        .set_random_seed(random_seed)
+2084	        .map_err(|error| anyhow!("failed to configure KVM guest random seed: {error}"))?;
+2085	    // The KVM backend now defaults to Tool-owned guest threads: CLONE_THREAD
+2086	    // workers are driven through the Detcore tool loop and their futex/CLEARTID
+2087	    // synchronization routes to Detcore, matching the golden ptrace model
+2088	    // ("follow children"). Detcore's own clone logic treats a CLONE_THREAD as
+2089	    // backend-uninstrumented iff `backend_dispatches_thread_tools` is false (see
+2090	    // detcore/src/syscalls/threads.rs), so in exactly that case opt the backend
+2091	    // out to host-owned threads to keep worker execution and futex ownership in
+2092	    // one synchronization domain (mixing them deadlocks pthread_join). In the
+2093	    // default (true) case the backend already follows children, so no call is
+2094	    // needed.
+2095	    if !config.backend_dispatches_thread_tools {
+2096	        backend.unmonitored_threads();
+2097	    }
+2098	
+2099	    let execution_started = Instant::now();
+2100	    let (global_state, code, stdout, stderr) = backend
+2101	        .run_static_elf_with_tool::<Detcore>(config, capture_output)
+2102	        .await
+2103	        .map_err(|error| anyhow!("KVM guest execution failed: {error}"))?;
+2104	    let cleanup_started = Instant::now();
+2105	    global_state
+2106	        .clean_up(print_summary, print_summary_to_json_file)
+2107	        .await;
+2108	    let teardown_started = Instant::now();
+2109	    // Drop explicitly so the host's KVM VM teardown cost remains observable.
+2110	    drop(backend);
+2111	    let teardown_finished = Instant::now();
+2112	
+2113	    // Every field below is a host wall-clock duration. Keep this diagnostic at
+2114	    // DEBUG so it remains available for backend profiling without entering the
+2115	    // INFO stream exposed to canonical comparison. KVM's built-in verification
+2116	    // is still output/status-only; this classification does not claim KVM L2.
+2117	    tracing::debug!(
+2118	        target: "hermit::kvm",
+2119	        prepare_us = setup_started.duration_since(dispatch_started).as_micros() as u64,
+2120	        setup_us = execution_started.duration_since(setup_started).as_micros() as u64,
+2121	        execution_us = cleanup_started.duration_since(execution_started).as_micros() as u64,
+2122	        cleanup_us = teardown_started.duration_since(cleanup_started).as_micros() as u64,
+2123	        teardown_us = teardown_finished.duration_since(teardown_started).as_micros() as u64,
+2124	        lifecycle_us = teardown_finished.duration_since(dispatch_started).as_micros() as u64,
+2125	        "reverie-kvm lifecycle phase timings",
+2126	    );
+2127	
+2128	    if !capture_output {
+2129	        std::io::stdout().write_all(&stdout)?;
+2130	        std::io::stderr().write_all(&stderr)?;
+2131	    }
+2132	
+2133	    Ok(Output {
+2134	        status: ExitStatus::Exited(code),
+2135	        stdout,
+2136	        stderr,
+2137	    })
+2138	}
+2139	
+2140	// TODO-HUMAN-REVIEW(PR-743): Review bounded relaunch before DBT guest execution.
+2141	#[cfg(feature = "dbt")]
+2142	fn dbt_client_thread_start_failed(status: &std::process::ExitStatus) -> bool {
+2143	    status.code() == Some(reverie_dbt::CLIENT_THREAD_START_FAILURE_EXIT_CODE)
+2144	}
+2145	
+2146	// AUTONOMOUS-BOT-IMPLEMENTED
+2147	// TODO-HUMAN-REVIEW(PR-737): Review public DBT dispatch and child environment ownership.
+2148	/// Dispatch a command onto the Detcore-linked reverie-dbt runtime.
+2149	#[cfg(feature = "dbt")]
+2150	async fn run_dbt(
+2151	    command: Command,
+2152	    config: DetConfig,
+2153	    print_summary: bool,
+2154	    capture_output: bool,
+2155	) -> Result<Output, Error> {
+2156	    if !config.sequentialize_threads {
+2157	        return Err(anyhow!(
+2158	            "the dbt backend requires sequentialized threads; remove \
+2159	             --no-sequentialize-threads (or --strace-only) to run under --backend dbt"
+2160	        ));
+2161	    }
+2162	
+2163	    let config_json = serde_json::to_string(&config)
+2164	        .map_err(|error| anyhow!("failed to serialize the Detcore config for DBT: {error}"))?;
+2165	    let panic_on_unsupported_syscalls = config.panic_on_unsupported_syscalls;
+2166	    let (drrun, client) = detcore_dbt::prepare_native_client()
+2167	        .map_err(|error| anyhow!("failed to prepare the Detcore DynamoRIO client: {error}"))?;
+2168	    let mut runner = reverie_dbt::DbtRunner::new(&drrun, &client)
+2169	        .map_err(|error| {
+2170	            anyhow!(
+2171	                "failed to configure the DynamoRIO DBT runner (drrun={}, client={}): {error}",
+2172	                drrun.display(),
+2173	                client.display()
+2174	            )
+2175	        })?
+2176	        .summary(print_summary)
+2177	        .isolated_process_group(panic_on_unsupported_syscalls);
+2178	    if panic_on_unsupported_syscalls {
+2179	        runner = runner.client_argument("-panic-on-unsupported-syscalls");
+2180	    }
+2181	
+2182	    let program = command.get_program().to_owned();
+2183	    let mut environment = command.get_captured_envs();
+2184	    environment.insert(detcore_dbt::DETCONFIG_ENV.into(), config_json.into());
+2185	    let guest = command.into_std_lossy();
+2186	    tracing::info!(
+2187	        target: "hermit::dbt",
+2188	        program = ?program,
+2189	        drrun = %drrun.display(),
+2190	        client = %client.display(),
+2191	        "launching guest through reverie-dbt with Detcore<DbtGuest>",
+2192	    );
+2193	
+2194	    let (status, stdout, stderr, mut global) = if capture_output {
+2195	        let launch = || {
+2196	            runner.output_with_environment_and_global::<detcore::GlobalState>(
+2197	                &guest,
+2198	                &environment,
+2199	                config.clone(),
+2200	            )
+2201	        };
+2202	        let (mut output, mut global) = launch()
+2203	            .await
+2204	            .map_err(|error| anyhow!("failed to launch drrun ({}): {error}", drrun.display()))?;
+2205	        if dbt_client_thread_start_failed(&output.status) {
+2206	            tracing::warn!(
+2207	                target: "hermit::dbt",
+2208	                "DynamoRIO client thread failed before guest start; retrying once",
+2209	            );
+2210	            global.force_shutdown_with_error();
+2211	            global.cancel_internal_scheduler().await;
+2212	            global.clean_up(false, &None).await;
+2213	            (output, global) = launch().await.map_err(|error| {
+2214	                anyhow!("failed to launch drrun ({}): {error}", drrun.display())
+2215	            })?;
+2216	        }
+2217	        (output.status, output.stdout, output.stderr, global)
+2218	    } else {
+2219	        let launch = || {
+2220	            runner.status_with_environment_and_global::<detcore::GlobalState>(
+2221	                &guest,
+2222	                &environment,
+2223	                config.clone(),
+2224	            )
+2225	        };
+2226	        let (mut status, mut global) = launch()
+2227	            .await
+2228	            .map_err(|error| anyhow!("failed to launch drrun ({}): {error}", drrun.display()))?;
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01Fq6QqqPj1c3r7pNHEkHf2z",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1	/*
+2	 * Copyright (c) Meta Platforms, Inc. and affiliates.
+3	 * All rights reserved.
+4	 *
+5	 * This source code is licensed under the BSD-style license found in the
+6	 * LICENSE file in the root directory of this source tree.
+7	 */
+8	
+9	use std::io::Read;
+10	use std::io::{self};
+11	
+12	/// The namespace used by the backend's ordinary host filesystem operations.
+13	/// Namespace-changing guest syscalls are unsupported, so fork and exec retain
+14	/// this snapshot. The Tool remains responsible for deterministic normalization.
+15	#[derive(Debug)]
+16	pub(crate) struct ProcMountSnapshot {
+17	    pub(crate) mountinfo: Vec<u8>,
+18	    pub(crate) mounts: Vec<u8>,
+19	}
+20	
+21	impl ProcMountSnapshot {
+22	    pub(crate) fn capture() -> io::Result<Self> {
+23	        Ok(Self {
+24	            mountinfo: read_snapshot("/proc/self/mountinfo")?,
+25	            mounts: read_snapshot("/proc/self/mounts")?,
+26	        })
+27	    }
+28	}
+29	
+30	fn read_snapshot(path: &str) -> io::Result<Vec<u8>> {
+31	    // A backend capacity refusal must not become a truncated mount table.
+32	    const MAX_SNAPSHOT_BYTES: u64 = 16 * 1024 * 1024;
+33	    read_snapshot_bytes(std::fs::File::open(path)?, MAX_SNAPSHOT_BYTES, path)
+34	}
+35	
+36	fn read_snapshot_bytes(source: impl Read, limit: u64, path: &str) -> io::Result<Vec<u8>> {
+37	    let mut bytes = Vec::new();
+38	    source.take(limit + 1).read_to_end(&mut bytes)?;
+39	    if bytes.is_empty() || bytes.len() as u64 > limit {
+40	        return Err(io::Error::new(
+41	            io::ErrorKind::InvalidData,
+42	            format!("{path} is empty or exceeds the backend mount snapshot capacity"),
+43	        ));
+44	    }
+45	    Ok(bytes)
+46	}
+47	
+48	#[cfg(test)]
+49	mod tests {
+50	    use super::*;
+51	
+52	    #[test]
+53	    fn mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input() {
+54	        let input = b"10 9 0:1 / / rw - tmpfs tmpfs rw\n";
+55	        assert_eq!(
+56	            read_snapshot_bytes(input.as_slice(), input.len() as u64, "fixture").unwrap(),
+57	            input
+58	        );
+59	        for (input, limit) in [(b"".as_slice(), 32), (b"12345".as_slice(), 4)] {
+60	            assert_eq!(
+61	                read_snapshot_bytes(input, limit, "fixture")
+62	                    .unwrap_err()
+63	                    .kind(),
+64	                io::ErrorKind::InvalidData
+65	            );
+66	        }
+67	    }
+68	
+69	    #[test]
+70	    fn mount_snapshot_propagates_read_error_without_partial_success() {
+71	        struct Broken;
+72	        impl Read for Broken {
+73	            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+74	                Err(io::Error::from_raw_os_error(libc::EACCES))
+75	            }
+76	        }
+77	        assert_eq!(
+78	            read_snapshot_bytes(Broken, 32, "fixture")
+79	                .unwrap_err()
+80	                .raw_os_error(),
+81	            Some(libc::EACCES)
+82	        );
+83	    }
+84	}
+85	
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_013HEvsYVMGEB2jTcbxi8Epz",
+  "name": "Grep",
+  "input": {
+    "pattern": "ProcMountSnapshot|capture\\(\\)|mount_snapshot|proc_mounts",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/lib.rs:26:mod proc_mounts;
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:16:pub(crate) struct ProcMountSnapshot {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:21:impl ProcMountSnapshot {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:22:    pub(crate) fn capture() -> io::Result<Self> {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:53:    fn mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input() {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs:70:    fn mount_snapshot_propagates_read_error_without_partial_success() {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs:502:    pub proc_mounts: std::sync::Arc<crate::proc_mounts::ProcMountSnapshot>,
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs:602:            proc_mounts: self.proc_mounts.clone(),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs:736:        self.proc_mounts = previous.proc_mounts;
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs:1033:        proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:10652:        b"/proc/mounts" | b"/proc/self/mounts" => state.proc_mounts.mounts.clone(),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:10656:        b"/proc/self/mountinfo" => state.proc_mounts.mountinfo.clone(),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:14488:            proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:15221:        assert_eq!(state.proc_mounts.mountinfo, expected);
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:15254:        assert!(Arc::ptr_eq(&state.proc_mounts, &child.proc_mounts));
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:15255:        let snapshot = state.proc_mounts.clone();
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:15258:        assert!(Arc::ptr_eq(&snapshot, &replacement.proc_mounts));
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:17878:    fn ordinary_vectored_io_preserves_limits_faults_replacement_and_capture() {
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:24465:        let mounts = f.executor.state.proc_mounts.clone();
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs:24468:        assert!(Arc::ptr_eq(&mounts, &f.executor.state.proc_mounts));
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01S2YB6hJuUyu3kGkZStBNiN",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs",
+    "offset": 990,
+    "limit": 70
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+990	        auxv,
+991	        fs_base: 0,
+992	        gs_base: 0,
+993	        pid: 1,
+994	        pgid: 1,
+995	        tid: 1,
+996	        ppid: 0,
+997	        // The backend-installed image is the root of the traced process tree.
+998	        // `KvmBackend::set_root_pid` may later renumber `pid`/`tid`/`ppid`; it
+999	        // must not change this.
+1000	        is_traced_tree_root: true,
+1001	        logical_clock_ns: 0,
+1002	        umask: 0o022,
+1003	        random_seed: 0,
+1004	        thread_name,
+1005	        thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
+1006	        thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
+1007	        keep_capabilities: false,
+1008	        capability_effective: GUEST_CAPABILITY_MASK,
+1009	        capability_permitted: GUEST_CAPABILITY_MASK,
+1010	        capability_inheritable: 0,
+1011	        capability_bounding: GUEST_CAPABILITY_MASK,
+1012	        capability_ambient: 0,
+1013	        dumpable: true,
+1014	        nice: 0,
+1015	        // TODO-HUMAN-REVIEW(PR-119): Review default virtual scheduler and ioprio state.
+1016	        sched_policy: libc::SCHED_OTHER,
+1017	        sched_priority: 0,
+1018	        sched_reset_on_fork: false,
+1019	        ioprio: 0,
+1020	        process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+1021	        thread_signals: SharedThreadSignalState::default(),
+1022	        task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
+1023	            1, 1, 1, true,
+1024	        ))),
+1025	        files: std::collections::BTreeMap::new(),
+1026	        random_device_fds: std::collections::BTreeSet::new(),
+1027	        stdout_alias_fds: std::collections::BTreeSet::new(),
+1028	        stderr_alias_fds: std::collections::BTreeSet::new(),
+1029	        cloexec_fds: std::collections::BTreeSet::new(),
+1030	        closed_standard_fds: std::collections::BTreeSet::new(),
+1031	        children: std::collections::BTreeMap::new(),
+1032	        proc_files: std::collections::BTreeMap::new(),
+1033	        proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
+1034	        fdinfo_files: std::collections::BTreeMap::new(),
+1035	        fdinfo_table: std::sync::Weak::new(),
+1036	        fd_object_inodes: std::collections::BTreeMap::new(),
+1037	        file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
+1038	            next_inode: 0x2100_0000,
+1039	            objects: std::collections::BTreeMap::new(),
+1040	        })),
+1041	    })
+1042	}
+1043	
+1044	pub(crate) fn initial_thread_name(executable_path: &Path) -> [u8; TASK_COMM_LEN] {
+1045	    let basename = executable_path
+1046	        .file_name()
+1047	        .unwrap_or(executable_path.as_os_str())
+1048	        .as_bytes();
+1049	    let mut name = [0; TASK_COMM_LEN];
+1050	    let length = basename.len().min(TASK_COMM_LEN - 1);
+1051	    name[..length].copy_from_slice(&basename[..length]);
+1052	    name
+1053	}
+1054	
+1055	// TODO-HUMAN-REVIEW(PR-92): Review Linux shebang parsing limits.
+1056	fn parse_shebang(image: &[u8]) -> Result<Option<(String, Option<String>)>> {
+1057	    let Some(rest) = image.strip_prefix(b"#!") else {
+1058	        return Ok(None);
+1059	    };
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01L5k2K6JHtzmYa5HwUPWAVX",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/files.rs",
+    "offset": 1429,
+    "limit": 130
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1429	            let mut devices = BTreeMap::new();
+1430	            let virtualize_metadata = guest.config().virtualize_metadata;
+1431	            if virtualize_metadata {
+1432	                // Intentionally use snapshot row order to pre-populate the
+1433	                // same run-global DevicePool used by stat/statx. This makes
+1434	                // every later observation of a device agree within the run.
+1435	                // It does not promise that unlike host filesystem layouts
+1436	                // expose the same device equivalence classes or order.
+1437	                for raw in raw_devices {
+1438	                    devices.insert(raw, determinize_device(guest, raw).await);
+1439	                }
+1440	            }
+1441	            let mut root_rewrites = BTreeMap::new();
+1442	            for rewrite in &guest.config().mountinfo_root_rewrites {
+1443	                if root_rewrites
+1444	                    .insert(rewrite.raw_mount_id, rewrite.clone())
+1445	                    .is_some()
+1446	                {
+1447	                    return Err(Error::Tool(anyhow::anyhow!(
+1448	                        "duplicate proven mountinfo root rewrite for mount ID {}",
+1449	                        rewrite.raw_mount_id
+1450	                    )));
+1451	                }
+1452	            }
+1453	            let snapshot = MountInfoSnapshot::new(
+1454	                rows,
+1455	                if guest.config().mountinfo_mount_ids_captured {
+1456	                    &guest.config().mountinfo_mount_ids
+1457	                } else {
+1458	                    &[]
+1459	                },
+1460	                virtualize_metadata,
+1461	                devices,
+1462	                root_rewrites,
+1463	            )
+1464	            .ok_or_else(|| {
+1465	                Error::Tool(anyhow::anyhow!(
+1466	                    "mountinfo snapshot failed strict identity validation"
+1467	                ))
+1468	            })?;
+1469	            if !validate_mountinfo_identity_order(guest, snapshot.raw_mount_id_order()).await {
+1470	                return Err(Error::Tool(anyhow::anyhow!(
+1471	                    "mountinfo mount-ID order changed after the run-global identity snapshot"
+1472	                )));
+1473	            }
+1474	            Some(snapshot)
+1475	        } else {
+1476	            None
+1477	        };
+1478	        guest.thread_state().with_detfd(call.fd(), |detfd| {
+1479	            detfd.initialize_procfs(
+1480	                contents.clone(),
+1481	                ProcfsSnapshotContext {
+1482	                    mapping_identities: mapping_identities.clone(),
+1483	                    mountinfo: mountinfo.clone(),
+1484	                    virtual_uptime_seconds,
+1485	                    virtual_realtime_seconds,
+1486	                    virtual_memory_kb,
+1487	                    virtual_pid,
+1488	                    virtual_ppid,
+1489	                    virtual_pty_count,
+1490	                    fdinfo_identity,
+1491	                    random_uuid,
+1492	                },
+1493	            );
+1494	        })?;
+1495	        Ok(())
+1496	    }
+1497	
+1498	    /// SYS_read system call (MAYHANG).
+1499	    pub async fn handle_read<G: Guest<Self>>(
+1500	        &self,
+1501	        guest: &mut G,
+1502	        call: syscalls::Read,
+1503	    ) -> Result<i64, Error> {
+1504	        if self.timer_slack_binding(guest, call.fd())?.is_some() {
+1505	            return self
+1506	                .read_timer_slack(guest, call.fd(), call.buf(), call.len())
+1507	                .await;
+1508	        }
+1509	
+1510	        if call.len() == 0 {
+1511	            // Zero-count reads only serve to detect errors.
+1512	            let res = guest.inject(Syscall::from(call)).await?;
+1513	            return Ok(res);
+1514	        }
+1515	
+1516	        let needs_procfs_snapshot = guest
+1517	            .thread_state()
+1518	            .with_detfd(call.fd(), |detfd| detfd.procfs_needs_snapshot())?;
+1519	        if needs_procfs_snapshot {
+1520	            self.initialize_procfs_snapshot(guest, call).await?;
+1521	        }
+1522	
+1523	        let procfs_bytes = guest
+1524	            .thread_state()
+1525	            .with_detfd(call.fd(), |detfd| detfd.take_procfs(call.len()))?;
+1526	        if let Some(bytes) = procfs_bytes {
+1527	            let remote_buf = call.buf().ok_or(Errno::EFAULT)?;
+1528	            guest.memory().write_exact(remote_buf, &bytes)?;
+1529	            return Ok(bytes.len() as i64);
+1530	        }
+1531	
+1532	        let (
+1533	            fd_type,
+1534	            physically_nonblocking,
+1535	            logically_nonblocking,
+1536	            resource,
+1537	            random_device_offset,
+1538	        ) = guest.thread_state_mut().with_detfd(call.fd(), |detfd| {
+1539	            (
+1540	                detfd.ty(),
+1541	                detfd.physically_nonblocking(),
+1542	                detfd.is_nonblocking(),
+1543	                detfd.resource(),
+1544	                detfd.random_device_offset(),
+1545	            )
+1546	        })?;
+1547	
+1548	        if let Some(resource) = resource {
+1549	            let mut request = guest.thread_state().mk_request(resource, Permission::R);
+1550	            if should_tag_sabre_internal_pipe_io(
+1551	                guest.config().discover_live_file_metadata,
+1552	                fd_type,
+1553	                physically_nonblocking,
+1554	                logically_nonblocking,
+1555	            ) {
+1556	                request.fyi(SABRE_INTERNAL_PIPE_IO_FYI);
+1557	            }
+1558	            resource_request(guest, request).await;
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01Xcv72Q6mVguqDnB26S21BN",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn mount_ids_are_ordered_subset|fn new\\(|fn raw_mount_id_order|fn parse_mountinfo|unlisted",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore-model/src/procfs.rs",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 60
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+29:pub fn mount_ids_are_ordered_subset(visible: &[u64], captured: &[u64]) -> bool {
+56:fn parse_mountinfo_row(line: &[u8]) -> Option<MountInfoRow> {
+100:pub fn parse_mountinfo(contents: &[u8]) -> Option<Vec<MountInfoRow>> {
+

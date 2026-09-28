@@ -1,0 +1,26 @@
+[
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "ci/publish-hermit-e2e-artifact.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/packaging-inputs/ci/publish-hermit-e2e-artifact.sh",
+    "bytes": 4801,
+    "sha256": "a7af5922cfeeb4f3603760a30764afc513cdcb8cb86baf298d47e6f74b3edf3c"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "ci/run-with-hermit-e2e-artifact.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/packaging-inputs/ci/run-with-hermit-e2e-artifact.sh",
+    "bytes": 1139,
+    "sha256": "c2c90ff03c6ad120ec09b9452accd98ae41f1240a3aafce697b0070987ffd1de"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "hermit-cli/tests/common/hermit_binary.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/shell-helper/packaging-inputs/hermit-cli/tests/common/hermit_binary.rs",
+    "bytes": 7156,
+    "sha256": "2e7afa54130736051e600408b788c1ad0aafe1104553a75155a655782382852c"
+  }
+]

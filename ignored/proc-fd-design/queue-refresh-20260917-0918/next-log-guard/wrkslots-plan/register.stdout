@@ -1,0 +1,32 @@
+usage: wrkslots register [-h] [--slot-type {agent,validate}] [--coordinator-authorized] --agent
+                         AGENT --task TASK --purpose TEXT --owner-pid PID --coordinator-pid PID
+                         --verified-live [--repo NAME=PATH] [--remote NAME=REMOTE]
+                         [--remote-url NAME=URL]
+                         slot
+
+Verify linked worktrees already present under the slot path and register their exact Git, coordinator, and owner identities. This command does not create or move paths. Use only while the owner is demonstrably live. The owner may be the invoking process or another child of the invoking coordinator whose working directory is inside the slot.
+
+positional arguments:
+  slot                        existing managed slot name
+
+options:
+  -h, --help                  show this help message and exit
+  --slot-type {agent,validate}
+                              type recorded at registration; it controls whether reclaim must
+                              salvage
+  --coordinator-authorized    confirm that the coordinator authorized this registration
+  --agent AGENT               registered agent name
+  --task TASK                 task or work-item identifier
+  --purpose TEXT              short human-readable reason for the slot
+  --owner-pid PID             live owner PID to bind
+  --coordinator-pid PID       live coordinator PID to bind
+  --verified-live             confirm that the named worktrees are currently owned and in use
+  --repo NAME=PATH            relative source Git repository path inside the project root, or
+                              ../NAME path components for one direct sibling; absolute paths, other
+                              parent traversal, and symlink components are refused. NAME labels the
+                              checkout and must match the other NAME=VALUE options (repeat once per
+                              checkout)
+  --remote NAME=REMOTE        configured Git remote name for one checkout (default: the remote
+                              recorded by init)
+  --remote-url NAME=URL       expected fetch URL for the selected remote; when omitted, record the
+                              configured URL (repeat once per applicable checkout)

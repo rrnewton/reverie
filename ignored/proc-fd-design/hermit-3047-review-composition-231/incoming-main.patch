@@ -1,0 +1,61 @@
+diff --git a/ci/dag/validate.json b/ci/dag/validate.json
+index 5432cfc31..90c1292ec 100644
+--- a/ci/dag/validate.json
++++ b/ci/dag/validate.json
+@@ -7772,7 +7772,7 @@
+       "env": {
+         "HERMIT_E2E_EMPTY_WORKDIR": "/test",
+         "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+-        "NEXTEST_EXPECTED_EXECUTED": "505",
++        "NEXTEST_EXPECTED_EXECUTED": "507",
+         "NEXTEST_PREPARED_BUILD_SELECTION": "[\"--workspace\",\"--exclude\",\"hermit-detcore\",\"--exclude\",\"hermit\",\"--exclude\",\"hermetic_infra_hermit_flaky-tests\"]"
+       },
+       "networkonly": false,
+@@ -61831,7 +61831,7 @@
+       ],
+       "env": {
+         "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+-        "NEXTEST_EXPECTED_EXECUTED": "505",
++        "NEXTEST_EXPECTED_EXECUTED": "507",
+         "NEXTEST_PREPARED_BUILD_SELECTION": "[\"--workspace\",\"--exclude\",\"hermit-detcore\",\"--exclude\",\"hermit\",\"--exclude\",\"hermetic_infra_hermit_flaky-tests\"]"
+       },
+       "networkonly": false,
+diff --git a/ci/manifest-plan/src/validation_dag_static.rs b/ci/manifest-plan/src/validation_dag_static.rs
+index 6a0ab6337..bb779b2d8 100644
+--- a/ci/manifest-plan/src/validation_dag_static.rs
++++ b/ci/manifest-plan/src/validation_dag_static.rs
+@@ -202,7 +202,7 @@ pub(super) const PMU_MEMORY_FAILURE_FAMILY_MEMBERS: &[&str] = &[
+ pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+     ("test.isolated_dbt_workdir", 2),
+     ("test.isolated_detcore_workdir", 1),
+-    ("test.regular_crates", 505),
++    ("test.regular_crates", 507),
+     ("test.hermit_unit", 630),
+     ("test.detcore_unit", 679),
+     ("test.detcore_misc", 27),
+@@ -235,7 +235,7 @@ pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+     ("test.hermit_unit_on_host", 630),
+     ("test.ignored_syscall_regressions_on_host", 4),
+     ("test.liteinst_strict_on_host", 24),
+-    ("test.regular_crates_on_host", 505),
++    ("test.regular_crates_on_host", 507),
+     ("test.rr_suite_contract_on_host", 1),
+     ("test.sabre_examples_on_host", 6),
+ ];
+diff --git a/hermit-cli/tests/liteinst_advanced.rs b/hermit-cli/tests/liteinst_advanced.rs
+index a89258552..a88e555d0 100644
+--- a/hermit-cli/tests/liteinst_advanced.rs
++++ b/hermit-cli/tests/liteinst_advanced.rs
+@@ -791,9 +791,9 @@ fn liteinst_strict_verify_python_entropy() {
+     let stdout = String::from_utf8(output.stdout).expect("Python output should be UTF-8");
+     let fields = stdout.split_whitespace().collect::<Vec<_>>();
+     assert_eq!(fields.len(), 3, "stdout={stdout:?}");
+-    // PID 1 belongs to the container init; LiteInst launches its root guest as
+-    // deterministic virtual PID 2.
+-    assert_eq!(fields[0], "2", "stdout={stdout:?}");
++    // The container init is PID 1. Synchronous tracing consumes TID 2 to
++    // match the other logging paths, so the root guest starts as PID 3.
++    assert_eq!(fields[0], "3", "stdout={stdout:?}");
+     assert_eq!(fields[1], "8", "stdout={stdout:?}");
+     assert_eq!(fields[2].len(), 16, "stdout={stdout:?}");
+     assert!(

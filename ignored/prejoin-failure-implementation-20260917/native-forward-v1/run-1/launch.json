@@ -1,0 +1,120 @@
+{
+  "plan_sha256": "9b3ecdc839a0f978e2fdf8c20bfdff1046a173306cc0e66a69b28b9ec6d98aff",
+  "caller_sha256": "c63546e027c95813064aab161173d1ce31547abe13b8b80040863c04a9742203",
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/launch.py"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "environment": {
+    "HOME": "/home/newton",
+    "USER": "newton",
+    "LOGNAME": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "RUSTFLAGS": "",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/run-1/tmp",
+    "CARGO_TERM_COLOR": "never",
+    "THIRD_PARTY_BUILD_JOBS": "2"
+  },
+  "source_binding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v23-preparation/binding.json",
+  "artifact": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+    "sha256": "daf7a52b631f19790dcac4e1d1fbbbd3326683ca3305a424db6befedb25cee8b",
+    "bytes": 116212232,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "default"
+      ],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+      "fresh": false
+    }
+  },
+  "selected": [
+    "error::tests::worker_diagnostic_and_primary_survive_exec_and_cleanup_wrappers",
+    "executor::tests::child_process_cleanup_joins_every_handle_and_preserves_each_error",
+    "executor::tests::child_start_gate_resolves_once_and_preserves_failed_delivery",
+    "executor::tests::discarding_named_fork_joins_only_that_unstarted_child",
+    "executor::tests::discarding_unstarted_fork_propagates_the_child_result",
+    "executor::tests::exiting_workers_transfer_every_child_handle_in_virtual_order",
+    "executor::tests::failed_child_cleanup_cancels_all_gates_before_joining",
+    "executor::tests::forked_process_waits_for_parent_registration_gate",
+    "failure::tests::completion_keeps_distinct_shared_cleanup_causes_and_first_worker_identity",
+    "failure::tests::completion_promotes_joined_worker_cause_without_duplicate_diagnostic",
+    "failure::tests::concurrent_publishers_pair_first_typed_cause_with_first_terminal_event",
+    "failure::tests::independent_failure_subscribers_wake_before_and_after_publication",
+    "failure::tests::local_failure_wake_waits_for_synchronous_tool_terminal_transition",
+    "failure::tests::process_failure_subscriptions_preserve_fork_and_thread_ownership",
+    "failure::tests::refused_host_spawn_returns_exact_initialized_owner",
+    "runtime::failure_tests::cached_worker_error_publishes_once_before_started_descendant_join",
+    "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join",
+    "runtime::failure_tests::failure_precedes_ready_callback_and_keeps_child_start_gate_closed",
+    "runtime::failure_tests::fatal_notification_releases_pending_tool_rpc_before_owned_join",
+    "runtime::failure_tests::fatal_worker_primary_survives_separate_consuming_hook_error",
+    "runtime::failure_tests::host_owned_returned_error_releases_root_rpc_and_owned_join_with_worker_identity",
+    "runtime::failure_tests::independent_process_callbacks_preserve_completion_and_failure_scope",
+    "runtime::failure_tests::independent_process_select_cannot_discard_rpc_runtime_failure",
+    "runtime::failure_tests::independent_process_select_then_await_keeps_failed_rpc_pending",
+    "runtime::failure_tests::missing_final_status_cancels_pending_descendant_gate",
+    "runtime::failure_tests::missing_final_status_publishes_before_owner_hooks_and_started_descendant_join",
+    "runtime::failure_tests::normal_post_worker_completion_preserves_start_status_and_owner_before_child_hooks",
+    "runtime::failure_tests::normal_rpc_keeps_status_and_worker_before_leader_hooks",
+    "runtime::failure_tests::peer_failure_cancellation_preserves_thread_status_and_primary_cause",
+    "runtime::failure_tests::terminal_after_local_success_cancels_pending_descendant_gate",
+    "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children",
+    "runtime::terminal_tests::terminal_exit_retires_only_current_identity_and_preserves_existing_status",
+    "runtime::tests::converts_linux_error_results",
+    "runtime::tests::erestartsys_requests_a_restart_and_every_other_result_is_returned",
+    "runtime::tests::handler_runtime_error_precedes_and_preserves_unstarted_child_gate",
+    "runtime::tests::handler_suspension_releases_registered_child_start",
+    "runtime::tests::signal_hook_ordinary_nonreturning_injection_is_rejected_before_side_effects",
+    "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect",
+    "runtime::tests::unresolved_children_refuse_every_nonreturning_injection_before_mutation",
+    "vm::tests::cancelling_named_tool_thread_joins_only_that_unstarted_worker",
+    "vm::tests::completed_failure_interrupts_a_later_natural_join",
+    "vm::tests::failure_cancels_pending_start_in_batch_being_joined",
+    "vm::tests::later_failure_interrupts_an_existing_natural_join",
+    "vm::tests::pending_start_registered_after_cancellation_is_drained"
+  ],
+  "scope": "One exact 44-method native invocation of the actual final-head KVM library ELF. Existing compile and full 453 inventory are separately bound. No VM or guest instruction is selected and no guest parity claim follows."
+}

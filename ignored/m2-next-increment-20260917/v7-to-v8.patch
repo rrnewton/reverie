@@ -1,0 +1,97 @@
+--- v7/hermit-cli/src/canonical_verdict.rs
++++ v8/hermit-cli/src/canonical_verdict.rs
+@@ -621,6 +621,21 @@
+             self.require_exact_output_match()?;
+         }
+         if self.verified && self.verdict == Verdict::Matched && self.bitwise_parity {
++            if !self
++                .compared_log_messages
++                .as_ref()
++                .is_some_and(|counts| counts.left == counts.right)
++            {
++                return Err(format!(
++                    "canonical match has unequal compared log-message counts: {}/{}",
++                    self.compared_log_messages
++                        .as_ref()
++                        .map_or(0, |counts| counts.left),
++                    self.compared_log_messages
++                        .as_ref()
++                        .map_or(0, |counts| counts.right),
++                ));
++            }
+             Ok(())
+         } else {
+             Err(format!(
+@@ -824,6 +839,31 @@
+         let mut weak = report(LogCompareStrictness::Canonical, true, 1, 1);
+         weak.comparison.as_mut().unwrap().record_envelope = RecordEnvelopeReport::CallerDefined;
+         assert!(weak.require_canonical_match().is_err());
++    }
++
++    #[test]
++    fn canonical_match_rejects_unequal_counts_without_rewriting_history() {
++        let unequal = report(LogCompareStrictness::Canonical, true, 2, 3);
++        let raw = serde_json::to_vec(&unequal).unwrap();
++        let retained = VerificationReport::from_json_slice(&raw).unwrap();
++        assert_eq!(retained, unequal);
++        assert_eq!(serde_json::to_vec(&retained).unwrap(), raw);
++        assert!(retained.require_canonical_comparison().is_ok());
++        assert_eq!(
++            retained.require_canonical_match().unwrap_err(),
++            "canonical match has unequal compared log-message counts: 2/3"
++        );
++        let mut divergence = retained;
++        divergence.verdict = Verdict::Diverged;
++        divergence.verified = false;
++        divergence.bitwise_parity = false;
++        assert!(divergence.require_canonical_comparison().is_ok());
++        assert!(divergence.require_canonical_match().is_err());
++        assert!(
++            report(LogCompareStrictness::Canonical, true, 2, 2)
++                .require_canonical_match()
++                .is_ok()
++        );
+     }
+ 
+     /// The exact bytes hermit writes for a run that reached no verdict, copied
+--- v7/hermit-cli/tests/verification_report_consumers.rs
++++ v8/hermit-cli/tests/verification_report_consumers.rs
+@@ -807,6 +807,38 @@
+         );
+     }
+     assert!(stdout.contains("all verdict-discrimination cases passed"));
++}
++
++#[test]
++fn canonical_reader_rejects_unequal_counts_while_matched_and_inspection_stay_distinct() {
++    let temporary = temporary_directory();
++    let path = temporary.join("verify.json");
++    let mut report = current_synthetic_match();
++    report["compared_log_messages"]["right"] = serde_json::json!(3);
++    write_report(&path, &report);
++    // `matched` is a weaker named requirement; it is not canonical qualification.
++    let matched = verdict("matched", &path);
++    assert_eq!(matched.status.code(), Some(0), "{matched:?}");
++    let canonical = Command::new(env!("CARGO_BIN_EXE_verification-report"))
++        .args(["--json", "canonical-match"])
++        .arg(&path)
++        .output()
++        .unwrap();
++    assert_eq!(canonical.status.code(), Some(1), "{canonical:?}");
++    assert!(
++        String::from_utf8_lossy(&canonical.stderr)
++            .contains("canonical match has unequal compared log-message counts: 2/3")
++    );
++    let inspected: Value = serde_json::from_slice(&canonical.stdout).unwrap();
++    assert_eq!(
++        inspected["compared_log_messages"],
++        report["compared_log_messages"]
++    );
++    report["compared_log_messages"]["right"] = serde_json::json!(2);
++    write_report(&path, &report);
++    let canonical = verdict("canonical-match", &path);
++    assert_eq!(canonical.status.code(), Some(0), "{canonical:?}");
++    fs::remove_dir_all(temporary).unwrap();
+ }
+ 
+ #[test]

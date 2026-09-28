@@ -1,0 +1,14 @@
+{
+  "patch": {
+    "bytes": 52541,
+    "sha256": "30e70c65e43d1e320a7c7d9ce8598726a8fd3c1a09eb848c1c77e127be078a92",
+    "mode": "0o644"
+  },
+  "checks": [
+    "Every base file byte-equal to its immutable Git blob",
+    "Every exact unified hunk applied in memory equals retained changed file",
+    "Original source test function names retained",
+    "No product, guest, test, formatter, or build executed"
+  ],
+  "execution_status": "source-only"
+}

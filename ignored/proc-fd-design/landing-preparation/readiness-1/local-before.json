@@ -1,0 +1,60 @@
+{
+  "head": {
+    "argv": [
+      "git",
+      "rev-parse",
+      "HEAD",
+      "HEAD^{tree}"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "f9a269490d482e8a47e1f776371761f113cf88a6caf898616e9095183e6af8ee"
+  },
+  "branch": {
+    "argv": [
+      "git",
+      "branch",
+      "--show-current"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "a918434f04765bcec4d2cfb7ea2c68b3f8b7bee2822c04237ea8594454c93c8f"
+  },
+  "status": {
+    "argv": [
+      "git",
+      "status",
+      "--short"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "a35ac9f56183ead62bfe27b3a90954d58a7f91685732ea7cab85c7a975361f73"
+  },
+  "remote": {
+    "argv": [
+      "git",
+      "remote",
+      "get-url",
+      "origin"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "b12c6f710949e0e7f300518068c2c343c581f34b8abf525cb01e1697740c74a6"
+  },
+  "tracked_diff": {
+    "argv": [
+      "git",
+      "diff",
+      "--binary"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "staged_diff": {
+    "argv": [
+      "git",
+      "diff",
+      "--cached",
+      "--binary"
+    ],
+    "returncode": 0,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "read_at_utc": "2026-09-17T05:44:58.215224+00:00"
+}

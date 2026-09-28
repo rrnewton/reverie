@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/ci-hub/bin/who-am-i",
+    "--tag",
+    "--role",
+    "relay"
+  ],
+  "exit_code": 0
+}

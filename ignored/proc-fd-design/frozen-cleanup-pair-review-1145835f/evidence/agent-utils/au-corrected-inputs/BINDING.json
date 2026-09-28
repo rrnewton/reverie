@@ -1,0 +1,17 @@
+{
+  "base": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+  "files": [
+    {
+      "path": "py/wrkslots/cli.py",
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6"
+    },
+    {
+      "path": "py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 807373,
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601"
+    }
+  ],
+  "patch_sha256": "c7b39cad7b7813514a5d78f74307be5c9814a3586430dfe8f9acc7696bf60940",
+  "patch_bytes": 37299
+}

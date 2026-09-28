@@ -1,0 +1,192 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_016ydygYyHoDuGhtsxx9hmjM",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/src/lib.rs",
+    "offset": 1900,
+    "limit": 180
+  }
+}
+
+Successful public tool result (exact text below):
+1900	/// be tidy. `fs::canonicalize` runs after the container's mounts are applied, and
+1901	/// the container bind-mounts a fresh empty tmpfs over `/tmp`
+1902	/// (`bin/hermit/container.rs`). So a cwd beneath `/tmp` is genuinely absent from
+1903	/// the guest's mount namespace and `canonicalize` returns a perfectly correct
+1904	/// `NotFound` -- for a directory the user can `ls`.
+1905	///
+1906	/// Reported 2026-08-25 as "run_kvm_ cli tests fail from a git worktree". They do
+1907	/// not. Measured across five working directories with one binary: a PLAIN
+1908	/// directory under `/tmp` with no git in it FAILS, and a linked git worktree
+1909	/// under `/home` WORKS. The only property that tracks the failure is "the cwd is
+1910	/// under /tmp"; `/tmp` itself resolves because the mount POINT exists. The git
+1911	/// hypothesis cost real investigation time, and it came from this message saying
+1912	/// only "No such file or directory".
+1913	///
+1914	/// It mattered more than a stray report because the historical landing recipe
+1915	/// placed detached worktrees below `/tmp`, exactly where this fires. Current
+1916	/// dev-hermit worktrees are created through wrkslots below `worktrees/`, but the
+1917	/// diagnostic remains necessary for arbitrary callers and older checkouts.
+1918	///
+1919	/// The message names the mechanism and both ways out. It deliberately does NOT
+1920	/// silently fall back to `/`: changing the guest's working directory out from
+1921	/// under a caller who asked for a specific one would trade a loud, correct
+1922	/// failure for a quiet, wrong success.
+1923	fn kvm_cwd_resolution_error(requested_cwd: &Path, error: &std::io::Error) -> Error {
+1924	    let under_replaced_tmp = requested_cwd.starts_with(CONTAINER_REPLACED_TMP)
+1925	        && requested_cwd != Path::new(CONTAINER_REPLACED_TMP);
+1926	    if error.kind() == std::io::ErrorKind::NotFound && under_replaced_tmp {
+1927	        anyhow!(
+1928	            "failed to resolve KVM guest working directory {:?}: {error}\n\
+1929	             \n\
+1930	             This directory may well exist on the host. The container replaces \
+1931	             {CONTAINER_REPLACED_TMP} with a private, empty tmpfs, so nothing beneath \
+1932	             {CONTAINER_REPLACED_TMP} is visible to the guest, and resolving the working \
+1933	             directory happens inside that mount namespace.\n\
+1934	             Either run from a directory outside {CONTAINER_REPLACED_TMP}, or pass \
+1935	             --workdir with a path that exists inside the guest.",
+1936	            requested_cwd
+1937	        )
+1938	    } else {
+1939	        anyhow!(
+1940	            "failed to resolve KVM guest working directory {:?}: {error}",
+1941	            requested_cwd
+1942	        )
+1943	    }
+1944	}
+1945	
+1946	/// Bind KVM's raw mountinfo and fdinfo to the same filesystem namespace.
+1947	///
+1948	/// The CLI supplies IdentityGuard provenance from the completed container.
+1949	/// Recapture that full row/parent order before ELF installation, which snapshots
+1950	/// the same namespace in the backend, and refuse stale producer provenance.
+1951	/// Library and no-namespace callers without provenance retain this capture.
+1952	/// KVM does not permit guest namespace changes. Later guest-visible mountinfo
+1953	/// views still use Detcore's existing ordered-subset validation.
+1954	fn prepare_kvm_mountinfo_config(
+1955	    config: &mut DetConfig,
+1956	    capture: impl FnOnce() -> Result<Vec<u64>, Error>,
+1957	) -> Result<(), Error> {
+1958	    if !config.mountinfo_mount_ids_captured
+1959	        && (!config.mountinfo_mount_ids.is_empty() || !config.fdinfo_unlisted_mount_ids.is_empty())
+1960	    {
+1961	        anyhow::bail!("KVM mount identities have no producer-captured namespace");
+1962	    }
+1963	    let order = capture().context("failed to capture the KVM backend mount namespace")?;
+1964	    if config.mountinfo_mount_ids_captured {
+1965	        if config.mountinfo_mount_ids != order {
+1966	            anyhow::bail!(
+1967	                "KVM producer-captured mount identities do not match the backend namespace"
+1968	            );
+1969	        }
+1970	    } else {
+1971	        config.mountinfo_mount_ids = order;
+1972	        config.mountinfo_mount_ids_captured = true;
+1973	    }
+1974	    // The backend now exposes the actual namespace's devices. There is no
+1975	    // synthetic 0:1 root device to translate; stat and mountinfo use the same
+1976	    // raw identities before entering Detcore's shared DevicePool.
+1977	    config.mountinfo_device_rewrites.clear();
+1978	    Ok(())
+1979	}
+1980	
+1981	/// Dispatch a command onto the real reverie-kvm Tool runtime.
+1982	async fn run_kvm(
+1983	    command: &Command,
+1984	    mut config: DetConfig,
+1985	    print_summary: bool,
+1986	    print_summary_to_json_file: &Option<PathBuf>,
+1987	    capture_output: bool,
+1988	) -> Result<Output, Error> {
+1989	    let dispatch_started = Instant::now();
+1990	    prepare_kvm_mountinfo_config(&mut config, capture_mountinfo_identity_order)?;
+1991	    let stdin = if capture_output {
+1992	        let (snapshot_reserved, snapshot) = output_backend_stdin_reservation()?;
+1993	        if snapshot_reserved {
+1994	            snapshot
+1995	        } else {
+1996	            // Public KVM output-capture callers do not pass through the CLI's
+1997	            // verify setup. Preserve their existing stdin behavior instead of
+1998	            // silently replacing it with /dev/null merely because output is
+1999	            // captured.
+2000	            reserved_kvm_stdin()?
+2001	        }
+2002	    } else {
+2003	        reserved_kvm_stdin()?
+2004	    };
+2005	    let requested_cwd = command
+2006	        .get_current_dir()
+2007	        .map(Path::to_owned)
+2008	        .unwrap_or(std::env::current_dir()?);
+2009	    let cwd = fs::canonicalize(&requested_cwd)
+2010	        .map_err(|error| kvm_cwd_resolution_error(&requested_cwd, &error))?;
+2011	    let program = command
+2012	        .get_program()
+2013	        .to_str()
+2014	        .ok_or_else(|| anyhow!("KVM guest executable path is not valid UTF-8"))?
+2015	        .to_owned();
+2016	    if !cwd.is_dir() {
+2017	        return Err(anyhow!(
+2018	            "KVM guest working directory is not a directory: {:?}",
+2019	            cwd
+2020	        ));
+2021	    }
+2022	    let resolved_program = command.find_program().map_err(|error| {
+2023	        anyhow!("failed to resolve KVM guest executable {program:?} in the guest PATH: {error}")
+2024	    })?;
+2025	    let mut argv = Vec::with_capacity(1 + command.get_args().count());
+2026	    argv.push(program.clone());
+2027	    for argument in command.get_args() {
+2028	        argv.push(
+2029	            argument
+2030	                .to_str()
+2031	                .ok_or_else(|| anyhow!("KVM guest argument is not valid UTF-8"))?
+2032	                .to_owned(),
+2033	        );
+2034	    }
+2035	
+2036	    // Rewrite `#!`-scripts to their interpreter before the ELF loader sees them.
+2037	    let (_interpreter_path, argv, image) = resolve_kvm_shebang(&resolved_program, argv)?;
+2038	    // After shebang resolution the executable is the interpreter (argv[0]).
+2039	    let program = argv.first().cloned().unwrap_or(program);
+2040	    let envp = command
+2041	        .get_captured_envs()
+2042	        .into_iter()
+2043	        .map(|(key, value)| {
+2044	            let key = key
+2045	                .to_str()
+2046	                .ok_or_else(|| anyhow!("KVM guest environment key is not valid UTF-8"))?;
+2047	            let value = value
+2048	                .to_str()
+2049	                .ok_or_else(|| anyhow!("KVM guest environment value is not valid UTF-8"))?;
+2050	            Ok(format!("{key}={value}"))
+2051	        })
+2052	        .collect::<Result<Vec<_>, Error>>()?;
+2053	    tracing::info!(
+2054	        target: "hermit::kvm",
+2055	        program = %program,
+2056	        argv = ?argv,
+2057	        cwd = %cwd.display(),
+2058	        env_count = envp.len(),
+2059	        "launching guest through reverie-kvm",
+2060	    );
+2061	    let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
+2062	    let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
+2063	
+2064	    let setup_started = Instant::now();
+2065	    config.cpuid_virtualized_by_backend = true;
+2066	    config.backend_supports_madvise = false;
+2067	    // KVM does not enter Hermit's UTS namespace, so Detcore must provide the
+2068	    // same synthetic identity that the namespace-backed ptrace path exposes.
+2069	    // TODO-HUMAN-REVIEW(PR-998): Review KVM UTS namespace parity.
+2070	    config.has_uts_namespace = false;
+2071	    let random_seed = config.rng_seed();
+2072	    let mut backend = reverie_kvm::KvmBackend::new_with_stdin(KVM_GUEST_MEMORY_BYTES, stdin)
+2073	        .map_err(|error| anyhow!("failed to initialize reverie-kvm: {error}"))?;
+2074	    // AUTONOMOUS-BOT-IMPLEMENTED
+2075	    // TODO-HUMAN-REVIEW(PR-1120): Review KVM's canonical Detcore root identity.
+2076	    backend
+2077	        .set_root_pid(detcore::ROOT_DETPID.as_raw())
+2078	        .map_err(|error| anyhow!("failed to configure KVM root PID: {error}"))?;
+2079	    backend

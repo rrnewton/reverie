@@ -1,0 +1,6 @@
+{
+  "stage": "clippy",
+  "status": "failed",
+  "error": "clippy failed",
+  "stop_remaining_checks": false
+}

@@ -1,0 +1,245 @@
+{
+  "finished_at": "2026-09-17T10:21:08.690196+00:00",
+  "source_readbacks": [
+    {
+      "path": "detcore/src/scheduler.rs",
+      "revision": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+      "sha256": "b680b092356d513484485ea474aec2f7ab6bae2546a0abf2f1489fcebc3b11f7",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "detcore/src/tool_global.rs",
+      "revision": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+      "sha256": "d96dc862ad325660213ecdba553c5f5d08c2753891e2a31ba804af6975413512",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "detcore/src/tool_local.rs",
+      "revision": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+      "sha256": "43ce15bfcce5e05c5e3b5725a9fc1e0153913e894667af93163d8c30fdc1763e",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "detcore/src/lib.rs",
+      "revision": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+      "sha256": "d8acd6b525f9276750bc6baef7cc0f2570b8b0016255cd682984dffeec139c83",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "detcore/src/syscalls/threads.rs",
+      "revision": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+      "sha256": "8a7adc4492141e6c6a62952ee0ecd989586ec1e638f9c5178f309b11c0d33381",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "detcore/src/config.rs",
+      "revision": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+      "sha256": "a38a140412681d24ce088372e407bd577d6167f9f7915c7a31f04b69b98bcfa2",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "revision": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+      "sha256": "20d5051c3482701181b3fc8c6eb9a08b2acc3741437386c359e42fc65e98096c",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "reverie/src/guest.rs",
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "sha256": "a7be97e32d0b89cf43fcc3b197800d3531b2f6c9ba2b62f02674f9f93c635c3e",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "sha256": "449c3287f9aa6de363292d5aaced5427a834a2dcda58779f0e3fa87b522d322d",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "reverie/src/signal.rs",
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "sha256": "ee8d4b4415be5465473aac2528b9f140367c722cc6dc38531243f8c8a8da88bb",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "sha256": "3625e831ac2e8e1d731447aa4e8bef4d9f59fcca01964162795f29102e272f30",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+      "actual_immutable_bytes_match": true
+    },
+    {
+      "path": "reverie-kvm/src/child_exit_runtime_tests.rs",
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "sha256": "f7f729114c502cd1e4b2e4359fd37c89bc0bd6224f8409d6ed2deafec0071115",
+      "actual_immutable_bytes_match": true
+    }
+  ],
+  "primary_references": [
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/signal-delivery/implementation-plan/primary/signal.7.txt",
+      "bytes": 38054,
+      "sha256": "6aa24b9d03dc152ef889d050df082409ba7b83a97be806dc56c6de6a43a4cb5c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/signal-delivery/implementation-plan/primary/sigaction.2.txt",
+      "bytes": 35561,
+      "sha256": "90ac582c3036ec7a7d0f01e71ed57f9646687d54d6e0b66a7c3b93a276271973"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/signal-delivery/implementation-plan/primary/wait.2.txt",
+      "bytes": 21938,
+      "sha256": "0ceac922701f242de35f0b8c05ba931d154c7998a1e93431d841eab963532653"
+    }
+  ],
+  "artifact_manifest": [
+    {
+      "path": "REPORT.md",
+      "mode": "0o644",
+      "bytes": 16244,
+      "sha256": "bbd35ce71d3a2e54c11149747d6121b783ad56aade6edfff530d5ed98bc942cb"
+    },
+    {
+      "path": "caller-search.json",
+      "mode": "0o644",
+      "bytes": 365,
+      "sha256": "dd0272d25f373224f0ff1bc9f543b7d3de64b6a8028a819a935a6ed2741f5e3c"
+    },
+    {
+      "path": "grounding-reuse.json",
+      "mode": "0o644",
+      "bytes": 1714,
+      "sha256": "21c87e28cab499198214303d86afb841e33b3319fd99b811ebf554eaf5b69f21"
+    },
+    {
+      "path": "prior-evidence-readback.json",
+      "mode": "0o644",
+      "bytes": 11347,
+      "sha256": "62173361398cbdad8d85b31e4e23d3901d52f5ec0835933f98267ed3bb49810b"
+    },
+    {
+      "path": "source-bindings.json",
+      "mode": "0o644",
+      "bytes": 7275,
+      "sha256": "fdac787cb62fcad51c68e72f011f555dd6977c36419349ed0edd9ee3a153b6b0"
+    },
+    {
+      "path": "sources/hermit/detcore/src/config.rs",
+      "mode": "0o644",
+      "bytes": 415,
+      "sha256": "a38a140412681d24ce088372e407bd577d6167f9f7915c7a31f04b69b98bcfa2"
+    },
+    {
+      "path": "sources/hermit/detcore/src/lib.rs",
+      "mode": "0o644",
+      "bytes": 162115,
+      "sha256": "d8acd6b525f9276750bc6baef7cc0f2570b8b0016255cd682984dffeec139c83"
+    },
+    {
+      "path": "sources/hermit/detcore/src/scheduler.rs",
+      "mode": "0o644",
+      "bytes": 349500,
+      "sha256": "b680b092356d513484485ea474aec2f7ab6bae2546a0abf2f1489fcebc3b11f7"
+    },
+    {
+      "path": "sources/hermit/detcore/src/syscalls/threads.rs",
+      "mode": "0o644",
+      "bytes": 138063,
+      "sha256": "8a7adc4492141e6c6a62952ee0ecd989586ec1e638f9c5178f309b11c0d33381"
+    },
+    {
+      "path": "sources/hermit/detcore/src/tool_global.rs",
+      "mode": "0o644",
+      "bytes": 245704,
+      "sha256": "d96dc862ad325660213ecdba553c5f5d08c2753891e2a31ba804af6975413512"
+    },
+    {
+      "path": "sources/hermit/detcore/src/tool_local.rs",
+      "mode": "0o644",
+      "bytes": 147434,
+      "sha256": "43ce15bfcce5e05c5e3b5725a9fc1e0153913e894667af93163d8c30fdc1763e"
+    },
+    {
+      "path": "sources/hermit/hermit-cli/src/lib.rs",
+      "mode": "0o644",
+      "bytes": 202202,
+      "sha256": "20d5051c3482701181b3fc8c6eb9a08b2acc3741437386c359e42fc65e98096c"
+    },
+    {
+      "path": "sources/reverie/reverie/src/guest.rs",
+      "mode": "0o644",
+      "bytes": 19585,
+      "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a"
+    },
+    {
+      "path": "sources/reverie/reverie/src/signal.rs",
+      "mode": "0o644",
+      "bytes": 6673,
+      "sha256": "ee8d4b4415be5465473aac2528b9f140367c722cc6dc38531243f8c8a8da88bb"
+    },
+    {
+      "path": "sources/reverie/reverie/src/tool.rs",
+      "mode": "0o644",
+      "bytes": 20963,
+      "sha256": "3625e831ac2e8e1d731447aa4e8bef4d9f59fcca01964162795f29102e272f30"
+    },
+    {
+      "path": "sources/reverie/reverie-kvm/src/child_exit_runtime_tests.rs",
+      "mode": "0o644",
+      "bytes": 5724,
+      "sha256": "f7f729114c502cd1e4b2e4359fd37c89bc0bd6224f8409d6ed2deafec0071115"
+    },
+    {
+      "path": "sources/reverie/reverie-kvm/src/child_exit_signal_tests.rs",
+      "mode": "0o644",
+      "bytes": 21507,
+      "sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b"
+    },
+    {
+      "path": "sources/reverie/reverie-kvm/src/executor.rs",
+      "mode": "0o644",
+      "bytes": 1393581,
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1"
+    },
+    {
+      "path": "sources/reverie/reverie-kvm/src/runtime.rs",
+      "mode": "0o644",
+      "bytes": 146482,
+      "sha256": "a7be97e32d0b89cf43fcc3b197800d3531b2f6c9ba2b62f02674f9f93c635c3e"
+    },
+    {
+      "path": "sources/reverie/reverie-kvm/src/vm.rs",
+      "mode": "0o644",
+      "bytes": 279455,
+      "sha256": "449c3287f9aa6de363292d5aaced5427a834a2dcda58779f0e3fa87b522d322d"
+    }
+  ],
+  "limits": {
+    "new_runtime": false,
+    "tests": false,
+    "builds": false,
+    "source_changes": false,
+    "ref_changes": false,
+    "public_actions": false,
+    "fresh_network": false,
+    "census_reclassification": false,
+    "implementation_approval": false
+  }
+}

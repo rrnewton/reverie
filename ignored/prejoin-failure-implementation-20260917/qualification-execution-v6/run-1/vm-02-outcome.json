@@ -1,0 +1,19 @@
+{
+  "stage": "vm-02",
+  "test": "vm::tests::page_fault_action_restores_complete_stopped_context",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "452"
+    ]
+  ],
+  "stdout_sha256": "f0691016917bfd5b27f096fd08eafaa8162841d6c8010f9a9c8bd25fc3819659",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "d659e44f22fb2dea0b7045590ffd557dbda118c9f9e802c8551726546b4b97aa",
+  "cpu_nsec": 271084000,
+  "wall_seconds": 1.003974709
+}

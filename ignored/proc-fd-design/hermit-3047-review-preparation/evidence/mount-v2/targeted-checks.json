@@ -1,0 +1,308 @@
+{
+  "tests": [
+    {
+      "name": "new KVM mount configuration controls",
+      "argv": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit",
+        "--features",
+        "third-party-backends",
+        "--lib",
+        "tests::kvm_mountinfo_config_",
+        "--",
+        "--test-threads=2"
+      ],
+      "expected_methods": 4
+    },
+    {
+      "name": "shared strict procfs parsers",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "detcore-model",
+        "--lib",
+        "procfs::tests::",
+        "--",
+        "--test-threads=2"
+      ],
+      "expected_methods": 3
+    },
+    {
+      "name": "tool_global::tests::fdinfo_mount_ids_preserve_raw_equivalence_and_distinctness",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_preserve_raw_equivalence_and_distinctness",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "tool_global::tests::fdinfo_mount_ids_seed_from_low_level_snapshot_and_refuse_drift",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_seed_from_low_level_snapshot_and_refuse_drift",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "tool_global::tests::mountinfo_reads_seed_once_and_refuse_later_table_changes",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::mountinfo_reads_seed_once_and_refuse_later_table_changes",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "tool_global::tests::configured_mountinfo_order_accepts_only_ordered_known_subsets",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::configured_mountinfo_order_accepts_only_ordered_known_subsets",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "tool_global::tests::configured_mountinfo_order_refuses_new_namespace_ids",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::configured_mountinfo_order_refuses_new_namespace_ids",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "tool_global::tests::fdinfo_mount_ids_refuse_malformed_configured_provenance",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_refuse_malformed_configured_provenance",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "tool_global::tests::raw_zero_is_one_mount_identity_without_descriptor_type_partitioning",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::raw_zero_is_one_mount_identity_without_descriptor_type_partitioning",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "tool_global::tests::recorded_unlisted_mount_order_rebuilds_the_same_mapping",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::recorded_unlisted_mount_order_rebuilds_the_same_mapping",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "procfs::tests::mountinfo_snapshot_accepts_only_known_ordered_subsets_and_matching_device_policy",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::mountinfo_snapshot_accepts_only_known_ordered_subsets_and_matching_device_policy",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "procfs::tests::fdinfo_hides_backing_identity_only",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_hides_backing_identity_only",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "procfs::tests::fdinfo_mount_ids_match_distinct_mountinfo_rows_and_repeat",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_mount_ids_match_distinct_mountinfo_rows_and_repeat",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    },
+    {
+      "name": "procfs::tests::fdinfo_mount_id_parser_refuses_missing_duplicate_or_malformed_ids",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_mount_id_parser_refuses_missing_duplicate_or_malformed_ids",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1
+    }
+  ],
+  "expected_test_methods": 19,
+  "build_only_inventory": [
+    "./ci/run-with-reverie-dbt-budget.sh",
+    "cargo",
+    "nextest",
+    "list",
+    "--locked",
+    "--offline",
+    "--message-format",
+    "json",
+    "-p",
+    "hermit",
+    "--features",
+    "third-party-backends",
+    "--lib",
+    "--bins"
+  ],
+  "generator": [
+    "cargo",
+    "run",
+    "--locked",
+    "--offline",
+    "-p",
+    "hermit-manifest-plan",
+    "--bin",
+    "generate-validation-dag",
+    "--",
+    "--write",
+    "<new-owned-generated-output>"
+  ],
+  "generator_check": [
+    "cargo",
+    "run",
+    "--locked",
+    "--offline",
+    "-p",
+    "hermit-manifest-plan",
+    "--bin",
+    "generate-validation-dag",
+    "--",
+    "--check"
+  ],
+  "format": [
+    "cargo",
+    "fmt",
+    "--all",
+    "--",
+    "--check"
+  ],
+  "clippy": [
+    "./ci/run-with-reverie-dbt-budget.sh",
+    "cargo",
+    "clippy",
+    "--locked",
+    "--offline",
+    "--workspace",
+    "--all-targets",
+    "--features",
+    "third-party-backends",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "status": "proposed, not executed; exact source/pin/output bindings must be supplied after approved application",
+  "guest_runs_in_these_commands": 0
+}

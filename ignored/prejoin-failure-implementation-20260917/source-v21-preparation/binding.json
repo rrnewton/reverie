@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "base_tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083",
+  "append_to_head": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "mode": "644",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "mode": "644",
+      "bytes": 16191,
+      "sha256": "eb130f64177a6e9d0cd851ce069fd992e0c0eca6eea2eb444ba378506c3fe7ac"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "mode": "644",
+      "bytes": 1398935,
+      "sha256": "53688c0f6af88ecdbdf880a74d9ba352f5d6f8fade5d670b07cdaedcabebe04e"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "mode": "644",
+      "bytes": 28158,
+      "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "mode": "644",
+      "bytes": 1721,
+      "sha256": "3438c724c266568bd175451c32ce5b297872dab69abcad0a1a146d4872e78650"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "mode": "644",
+      "bytes": 159612,
+      "sha256": "52a24f271361c0f4ce46e45be6bbf6d130dd5d07966f9bbd39d4b86345a599c4"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "mode": "644",
+      "bytes": 47522,
+      "sha256": "a53ad82f9bc742812b9048021d46b8280f90da26eceaa7f6b46bf91e67256673"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/native_test_support.rs",
+      "mode": "644",
+      "bytes": 17882,
+      "sha256": "c3be9c6a4a0ad3e2910a1a1c490c203077da70e9b5308ea9f2f5c990536bb6c5"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "mode": "644",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "mode": "644",
+      "bytes": 306150,
+      "sha256": "5f6de8ca47096d9485f61814dcdc435cee4a19234c4a4dd1371a8f07332d8dfa"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "mode": "644",
+      "bytes": 24381,
+      "sha256": "6f65c3689503298f09ed71d43ee2212a5e3ca3af160a112772379ec80b685023"
+    }
+  ],
+  "patch_sha256": "c1749daf8902cb66c4919636623597fd30b5388783a03da49e7addc473519544",
+  "patch_bytes": 242371,
+  "increment_sha256": "7b55b4933f07dd3b583243018a6162e988ae45384a5d9df1e15055d92d576ad9",
+  "report_sha256": "6aa1305f18c40ef3e19d160c311b822f019b893678dd8e629665f61ccef4ac32",
+  "source_manifest_sha256": "33e172d79fecd59e5c3e5084eee8959055eee3e4e1744a1a979bfa65fdd25e88",
+  "source_file_count": 2586,
+  "selected_tests_sha256": "dabafcd3770b0b5f97103773b55130673f88b3f0664b7aeaa291f4d0622f219d",
+  "retained_no_vm_selected_count": 42,
+  "selected_no_vm_count": 43,
+  "separate_new_vm_count": 1,
+  "source_preparation": "Consume explicit nonlocal handler signals before accepting callback results; source v21 unexecuted.",
+  "previous_binding_sha256": "a98eba0ffec8162d333e01ecd616685c76aeb894f3d0777e489faeea7fd48d4e"
+}

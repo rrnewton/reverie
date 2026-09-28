@@ -1,0 +1,52 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01UzbZxwwNGUsTjzK9Db1o4C",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/configure-build-jobs.sh",
+    "offset": 250,
+    "limit": 40
+  }
+}
+
+Successful public tool result (exact text below):
+250	# 0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4.
+251	# A genuine local content-key MISS built in 27.71s at jobs=4 (110.84 job-seconds)
+252	# under 4 CPU / 8 GiB bounds. This supports retaining the existing 1050
+253	# effective-job-second threshold and 16-job clamp; it is not a replacement
+254	# hosted-runner calibration or a claim of unchanged recipe bytes.
+255	# The same pin also carries stricter RPC partial-header EOF classification;
+256	# it does not select the new mapped transport. Fresh Hermit build and original
+257	# unit assertions remain required; native loader fixtures are not guest evidence.
+258	# CARRY TO b3049e54 (2026-09-17): the landed SaBRe frame ABI repair and
+259	# opt-in mapped-RPC ownership APIs leave the entire reverie-dbt subtree,
+260	# build.rs, vendor tree, native key, and CMAKE/CMAKE_GENERATOR selection unchanged.
+261	# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+262	# This source-identity carry supplies no new timing or Hermit guest evidence.
+263	# CARRY TO 596b9ade (2026-09-17): the complete b3049e54-to-landed
+264	# comparison preserves reverie-dbt tree 6232257769144e8f63891a5efc8935abc3cd836b,
+265	# build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and DynamoRIO vendor
+266	# tree 42dd83f76cef3e730c39d2313c11fdc78d12ae35, including all build/config bytes.
+267	# CMAKE remains the default cmake and CMAKE_GENERATOR remains unset.
+268	# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+269	# Source comparison 89b2eb0abe05008a21974668602c288452108270c85132ea48f87bb325d91ca2 is a carry decision,
+270	# not a new timing sample or Hermit guest receipt.
+271	if [[ ${REVERIE_DBT_BUDGET_BOUND_PIN:-} != 596b9adee8473dc0a7e62dce18580eead3d0c5c9 ]]; then
+272	    echo "configure-build-jobs.sh: DECLINED (no_result, exit 75): DBT budget is not bound to Reverie 596b9adee8473dc0a7e62dce18580eead3d0c5c9 (bound pin: ${REVERIE_DBT_BUDGET_BOUND_PIN:-<unset>})" >&2
+273	    return 75
+274	fi
+275	
+276	if [[ -n ${CARGO_BUILD_JOBS:-} ]]; then
+277	    REVERIE_DBT_RAW_BUILD_JOBS=$CARGO_BUILD_JOBS
+278	    if [[ ${DAGRUN_IN_SCOPE:-} == 1 ]]; then
+279	        REVERIE_DBT_BUILD_JOBS_SOURCE=runner-child-cargo-build-jobs
+280	    else
+281	        REVERIE_DBT_BUILD_JOBS_SOURCE=inherited-launch-cargo-build-jobs
+282	    fi
+283	else
+284	    REVERIE_DBT_RAW_BUILD_JOBS=$CI_DAG_BUILD_JOBS
+285	    REVERIE_DBT_BUILD_JOBS_SOURCE=ci-dag-build-jobs-fallback
+286	fi
+287	if [[ ! $REVERIE_DBT_RAW_BUILD_JOBS =~ ^[1-9][0-9]*$ ]]; then
+288	    echo "configure-build-jobs.sh: selected raw build width must be a positive integer" >&2
+289	    return 2

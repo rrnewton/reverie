@@ -1,0 +1,16 @@
+{
+  "commit": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "status": "",
+  "source_hashes": {
+    "py/wrkslots/cli.py": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6",
+    "py/wrkslots/tests/test_lifecycle.py": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601",
+    "py/tests/test_packaging_infrastructure.py": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b"
+  },
+  "command": [
+    "with-proxy",
+    "make",
+    "validate"
+  ],
+  "start_utc": "2026-09-17T08:42:43Z"
+}

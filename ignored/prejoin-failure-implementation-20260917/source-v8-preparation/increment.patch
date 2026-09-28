@@ -1,0 +1,11 @@
+--- a/reverie-kvm/src/vm.rs
++++ b/reverie-kvm/src/vm.rs
+@@ -1600,7 +1600,7 @@
+                 clear_sighand,
+                 share_address_space,
+             } => {
+-                let mut child = self.prepare_forked_process(
++                let child = self.prepare_forked_process(
+                     executor,
+                     child_pid,
+                     child_stack,

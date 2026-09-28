@@ -1,0 +1,82 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01S2YB6hJuUyu3kGkZStBNiN",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs",
+    "offset": 990,
+    "limit": 70
+  }
+}
+
+Successful public tool result (exact text below):
+990	        auxv,
+991	        fs_base: 0,
+992	        gs_base: 0,
+993	        pid: 1,
+994	        pgid: 1,
+995	        tid: 1,
+996	        ppid: 0,
+997	        // The backend-installed image is the root of the traced process tree.
+998	        // `KvmBackend::set_root_pid` may later renumber `pid`/`tid`/`ppid`; it
+999	        // must not change this.
+1000	        is_traced_tree_root: true,
+1001	        logical_clock_ns: 0,
+1002	        umask: 0o022,
+1003	        random_seed: 0,
+1004	        thread_name,
+1005	        thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
+1006	        thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
+1007	        keep_capabilities: false,
+1008	        capability_effective: GUEST_CAPABILITY_MASK,
+1009	        capability_permitted: GUEST_CAPABILITY_MASK,
+1010	        capability_inheritable: 0,
+1011	        capability_bounding: GUEST_CAPABILITY_MASK,
+1012	        capability_ambient: 0,
+1013	        dumpable: true,
+1014	        nice: 0,
+1015	        // TODO-HUMAN-REVIEW(PR-119): Review default virtual scheduler and ioprio state.
+1016	        sched_policy: libc::SCHED_OTHER,
+1017	        sched_priority: 0,
+1018	        sched_reset_on_fork: false,
+1019	        ioprio: 0,
+1020	        process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+1021	        thread_signals: SharedThreadSignalState::default(),
+1022	        task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
+1023	            1, 1, 1, true,
+1024	        ))),
+1025	        files: std::collections::BTreeMap::new(),
+1026	        random_device_fds: std::collections::BTreeSet::new(),
+1027	        stdout_alias_fds: std::collections::BTreeSet::new(),
+1028	        stderr_alias_fds: std::collections::BTreeSet::new(),
+1029	        cloexec_fds: std::collections::BTreeSet::new(),
+1030	        closed_standard_fds: std::collections::BTreeSet::new(),
+1031	        children: std::collections::BTreeMap::new(),
+1032	        proc_files: std::collections::BTreeMap::new(),
+1033	        proc_mounts: std::sync::Arc::new(crate::proc_mounts::ProcMountSnapshot::capture()?),
+1034	        fdinfo_files: std::collections::BTreeMap::new(),
+1035	        fdinfo_table: std::sync::Weak::new(),
+1036	        fd_object_inodes: std::collections::BTreeMap::new(),
+1037	        file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
+1038	            next_inode: 0x2100_0000,
+1039	            objects: std::collections::BTreeMap::new(),
+1040	        })),
+1041	    })
+1042	}
+1043	
+1044	pub(crate) fn initial_thread_name(executable_path: &Path) -> [u8; TASK_COMM_LEN] {
+1045	    let basename = executable_path
+1046	        .file_name()
+1047	        .unwrap_or(executable_path.as_os_str())
+1048	        .as_bytes();
+1049	    let mut name = [0; TASK_COMM_LEN];
+1050	    let length = basename.len().min(TASK_COMM_LEN - 1);
+1051	    name[..length].copy_from_slice(&basename[..length]);
+1052	    name
+1053	}
+1054	
+1055	// TODO-HUMAN-REVIEW(PR-92): Review Linux shebang parsing limits.
+1056	fn parse_shebang(image: &[u8]) -> Result<Option<(String, Option<String>)>> {
+1057	    let Some(rest) = image.strip_prefix(b"#!") else {
+1058	        return Ok(None);
+1059	    };

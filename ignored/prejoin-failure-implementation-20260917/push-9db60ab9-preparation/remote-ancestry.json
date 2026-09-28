@@ -1,0 +1,32 @@
+{
+  "remote_tip": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "checks": [
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "696f0476aa46cf29e31b947a89379d80b4542ce3",
+        "9db60ab95587d4cb5e0438dfeca409471eb9baf5"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "696f0476aa46cf29e31b947a89379d80b4542ce3",
+        "526c21cf06ef9e5098ec9002b93e40e2022e798f"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "merge_base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "normal_push_is_fast_forward": false
+}

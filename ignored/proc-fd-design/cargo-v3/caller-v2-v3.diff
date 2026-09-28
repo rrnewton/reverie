@@ -1,0 +1,152 @@
+--- cargo-v2/launch.py
++++ cargo-v3/launch.py
+@@ -10,7 +10,7 @@
+ 
+ HERE = Path(__file__).resolve().parent
+ PLAN = HERE / 'plan.json'
+-PLAN_SHA256 = '4b8f799d674f2af53f86d319669cf65912a1d6bcc1168bf19def99c11db6e97e'
++PLAN_SHA256 = '8bd40f80e45b437eca831376fb1e0326935c8cc8735dcff00ae96c48f56c9cad'
+ 
+ 
+ def require(condition, message):
+@@ -131,11 +131,10 @@
+             and digest(path) == artifact['sha256'], 'compiled test executable changed')
+ 
+ 
+-def check_prior_compile(plan, environment):
+-    prior = plan['prior_compile']
++def check_prior_sequence(plan, environment):
++    prior = plan['prior_sequence']
+     prior_plan = json.loads(read_bounded(prior['plan'], 1024**2))
+     prior_readback = json.loads(read_bounded(prior['readback'], 1024**2))
+-    prior_result = json.loads(read_bounded(prior['result'], 1024**2))
+     prior_summary = json.loads(read_bounded(prior['summary'], 1024**2))
+     require(prior_plan['target_dir'] == plan['target_dir']
+             == plan['environment_fixed']['CARGO_TARGET_DIR'], 'cache is not the previously owned target')
+@@ -143,33 +142,50 @@
+     require(not target.is_symlink() and target.is_dir()
+             and target.resolve(strict=True) == target and target.stat().st_uid == os.getuid(),
+             'target cache is not an owned, unredirected directory')
+-    require(prior['expected_exit'] == 101 and prior_result['wrapper_exit_code'] == 101
+-            and prior_readback['cargo_exit'] == 101, 'prior failed compile identity changed')
+-    require(prior_summary['status'] == 'failed' and prior_summary['active_stage'] == 'compile'
+-            and prior_summary['retained_stages'] == ['compile'] and prior_summary['artifact'] is None,
+-            'prior sequence did not stop at compilation')
+-    require(prior_readback['listed_or_executed_test_names'] == []
+-            and prior_readback['kvm_library_test_executables'] == [], 'prior native execution differs')
+-    require(prior_result['accounting_complete'] is True
+-            and prior_result['final_accounting']['cgroup_empty'] is True
+-            and prior_result['observer_error'] is None and prior_result['stop_reason'] is None,
+-            'prior compile lacks complete, empty terminal accounting')
+-    props = prior_result['final_accounting']['properties']
+-    require(props['ActiveState'] == 'inactive' and props['MainPID'] == 0
+-            and props['ControlGroup'] == '', 'prior compile retained processes')
+-    unit = props['Id']
+-    require(re.fullmatch(r'safehermit-[A-Za-z0-9T_-]+\.service', unit), 'unexpected prior service name')
+-    command = ['/usr/bin/systemctl', '--user', 'show', unit,
+-               '--property=LoadState,ActiveState,SubState,MainPID,ControlGroup']
+-    post = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL,
+-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+-    require(len(post.stdout) <= 8192 and len(post.stderr) <= 8192, 'unexpected prior service output size')
+-    fields = dict(line.split('=', 1) for line in post.stdout.decode().splitlines() if '=' in line)
+-    require(post.returncode == 0 and fields.get('ActiveState') == 'inactive'
+-            and fields.get('MainPID') == '0' and fields.get('ControlGroup') == '',
+-            'prior service is no longer inactive and empty')
+-    return {'argv': command, 'exit': post.returncode, 'properties': fields,
+-            'stderr': post.stderr.decode(errors='replace'), 'target_dir': str(target),
++    require(prior_summary['status'] == 'failed' and prior_summary['active_stage'] == 'native'
++            and prior_summary['retained_stages'] == ['compile', 'list', 'native'],
++            'prior sequence did not stop at its native failure')
++    require(len(prior_readback['passed_test_names']) == 35
++            and prior_readback['failed_test_names'] ==
++            ['executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned'],
++            'prior native outcomes differ')
++    retained = json.loads(read_bounded(prior['retained_executable'], 1024**2))
++    require(retained['original'] == prior_readback['compiled_executable']
++            == prior_summary['artifact'], 'prior executable identity differs')
++    copy = retained['retained_copy']
++    require(copy['sha256'] == retained['original']['sha256']
++            and copy['bytes'] == retained['original']['bytes']
++            and copy['mode'] == retained['original']['mode'], 'retained executable identity differs')
++    check_executable(copy)
++    require([step['name'] for step in prior['stages']] == ['compile', 'list', 'native'],
++            'prior stage population differs')
++    posts = []
++    for step in prior['stages']:
++        result = json.loads(read_bounded(step['result'], 1024**2))
++        expected = 101 if step['name'] == 'native' else 0
++        require(step['expected_exit'] == expected and result['wrapper_exit_code'] == expected,
++                'prior stage exit changed')
++        require(result['accounting_complete'] is True
++                and result['final_accounting']['cgroup_empty'] is True
++                and result['observer_error'] is None and result['stop_reason'] is None,
++                'prior stage lacks complete, empty terminal accounting')
++        props = result['final_accounting']['properties']
++        require(props['ActiveState'] == 'inactive' and props['MainPID'] == 0
++                and props['ControlGroup'] == '', 'prior stage retained processes')
++        unit = props['Id']
++        require(re.fullmatch(r'safehermit-[A-Za-z0-9T_-]+\.service', unit), 'unexpected prior service name')
++        command = ['/usr/bin/systemctl', '--user', 'show', unit,
++                   '--property=LoadState,ActiveState,SubState,MainPID,ControlGroup']
++        post = subprocess.run(command, env=environment, stdin=subprocess.DEVNULL,
++                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
++        require(len(post.stdout) <= 8192 and len(post.stderr) <= 8192, 'unexpected prior service output size')
++        fields = dict(line.split('=', 1) for line in post.stdout.decode().splitlines() if '=' in line)
++        require(post.returncode == 0 and fields.get('ActiveState') == 'inactive'
++                and fields.get('MainPID') == '0' and fields.get('ControlGroup') == '',
++                'prior service is no longer inactive and empty')
++        posts.append({'stage': step['name'], 'argv': command, 'exit': post.returncode,
++                      'properties': fields, 'stderr': post.stderr.decode(errors='replace')})
++    return {'services': posts, 'target_dir': str(target), 'retained_executable': copy,
+             'scope': 'Prior owned cache reuse; source and actual Cargo artifact remain independently verified.'}
+ 
+ 
+@@ -178,17 +194,17 @@
+     plan = json.loads(read_bounded(PLAN, 1024**2))
+     require(Path(plan['run_root']) == HERE / 'run-1', 'unexpected run output destination')
+     require([step['name'] for step in plan['stages']] == ['compile', 'list', 'native'], 'unexpected stage order')
+-    require(plan['required_count'] == 36 and len(set(plan['selected_tests'])) == 36, 'selected population changed')
++    require(plan['required_count'] == 37 and len(set(plan['selected_tests'])) == 37, 'selected population changed')
+     root = Path(plan['run_root'])
+     for path in [root, Path(plan['observer_root'])]:
+         require(not path.exists() and not path.is_symlink(), 'retain every earlier attempt: ' + str(path))
+     check_inputs(plan)
+     environment = {key: os.environ[key] for key in plan['environment_keys'] if key in os.environ}
+     environment.update(plan['environment_fixed'])
+-    prior_terminal = check_prior_compile(plan, environment)
++    prior_terminal = check_prior_sequence(plan, environment)
+     root.mkdir(mode=0o700)
+     Path(plan['tmpdir']).mkdir(mode=0o700)
+-    write_new(root / 'prior-compile-terminal-readback.json', prior_terminal)
++    write_new(root / 'prior-sequence-terminal-readback.json', prior_terminal)
+     write_new(root / 'launch.json', {'plan_sha256': PLAN_SHA256, 'caller_sha256': digest(__file__),
+               'environment': environment, 'source_binding_sha256': digest(plan['source_binding']),
+               'scope': 'One native KVM library build/list/selected run; no Hermit or KVM guest.'})
+@@ -236,14 +252,14 @@
+             elif active_stage == 'list':
+                 listed = [line[:-6] for line in raw.decode().splitlines() if line.endswith(': test')]
+                 require(all(listed.count(name) == 1 for name in plan['selected_tests']), 'a selected native test is absent or duplicated')
+-                write_new(root / 'selected-list-readback.json', {'selected': plan['selected_tests'], 'count': 36,
++                write_new(root / 'selected-list-readback.json', {'selected': plan['selected_tests'], 'count': 37,
+                           'listed_total': len(listed), 'raw_sha256': hashlib.sha256(raw).hexdigest()})
+             else:
+                 text = raw.decode()
+                 summaries = re.findall(r'^test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;', text, re.M)
+-                require(len(summaries) == 1 and summaries[0][:4] == ('36', '0', '0', '0'),
+-                        'native summary lacks exactly 36 passing, unignored tests')
+-                write_new(root / 'native-summary-readback.json', {'selected': plan['selected_tests'], 'count': 36,
++                require(len(summaries) == 1 and summaries[0][:4] == ('37', '0', '0', '0'),
++                        'native summary lacks exactly 37 passing, unignored tests')
++                write_new(root / 'native-summary-readback.json', {'selected': plan['selected_tests'], 'count': 37,
+                           'summary_counts': summaries[0], 'raw_sha256': hashlib.sha256(raw).hexdigest()})
+             check_inputs(plan)
+             if artifact is not None:
+@@ -253,7 +269,7 @@
+                   'retained_stages': [row['stage'] for row in records], 'artifact': artifact,
+                   'scope': 'Retained failure; no source repair, retry, guest or parity claim.'})
+         raise
+-    write_new(root / 'summary.json', {'status': 'passed', 'artifact': artifact, 'selected_count': 36,
++    write_new(root / 'summary.json', {'status': 'passed', 'artifact': artifact, 'selected_count': 37,
+               'observed': [{'stage': row['stage'], 'exit': row['result']['wrapper_exit_code'],
+                             'aggregate_cpu_nsec': row['result']['final_accounting']['cpu_usage_nsec'],
+                             'wall_seconds': row['result']['elapsed_seconds']} for row in records],

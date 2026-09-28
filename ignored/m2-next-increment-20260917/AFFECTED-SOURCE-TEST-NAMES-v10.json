@@ -1,0 +1,8 @@
+{
+  "scope": "unchanged v9 source declarations; no new inventory or execution",
+  "same_population": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/AFFECTED-SOURCE-TEST-NAMES-v9.json",
+    "bytes": 5812,
+    "sha256": "9b0efd455df8f6152a84feade1716b6d6a0ec2fe3a91e3464289a28c0fe170fc"
+  }
+}

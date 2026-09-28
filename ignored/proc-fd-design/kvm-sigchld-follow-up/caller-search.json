@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "git",
+    "-C",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+    "grep",
+    "-n",
+    "-e",
+    "queue_child_exit_signal",
+    "-e",
+    "on_backend_child_wait_event",
+    "31289f45984e4f9de29e25a4463d0936976e8b5d",
+    "--",
+    "detcore",
+    "hermit-cli"
+  ],
+  "exit": 1,
+  "stdout": "",
+  "stderr": ""
+}

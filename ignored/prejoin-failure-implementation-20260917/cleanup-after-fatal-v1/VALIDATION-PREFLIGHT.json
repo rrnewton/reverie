@@ -1,0 +1,121 @@
+{
+  "status": "passed",
+  "time_unix": 1789669447.6763823,
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "plans": [
+    {
+      "name": "qualification-build-v7",
+      "plan_sha256": "1b43c8ab82248ffc2645f1673a22bb7c2fc9c1abffe12296d9862bf71194a2e3",
+      "caller_sha256": "f5d06e5f5931ee60295d1fd4b19fa2f9f18e6118ecb2fe3a3d4223cd7a08c6ed",
+      "input_count": 75,
+      "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9",
+      "source_head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+      "source_binding_sha256": "aa5fecbfa4360cc8bcc55a6df50c7e2e47e1d0d99e9551a9516c8037d0edd5ff"
+    },
+    {
+      "name": "lint-v15",
+      "plan_sha256": "a388b4d6449c06ddb29e96fcbc5776af6d5dab95153449096691f1fb80bc22d1",
+      "caller_sha256": "8415d2d80345c7fe06e579ccf0b5fbd4da3d56f8b9c139543895ebb8e37b982d",
+      "input_count": 60,
+      "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v7",
+      "source_head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+      "source_binding_sha256": "aa5fecbfa4360cc8bcc55a6df50c7e2e47e1d0d99e9551a9516c8037d0edd5ff"
+    }
+  ],
+  "prior_elf_preservation": [
+    {
+      "kind": "lib",
+      "emitted": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+        "sha256": "daf7a52b631f19790dcac4e1d1fbbbd3326683ca3305a424db6befedb25cee8b",
+        "bytes": 116212232,
+        "mode": 493,
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "reverie_kvm",
+            "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default"
+          ],
+          "filenames": [
+            "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a"
+          ],
+          "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+          "fresh": false
+        }
+      },
+      "retained_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v6/run-1/retained-elf-v23/lib",
+      "retained_sha256": "daf7a52b631f19790dcac4e1d1fbbbd3326683ca3305a424db6befedb25cee8b"
+    },
+    {
+      "kind": "static-elf",
+      "emitted": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+        "sha256": "f11f2ec042c41f42ca16e062b8ac4da483998635cdd4d621d259a3be12fe2b85",
+        "bytes": 148699992,
+        "mode": 493,
+        "cargo_artifact": {
+          "reason": "compiler-artifact",
+          "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+          "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+          "target": {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "static_elf",
+            "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/tests/static_elf.rs",
+            "edition": "2024",
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 2,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [
+            "default"
+          ],
+          "filenames": [
+            "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592"
+          ],
+          "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+          "fresh": false
+        }
+      },
+      "retained_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v6/run-1/retained-elf-v23/static-elf",
+      "retained_sha256": "f11f2ec042c41f42ca16e062b8ac4da483998635cdd4d621d259a3be12fe2b85"
+    }
+  ],
+  "active_slot_work": [],
+  "source_input_and_payload_checks": true,
+  "fresh_outputs_absent": true,
+  "no_execution_yet": true
+}

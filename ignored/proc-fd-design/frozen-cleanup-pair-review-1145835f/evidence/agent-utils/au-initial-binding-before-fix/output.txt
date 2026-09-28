@@ -1,0 +1,168 @@
+FFFF                                                                     [100%]
+=================================== FAILURES ===================================
+_ test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot[root-head-recover] _
+
+tmp_path = PosixPath('/tmp/pytest-of-newton/pytest-6765/test_current_incomplete_frozen0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f457e19c560>
+capsys = <_pytest.capture.CaptureFixture object at 0x7f457e19f0b0>
+action = 'recover', mutation = 'root-head'
+
+    @pytest.mark.ordinary_environment
+    @pytest.mark.parametrize("action", ("recover", "classify"))
+    @pytest.mark.parametrize("mutation", ("root-head", "both-origins"))
+    def test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], action: str, mutation: str,
+    ) -> None:
+        project, source, checkout, record, _sidecar = prepare_current_incomplete_frozen_checkout(
+            tmp_path, monkeypatch
+        )
+        original = wrkslots._retained_validation_git_state
+        changed = False
+        def observe(
+            repository: Path, *, pristine: bool, cache_globs: Sequence[str] = (),
+        ) -> wrkslots._RetainedValidationGitState:
+            nonlocal changed
+            if repository == checkout and not changed:
+                changed = True
+                if mutation == "root-head":
+                    git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "changed before first snapshot")
+                else:
+                    for path in (checkout, source):
+                        git(path, "remote", "set-url", "origin", str(tmp_path / "changed.git"))
+            return original(repository, pristine=pristine, cache_globs=cache_globs)
+        monkeypatch.setattr(wrkslots, "_retained_validation_git_state", observe)
+        assert run_current_incomplete_batch(project, source, checkout, record, action=action) == 0
+        row = incomplete_batch_row(json.loads(capsys.readouterr().out), action)
+        assert changed
+>       assert row["blocks_entry"] is True, row
+E       AssertionError: {'blocks_entry': False, 'checkout': '/tmp/pytest-of-newton/pytest-6765/test_current_incomplete_frozen0/.project-frozen...e', 'reason': 'current incomplete frozen validation is exact and inactive; the checkout and no-result remain retained'}
+E       assert False is True
+
+py/wrkslots/tests/test_lifecycle.py:22918: AssertionError
+_ test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot[root-head-classify] _
+
+tmp_path = PosixPath('/tmp/pytest-of-newton/pytest-6765/test_current_incomplete_frozen1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f457e2f0d70>
+capsys = <_pytest.capture.CaptureFixture object at 0x7f457e2f0da0>
+action = 'classify', mutation = 'root-head'
+
+    @pytest.mark.ordinary_environment
+    @pytest.mark.parametrize("action", ("recover", "classify"))
+    @pytest.mark.parametrize("mutation", ("root-head", "both-origins"))
+    def test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], action: str, mutation: str,
+    ) -> None:
+        project, source, checkout, record, _sidecar = prepare_current_incomplete_frozen_checkout(
+            tmp_path, monkeypatch
+        )
+        original = wrkslots._retained_validation_git_state
+        changed = False
+        def observe(
+            repository: Path, *, pristine: bool, cache_globs: Sequence[str] = (),
+        ) -> wrkslots._RetainedValidationGitState:
+            nonlocal changed
+            if repository == checkout and not changed:
+                changed = True
+                if mutation == "root-head":
+                    git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "changed before first snapshot")
+                else:
+                    for path in (checkout, source):
+                        git(path, "remote", "set-url", "origin", str(tmp_path / "changed.git"))
+            return original(repository, pristine=pristine, cache_globs=cache_globs)
+        monkeypatch.setattr(wrkslots, "_retained_validation_git_state", observe)
+        assert run_current_incomplete_batch(project, source, checkout, record, action=action) == 0
+        row = incomplete_batch_row(json.loads(capsys.readouterr().out), action)
+        assert changed
+>       assert row["blocks_entry"] is True, row
+E       AssertionError: {'blocks_entry': False, 'checkout': '/tmp/pytest-of-newton/pytest-6765/test_current_incomplete_frozen1/.project-frozen... validation is exact and inactive; the checkout and no-result remain retained', 'state': 'current-incomplete-retained'}
+E       assert False is True
+
+py/wrkslots/tests/test_lifecycle.py:22918: AssertionError
+_ test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot[both-origins-recover] _
+
+tmp_path = PosixPath('/tmp/pytest-of-newton/pytest-6765/test_current_incomplete_frozen2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f457e2e38f0>
+capsys = <_pytest.capture.CaptureFixture object at 0x7f457e2e3c50>
+action = 'recover', mutation = 'both-origins'
+
+    @pytest.mark.ordinary_environment
+    @pytest.mark.parametrize("action", ("recover", "classify"))
+    @pytest.mark.parametrize("mutation", ("root-head", "both-origins"))
+    def test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], action: str, mutation: str,
+    ) -> None:
+        project, source, checkout, record, _sidecar = prepare_current_incomplete_frozen_checkout(
+            tmp_path, monkeypatch
+        )
+        original = wrkslots._retained_validation_git_state
+        changed = False
+        def observe(
+            repository: Path, *, pristine: bool, cache_globs: Sequence[str] = (),
+        ) -> wrkslots._RetainedValidationGitState:
+            nonlocal changed
+            if repository == checkout and not changed:
+                changed = True
+                if mutation == "root-head":
+                    git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "changed before first snapshot")
+                else:
+                    for path in (checkout, source):
+                        git(path, "remote", "set-url", "origin", str(tmp_path / "changed.git"))
+            return original(repository, pristine=pristine, cache_globs=cache_globs)
+        monkeypatch.setattr(wrkslots, "_retained_validation_git_state", observe)
+        assert run_current_incomplete_batch(project, source, checkout, record, action=action) == 0
+        row = incomplete_batch_row(json.loads(capsys.readouterr().out), action)
+        assert changed
+>       assert row["blocks_entry"] is True, row
+E       AssertionError: {'blocks_entry': False, 'checkout': '/tmp/pytest-of-newton/pytest-6765/test_current_incomplete_frozen2/.project-frozen...e', 'reason': 'current incomplete frozen validation is exact and inactive; the checkout and no-result remain retained'}
+E       assert False is True
+
+py/wrkslots/tests/test_lifecycle.py:22918: AssertionError
+_ test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot[both-origins-classify] _
+
+tmp_path = PosixPath('/tmp/pytest-of-newton/pytest-6765/test_current_incomplete_frozen3')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f457e297bc0>
+capsys = <_pytest.capture.CaptureFixture object at 0x7f457e296570>
+action = 'classify', mutation = 'both-origins'
+
+    @pytest.mark.ordinary_environment
+    @pytest.mark.parametrize("action", ("recover", "classify"))
+    @pytest.mark.parametrize("mutation", ("root-head", "both-origins"))
+    def test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str], action: str, mutation: str,
+    ) -> None:
+        project, source, checkout, record, _sidecar = prepare_current_incomplete_frozen_checkout(
+            tmp_path, monkeypatch
+        )
+        original = wrkslots._retained_validation_git_state
+        changed = False
+        def observe(
+            repository: Path, *, pristine: bool, cache_globs: Sequence[str] = (),
+        ) -> wrkslots._RetainedValidationGitState:
+            nonlocal changed
+            if repository == checkout and not changed:
+                changed = True
+                if mutation == "root-head":
+                    git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "changed before first snapshot")
+                else:
+                    for path in (checkout, source):
+                        git(path, "remote", "set-url", "origin", str(tmp_path / "changed.git"))
+            return original(repository, pristine=pristine, cache_globs=cache_globs)
+        monkeypatch.setattr(wrkslots, "_retained_validation_git_state", observe)
+        assert run_current_incomplete_batch(project, source, checkout, record, action=action) == 0
+        row = incomplete_batch_row(json.loads(capsys.readouterr().out), action)
+        assert changed
+>       assert row["blocks_entry"] is True, row
+E       AssertionError: {'blocks_entry': False, 'checkout': '/tmp/pytest-of-newton/pytest-6765/test_current_incomplete_frozen3/.project-frozen... validation is exact and inactive; the checkout and no-result remain retained', 'state': 'current-incomplete-retained'}
+E       assert False is True
+
+py/wrkslots/tests/test_lifecycle.py:22918: AssertionError
+=========================== short test summary info ============================
+FAILED py/wrkslots/tests/test_lifecycle.py::test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot[root-head-recover]
+FAILED py/wrkslots/tests/test_lifecycle.py::test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot[root-head-classify]
+FAILED py/wrkslots/tests/test_lifecycle.py::test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot[both-origins-recover]
+FAILED py/wrkslots/tests/test_lifecycle.py::test_current_incomplete_frozen_binds_initial_facts_to_recursive_snapshot[both-origins-classify]
+4 failed, 793 deselected in 9.70s

@@ -1,0 +1,312 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01F1hrx9iamVEzLmWNUJWkCZ",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_local.rs",
+    "offset": 600,
+    "limit": 300
+  }
+}
+
+Successful public tool result (exact text below):
+600	                    self.with_detfd(fd, |detfd| detfd.set_logical_nonblocking(false))
+601	                        .expect("a just-discovered descriptor must remain registered");
+602	                }
+603	                Err(error) => {
+604	                    tracing::warn!(
+605	                        "[detcore, dtid {}] unable to restore inherited descriptor {} after exec: {}",
+606	                        owner,
+607	                        fd,
+608	                        error,
+609	                    );
+610	                }
+611	            }
+612	        }
+613	    }
+614	
+615	    pub(crate) fn open_files_closed_on_exec(&self, table_is_shared: bool) -> Vec<OpenFileId> {
+616	        if table_is_shared {
+617	            return Vec::new();
+618	        }
+619	
+620	        let mut open_files = HashMap::new();
+621	        for detfd in self.file_handles.values() {
+622	            let id = detfd.open_file_id();
+623	            let total_aliases = detfd.open_file_alias_count();
+624	            let entry = open_files.entry(id).or_insert((0, total_aliases, true));
+625	            debug_assert_eq!(entry.1, total_aliases);
+626	            entry.0 += 1;
+627	            entry.2 &= detfd.is_cloexec();
+628	        }
+629	
+630	        let mut closed: Vec<_> = open_files
+631	            .into_iter()
+632	            .filter_map(|(id, (table_aliases, total_aliases, all_cloexec))| {
+633	                (all_cloexec && table_aliases == total_aliases).then_some(id)
+634	            })
+635	            .collect();
+636	        closed.sort();
+637	        closed
+638	    }
+639	
+640	    /// set default fds
+641	    fn setup_stdio(mut self, _pid: Pid, owner: DetTid) -> Self {
+642	        // guest stdio can be a pipe, which make things difficult
+643	        // hence use a dummy stat here.
+644	        // SAFETY: stating stdin is likely to always be safe
+645	        let stat: DetStat = stat::fstat(unsafe { BorrowedFd::borrow_raw(0) })
+646	            .unwrap()
+647	            .into();
+648	        let stdin = DetFd::new(
+649	            0,
+650	            OFlag::empty(),
+651	            FdType::Regular,
+652	            self.allocate_open_file_id(owner, FdType::Regular),
+653	        )
+654	        .with_stat(stat)
+655	        .with_resource(ResourceID::Device(Device::ContainerStdin));
+656	        let stdout = DetFd::new(
+657	            1,
+658	            OFlag::empty(),
+659	            FdType::Regular,
+660	            self.allocate_open_file_id(owner, FdType::Regular),
+661	        )
+662	        .with_stat(stat)
+663	        .with_resource(ResourceID::Device(Device::ContainerStdout));
+664	        let stderr = DetFd::new(
+665	            2,
+666	            OFlag::empty(),
+667	            FdType::Regular,
+668	            self.allocate_open_file_id(owner, FdType::Regular),
+669	        )
+670	        .with_stat(stat)
+671	        .with_resource(ResourceID::Device(Device::ContainerStderr));
+672	
+673	        // These descriptors existed before Detcore began observing the guest,
+674	        // so they may already carry flock state that we cannot query.
+675	        stdin.mark_flock_mode_unobserved();
+676	        stdout.mark_flock_mode_unobserved();
+677	        stderr.mark_flock_mode_unobserved();
+678	
+679	        self.add_detfd(stdin);
+680	        self.add_detfd(stdout);
+681	        self.add_detfd(stderr);
+682	
+683	        self
+684	    }
+685	
+686	    // AUTONOMOUS-BOT-IMPLEMENTED
+687	    // TODO-HUMAN-REVIEW(PR-845): Review SaBRe on-demand inherited descriptor discovery.
+688	    fn discover_fd_from_current_process(&mut self, owner: DetTid, fd: RawFd) -> Result<(), Errno> {
+689	        if self.file_handles.contains_key(&fd) {
+690	            return Ok(());
+691	        }
+692	
+693	        let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+694	        let status_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+695	        if fd_flags == -1 || status_flags == -1 {
+696	            return Err(Errno::last());
+697	        }
+698	        let raw_stat =
+699	            stat::fstat(unsafe { BorrowedFd::borrow_raw(fd) }).map_err(|_| Errno::last())?;
+700	        let file_type = stat::SFlag::from_bits_truncate(raw_stat.st_mode);
+701	        let ty = if file_type.contains(stat::SFlag::S_IFIFO) {
+702	            FdType::Pipe
+703	        } else if file_type.contains(stat::SFlag::S_IFSOCK) {
+704	            FdType::Socket
+705	        } else {
+706	            FdType::Regular
+707	        };
+708	        let mut flags = OFlag::from_bits_truncate(status_flags);
+709	        let physically_nonblocking = flags.contains(OFlag::O_NONBLOCK);
+710	        // Discovered descriptors have unknown provenance, so an observed
+711	        // O_NONBLOCK bit must remain guest-visible. Detcore-created scheduler
+712	        // pipes are registered when created and do not reach this fallback.
+713	        if fd_flags & libc::FD_CLOEXEC != 0 {
+714	            flags.insert(OFlag::O_CLOEXEC);
+715	        }
+716	        self.add_fd(owner, fd, flags, ty, Some(raw_stat.into()))?;
+717	        self.with_detfd(fd, |detfd| detfd.forget_flock_mode())?;
+718	        if let Some(resource) = stdio_resource(fd) {
+719	            self.with_detfd(fd, |detfd| detfd.set_resource(resource.clone()))?;
+720	        }
+721	        if ty == FdType::Pipe && physically_nonblocking {
+722	            self.with_detfd(fd, |detfd| detfd.set_physically_nonblocking())?;
+723	        }
+724	        Ok(())
+725	    }
+726	
+727	    /// get detfd from rawfd, rawfd must be added or dup-ed first.
+728	    fn with_detfd<F, U>(&mut self, fd: RawFd, mut f: F) -> Result<U, Errno>
+729	    where
+730	        F: FnMut(&mut DetFd) -> U,
+731	    {
+732	        let detfd = self.file_handles.get_mut(&fd).ok_or(Errno::EBADF)?;
+733	        Ok(f(detfd))
+734	    }
+735	
+736	    /// add a detfd
+737	    fn add_detfd(&mut self, detfd: DetFd) {
+738	        let fd = detfd.fd;
+739	        self.file_handles.insert(fd, detfd);
+740	    }
+741	
+742	    /// add a raw fd
+743	    fn add_fd(
+744	        &mut self,
+745	        creator: DetTid,
+746	        fd: RawFd,
+747	        flags: OFlag,
+748	        ty: FdType,
+749	        stat: Option<DetStat>,
+750	    ) -> Result<(), Errno> {
+751	        let id = self.allocate_open_file_id(creator, ty);
+752	        let detfd = DetFd::new(fd, flags, ty, id).with_stat(stat);
+753	        self.add_detfd(detfd);
+754	        Ok(())
+755	    }
+756	
+757	    /// remove a rawfd
+758	    fn remove_fd(&mut self, fd: RawFd) -> Option<OpenFileId> {
+759	        let detfd = self.file_handles.remove(&fd)?;
+760	        (detfd.open_file_alias_count() == 1).then(|| detfd.open_file_id())
+761	    }
+762	
+763	    /// Remove every modeled descriptor in an inclusive close_range interval.
+764	    fn remove_fd_range(&mut self, first: u32, last: u32) -> Vec<OpenFileId> {
+765	        let mut descriptors: Vec<_> = self
+766	            .file_handles
+767	            .keys()
+768	            .copied()
+769	            .filter(|fd| *fd >= 0 && first <= *fd as u32 && *fd as u32 <= last)
+770	            .collect();
+771	        descriptors.sort_unstable();
+772	        descriptors
+773	            .into_iter()
+774	            .filter_map(|fd| self.remove_fd(fd))
+775	            .collect()
+776	    }
+777	
+778	    /// dup raw fds.
+779	    fn dup_fd(
+780	        &mut self,
+781	        oldfd: RawFd,
+782	        newfd: RawFd,
+783	        flags: OFlag,
+784	    ) -> Result<Option<OpenFileId>, Errno> {
+785	        if oldfd == newfd {
+786	            self.with_detfd(oldfd, |_| ())?;
+787	            return Ok(None);
+788	        }
+789	
+790	        let detfd = self.with_detfd(oldfd, |old_detfd| {
+791	            old_detfd.clone().with_fd(newfd).with_fd_flags(flags)
+792	        })?;
+793	        let replaced = self.file_handles.insert(newfd, detfd);
+794	        Ok(replaced
+795	            .and_then(|detfd| (detfd.open_file_alias_count() == 1).then(|| detfd.open_file_id())))
+796	    }
+797	
+798	    /// Capture the exact open-file description currently named by `fd`.
+799	    fn capture_fd(&mut self, fd: RawFd) -> Result<CapturedDetFd, Errno> {
+800	        let detfd = self.with_detfd(fd, |detfd| detfd.clone())?;
+801	        Ok(CapturedDetFd {
+802	            files_id: self.files_id,
+803	            detfd,
+804	        })
+805	    }
+806	
+807	    /// Install a previously captured open-file description as `newfd`.
+808	    ///
+809	    /// Unlike [`Self::dup_fd`], this never resolves the source fd number again.
+810	    /// It succeeds only if the destination still belongs to the descriptor
+811	    /// table in which the source was captured.
+812	    fn install_captured_fd(
+813	        &mut self,
+814	        captured: CapturedDetFd,
+815	        newfd: RawFd,
+816	        flags: OFlag,
+817	    ) -> Result<Option<OpenFileId>, CapturedDetFdInstallError> {
+818	        if captured.files_id != self.files_id {
+819	            return Err(CapturedDetFdInstallError {
+820	                expected_files_id: captured.files_id,
+821	                actual_files_id: self.files_id,
+822	                returned_fd: newfd,
+823	                captured,
+824	            });
+825	        }
+826	
+827	        let detfd = captured.detfd.with_fd(newfd).with_fd_flags(flags);
+828	        let replaced = self.file_handles.insert(newfd, detfd);
+829	        Ok(replaced
+830	            .and_then(|detfd| (detfd.open_file_alias_count() == 1).then(|| detfd.open_file_id())))
+831	    }
+832	
+833	    /// Drop a capture that was not installed and report whether it retained the
+834	    /// final reference to the open-file description.
+835	    fn abandon_captured_fd(&mut self, captured: CapturedDetFd) -> Option<OpenFileId> {
+836	        let release =
+837	            (captured.detfd.open_file_alias_count() == 1).then(|| captured.detfd.open_file_id());
+838	        drop(captured);
+839	        release
+840	    }
+841	}
+842	
+843	fn stdio_resource(fd: RawFd) -> Option<ResourceID> {
+844	    match fd {
+845	        0 => Some(ResourceID::Device(Device::ContainerStdin)),
+846	        1 => Some(ResourceID::Device(Device::ContainerStdout)),
+847	        2 => Some(ResourceID::Device(Device::ContainerStderr)),
+848	        _ => None,
+849	    }
+850	}
+851	
+852	#[cfg(test)]
+853	mod posix_timers_tests {
+854	    use super::*;
+855	
+856	    fn t(ns: u64) -> LogicalTime {
+857	        LogicalTime::from_nanos(ns)
+858	    }
+859	
+860	    #[test]
+861	    fn ids_are_deterministic_and_sequential() {
+862	        let mut timers = PosixTimers::default();
+863	        assert_eq!(timers.create(None), 0);
+864	        assert_eq!(timers.create(Some(libc::SIGALRM)), 1);
+865	        assert_eq!(timers.create(None), 2);
+866	    }
+867	
+868	    #[test]
+869	    fn settime_reports_previous_arming_and_remaining_uses_virtual_clock() {
+870	        let mut timers = PosixTimers::default();
+871	        let id = timers.create(None);
+872	
+873	        // Arm a one-shot timer for 100ns at t=0. A freshly created timer was
+874	        // disarmed, so the reported old value is zero.
+875	        let old = timers.settime(id, 0, Some(t(100)), t(0)).expect("known id");
+876	        assert_eq!(old, (0, 0));
+877	
+878	        // At t=40 there should be 60ns remaining and no interval.
+879	        assert_eq!(timers.gettime(id, t(40)), Some((60, 0)));
+880	        // Past the deadline the remaining time saturates at 0.
+881	        assert_eq!(timers.gettime(id, t(150)), Some((0, 0)));
+882	    }
+883	
+884	    #[test]
+885	    fn resetting_reports_old_remaining() {
+886	        let mut timers = PosixTimers::default();
+887	        let id = timers.create(None);
+888	        timers.settime(id, 0, Some(t(100)), t(0));
+889	        // Re-arm at t=30 (70ns remained) with a periodic 50ns timer.
+890	        let old = timers
+891	            .settime(id, 50, Some(t(200)), t(30))
+892	            .expect("known id");
+893	        assert_eq!(old, (70, 0));
+894	        assert_eq!(timers.gettime(id, t(30)), Some((170, 50)));
+895	    }
+896	
+897	    // AUTONOMOUS-BOT-IMPLEMENTED
+898	    // TODO-HUMAN-REVIEW(#869)
+899	    #[test]

@@ -1,0 +1,54 @@
+{
+  "source_identity_chain": "Independently authenticated stage02 file manifest plus the two exact reviewed mount source blobs and generated DAG blob, composed through all1726 files.",
+  "generation_before_after_byte_identical": true,
+  "generation_source_before_sha256": "a8a2e221ba71909e858014f2ebb68e0b9a2c0447472302642985f00d921c4a3b",
+  "all1726_generation_files_match_expected": true,
+  "all1726_committed_files_match_expected": true,
+  "pre_post_commit_files_unchanged": true,
+  "records": {
+    "mount-18-generate-dag": {
+      "exit_code": 0,
+      "elapsed_seconds": 73.78114048787393,
+      "guard": null,
+      "source_changed": false,
+      "log_sha256": "cb88c76f74f140251e1128668607e60a7178a069c5cc0efec1edad9613d81b11",
+      "cpu_seconds": 124.914967,
+      "box_reaped": false,
+      "receipt_sha256": "a18c32df4c23978f2098517a19c39f4e3e64b5ff2da4cbecc17ffb1736c18121"
+    },
+    "mount-integration-commit": {
+      "exit_code": 1,
+      "elapsed_seconds": 11.689585814019665,
+      "guard": null,
+      "source_changed": false,
+      "log_sha256": "feb4257cbab2ebc699b62b6f9e534b81917e6edde82f008968e0067374a5b26b",
+      "cpu_seconds": 6.045241,
+      "box_reaped": false,
+      "receipt_sha256": "6b559e58ca4a42938c16b594f6298dccea4a10df188670a7c6475d673ddfe9da"
+    },
+    "mount-integration-commit-ack": {
+      "exit_code": 0,
+      "elapsed_seconds": 5.454469581134617,
+      "guard": null,
+      "source_changed": false,
+      "log_sha256": "47d08b551beeca8d219cd798c4b89cd5990ae6697197e0b9c6fa7f9040061186",
+      "cpu_seconds": 5.865382,
+      "box_reaped": false,
+      "receipt_sha256": "31fc7a847123a15a214193c0ed3a8c1a116dea2b1f47ee6cb2278838844f6922"
+    }
+  },
+  "generator_scope_readback": {
+    "argv": [
+      "systemctl",
+      "--user",
+      "show",
+      "hermit-box-run-1556495-1789625406011113874.scope",
+      "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+    ],
+    "exit_code": 0,
+    "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+    "stderr": "",
+    "inactive_empty": true
+  },
+  "native_tests_and_integrated_guests_not_run_by_reviewer": true
+}

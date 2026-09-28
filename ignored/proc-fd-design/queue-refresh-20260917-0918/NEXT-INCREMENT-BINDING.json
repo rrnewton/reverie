@@ -1,0 +1,34 @@
+{
+  "captured_utc": "2026-09-17T09:51:32.797920+00:00",
+  "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+  "branch": "codex/kvm-parity-recovery-20260916",
+  "head": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+  "tree": "b06a3d19d4e15e31542aeef742d5f81679df2a99",
+  "tracked_and_untracked_status": "?? HANDOFF.md\n",
+  "handoff_sha256": "f3d4023258cb7644c9a919b07a99f3c7fa0aec330f246b010c2406aa4c07bd3c",
+  "handoff_bytes": 2107,
+  "handoff_mode": "0o644",
+  "prior_artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/pr2958-follow-up/PLAN.md",
+      "bytes": 16870,
+      "sha256": "857a993489c4dd3eec7c66552d8df25b59f0e0ca09ae391ec578e9dd0111f7d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/pr2958-follow-up/source-binding.json",
+      "bytes": 109305,
+      "sha256": "891b7fff0cb305bd42f16665b1e49a9276a06c4ce2d5b92a275bb6c63698c15a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/pr2958-follow-up/original-authored.patch",
+      "bytes": 705332,
+      "sha256": "451bdf2fd3774bce44c9f6ccd67950c2ad75a578d404ce9209ee28be9e9b3e9c"
+    }
+  ],
+  "donor_patch_sha256": "a3f1ff727aeff0dd6f9aabc7d19c9c58375ff9486370744c483ae22605494bbd",
+  "donor_patch_bytes": 2251,
+  "donor_source_sha256": "a311bbbde8bd827d3aad9c8225dcaa394db567aa33afd991f89202cbc79e3abd",
+  "public_312_global_opts_sha256": "c6ba4919c06c4c4cb6e1498101719fd62f8a85f789574b8b40c01ef37a9cd26f",
+  "public_312_equals_retained439_global_opts": true,
+  "permission_limit": "read-only branch/context inventory; no source release inferred, HANDOFF retained unchanged"
+}

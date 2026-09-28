@@ -1,0 +1,1406 @@
+[
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-075ced958c914e7a/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-075ced958c914e7a/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397391284,
+    "mtime_ns": 1789673535590795821,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-075ced958c914e7a/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-075ced958c914e7a/output",
+    "bytes": 337,
+    "mode": 420,
+    "sha256": "57c537c883bcea1b4687399c339398ca7b2f282e9ab3ea7f8f4905062c5a8f63",
+    "device": 49,
+    "inode": 397391289,
+    "mtime_ns": 1789673535590795821,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-075ced958c914e7a/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-075ced958c914e7a/root-output",
+    "bytes": 104,
+    "mode": 420,
+    "sha256": "66f1fd07e7fe4fbcd729a60d44ad288801c1d03bdc3ce00103aee2f994f0ad47",
+    "device": 49,
+    "inode": 397391291,
+    "mtime_ns": 1789673535620795849,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-075ced958c914e7a/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-075ced958c914e7a/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397391290,
+    "mtime_ns": 1789673535620795849,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build_script_build-168875ed329b06d3",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build_script_build-168875ed329b06d3",
+    "bytes": 440976,
+    "mode": 493,
+    "sha256": "fa642215fad0d73594ef99696dd4a8e6873e2f478d05ddadc4408d6a0f96441f",
+    "device": 49,
+    "inode": 397391231,
+    "mtime_ns": 1789673535135795390,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build_script_build-168875ed329b06d3.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build_script_build-168875ed329b06d3.d",
+    "bytes": 551,
+    "mode": 420,
+    "sha256": "1aa591d5574e19f7bde0828fd50f60becbcb48b587e2fa9a3e8b594165031687",
+    "device": 49,
+    "inode": 397391219,
+    "mtime_ns": 1789673535069795328,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-325a8f7e3212b35e/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-325a8f7e3212b35e/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390487,
+    "mtime_ns": 1789673530078790607,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-325a8f7e3212b35e/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-325a8f7e3212b35e/output",
+    "bytes": 34,
+    "mode": 420,
+    "sha256": "728ed3558e77726a99b8d4db0825e424cd99543ac81da7d80f84a5e04cf74869",
+    "device": 49,
+    "inode": 397390488,
+    "mtime_ns": 1789673530078790607,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-325a8f7e3212b35e/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-325a8f7e3212b35e/root-output",
+    "bytes": 111,
+    "mode": 420,
+    "sha256": "776d3f8e4f1eaf7605fe4fa9212c404006fdacd696a624bc44fac2f4421b6a47",
+    "device": 49,
+    "inode": 397390490,
+    "mtime_ns": 1789673530088790616,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-325a8f7e3212b35e/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-325a8f7e3212b35e/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390489,
+    "mtime_ns": 1789673530088790616,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build_script_build-a789441236726915",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build_script_build-a789441236726915",
+    "bytes": 443720,
+    "mode": 493,
+    "sha256": "c49d9a7ee14845a47cf8814e59ff19156d204b23451b24e27fb0e42d228f940c",
+    "device": 49,
+    "inode": 397390234,
+    "mtime_ns": 1789673527362788038,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build_script_build-a789441236726915.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build_script_build-a789441236726915.d",
+    "bytes": 583,
+    "mode": 420,
+    "sha256": "02c7b02331ec56c00e13db480ba579005826603e35f4baf8e0f9db7113c3fc26",
+    "device": 49,
+    "inode": 397390222,
+    "mtime_ns": 1789673527336788013,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-7efbd6dfa0693fed/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-7efbd6dfa0693fed/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397394711,
+    "mtime_ns": 1789673550361809792,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-7efbd6dfa0693fed/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-7efbd6dfa0693fed/output",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "dd454a92dee8a02b053b2cf6f15c04b2ff982baaa108229e76ba230456bca222",
+    "device": 49,
+    "inode": 397394712,
+    "mtime_ns": 1789673550361809792,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-7efbd6dfa0693fed/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-7efbd6dfa0693fed/root-output",
+    "bytes": 107,
+    "mode": 420,
+    "sha256": "fecd36c3c9cd166b991b01703d60aeebbf022083dcc8673d19fb25640e358b51",
+    "device": 49,
+    "inode": 397394714,
+    "mtime_ns": 1789673550365809796,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-7efbd6dfa0693fed/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-7efbd6dfa0693fed/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397394713,
+    "mtime_ns": 1789673550365809796,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build_script_build-8a9c7e59243f4229",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build_script_build-8a9c7e59243f4229",
+    "bytes": 354864,
+    "mode": 493,
+    "sha256": "a6545bfc72f67b7352ea8d4ab39c8ba8dc578713270e0650f53ea6111e51210d",
+    "device": 49,
+    "inode": 397393541,
+    "mtime_ns": 1789673546157805816,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build_script_build-8a9c7e59243f4229.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build_script_build-8a9c7e59243f4229.d",
+    "bytes": 560,
+    "mode": 420,
+    "sha256": "b585724ec06fdb826907d5a14809bbb8837a56045e6e3ec64044a615eeac78c4",
+    "device": 49,
+    "inode": 397393523,
+    "mtime_ns": 1789673546113805774,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build_script_build-60a4793546b20624",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build_script_build-60a4793546b20624",
+    "bytes": 454968,
+    "mode": 493,
+    "sha256": "5821faf967b37db37831c823fb476a54a368e8cbb6ecac7c31865fd8fc2e823f",
+    "device": 49,
+    "inode": 397389818,
+    "mtime_ns": 1789673525679786446,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build_script_build-60a4793546b20624.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build_script_build-60a4793546b20624.d",
+    "bytes": 541,
+    "mode": 420,
+    "sha256": "9fb5d3814346b062338f342324b9ff6e8d37be871b691869ac0ba97f0276788e",
+    "device": 49,
+    "inode": 397389800,
+    "mtime_ns": 1789673525577786349,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-fc9be8fc67846877/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-fc9be8fc67846877/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397389822,
+    "mtime_ns": 1789673525683786450,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-fc9be8fc67846877/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-fc9be8fc67846877/output",
+    "bytes": 1222,
+    "mode": 420,
+    "sha256": "a8c8f65c7e5ff321c04794c844638e113fcb0823bef06c2baf483eaf13c1a73e",
+    "device": 49,
+    "inode": 397389823,
+    "mtime_ns": 1789673525683786450,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-fc9be8fc67846877/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-fc9be8fc67846877/root-output",
+    "bytes": 102,
+    "mode": 420,
+    "sha256": "0cf7d281745ca1b86b73c741cf617e52631f5dd5554bac1c6a322820ec357f5f",
+    "device": 49,
+    "inode": 397389825,
+    "mtime_ns": 1789673525694786460,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-fc9be8fc67846877/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-fc9be8fc67846877/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397389824,
+    "mtime_ns": 1789673525694786460,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-1c8046c0621f37a5/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-1c8046c0621f37a5/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390710,
+    "mtime_ns": 1789673531902792332,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-1c8046c0621f37a5/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-1c8046c0621f37a5/output",
+    "bytes": 201,
+    "mode": 420,
+    "sha256": "25718bc86269e410ef48775e0b1071521dd9f7a7029abc371aa98e55dfe43324",
+    "device": 49,
+    "inode": 397390715,
+    "mtime_ns": 1789673531902792332,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-1c8046c0621f37a5/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-1c8046c0621f37a5/root-output",
+    "bytes": 107,
+    "mode": 420,
+    "sha256": "4263046fba457da9b090e13fd3f709a83e7cf60bf91d36655667cb9a1a6e07fb",
+    "device": 49,
+    "inode": 397390717,
+    "mtime_ns": 1789673531926792355,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-1c8046c0621f37a5/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-1c8046c0621f37a5/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390716,
+    "mtime_ns": 1789673531926792355,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build_script_build-3576ccc6695fae61",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build_script_build-3576ccc6695fae61",
+    "bytes": 520096,
+    "mode": 493,
+    "sha256": "a656e9910d6690095b089b22418467536f3f4d038acb22d5107950f7e3847123",
+    "device": 49,
+    "inode": 397390507,
+    "mtime_ns": 1789673530131790657,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build_script_build-3576ccc6695fae61.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build_script_build-3576ccc6695fae61.d",
+    "bytes": 560,
+    "mode": 420,
+    "sha256": "126fcf81f346ab7854f2c18ff24dc2eb83fa09801bb6926b9c8c54c237f1a072",
+    "device": 49,
+    "inode": 397390494,
+    "mtime_ns": 1789673530103790631,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build_script_build-c62d6c2f6782c2b4",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build_script_build-c62d6c2f6782c2b4",
+    "bytes": 423864,
+    "mode": 493,
+    "sha256": "71b5dbc3f7150444e869d4fdfb24c0528dd7eb18f0cf738e542f2709eaede475",
+    "device": 49,
+    "inode": 397390664,
+    "mtime_ns": 1789673531468791922,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build_script_build-c62d6c2f6782c2b4.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build_script_build-c62d6c2f6782c2b4.d",
+    "bytes": 533,
+    "mode": 420,
+    "sha256": "486f48931ab6598facd9a3cd0f0f5304be6af40b2a4bcf98624a4ddd3e3c0200",
+    "device": 49,
+    "inode": 397390648,
+    "mtime_ns": 1789673531364791823,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-f00256dca29fdd3b/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-f00256dca29fdd3b/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390999,
+    "mtime_ns": 1789673533226793585,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-f00256dca29fdd3b/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-f00256dca29fdd3b/output",
+    "bytes": 890,
+    "mode": 420,
+    "sha256": "8dffe6abb224d5a55443f0c194e029aee9cf6c3c1a03699ff209fde55e0d09b8",
+    "device": 49,
+    "inode": 397391000,
+    "mtime_ns": 1789673533226793585,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-f00256dca29fdd3b/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-f00256dca29fdd3b/root-output",
+    "bytes": 101,
+    "mode": 420,
+    "sha256": "1eca611a8db4255b72187b0f29504a972cbdc542cc134cb0d18863405bd44b8a",
+    "device": 49,
+    "inode": 397391002,
+    "mtime_ns": 1789673533229793587,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-f00256dca29fdd3b/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-f00256dca29fdd3b/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397391001,
+    "mtime_ns": 1789673533229793587,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-7263bad6e5522d0c/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-7263bad6e5522d0c/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390945,
+    "mtime_ns": 1789673532659793048,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-7263bad6e5522d0c/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-7263bad6e5522d0c/output",
+    "bytes": 103,
+    "mode": 420,
+    "sha256": "b3381c2f8957591e2f83be8bc409d3b9785a8a220c4373dc1ddc455b725153f9",
+    "device": 49,
+    "inode": 397390954,
+    "mtime_ns": 1789673532659793048,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-7263bad6e5522d0c/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-7263bad6e5522d0c/root-output",
+    "bytes": 108,
+    "mode": 420,
+    "sha256": "679a9a4bb1ca46a1d3de85253f5a1662b2c5047586733f4758c6909e4c85119b",
+    "device": 49,
+    "inode": 397390956,
+    "mtime_ns": 1789673532699868547,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-7263bad6e5522d0c/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-7263bad6e5522d0c/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390955,
+    "mtime_ns": 1789673532699868547,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build_script_build-94a754cf22ab07d8",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build_script_build-94a754cf22ab07d8",
+    "bytes": 520336,
+    "mode": 493,
+    "sha256": "4d81684c5f38df4f1067f7cffaecd2639957a3e653c71519eb2dbf1dabe34973",
+    "device": 49,
+    "inode": 397390776,
+    "mtime_ns": 1789673532112792531,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build_script_build-94a754cf22ab07d8.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build_script_build-94a754cf22ab07d8.d",
+    "bytes": 568,
+    "mode": 420,
+    "sha256": "745d91700a77ce1a6158061f6dae471a4463cb5df80e8bda270409e4f5e18ca4",
+    "device": 49,
+    "inode": 397390751,
+    "mtime_ns": 1789673532084792504,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build_script_build-94a54ef6dda938bb",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build_script_build-94a54ef6dda938bb",
+    "bytes": 406928,
+    "mode": 493,
+    "sha256": "b920d69c8ab74a899d7e69c871bb6d5fbae867e470c72b8be68b33a9f79a177f",
+    "device": 49,
+    "inode": 397390804,
+    "mtime_ns": 1789673532170792586,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build_script_build-94a54ef6dda938bb.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build_script_build-94a54ef6dda938bb.d",
+    "bytes": 543,
+    "mode": 420,
+    "sha256": "b615afc1c92e9cfd6e1d797c3ee5404a8c7c0d391fb59f3d36e58a6ee78a3a26",
+    "device": 49,
+    "inode": 397390781,
+    "mtime_ns": 1789673532120792538,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-eb187a30188241d1/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-eb187a30188241d1/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390939,
+    "mtime_ns": 1789673532649793039,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-eb187a30188241d1/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-eb187a30188241d1/output",
+    "bytes": 147,
+    "mode": 420,
+    "sha256": "76345a276f5e36bb19bec7896a3fb92d674a952296a66210951b9caded7b3368",
+    "device": 49,
+    "inode": 397390940,
+    "mtime_ns": 1789673532649793039,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-eb187a30188241d1/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-eb187a30188241d1/root-output",
+    "bytes": 103,
+    "mode": 420,
+    "sha256": "bc2c94f44c12ad64cdcfd9526183e0de8c9f3f418523c91320878362da7c46ae",
+    "device": 49,
+    "inode": 397390942,
+    "mtime_ns": 1789673532659793048,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-eb187a30188241d1/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-eb187a30188241d1/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390941,
+    "mtime_ns": 1789673532659793048,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-30a248254c871aa3/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-30a248254c871aa3/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397389539,
+    "mtime_ns": 1789673523714784587,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-30a248254c871aa3/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-30a248254c871aa3/output",
+    "bytes": 932,
+    "mode": 420,
+    "sha256": "6fb9b93018b48c773e7da2fd981ecd249289527845798c9f0e1658678696ec24",
+    "device": 49,
+    "inode": 397389565,
+    "mtime_ns": 1789673523714784587,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-30a248254c871aa3/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-30a248254c871aa3/root-output",
+    "bytes": 109,
+    "mode": 420,
+    "sha256": "6f4833dbaec9b63180e1932278a6673a98b10f8e0da50c96a6d9b4fc3552e405",
+    "device": 49,
+    "inode": 397389567,
+    "mtime_ns": 1789673523744784616,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-30a248254c871aa3/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-30a248254c871aa3/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397389566,
+    "mtime_ns": 1789673523744784616,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build_script_build-42d0306140dba9a7",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build_script_build-42d0306140dba9a7",
+    "bytes": 443920,
+    "mode": 493,
+    "sha256": "062be535c789af66a53d6a2b6646617d88f045882bd63907e793b3559be42eb2",
+    "device": 49,
+    "inode": 397389535,
+    "mtime_ns": 1789673523708784581,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build_script_build-42d0306140dba9a7.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build_script_build-42d0306140dba9a7.d",
+    "bytes": 576,
+    "mode": 420,
+    "sha256": "19f49a50eff45624f1894763bd962c048a697207f810c7dffff02d1f2257dc2f",
+    "device": 49,
+    "inode": 397389503,
+    "mtime_ns": 1789673523634784511,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-2ad35d841031874a/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-2ad35d841031874a/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397389552,
+    "mtime_ns": 1789673523727784599,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-2ad35d841031874a/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-2ad35d841031874a/output",
+    "bytes": 83,
+    "mode": 420,
+    "sha256": "e18aa0a6d8bc038d8be01c064d207eaefa1412edd991b27eb123b0664c53fecc",
+    "device": 49,
+    "inode": 397389556,
+    "mtime_ns": 1789673523727784599,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-2ad35d841031874a/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-2ad35d841031874a/root-output",
+    "bytes": 103,
+    "mode": 420,
+    "sha256": "cca0312ae1ef2e8dbc02bfbbdeaf7730dd9a53ba85401e5d055299680bc5b46a",
+    "device": 49,
+    "inode": 397389558,
+    "mtime_ns": 1789673523738784610,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-2ad35d841031874a/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-2ad35d841031874a/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397389557,
+    "mtime_ns": 1789673523738784610,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build_script_build-8fd6d312e547734e",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build_script_build-8fd6d312e547734e",
+    "bytes": 406656,
+    "mode": 493,
+    "sha256": "1f912142b6cfda0162e0453bada005d0a0abd495b31e8084724a4fe5faf537ad",
+    "device": 49,
+    "inode": 397389521,
+    "mtime_ns": 1789673523685784560,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build_script_build-8fd6d312e547734e.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build_script_build-8fd6d312e547734e.d",
+    "bytes": 543,
+    "mode": 420,
+    "sha256": "ca16a8f8c16bc107dac861a1bbecdc61726bc7072cc969cd54ea87a342ef4c6f",
+    "device": 49,
+    "inode": 397389502,
+    "mtime_ns": 1789673523633784511,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-73fab21273ec28ad/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-73fab21273ec28ad/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390933,
+    "mtime_ns": 1789673532645793035,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-73fab21273ec28ad/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-73fab21273ec28ad/output",
+    "bytes": 165,
+    "mode": 420,
+    "sha256": "a50e32858e1425c9d524c19acaa59d13ebdeddec2b3d08d5d911f4fb8433eae9",
+    "device": 49,
+    "inode": 397390934,
+    "mtime_ns": 1789673532645793035,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-73fab21273ec28ad/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-73fab21273ec28ad/root-output",
+    "bytes": 104,
+    "mode": 420,
+    "sha256": "a4c0bb825f0c7c337fdc1fd5efdfd61dd34c0eb923b0f5972e209662a18248c7",
+    "device": 49,
+    "inode": 397390936,
+    "mtime_ns": 1789673532648793038,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-73fab21273ec28ad/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-73fab21273ec28ad/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390935,
+    "mtime_ns": 1789673532648793038,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build_script_build-ed5f82c473ca7fff",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build_script_build-ed5f82c473ca7fff",
+    "bytes": 355512,
+    "mode": 493,
+    "sha256": "35fa2bed54efc3ea3344e8acd1c75109cf180ae5b126035d22976038e277af87",
+    "device": 49,
+    "inode": 397390814,
+    "mtime_ns": 1789673532179792594,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build_script_build-ed5f82c473ca7fff.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build_script_build-ed5f82c473ca7fff.d",
+    "bytes": 545,
+    "mode": 420,
+    "sha256": "f0b01f325302aff390107ac00a0d2ee08e75abcbc280175169b93eb70db7aa85",
+    "device": 49,
+    "inode": 397390784,
+    "mtime_ns": 1789673532132792550,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build_script_build-62f1443b2e640e23",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build_script_build-62f1443b2e640e23",
+    "bytes": 445488,
+    "mode": 493,
+    "sha256": "b02e2e03c194dabfbb01223cb27828d668a3947a255ceac4c0f7c9f19953bba0",
+    "device": 49,
+    "inode": 397390161,
+    "mtime_ns": 1789673527187787872,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build_script_build-62f1443b2e640e23.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build_script_build-62f1443b2e640e23.d",
+    "bytes": 545,
+    "mode": 420,
+    "sha256": "e1ad49c4a538c77b0b5be6327c4a430119509c37c2f18be260a28adc3071c983",
+    "device": 49,
+    "inode": 397390080,
+    "mtime_ns": 1789673527097787787,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-c6539f4411867dac/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-c6539f4411867dac/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390238,
+    "mtime_ns": 1789673527366788042,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-c6539f4411867dac/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-c6539f4411867dac/output",
+    "bytes": 491,
+    "mode": 420,
+    "sha256": "d3977ae6316aacb3a1fe6195c56989fcfb58c06fd8ac3119c04b42f946a881b6",
+    "device": 49,
+    "inode": 397390246,
+    "mtime_ns": 1789673527366788042,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-c6539f4411867dac/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-c6539f4411867dac/root-output",
+    "bytes": 104,
+    "mode": 420,
+    "sha256": "a1ac3e202d61f04e98a7f5a912dc899997e61cd71f1c6365eeca14b3871da7a0",
+    "device": 49,
+    "inode": 397390248,
+    "mtime_ns": 1789673527399868362,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-c6539f4411867dac/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-c6539f4411867dac/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390247,
+    "mtime_ns": 1789673527399868362,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-07ae723660755ab3/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-07ae723660755ab3/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397389787,
+    "mtime_ns": 1789673525549786323,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-07ae723660755ab3/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-07ae723660755ab3/output",
+    "bytes": 582,
+    "mode": 420,
+    "sha256": "fbefaabcc65c2512e804f217336578c3751a411d58efabf3d24b8a74e2072fbb",
+    "device": 49,
+    "inode": 397389791,
+    "mtime_ns": 1789673525549786323,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-07ae723660755ab3/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-07ae723660755ab3/root-output",
+    "bytes": 103,
+    "mode": 420,
+    "sha256": "7fcac6a93af2923fb6e618dc41b8b5b70732db66fcfc27e7b7843b33726fe35f",
+    "device": 49,
+    "inode": 397389793,
+    "mtime_ns": 1789673525560786333,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-07ae723660755ab3/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-07ae723660755ab3/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397389792,
+    "mtime_ns": 1789673525560786333,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build_script_build-1e172df5c1a329f0",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build_script_build-1e172df5c1a329f0",
+    "bytes": 423984,
+    "mode": 493,
+    "sha256": "22784ad1e2f684c55061a45598171a6f01f996dd13b19569c67cc1b72bb4997f",
+    "device": 49,
+    "inode": 397389782,
+    "mtime_ns": 1789673525546411655,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build_script_build-1e172df5c1a329f0.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build_script_build-1e172df5c1a329f0.d",
+    "bytes": 546,
+    "mode": 420,
+    "sha256": "471b5c328085eeb2d853fe04bbc9c678d28c4445121658c1156c49d0c780ec0c",
+    "device": 49,
+    "inode": 397389770,
+    "mtime_ns": 1789673525479786257,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build_script_build-13e115e5ce1c7652",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build_script_build-13e115e5ce1c7652",
+    "bytes": 426288,
+    "mode": 493,
+    "sha256": "5456f3a78acc83b3a17bb317d0e0fd2007b381cb2f06de390954f6f4675eca8c",
+    "device": 49,
+    "inode": 397389595,
+    "mtime_ns": 1789673523823162339,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build_script_build-13e115e5ce1c7652.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build_script_build-13e115e5ce1c7652.d",
+    "bytes": 571,
+    "mode": 420,
+    "sha256": "63785f4c1069047600a0535b8b8446de999e51d4e696a2cf5868db3db4eeaa9e",
+    "device": 49,
+    "inode": 397389575,
+    "mtime_ns": 1789673523753784624,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-e787b6a14bfd8881/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-e787b6a14bfd8881/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397389601,
+    "mtime_ns": 1789673523827784694,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-e787b6a14bfd8881/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-e787b6a14bfd8881/output",
+    "bytes": 484,
+    "mode": 420,
+    "sha256": "b05731ace603d330b9a7aaf76b8433df15c3e1b2a3a95f4c644d5f5ed0c82f84",
+    "device": 49,
+    "inode": 397389603,
+    "mtime_ns": 1789673523827784694,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-e787b6a14bfd8881/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-e787b6a14bfd8881/root-output",
+    "bytes": 108,
+    "mode": 420,
+    "sha256": "7eed2bdb3f66fa023266716371184c20167a247041cf2f8586725bd6d6efdc04",
+    "device": 49,
+    "inode": 397389605,
+    "mtime_ns": 1789673523839784705,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-e787b6a14bfd8881/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-e787b6a14bfd8881/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397389604,
+    "mtime_ns": 1789673523839784705,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build_script_build-0a15e695e2e140f9",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build_script_build-0a15e695e2e140f9",
+    "bytes": 340592,
+    "mode": 493,
+    "sha256": "3f5a53716bf9d069c249052f4c6e2dafe82ec8d440a9b2642e0457838117e5a1",
+    "device": 49,
+    "inode": 397390854,
+    "mtime_ns": 1789673532217792630,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build_script_build-0a15e695e2e140f9.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build_script_build-0a15e695e2e140f9.d",
+    "bytes": 571,
+    "mode": 420,
+    "sha256": "f5d275e1944a28d67463da38f4072b79d8b939a52dce9a4c3bfc28726a0564e6",
+    "device": 49,
+    "inode": 397390821,
+    "mtime_ns": 1789673532188792603,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-1d1bcc3bb8df89c7/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-1d1bcc3bb8df89c7/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390927,
+    "mtime_ns": 1789673532642793032,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-1d1bcc3bb8df89c7/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-1d1bcc3bb8df89c7/output",
+    "bytes": 132,
+    "mode": 420,
+    "sha256": "6bb524834a0c0657c682dbb81bc6eeb23ac92c48da502f17ce4455240e5d062b",
+    "device": 49,
+    "inode": 397390928,
+    "mtime_ns": 1789673532642793032,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-1d1bcc3bb8df89c7/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-1d1bcc3bb8df89c7/root-output",
+    "bytes": 108,
+    "mode": 420,
+    "sha256": "a7b57ced432e90eac226a15a3e06cb8c8da5f16560be5562f94cb0153196ad3b",
+    "device": 49,
+    "inode": 397390930,
+    "mtime_ns": 1789673532645793035,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-1d1bcc3bb8df89c7/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-1d1bcc3bb8df89c7/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390929,
+    "mtime_ns": 1789673532645793035,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build_script_build-75c77dda53a01fd4",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build_script_build-75c77dda53a01fd4",
+    "bytes": 332912,
+    "mode": 493,
+    "sha256": "c9ad05dd09478149b519aa6a44bb234450133739ed2b7a37ee97835e1d0a33bc",
+    "device": 49,
+    "inode": 397391248,
+    "mtime_ns": 1789673535177795430,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build_script_build-75c77dda53a01fd4.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build_script_build-75c77dda53a01fd4.d",
+    "bytes": 570,
+    "mode": 420,
+    "sha256": "29564a5873faa1e4db240306c53a38789eb1267327cfd45ecd29560a6344e6f7",
+    "device": 49,
+    "inode": 397391236,
+    "mtime_ns": 1789673535153795407,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-cb10ab68d98989dc/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-cb10ab68d98989dc/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397391278,
+    "mtime_ns": 1789673535587795818,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-cb10ab68d98989dc/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-cb10ab68d98989dc/output",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397391279,
+    "mtime_ns": 1789673535587795818,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-cb10ab68d98989dc/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-cb10ab68d98989dc/root-output",
+    "bytes": 109,
+    "mode": 420,
+    "sha256": "0fde90e19067f8fbc68a83e171104fd3771c40845b8d0081fc18f7acc0413dd8",
+    "device": 49,
+    "inode": 397391281,
+    "mtime_ns": 1789673535589795820,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-cb10ab68d98989dc/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-cb10ab68d98989dc/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397391280,
+    "mtime_ns": 1789673535589795820,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build_script_build-032901c1b55d7524",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build_script_build-032901c1b55d7524",
+    "bytes": 340544,
+    "mode": 493,
+    "sha256": "82a17fbfc3b17a68b390997c309dfb66238d7a506f47cdf6332c2ef5368ecd44",
+    "device": 49,
+    "inode": 397390572,
+    "mtime_ns": 1789673531022791500,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build_script_build-032901c1b55d7524.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build_script_build-032901c1b55d7524.d",
+    "bytes": 558,
+    "mode": 420,
+    "sha256": "94e51c63b5deefcadc86e1d21b00f73dd5155cf6e3b33f718cd67632b0c5f07b",
+    "device": 49,
+    "inode": 397390560,
+    "mtime_ns": 1789673530992791471,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-13f0ed2fe08fbf28/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-13f0ed2fe08fbf28/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390641,
+    "mtime_ns": 1789673531344791804,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-13f0ed2fe08fbf28/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-13f0ed2fe08fbf28/output",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "dd454a92dee8a02b053b2cf6f15c04b2ff982baaa108229e76ba230456bca222",
+    "device": 49,
+    "inode": 397390642,
+    "mtime_ns": 1789673531344791804,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-13f0ed2fe08fbf28/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-13f0ed2fe08fbf28/root-output",
+    "bytes": 106,
+    "mode": 420,
+    "sha256": "a04de3460099c354a7caa59a6d9897405ae696c6d48a571767f44de9673b9172",
+    "device": 49,
+    "inode": 397390644,
+    "mtime_ns": 1789673531347791807,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-13f0ed2fe08fbf28/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-13f0ed2fe08fbf28/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390643,
+    "mtime_ns": 1789673531347791807,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build_script_build-858beb93a7e433cc",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build_script_build-858beb93a7e433cc",
+    "bytes": 409840,
+    "mode": 493,
+    "sha256": "d1af90569b76850cfa43aae7db4f54920196ca6aa68d7b5216a5561f7166ff43",
+    "device": 49,
+    "inode": 397390604,
+    "mtime_ns": 1789673531119791592,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build_script_build-858beb93a7e433cc.d",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build_script_build-858beb93a7e433cc.d",
+    "bytes": 538,
+    "mode": 420,
+    "sha256": "375c6763adb18129ffa7e45ca2c58570b80c831ca3764b9f61590b214c7d7306",
+    "device": 49,
+    "inode": 397390592,
+    "mtime_ns": 1789673531069791544,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-e8ef872e9661dbd2/invoked.timestamp",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-e8ef872e9661dbd2/invoked.timestamp",
+    "bytes": 48,
+    "mode": 420,
+    "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+    "device": 49,
+    "inode": 397390622,
+    "mtime_ns": 1789673531238791704,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-e8ef872e9661dbd2/output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-e8ef872e9661dbd2/output",
+    "bytes": 176,
+    "mode": 420,
+    "sha256": "c0b8aa6f3fd9897b28fc79459a2eee7a119105af18f0e05bc79bb3f1ea0ad94e",
+    "device": 49,
+    "inode": 397390623,
+    "mtime_ns": 1789673531238791704,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-e8ef872e9661dbd2/root-output",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-e8ef872e9661dbd2/root-output",
+    "bytes": 102,
+    "mode": 420,
+    "sha256": "71e0683c08b6e99869411ae96db22629ebf9f2d55d835cedff58bf09b23d8da2",
+    "device": 49,
+    "inode": 397390625,
+    "mtime_ns": 1789673531249791715,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  },
+  {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-e8ef872e9661dbd2/stderr",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-e8ef872e9661dbd2/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "device": 49,
+    "inode": 397390624,
+    "mtime_ns": 1789673531249791715,
+    "roles": [
+      "existing Cargo build-script executable or output"
+    ]
+  }
+]

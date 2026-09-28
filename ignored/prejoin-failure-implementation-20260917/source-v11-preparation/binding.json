@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "base_tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "mode": "644",
+      "bytes": 9168,
+      "sha256": "b59708a61dd1534c8bf1179af37aa51f6a6eb185ad5115213faca75f37756214"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "mode": "644",
+      "bytes": 1396828,
+      "sha256": "3c3e312ccd297d93ba0cd6971156b00a5a47eb543d81f729a9002b1ffdf1d74b"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "mode": "644",
+      "bytes": 15362,
+      "sha256": "3762b232dab8a54b7631376263e4b0d12e8e9c50789eb168ba9fda3d93f8451b"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "mode": "644",
+      "bytes": 1721,
+      "sha256": "3438c724c266568bd175451c32ce5b297872dab69abcad0a1a146d4872e78650"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "mode": "644",
+      "bytes": 155440,
+      "sha256": "e3a37e6a5d8676d0192f9dde72e2f95f26f1bbf70eb043e5e01926abfa6f5060"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "mode": "644",
+      "bytes": 23950,
+      "sha256": "476830f40e36166ee1fc0eca6dcf348b0eafc7d7e7b1f225aa5866232dd7582c"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "mode": "644",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "mode": "644",
+      "bytes": 291904,
+      "sha256": "877f28d0d03dc1da15787894724721a84bad73d514e71631e3f6c0e5bea19081"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "mode": "644",
+      "bytes": 22113,
+      "sha256": "47199a5de83f5e8d94f883ac5909ee1de24aa1820774be61555d211a4844d85a"
+    },
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "mode": "644",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/native_test_support.rs",
+      "mode": "644",
+      "bytes": 17168,
+      "sha256": "18254f2722d63957d5c28c7952ad9aa1761645f5984b1c0e1672bf8f74353d2c"
+    }
+  ],
+  "patch_sha256": "774f2863f9bd7338a7edb3bc6ad024e5046b58620c71cb07e97411b9a0bef30e",
+  "patch_bytes": 153730,
+  "report_sha256": "a6accdbbc166426ad63647afddb5e63cd051211d8e4f3403a1e623f89d50aacc",
+  "source_manifest_sha256": "ae6cd2cc542dd56192beb234672604fc021940f1450f3f8d9766016983164bfa",
+  "selected_tests_sha256": "befc2fa75c5f82f85d3f6abe5723806278ee1e6aed23b991d0fbb0f09d19cf3f",
+  "increment_sha256": "5981b0ab8a0f04c9d5bda987eac62a25555ec5444865e0df941ecaee5aee786a",
+  "previous_binding_sha256": "b1ca2effa4b403dc6e712f2920055430e4f66ac14ad5a2596821f791c19b67de",
+  "previous_actual_patch_sha256": "ee1f46900cfe86546d95f3556b5fa9c65b01f0b426d7a8f570db891143f58c15",
+  "previous_report_sha256": "d7aa167da745fdf9d19b87d9ab4d16a604a0dc5498714c8c146ccb9c9c9ea3e2",
+  "feature": "native-test-support (nondefault)",
+  "retained_no_vm_selected_count": 34,
+  "added_kvm_construction_selector_count": 1,
+  "source_preparation": "Only rustfmt final-match-arm layout changed after terminal lint-v3 result; no execution on source-v11."
+}

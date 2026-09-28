@@ -1,0 +1,866 @@
+{
+  "base": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+  "head": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+  "remote_tree": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+  "remote_tree_truncated": false,
+  "file_entries_before": 2562,
+  "file_entries_after": 2581,
+  "changed_paths": [
+    "experimental/reverie-sabre/tests/loader_bootstrap.c",
+    "experimental/reverie-sabre/tests/loader_bootstrap.rs",
+    "experimental/reverie-sabre/tests/loader_map_protections.c",
+    "experimental/reverie-sabre/tests/loader_map_protections.rs",
+    "experimental/reverie-sabre/vendor/sabre/includes/loader/bootstrap.h",
+    "experimental/reverie-sabre/vendor/sabre/includes/loader/maps.h",
+    "experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/maps.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/premain.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/tools/process-vdso.c",
+    "reverie-dbt/native/CMakeLists.txt",
+    "reverie-liteinst/tests/fixtures/hybrid_exec_during_preinit.c",
+    "reverie-liteinst/tests/fixtures/hybrid_exec_generation.c",
+    "reverie-liteinst/tests/fixtures/hybrid_fork_exec.c",
+    "reverie-liteinst/tests/fixtures/hybrid_fork_exec_after_root_exit.c",
+    "reverie-liteinst/tests/fixtures/hybrid_thread_exec.c",
+    "reverie-liteinst/tests/hybrid.rs",
+    "reverie-ptrace/src/task.rs",
+    "reverie-rpc-transport/Cargo.toml",
+    "reverie-rpc-transport/src/guest_log.rs",
+    "reverie-rpc-transport/src/guest_log/buffer.rs",
+    "reverie-rpc-transport/src/guest_log/buffer/ordered.rs",
+    "reverie-rpc-transport/src/guest_log/buffer/ordered_tests.rs",
+    "reverie-rpc-transport/src/guest_log/capture.rs",
+    "reverie-rpc-transport/src/guest_log/capture/README.md",
+    "reverie-rpc-transport/src/guest_log/capture/publication.rs",
+    "reverie-rpc-transport/src/guest_log/capture/tests.rs",
+    "reverie-rpc-transport/src/guest_log/fixture.rs",
+    "reverie-rpc-transport/src/guest_log/tests.rs",
+    "reverie-rpc-transport/src/lib.rs",
+    "reverie-rpc-transport/src/server.rs",
+    "reverie-rpc-transport/tests/fixtures/guest_log_lifecycle_fixture.rs",
+    "reverie-rpc-transport/tests/fixtures/owned_lifecycle.rs",
+    "reverie-rpc-transport/tests/guest_log_lifecycle.rs",
+    "reverie-rpc-transport/tests/retained_issues.rs"
+  ],
+  "protected_paths": {
+    "reverie-kvm/Cargo.toml": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4377574a4849625f4b155ffff9aeb7664e18db2f"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4377574a4849625f4b155ffff9aeb7664e18db2f"
+      },
+      "identical": true
+    },
+    "reverie-kvm/README.md": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "1b14e399b9099bc75efbe4d13a0c2fa5b2d5f6fc"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "1b14e399b9099bc75efbe4d13a0c2fa5b2d5f6fc"
+      },
+      "identical": true
+    },
+    "reverie-kvm/RELATED_WORK.md": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7433200a2c8a57bbe3e79f266da394e541efdd85"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7433200a2c8a57bbe3e79f266da394e541efdd85"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/bootstrap.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "88613b521c83e1fba1e8277c75c26497120fa7bd"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "88613b521c83e1fba1e8277c75c26497120fa7bd"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/child_exit_runtime_tests.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "876491ee67a4a20115d2f7ced4195c2d77de3a89"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "876491ee67a4a20115d2f7ced4195c2d77de3a89"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/child_exit_signal_tests.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "024adb4dd9df85d684786026076c369493c98ea2"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "024adb4dd9df85d684786026076c369493c98ea2"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/clock.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ae0df8df3f1dbec8061cac6aeeb643d4f4092d4f"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ae0df8df3f1dbec8061cac6aeeb643d4f4092d4f"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/cpuid.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ca356ad80bc91d95217923adbd243083bdc8f0ae"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ca356ad80bc91d95217923adbd243083bdc8f0ae"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/elf.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7959e7780cec9d3b41a6cf13088e474e3b03c1bf"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7959e7780cec9d3b41a6cf13088e474e3b03c1bf"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/error.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "13dac1cb8b5167a3872d6c96e3c6067b5218e3f4"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "13dac1cb8b5167a3872d6c96e3c6067b5218e3f4"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/executor.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "44ee9f7c26dd71075291aad4446051eeee6eba02"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "44ee9f7c26dd71075291aad4446051eeee6eba02"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/fdinfo.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "2518463e81b35fb2c27ef823edc3d103ec3bba01"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "2518463e81b35fb2c27ef823edc3d103ec3bba01"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/lib.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "b0645d69507e33ca76880691ccb5c5f9c8d9d190"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "b0645d69507e33ca76880691ccb5c5f9c8d9d190"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/memory.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ce39403ae27b32ff5c0952868759951a10acbb40"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ce39403ae27b32ff5c0952868759951a10acbb40"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/pipe_fionread_tests.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "b543b18b81860926f5279f92488eb07896b2d5e8"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "b543b18b81860926f5279f92488eb07896b2d5e8"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/proc_mounts.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "413c53832e52d380814741306e7a2ba528d78424"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "413c53832e52d380814741306e7a2ba528d78424"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/runtime.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "b289ec97da382c588ae6ad2a81d845c3f0f35403"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "b289ec97da382c588ae6ad2a81d845c3f0f35403"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/signal.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ed94e5041e0346c055b6b4b0f54701ed4c23a691"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ed94e5041e0346c055b6b4b0f54701ed4c23a691"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/stats.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4560114c1939cfbbb8f65341e41ded0b9a5f6590"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4560114c1939cfbbb8f65341e41ded0b9a5f6590"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/syscall.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "181cb0712361980e3eced3df51cde9b881e2b307"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "181cb0712361980e3eced3df51cde9b881e2b307"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/terminal_runtime_tests.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "66c71166c09b9295aba882233a94fbef33f6c69e"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "66c71166c09b9295aba882233a94fbef33f6c69e"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/terminal_vm_tests.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "8cf7c276784a9685ec8d527f05007fd985ee596b"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "8cf7c276784a9685ec8d527f05007fd985ee596b"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/tools.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "6be333f080793ce6254d409b0dc74e090f4ad90a"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "6be333f080793ce6254d409b0dc74e090f4ad90a"
+      },
+      "identical": true
+    },
+    "reverie-kvm/src/vm.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "13aeec30c28f15cb96525f342261efde290d792f"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "13aeec30c28f15cb96525f342261efde290d792f"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/counter.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "1cca70c032b55262297e9413458a3e9135851100"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "1cca70c032b55262297e9413458a3e9135851100"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/erestartsys.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "021d7d32166a9bf32860b325f834330d818ac3d8"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "021d7d32166a9bf32860b325f834330d818ac3d8"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/child_exit_signals.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ea68965ad4b2ecd0754b1b13c2441b63b6f09f76"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "ea68965ad4b2ecd0754b1b13c2441b63b6f09f76"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/leader_exit.s": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "392a8343ad5e9b204149a65f2a970338e61212f7"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "392a8343ad5e9b204149a65f2a970338e61212f7"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/leader_pthread_exit.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5e1388d3f99193836a1751b438907bec74d3c7f5"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5e1388d3f99193836a1751b438907bec74d3c7f5"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/leader_wait_status.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "626055e8346f1b60f57338c50c2b2a5cd23a8470"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "626055e8346f1b60f57338c50c2b2a5cd23a8470"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/pipe_fionread.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5ef7b7b6e147a227e0873e6bbc11e5f1a1875414"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5ef7b7b6e147a227e0873e6bbc11e5f1a1875414"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/rt_sigreturn_fpregs.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "d0e277ccf1a0b16d90eb3195fa5a1c696336cde1"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "d0e277ccf1a0b16d90eb3195fa5a1c696336cde1"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/signal_abi_kernel.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "03c407772511384b70f55cb3b8ed974041c9410d"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "03c407772511384b70f55cb3b8ed974041c9410d"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/signal_abi_libc.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "85d353f11d6ec7fb65b83f56e3570255c4ee483b"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "85d353f11d6ec7fb65b83f56e3570255c4ee483b"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/terminal_cancellation.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5ed2008025646e28e70bac67cc9ef50c1dda154c"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5ed2008025646e28e70bac67cc9ef50c1dda154c"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/fixtures/vectored_fd_width.c": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "bac9746ccd829856c775831cc4cbba8e829d0471"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "bac9746ccd829856c775831cc4cbba8e829d0471"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/read_clock.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "a1f5a0bf9819e074a843e6962e362fa030349011"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "a1f5a0bf9819e074a843e6962e362fa030349011"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/static_elf.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "2fc8fd4439a4bc8cd9313930407c8ca06205de05"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "2fc8fd4439a4bc8cd9313930407c8ca06205de05"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/strace.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7a58f715cf42954c1b2699ae47a23bd6e29b2949"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7a58f715cf42954c1b2699ae47a23bd6e29b2949"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/support/child_exit_signals.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "3b6d99df6f59f09a7eceb639ecb69a63f43a3eef"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "3b6d99df6f59f09a7eceb639ecb69a63f43a3eef"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/support/exec_worker_error_diagnostic.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "c2b5486f8d5193e3251c7396353c5eae0ad42f47"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "c2b5486f8d5193e3251c7396353c5eae0ad42f47"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/support/leader_exit.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "9cfc5f991e101ba73dc76d6148276e3106374094"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "9cfc5f991e101ba73dc76d6148276e3106374094"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/support/terminal_cancellation.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "fb480f43214f95fd86baf34d6d66c851bbf05864"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "fb480f43214f95fd86baf34d6d66c851bbf05864"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/support/terminal_fork.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5649dd41cd96ea8e1c7127a0a4d62a2717db02c3"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5649dd41cd96ea8e1c7127a0a4d62a2717db02c3"
+      },
+      "identical": true
+    },
+    "reverie-kvm/tests/vmcall.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "bd1819bec1906b2f197ab949053a37c24ce22559"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "bd1819bec1906b2f197ab949053a37c24ce22559"
+      },
+      "identical": true
+    },
+    "reverie/src/auxv.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "241583d6dc1503bbe883fa662ac411ee94fa92cd"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "241583d6dc1503bbe883fa662ac411ee94fa92cd"
+      },
+      "identical": true
+    },
+    "reverie/src/backend.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "c12dee55bd090e12f362cfbce3b1432efd0a5373"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "c12dee55bd090e12f362cfbce3b1432efd0a5373"
+      },
+      "identical": true
+    },
+    "reverie/src/backend_stats.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5b7b2c2fba65e1773c88093331b990c25e4809c7"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "5b7b2c2fba65e1773c88093331b990c25e4809c7"
+      },
+      "identical": true
+    },
+    "reverie/src/backtrace.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "6cc4d3d5e9a520db84fcd413a026e2a61dcda35d"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "6cc4d3d5e9a520db84fcd413a026e2a61dcda35d"
+      },
+      "identical": true
+    },
+    "reverie/src/backtrace/cache.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "3f28ed8ca276ab84420db744a0e76052ad5a1cd4"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "3f28ed8ca276ab84420db744a0e76052ad5a1cd4"
+      },
+      "identical": true
+    },
+    "reverie/src/backtrace/library.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "e857312d3a6e0dd7d088b545aca0d9718185088c"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "e857312d3a6e0dd7d088b545aca0d9718185088c"
+      },
+      "identical": true
+    },
+    "reverie/src/backtrace/symbols.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "44c15ff5b62554015d22e0c5c2ee3a2782a7268e"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "44c15ff5b62554015d22e0c5c2ee3a2782a7268e"
+      },
+      "identical": true
+    },
+    "reverie/src/error.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "22e9ddafa54f11fff223f2710b24dc37d09a849d"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "22e9ddafa54f11fff223f2710b24dc37d09a849d"
+      },
+      "identical": true
+    },
+    "reverie/src/guest.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "fb4de8c2b10dd59031f07623f537528cfc7aecfa"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "fb4de8c2b10dd59031f07623f537528cfc7aecfa"
+      },
+      "identical": true
+    },
+    "reverie/src/lib.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "b99a2822fccc32c9dc4be251937ce1df5f52af67"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "b99a2822fccc32c9dc4be251937ce1df5f52af67"
+      },
+      "identical": true
+    },
+    "reverie/src/pmu.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "9ec1826aa3189e22ec6baec9ab33e521197cb985"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "9ec1826aa3189e22ec6baec9ab33e521197cb985"
+      },
+      "identical": true
+    },
+    "reverie/src/rdtsc.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4d741fed82bc9bd2c3f405b44aebd53ca7cfde4f"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4d741fed82bc9bd2c3f405b44aebd53ca7cfde4f"
+      },
+      "identical": true
+    },
+    "reverie/src/regs.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "546c40b033bce478429cf8fdf90152551e913b16"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "546c40b033bce478429cf8fdf90152551e913b16"
+      },
+      "identical": true
+    },
+    "reverie/src/signal.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7ed7202809b7f0c508cffdf403be84988bf72047"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "7ed7202809b7f0c508cffdf403be84988bf72047"
+      },
+      "identical": true
+    },
+    "reverie/src/stack.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "1ef8c6d14478e3e3c58e03a3b4d023f08788ca27"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "1ef8c6d14478e3e3c58e03a3b4d023f08788ca27"
+      },
+      "identical": true
+    },
+    "reverie/src/subscription.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "9e6abc597c8d0e4e4afed073634ae0d0fc9f9bf6"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "9e6abc597c8d0e4e4afed073634ae0d0fc9f9bf6"
+      },
+      "identical": true
+    },
+    "reverie/src/timer.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "a2e272af8d90ccf8dd401f5c399647bcda41b1b3"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "a2e272af8d90ccf8dd401f5c399647bcda41b1b3"
+      },
+      "identical": true
+    },
+    "reverie/src/tool.rs": {
+      "before": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4a2a3af5c83463f6734f5d9ff5397f85eb81fd5a"
+      },
+      "after": {
+        "mode": "100644",
+        "type": "blob",
+        "sha": "4a2a3af5c83463f6734f5d9ff5397f85eb81fd5a"
+      },
+      "identical": true
+    }
+  }
+}

@@ -1,0 +1,19 @@
+tree 8a41f1130199bc2dde1f60e6d053f1817375c94a
+parent 1145835fc804f47ae48b29b89009e6937184175a
+author Ryan Newton <rrnewton@gmail.com> 1789634539 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789634539 -0700
+
+wrkslots: count added frozen validation preservation tests
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Keep the exact lifecycle inventory aligned with the 143 added cases from
+eight preservation test methods. Independent collection of the before and
+after source preserves all 654 old identities. Total cases increase to 797
+and ordinary-environment cases to 241; all 556 mapped cases and both mapped
+root identities stay unchanged.
+
+Retain the disjointness, complete union, exact counts and exact method-name
+checks. The directly affected inventory test passes. The original normal
+validation failure at the stale total count remains recorded; normal
+validation is rerun after this correction.

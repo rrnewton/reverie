@@ -1,0 +1,106 @@
+{
+  "fetch": {
+    "argv": [
+      "/usr/bin/with-proxy",
+      "/usr/bin/git",
+      "fetch",
+      "origin",
+      "refs/heads/codex/kvm-prejoin-failure-20260917"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": "From https://github.com/rrnewton/reverie\n * branch              codex/kvm-prejoin-failure-20260917 -> FETCH_HEAD\n"
+  },
+  "fetched_head": {
+    "argv": [
+      "git",
+      "rev-parse",
+      "FETCH_HEAD"
+    ],
+    "exit": 0,
+    "stdout": "9db60ab95587d4cb5e0438dfeca409471eb9baf5\n",
+    "stderr": ""
+  },
+  "content_diff": {
+    "argv": [
+      "git",
+      "diff",
+      "--exit-code",
+      "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+      "FETCH_HEAD",
+      "--"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "tracked_status": {
+    "argv": [
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=no"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "branch": {
+    "argv": [
+      "git",
+      "branch",
+      "--show-current"
+    ],
+    "exit": 0,
+    "stdout": "codex/kvm-proc-fd-identity-20260917\n",
+    "stderr": ""
+  },
+  "head": {
+    "argv": [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    "exit": 0,
+    "stdout": "9db60ab95587d4cb5e0438dfeca409471eb9baf5\n",
+    "stderr": ""
+  },
+  "source_tree": {
+    "argv": [
+      "git",
+      "rev-parse",
+      "9db60ab95587d4cb5e0438dfeca409471eb9baf5^{tree}"
+    ],
+    "exit": 0,
+    "stdout": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24\n",
+    "stderr": ""
+  },
+  "fetched_tree": {
+    "argv": [
+      "git",
+      "rev-parse",
+      "FETCH_HEAD^{tree}"
+    ],
+    "exit": 0,
+    "stdout": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24\n",
+    "stderr": ""
+  },
+  "fresh_terminal": {
+    "argv": [
+      "/usr/bin/systemctl",
+      "--user",
+      "show",
+      "safehermit-20260917T174336Z-3457861.service",
+      "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+    ],
+    "exit": 0,
+    "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+    "stderr": ""
+  },
+  "status": "passed",
+  "tree": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24",
+  "remote_refs": {
+    "refs/heads/codex/kvm-prejoin-failure-20260917": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+    "refs/heads/codex/kvm-proc-fd-identity-20260917": "696f0476aa46cf29e31b947a89379d80b4542ce3"
+  }
+}

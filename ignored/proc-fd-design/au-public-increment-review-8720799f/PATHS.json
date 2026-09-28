@@ -1,0 +1,683 @@
+[
+  {
+    "after": {
+      "mode": "100644",
+      "object": "6ff0d6805ee19edd6cd0798a1fe272035707713e",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "8b37767529587bed562fbb968fc643b138bbe4d5",
+      "type": "blob"
+    },
+    "path": ".gitignore"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "3fc3286389beb1ef5118f3d5ebda7e3c28ebcdf1",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "42eb3f561ef64e44bc51becad7cbe374023c8a26",
+      "type": "blob"
+    },
+    "path": "README.md"
+  },
+  {
+    "after": {
+      "mode": "120000",
+      "object": "e371bccee352e1688638221d805b3e43fcf6745d",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "common/bin/herdr-chat"
+  },
+  {
+    "after": {
+      "mode": "120000",
+      "object": "e371bccee352e1688638221d805b3e43fcf6745d",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "common/bin/herdr-subagents"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "b3c083f132ca9d701eb22167802c4784a714c4a1",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "5729706d38fd332deadd3e8944dd024f7fe0bf15",
+      "type": "blob"
+    },
+    "path": "common/docs/herdr-run/AGENT_USER_GUIDE.md"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "6f584b6f7069e72e34b54cb9d863dd83b51994a2",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "common/docs/herdr-run/CHAT_USER_GUIDE.md"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "852364b880fb8e2602582b49c1162b8fdb444601",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "common/docs/herdr-run/FOREIGN_USER_GUIDE.md"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "26c65a77e1f46bed35db9683622c4f72f058701c",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "ecf3ea77516e8aa0385c1944a94c81546b461193",
+      "type": "blob"
+    },
+    "path": "common/docs/herdr-run/fragments/python/README.md"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "e7e913d46b5d588a46aa83b5e64b88b7825cc9ae",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "425a5a3e45eb7f13bb979dc0c56be01609b6fd1f",
+      "type": "blob"
+    },
+    "path": "common/docs/herdr-run/rendered/python/README.md"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "96eaf44e382ed17d2c7b38ecb359b42b5e65cc31",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "62a47e7b94f0d5e9b74833b8d85ebe6b89448378",
+      "type": "blob"
+    },
+    "path": "cross/herdr_agent_differential.py"
+  },
+  {
+    "after": {
+      "mode": "120000",
+      "object": "30b3dc88cc13b6532044aa6affc840fe645050f4",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/bin/herdr-chat"
+  },
+  {
+    "after": {
+      "mode": "120000",
+      "object": "30a029c209450bcaeeb8dc162973f57811d6aff7",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/bin/herdr-subagents"
+  },
+  {
+    "after": {
+      "mode": "120000",
+      "object": "56349c5cd526a9e21ff3315d0b61a8d105495338",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/CHAT_USER_GUIDE.md"
+  },
+  {
+    "after": {
+      "mode": "120000",
+      "object": "910a4fe9d3c2c87e4948852c15cb37ceef0929bf",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/FOREIGN_USER_GUIDE.md"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "f01d21c1949dcd5fce76b7accc8e2a9cafe41ae2",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "3f4aff0ff47a1de6c5aaaf245967f52f871c7e03",
+      "type": "blob"
+    },
+    "path": "py/herdr_run/agent.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "3aaeb1e42c1bd410acb0546b7be26d82150fe96e",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100755",
+      "object": "d08620f1efbe8c8df7b56ed71865e11fa2ae7535",
+      "type": "blob"
+    },
+    "path": "py/herdr_run/agent_cli.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "5205e46eac73401f56cf077f4a4e578bc9a6f202",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/chat.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "7d5188d45b24a00bb8586fedc5adc9a3e330c958",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "7f516422e27e6f411ed777c1076b73551c88029d",
+      "type": "blob"
+    },
+    "path": "py/herdr_run/client.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "29bd5078054cc9880172e0ef6b801d68f1bddd04",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/codex_goal.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "4ca82b7aaf9354f150e35920aec4424bb9b8a0c0",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/__init__.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "f3d813372402de146f22bfbb97551eade3ddbade",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/__main__.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "f82277fd5b466eebd1ba434b523c98737966fb49",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_backend.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "e264c56abaac3dd283f7beec10d035db27cd0880",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_down.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "4e3ac223e8607ca7e99acacc0ade09b35f399b54",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_inbox.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "09ff639efc6b846a0eab1d8a1e57fe4e4cc2f9cd",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_keeper.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "7fb2f386fb4e9a9dd2bcf7ffd8b7ee63c25469aa",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_migrate.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "e6a40cc2f93005c5d5d050f094873372dbfa1b9b",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_read.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "04777030294efa3a508ff1e0643a3dce2235336c",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_reset.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "9d8d883385253f28f2b86ee2e3f83b8806bd0d34",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_runner.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "8c2b9ad84ba364310701bf48d0b3c547d5f1b173",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_send.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "5b9a7bf4e7bbcaad12733ecfd9e5081e685fa869",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_status.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "b1433449e08571995610c1e814336691b9a5d39e",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_turn.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "55f0ddaad1cc3536d81b2a7e974f85f8dde796ab",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/agent_up.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "44a153d101cdf3be944f1a80fa9f564f047ec263",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/cli.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "3f87ba50c1e3e99d0a14c9c0ce4228f6cc8aed39",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/lib.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "1d0893e78564ecc862ffacf11dfc8aba9056f412",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/mcp/__init__.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "3853c1e6fd5072c80a5d0816e7ee0ca156b3ecc6",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/mcp/adapter.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "b4ccb234e6577eaf6ec41cbc32d547cd93292651",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/mcp/server.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "f211fe3c50d61d84a0f67ca944753bad28bb1945",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/policy.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "197b9e4102a794af59f112937ff2dcd6b2e24d27",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/tests/test_agent_runner.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "333937fca8c72c702c92acc613cc5b3e4807cb88",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/tests/test_backends.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "8f3d861d38f2310c630cfeedc0020e87b275511f",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign/tests/test_mcp_server.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "c5f0a6fda3d837ba657beac588961f0f39c531f6",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/foreign_cli.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "897cfe770dbab1467aba3c59c08b288dcf4df9a8",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "f56759623e86f9301d7a29fecc8fdac44ca23b8c",
+      "type": "blob"
+    },
+    "path": "py/herdr_run/pyproject.toml"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "826f73bea7981e1af39cca2eb34088125a38f7a7",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/herdr_run/subagents.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "7ab121dcdd9bf05d634697933a97f032eb0863f3",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "cadfed489df6026423dc2326d69b33e4fbd24676",
+      "type": "blob"
+    },
+    "path": "py/tests/test_herdr_agent.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "3d0093453c11d665aaf32f6461414c94ae14624d",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/tests/test_herdr_chat.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "bcb8811967e6a28b05fa89ecab7eb6fa1f451731",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/tests/test_herdr_chat_transport.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "50d3b63951c1c41c483eb1482cf422488986cb37",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/tests/test_herdr_codex_goal.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "b3e0b4fefd25cd9334f4705952f9572601105f88",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "829e4cf5c79f873bb9bdefd5a3631fd59bdb6121",
+      "type": "blob"
+    },
+    "path": "py/tests/test_herdr_run_client.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "9a129380affde60319bfc6fa0a5d1adeb3fb4be8",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "py/tests/test_herdr_subagents.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "a246346f4d47d33ab4339af9f09e5c1fa8eb6015",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "608091205621cb79121ac91392bacf3e1393596b",
+      "type": "blob"
+    },
+    "path": "py/tests/test_packaging_infrastructure.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "df6f8c15e34e4d7e7ff834fdcb47583611287894",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "1fdf0e6862b493f698298cac03554c19e37ccb0b",
+      "type": "blob"
+    },
+    "path": "py/tests/test_repo_dispatch_wiring.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "d9a2a1abb4906c860a9c33cb703f1f404c81ead4",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100755",
+      "object": "bf2c96c5ff1c870e23f12df11e8a9894c3d84e88",
+      "type": "blob"
+    },
+    "path": "py/wrkslots/cli.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "b5a913d3895722388e43a0d935cb9dc652e81284",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "67d7c0ccd5e25604011496f247e86df21c6862a3",
+      "type": "blob"
+    },
+    "path": "py/wrkslots/tests/test_lifecycle.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "ad8f2a4081b9b0ec39922b7566666cce88114cd8",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "cb16fd55930feb1443329df1d38bebbfe42894eb",
+      "type": "blob"
+    },
+    "path": "py/wrkslots/tests/test_proc_status.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "7c971a9759216d5482e41915199983c3af573790",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "e6a77a2691a5f97c4fd69865c3e07bc3e35fbfb0",
+      "type": "blob"
+    },
+    "path": "rs/herdr-run/src/agent.rs"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "a8b1a98fb88a9a18a2e54439b01f9d2edd954439",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "f9ad942284eca5c23baec26e58c04e39b585a5ac",
+      "type": "blob"
+    },
+    "path": "rs/herdr-run/src/agent_cli.rs"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "20f240b6a3928eaeb0bc67267ad954fc9a82b6e4",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "35a619182b86b1a80cb2b0d696fd0cd0e33acb10",
+      "type": "blob"
+    },
+    "path": "rs/herdr-run/src/client.rs"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "26b46e48fa23d8be0141caf79729d91f93ab9023",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "rs/herdr-run/src/codex_goal.rs"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "0daea2b1a686ca0299728749fa55bcc9a4f84a4b",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "b7972e9281c904ce4582edcf9a34e541fd6375b2",
+      "type": "blob"
+    },
+    "path": "rs/herdr-run/src/lib.rs"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "dac7096b0076b4d10902a99f5b014fdcdb185ba0",
+      "type": "blob"
+    },
+    "before": null,
+    "path": "rs/herdr-run/src/subagents.rs"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "8cd60584caaa4c31b03f5eca7814b1190ed104fa",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100755",
+      "object": "10f588ff58531ee6b3f83ed651b86f09036c1cd1",
+      "type": "blob"
+    },
+    "path": "scripts/check_deps.py"
+  },
+  {
+    "after": {
+      "mode": "100644",
+      "object": "8629150bf63b63fa8321c4ac9384382d8e289a0b",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100644",
+      "object": "6bf13bc447b206301e300b96b40955aa05011f29",
+      "type": "blob"
+    },
+    "path": "scripts/check_python_packages.py"
+  },
+  {
+    "after": {
+      "mode": "100755",
+      "object": "f88ed1af99f75a3713e7748d4debee8b2f9b0704",
+      "type": "blob"
+    },
+    "before": {
+      "mode": "100755",
+      "object": "028c1fd4c3cd103eb466f4660dd8be27084ce7f3",
+      "type": "blob"
+    },
+    "path": "scripts/embed_userguides.py"
+  }
+]

@@ -1,0 +1,110 @@
+[
+  {
+    "source_name": "child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+    "source_derived_test_path": "executor::tests::child_exit_signal_preserves_process_ownership_and_first_complete_siginfo",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "start_line": 23,
+    "end_line": 58,
+    "function_sha256": "baa613dc266c0011202dc3073373d235f2bdbbeef8ba570d975a79bb18f01ffc",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "prior_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "full_source_equal_prior": true
+  },
+  {
+    "source_name": "child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+    "source_derived_test_path": "executor::tests::child_exit_signal_distinguishes_explicit_ignore_blocking_and_tool_eligibility",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "start_line": 61,
+    "end_line": 123,
+    "function_sha256": "291ad048059a7bc3124925435c48ce8199ab18d551a6d546c01be020d2c805d7",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "prior_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "full_source_equal_prior": true
+  },
+  {
+    "source_name": "child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+    "source_derived_test_path": "executor::tests::child_exit_signal_invalid_metadata_and_unsupported_classes_do_not_publish",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "start_line": 126,
+    "end_line": 203,
+    "function_sha256": "659ae18ba46fa8e03b39a399c1409d70f891dcc98b073a60d194a0c0a75069cf",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "prior_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "full_source_equal_prior": true
+  },
+  {
+    "source_name": "child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+    "source_derived_test_path": "executor::tests::child_exit_signal_signalfd_preserves_child_fields_and_complete_output_buffer",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "start_line": 237,
+    "end_line": 295,
+    "function_sha256": "5eed8e0a4fa0fc9e106ecedbf23e8ac133dce1e11a81ce02e1d772439cbe0c0b",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "prior_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "full_source_equal_prior": true
+  },
+  {
+    "source_name": "child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+    "source_derived_test_path": "executor::tests::child_exit_signal_distinguishes_failure_before_and_after_pending_publication",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "start_line": 298,
+    "end_line": 364,
+    "function_sha256": "5572c3f95b64bec115df7eb72ab34dd7e7f8df94dd10b860376240f576a66274",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "prior_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "full_source_equal_prior": true
+  },
+  {
+    "source_name": "child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+    "source_derived_test_path": "executor::tests::child_exit_signal_disposition_generation_discards_old_info_without_replacing_new_info",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "start_line": 367,
+    "end_line": 477,
+    "function_sha256": "7023b16d186d6d42ec9af6fda7e41fbc300b8663eb67131b0ba59e887968ae77",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "prior_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "full_source_equal_prior": true
+  },
+  {
+    "source_name": "child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+    "source_derived_test_path": "executor::tests::child_exit_signal_lifecycle_keeps_pending_process_state_private_across_fork_and_exec",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "start_line": 480,
+    "end_line": 589,
+    "function_sha256": "b8dd1db6d9dbf9da0a636b19dce3c1fdb859dcb73bc274b012a3e82db8c0b9e7",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "prior_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "full_source_equal_prior": true
+  },
+  {
+    "source_name": "child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+    "source_derived_test_path": "executor::tests::child_exit_signal_tool_return_keeps_process_domain_and_validates_replacements",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "start_line": 592,
+    "end_line": 619,
+    "function_sha256": "12e1f998824070cad8009c25dc658a30981b6f8d478cdafeb12f5f29a363d1aa",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "prior_full_source_sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "full_source_equal_prior": true
+  },
+  {
+    "source_name": "child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+    "source_derived_test_path": "runtime::child_exit_tests::child_exit_signal_into_guest_forwards_complete_outcomes_without_guest_effects",
+    "path": "reverie-kvm/src/child_exit_runtime_tests.rs",
+    "start_line": 61,
+    "end_line": 176,
+    "function_sha256": "eef0c01f7efe2726c8649e45ed4cd4f5428a5df9258248bb913ccf919e56165f",
+    "classification": "source declaration only; not an emitted test inventory or execution",
+    "current_full_source_sha256": "f7f729114c502cd1e4b2e4359fd37c89bc0bd6224f8409d6ed2deafec0071115",
+    "prior_full_source_sha256": "f7f729114c502cd1e4b2e4359fd37c89bc0bd6224f8409d6ed2deafec0071115",
+    "full_source_equal_prior": true
+  }
+]

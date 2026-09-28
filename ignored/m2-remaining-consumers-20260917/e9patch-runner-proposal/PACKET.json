@@ -1,0 +1,67 @@
+{
+  "scope": "authoritative Rust runner command append only; generated JSON untouched",
+  "base_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/CHANGE.json",
+      "bytes": 659,
+      "sha256": "657599ed11f8a2ed3cb083c8f9780d309bfa2394a1d20a66faca346ab9530816"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/INPUTS.json",
+      "bytes": 3701,
+      "sha256": "4dcfcdf39ea3886c78ae76f653b55062b3a0b1feb14576ccc909cf1ad5b1b300"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/NODE-READBACK.json",
+      "bytes": 5252,
+      "sha256": "8600bdf3b5a6603568572ca85bd5e46a4d252db3a2a6416ac441f42deca8151a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/REPORT.md",
+      "bytes": 4270,
+      "sha256": "c9315c796ccffbe02e04d7f4cb1e480fd18444152d09adc811ca3a42deb2ad89"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/candidate.patch",
+      "bytes": 1365,
+      "sha256": "36b187c8d2121abf7ff50a47cfd14a85bf5833de4787dba8cc878051f7d4e0c6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/changed/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 349632,
+      "sha256": "507917046f40cf493af382b49b7eb5883e37b293be7b6ac27b7f968af364252c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/current/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 349470,
+      "sha256": "29b449fa36f7eee28a8d264465c8bd8f86b4b4bd1777b46d5d7a179036945d7c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/.github/workflows/ci-portable.yml",
+      "bytes": 65813,
+      "sha256": "207b1b6c7c7baf399d9a9ef4934129aa879d7e58b27c6b14fb629aa83af113eb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/ci/check-shard-coverage.sh",
+      "bytes": 25561,
+      "sha256": "b1936bd633debf15a773d6120e38e85f5e3c579d497fce5f21c59ecd167b218a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/ci/dag/validate.json",
+      "bytes": 2858049,
+      "sha256": "c776274a95d165d40cce5212a4331240d55b6e90061962430f449b11ea010983"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 349470,
+      "sha256": "29b449fa36f7eee28a8d264465c8bd8f86b4b4bd1777b46d5d7a179036945d7c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/tests/backend-parity/run_matrix.py",
+      "bytes": 84430,
+      "sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024"
+    }
+  ],
+  "execution": false
+}

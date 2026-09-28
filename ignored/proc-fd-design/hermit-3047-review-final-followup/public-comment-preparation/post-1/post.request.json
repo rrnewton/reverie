@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "--method",
+    "POST",
+    "repos/rrnewton/hermit/issues/3047/comments",
+    "--input",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/public-comment-preparation/request.json"
+  ],
+  "started_at": "2026-09-17T07:30:28.665830+00:00"
+}

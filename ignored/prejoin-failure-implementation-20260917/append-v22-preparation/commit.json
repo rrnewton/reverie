@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "commit",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/commit-message.txt"
+  ],
+  "exit": 0,
+  "stdout_sha256": "111143f98844bbedcf810a2d8758d94fb1881db4db3a53d2a7d1e6aad47abbf5",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

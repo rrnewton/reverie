@@ -1,0 +1,13 @@
+{
+  "first_receipt_sha256": "6b559e58ca4a42938c16b594f6298dccea4a10df188670a7c6475d673ddfe9da",
+  "first_actual_exit": 1,
+  "first_wall_seconds": 11.689585814019665,
+  "first_cpu_seconds": 6.045241,
+  "scope_inactive_empty": true,
+  "branch_index_source_unchanged": true,
+  "rebase_inactive": true,
+  "acknowledged_pin": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+  "new_caller_sha256": "ba5444241b76c0b313101e24888046a61adb85698cd99d750cc80f77d34c3459",
+  "delta_sha256": "fd127db955c975d9190ae281277cbee169aaae2249245d1b51c38c01f56134d7",
+  "policy_authority": "Root explicit fixed reviewed596 acknowledgement authorization; ancestry/coherence/monotonicity checks and normal hooks unchanged."
+}

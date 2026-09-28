@@ -1,0 +1,94 @@
+17100:     config: Config,
+17101:     raw: str,
+17102:     target: Path,
+17103:     target_kind: str,
+17104:     *,
+17105:     expected_digest: str | None = None,
+17106:     repository: Path | None = None,
+17107:     expected_target: str | None = None,
+17108:     allow_historical_service_result: bool = False,
+17109:     frozen_removal_proof_supplied: bool | None = None,
+17110: ) -> tuple[str, str, str | None]:
+17111:     relative, path = _relative_inside(config.root, raw, "terminal validation record")
+17112:     if Path(relative).parent != Path("ignored/validate/runs") or path.suffix != ".json":
+17113:         raise Refusal("terminal validation record must be an ignored/validate/runs/*.json file")
+17114:     try:
+17115:         contents = _read_bounded_regular_file(
+17116:             path, "terminal validation record", 16 * 1024 * 1024
+17117:         )
+17118:         value = json.loads(contents)
+17119:     except (OSError, json.JSONDecodeError) as exc:
+17120:         raise Refusal(f"terminal validation record is unreadable: {path}: {exc}") from exc
+17121:     digest = hashlib.sha256(contents).hexdigest()
+17122:     if expected_digest is not None and digest != expected_digest:
+17123:         raise Refusal("terminal validation record changed after recovery was authorized")
+17124:     record = _as_mapping(value, "terminal validation record")
+17125:     field = (
+17126:         "checkout"
+17127:         if target_kind in {"checkout", "frozen-checkout"}
+17128:         else "cargo_home"
+17129:     )
+17130:     if target_kind != "frozen-checkout":
+17131:         recorded = record.get(field)
+17132:         if not isinstance(recorded, str) or recorded != str(target):
+17133:             raise Refusal(f"terminal validation record does not name this exact {field}")
+17134:         if target_kind == "checkout" and record.get("temporary_checkout") is False:
+17135:             raise Refusal("terminal validation record says the checkout is not temporary")
+17136:     record_target: str | None = None
+17137:     if target_kind == "frozen-checkout":
+17138:         if (
+17139:             frozen_removal_proof_supplied is False
+17140:             and not (
+17141:                 type(record.get("service_result_schema")) is int
+17142:                 and record.get("service_result_schema") in {1, 2, 3}
+17143:                 and record.get("result_source") == "validation-service-result"
+17144:             )
+17145:         ):
+17146:             raise Refusal(
+17147:                 "direct frozen validation recovery requires "
+17148:                 "--validation-proof-manifest for current or historical-projection "
+17149:                 "records; use the bounded batch command to classify a pre-proof "
+17150:                 "historical checkout without removing it"
+17151:             )
+17152:         record_target = _frozen_validation_record_binding(
+17153:             record,
+17154:             target,
+17155:             repository,
+17156:             expected_target=expected_target,
+17157:         )
+17158:         if (
+17159:             record.get("schema_version") != 1
+17160:             or record.get("kind") != "frozen-validate"
+17161:             or record.get("producer") != "ci-hub/validate/run_registry.py"
+17162:             or record.get("admission") != "frozen-validate"
+17163:             or record.get("validation_kind") != "frozen-validate"
+17164:         ):
+17165:             raise Refusal(
+17166:                 "terminal validation record is not an authoritative frozen-validation "
+17167:                 "handle; preserve the checkout and pass its current frozen run handle"
+17168:             )
+17169:         projected, rebound = _canonical_frozen_validation_record(config, path, contents)
+17170:         _frozen_validation_record_binding(
+17171:             rebound,
+17172:             target,
+17173:             repository,
+17174:             expected_target=record_target,
+17175:         )
+17176:         if (
+17177:             projected.get("schema_version") != record.get("schema_version")
+17178:             or projected.get("kind") != "frozen-validate"
+17179:             or projected.get("state") != record.get("state")
+17180:             or projected.get("target") != record_target
+17181:             or projected.get("repo") != record.get("repo")
+17182:         ):
+17183:             raise Refusal(
+17184:                 "canonical frozen validation record projection does not bind this handle"
+17185:             )
+17186:     if not _validation_record_is_terminal(
+17187:         record,
+17188:         target_kind=target_kind,
+17189:         allow_historical_service_result=allow_historical_service_result,
+17190:     ):
+17191:         raise Refusal(
+17192:             "validation record does not contain an evidenced terminal result; no path was "
+17193:             "removed. Let validate-run finish recording the result or preserve the path"

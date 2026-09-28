@@ -1,0 +1,25 @@
+{
+  "device": "/dev/kvm",
+  "device_inode": 3659,
+  "device_filesystem": 7,
+  "device_number": 2792,
+  "api_version": 12,
+  "supervisor_pid": 3982133,
+  "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T151201Z-3981893.service\n",
+  "test_binary": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+    "sha256": "ae49cc82c2927910caf4920754f0f5bab8eb7cd90434393f2dbf8187b8c6414d",
+    "bytes": 147744264,
+    "mode": 493
+  },
+  "hermit_binary": null,
+  "argv": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+    "--exact",
+    "--nocapture",
+    "--test-threads",
+    "1",
+    "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks"
+  ],
+  "guest_output": null
+}

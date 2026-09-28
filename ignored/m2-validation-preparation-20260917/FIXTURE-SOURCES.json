@@ -1,0 +1,1445 @@
+{
+  "base": "8051335e87104f7cf832204f74920d38416393b2",
+  "scope": "Literal source fixture mapping; does not resolve generated guests, all includes, external tools, dynamic libraries, or Cargo package closure",
+  "files": [
+    {
+      "path": "detcore/tests/lit/hello_world_c/main.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 243,
+          "literal": "detcore/tests/lit/hello_world_c/main.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 369,
+      "sha256": "5d0d25a8b00c608d5217230bd750f877dc2f27086c7414280d42f968603708b9",
+      "blob": "fc0ddab9ebd6041bd28a1b281b7ebeaaf505dd72"
+    },
+    {
+      "path": "detcore/tests/lit/hello_world_rs/main.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 265,
+          "literal": "detcore/tests/lit/hello_world_rs/main.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 331,
+      "sha256": "a869f8dde3f0307fb84507f46961c1f50905f3cc3f6df9f47892d529dd2e1a58",
+      "blob": "79668bc1e96299edbaf2e68d98f2f4a0ac776ef2"
+    },
+    {
+      "path": "detcore/tests/lit/networking/main.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 250,
+          "literal": "detcore/tests/lit/networking/main.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2716,
+      "sha256": "9da1e18610a4600a270c6b7ac90cc4716eeaf32d162d7b4ecbf26b4c9d5334c5",
+      "blob": "1ec50fa7b02cb69ddb19e95dec3298d7a467a718"
+    },
+    {
+      "path": "detcore/tests/lit/rt_sigaction/main.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 245,
+          "literal": "detcore/tests/lit/rt_sigaction/main.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1966,
+      "sha256": "942864ada37cb71099a14ddeb91a13c99eda61cbaa1c877dff3310ceaaca7b5f",
+      "blob": "54bccc754961645c2a3c3ccc9b9b74059fcba515"
+    },
+    {
+      "path": "detcore/tests/lit/rt_sigprocmask/main.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 248,
+          "literal": "detcore/tests/lit/rt_sigprocmask/main.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1564,
+      "sha256": "dd17600c4910229a882932565e1e982e4769b7bd4c0d26322dfcbc7b3039c0e3",
+      "blob": "cda01f42b603df62572dfeeafcb3ec5e0b01e311"
+    },
+    {
+      "path": "flaky-tests/cas_sequence_easy.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/stress_suite.rs",
+          "line": 165,
+          "literal": "flaky-tests/cas_sequence_easy.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1735,
+      "sha256": "6df1cb79101384544f97592f0b4a9b12825588cf6af5e06c53eae5996b4c435d",
+      "blob": "dd9b951be096fd3cbda93d68bda14b3507149756"
+    },
+    {
+      "path": "flaky-tests/hello_race.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 329,
+          "literal": "flaky-tests/hello_race.rs"
+        },
+        {
+          "caller": "hermit-cli/tests/analyze.rs",
+          "line": 133,
+          "literal": "flaky-tests/hello_race.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2566,
+      "sha256": "ae1c77f011eb6c5d7157eb63ca46f205130958678efeb8933e76658a474d5d10",
+      "blob": "a5a648a3b8a3bca6eb12cb9a96e56a1737f943de"
+    },
+    {
+      "path": "hermit-cli/test-resources/flaky_cas_sequence_schedules-failing.json",
+      "references": [
+        {
+          "caller": "explicit source mapping",
+          "line": null
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 96329,
+      "sha256": "dc597a8ba75822875df3a47d3f34491b75615becc76a6e86cc53ce319542ef4d",
+      "blob": "604f064dfe820811db3869e833a23cd505c3198c"
+    },
+    {
+      "path": "hermit-cli/test-resources/flaky_cas_sequence_schedules-passing.json",
+      "references": [
+        {
+          "caller": "explicit source mapping",
+          "line": null
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 96010,
+      "sha256": "aa67d56256c0fd9f9adc8864d1d0346e6c55790ef7a9ee32a186e8b78335b049",
+      "blob": "f780e106b1c3c23484f3d130ce5dca8a04f52a51"
+    },
+    {
+      "path": "hermit-cli/tests/fixtures/dbt/hermit_log_env.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 281,
+          "literal": "hermit-cli/tests/fixtures/dbt/hermit_log_env.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 745,
+      "sha256": "a0dcf966a85161e6f3436156bc744053663d1bb026177a2012198c8411545194",
+      "blob": "49e79ce99754820dc68c613059aa9ab9b99ede0a"
+    },
+    {
+      "path": "hermit-cli/tests/fixtures/dbt/stderr_nostdlib.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 256,
+          "literal": "hermit-cli/tests/fixtures/dbt/stderr_nostdlib.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 873,
+      "sha256": "97e4012654a8c4d0c40469cff6d57efa83866587007c0c764020b1f90664ef57",
+      "blob": "34dd83e1b665ef7fb115928044e257fcab0c7f92"
+    },
+    {
+      "path": "tests/backend-parity/fixtures/cpuid_probe.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 3097,
+          "literal": "tests/backend-parity/fixtures/cpuid_probe.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3808,
+      "sha256": "c64474d025814e29089584ecaf1271ded6bf8e39a846d660c47b37d2f9cb0eeb",
+      "blob": "492686445acb192711a52e974c980c6ae3095e4f"
+    },
+    {
+      "path": "tests/c/clock_exec_continuity.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 601,
+          "literal": "clock_exec_continuity.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 7439,
+      "sha256": "58efc8a739a05b8c8173ff8d1a7050e4e1dbabf15c99cfe137e1c4b1114b8116",
+      "blob": "a6f38a9b1f59c6855e4ed2511124379448c3d71c"
+    },
+    {
+      "path": "tests/c/clone.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 219,
+          "literal": "tests/c/clone.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1266,
+      "sha256": "7b69bf0a0d23ae0339242047e49999449e360cf285486fcbad3b55e41e632b40",
+      "blob": "1e7a712d05cbff656b49ff86d861617b62fd4b09"
+    },
+    {
+      "path": "tests/c/dbt_exec_failure.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 546,
+          "literal": "tests/c/dbt_exec_failure.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 699,
+      "sha256": "3d79b338c92ba741cae997c389b2a23542a1b214bf621e01426b2e262c397f1c",
+      "blob": "6eada8a998eb4361cccc3410bf2e56f968bf3506"
+    },
+    {
+      "path": "tests/c/dbt_execveat_unsupported.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 571,
+          "literal": "tests/c/dbt_execveat_unsupported.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1256,
+      "sha256": "a83d513d0ef087b2c4c3f4265245c044cf056fda564b41af7eccf24df202e7d9",
+      "blob": "b3e28f571813597dec17fd923f5df8e7f44fee8a"
+    },
+    {
+      "path": "tests/c/dbt_mmap_exec.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 521,
+          "literal": "tests/c/dbt_mmap_exec.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1508,
+      "sha256": "1849e554e66b3a784b2d8e2d9eba8db5093189d17067f9cbb7f1c4035447b16e",
+      "blob": "9cc49a3d341e13d77ed868a0d85447fbc207df32"
+    },
+    {
+      "path": "tests/c/dbt_pid_virtualization.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 648,
+          "literal": "tests/c/dbt_pid_virtualization.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 5306,
+      "sha256": "6921c11d93ffbe9194e5127c644360e265cdeea07dc232d020a8ae4258736b67",
+      "blob": "9a2cec879d3ede9231c6104d180dd693cbc6aeb3"
+    },
+    {
+      "path": "tests/c/dbt_prlimit_self.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 675,
+          "literal": "tests/c/dbt_prlimit_self.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1848,
+      "sha256": "abfe6ba6795336f868031b56b5fe34c9d29e1df8c96a15a678f48d45831e0f75",
+      "blob": "706608f17294909a032253cb5435a240ca992cf2"
+    },
+    {
+      "path": "tests/c/dbt_self_sigqueue.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 730,
+          "literal": "tests/c/dbt_self_sigqueue.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1705,
+      "sha256": "b9682fc1c15c11b82a136b9160cbb5801b33b8bcbe6920da0fbb08499ddcef10",
+      "blob": "8b3b4de7779403170eea977653d0b67b0936ed28"
+    },
+    {
+      "path": "tests/c/dbt_unsupported_syscall.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 703,
+          "literal": "tests/c/dbt_unsupported_syscall.c"
+        },
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 619,
+          "literal": "dbt_unsupported_syscall.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3949,
+      "sha256": "718dcc24c839affa2e89fdcc869a8b5c61b2f7fdc8121b0b8256dc26357adb9a",
+      "blob": "664947d325c83157c2ab822bc2d524147f0bc181"
+    },
+    {
+      "path": "tests/c/dbt_wait_lifecycle.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 596,
+          "literal": "tests/c/dbt_wait_lifecycle.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2673,
+      "sha256": "dec75866566ee5204523c213414a64cf9e9930d46bcf63a7104ed527a041db92",
+      "blob": "82a7e00f9fb067985888848d583a9da9971e060a"
+    },
+    {
+      "path": "tests/c/exec_clock_continuity.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 411,
+          "literal": "tests/c/exec_clock_continuity.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 4583,
+      "sha256": "d96b86b70842449cae126f7989408ddb6a1ba6f51e694a0cd41ddde1f8d97ff4",
+      "blob": "7cff9f36103ffee7d978275b62f7c5650177ec05"
+    },
+    {
+      "path": "tests/c/fixtures/stdio_inode_identity.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 465,
+          "literal": "tests/c/fixtures/stdio_inode_identity.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 11218,
+      "sha256": "2981cd8521adc7e9d7be82b7e62c73814a744ad946b60251392be8c4c607bd47",
+      "blob": "008e0cfcf2ab7c0045dc78d92af9add2ea079467"
+    },
+    {
+      "path": "tests/c/fork_child_getrandom.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 492,
+          "literal": "tests/c/fork_child_getrandom.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2436,
+      "sha256": "0e79ca70a6975c78cff2e579e8ff3b15102ea94fca0d2f096896a67fb2fc9856",
+      "blob": "12c3048105d025abb4aa7fcf28acc336b5c1c777"
+    },
+    {
+      "path": "tests/c/ftruncate_ignore_output_error.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 616,
+          "literal": "ftruncate_ignore_output_error.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 310,
+      "sha256": "f00568879ab765cde774724f46731e0ea90447816df5e633b7e44de7b27a4ec9",
+      "blob": "4aac0557c2c47ec904b0a0012915867ee54419c7"
+    },
+    {
+      "path": "tests/c/getCpu.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 220,
+          "literal": "tests/c/getCpu.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2108,
+      "sha256": "08ff05c36db65159e00f5f870ceef370a0be762921fd50d0950b2d24063a1ec2",
+      "blob": "c127fa6f796960b0cf9ea083d3869a2a87baf8fd"
+    },
+    {
+      "path": "tests/c/getpid.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 202,
+          "literal": "getpid.c"
+        },
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 579,
+          "literal": "getpid.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1584,
+      "sha256": "c3bcd7e831cf8aef8ddb81bbbf6c6d7ba453e0e1dd77e9dc4f68d8768e67bfd5",
+      "blob": "95e46861b88f687943cd363121a5a64a49a6befd"
+    },
+    {
+      "path": "tests/c/getsockopt_null.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 580,
+          "literal": "getsockopt_null.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 735,
+      "sha256": "17921c9edf3e5eb6b3fe9c6754c6711caa5a89193024d6bbc02236531366ab61",
+      "blob": "f3885f196a115d02144274c4ac07408db3f1f594"
+    },
+    {
+      "path": "tests/c/guest.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 1315,
+          "literal": "guest.c"
+        }
+      ],
+      "status": "literal candidate not found at immutable base",
+      "diagnostic": "fatal: path 'tests/c/guest.c' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+    },
+    {
+      "path": "tests/c/hello_alarm.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 221,
+          "literal": "tests/c/hello_alarm.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 820,
+      "sha256": "a7895c224d6ddb974e2172d1a7464fd9d7c1371c9a3d6f086f9e15514fbbaedc",
+      "blob": "2140a398f6ba0f0dcac41cfece4a2da5a829b34b"
+    },
+    {
+      "path": "tests/c/hello_signals.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 222,
+          "literal": "tests/c/hello_signals.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 863,
+      "sha256": "615a3d85835cad5c0113cd49ae5111bb6349bb6370c11065ea24af7b71844071",
+      "blob": "9ab0195243b9b2bf562a773be08320412fcdcbe7"
+    },
+    {
+      "path": "tests/c/io_buffer_mutator.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 1544,
+          "literal": "io_buffer_mutator.c"
+        }
+      ],
+      "status": "literal candidate not found at immutable base",
+      "diagnostic": "fatal: path 'tests/c/io_buffer_mutator.c' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+    },
+    {
+      "path": "tests/c/io_uring_fallback.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 203,
+          "literal": "io_uring_fallback.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1269,
+      "sha256": "83d70bface1e8d4501ff25776f471e7f4d7ebd70144c40cadea1f712ca77ff4c",
+      "blob": "96b7089dfbd7b65e14baedd078a9ffa68ce1989d"
+    },
+    {
+      "path": "tests/c/ioctl_fioclex.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 582,
+          "literal": "ioctl_fioclex.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1669,
+      "sha256": "86967a003b2f40da061affa6cb40803386198246b737b252f78947e6b2a1952f",
+      "blob": "aa3b7f9cc41edd8a306b8c71d14b0f2bbd03b7bc"
+    },
+    {
+      "path": "tests/c/ioctl_siocethtool.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 583,
+          "literal": "ioctl_siocethtool.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1157,
+      "sha256": "bb4f1bb2165456e36e54cd2e08276ea7a5672600244b8502950e2ea8c8813f10",
+      "blob": "0d837e9a6750800178570b40d4412c8d01a69e22"
+    },
+    {
+      "path": "tests/c/just_spin.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 223,
+          "literal": "tests/c/just_spin.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 658,
+      "sha256": "6090da69dd623934edec5ab2b9602116d51b8e72e9d3c70916d86e63063f7b4f",
+      "blob": "9677b94ce36057a7684beedffefd38aa28ef6a4c"
+    },
+    {
+      "path": "tests/c/kvm_exact_child_waits.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 622,
+          "literal": "tests/c/kvm_exact_child_waits.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 4559,
+      "sha256": "4892bd4cbedaa4ff14b32fd674cc616a3965bbf290c455c33becbeefdb580bc7",
+      "blob": "c072166bbb01eecc3cce0b89b1e5adeab4085099"
+    },
+    {
+      "path": "tests/c/liteinst_inert_runtime.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 384,
+          "literal": "tests/c/liteinst_inert_runtime.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 472,
+      "sha256": "d6c353adf0c87adb9899e59bfe234f358ed8fe8469dfb3dda9f93b1afaa9acc4",
+      "blob": "1b1a067c5f52ddf8db7cf2cd44c4cd619cfe54dd"
+    },
+    {
+      "path": "tests/c/memoryPress.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 224,
+          "literal": "tests/c/memoryPress.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 691,
+      "sha256": "b634e494488c2e60ca0661f005766a876cf8b85bad9e4f4ac29a67b108464613",
+      "blob": "388a6abdce06bf8e2b8da586230168d57c4db918"
+    },
+    {
+      "path": "tests/c/mount_nscd_order.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 1166,
+          "literal": "tests/c/mount_nscd_order.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1120,
+      "sha256": "8c79091332e4451a864c8175e7ae2a682463edaf638b68789c5a19fc9e235635",
+      "blob": "b5d462487763a2670ffbd4207bbefe43aac0d3e1"
+    },
+    {
+      "path": "tests/c/nanosleep-par.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 207,
+          "literal": "nanosleep-par.c"
+        },
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 613,
+          "literal": "nanosleep-par.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2802,
+      "sha256": "87f2369a6e30d81bf4f94d1919fd024ceb1a93f895f02ce792c962dea2b5976b",
+      "blob": "f93015f2bd0d76366dbc0bf4bcf80914e8592c86"
+    },
+    {
+      "path": "tests/c/pidfd_open_self.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 585,
+          "literal": "pidfd_open_self.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1044,
+      "sha256": "63933e7653adc2e898cb3ef5460688d57d8053f8545ef69197eecff80d45bb6e",
+      "blob": "4ceda7539c92680caad6ed5f588684573d8b94bd"
+    },
+    {
+      "path": "tests/c/pidfd_poll_self.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 586,
+          "literal": "pidfd_poll_self.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 874,
+      "sha256": "deb70d8b29c2d294dce7276f1c062fc9f2a79b44b14794de6af5742150fabf99",
+      "blob": "b46ad53554ebe8d42e788712db45310b956c1689"
+    },
+    {
+      "path": "tests/c/pipe_roundtrip.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 3607,
+          "literal": "pipe_roundtrip.c"
+        }
+      ],
+      "status": "literal candidate not found at immutable base",
+      "diagnostic": "fatal: path 'tests/c/pipe_roundtrip.c' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+    },
+    {
+      "path": "tests/c/pipecap.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 5021,
+          "literal": "pipecap.c"
+        }
+      ],
+      "status": "literal candidate not found at immutable base",
+      "diagnostic": "fatal: path 'tests/c/pipecap.c' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+    },
+    {
+      "path": "tests/c/ppoll_readv.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 608,
+          "literal": "ppoll_readv.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2984,
+      "sha256": "82d19fdebd88fafe7de1e877c06d1c4ea014fe8dfd6768ca42bf9b1c02ba648f",
+      "blob": "5f25720c19a43b25394e7f36ce113289927c9d79"
+    },
+    {
+      "path": "tests/c/print_memaddrs.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 225,
+          "literal": "tests/c/print_memaddrs.c"
+        },
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 1230,
+          "literal": "tests/c/print_memaddrs.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 619,
+      "sha256": "96d6a7186888bdb48b5de46ea4532e7f0dcfdbaa69effec809d575bda9c91387",
+      "blob": "b8a5437359eb0752fd3aae0289e277d5741ed185"
+    },
+    {
+      "path": "tests/c/printf_with_threads.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 226,
+          "literal": "tests/c/printf_with_threads.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 794,
+      "sha256": "3cf03ec95144b7153c120ffe6b18623edeff1b3ebb6d13425b9206070d87dbc3",
+      "blob": "042c71adb07cf0dc02ef5decca31bc12d9118784"
+    },
+    {
+      "path": "tests/c/proc_fdinfo_mount_classes.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 611,
+          "literal": "proc_fdinfo_mount_classes.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1804,
+      "sha256": "fb7e8c99a41468dc8c32e076b7737c257546a7972fef95ebcac310c60579a588",
+      "blob": "8b392ccd6867719762d9653e027b9e42f46c1fcd"
+    },
+    {
+      "path": "tests/c/public_record_mount_stdio.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 98,
+          "literal": "tests/c/public_record_mount_stdio.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1704,
+      "sha256": "e60e3947f087dea82064ce7d17439f10847c151151dffb11a7242838700bf828",
+      "blob": "04b630a8140ab3bafdd86270b90b6686a31fe839"
+    },
+    {
+      "path": "tests/c/random_device_lseek.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 3694,
+          "literal": "random_device_lseek.c"
+        }
+      ],
+      "status": "literal candidate not found at immutable base",
+      "diagnostic": "fatal: path 'tests/c/random_device_lseek.c' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+    },
+    {
+      "path": "tests/c/record_replay_deep_fork_chain.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 267,
+          "literal": "tests/c/record_replay_deep_fork_chain.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 668,
+      "sha256": "f68f162ba3a64a5f382b80bb9f0c928e5062d1c1822ca83300b523e7f1bc8d97",
+      "blob": "90c35f419c0120e48cb073261ec7dcf3b2895529"
+    },
+    {
+      "path": "tests/c/record_replay_execveat_paths.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 595,
+          "literal": "record_replay_execveat_paths.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 4864,
+      "sha256": "0353b0c4230743ad84162c1e8400cf2ea8e60a087fdab6ec98cb3e350992ed00",
+      "blob": "3ead4dc79ea6a0418f2b965889cddee5e737466e"
+    },
+    {
+      "path": "tests/c/record_replay_fd_close.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 584,
+          "literal": "record_replay_fd_close.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 5532,
+      "sha256": "e25b393f31eac6ae5b59859d8b976de1ae018bc079d5cf76807518bfd1bc0b2f",
+      "blob": "a1c46858c3f7285ca7af8ddf48de2ef0c988014a"
+    },
+    {
+      "path": "tests/c/record_replay_file_state.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 588,
+          "literal": "record_replay_file_state.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 6280,
+      "sha256": "b3766729d2d3b320e72c72ff2b09e07bbf121a8632e94b7c2088c566d1c884ce",
+      "blob": "20822fbf72cd00a114214f5631c751cac5c1633c"
+    },
+    {
+      "path": "tests/c/record_replay_forked_streams.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 188,
+          "literal": "tests/c/record_replay_forked_streams.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 737,
+      "sha256": "1ae7bb328920723fad97436ee371c8760a74c591674abc4681c776c0312ddb0e",
+      "blob": "cab9637f74147120c84d858a58654b7d075b5443"
+    },
+    {
+      "path": "tests/c/record_replay_lseek_seek_cur.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 602,
+          "literal": "record_replay_lseek_seek_cur.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3453,
+      "sha256": "08e795b3aa118236df53e51e9d89f957d801ff615aea9aea54b3753c215cc0d8",
+      "blob": "a91ffd41d8758789cbe7f55932a6b1839ad9d74c"
+    },
+    {
+      "path": "tests/c/record_replay_mkdir_eexist.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 599,
+          "literal": "record_replay_mkdir_eexist.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2568,
+      "sha256": "92aa3b8ea13778da1413248c3708b4993fa47237971a4e68b542ef67263000a9",
+      "blob": "1b223f827899a9918ed06d0dced765a1dc831c4c"
+    },
+    {
+      "path": "tests/c/record_replay_poll_partial_copyout.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 591,
+          "literal": "record_replay_poll_partial_copyout.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 5855,
+      "sha256": "8f6f4418a664f7d21cb4453528e3dce06c24a2044f74b1239a8ea92440b4c986",
+      "blob": "c72ecdf478df90097cf37c4f94ed98b59c0965a1"
+    },
+    {
+      "path": "tests/c/record_replay_setsockopt.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 581,
+          "literal": "record_replay_setsockopt.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1771,
+      "sha256": "6d597079a49807cb6704c460996e45c5fa3a787d70661705da666701bcd0d752",
+      "blob": "fe5a615fb3b605688244579eee2aae162d2b7dbd"
+    },
+    {
+      "path": "tests/c/recvmsg_scm_rights_mmap.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 587,
+          "literal": "recvmsg_scm_rights_mmap.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3112,
+      "sha256": "a99037a1b73a652c3034362cdc84b420934e9e80aebe7327076caffbfc0e221c",
+      "blob": "cb14cb19e1c5c66cd217be2ea109fb8fec065ff0"
+    },
+    {
+      "path": "tests/c/resource_determinism.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 323,
+          "literal": "tests/c/resource_determinism.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 19168,
+      "sha256": "d522acbd9b90484cd956a07cf681463c5afc9389b4d189b9950212fdce2e25f0",
+      "blob": "a4e1cb78f11ca408a2d7c39da25dadcf5c03fc4e"
+    },
+    {
+      "path": "tests/c/sabre_exit_group_parked.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 338,
+          "literal": "tests/c/sabre_exit_group_parked.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2053,
+      "sha256": "9cec50014aff1ab8e3fd95c9c2ee840d399226c5fc023953f565a1712d7f0d57",
+      "blob": "804e0e7d5cfb8ff7ed7c163d81197ab4c2070943"
+    },
+    {
+      "path": "tests/c/sigpipe_siginfo.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 607,
+          "literal": "sigpipe_siginfo.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 6847,
+      "sha256": "6dfce2202e315a6f92faf9a2423453e4e41febb02b1ba3cce83cbca7c17a3679",
+      "blob": "c3bdffd3d6ba5f5e7b57f09ed0a6f9d3d4c7ca10"
+    },
+    {
+      "path": "tests/c/sigtimedwait-no-timeout.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 229,
+          "literal": "tests/c/sigtimedwait-no-timeout.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3068,
+      "sha256": "6a926a92f76babc7fd0bf856677be3ce8f41a48a6de0e0dd61e03c629015aa3b",
+      "blob": "2fd23e3167da83ac6cdbe32369e103ae24ea8b10"
+    },
+    {
+      "path": "tests/c/sigtimedwait-timeout-0s.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 233,
+          "literal": "tests/c/sigtimedwait-timeout-0s.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3245,
+      "sha256": "6a9ab4105fecb68d73a93a77599ec7c934a94a678f23736510b7b134d71b0a99",
+      "blob": "3f50108ec66a81580c5edb954db1ec2b8776f34c"
+    },
+    {
+      "path": "tests/c/sigtimedwait-timeout-1s.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 237,
+          "literal": "tests/c/sigtimedwait-timeout-1s.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3098,
+      "sha256": "04138ae0b35ea5505f54315016deeefc1636d016d64e3cc791477f27abecb383",
+      "blob": "a49191679906e0b39f56859ca07b477471d8c2f2"
+    },
+    {
+      "path": "tests/c/simple/hello_nostdlib.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 280,
+          "literal": "tests/c/simple/hello_nostdlib.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1518,
+      "sha256": "257caefcc97ebb009a286e9ef7a066145b3e32f2bb33457947bf383f20f9d890",
+      "blob": "0a6a20b3b45caea819583b649c6a855aac6230cf"
+    },
+    {
+      "path": "tests/c/simple/nanosleep-threads-nocrash.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/analyze.rs",
+          "line": 143,
+          "literal": "tests/c/simple/nanosleep-threads-nocrash.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 923,
+      "sha256": "8888a3245da024e496ff228984b643af37d2bec84bc835d60d6d1a2bf60c2a38",
+      "blob": "be043dfab3b4548888bd16b866fedeb74aa8b4ff"
+    },
+    {
+      "path": "tests/c/simple/nanosleep-threads-simple.c",
+      "references": [
+        {
+          "caller": "explicit source mapping",
+          "line": null
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 730,
+      "sha256": "17a0a80c4655653be991b4b246b20a49e3d89fe9b3fe8e61df13153142206bce",
+      "blob": "5013853addeda2dae1931c54b9c7983467476478"
+    },
+    {
+      "path": "tests/c/simple/pread64_nostdlib.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 287,
+          "literal": "tests/c/simple/pread64_nostdlib.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1413,
+      "sha256": "38c294c2f913bfdeb1b2cae8238d1cc91dccfc2b9b0f3f7df99009f24d7d3c84",
+      "blob": "ebc0add6f4ad4eea610bc6ffb031f1eef3b55ec6"
+    },
+    {
+      "path": "tests/c/simple/racewrite_nostdlib.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/analyze.rs",
+          "line": 137,
+          "literal": "tests/c/simple/racewrite_nostdlib.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1738,
+      "sha256": "88f0da64dc373d750d0fe215050191d21ba226154366e012f236e61b447648c4",
+      "blob": "00bda7efe950dcadc3f45c91057bb03ead56d141"
+    },
+    {
+      "path": "tests/c/stdio_lseek_identity.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/cli.rs",
+          "line": 436,
+          "literal": "tests/c/stdio_lseek_identity.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1661,
+      "sha256": "2f4e64cabef81af213a6cffb9fe2e6ef5a45e55790fa0453ae65379e041f4b3e",
+      "blob": "e76195039685892b2c07b4645cbc59267c2e21a1"
+    },
+    {
+      "path": "tests/c/sysinfo.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 205,
+          "literal": "sysinfo.c"
+        },
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 610,
+          "literal": "sysinfo.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2968,
+      "sha256": "000da55a9a9b61ef602ba59382b477a66aa635fa40135f3aac39339fe83c0e53",
+      "blob": "e2eac77b1948711e664b608462f2f319ed4600e3"
+    },
+    {
+      "path": "tests/c/sysinfo_uptime.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 239,
+          "literal": "tests/c/sysinfo_uptime.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3251,
+      "sha256": "3f3f14dc991e1956d9e9d284dc9fc8992e9abda5ce71f50d0f43b14e26ddbe4e",
+      "blob": "40eaf36afa4cc694532e7e7d61f3342bb917de09"
+    },
+    {
+      "path": "tests/c/threadExhaustion.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 240,
+          "literal": "tests/c/threadExhaustion.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 779,
+      "sha256": "6d43803e88a104c388baac81c8f8e96c4b1e9b56a70d71422f806f03df234526",
+      "blob": "18d93bff832d30bb4af5152b1378095bb2573fb4"
+    },
+    {
+      "path": "tests/c/timerslack_proc_record_replay.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 605,
+          "literal": "timerslack_proc_record_replay.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 4458,
+      "sha256": "bb3bdd94a57ce6f28ecbd37d37cad1a630d7d6af225447c5cc27b232e4eaae3d",
+      "blob": "33dcc39b29f464f387c5e7ae538615db5f807f77"
+    },
+    {
+      "path": "tests/c/uname.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 204,
+          "literal": "uname.c"
+        },
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 609,
+          "literal": "uname.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2546,
+      "sha256": "18bf3b2799c29bf8eff8e910775bc59e1dedd68c6b131e3e45f904b67e53946f",
+      "blob": "c27c63d11b078601a80e0884b05b7ca9083e121e"
+    },
+    {
+      "path": "tests/c/wait_on_child.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 206,
+          "literal": "wait_on_child.c"
+        },
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 612,
+          "literal": "wait_on_child.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2154,
+      "sha256": "a5db53c0d6d4376e229b64b67db747bf3e2d8436ed9bc500c8c8b1c9b4a17494",
+      "blob": "f3646b65f694c58146412a7bfdecdf02bc948f85"
+    },
+    {
+      "path": "tests/c/write_ignore_output_error.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 618,
+          "literal": "write_ignore_output_error.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 383,
+      "sha256": "2c15ec5ef30529e3b0c6b9982d5d7c70ae063655aceb36c4aff3f385d92e36e0",
+      "blob": "5362d835590f9f63857670209b50a46b2cd4acad"
+    },
+    {
+      "path": "tests/chaos/lock_granularity.c",
+      "references": [
+        {
+          "caller": "explicit source mapping",
+          "line": null
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2017,
+      "sha256": "87caac14d80dcf982538594c374fce5d7a0f522d66ddedddfc8f724ec3acebdd",
+      "blob": "fcc58c44e7055ed0d0b51ea0d35e77b5560f4f38"
+    },
+    {
+      "path": "tests/chaos/order_violation.c",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/stress_suite.rs",
+          "line": 148,
+          "literal": "tests/chaos/order_violation.c"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1388,
+      "sha256": "0806c727a2c6fdce1120e7dc39952af1f0f94bcf7eba8394b262b81295732d36",
+      "blob": "6273cb801a6efda2b905ae78854fe442dd06e7b4"
+    },
+    {
+      "path": "tests/e2e/lib/determinism-stress/common.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/verification_report_consumers.rs",
+          "line": 52,
+          "literal": "tests/e2e/lib/determinism-stress/common.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 8569,
+      "sha256": "38a70abc0078e6dd718ac2a8d75b61a1058d341b09ffdac19cf893e82fbdcf26",
+      "blob": "e835de91d9642874e8bb6c7e3cb9abe17b6c1e79"
+    },
+    {
+      "path": "tests/e2e/lib/language-runtimes/run.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/verification_report_consumers.rs",
+          "line": 58,
+          "literal": "tests/e2e/lib/language-runtimes/run.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 4347,
+      "sha256": "9fa2cd462f1dbc358e90dffc3a61dafa589f5bf212070873c7f9a650dff32e57",
+      "blob": "180688289e6ed4997a53c3f69b37cdb04076188e"
+    },
+    {
+      "path": "tests/e2e/lib/system-utils/_common.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/verification_report_consumers.rs",
+          "line": 64,
+          "literal": "tests/e2e/lib/system-utils/_common.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 7120,
+      "sha256": "cd08a5a44c22757ac73ad106a968dab330163fa116d94d69d377e7280df48864",
+      "blob": "b83823ee638827d0196d9784c98088f724785c38"
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_network_test.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/verification_report_consumers.rs",
+          "line": 70,
+          "literal": "tests/qemu-boot/strict_l2_network_test.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 8809,
+      "sha256": "7a6bf01474529aa8da8e6683e580caf0e8529fe1087462dbe5e1dc95bdee0642",
+      "blob": "ade573870f20a0b5363c899c8dc76a1cdac999f2"
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_test.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/verification_report_consumers.rs",
+          "line": 76,
+          "literal": "tests/qemu-boot/strict_l2_test.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 6299,
+      "sha256": "73c078b4a0c3fc5113a5dedb8fc5a2d09ebb633d39a71307f4feb4f55ec4195a",
+      "blob": "c53deb6ddeb9b8a33c250210fc680e63e2ac66fc"
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_userspace_test.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/verification_report_consumers.rs",
+          "line": 82,
+          "literal": "tests/qemu-boot/strict_l2_userspace_test.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 10833,
+      "sha256": "e75fca3a7bc832db83d80a3415c116752d4552b8a562d3e9c9e6f96a29ed15d1",
+      "blob": "8ab76a1f6dafb1eaf00d31661d52b2fbc5590cef"
+    },
+    {
+      "path": "tests/rust/clock_gettime.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/record_replay.rs",
+          "line": 635,
+          "literal": "tests/rust/clock_gettime.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 2546,
+      "sha256": "8c616ce1fc697c8d68566053220b7d986b8f1b527118060feb62140643598f60",
+      "blob": "e5115e75fec5e83a7f33704ab8b802a9063304e7"
+    },
+    {
+      "path": "tests/rust/heap_ptrs.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 268,
+          "literal": "tests/rust/heap_ptrs.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1150,
+      "sha256": "6d049344351fefe2007f08bd72a34a48611e35adb73198fb37bfc4128cf41e7b",
+      "blob": "c2c109c194b577dde67287d763ef4b0a21de5ddd"
+    },
+    {
+      "path": "tests/rust/mem_race.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 270,
+          "literal": "tests/rust/mem_race.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 6910,
+      "sha256": "4bd08221a2672dbe485c03b563963ab9e15299847fddf1ee8dd55a81aad6af2f",
+      "blob": "dd86412721f1f80777c08ab9dbbf2c643ccb057a"
+    },
+    {
+      "path": "tests/rust/rdtsc.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 269,
+          "literal": "tests/rust/rdtsc.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 601,
+      "sha256": "0492c03bfabe18abdd1dca6999dc76ec762c7835ed1c86de48822ebff0bb4211",
+      "blob": "01cabd355a9dadb76af158a3ae8dbe88d962f25c"
+    },
+    {
+      "path": "tests/rust/stack_ptr.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 267,
+          "literal": "tests/rust/stack_ptr.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 474,
+      "sha256": "4780cf2a7339576914ca9d6b5d0a09ef95ceba47cc537b7cd6497159b1bc2286",
+      "blob": "7de72a9b08451635c8fc68cc7a569a18007e7941"
+    },
+    {
+      "path": "tests/shell/par_work.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 307,
+          "literal": "tests/shell/par_work.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1370,
+      "sha256": "892fc6a71d2f760575b77c77f290df229bb1227042f4988301556b8be1480b6a",
+      "blob": "64cf5a690a6e1614a536a626a17f119e1be88b52"
+    },
+    {
+      "path": "tests/shell/taskset.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 308,
+          "literal": "tests/shell/taskset.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 423,
+      "sha256": "3be51ac1dcebffbe0cf09f5666ac02ffcba34e1e7e96a7345e6c00ab46c9e6e3",
+      "blob": "3a128ff4bed77c9f22179cee44ebf84353515855"
+    },
+    {
+      "path": "tests/standalone/network_bind.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/hermit_modes.rs",
+          "line": 262,
+          "literal": "tests/standalone/network_bind.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 1262,
+      "sha256": "8e94a8d86016c742d1c9b56d5c1b9a2ce0f4de41d84f6016ba99d68c6ddefb12",
+      "blob": "11f967c676e80e47bf783b4b4557a46050bdb183"
+    },
+    {
+      "path": "tests/standalone/strict_setitimer.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/verification_report_consumers.rs",
+          "line": 88,
+          "literal": "tests/standalone/strict_setitimer.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 5976,
+      "sha256": "d7c1bcf30860624fed6cebde51e7243b37833921e60e5dcbc522b2071faa05fa",
+      "blob": "28f25c66aa67b27ca8c3e93c8c0cbff11ee25672"
+    },
+    {
+      "path": "tests/standalone/strict_timer_create.sh",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/verification_report_consumers.rs",
+          "line": 94,
+          "literal": "tests/standalone/strict_timer_create.sh"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 3309,
+      "sha256": "ba8a6d49595c4e02d578369814d554c2e350956baafa9e53e138a1cdd62ccb57",
+      "blob": "0abd174fd14752ebebe9852585e2846a1c86fcec"
+    },
+    {
+      "path": "tests/stress/concurrency.rs",
+      "references": [
+        {
+          "caller": "hermit-cli/tests/stress_suite.rs",
+          "line": 162,
+          "literal": "tests/stress/concurrency.rs"
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 11376,
+      "sha256": "bb301f3a848f7ffa166bd82708c24362ae0cc42212dfeb2446e0bbb960516fa9",
+      "blob": "ede3e17d3d92686aa4f5a509219840292ac2b6a2"
+    },
+    {
+      "path": "tests/util/pmu_skid.c",
+      "references": [
+        {
+          "caller": "explicit source mapping",
+          "line": null
+        }
+      ],
+      "status": "source bytes retained",
+      "bytes": 13364,
+      "sha256": "d3995c134a0f6588837a969b646e012ffaaed0c44321b9a41411a4d11fcd5b95",
+      "blob": "b3ca69816a9c02656bcb5ba4368d4de042068703"
+    }
+  ]
+}

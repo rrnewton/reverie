@@ -1,0 +1,221 @@
+python3 scripts/validate.py
+validate: 2 changed path(s)
+  RUN   cross       — code with a paired cross-language implementation changed [py/wrkslots/cli.py]
+  skip  docs        — nothing changed that it can observe
+  skip  gent-talk   — nothing changed that it can observe
+  RUN   hygiene     — always: a consuming project's name can be typed into any file, and a documented default can be broken from either the prose or the code side [always]
+  RUN   packages    — something that ships inside a distribution changed [py/wrkslots/cli.py]
+  skip  timeline-browser — nothing changed that it can observe
+  RUN   workspace   — workspace Rust or Python source changed [py/wrkslots/cli.py]
+
+=== client-names-self-test ===
+check-client-names --self-test: PASSED (12 controls)
+
+=== client-names ===
+check-client-names: ok — 828 files name no consuming project
+
+=== documented-defaults-self-test ===
+check-documented-defaults --self-test: PASSED (111 controls, 9 pins)
+
+=== documented-defaults ===
+check-documented-defaults: ok — 28 documented occurrences of 9 defaults agree with the code
+
+=== rust-fmt ===
+
+=== build ===
+make[1]: Entering directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+./setup both
+==> [docs] render standalone package docs from shared templates + edition fragments
+embed_userguides: refreshed 0 rendered files and package links:
+==> [py] mypy strict typecheck + wire bin
+Success: no issues found in 331 source files
+==> [py] check-deps (dependency-free entrypoint smoke test)
+check-deps: ok — 33 dependency-free invocations across 11 entrypoints start cleanly. PyYAML present (YAML read/write enabled).
+==> [py] ok
+==> [rs] verify/build tracked Cargo-backed launchers
+[dagrun] discarding missing cached Rust artifact(s) for dagrun
+[dagrun] rust cache=refreshed source=7489e7b343b3 binary=b60d1ab580b1
+rs: ready dagrun -> rs/target/x86_64-unknown-linux-gnu/release/dagrun
+[cpuset-alloc] rust cache=verified source=7489e7b343b3 binary=f5f813e78626
+rs: ready cpuset-alloc -> rs/target/x86_64-unknown-linux-gnu/release/cpuset-alloc
+[tick-hub] discarding missing cached Rust artifact(s) for tick-hub
+[tick-hub] rust cache=refreshed source=7489e7b343b3 binary=941b77b9629d
+rs: ready tick-hub -> rs/target/x86_64-unknown-linux-gnu/release/tick-hub
+[pr-landing-planner] discarding missing cached Rust artifact(s) for pr-landing-planner
+[pr-landing-planner] rust cache=refreshed source=7489e7b343b3 binary=8de46f0eb5d7
+rs: ready pr-landing-planner -> rs/target/x86_64-unknown-linux-gnu/release/pr-landing-planner
+[herdr-run] discarding missing cached Rust artifact(s) for herdr-run
+[herdr-run] rust cache=refreshed source=7489e7b343b3 binary=18df7fe39ce5
+rs: ready herdr-run -> rs/target/x86_64-unknown-linux-gnu/release/herdr-run
+[herdr-agent] rust cache=verified source=7489e7b343b3 binary=cb96520f616e
+rs: ready herdr-agent -> rs/target/x86_64-unknown-linux-gnu/release/herdr-agent
+==> [rs] ok
+==> ./bin -> common/bin
+setup: done (both)
+make[1]: Leaving directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+
+=== lint-and-typecheck ===
+make[1]: Entering directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+python3 scripts/check_deps.py
+check-deps: ok — 33 dependency-free invocations across 11 entrypoints start cleanly. PyYAML present (YAML read/write enabled).
+python3 -m mypy --config-file py/pyproject.toml --strict --disallow-any-explicit --disallow-any-decorated .
+Success: no issues found in 353 source files
+python3 scripts/check_no_any.py .
+check-no-any: ok — 354 Python files contain no typing.Any
+python3 scripts/validate.py --self-test
+validate --self-test: PASSED (16 mapping controls, 8 always-on controls)
+python3 scripts/check_client_names.py --self-test
+check-client-names --self-test: PASSED (12 controls)
+python3 scripts/check_client_names.py
+check-client-names: ok — 828 files name no consuming project
+python3 scripts/check_documented_defaults.py --self-test
+check-documented-defaults --self-test: PASSED (111 controls, 9 pins)
+python3 scripts/check_documented_defaults.py
+check-documented-defaults: ok — 28 documented occurrences of 9 defaults agree with the code
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling serde_core v1.0.229
+    Checking memchr v2.8.3
+   Compiling zmij v1.0.23
+   Compiling serde v1.0.229
+    Checking hashbrown v0.17.1
+    Checking equivalent v1.0.2
+   Compiling serde_json v1.0.151
+    Checking itoa v1.0.18
+   Compiling libc v0.2.189
+    Checking unsafe-libyaml-norway v0.2.15
+    Checking ryu v1.0.23
+   Compiling signal-hook v0.4.4
+   Compiling version_check v0.9.5
+    Checking typenum v1.20.1
+    Checking regex-syntax v0.8.11
+    Checking cpufeatures v0.2.17
+    Checking cfg-if v1.0.4
+    Checking base64 v0.22.1
+    Checking shell-words v1.1.1
+    Checking glob v0.3.4
+   Compiling generic-array v0.14.7
+    Checking aho-corasick v1.1.5
+    Checking indexmap v2.14.0
+   Compiling syn v3.0.3
+    Checking errno v0.3.14
+    Checking fs2 v0.4.3
+    Checking signal-hook-registry v1.4.8
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.7
+    Checking digest v0.10.7
+    Checking sha2 v0.10.9
+    Checking regex-automata v0.4.18
+   Compiling serde_derive v1.0.229
+    Checking regex v1.13.1
+    Checking serde_norway v0.9.42
+    Checking dagrun v0.15.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/dagrun)
+    Checking herdr-run v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/herdr-run)
+    Checking tick-hub v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/tick-hub)
+    Checking pr-landing-planner v0.1.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/rs/pr-landing-planner)
+    Finished `release` profile [optimized] target(s) in 7.28s
+make[1]: Leaving directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+
+=== test ===
+make[1]: Entering directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+........................................................................ [  2%]
+........................................................................ [  4%]
+........................................................................ [  7%]
+........................................................................ [  9%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 24%]
+........................................................................ [ 26%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+..F..................................................................... [ 48%]
+........................................................................ [ 50%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 58%]
+........................................................................ [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+................                                                         [100%]
+=================================== FAILURES ===================================
+_________ test_wrkslots_lifecycle_partitions_are_disjoint_and_complete _________
+
+    def test_wrkslots_lifecycle_partitions_are_disjoint_and_complete() -> None:
+        all_tests = _collect_lifecycle_tests()
+        ordinary = _collect_lifecycle_tests("ordinary_environment")
+        mapped = _collect_lifecycle_tests("not ordinary_environment")
+        mapped_root = _collect_lifecycle_tests("mapped_root_namespace")
+    
+        assert ordinary.isdisjoint(mapped)
+        assert ordinary | mapped == all_tests
+>       assert len(all_tests) == 654
+E       AssertionError: assert 797 == 654
+E        +  where 797 = len({'wrkslots/tests/test_lifecycle.py::test_abort_create_preflights_every_checkout_before_removing_any', 'wrkslots/tests/.../test_lifecycle.py::test_absent_validate_batch_resumes_each_durable_boundary[after-absent-validate-active-event]', ...})
+
+tests/test_packaging_infrastructure.py:402: AssertionError
+=============================== warnings summary ===============================
+tests/test_supervisor_crash.py::test_a_supervisor_that_vanishes_without_a_traceback_is_still_reaped
+  /home/newton/.local/lib/python3.12/site-packages/_pytest/threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-577 (die_without_publishing)
+  
+  Traceback (most recent call last):
+    File "/usr/local/fbcode/platform010/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "/usr/local/fbcode/platform010/lib/python3.12/threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/py/tests/test_supervisor_crash.py", line 129, in die_without_publishing
+      raise RuntimeError("layer one is not present on this thread")
+  RuntimeError: layer one is not present on this thread
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+tests/test_supervisor_crash.py::test_the_sweep_sees_a_crash_that_lands_between_running_and_done
+  /home/newton/.local/lib/python3.12/site-packages/_pytest/threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-579 (retire_then_die)
+  
+  Traceback (most recent call last):
+    File "/usr/local/fbcode/platform010/lib/python3.12/threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "/usr/local/fbcode/platform010/lib/python3.12/threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/py/tests/test_supervisor_crash.py", line 164, in retire_then_die
+      raise RuntimeError("died after retiring, before publishing")
+  RuntimeError: died after retiring, before publishing
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_packaging_infrastructure.py::test_wrkslots_lifecycle_partitions_are_disjoint_and_complete
+1 failed, 2967 passed, 2 warnings in 521.47s (0:08:41)
+make[1]: *** [Makefile:93: test] Error 1
+make[1]: Leaving directory '/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils'
+
+validate: FAILED at test (make test)
+make: *** [Makefile:49: validate] Error 2

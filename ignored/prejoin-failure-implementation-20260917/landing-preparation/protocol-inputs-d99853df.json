@@ -1,0 +1,60 @@
+{
+  "repository": "rrnewton/reverie",
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "head": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "body": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/landing-preparation/pr-body-d99853df.md",
+    "bytes": 4342,
+    "sha256": "aa7a5247ec0af0187def0e5052caee6e4e25e62fedfc8b446e2da6b581bf2d79"
+  },
+  "title": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/landing-preparation/pr-title-d99853df.txt",
+    "bytes": 56,
+    "sha256": "27c93e5bc2dce10447831b02f909fa94184166f30fca99361c020ea594319f3b"
+  },
+  "required_post_facto_label": "post-facto-human-review",
+  "numbered_trigger_for_this_pr": 2,
+  "coordinated_hermit_trigger": 4,
+  "review_labels_after_actual_approvals": [
+    "adversarial-review-codex1",
+    "passed-review-codex",
+    "adversarial-review-claude1",
+    "passed-review-claude"
+  ],
+  "codex_actual_approval_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/prejoin-combined-source-review-20260917/ADDENDUM-d99853df.md",
+    "sha256": "9945ab99a7d2fec70076264ebae75ff9c86939dc3c793ca3067b1b643dd39534"
+  },
+  "claude_actual_approval": "Pending actual root-owned review; do not publish an approval label or fabricate a comment.",
+  "lint_script": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-hermit-20260917/scripts/core-review-protocol-lint.sh",
+    "bytes": 58116,
+    "sha256": "54f5a5b57bd5efc4239d383e5b5b2d130befa693adee03e5d03dd9b4c3847725"
+  },
+  "lint_self_test": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-hermit-20260917/scripts/core-review-protocol-lint-test.sh",
+    "bytes": 76055,
+    "sha256": "150295042ebb144516147918c3cc9897eac75dbc417bb939c7a8641d673a1045"
+  },
+  "lint_adapter": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-hermit-20260917/scripts/review_contract_adapter.py",
+    "bytes": 6917,
+    "sha256": "562c80ca5688736b9d35ad748b81042d52803791ab193f02c91c16279402430c"
+  },
+  "canonical_review_contract": {
+    "path": "/home/newton/work/dev-hermit/ci-hub/review_contract.py",
+    "bytes": 5234,
+    "sha256": "1b0d798e55f8a5976a4334255a5e7de1792a79e81c6d27034d31d11d4294c18d"
+  },
+  "live_lint_environment": {
+    "PR_HEAD_SHA": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+    "PR_IS_KVM": "true",
+    "PR_NUMBER": "Read from the actual created pull request",
+    "PR_LABELS": "Read complete actual label names from the actual pull request",
+    "PR_BODY": "Read exact body from the actual pull request",
+    "PR_COMMENTS_FILE": "Read complete chronological actual issue comments to a file; no synthetic approvals"
+  },
+  "status": "Prepared only; no public pull request, approval-label mutation or live lint result claimed.",
+  "policy": "Current owner and product AGENTS control exact disclosure, KVM log-comparison claims and speculative soft-green landing; stale conflicting skill clauses are not applied."
+}

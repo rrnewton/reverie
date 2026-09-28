@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "/usr/bin/systemctl",
+    "--user",
+    "show",
+    "safehermit-20260917T044039Z-3384380.service",
+    "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+  ],
+  "exit": 0,
+  "properties": {
+    "LoadState": "not-found",
+    "ActiveState": "inactive",
+    "SubState": "dead",
+    "MainPID": "0",
+    "ControlGroup": ""
+  },
+  "stderr": "",
+  "target_dir": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1",
+  "scope": "Prior owned cache reuse; source and actual Cargo artifact remain independently verified."
+}

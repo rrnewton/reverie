@@ -1,0 +1,17 @@
+Complete-stat-routes passed on native Linux, ptrace and KVM. Each of the three authorized attempts ran once, with no retry, assertion change, resource stop, kill or observer error. This is the first retained native result for the complete-stat-routes mode of fixturefc1546e; the older descriptor native result remains separate.
+
+| Execution | Guest exit | CPU seconds | Wall seconds | Output |
+| --- | --- | --- | --- | --- |
+| Native | 0 | 0.029957 | 0.535491989 | Exact complete-mode success stdout; empty stderr |
+| Hermit ptrace | 0 | 0.763502 | 1.953513316 | Exact complete-mode success stdout;226819B raw INFO stderr |
+| Hermit KVM | 0 | 0.756270 | 2.045842015 | Exact complete-mode success stdout;220464B raw INFO stderr |
+
+All stdout is exactly stdio-inode-complete-stat-routes-ok plus one newline. The native branch additionally required empty stderr. Both Hermit branches retained their original unnormalized INFO stream under the1MiB fatal cap. Observer and collector exits were0, and each retained result passed all input, accounting, no-truncation and cleanup predicates; collector0 was not treated as a substitute for guest success. Total measured service use was1.549729CPU/4.534847320wall seconds.
+
+The unchanged fixture ELF is fc1546ea0cbb2c1378f1d3ef1d26a5fd36203b64218fc6e6b0d39d5cff50d48c. Both Hermit legs used aa7ea4827b8328345e715d76518d7f2205e41110/tree40d69bea9282cbcbf161a2736bcb39108a1d53db and the published401511984-byte ELF a31abf5547e55c221b5a79fdff728ab2c4313882ace1a8473eac6890734a74fd. Native bounds remained5CPU/15wall seconds; each Hermit leg remained15CPU/30wall; all used16GiB/no swap and the unchanged observer/safehermit path. Strict/minimal/tmpfs-/test arguments remained exact for Hermit. The original unbound packages, preparation refusals and all historical runtime results remain untouched.
+
+Actual native and both Hermit before-exec payloads were authenticated against the retained command vectors and executable hashes. All17 native inputs and22 Hermit inputs (25 unique paths), plan/caller hashes, fixture and published binary were reverified after completion. The Hermit source remained clean at aa7. All three actual systemd units were independently queried after the last attempt: inactive/dead, MainPID0 and empty ControlGroup. Native workdir was empty. Root and recovery were promptly informed that the source hold could be released.
+
+Raw results live beneath recovery's unchanged measurement-observer directory: measurement-complete-stat-routes-native-aa7ea482/native (resultc5f5d8192f545640e02a2df290e57d12969b89d9734826be18fb6e91f23b0b5a), and measurement-complete-stat-routes-aa7ea482/candidate-ptrace (result60198af064f53215a2b4686316b326835760299188e5ca91066426df1e761cea) and candidate-kvm (result7fe671212dafe4725340cf71f8978b68eb0b8274e441cd20b9cda398e2d0622b). Full input/source/payload/output/service readback is FINAL-READBACK.json SHA256 990eeeaf988478dfcb3fdcd689ac3c07f7f9bb6949896f728eac541011e442bb.
+
+These passes establish the unchanged fixture's descriptor, followed/no-follow proc-fd stat/statx, fdinfo and pipe-link assertions for this execution. They do not establish repeated determinism, canonical cross-backend parity, the separate original closed-stdin cat behavior, full-image execution, the full official node or all library tests. The independent full Reverie426pass/1fail result remains unchanged. No product source, fixtures, thresholds or selection policy were edited for these measurements.

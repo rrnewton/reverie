@@ -1,0 +1,44 @@
+{
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "base": "c8f4ca9d2e95460e027678ff23f6dec2529d255d",
+  "tree": "ba584b989e7dc89fce4ac7eabaa05166ba035069",
+  "title": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/pr-title-12d4ce8c.txt",
+    "sha256": "6602dd5a6ab23af854f0d26028b3ea97ea876955b40ced1269e0a1ae55baef30"
+  },
+  "body": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/pr-body-12d4ce8c.md",
+    "sha256": "43b219202d43f0ca146e629c80a4173c6aaaa9635c5bffc2ca6d355be429f0ce"
+  },
+  "required_post_facto_label": "post-facto-human-review",
+  "numbered_trigger": 2,
+  "review_labels_only_after_actual_approvals": [
+    "adversarial-review-codex1",
+    "passed-review-codex",
+    "adversarial-review-claude1",
+    "passed-review-claude"
+  ],
+  "validation": {
+    "qualification-build-v7": {
+      "result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v7/RESULT.json",
+      "sha256": "0ce989360ded0da65c27eeeedd2d78e44509c9e2764b21885cb2848f95b01798"
+    },
+    "lint-v15": {
+      "result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v15/RESULT.json",
+      "sha256": "bb579f4d9ae6a534c0dddaee9abd787f746c4cadf85c35805617beb004e81e1c"
+    },
+    "futex-full-library-v3": {
+      "result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/futex-full-library-v3/RESULT.json",
+      "sha256": "e7416996e3829e374e651ff82bfbe6d5dd334dea199c38461594ecc8767ef92b"
+    },
+    "qualification-execution-v7": {
+      "result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v7/RESULT.json",
+      "sha256": "d574f92ab7a4d033d3a0ca90fa355b4c007c72b36ce128d372948fbe7d7cd345"
+    },
+    "qualification-execution-v8": {
+      "result": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v8/RESULT.json",
+      "sha256": "e13aae19c9e91cdfadfe2582f1e81c3fac8267e2c2433cbe4a2531d32bfe3c63"
+    }
+  },
+  "publication": "Not executed. Root owns final review publication and normal rebase landing. Actual Claude verdict is pending at this preparation cutoff."
+}

@@ -1,0 +1,150 @@
+{
+  "scope": "read-only source review; static parsing and in-memory patch reconstruction only",
+  "inputs": [
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/BASE.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/BASE.json",
+      "bytes": 1358,
+      "mode": "0o644",
+      "sha256": "2698c7e05aba362c077e05370fdde9b9db0b6a628caa7e66758f30c1f269354a"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/FILES.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/FILES.json",
+      "bytes": 574,
+      "mode": "0o644",
+      "sha256": "94ac14ecd44d50c8de84bdb9d4d4273624a1c66046dc81a08a307dd637f48a2b"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/candidate.patch",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/candidate.patch",
+      "bytes": 21167,
+      "mode": "0o644",
+      "sha256": "d41233ccd085987ff5545a4b1f41860c62610c8cfc20a8eb5aaa45ef43da1a30"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/base/tests/backend-parity/run_matrix.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/base/tests/backend-parity/run_matrix.py",
+      "bytes": 84430,
+      "mode": "0o644",
+      "sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024",
+      "immutable_git_bytes_equal": true
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/base/tests/backend-parity/test_verify_tier_evidence.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/base/tests/backend-parity/test_verify_tier_evidence.py",
+      "bytes": 28550,
+      "mode": "0o644",
+      "sha256": "0343f2ac871a3b3b10dfa3d9357e35d299704dbe8c782929bbd52148806cbbda",
+      "immutable_git_bytes_equal": true
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/base/tests/backend-parity/test_scorecard_header_compat.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/base/tests/backend-parity/test_scorecard_header_compat.py",
+      "bytes": 32156,
+      "mode": "0o644",
+      "sha256": "da610b2ae0de6bc7a8d6662c73272fe33d302d83cac44aed31ee9c3271bcfca7",
+      "immutable_git_bytes_equal": true
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/base/tests/backend-parity/test_parallel_validate_paths.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/base/tests/backend-parity/test_parallel_validate_paths.py",
+      "bytes": 15072,
+      "mode": "0o644",
+      "sha256": "7c327fc6bace5fb9365104975f73b8b81d790b448522ea7cd7dc7f160d2dfd72",
+      "immutable_git_bytes_equal": true
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/changed/tests/backend-parity/run_matrix.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/changed/tests/backend-parity/run_matrix.py",
+      "bytes": 82719,
+      "mode": "0o755",
+      "sha256": "60fb58938071aa87a4df2887b35f426c08677f513d6f711736cacc1b1d629897",
+      "static_python_parse_successful": true
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/changed/tests/backend-parity/test_verify_tier_evidence.py",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/changed/tests/backend-parity/test_verify_tier_evidence.py",
+      "bytes": 32897,
+      "mode": "0o755",
+      "sha256": "0c94b3a795d25aea06a2403361d5f25a1ad6895b644cda3c0fcc107b3e938030",
+      "static_python_parse_successful": true
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/consumer-docs/FILES.json",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/consumer-docs/FILES.json",
+      "bytes": 568,
+      "mode": "0o644",
+      "sha256": "29ebe97902b24627f7ea38c2a63c650b9d30b8c0ba6e002943da8fd3a5228931"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/consumer-docs/candidate.patch",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/consumer-docs/candidate.patch",
+      "bytes": 8296,
+      "mode": "0o644",
+      "sha256": "dad927777ba2abad2cb4e3f9612fa29ed58666e413806ec2e3b1562544cf2766"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/consumer-docs/base/hermit-cli/tests/verification_report_consumers.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/consumer-docs/base/hermit-cli/tests/verification_report_consumers.rs",
+      "bytes": 43858,
+      "mode": "0o644",
+      "sha256": "16166d56985c0b6cd1052cf73db86df2b1d4f69da43a1db27277619ae38887b3"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/consumer-docs/changed/hermit-cli/tests/verification_report_consumers.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/consumer-docs/changed/hermit-cli/tests/verification_report_consumers.rs",
+      "bytes": 44580,
+      "mode": "0o644",
+      "sha256": "d3d665450e2dfa55aaec02fd78d43cbf3a8ee7169ae1011bd03f9645a2f274d5"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/consumer-docs/base/tests/backend-parity/README.md",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/consumer-docs/base/tests/backend-parity/README.md",
+      "bytes": 30302,
+      "mode": "0o644",
+      "sha256": "be60766cb1ea1994becd723b49e68f5ab29029553cf3d628eab9ed0ebfd47136"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/m2-matrix-current-qualification-20260917/consumer-docs/changed/tests/backend-parity/README.md",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/consumer-docs/changed/tests/backend-parity/README.md",
+      "bytes": 31147,
+      "mode": "0o644",
+      "sha256": "1baac34e8cce034e10b5fd669678c14c3517c8e1a68141a077b492b7247a3fab"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-matrix-review-20260917/inputs-v1/code-review-SKILL.md",
+      "bytes": 3617,
+      "mode": "0o644",
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    }
+  ],
+  "hunk_checks": [
+    {
+      "packet": ".",
+      "path": "tests/backend-parity/run_matrix.py",
+      "hunks_reconstruct_exact_changed_bytes": true
+    },
+    {
+      "packet": ".",
+      "path": "tests/backend-parity/test_verify_tier_evidence.py",
+      "hunks_reconstruct_exact_changed_bytes": true
+    },
+    {
+      "packet": "consumer-docs",
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "hunks_reconstruct_exact_changed_bytes": true
+    },
+    {
+      "packet": "consumer-docs",
+      "path": "tests/backend-parity/README.md",
+      "hunks_reconstruct_exact_changed_bytes": true
+    }
+  ],
+  "caller_search": {
+    "bytes": 1793,
+    "sha256": "50004817108ad4c5943d48838177303f13b695808b54a239624b7b88cc0aaa35"
+  },
+  "product_tests_or_execution": false
+}

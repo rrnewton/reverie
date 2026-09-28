@@ -1,0 +1,204 @@
+{
+  "time": "2026-09-17T10:07:23.195612+00:00",
+  "retained_files": [
+    {
+      "path": "REPORT.md",
+      "bytes": 10948,
+      "mode": "0o644",
+      "sha256": "1b4a9cf84ebdad34c6c20b25daa364633d2798601cbfbe9361e4cd9b98f59b20"
+    },
+    {
+      "path": "SOURCE-BINDING.json",
+      "bytes": 8463,
+      "mode": "0o644",
+      "sha256": "caa1fac53f6d23e6eb28b2cb6554789823a6fa034ffd6ea898e88178eb0abcfe"
+    },
+    {
+      "path": "base-global_opts.rs",
+      "bytes": 9193,
+      "mode": "0o644",
+      "sha256": "c6ba4919c06c4c4cb6e1498101719fd62f8a85f789574b8b40c01ef37a9cd26f"
+    },
+    {
+      "path": "callers/hermit-cli/Cargo.toml",
+      "bytes": 4122,
+      "mode": "0o644",
+      "sha256": "ff312f2f540a65be0567aa78bf9e0b90290b2f4e29017854c8c4e38b2fb39697"
+    },
+    {
+      "path": "callers/hermit-cli/src/bin/hermit/analyze/rundata.rs",
+      "bytes": 17309,
+      "mode": "0o644",
+      "sha256": "26ff89c132cad78300b6d004f9a4f9d3c77def82a7b3ffaf5a2a602d9ffd4dd1"
+    },
+    {
+      "path": "callers/hermit-cli/src/bin/hermit/global_opts.rs",
+      "bytes": 9193,
+      "mode": "0o644",
+      "sha256": "c6ba4919c06c4c4cb6e1498101719fd62f8a85f789574b8b40c01ef37a9cd26f"
+    },
+    {
+      "path": "callers/hermit-cli/src/bin/hermit/main.rs",
+      "bytes": 54999,
+      "mode": "0o644",
+      "sha256": "c6d92d4cb812c0646f588fb059bfeacf9b0cc0bc83a03d29b514527a9390b776"
+    },
+    {
+      "path": "candidate-global_opts.rs",
+      "bytes": 12308,
+      "mode": "0o644",
+      "sha256": "34506e6cdd47915e2e6d6b64563e271e6a3df14d5ecf1de99bb20d764bda1d6a"
+    },
+    {
+      "path": "landed-correspondence.json",
+      "bytes": 2917,
+      "mode": "0o644",
+      "sha256": "292f043da12f90ab50c2eba1931885dd43d597621812512068f88bd0ab16bbad"
+    },
+    {
+      "path": "log-file-nofollow.patch",
+      "bytes": 4242,
+      "mode": "0o644",
+      "sha256": "5ccc72192d987ef953213f4561d43983393e82d50862eff2d5027b05f099a44e"
+    },
+    {
+      "path": "wrkslots-plan/actual-implementation.json",
+      "bytes": 15808,
+      "mode": "0o644",
+      "sha256": "68bfd63ec0b3a85940dc83496ab42e41c04b5c6e61c55b5a4d05f5d5565ba745"
+    },
+    {
+      "path": "wrkslots-plan/actual-wrapper.sh",
+      "bytes": 11327,
+      "mode": "0o644",
+      "sha256": "56ae5c51026575f4d32b455785e4904b10b60d18ddab028b6337318e654a3c10"
+    },
+    {
+      "path": "wrkslots-plan/adopt.receipt.json",
+      "bytes": 412,
+      "mode": "0o644",
+      "sha256": "f822c7e9591264331781135711cab9b354e20a3310eb987ba9cc15ed155f84fe"
+    },
+    {
+      "path": "wrkslots-plan/adopt.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "wrkslots-plan/adopt.stdout",
+      "bytes": 601,
+      "mode": "0o644",
+      "sha256": "7a0763d90bd999395c17a81b08382c7c57ae87da59a0e318a6ef3e511b7b94f8"
+    },
+    {
+      "path": "wrkslots-plan/finish.receipt.json",
+      "bytes": 413,
+      "mode": "0o644",
+      "sha256": "ef1399dbe098ef1ca3eace67bba408abf8ed5167513d8f4875eb9a6009bd79b0"
+    },
+    {
+      "path": "wrkslots-plan/finish.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "wrkslots-plan/finish.stdout",
+      "bytes": 842,
+      "mode": "0o644",
+      "sha256": "651add41d74c5ab2124196e8640a05eb20670c96376a76af8bbc6d07358669d8"
+    },
+    {
+      "path": "wrkslots-plan/heartbeat.receipt.json",
+      "bytes": 415,
+      "mode": "0o644",
+      "sha256": "3d2c414fd11e0c9f3fc458cb7fc173a9370742f688edc525fc608bcd3c4d7da4"
+    },
+    {
+      "path": "wrkslots-plan/heartbeat.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "wrkslots-plan/heartbeat.stdout",
+      "bytes": 545,
+      "mode": "0o644",
+      "sha256": "023e8ac897270329ba876e42d358ba9cf4ec5e8ad8ae96987d37f3b5cd1d6b0a"
+    },
+    {
+      "path": "wrkslots-plan/register.receipt.json",
+      "bytes": 415,
+      "mode": "0o644",
+      "sha256": "4ed8c37c9df4ab36072d4bb923fe251c477c8208ca3d61b24ed413a36b85bbe8"
+    },
+    {
+      "path": "wrkslots-plan/register.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "wrkslots-plan/register.stdout",
+      "bytes": 2248,
+      "mode": "0o644",
+      "sha256": "16e672b84a052fab96968885c03d2116fdafade9c5efef8d4a73e1bfa877fbe1"
+    },
+    {
+      "path": "wrkslots-plan/root-help.receipt.json",
+      "bytes": 399,
+      "mode": "0o644",
+      "sha256": "d7fb78872ef206541e7928c18bbfb60eb86caabfa79483f76bd66d12cfc4f028"
+    },
+    {
+      "path": "wrkslots-plan/root-help.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "wrkslots-plan/root-help.stdout",
+      "bytes": 6177,
+      "mode": "0o644",
+      "sha256": "64f3dbd53b4f5ce8184cc8b349738fad0316f36b63eea88ee6af0e9363822b8a"
+    }
+  ],
+  "recovery_source_checks": [
+    {
+      "argv": [
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "4392560a4f6e06f136b5a74b0418294a6cdda28a\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "branch",
+        "--show-current"
+      ],
+      "exit": 0,
+      "stdout": "codex/kvm-parity-recovery-20260916\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=normal"
+      ],
+      "exit": 0,
+      "stdout": "?? HANDOFF.md\n",
+      "stderr": ""
+    }
+  ],
+  "handoff_sha256": "f3d4023258cb7644c9a919b07a99f3c7fa0aec330f246b010c2406aa4c07bd3c",
+  "prepared_test_count": 3,
+  "tests_executed": 0,
+  "source_applied": false,
+  "refs_changed": false,
+  "registry_changed": false,
+  "public_action": false
+}

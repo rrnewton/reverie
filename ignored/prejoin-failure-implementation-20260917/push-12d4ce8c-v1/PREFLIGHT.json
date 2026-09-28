@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "time_unix": 1789670576.4704862,
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "plan_sha256": "abd022f22e52df70a70a56c134b58b5518e79659f1c65305b49bb70503cc29b5",
+  "caller_sha256": "114f728023fd664ec9afb4fd1039814aea33ccea6d9f0d2720795b941f5fc5ee",
+  "input_count": 27,
+  "full_source_plan_input_counts": [
+    199,
+    258,
+    75,
+    60
+  ],
+  "normal_installed_hook_checked": true,
+  "same_bound_stage_except_remote_ref_and_output": true,
+  "actual_interpreter_bound": true,
+  "all_results_and_actual_artifacts_pass": true,
+  "active_owned_work": [],
+  "fresh_outputs": true,
+  "remote_absence_and_old_refs": "04904cf48ce515abc7f32a92955c9b39d38c4cfdb499aa49935a5286f7f5344a"
+}

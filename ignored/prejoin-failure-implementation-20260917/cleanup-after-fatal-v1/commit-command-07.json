@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "commit",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/commit-message.txt"
+  ],
+  "exit": 0,
+  "stdout": "[codex/kvm-proc-fd-identity-20260917 12d4ce8c] Do not treat fatal child cancellation as a cleanup failure\n 1 file changed, 121 insertions(+), 5 deletions(-)\n",
+  "stderr": ""
+}

@@ -1,0 +1,21 @@
+{
+  "time": "2026-09-17T17:24:01.303869+00:00",
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "source_binding_sha256": "043b859fea40ae2da1a95eab4774e57c1e72eeacf35eafbdc10534f31057119f",
+  "target": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9",
+  "excluded_ancestors": [
+    1,
+    88128,
+    1191445,
+    1209701,
+    1210520,
+    1632332,
+    1632508,
+    1632512
+  ],
+  "matches": [],
+  "full_source_entries": 2596,
+  "checked_explicit_inputs": 58,
+  "payloads_limits_and_callers_match_reviewed_predecessors": true,
+  "fresh_outputs_absent": true
+}

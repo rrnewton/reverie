@@ -1,0 +1,25 @@
+{
+  "required_paths": [
+    "/bin/echo",
+    "/bin/sh",
+    "/bin/cat",
+    "/bin/ls",
+    "/bin/date",
+    "/bin/hostname",
+    "/bin/bash",
+    "/usr/bin/awk",
+    "/usr/bin/perl",
+    "/usr/bin/setpriv",
+    "/usr/bin/env",
+    "/usr/bin/wc",
+    "/usr/bin/paste",
+    "/usr/bin/diff",
+    "/usr/bin/id",
+    "/usr/bin/timeout"
+  ],
+  "host_input_files": [
+    "/etc/hostname"
+  ],
+  "compiler_requirement": "The actual first successful compiler in the source-declared cc,gcc,clang search; cc is also explicitly required by kvm_exact_child_waits and pthread_lifecycle. Bind resolved executable, actual compiler/linker subprocesses and dynamic loader/sysroot inputs before executing controls.",
+  "admission": "Inside the observed service, open /dev/kvm O_RDWR|O_CLOEXEC|O_NOFOLLOW, require character device and ioctl KVM_GET_API_VERSION=12; preserve descriptor/device identity and actual CPU/PMU/namespace context. Refuse missing binaries or unreadable host fixtures before the test can self-return. Record every path spelling, symlink resolution, inode/mode/size/hash and validate unchanged after the phase."
+}

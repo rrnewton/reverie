@@ -1,0 +1,106 @@
+test_entry_cleanup_blocks_running_frozen_singleton_after_admission_tamper (test_start_unit.StartUnitTest.test_entry_cleanup_blocks_running_frozen_singleton_after_admission_tamper) ... ok
+test_entry_cleanup_allows_typed_historical_frozen_retention (test_start_unit.StartUnitTest.test_entry_cleanup_allows_typed_historical_frozen_retention) ... ok
+test_entry_cleanup_blocks_frozen_checkout_named_by_multiple_records (test_start_unit.StartUnitTest.test_entry_cleanup_blocks_frozen_checkout_named_by_multiple_records) ... ok
+test_entry_cleanup_blocks_current_frozen_checkout_without_proof (test_start_unit.StartUnitTest.test_entry_cleanup_blocks_current_frozen_checkout_without_proof) ... ok
+test_entry_cleanup_preserves_current_incomplete_frozen_result (test_start_unit.StartUnitTest.test_entry_cleanup_preserves_current_incomplete_frozen_result) ... validate-run: ENTRY-CLEANUP state=ready removed=0 removed-cargo-homes=0 retained-nonblocking=1 elapsed=0.001s
+ok
+test_sweep_completed_defers_frozen_checkouts_beyond_batch_limit (test_start_unit.StartUnitTest.test_sweep_completed_defers_frozen_checkouts_beyond_batch_limit) ... ok
+test_frozen_batch_preserves_nested_recorded_source_checkout (test_start_unit.StartUnitTest.test_frozen_batch_preserves_nested_recorded_source_checkout) ... ok
+test_ownerless_classification_requires_exact_integer_metadata (test_start_unit.StartUnitTest.test_ownerless_classification_requires_exact_integer_metadata) ... ok
+test_ownerless_classification_requires_state_disposition_pair_and_census (test_start_unit.StartUnitTest.test_ownerless_classification_requires_state_disposition_pair_and_census) ... ok
+test_frozen_nonblocking_report_requires_fresh_same_uid_census (test_start_unit.StartUnitTest.test_frozen_nonblocking_report_requires_fresh_same_uid_census) ... ok
+test_sweep_completed_removes_frozen_checkout_outside_dev_hermit (test_start_unit.StartUnitTest.test_sweep_completed_removes_frozen_checkout_outside_dev_hermit) ... ok
+test_sweep_completed_retains_frozen_checkout_when_use_is_unknown (test_start_unit.StartUnitTest.test_sweep_completed_retains_frozen_checkout_when_use_is_unknown) ... ok
+test_sweep_retains_frozen_checkout_from_managed_location_without_identity (test_start_unit.StartUnitTest.test_sweep_retains_frozen_checkout_from_managed_location_without_identity) ... ok
+test_frozen_validate_refuses_a_target_that_still_contains_current_main (test_start_unit.StartUnitTest.test_frozen_validate_refuses_a_target_that_still_contains_current_main) ... ok
+test_frozen_validate_cannot_reenable_receipt_backed_label (test_start_unit.StartUnitTest.test_frozen_validate_cannot_reenable_receipt_backed_label) ... ok
+test_marking_frozen_result_makes_canonical_admission_reject_it (test_start_unit.StartUnitTest.test_marking_frozen_result_makes_canonical_admission_reject_it) ... ok
+test_materialize_target_rc75_archives_receipt_before_cleanup (test_start_unit.StartUnitTest.test_materialize_target_rc75_archives_receipt_before_cleanup) ... ok
+test_new_dagrun_name_is_a_usable_fresh_checkout (test_start_unit.StartUnitTest.test_new_dagrun_name_is_a_usable_fresh_checkout) ... ok
+test_fresh_checkout_uses_the_exact_tooling_wrkslots (test_start_unit.StartUnitTest.test_fresh_checkout_uses_the_exact_tooling_wrkslots) ... ok
+test_crate_without_runner_executable_is_not_usable (test_start_unit.StartUnitTest.test_crate_without_runner_executable_is_not_usable) ... ok
+test_cleanup_uses_wrkslots_even_when_source_is_missing (test_start_unit.StartUnitTest.test_cleanup_uses_wrkslots_even_when_source_is_missing) ... ok
+test_immediate_frozen_cleanup_uses_typed_wrkslots_recovery (test_start_unit.StartUnitTest.test_immediate_frozen_cleanup_uses_typed_wrkslots_recovery) ... ok
+test_frozen_receipt_cleanup_routes_preserve_provider_refusal (test_start_unit.StartUnitTest.test_frozen_receipt_cleanup_routes_preserve_provider_refusal) ... 
+  test_frozen_receipt_cleanup_routes_preserve_provider_refusal (test_start_unit.StartUnitTest.test_frozen_receipt_cleanup_routes_preserve_provider_refusal) (route='recorded') ... ERROR
+  test_frozen_receipt_cleanup_routes_preserve_provider_refusal (test_start_unit.StartUnitTest.test_frozen_receipt_cleanup_routes_preserve_provider_refusal) (route='immediate') ... ERROR
+test_frozen_cleanup_refuses_missing_record_and_wrong_roots (test_start_unit.StartUnitTest.test_frozen_cleanup_refuses_missing_record_and_wrong_roots) ... ERROR
+test_frozen_cleanup_rejects_provider_success_with_retained_path (test_start_unit.StartUnitTest.test_frozen_cleanup_rejects_provider_success_with_retained_path) ... ERROR
+test_frozen_pre_record_refusal_does_not_invent_cleanup_record (test_start_unit.StartUnitTest.test_frozen_pre_record_refusal_does_not_invent_cleanup_record) ... ok
+test_frozen_inner_refusal_threads_actual_record_from_worker_slot (test_start_unit.StartUnitTest.test_frozen_inner_refusal_threads_actual_record_from_worker_slot) ... FAIL
+test_immediate_cleanup_does_not_rmtree_managed_git_directory (test_start_unit.StartUnitTest.test_immediate_cleanup_does_not_rmtree_managed_git_directory) ... validate-run: wrkslots did not confirm removal of validation checkout /tmp/tmp02y05ahp/worktrees/validate/validate-fresh-corrupt-git: registry shape refused
+ok
+test_linked_parent_uses_shared_state_and_exact_tooling (test_start_unit.StartUnitTest.test_linked_parent_uses_shared_state_and_exact_tooling) ... ok
+test_same_sha_can_run_again_after_main_moves_and_is_not_a_current_receipt (test_start_unit.StartUnitTest.test_same_sha_can_run_again_after_main_moves_and_is_not_a_current_receipt)
+The named end-to-end bracket: same SHA, main advances, second run completes. ... ok
+test_entry_cleanup_does_not_infer_nonblocking_from_reason_text (test_start_unit.StartUnitTest.test_entry_cleanup_does_not_infer_nonblocking_from_reason_text) ... ok
+test_ownerless_batch_report_requires_typed_entry_disposition (test_start_unit.StartUnitTest.test_ownerless_batch_report_requires_typed_entry_disposition) ... ok
+
+======================================================================
+ERROR: test_frozen_receipt_cleanup_routes_preserve_provider_refusal (test_start_unit.StartUnitTest.test_frozen_receipt_cleanup_routes_preserve_provider_refusal) (route='recorded')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/tests/test_start_unit.py", line 9412, in test_frozen_receipt_cleanup_routes_preserve_provider_refusal
+    start_unit.run_registry.write_record(record, fields)
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/run_registry.py", line 1210, in write_record
+    _write_unlocked(path, value)
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/run_registry.py", line 1190, in _write_unlocked
+    raise RuntimeError(f"validation handle {path} has an unsupported schema")
+RuntimeError: validation handle /tmp/tmp2as7rrcv/ignored/validate/runs/validate-recorded.json has an unsupported schema
+
+======================================================================
+ERROR: test_frozen_receipt_cleanup_routes_preserve_provider_refusal (test_start_unit.StartUnitTest.test_frozen_receipt_cleanup_routes_preserve_provider_refusal) (route='immediate')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/tests/test_start_unit.py", line 9412, in test_frozen_receipt_cleanup_routes_preserve_provider_refusal
+    start_unit.run_registry.write_record(record, fields)
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/run_registry.py", line 1210, in write_record
+    _write_unlocked(path, value)
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/run_registry.py", line 1190, in _write_unlocked
+    raise RuntimeError(f"validation handle {path} has an unsupported schema")
+RuntimeError: validation handle /tmp/tmp2as7rrcv/ignored/validate/runs/validate-immediate.json has an unsupported schema
+
+======================================================================
+ERROR: test_frozen_cleanup_refuses_missing_record_and_wrong_roots (test_start_unit.StartUnitTest.test_frozen_cleanup_refuses_missing_record_and_wrong_roots)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/tests/test_start_unit.py", line 9459, in test_frozen_cleanup_refuses_missing_record_and_wrong_roots
+    start_unit.run_registry.write_record(record, {"checkout": str(fresh)})
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/run_registry.py", line 1210, in write_record
+    _write_unlocked(path, value)
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/run_registry.py", line 1190, in _write_unlocked
+    raise RuntimeError(f"validation handle {path} has an unsupported schema")
+RuntimeError: validation handle /tmp/tmpqajzmtae/ignored/validate/runs/validate-root-mismatch.json has an unsupported schema
+
+======================================================================
+ERROR: test_frozen_cleanup_rejects_provider_success_with_retained_path (test_start_unit.StartUnitTest.test_frozen_cleanup_rejects_provider_success_with_retained_path)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/tests/test_start_unit.py", line 9487, in test_frozen_cleanup_rejects_provider_success_with_retained_path
+    start_unit.run_registry.write_record(record, {"checkout": str(fresh)})
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/run_registry.py", line 1210, in write_record
+    _write_unlocked(path, value)
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/run_registry.py", line 1190, in _write_unlocked
+    raise RuntimeError(f"validation handle {path} has an unsupported schema")
+RuntimeError: validation handle /tmp/tmpbb2njvra/ignored/validate/runs/validate-kept-path.json has an unsupported schema
+
+======================================================================
+FAIL: test_frozen_inner_refusal_threads_actual_record_from_worker_slot (test_start_unit.StartUnitTest.test_frozen_inner_refusal_threads_actual_record_from_worker_slot)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/usr/local/fbcode/platform010/lib/python3.12/unittest/mock.py", line 1396, in patched
+    return func(*newargs, **newkeywargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/tests/test_start_unit.py", line 9575, in test_frozen_inner_refusal_threads_actual_record_from_worker_slot
+    self.assertEqual(75, rc, error.getvalue())
+AssertionError: 75 != 2 : validate-run: ENTRY-CLEANUP state=ready removed=0 removed-cargo-homes=0 retained-nonblocking=0 elapsed=0.000s
+validate-run: wrkslots cleanup could not run for /tmp/.tmp23ojqvzq-frozen-validate/validate-fresh-aaaaaaaaaaaa-3063511-bcd669e2: frozen checkout cleanup requires its completed validation record; checkout and row state are unconfirmed. Run 'ci-hub/bin/wrkslots recover --coordinator-pid PID' if an interrupted operation is reported, otherwise rerun the printed remove command.
+validate-run: REFUSED: validation-service-result-schema: cannot read /tmp/tmp23ojqvzq/worktrees/slots/tooling/hermit/ci/manifest-plan/validation-service-result-schema.json: [Errno 2] No such file or directory: '/tmp/tmp23ojqvzq/worktrees/slots/tooling/hermit/ci/manifest-plan/validation-service-result-schema.json'
+  state:  REFUSED -- the validate NEVER RAN, so there is no log and no result.
+  remedy: the unit did not start; check `ci-hub validate-lock status` for a held box lock and retry once it is free
+
+
+----------------------------------------------------------------------
+Ran 32 tests in 0.200s
+
+FAILED (failures=1, errors=4)

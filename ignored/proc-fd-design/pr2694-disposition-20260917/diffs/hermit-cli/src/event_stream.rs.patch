@@ -1,0 +1,12 @@
+diff --git a/hermit-cli/src/event_stream.rs b/hermit-cli/src/event_stream.rs
+index 86b755faa..36b459655 100644
+--- a/hermit-cli/src/event_stream.rs
++++ b/hermit-cli/src/event_stream.rs
+@@ -590,3 +590,7 @@ mod tests {
+         assert!(error.to_string().contains("identity mismatch"));
+     }
+ }
++
++#[cfg(test)]
++#[path = "event_stream/append_record_replay_test.rs"]
++mod append_record_replay_test;

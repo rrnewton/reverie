@@ -1,0 +1,152 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01E44qB165otfqBdWxrRW2B8",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore-model/src/procfs.rs",
+    "offset": 1,
+    "limit": 140
+  }
+}
+
+Successful public tool result (exact text below):
+1	/*
+2	 * Copyright (c) Meta Platforms, Inc. and affiliates.
+3	 * All rights reserved.
+4	 *
+5	 * This source code is licensed under the BSD-style license found in the
+6	 * LICENSE file in the root directory of this source tree.
+7	 */
+8	
+9	//! Types and parsers shared by procfs producers and consumers.
+10	
+11	use std::collections::BTreeSet;
+12	
+13	/// Identity-bearing fields from one Linux `/proc/*/mountinfo` row.
+14	#[derive(Clone, Debug, Eq, PartialEq)]
+15	pub struct MountInfoRow {
+16	    pub raw_mount_id: u64,
+17	    pub raw_parent_id: u64,
+18	    pub raw_device: u64,
+19	    pub root: Vec<u8>,
+20	    pub raw_peer_groups: Vec<u64>,
+21	}
+22	
+23	// AUTONOMOUS-BOT-IMPLEMENTED
+24	// TODO-HUMAN-REVIEW(PR-873): Review private mount-root normalization.
+25	pub const MOUNT_PEER_PREFIXES: [&[u8]; 3] = [b"shared:", b"master:", b"propagate_from:"];
+26	
+27	/// Whether every visible mount ID occurs once and in the same relative order
+28	/// as the producer-captured namespace.
+29	pub fn mount_ids_are_ordered_subset(visible: &[u64], captured: &[u64]) -> bool {
+30	    let mut seen = BTreeSet::new();
+31	    if !visible.iter().all(|raw| seen.insert(*raw)) {
+32	        return false;
+33	    }
+34	    let mut captured = captured.iter();
+35	    visible
+36	        .iter()
+37	        .all(|raw| captured.by_ref().any(|candidate| candidate == raw))
+38	}
+39	
+40	fn decimal(field: &[u8]) -> Option<u64> {
+41	    if field.is_empty() || field.iter().any(|byte| !byte.is_ascii_digit()) {
+42	        return None;
+43	    }
+44	    std::str::from_utf8(field).ok()?.parse().ok()
+45	}
+46	
+47	fn mount_peer_group(field: &[u8]) -> Option<Option<u64>> {
+48	    for prefix in MOUNT_PEER_PREFIXES {
+49	        if let Some(raw) = field.strip_prefix(prefix) {
+50	            return Some(Some(decimal(raw)?));
+51	        }
+52	    }
+53	    Some(None)
+54	}
+55	
+56	fn parse_mountinfo_row(line: &[u8]) -> Option<MountInfoRow> {
+57	    let fields = line.split(|byte| *byte == b' ').collect::<Vec<_>>();
+58	    if fields.iter().any(|field| field.is_empty()) {
+59	        return None;
+60	    }
+61	    let separator = fields.iter().position(|field| *field == b"-")?;
+62	    if separator < 6 || separator + 4 != fields.len() {
+63	        return None;
+64	    }
+65	    let mut device = fields[2].split(|byte| *byte == b':');
+66	    let major = u32::try_from(decimal(device.next()?)?).ok()?;
+67	    let minor = u32::try_from(decimal(device.next()?)?).ok()?;
+68	    if device.next().is_some() {
+69	        return None;
+70	    }
+71	    let mut raw_peer_groups = Vec::new();
+72	    for field in &fields[6..separator] {
+73	        if let Some(raw) = mount_peer_group(field)? {
+74	            raw_peer_groups.push(raw);
+75	        } else if field
+76	            .iter()
+77	            .position(|byte| *byte == b':')
+78	            .is_some_and(|separator| decimal(&field[separator + 1..]).is_some())
+79	        {
+80	            // Unknown numeric optional fields can carry mount-namespace
+81	            // identity just like the peer-group fields above. Passing one
+82	            // through would expose an unsanitized host identifier, so refuse
+83	            // until its Linux semantics and deterministic mapping are known.
+84	            return None;
+85	        }
+86	    }
+87	    Some(MountInfoRow {
+88	        raw_mount_id: decimal(fields[0])?,
+89	        raw_parent_id: decimal(fields[1])?,
+90	        raw_device: libc::makedev(major, minor),
+91	        root: fields[3].to_vec(),
+92	        raw_peer_groups,
+93	    })
+94	}
+95	
+96	/// Strictly parse a Linux `/proc/*/mountinfo` snapshot.
+97	///
+98	/// Empty files are valid empty snapshots. Malformed rows and duplicate mount
+99	/// IDs are rejected so every producer and consumer accepts the same grammar.
+100	pub fn parse_mountinfo(contents: &[u8]) -> Option<Vec<MountInfoRow>> {
+101	    if contents.is_empty() {
+102	        return Some(Vec::new());
+103	    }
+104	    let body = contents.strip_suffix(b"\n").unwrap_or(contents);
+105	    if body.is_empty() {
+106	        return None;
+107	    }
+108	    let rows = body
+109	        .split(|byte| *byte == b'\n')
+110	        .map(parse_mountinfo_row)
+111	        .collect::<Option<Vec<_>>>()?;
+112	    let mut seen = BTreeSet::new();
+113	    rows.iter()
+114	        .all(|row| seen.insert(row.raw_mount_id))
+115	        .then_some(rows)
+116	}
+117	
+118	/// Parse the one decimal `mnt_id` field required by Linux fdinfo.
+119	///
+120	/// Missing, duplicate, malformed, signed, or out-of-range values are rejected.
+121	/// Keeping this byte parser below both `hermit-cli` and `detcore` prevents the
+122	/// container capture path from accepting input the guest-visible sanitizer
+123	/// would later refuse.
+124	pub fn parse_fdinfo_mount_id(contents: &[u8]) -> Option<u64> {
+125	    let mut mount_id = None;
+126	    for line in contents.split(|byte| *byte == b'\n') {
+127	        let Some(value) = line.strip_prefix(b"mnt_id:") else {
+128	            continue;
+129	        };
+130	        let value = value
+131	            .strip_prefix(b"\t")
+132	            .or_else(|| value.strip_prefix(b" "))?;
+133	        if value.is_empty() || value.iter().any(|byte| !byte.is_ascii_digit()) || mount_id.is_some()
+134	        {
+135	            return None;
+136	        }
+137	        let text = std::str::from_utf8(value).ok()?;
+138	        mount_id = Some(text.parse().ok()?);
+139	    }
+140	    mount_id

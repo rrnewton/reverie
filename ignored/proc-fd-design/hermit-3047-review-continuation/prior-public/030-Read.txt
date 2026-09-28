@@ -1,0 +1,142 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01L5k2K6JHtzmYa5HwUPWAVX",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/files.rs",
+    "offset": 1429,
+    "limit": 130
+  }
+}
+
+Successful public tool result (exact text below):
+1429	            let mut devices = BTreeMap::new();
+1430	            let virtualize_metadata = guest.config().virtualize_metadata;
+1431	            if virtualize_metadata {
+1432	                // Intentionally use snapshot row order to pre-populate the
+1433	                // same run-global DevicePool used by stat/statx. This makes
+1434	                // every later observation of a device agree within the run.
+1435	                // It does not promise that unlike host filesystem layouts
+1436	                // expose the same device equivalence classes or order.
+1437	                for raw in raw_devices {
+1438	                    devices.insert(raw, determinize_device(guest, raw).await);
+1439	                }
+1440	            }
+1441	            let mut root_rewrites = BTreeMap::new();
+1442	            for rewrite in &guest.config().mountinfo_root_rewrites {
+1443	                if root_rewrites
+1444	                    .insert(rewrite.raw_mount_id, rewrite.clone())
+1445	                    .is_some()
+1446	                {
+1447	                    return Err(Error::Tool(anyhow::anyhow!(
+1448	                        "duplicate proven mountinfo root rewrite for mount ID {}",
+1449	                        rewrite.raw_mount_id
+1450	                    )));
+1451	                }
+1452	            }
+1453	            let snapshot = MountInfoSnapshot::new(
+1454	                rows,
+1455	                if guest.config().mountinfo_mount_ids_captured {
+1456	                    &guest.config().mountinfo_mount_ids
+1457	                } else {
+1458	                    &[]
+1459	                },
+1460	                virtualize_metadata,
+1461	                devices,
+1462	                root_rewrites,
+1463	            )
+1464	            .ok_or_else(|| {
+1465	                Error::Tool(anyhow::anyhow!(
+1466	                    "mountinfo snapshot failed strict identity validation"
+1467	                ))
+1468	            })?;
+1469	            if !validate_mountinfo_identity_order(guest, snapshot.raw_mount_id_order()).await {
+1470	                return Err(Error::Tool(anyhow::anyhow!(
+1471	                    "mountinfo mount-ID order changed after the run-global identity snapshot"
+1472	                )));
+1473	            }
+1474	            Some(snapshot)
+1475	        } else {
+1476	            None
+1477	        };
+1478	        guest.thread_state().with_detfd(call.fd(), |detfd| {
+1479	            detfd.initialize_procfs(
+1480	                contents.clone(),
+1481	                ProcfsSnapshotContext {
+1482	                    mapping_identities: mapping_identities.clone(),
+1483	                    mountinfo: mountinfo.clone(),
+1484	                    virtual_uptime_seconds,
+1485	                    virtual_realtime_seconds,
+1486	                    virtual_memory_kb,
+1487	                    virtual_pid,
+1488	                    virtual_ppid,
+1489	                    virtual_pty_count,
+1490	                    fdinfo_identity,
+1491	                    random_uuid,
+1492	                },
+1493	            );
+1494	        })?;
+1495	        Ok(())
+1496	    }
+1497	
+1498	    /// SYS_read system call (MAYHANG).
+1499	    pub async fn handle_read<G: Guest<Self>>(
+1500	        &self,
+1501	        guest: &mut G,
+1502	        call: syscalls::Read,
+1503	    ) -> Result<i64, Error> {
+1504	        if self.timer_slack_binding(guest, call.fd())?.is_some() {
+1505	            return self
+1506	                .read_timer_slack(guest, call.fd(), call.buf(), call.len())
+1507	                .await;
+1508	        }
+1509	
+1510	        if call.len() == 0 {
+1511	            // Zero-count reads only serve to detect errors.
+1512	            let res = guest.inject(Syscall::from(call)).await?;
+1513	            return Ok(res);
+1514	        }
+1515	
+1516	        let needs_procfs_snapshot = guest
+1517	            .thread_state()
+1518	            .with_detfd(call.fd(), |detfd| detfd.procfs_needs_snapshot())?;
+1519	        if needs_procfs_snapshot {
+1520	            self.initialize_procfs_snapshot(guest, call).await?;
+1521	        }
+1522	
+1523	        let procfs_bytes = guest
+1524	            .thread_state()
+1525	            .with_detfd(call.fd(), |detfd| detfd.take_procfs(call.len()))?;
+1526	        if let Some(bytes) = procfs_bytes {
+1527	            let remote_buf = call.buf().ok_or(Errno::EFAULT)?;
+1528	            guest.memory().write_exact(remote_buf, &bytes)?;
+1529	            return Ok(bytes.len() as i64);
+1530	        }
+1531	
+1532	        let (
+1533	            fd_type,
+1534	            physically_nonblocking,
+1535	            logically_nonblocking,
+1536	            resource,
+1537	            random_device_offset,
+1538	        ) = guest.thread_state_mut().with_detfd(call.fd(), |detfd| {
+1539	            (
+1540	                detfd.ty(),
+1541	                detfd.physically_nonblocking(),
+1542	                detfd.is_nonblocking(),
+1543	                detfd.resource(),
+1544	                detfd.random_device_offset(),
+1545	            )
+1546	        })?;
+1547	
+1548	        if let Some(resource) = resource {
+1549	            let mut request = guest.thread_state().mk_request(resource, Permission::R);
+1550	            if should_tag_sabre_internal_pipe_io(
+1551	                guest.config().discover_live_file_metadata,
+1552	                fd_type,
+1553	                physically_nonblocking,
+1554	                logically_nonblocking,
+1555	            ) {
+1556	                request.fyi(SABRE_INTERNAL_PIPE_IO_FYI);
+1557	            }
+1558	            resource_request(guest, request).await;

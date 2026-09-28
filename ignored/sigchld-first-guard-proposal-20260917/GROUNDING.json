@@ -1,0 +1,41 @@
+{
+  "order": [
+    "full paper and artifact appendix",
+    "complete base scheduler including tests",
+    "vision and roadmap",
+    "proposal history next"
+  ],
+  "records": [
+    {
+      "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/prejoin-design-independent-review-20260917/paper.txt",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-first-guard-proposal-20260917/grounding/paper.txt",
+      "bytes": 84193,
+      "sha256": "7a8d52fa86a659b0ee314a736fc0a3eb7c8b587306a7bf1a4bed2d7df45f532c"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/PROJECT_VISION.md",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-first-guard-proposal-20260917/grounding/PROJECT_VISION.md",
+      "bytes": 10684,
+      "sha256": "b0453aa9e05cfe86c0f0d934a40fda4db2ca93f148cc62d57d732566b75b7540"
+    },
+    {
+      "source": "/home/newton/work/dev-hermit/ai_docs/hermit-v2-roadmap.md",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-first-guard-proposal-20260917/grounding/hermit-v2-roadmap.md",
+      "bytes": 27942,
+      "sha256": "c7140f6f6cbdca706ed08b270ff1b2869d1448df49de2c2d9186b4a40eeccde1"
+    },
+    {
+      "source": "/tmp/codex-kvm-paper-JILNekxj/reproducible-containers.pdf",
+      "bytes": 596500,
+      "sha256": "6346dfa0e5ea193fb975d5330da80d030f2a7641d95c7063069c8f8d7d875539"
+    },
+    {
+      "source": "Hermit14d63ed54b7284b7f8bc29d44c7610a809815621:detcore/src/scheduler.rs",
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-first-guard-proposal-20260917/base/detcore/src/scheduler.rs",
+      "bytes": 353840,
+      "sha256": "d9b94c41fb688d46bfae5420bb0319a8ad26249f39691f11d2dec908394da358",
+      "complete_lines_read": 8153
+    }
+  ],
+  "missing_designated_path": "/home/newton/work/dev-hermit/.skills/supplemental_docs/hermit-v2-roadmap.md"
+}

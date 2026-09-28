@@ -1,0 +1,42 @@
+
+running 37 tests
+test executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat ... ok
+test executor::tests::captured_output_fstat_is_synthetic_and_stable ... ok
+test executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink ... ok
+test executor::tests::fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit ... ok
+test executor::tests::fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers ... ok
+test executor::tests::fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable ... ok
+test executor::tests::fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec ... ok
+test executor::tests::fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions ... ok
+test executor::tests::fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime ... ok
+test executor::tests::fdinfo_dispatch_preserves_supported_open_status_flags ... ok
+test executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state ... ok
+test executor::tests::fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts ... ok
+test executor::tests::fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields ... ok
+test executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor ... ok
+test executor::tests::guest_fd_paths_reopen_mapped_descriptors ... ok
+test executor::tests::guest_fd_reopen_uses_fresh_description_and_native_flags ... ok
+test executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned ... ok
+test executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement ... ok
+test executor::tests::proc_executable_link_marks_unlinked_and_replaced_files_deleted ... ok
+test executor::tests::proc_fd_statx_preserves_native_masks_and_error_results ... ok
+test executor::tests::synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher ... ok
+test executor::tests::synthetic_proc_directory_fd_rejects_relative_mutation ... ok
+test executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files ... ok
+test executor::tests::synthetic_proc_files_serve_deterministic_content ... ok
+test executor::tests::synthetic_proc_metadata_is_synthetic_and_stable ... ok
+test executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths ... ok
+test executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable ... ok
+test executor::tests::synthetic_proc_self_reflects_guest_identity ... ok
+test executor::tests::virtual_identity_and_random_files_are_read_only ... ok
+test memory::tests::counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy ... ok
+test memory::tests::prctl_copyout_keeps_privileged_write_and_scalar_contracts ... ok
+test memory::tests::prctl_copyout_permissions_follow_remap_unmap_and_reset ... ok
+test memory::tests::prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone ... ok
+test memory::tests::tracked_read_only_pages_reject_backend_copyout_but_remain_readable ... ok
+test memory::tests::tracked_user_access_faults_and_returns_partial_copies ... ok
+test proc_mounts::tests::mount_snapshot_propagates_read_error_without_partial_success ... ok
+test proc_mounts::tests::mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 390 filtered out; finished in 0.03s
+

@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "git",
+    "bundle",
+    "create",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/9db-before-cleanup-followup.bundle",
+    "refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917",
+    "^526c21cf06ef9e5098ec9002b93e40e2022e798f"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": ""
+}

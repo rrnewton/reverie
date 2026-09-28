@@ -1,0 +1,108 @@
+{
+  "default_launcher_refuses_without_execution_argument": true,
+  "argument_is_not_authorization": "Root must review the exact prompt/caller/input binding and release the command before use.",
+  "review_command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "900s",
+    "with-proxy",
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "Read,Grep,Glob",
+    "--strict-mcp-config"
+  ],
+  "wall_seconds": 900,
+  "kill_after_seconds": 10,
+  "per_output_file_bytes": 67108864,
+  "no_test_or_guest_execution": true,
+  "no_source_or_ref_or_pr_operations": true,
+  "tools_current_metadata": [
+    {
+      "entrypoint": "/usr/bin/python3",
+      "resolved_path": "/usr/bin/python3.9",
+      "path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "timeout",
+      "resolved_path": "/usr/bin/timeout",
+      "path": "/usr/bin/timeout",
+      "bytes": 36848,
+      "sha256": "8eb5abb15bad3a1d608c68272412f0d55c9100c64078ae083b4f8b0e746d781c",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "with-proxy",
+      "resolved_path": "/usr/bin/with-proxy",
+      "path": "/usr/bin/with-proxy",
+      "bytes": 375,
+      "sha256": "58ac36d860272774df83d2e69eecaefdc4fc54161171bf846bbb34d0903f8b1d",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "claude",
+      "resolved_path": "/usr/local/bin/claude_code/os/claude",
+      "path": "/usr/local/bin/claude_code/os/claude",
+      "bytes": 669,
+      "sha256": "36f36c0fe279c7077e3e48c8813344d1db59741766923bec9ec2308fa3d278d9",
+      "mode": "0o755"
+    }
+  ],
+  "read_tools_only": true,
+  "state": "prepared_under_root_source_review_release_not_executed",
+  "proposed_released_argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/launch-review.py",
+    "--execute-reviewed-1145835f-fba5d50c"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent",
+  "candidate_binding_sha256": "b331c29f7f48d7ff43612d31bf8bcedaec7bdb0ee193ce0aae7e56d91e322218",
+  "outputs": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/launch.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/stdout.jsonl",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/stderr.log",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/exit.json"
+  ],
+  "source_scope": "Complete committed parent+AU preservation-classification correction, including full changed source/tests and unchanged canonical authority, process census and typed direct-removal context.",
+  "raw_private_transcript_not_input": true,
+  "repositories": {
+    "parent": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "base": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "head": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+      "tree": "f127f6563d771eb172980af74e398fed8b6e0edd",
+      "changed": [
+        "ci-hub/validate/start_unit.py",
+        "ci-hub/validate/tests/test_start_unit.py"
+      ],
+      "patch_sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12"
+    },
+    "agent-utils": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "base": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "head": "1145835fc804f47ae48b29b89009e6937184175a",
+      "tree": "e470a86697cbb9590c23d45ee5fab9ade12aab01",
+      "changed": [
+        "py/wrkslots/cli.py",
+        "py/wrkslots/tests/test_lifecycle.py"
+      ],
+      "patch_sha256": "c7b39cad7b7813514a5d78f74307be5c9814a3586430dfe8f9acc7696bf60940"
+    }
+  },
+  "actual_evidence_cutoff": "AU corrected focused43 and strict mypy13 passed; earlier four initial-window failures preserved. Parent28 passes in first32-method attempt plus corrected4 passes, production identical. Normal AU make validate pending at freeze and excluded from immutable inputs. No real1839 classifier, cleanup, admission or guest performed."
+}

@@ -1,0 +1,83 @@
+--- prior/execution-plan.json
++++ follow-up/execution-plan.json
+@@ -1,12 +1,5 @@
+ {
+-  "state": "prepared_continuation_only_not_released_or_executed",
+   "default_launcher_refuses_without_execution_argument": true,
+-  "proposed_released_argv": [
+-    "/usr/bin/python3",
+-    "-B",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/launch-review.py",
+-    "--execute-reviewed-a9d3b1fa"
+-  ],
+   "argument_is_not_authorization": "Root must review the exact prompt/caller/input binding and release the command before use.",
+   "review_command": [
+     "timeout",
+@@ -30,23 +23,11 @@
+     "Read,Grep,Glob",
+     "--strict-mcp-config"
+   ],
+-  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/source/hermit",
+   "wall_seconds": 900,
+   "kill_after_seconds": 10,
+   "per_output_file_bytes": 67108864,
+-  "outputs": [
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/launch.json",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/stdout.jsonl",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/stderr.log",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/exit.json"
+-  ],
+   "no_test_or_guest_execution": true,
+   "no_source_or_ref_or_pr_operations": true,
+-  "hermit_base": "b03fd6c16a438060f0013d58948643d8f3d81ab5",
+-  "hermit_head": "a9d3b1faa4502963e33bcb3e7e8a213a4e1a3bb0",
+-  "hermit_tree": "340e146bb4e3943f33393cc71792bcc8a3b31079",
+-  "candidate_binding_sha256": "561cfd5223be2e601e7e31920288327e275f74c26276e55dde621e17e2c9811d",
+-  "snapshot_manifest_sha256": "6b34382614c3653a6010fc37a58d0adea4aaefac0680f86116437f91a73194e4",
+   "tools_current_metadata": [
+     {
+       "entrypoint": "/usr/bin/python3",
+@@ -82,16 +63,31 @@
+     }
+   ],
+   "read_tools_only": true,
+-  "actual_evidence_cutoff": "aa7 native19/fmt/Clippy634/build and2descriptor+3complete-mode runtime passes; actual a9 source composition; official full-image cat pending; Reverie426/1 unchanged.",
+-  "normal_disjoint_future_main": "b03 is now the actual base; a9 source union verified without claiming new runtime evidence.",
+-  "public_transcript_bytes": 400919,
+-  "decoded_public_tool_result_bytes": 348339,
+-  "public_material_parts": 8,
+-  "public_material_total_bytes": 380280,
+-  "public_material_max_part_bytes": 58440,
+-  "public_material_not_embedded_in_prompt": true,
+-  "public_tool_pairs": 75,
+-  "public_text_blocks": 2,
+-  "hidden_thinking_blocks_excluded": 47,
+-  "original_attempt": "900.019045436 seconds / exit124 / no terminal verdict; unchanged original files preserved."
++  "state": "prepared_only_not_released_or_executed",
++  "proposed_released_argv": [
++    "/usr/bin/python3",
++    "-B",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/launch-review.py",
++    "--execute-reviewed-a88f9480"
++  ],
++  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/source/hermit",
++  "hermit_base": "158a89f6217b25db9540237f9c1e256cdbaf785c",
++  "hermit_head": "a88f948021a24c6a1ea808f868516c0691c8819a",
++  "hermit_tree": "cf2185e73d2335ddd70162e336b27440df5bf3d8",
++  "candidate_binding_sha256": "e82585b11cd13ffea137c78f6c81605c2064ec1020f497d905d08680be19135b",
++  "outputs": [
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/launch.json",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/stdout.jsonl",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/stderr.log",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/exit.json"
++  ],
++  "source_scope": "Incoming scripts/validate.rs plus exact test-only F1 insertion; complete final authored patch and relevant unchanged source provided.",
++  "prior_literal_source_approval": {
++    "head": "a9d3b1faa4502963e33bcb3e7e8a213a4e1a3bb0",
++    "report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/prior-a9-REVIEW.md",
++    "sha256": "f8d2cca4a3a8235bd759b9b4bf6f7526d70769ebf99533c71d02b288d4d6c08f"
++  },
++  "actual_evidence_cutoff": "aa7 native19/fmt/Clippy634/build and2descriptor+3complete-mode passes retained at aa7; official method/empty-stderr obligation pending; Reverie426/1 unchanged.",
++  "raw_private_transcript_not_input": true,
++  "no_rebuild_or_relist_or_retest": true
+ }

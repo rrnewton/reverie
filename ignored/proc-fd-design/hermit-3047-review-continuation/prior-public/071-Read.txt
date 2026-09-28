@@ -1,0 +1,48 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01SugNCdPHzpVBVYUbbjd6p1",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/landed-reverie.commit"
+  }
+}
+
+Successful public tool result (exact text below):
+1	commit 596b9adee8473dc0a7e62dce18580eead3d0c5c9
+2	Author:     Ryan Newton <rrnewton@gmail.com>
+3	AuthorDate: Wed Sep 16 22:10:56 2026 -0700
+4	Commit:     Ryan Newton <ryan.newton@alum.mit.edu>
+5	CommitDate: Thu Sep 17 01:55:57 2026 -0400
+6	
+7	    Preserve KVM proc descriptor metadata and fdinfo semantics
+8	    
+9	    [hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+10	    
+11	    Task: kvm-lane-to-full-determinism-and-parity
+12	    
+13	    Plain Language Summary:
+14	    Use the guest-owned object for ordinary proc descriptor stat and anonymous
+15	    readlink results. Serve fdinfo through the original guest task and descriptor
+16	    table, observing its current offset, status flags and descriptor close-on-exec
+17	    bit. Preserve Linux sequence-file behavior across partial reads, pread, shared
+18	    aliases, seek, target closure and descriptor reuse.
+19	    
+20	    Project Impact:
+21	    Ordinary proc descriptor paths now agree with direct fstat. Descriptor metadata
+22	    retains actual mount identity and uses the backend's captured mount namespace.
+23	    Fdinfo for private and captured carriers remains explicitly unsupported. The
+24	    counted guest copy keeps partial-copy accounting and existing scalar-copy error
+25	    behavior intact.
+26	    Native controls cover owned-object identity, lifetime, flags, partial faults,
+27	    mount snapshot bounds and supervisor isolation. Hermit end-to-end measurements
+28	    and backend parity qualification remain separate work.
+29	    
+30	    Validation:
+31	    All 37 selected native executor/memory/mount controls passed, including the
+32	    existing executable-link replacement/deletion control. Pinned-toolchain Clippy
+33	    passed with --locked --offline -p reverie-kvm --lib --tests -- -D warnings;
+34	    formatting and diff checks passed. Native execution used 0.228809 CPU seconds
+35	    and 1.016614923 wall seconds; Clippy used 40.80786 CPU seconds and
+36	    22.047195164 wall seconds. Prior compilation and private-versus-visible
+37	    identity assertion failures remain retained with their original results.
+38	

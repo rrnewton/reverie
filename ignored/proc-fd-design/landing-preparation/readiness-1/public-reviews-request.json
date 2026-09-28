@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "--paginate",
+    "--slurp",
+    "repos/rrnewton/reverie/pulls/565/reviews"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "started_at_utc": "2026-09-17T05:45:09.520992+00:00",
+  "finished_at_utc": "2026-09-17T05:45:09.990692+00:00",
+  "elapsed_wall_seconds": 0.4697233559563756,
+  "returncode": 0,
+  "stdout_bytes": 4,
+  "stderr_bytes": 0,
+  "stdout_sha256": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

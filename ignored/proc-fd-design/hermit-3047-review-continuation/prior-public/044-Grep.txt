@@ -1,0 +1,75 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_011YwmvirGzx5gMFPyMgyuWT",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn run_kvm_preserves_closed_standard_input",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/hermit-cli/tests/cli.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-A": 60
+  }
+}
+
+Successful public tool result (exact text below):
+3375:fn run_kvm_preserves_closed_standard_input() {
+3376-    if !Path::new("/dev/kvm").exists() {
+3377-        return;
+3378-    }
+3379-
+3380-    let args = [
+3381-        "run",
+3382-        "--backend",
+3383-        "kvm",
+3384-        "--strict",
+3385-        "--base-env=minimal",
+3386-        "--",
+3387-        "/bin/cat",
+3388-    ];
+3389-    let output = hermit_with_closed_stdin(&args);
+3390-
+3391-    // ⚠️ THE GUEST RAN, SO THIS IS THE GUEST'S OWN STATUS AND NOT A `Refusal`.
+3392-    // `/bin/cat` starts, finds stdin closed, prints its own diagnostic
+3393-    // ("/bin/cat: -: Bad file descriptor") and exits 1 of its own accord. That
+3394-    // the closed descriptor is PRESERVED INTO THE GUEST is the whole subject of
+3395-    // this test, so a hermit-internal code here would assert the opposite of
+3396-    // what the test exists to check.
+3397-    //
+3398-    // This assertion was briefly changed to `HERMIT_INTERNAL_FAILURE_EXIT` on
+3399-    // the theory that no guest was launched. It was wrong, and the reason it
+3400-    // looked right is worth keeping: from a checkout under /tmp the case fails
+3401-    // earlier, with "failed to resolve KVM guest working directory", and that
+3402-    // unrelated failure hides the real exit status. Verify this one from a
+3403-    // checkout OUTSIDE /tmp or the evidence is not about this test.
+3404-    //
+3405-    // So this is a deliberate bare literal, like the guest arm of
+3406-    // `a_guest_side_fault_is_not_reported_as_a_hermit_internal_failure`: it must
+3407-    // NOT track a hermit constant, because it is not hermit's number.
+3408-    assert_eq!(
+3409-        output.status.code(),
+3410-        Some(1),
+3411-        "expected the guest's own exit status to survive a closed stdin: {output:?}"
+3412-    );
+3413-    assert_eq!(stdout(&output), "");
+3414-    assert!(
+3415-        stderr(&output)
+3416-            .to_ascii_lowercase()
+3417-            .contains("bad file descriptor")
+3418-    );
+3419-}
+3420-
+3421-#[test]
+3422-fn run_kvm_verify_does_not_write_to_standard_input() {
+3423-    if !Path::new("/usr/bin/perl").exists() {
+3424-        return;
+3425-    }
+3426-
+3427-    for backend in ["ptrace", "kvm"] {
+3428-        if backend == "kvm" && !Path::new("/dev/kvm").exists() {
+3429-            continue;
+3430-        }
+3431-
+3432-        let temp = tempfile::tempdir().expect("failed to create stdin fixture");
+3433-        let path = temp.path().join("stdin");
+3434-        fs::write(&path, b"original-data").expect("failed to write stdin fixture");
+3435-        let stdin = fs::OpenOptions::new()

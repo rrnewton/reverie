@@ -1,0 +1,19 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01CAPYvN3qe7dhEEYtaVGQsP",
+  "name": "Grep",
+  "input": {
+    "pattern": "set_resource|with_resource",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+
+Successful public tool result (exact text below):
+detcore/src/tool_local.rs:655:        .with_resource(ResourceID::Device(Device::ContainerStdin));
+detcore/src/tool_local.rs:663:        .with_resource(ResourceID::Device(Device::ContainerStdout));
+detcore/src/tool_local.rs:671:        .with_resource(ResourceID::Device(Device::ContainerStderr));
+detcore/src/tool_local.rs:719:            self.with_detfd(fd, |detfd| detfd.set_resource(resource.clone()))?;
+detcore/src/fd.rs:274:    pub fn with_resource<S: Into<Option<ResourceID>>>(self, resource: S) -> Self {
+detcore/src/fd.rs:280:    pub(crate) fn set_resource<S: Into<Option<ResourceID>>>(&self, resource: S) {

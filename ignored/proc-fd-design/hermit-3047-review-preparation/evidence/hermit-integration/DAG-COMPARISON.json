@@ -1,0 +1,33 @@
+{
+  "complete_object_differences": [
+    [
+      [
+        "steps",
+        44,
+        "env",
+        "NEXTEST_EXPECTED_EXECUTED"
+      ],
+      "630",
+      "634"
+    ],
+    [
+      [
+        "steps",
+        1377,
+        "env",
+        "NEXTEST_EXPECTED_EXECUTED"
+      ],
+      "630",
+      "634"
+    ]
+  ],
+  "steps_before": 1598,
+  "steps_after": 1598,
+  "all_other_object_values_equal": true,
+  "all_populations_commands_dependencies_resources_unchanged": true,
+  "generated_sha256": "3e3d6c2e2fe7033a8baf4bf051469f36b934e6ac2ddfecd3e5dee67ddad09de9",
+  "baseline_sha256": "9d3046b0d8b0b1edba062355aaa9c2aa4b8380c500312a47407c93307e0d54bb",
+  "generator_exit_code": 0,
+  "cpu_seconds": 124.914967,
+  "wall_seconds": 73.78114048787393
+}

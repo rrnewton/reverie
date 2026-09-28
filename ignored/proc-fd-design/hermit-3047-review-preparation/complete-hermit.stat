@@ -1,0 +1,22 @@
+ Cargo.lock                                    |  34 ++--
+ ci/configure-build-jobs.sh                    |  12 +-
+ ci/dag/validate.json                          |   4 +-
+ ci/manifest-plan/src/validation_dag_static.rs |   4 +-
+ ci/run-with-reverie-dbt-budget.sh             |  10 +-
+ detcore-dbt/Cargo.toml                        |   4 +-
+ detcore-model/Cargo.toml                      |   2 +-
+ detcore-sabre/Cargo.toml                      |  10 +-
+ detcore/Cargo.toml                            |   4 +-
+ detcore/src/syscalls.rs                       |  45 +++++
+ detcore/src/syscalls/files.rs                 |  22 ++-
+ detcore/src/syscalls/namespace.rs             |  18 +-
+ detcore/src/tool_local.rs                     |  64 ++++++
+ detcore/tests/testutils/Cargo.toml            |   4 +-
+ hermit-cli/Cargo.toml                         |  12 +-
+ hermit-cli/src/lib.rs                         | 256 ++++++++++++++++++++----
+ hermit-cli/tests/cli.rs                       |  65 ++++++
+ hermit-install/Cargo.toml                     |   2 +-
+ liteinst-runtime-build/Cargo.lock             |  18 +-
+ liteinst-runtime-build/runtime/Cargo.toml     |   2 +-
+ tests/c/fixtures/stdio_inode_identity.c       | 274 ++++++++++++++++++++++++++
+ 21 files changed, 770 insertions(+), 96 deletions(-)

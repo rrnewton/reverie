@@ -1,0 +1,4833 @@
+[
+  {
+    "path": "/bin/bash",
+    "resolved_path": "/usr/bin/bash",
+    "size": 1389072,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100481,
+    "mtime_ns": 1708011489000000000,
+    "sha256": "97995faa249e5706dd0b0373c9da547709bf7349755d5fc8e52f97a4bd04feaf",
+    "symlinks": [
+      {
+        "path": "/bin",
+        "target": "usr/bin",
+        "size": 7,
+        "mode": 511,
+        "device": 33,
+        "inode": 264,
+        "sha256": "51eb85985e2f36e92fb2e18d663412b7bb94839f546901884eda4936683d9481"
+      }
+    ],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/bin/cat",
+    "resolved_path": "/usr/bin/cat",
+    "size": 36304,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100490,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "d6a2bf4d3442f156e31eb6ba4d5b8b8aab9295507d419bb4636b9c9a48758064",
+    "symlinks": [
+      {
+        "path": "/bin",
+        "target": "usr/bin",
+        "size": 7,
+        "mode": 511,
+        "device": 33,
+        "inode": 264,
+        "sha256": "51eb85985e2f36e92fb2e18d663412b7bb94839f546901884eda4936683d9481"
+      }
+    ],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/bin/date",
+    "resolved_path": "/usr/bin/date",
+    "size": 106336,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100529,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "66ea4d8edcc980d9f55c18a00e7e9b995522c601be21ae4c55937feab9c5738f",
+    "symlinks": [
+      {
+        "path": "/bin",
+        "target": "usr/bin",
+        "size": 7,
+        "mode": 511,
+        "device": 33,
+        "inode": 264,
+        "sha256": "51eb85985e2f36e92fb2e18d663412b7bb94839f546901884eda4936683d9481"
+      }
+    ],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/bin/echo",
+    "resolved_path": "/usr/bin/echo",
+    "size": 27936,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100557,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "17cdf5767f8b5f6a4d9863c733929ac23228c447b29dce1d230dbbee403ed978",
+    "symlinks": [
+      {
+        "path": "/bin",
+        "target": "usr/bin",
+        "size": 7,
+        "mode": 511,
+        "device": 33,
+        "inode": 264,
+        "sha256": "51eb85985e2f36e92fb2e18d663412b7bb94839f546901884eda4936683d9481"
+      }
+    ],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/bin/hostname",
+    "resolved_path": "/usr/bin/hostname",
+    "size": 24384,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100654,
+    "mtime_ns": 1628546185000000000,
+    "sha256": "ff75ee3834fc0708ba9df5d01d611046e5a87f3ea637bf5e5e95f6e05932b35b",
+    "symlinks": [
+      {
+        "path": "/bin",
+        "target": "usr/bin",
+        "size": 7,
+        "mode": 511,
+        "device": 33,
+        "inode": 264,
+        "sha256": "51eb85985e2f36e92fb2e18d663412b7bb94839f546901884eda4936683d9481"
+      }
+    ],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/bin/ls",
+    "resolved_path": "/usr/bin/ls",
+    "size": 140752,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100723,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "eec29318f59647c9a13b619e2738575164e3c43c7a1ee2b8509f36cb09019315",
+    "symlinks": [
+      {
+        "path": "/bin",
+        "target": "usr/bin",
+        "size": 7,
+        "mode": 511,
+        "device": 33,
+        "inode": 264,
+        "sha256": "51eb85985e2f36e92fb2e18d663412b7bb94839f546901884eda4936683d9481"
+      }
+    ],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/bin/sh",
+    "resolved_path": "/usr/bin/bash",
+    "size": 1389072,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100481,
+    "mtime_ns": 1708011489000000000,
+    "sha256": "97995faa249e5706dd0b0373c9da547709bf7349755d5fc8e52f97a4bd04feaf",
+    "symlinks": [
+      {
+        "path": "/bin",
+        "target": "usr/bin",
+        "size": 7,
+        "mode": 511,
+        "device": 33,
+        "inode": 264,
+        "sha256": "51eb85985e2f36e92fb2e18d663412b7bb94839f546901884eda4936683d9481"
+      },
+      {
+        "path": "/usr/bin/sh",
+        "target": "bash",
+        "size": 4,
+        "mode": 511,
+        "device": 33,
+        "inode": 99445,
+        "sha256": "37d2b12d5d9abc2a364ef9448767ee03938e383c0284193477dc7618f4b7c6c2"
+      }
+    ],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/etc/group",
+    "resolved_path": "/etc/group",
+    "size": 1395,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 7917680,
+    "mtime_ns": 1787070137069131435,
+    "sha256": "37f494629f76305e1e2cdcf16dc665a4da03719887d0779c5a38d3a91a644df4",
+    "symlinks": [],
+    "roles": [
+      "conditional runtime configuration"
+    ]
+  },
+  {
+    "path": "/etc/hostname",
+    "resolved_path": "/etc/hostname",
+    "size": 27,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 255344,
+    "mtime_ns": 1786585738273000265,
+    "sha256": "3d106a8aa1b35de7d33a6e575e5d2fa00c0eeb7f4454c15c3d80d59b8b8185b9",
+    "symlinks": [],
+    "roles": [
+      "original host fixture"
+    ]
+  },
+  {
+    "path": "/etc/hosts",
+    "resolved_path": "/etc/hosts",
+    "size": 676,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 255343,
+    "mtime_ns": 1786587684008171180,
+    "sha256": "c8ba2ac7c1aaf9ea71ab57ea2f1385730549d372a9e842086f3b79a8a8ee1bdb",
+    "symlinks": [],
+    "roles": [
+      "conditional runtime configuration"
+    ]
+  },
+  {
+    "path": "/etc/ld.so.cache",
+    "resolved_path": "/etc/ld.so.cache",
+    "size": 28431,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 40101525,
+    "mtime_ns": 1789671837638204192,
+    "sha256": "2a85ed62cfbe1156d2d5b33c84b0c136ae06c7871b751e70f41de1b1c5e41c0e",
+    "symlinks": [],
+    "roles": [
+      "dynamic loader configuration"
+    ]
+  },
+  {
+    "path": "/etc/ld.so.conf",
+    "resolved_path": "/etc/ld.so.conf",
+    "size": 138,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 447924,
+    "mtime_ns": 1786586868823206146,
+    "sha256": "c4fd43fc82b3b002841dca6b78f8a6394b781aeefc094a44f1fab3ab775a5d82",
+    "symlinks": [],
+    "roles": [
+      "dynamic loader configuration"
+    ]
+  },
+  {
+    "path": "/etc/ld.so.conf.d/chef.conf",
+    "resolved_path": "/etc/ld.so.conf.d/chef.conf",
+    "size": 165,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 723345,
+    "mtime_ns": 1786587683614216965,
+    "sha256": "9f14e6b6bcc8d67027520f58bb1d3b7bae1b0c9f1c857eb614406ec23045868e",
+    "symlinks": [],
+    "roles": [
+      "ld.so.conf included configuration"
+    ]
+  },
+  {
+    "path": "/etc/ld.so.conf.d/fb-mysql-libs-universal-x86_64.conf",
+    "resolved_path": "/etc/ld.so.conf.d/fb-mysql-libs-universal-x86_64.conf",
+    "size": 17,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 630027,
+    "mtime_ns": 1679875675000000000,
+    "sha256": "598466b4954bc66c6f45f1f119211b0698d4a549f6c01b5d9a933a2511b82626",
+    "symlinks": [],
+    "roles": [
+      "ld.so.conf included configuration"
+    ]
+  },
+  {
+    "path": "/etc/ld.so.conf.d/fb-mysql-x86_64.conf",
+    "resolved_path": "/etc/ld.so.conf.d/fb-mysql-x86_64.conf",
+    "size": 17,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 630028,
+    "mtime_ns": 1679844828000000000,
+    "sha256": "598466b4954bc66c6f45f1f119211b0698d4a549f6c01b5d9a933a2511b82626",
+    "symlinks": [],
+    "roles": [
+      "ld.so.conf included configuration"
+    ]
+  },
+  {
+    "path": "/etc/nsswitch.conf",
+    "resolved_path": "/etc/nsswitch.conf",
+    "size": 443,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 908864,
+    "mtime_ns": 1786588586369548213,
+    "sha256": "9f59cbcc2e4735bffd58f1948b3fc8c40bfe5f805c27a0c057c334b7722889e7",
+    "symlinks": [],
+    "roles": [
+      "conditional runtime configuration"
+    ]
+  },
+  {
+    "path": "/etc/passwd",
+    "resolved_path": "/etc/passwd",
+    "size": 3010,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 7917682,
+    "mtime_ns": 1787070137070431056,
+    "sha256": "4d10ca234531287cffe536776fd79fa0a5693363ad6e58f61be1d1d2e22af459",
+    "symlinks": [],
+    "roles": [
+      "conditional runtime configuration"
+    ]
+  },
+  {
+    "path": "/etc/resolv.conf",
+    "resolved_path": "/etc/resolv.conf",
+    "size": 188,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 448074,
+    "mtime_ns": 1786586873644762490,
+    "sha256": "f8f3bd2c6285aa39488c7c660f5c23a79e23d16aa7a75386dfc53d63115197cd",
+    "symlinks": [],
+    "roles": [
+      "conditional runtime configuration"
+    ]
+  },
+  {
+    "path": "/home/newton/.cargo/bin/cargo-nextest",
+    "resolved_path": "/home/newton/.cargo/bin/cargo-nextest",
+    "size": 21562480,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 48,
+    "inode": 129420804,
+    "mtime_ns": 1785448854677865644,
+    "sha256": "ee1af2e9ce0f5eeeee6832035c0d8001a2fdb557332a0383434dfe6b38f0fe83",
+    "symlinks": [],
+    "roles": [
+      "production execution helper"
+    ]
+  },
+  {
+    "path": "/home/newton/.cargo/bin/rust-script",
+    "resolved_path": "/home/newton/.cargo/bin/rust-script",
+    "size": 3589808,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 48,
+    "inode": 45136562,
+    "mtime_ns": 1785317107583374124,
+    "sha256": "90a6cc5197f2d35f9d9a7c3b30a1a8ca7dcfcfa645024fa4b7a1d565461d7a00",
+    "symlinks": [],
+    "roles": [
+      "production execution helper"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-guest-plan-v1/source/hermit-cli/tests/cli.rs",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-guest-plan-v1/source/hermit-cli/tests/cli.rs",
+    "size": 267845,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 799060033,
+    "mtime_ns": 1789665831628684972,
+    "sha256": "9e4dc5901edaa7ece16d4a5fe14d4182c62a82c7e82c885d2ea4876183a994a0",
+    "symlinks": [],
+    "roles": [
+      "original fixture source pipe",
+      "original fixture source random-device"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/backend-parity/fixtures/cpuid_probe.c",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/backend-parity/fixtures/cpuid_probe.c",
+    "size": 3808,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 796871582,
+    "mtime_ns": 1789661008303865698,
+    "sha256": "c64474d025814e29089584ecaf1271ded6bf8e39a846d660c47b37d2f9cb0eeb",
+    "symlinks": [],
+    "roles": [
+      "original fixture source cpuid"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/backend-parity/fixtures/pthread_lifecycle.c",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/backend-parity/fixtures/pthread_lifecycle.c",
+    "size": 869,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 796871641,
+    "mtime_ns": 1789661008306291461,
+    "sha256": "060e698e06919066bc7c2f2e0aab0563696ad762beabfb6c06c7e74c734667cd",
+    "symlinks": [],
+    "roles": [
+      "original fixture source pthread"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/c/kvm_exact_child_waits.c",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/tests/c/kvm_exact_child_waits.c",
+    "size": 4559,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 796871754,
+    "mtime_ns": 1789661008314291468,
+    "sha256": "4892bd4cbedaa4ff14b32fd674cc616a3965bbf290c455c33becbeefdb580bc7",
+    "symlinks": [],
+    "roles": [
+      "original fixture source exact-child-waits"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/cpuid_probe.c",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/cpuid_probe.c",
+    "size": 3808,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 800702473,
+    "mtime_ns": 1789672224681218127,
+    "sha256": "c64474d025814e29089584ecaf1271ded6bf8e39a846d660c47b37d2f9cb0eeb",
+    "symlinks": [],
+    "roles": [
+      "exact copied fixture cpuid",
+      "preprocessor input for cpuid"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/kvm_exact_child_waits.c",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/kvm_exact_child_waits.c",
+    "size": 4559,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 800702472,
+    "mtime_ns": 1789672224681048112,
+    "sha256": "4892bd4cbedaa4ff14b32fd674cc616a3965bbf290c455c33becbeefdb580bc7",
+    "symlinks": [],
+    "roles": [
+      "exact copied fixture exact-child-waits",
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/pipe_roundtrip.c",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/pipe_roundtrip.c",
+    "size": 748,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 800702475,
+    "mtime_ns": 1789672224681626220,
+    "sha256": "a981b7ebb91fcb2ae46a7d10185c651d42709ea9098653e6cf0f376c7472ed29",
+    "symlinks": [],
+    "roles": [
+      "exact copied fixture pipe",
+      "preprocessor input for pipe"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/pthread_lifecycle.c",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/pthread_lifecycle.c",
+    "size": 869,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 800702474,
+    "mtime_ns": 1789672224681337016,
+    "sha256": "060e698e06919066bc7c2f2e0aab0563696ad762beabfb6c06c7e74c734667cd",
+    "symlinks": [],
+    "roles": [
+      "exact copied fixture pthread",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/random_device_lseek.c",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/fixtures/random_device_lseek.c",
+    "size": 2494,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 48,
+    "inode": 800702476,
+    "mtime_ns": 1789672224681714703,
+    "sha256": "d34eaa20a8c700da6a37dabd10d6f6142705a4e2a0efc34eaa2427d66ef021b5",
+    "symlinks": [],
+    "roles": [
+      "exact copied fixture random-device",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/lib64/ld-linux-x86-64.so.2",
+    "resolved_path": "/usr/lib64/ld-linux-x86-64.so.2",
+    "size": 938752,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 21907915,
+    "mtime_ns": 1785350084000000000,
+    "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      }
+    ],
+    "roles": [
+      "linker script input",
+      "ELF interpreter for /usr/bin/python3.9",
+      "ELF interpreter for /usr/bin/readelf",
+      "ELF interpreter for /usr/bin/gcc",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/bin/gcc",
+      "ELF interpreter for /usr/bin/as",
+      "ELF interpreter for /usr/bin/ld.bfd",
+      "ELF interpreter for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "ELF interpreter for /usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+      "ELF interpreter for /usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+      "ELF interpreter for /usr/lib64/libc.so.6",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libc.so.6",
+      "ELF interpreter for /usr/bin/echo",
+      "ELF interpreter for /usr/bin/bash",
+      "ELF interpreter for /usr/bin/cat",
+      "ELF interpreter for /usr/bin/ls",
+      "ELF interpreter for /usr/bin/date",
+      "ELF interpreter for /usr/bin/hostname",
+      "ELF interpreter for /usr/bin/gawk",
+      "ELF interpreter for /usr/bin/perl",
+      "ELF interpreter for /usr/bin/setpriv",
+      "ELF interpreter for /usr/bin/env",
+      "ELF interpreter for /usr/bin/wc",
+      "ELF interpreter for /usr/bin/paste",
+      "ELF interpreter for /usr/bin/diff",
+      "ELF interpreter for /usr/bin/id",
+      "ELF interpreter for /usr/bin/timeout",
+      "ELF interpreter for /home/newton/.cargo/bin/rust-script",
+      "ELF interpreter for /home/newton/.cargo/bin/cargo-nextest",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /home/newton/.cargo/bin/cargo-nextest",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libm.so.6",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libmpfr.so.6.1.0",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libselinux.so.1",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libcap-ng.so.0.0.0",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libelf-0.195.so",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libjson-c.so.5.0.0",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libssh.so.4.9.4",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libk5crypto.so.3.1",
+      "DT_NEEDED ld-linux-x86-64.so.2 for /usr/lib64/libcom_err.so.2.1"
+    ]
+  },
+  {
+    "path": "/lib64/libbfd-2.35.2-72.el9.so",
+    "resolved_path": "/usr/lib64/libbfd-2.35.2-72.el9.so",
+    "size": 1343512,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110379,
+    "mtime_ns": 1769162552000000000,
+    "sha256": "fa99d0491b5200bf47bb7b6e4340c572bc8e1681c44ea9e7b59106af8e6da7b5",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libbfd-2.35.2-72.el9.so for /usr/bin/as",
+      "DT_NEEDED libbfd-2.35.2-72.el9.so for /usr/bin/ld.bfd",
+      "DT_NEEDED libbfd-2.35.2-72.el9.so for /usr/lib64/libopcodes-2.35.2-72.el9.so",
+      "DT_NEEDED libbfd-2.35.2-72.el9.so for /usr/lib64/libctf.so.0.0.0"
+    ]
+  },
+  {
+    "path": "/lib64/libbrotlicommon.so.1",
+    "resolved_path": "/usr/lib64/libbrotlicommon.so.1.0.9",
+    "size": 138080,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 21918114,
+    "mtime_ns": 1785427856000000000,
+    "sha256": "61035507604289edc6ed61a672b3d4b00f752e2360fffbd19d2b06d52de94e50",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libbrotlicommon.so.1",
+        "target": "libbrotlicommon.so.1.0.9",
+        "size": 24,
+        "mode": 511,
+        "device": 33,
+        "inode": 21918113,
+        "sha256": "d72077e0bb670a3c1231ca4646500a8f53ae633418291279794769aaa40c623b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libbrotlicommon.so.1 for /usr/lib64/libbrotlidec.so.1.0.9"
+    ]
+  },
+  {
+    "path": "/lib64/libbrotlidec.so.1",
+    "resolved_path": "/usr/lib64/libbrotlidec.so.1.0.9",
+    "size": 52416,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 21918116,
+    "mtime_ns": 1785427856000000000,
+    "sha256": "258b72615be8b96b9c87e25482d49694fdee535b060e0cdd147af71135d42b8c",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libbrotlidec.so.1",
+        "target": "libbrotlidec.so.1.0.9",
+        "size": 21,
+        "mode": 511,
+        "device": 33,
+        "inode": 21918115,
+        "sha256": "5a1154f80589ed3d73b17775aa27b79f279b32b5f69f0491350d9a4751a85420"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libbrotlidec.so.1 for /usr/lib64/libcurl.so.4.7.0"
+    ]
+  },
+  {
+    "path": "/lib64/libc.so.6",
+    "resolved_path": "/usr/lib64/libc.so.6",
+    "size": 2549352,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 21907919,
+    "mtime_ns": 1785350084000000000,
+    "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      }
+    ],
+    "roles": [
+      "linker script input",
+      "DT_NEEDED libc.so.6 for /usr/bin/python3.9",
+      "DT_NEEDED libc.so.6 for /usr/bin/readelf",
+      "DT_NEEDED libc.so.6 for /usr/bin/gcc",
+      "DT_NEEDED libc.so.6 for /usr/bin/as",
+      "DT_NEEDED libc.so.6 for /usr/bin/ld.bfd",
+      "DT_NEEDED libc.so.6 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "DT_NEEDED libc.so.6 for /usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+      "DT_NEEDED libc.so.6 for /usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libgcc_s-11-20240719.so.1",
+      "DT_NEEDED libc.so.6 for /usr/bin/echo",
+      "DT_NEEDED libc.so.6 for /usr/bin/bash",
+      "DT_NEEDED libc.so.6 for /usr/bin/cat",
+      "DT_NEEDED libc.so.6 for /usr/bin/ls",
+      "DT_NEEDED libc.so.6 for /usr/bin/date",
+      "DT_NEEDED libc.so.6 for /usr/bin/hostname",
+      "DT_NEEDED libc.so.6 for /usr/bin/gawk",
+      "DT_NEEDED libc.so.6 for /usr/bin/perl",
+      "DT_NEEDED libc.so.6 for /usr/bin/setpriv",
+      "DT_NEEDED libc.so.6 for /usr/bin/env",
+      "DT_NEEDED libc.so.6 for /usr/bin/wc",
+      "DT_NEEDED libc.so.6 for /usr/bin/paste",
+      "DT_NEEDED libc.so.6 for /usr/bin/diff",
+      "DT_NEEDED libc.so.6 for /usr/bin/id",
+      "DT_NEEDED libc.so.6 for /usr/bin/timeout",
+      "DT_NEEDED libc.so.6 for /home/newton/.cargo/bin/rust-script",
+      "DT_NEEDED libc.so.6 for /home/newton/.cargo/bin/cargo-nextest",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libpython3.9.so.1.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libctf-nobfd.so.0.0.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libz.so.1.2.11",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libdebuginfod-0.195.so",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libm.so.6",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libopcodes-2.35.2-72.el9.so",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libbfd-2.35.2-72.el9.so",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libctf.so.0.0.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libmpc.so.3.2.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libmpfr.so.6.1.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libgmp.so.10.4.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libzstd.so.1.5.5",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libtinfo.so.6.2",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libselinux.so.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libcap.so.2.48",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libsigsegv.so.2.0.6",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libreadline.so.8.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libperl.so.5.32.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libcap-ng.so.0.0.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libelf-0.195.so",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libcrypto.so.3.5.7",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libjson-c.so.5.0.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libpcre2-8.so.0.11.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libcrypt.so.2.0.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libnghttp2.so.14.20.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libidn2.so.0.3.7",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libssh.so.4.9.4",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libpsl.so.5.3.3",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libssl.so.3.5.7",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libgssapi_krb5.so.2.2",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libkrb5.so.3.3",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libk5crypto.so.3.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libcom_err.so.2.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libldap_r.so.2.0.200",
+      "DT_NEEDED libc.so.6 for /usr/lib64/liblber.so.2.0.200",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libbrotlidec.so.1.0.9",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libunistring.so.2.1.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libkrb5support.so.0.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libkeyutils.so.1.10",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libresolv.so.2",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libevent-2.1.so.7.0.1",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libsasl2.so.3.0.0",
+      "DT_NEEDED libc.so.6 for /usr/lib64/libbrotlicommon.so.1.0.9"
+    ]
+  },
+  {
+    "path": "/lib64/libcap-ng.so.0",
+    "resolved_path": "/usr/lib64/libcap-ng.so.0.0.0",
+    "size": 32528,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110389,
+    "mtime_ns": 1644930757000000000,
+    "sha256": "0f03248a4184699f298d006c36cad963dba065d451ed8dc187aceb7c1e3fff81",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libcap-ng.so.0",
+        "target": "libcap-ng.so.0.0.0",
+        "size": 18,
+        "mode": 511,
+        "device": 33,
+        "inode": 109254,
+        "sha256": "878c3b9e9f0c8f86a0074e5381b12e8a7e5ab4ff2f3ed7386425a75ef663c266"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libcap-ng.so.0 for /usr/bin/setpriv"
+    ]
+  },
+  {
+    "path": "/lib64/libcap.so.2",
+    "resolved_path": "/usr/lib64/libcap.so.2.48",
+    "size": 36296,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110390,
+    "mtime_ns": 1751551640000000000,
+    "sha256": "29a6c106d86e91a4f3c6cbbe4645a2e08fc792522849ae21dcb1e605fa17144a",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libcap.so.2",
+        "target": "libcap.so.2.48",
+        "size": 14,
+        "mode": 511,
+        "device": 33,
+        "inode": 109255,
+        "sha256": "3ea43090279d4aa1064c02cd835c39cc9728d7109e800be6305a7cfbc3faeb15"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libcap.so.2 for /usr/bin/ls"
+    ]
+  },
+  {
+    "path": "/lib64/libcom_err.so.2",
+    "resolved_path": "/usr/lib64/libcom_err.so.2.1",
+    "size": 23768,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110392,
+    "mtime_ns": 1772476355000000000,
+    "sha256": "3958645734110eb76dcf59b64bd5bc3b2b4d5cd6eee46bf73b024ca83931dc2b",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libcom_err.so.2",
+        "target": "libcom_err.so.2.1",
+        "size": 17,
+        "mode": 511,
+        "device": 33,
+        "inode": 109260,
+        "sha256": "409e93e870abb4313a4b8640c036271d350530f2303742312ff6afd13fc56795"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libcom_err.so.2 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libcom_err.so.2 for /usr/lib64/libgssapi_krb5.so.2.2",
+      "DT_NEEDED libcom_err.so.2 for /usr/lib64/libkrb5.so.3.3",
+      "DT_NEEDED libcom_err.so.2 for /usr/lib64/libsasl2.so.3.0.0"
+    ]
+  },
+  {
+    "path": "/lib64/libcrypt.so.2",
+    "resolved_path": "/usr/lib64/libcrypt.so.2.0.0",
+    "size": 201808,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110396,
+    "mtime_ns": 1628554506000000000,
+    "sha256": "67847e804cdd224fc438207e6919a69ce03cdede0fa3f3467fbd09b554640667",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libcrypt.so.2",
+        "target": "libcrypt.so.2.0.0",
+        "size": 17,
+        "mode": 511,
+        "device": 33,
+        "inode": 109264,
+        "sha256": "a540299eb76e53fffda06ac5e951df5d0521c17433d203111a945c255ffe080f"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libcrypt.so.2 for /usr/lib64/libperl.so.5.32.1",
+      "DT_NEEDED libcrypt.so.2 for /usr/lib64/libsasl2.so.3.0.0"
+    ]
+  },
+  {
+    "path": "/lib64/libcrypto.so.3",
+    "resolved_path": "/usr/lib64/libcrypto.so.3.5.7",
+    "size": 6164424,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 22559795,
+    "mtime_ns": 1786615191000000000,
+    "sha256": "0599684a6f76b425c95832bd00b2faf5719b32e6319afd6ce8846360d0529d31",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libcrypto.so.3",
+        "target": "libcrypto.so.3.5.7",
+        "size": 18,
+        "mode": 511,
+        "device": 33,
+        "inode": 22559794,
+        "sha256": "767caf23a4cea04a7012b7dafbda0c6f6a0c64440c141c337c371f1ce26d0c87"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libdebuginfod-0.195.so",
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libssh.so.4.9.4",
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libssl.so.3.5.7",
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libgssapi_krb5.so.2.2",
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libkrb5.so.3.3",
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libk5crypto.so.3.1",
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libldap_r.so.2.0.200",
+      "DT_NEEDED libcrypto.so.3 for /usr/lib64/libkrb5support.so.0.1"
+    ]
+  },
+  {
+    "path": "/lib64/libctf-nobfd.so.0",
+    "resolved_path": "/usr/lib64/libctf-nobfd.so.0.0.0",
+    "size": 115912,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110400,
+    "mtime_ns": 1769162553000000000,
+    "sha256": "0d4e4bbed74766b9ccceb3f7b7e82a71dc1c996bda55cdf4d7da9206fe04542f",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libctf-nobfd.so.0",
+        "target": "libctf-nobfd.so.0.0.0",
+        "size": 21,
+        "mode": 511,
+        "device": 33,
+        "inode": 109268,
+        "sha256": "3a82f0b6746c8ef6953c05934629e24a0dac6713ea8f8f3ae8015a8748e62257"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libctf-nobfd.so.0 for /usr/bin/readelf"
+    ]
+  },
+  {
+    "path": "/lib64/libctf.so.0",
+    "resolved_path": "/usr/lib64/libctf.so.0.0.0",
+    "size": 120088,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110402,
+    "mtime_ns": 1769162552000000000,
+    "sha256": "42fff8b2b495fc7826e87b29459b583b61ccea79fdbf0d5f44c16d1c4d201be8",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libctf.so.0",
+        "target": "libctf.so.0.0.0",
+        "size": 15,
+        "mode": 511,
+        "device": 33,
+        "inode": 109270,
+        "sha256": "9767e74abed62ddd8e2418a7bc4a2f6292bb76233c41dbe6c9dcffc2ad594d00"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libctf.so.0 for /usr/bin/ld.bfd"
+    ]
+  },
+  {
+    "path": "/lib64/libcurl.so.4",
+    "resolved_path": "/usr/lib64/libcurl.so.4.7.0",
+    "size": 666384,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110403,
+    "mtime_ns": 1750755982000000000,
+    "sha256": "644251954e0709a4e403587d3ff85286b038fcdb1db3042f044fb129aed9cd24",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libcurl.so.4",
+        "target": "libcurl.so.4.7.0",
+        "size": 16,
+        "mode": 511,
+        "device": 33,
+        "inode": 109271,
+        "sha256": "a9968534dd6ec1105de53f0c060f0e4a93dadaf41472f7bf58ca256cd6756fc9"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libcurl.so.4 for /usr/lib64/libdebuginfod-0.195.so"
+    ]
+  },
+  {
+    "path": "/lib64/libdebuginfod.so.1",
+    "resolved_path": "/usr/lib64/libdebuginfod-0.195.so",
+    "size": 52608,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110406,
+    "mtime_ns": 1778678309000000000,
+    "sha256": "1df875e2eb8aca3cd2a4ced29b1c362c9157a9407f28e77113637f1e5f7eb387",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libdebuginfod.so.1",
+        "target": "libdebuginfod-0.195.so",
+        "size": 22,
+        "mode": 511,
+        "device": 33,
+        "inode": 109274,
+        "sha256": "a5caea135e198806e2da64c0099ba28a3f1f26a9b5814b7871fb40b5d5141f2e"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libdebuginfod.so.1 for /usr/bin/readelf"
+    ]
+  },
+  {
+    "path": "/lib64/libelf.so.1",
+    "resolved_path": "/usr/lib64/libelf-0.195.so",
+    "size": 111624,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110420,
+    "mtime_ns": 1778678309000000000,
+    "sha256": "fdf92630174e71757632cb728d655aea8e942030cc9a775e895dd2eab636131b",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libelf.so.1",
+        "target": "libelf-0.195.so",
+        "size": 15,
+        "mode": 511,
+        "device": 33,
+        "inode": 109284,
+        "sha256": "9f249156e3daecf6e317e0d9c0eda11d1cfd5073996fa90aeb9a982532c52106"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libelf.so.1 for /usr/lib64/libdebuginfod-0.195.so"
+    ]
+  },
+  {
+    "path": "/lib64/libevent-2.1.so.7",
+    "resolved_path": "/usr/lib64/libevent-2.1.so.7.0.1",
+    "size": 365352,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110422,
+    "mtime_ns": 1724156235000000000,
+    "sha256": "b39790e3ac8043f9a84ced739efcd03adc9446f837f90e37221515b28bca7383",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libevent-2.1.so.7",
+        "target": "libevent-2.1.so.7.0.1",
+        "size": 21,
+        "mode": 511,
+        "device": 33,
+        "inode": 109286,
+        "sha256": "cdde57f940c4acde23330c49ff8b01c5ee9a58f1e605ef6c66e069706508945d"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libevent-2.1.so.7 for /usr/lib64/libldap_r.so.2.0.200",
+      "DT_NEEDED libevent-2.1.so.7 for /usr/lib64/liblber.so.2.0.200"
+    ]
+  },
+  {
+    "path": "/lib64/libgcc_s.so.1",
+    "resolved_path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+    "size": 116408,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110440,
+    "mtime_ns": 1783631229000000000,
+    "sha256": "3d144b557008c93e4e67567d5dc98cb81cf55187a698d1b4872ce84ba8a26bed",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libgcc_s.so.1",
+        "target": "libgcc_s-11-20240719.so.1",
+        "size": 25,
+        "mode": 511,
+        "device": 33,
+        "inode": 109304,
+        "sha256": "d359192c4c77928fa9d0d5be9e87f9a95cad61eaa2081a46213ae80d18bb2ec9"
+      }
+    ],
+    "roles": [
+      "linker script input",
+      "DT_NEEDED libgcc_s.so.1 for /home/newton/.cargo/bin/rust-script",
+      "DT_NEEDED libgcc_s.so.1 for /home/newton/.cargo/bin/cargo-nextest"
+    ]
+  },
+  {
+    "path": "/lib64/libgmp.so.10",
+    "resolved_path": "/usr/lib64/libgmp.so.10.4.0",
+    "size": 677824,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110450,
+    "mtime_ns": 1691058178000000000,
+    "sha256": "b9d1265de01c92a6565272aa3ffa30034fe3656c73c348fc988a2e65389d6782",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libgmp.so.10",
+        "target": "libgmp.so.10.4.0",
+        "size": 16,
+        "mode": 511,
+        "device": 33,
+        "inode": 109312,
+        "sha256": "77a0db56f9f606e1fb8be8b2c575a9f789193de000a3d3c17357198347977a91"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libgmp.so.10 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "DT_NEEDED libgmp.so.10 for /usr/bin/gawk",
+      "DT_NEEDED libgmp.so.10 for /usr/lib64/libmpc.so.3.2.1",
+      "DT_NEEDED libgmp.so.10 for /usr/lib64/libmpfr.so.6.1.0"
+    ]
+  },
+  {
+    "path": "/lib64/libgssapi_krb5.so.2",
+    "resolved_path": "/usr/lib64/libgssapi_krb5.so.2.2",
+    "size": 358456,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110457,
+    "mtime_ns": 1777396406000000000,
+    "sha256": "7fe81e015e7647977eb0ce9f6c0fcd91ae3a2ddae8342ff3b47dee6f017571c1",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libgssapi_krb5.so.2",
+        "target": "libgssapi_krb5.so.2.2",
+        "size": 21,
+        "mode": 511,
+        "device": 33,
+        "inode": 109320,
+        "sha256": "351ddf0bb1b92524a33b9227e7d8cf2078c4026d9cbbbe89df3278fcec1c74a8"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libgssapi_krb5.so.2 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libgssapi_krb5.so.2 for /usr/lib64/libssh.so.4.9.4",
+      "DT_NEEDED libgssapi_krb5.so.2 for /usr/lib64/libsasl2.so.3.0.0"
+    ]
+  },
+  {
+    "path": "/lib64/libidn2.so.0",
+    "resolved_path": "/usr/lib64/libidn2.so.0.3.7",
+    "size": 130952,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110468,
+    "mtime_ns": 1628550585000000000,
+    "sha256": "dc245bad13edbcd52b6f654a3de2ddcb017c92590e0b7b473b8a69a3db3a2b9c",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libidn2.so.0",
+        "target": "libidn2.so.0.3.7",
+        "size": 16,
+        "mode": 511,
+        "device": 33,
+        "inode": 109332,
+        "sha256": "5827e41a7d64102a5fbb4f3465308226bfaa5d1b40536fdbee83c461b7200110"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libidn2.so.0 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libidn2.so.0 for /usr/lib64/libpsl.so.5.3.3"
+    ]
+  },
+  {
+    "path": "/lib64/libjson-c.so.5",
+    "resolved_path": "/usr/lib64/libjson-c.so.5.0.0",
+    "size": 75928,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110481,
+    "mtime_ns": 1631617022000000000,
+    "sha256": "8aa6483f266303dd0116a85882806382c9e254bceeb17be1c1f8933a1ea9f33e",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libjson-c.so.5",
+        "target": "libjson-c.so.5.0.0",
+        "size": 18,
+        "mode": 511,
+        "device": 33,
+        "inode": 109341,
+        "sha256": "82a3bbc9fb181be4cbd32a0eaf05a8fbd9317b12f064b4c51b86a943b35ce04f"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libjson-c.so.5 for /usr/lib64/libdebuginfod-0.195.so"
+    ]
+  },
+  {
+    "path": "/lib64/libk5crypto.so.3",
+    "resolved_path": "/usr/lib64/libk5crypto.so.3.1",
+    "size": 99016,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110482,
+    "mtime_ns": 1777396406000000000,
+    "sha256": "11798eda493ff0b9d99b7f061768a98ab81cadb10112db07ee229c1a4777c8c7",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libk5crypto.so.3",
+        "target": "libk5crypto.so.3.1",
+        "size": 18,
+        "mode": 511,
+        "device": 33,
+        "inode": 109343,
+        "sha256": "66557736e14dbd998fa0e04540e6fbe65c6354c0ff75e4560762c0f5839649b1"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libk5crypto.so.3 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libk5crypto.so.3 for /usr/lib64/libgssapi_krb5.so.2.2",
+      "DT_NEEDED libk5crypto.so.3 for /usr/lib64/libkrb5.so.3.3",
+      "DT_NEEDED libk5crypto.so.3 for /usr/lib64/libsasl2.so.3.0.0"
+    ]
+  },
+  {
+    "path": "/lib64/libkeyutils.so.1",
+    "resolved_path": "/usr/lib64/libkeyutils.so.1.10",
+    "size": 23992,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110487,
+    "mtime_ns": 1666019245000000000,
+    "sha256": "b0aaec55115d2ab97e1a70cb4c9a1b036d839d7922e67d3e610cd3ccd58521e3",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libkeyutils.so.1",
+        "target": "libkeyutils.so.1.10",
+        "size": 19,
+        "mode": 511,
+        "device": 33,
+        "inode": 109354,
+        "sha256": "a1866178c069ef4ab5ff05ce18b3fac20b09eb4aecfc15054b10a4c988bedd48"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libkeyutils.so.1 for /usr/lib64/libgssapi_krb5.so.2.2",
+      "DT_NEEDED libkeyutils.so.1 for /usr/lib64/libkrb5.so.3.3",
+      "DT_NEEDED libkeyutils.so.1 for /usr/lib64/libk5crypto.so.3.1",
+      "DT_NEEDED libkeyutils.so.1 for /usr/lib64/libkrb5support.so.0.1"
+    ]
+  },
+  {
+    "path": "/lib64/libkrb5.so.3",
+    "resolved_path": "/usr/lib64/libkrb5.so.3.3",
+    "size": 906320,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110490,
+    "mtime_ns": 1777396406000000000,
+    "sha256": "9ce9f8baa6dfe3a76aaded2aa55464f859b1c0691cd784e2e98bf9cac62edcfe",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libkrb5.so.3",
+        "target": "libkrb5.so.3.3",
+        "size": 14,
+        "mode": 511,
+        "device": 33,
+        "inode": 109359,
+        "sha256": "4502f54782e92d78ae6faab520517067503b9db093bbc8b71a90a6d325b57c2a"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libkrb5.so.3 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libkrb5.so.3 for /usr/lib64/libgssapi_krb5.so.2.2",
+      "DT_NEEDED libkrb5.so.3 for /usr/lib64/libsasl2.so.3.0.0"
+    ]
+  },
+  {
+    "path": "/lib64/libkrb5support.so.0",
+    "resolved_path": "/usr/lib64/libkrb5support.so.0.1",
+    "size": 66200,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110491,
+    "mtime_ns": 1777396406000000000,
+    "sha256": "d07b246960403bcc9d2532b4954a761ee8607548bb3f0dedc3feb359a6dafc21",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libkrb5support.so.0",
+        "target": "libkrb5support.so.0.1",
+        "size": 21,
+        "mode": 511,
+        "device": 33,
+        "inode": 109361,
+        "sha256": "6697ea813065ec8f2c5fbfd52c8a44584b4a0d6d7b42bf10d00dd932bf1689a1"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libkrb5support.so.0 for /usr/lib64/libgssapi_krb5.so.2.2",
+      "DT_NEEDED libkrb5support.so.0 for /usr/lib64/libkrb5.so.3.3",
+      "DT_NEEDED libkrb5support.so.0 for /usr/lib64/libk5crypto.so.3.1"
+    ]
+  },
+  {
+    "path": "/lib64/liblber.so.2",
+    "resolved_path": "/usr/lib64/liblber.so.2.0.200",
+    "size": 74504,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110493,
+    "mtime_ns": 1776988507000000000,
+    "sha256": "fc59a9429baf572a000665da512861ce97e85b4bb72acc2ae9d6aad195570b91",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/liblber.so.2",
+        "target": "liblber.so.2.0.200",
+        "size": 18,
+        "mode": 511,
+        "device": 33,
+        "inode": 109363,
+        "sha256": "3f471a64062f09b9edea34eb795403d2303154144100f5a19de9929f88881314"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED liblber.so.2 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED liblber.so.2 for /usr/lib64/libldap_r.so.2.0.200"
+    ]
+  },
+  {
+    "path": "/lib64/libldap.so.2",
+    "resolved_path": "/usr/lib64/libldap_r.so.2.0.200",
+    "size": 417144,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110495,
+    "mtime_ns": 1776988507000000000,
+    "sha256": "035aa103efcc5cfdac264b18ccdd5566699bfebf114b0feb56b116f7e36c58f2",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libldap.so.2",
+        "target": "libldap_r.so.2.0.200",
+        "size": 20,
+        "mode": 511,
+        "device": 33,
+        "inode": 109364,
+        "sha256": "83dbd9fac0a2b7f532814967c68280cdfbdbda0cb400da77c50b503320490eed"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libldap.so.2 for /usr/lib64/libcurl.so.4.7.0"
+    ]
+  },
+  {
+    "path": "/lib64/libm.so.6",
+    "resolved_path": "/usr/lib64/libm.so.6",
+    "size": 913048,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 21907922,
+    "mtime_ns": 1785350083000000000,
+    "sha256": "9a66ed5465040274a85266a9404268b50e69a1fdd7f34aaac3746905003c5135",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libm.so.6 for /usr/bin/gcc",
+      "DT_NEEDED libm.so.6 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "DT_NEEDED libm.so.6 for /usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+      "DT_NEEDED libm.so.6 for /usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+      "DT_NEEDED libm.so.6 for /usr/bin/gawk",
+      "DT_NEEDED libm.so.6 for /home/newton/.cargo/bin/cargo-nextest",
+      "DT_NEEDED libm.so.6 for /usr/lib64/libpython3.9.so.1.0",
+      "DT_NEEDED libm.so.6 for /usr/lib64/libperl.so.5.32.1"
+    ]
+  },
+  {
+    "path": "/lib64/libmpc.so.3",
+    "resolved_path": "/usr/lib64/libmpc.so.3.2.1",
+    "size": 118904,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 591844,
+    "mtime_ns": 1628551825000000000,
+    "sha256": "dff128b03df28b63414e9961d1d8ff175ce822323b1db084b0b225c25e5c8a9c",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libmpc.so.3",
+        "target": "libmpc.so.3.2.1",
+        "size": 15,
+        "mode": 511,
+        "device": 33,
+        "inode": 591843,
+        "sha256": "5be5747de48d2c8080723f2a698df9fa8fc9e436c068de88d3dbca5ede3c1a06"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libmpc.so.3 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1"
+    ]
+  },
+  {
+    "path": "/lib64/libmpfr.so.6",
+    "resolved_path": "/usr/lib64/libmpfr.so.6.1.0",
+    "size": 725480,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110514,
+    "mtime_ns": 1770637283000000000,
+    "sha256": "9a984581ddb139aa4f00331af6732965adf32c1d52b4094d463a1b377812a625",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libmpfr.so.6",
+        "target": "libmpfr.so.6.1.0",
+        "size": 16,
+        "mode": 511,
+        "device": 33,
+        "inode": 109380,
+        "sha256": "ac910d70eb45083ce77a620b212e061e2328adc862ee46e2574dd9deee4db23c"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libmpfr.so.6 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "DT_NEEDED libmpfr.so.6 for /usr/bin/gawk",
+      "DT_NEEDED libmpfr.so.6 for /usr/lib64/libmpc.so.3.2.1"
+    ]
+  },
+  {
+    "path": "/lib64/libnghttp2.so.14",
+    "resolved_path": "/usr/lib64/libnghttp2.so.14.20.1",
+    "size": 168536,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 22585457,
+    "mtime_ns": 1786606079000000000,
+    "sha256": "d6954507f906809babd898c3b07d1140ea7545596702e88416f3e6f1b8d271fc",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libnghttp2.so.14",
+        "target": "libnghttp2.so.14.20.1",
+        "size": 21,
+        "mode": 511,
+        "device": 33,
+        "inode": 22585456,
+        "sha256": "cfffd69c282e34a7a50a29f10e7a7f4a510a92a8b5efae22c8ee63e4da0929c6"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libnghttp2.so.14 for /usr/lib64/libcurl.so.4.7.0"
+    ]
+  },
+  {
+    "path": "/lib64/libopcodes-2.35.2-72.el9.so",
+    "resolved_path": "/usr/lib64/libopcodes-2.35.2-72.el9.so",
+    "size": 1586296,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110541,
+    "mtime_ns": 1769162552000000000,
+    "sha256": "c2c4e79148dd95299f3b3656a7f397e898498d51e5f1c488270b3eec17eec3d9",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libopcodes-2.35.2-72.el9.so for /usr/bin/as"
+    ]
+  },
+  {
+    "path": "/lib64/libpcre2-8.so.0",
+    "resolved_path": "/usr/lib64/libpcre2-8.so.0.11.0",
+    "size": 636848,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110564,
+    "mtime_ns": 1722440496000000000,
+    "sha256": "9a7c5324aa19b789ec6451fac312238ba8b266886e37f2dcad51b612deaae96c",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libpcre2-8.so.0",
+        "target": "libpcre2-8.so.0.11.0",
+        "size": 20,
+        "mode": 511,
+        "device": 33,
+        "inode": 109415,
+        "sha256": "f8121b48a9dedc85447da8add15e40cd76f56bd5f22fc0ca68b449c741f6c877"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libpcre2-8.so.0 for /usr/lib64/libselinux.so.1"
+    ]
+  },
+  {
+    "path": "/lib64/libperl.so.5.32",
+    "resolved_path": "/usr/lib64/libperl.so.5.32.1",
+    "size": 3724848,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 305093,
+    "mtime_ns": 1752149431000000000,
+    "sha256": "de3d50fb9394e1ba45a7beffcbf5c1b474fbc828d690c13bc13d3ea549d27912",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libperl.so.5.32",
+        "target": "libperl.so.5.32.1",
+        "size": 17,
+        "mode": 511,
+        "device": 33,
+        "inode": 305092,
+        "sha256": "bc30673ea5a0d0b47bd72facee68eec80b5910ed7952d2fca177149d8960f48b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libperl.so.5.32 for /usr/bin/perl"
+    ]
+  },
+  {
+    "path": "/lib64/libpsl.so.5",
+    "resolved_path": "/usr/lib64/libpsl.so.5.3.3",
+    "size": 77488,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110574,
+    "mtime_ns": 1628552345000000000,
+    "sha256": "fe74845c864b47a6b5a2cadbdeab940f828d1a45cc6381e68bd5f2d96bd836c9",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libpsl.so.5",
+        "target": "libpsl.so.5.3.3",
+        "size": 15,
+        "mode": 511,
+        "device": 33,
+        "inode": 109426,
+        "sha256": "8204b5e6f1a90984f69e4fdfee3f357f2a7bcb99071363050c849146ecb530a0"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libpsl.so.5 for /usr/lib64/libcurl.so.4.7.0"
+    ]
+  },
+  {
+    "path": "/lib64/libpython3.9.so.1.0",
+    "resolved_path": "/usr/lib64/libpython3.9.so.1.0",
+    "size": 3851200,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 22573005,
+    "mtime_ns": 1786714180000000000,
+    "sha256": "63e27f1171161897be095b5c5b82692489768c7db0fec9cc84f7c076a97bc9ee",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libpython3.9.so.1.0 for /usr/bin/python3.9"
+    ]
+  },
+  {
+    "path": "/lib64/libreadline.so.8",
+    "resolved_path": "/usr/lib64/libreadline.so.8.1",
+    "size": 358128,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110580,
+    "mtime_ns": 1628568934000000000,
+    "sha256": "cd005d15fd3c6546b1ce73e629e516a421c9b0776cb7a0609f45c5c2f8d395bb",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libreadline.so.8",
+        "target": "libreadline.so.8.1",
+        "size": 18,
+        "mode": 511,
+        "device": 33,
+        "inode": 109429,
+        "sha256": "b83cff9363e22cfdc0c553fe70b93639cbff050ccf2f57301ae05d96e9536901"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libreadline.so.8 for /usr/bin/gawk"
+    ]
+  },
+  {
+    "path": "/lib64/libresolv.so.2",
+    "resolved_path": "/usr/lib64/libresolv.so.2",
+    "size": 70512,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 21907930,
+    "mtime_ns": 1785350083000000000,
+    "sha256": "b39beb8c599307ca3c3958ab358a734815addcefc7e595a02c91745ef2756d8b",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libresolv.so.2 for /usr/lib64/libgssapi_krb5.so.2.2",
+      "DT_NEEDED libresolv.so.2 for /usr/lib64/libkrb5.so.3.3",
+      "DT_NEEDED libresolv.so.2 for /usr/lib64/libk5crypto.so.3.1",
+      "DT_NEEDED libresolv.so.2 for /usr/lib64/libkrb5support.so.0.1",
+      "DT_NEEDED libresolv.so.2 for /usr/lib64/libsasl2.so.3.0.0"
+    ]
+  },
+  {
+    "path": "/lib64/libsasl2.so.3",
+    "resolved_path": "/usr/lib64/libsasl2.so.3.0.0",
+    "size": 128416,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110588,
+    "mtime_ns": 1663006644000000000,
+    "sha256": "0eb67aea149186cd182854c46d66a7e53b6c451aaaa5a6e2ab4e84db63fd5585",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libsasl2.so.3",
+        "target": "libsasl2.so.3.0.0",
+        "size": 17,
+        "mode": 511,
+        "device": 33,
+        "inode": 109434,
+        "sha256": "182153181857c9896cebc51d750cfe2b07772cfab3f23e3e4ad5a028edb939a4"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libsasl2.so.3 for /usr/lib64/libldap_r.so.2.0.200"
+    ]
+  },
+  {
+    "path": "/lib64/libselinux.so.1",
+    "resolved_path": "/usr/lib64/libselinux.so.1",
+    "size": 175624,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110590,
+    "mtime_ns": 1778176963000000000,
+    "sha256": "c265777e75d52d549e52ec3b24df4f760d26fb439cc468b260d34175d1bac0e5",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libselinux.so.1 for /usr/bin/ls",
+      "DT_NEEDED libselinux.so.1 for /usr/bin/id",
+      "DT_NEEDED libselinux.so.1 for /usr/lib64/libkrb5support.so.0.1"
+    ]
+  },
+  {
+    "path": "/lib64/libsigsegv.so.2",
+    "resolved_path": "/usr/lib64/libsigsegv.so.2.0.6",
+    "size": 20192,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110594,
+    "mtime_ns": 1628552832000000000,
+    "sha256": "ed87f1cc009a33dec708be009dee5f66ac26f2b5e1638d8ff2c460e8c34f3375",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libsigsegv.so.2",
+        "target": "libsigsegv.so.2.0.6",
+        "size": 19,
+        "mode": 511,
+        "device": 33,
+        "inode": 109439,
+        "sha256": "7d395c10456c6900d8d9bc6800500afd053eeb7f310532a1d039053e13711cf2"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libsigsegv.so.2 for /usr/bin/gawk"
+    ]
+  },
+  {
+    "path": "/lib64/libssh.so.4",
+    "resolved_path": "/usr/lib64/libssh.so.4.9.4",
+    "size": 487808,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 22584773,
+    "mtime_ns": 1785399578000000000,
+    "sha256": "30e94bf8c006b2de68708f0b6a8f4d8c530c7ca2525821a9dd1964e781ad6152",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libssh.so.4",
+        "target": "libssh.so.4.9.4",
+        "size": 15,
+        "mode": 511,
+        "device": 33,
+        "inode": 22584772,
+        "sha256": "af97ee8ec896a936c500e3917c1ca7b6d644aef30641c41bef81df1a7872a55b"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libssh.so.4 for /usr/lib64/libcurl.so.4.7.0"
+    ]
+  },
+  {
+    "path": "/lib64/libssl.so.3",
+    "resolved_path": "/usr/lib64/libssl.so.3.5.7",
+    "size": 1043976,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 22559797,
+    "mtime_ns": 1786615191000000000,
+    "sha256": "f587ccb16f966d96e6062c10e9e2f9c0dec3358281f6569eb65988d4a9741725",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libssl.so.3",
+        "target": "libssl.so.3.5.7",
+        "size": 15,
+        "mode": 511,
+        "device": 33,
+        "inode": 22559796,
+        "sha256": "d9e2a96ec7f3c1b2a7e79cacbb94cb768845830cbf27124e79a473ba13537186"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libssl.so.3 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libssl.so.3 for /usr/lib64/libldap_r.so.2.0.200"
+    ]
+  },
+  {
+    "path": "/lib64/libtinfo.so.6",
+    "resolved_path": "/usr/lib64/libtinfo.so.6.2",
+    "size": 195088,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110610,
+    "mtime_ns": 1751361708000000000,
+    "sha256": "7f6e6b4b437315880fb459256f663fe1cf96ffd437f9bdcdddc5c5104b89c3ff",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libtinfo.so.6",
+        "target": "libtinfo.so.6.2",
+        "size": 15,
+        "mode": 511,
+        "device": 33,
+        "inode": 109454,
+        "sha256": "c3dc56d09fc85cc3aeebf810500fd894e4437f2b98cba4dc289beb182264e1d9"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libtinfo.so.6 for /usr/bin/bash",
+      "DT_NEEDED libtinfo.so.6 for /usr/lib64/libreadline.so.8.1"
+    ]
+  },
+  {
+    "path": "/lib64/libunistring.so.2",
+    "resolved_path": "/usr/lib64/libunistring.so.2.1.0",
+    "size": 1591920,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110624,
+    "mtime_ns": 1628553591000000000,
+    "sha256": "70b4c4050c4319fb109a3cf5745f9a6ab2e5862c6bc809aea0e4cb94c87978ef",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libunistring.so.2",
+        "target": "libunistring.so.2.1.0",
+        "size": 21,
+        "mode": 511,
+        "device": 33,
+        "inode": 109468,
+        "sha256": "ff2f3463b894183f97d476d1495d8c68142f797c87c6cf94b9226346a3ad586d"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libunistring.so.2 for /usr/lib64/libidn2.so.0.3.7",
+      "DT_NEEDED libunistring.so.2 for /usr/lib64/libpsl.so.5.3.3"
+    ]
+  },
+  {
+    "path": "/lib64/libz.so.1",
+    "resolved_path": "/usr/lib64/libz.so.1.2.11",
+    "size": 102672,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110634,
+    "mtime_ns": 1698657363000000000,
+    "sha256": "ae0b0485bffccd7b374451b52938f67e109c237a4a98679792d5dc1a31270289",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libz.so.1",
+        "target": "libz.so.1.2.11",
+        "size": 14,
+        "mode": 511,
+        "device": 33,
+        "inode": 109478,
+        "sha256": "a6ce02804568a86ee8a6042c126ac0672a79811f207e2dded7497a0b9496ae79"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libz.so.1 for /usr/bin/readelf",
+      "DT_NEEDED libz.so.1 for /usr/bin/as",
+      "DT_NEEDED libz.so.1 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "DT_NEEDED libz.so.1 for /usr/lib64/libctf-nobfd.so.0.0.0",
+      "DT_NEEDED libz.so.1 for /usr/lib64/libopcodes-2.35.2-72.el9.so",
+      "DT_NEEDED libz.so.1 for /usr/lib64/libbfd-2.35.2-72.el9.so",
+      "DT_NEEDED libz.so.1 for /usr/lib64/libctf.so.0.0.0",
+      "DT_NEEDED libz.so.1 for /usr/lib64/libcurl.so.4.7.0",
+      "DT_NEEDED libz.so.1 for /usr/lib64/libelf-0.195.so",
+      "DT_NEEDED libz.so.1 for /usr/lib64/libcrypto.so.3.5.7",
+      "DT_NEEDED libz.so.1 for /usr/lib64/libssh.so.4.9.4"
+    ]
+  },
+  {
+    "path": "/lib64/libzstd.so.1",
+    "resolved_path": "/usr/lib64/libzstd.so.1.5.5",
+    "size": 754200,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110635,
+    "mtime_ns": 1731924305000000000,
+    "sha256": "dc1ccdc94eea889670d6258a70ae51be922be6a4740eb44eee4f1baf012136b7",
+    "symlinks": [
+      {
+        "path": "/lib64",
+        "target": "usr/lib64",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 266,
+        "sha256": "1a8dcebf89cf73748aa1a3c88dd1ecc2a040ffabb45a10d9231a642e1a89913b"
+      },
+      {
+        "path": "/usr/lib64/libzstd.so.1",
+        "target": "libzstd.so.1.5.5",
+        "size": 16,
+        "mode": 511,
+        "device": 33,
+        "inode": 109479,
+        "sha256": "47219504e8c0116b3b30e7b3b7b4b38277b4156ea7e9167f13b95bc4803d89a3"
+      }
+    ],
+    "roles": [
+      "DT_NEEDED libzstd.so.1 for /usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+      "DT_NEEDED libzstd.so.1 for /usr/lib64/libelf-0.195.so"
+    ]
+  },
+  {
+    "path": "/usr/bin/as",
+    "resolved_path": "/usr/bin/as",
+    "size": 727360,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100408,
+    "mtime_ns": 1769162552000000000,
+    "sha256": "2870525fb59869f6f4c51cae67ffc6124f6635129db00a7d0818b84f7d069c56",
+    "symlinks": [],
+    "roles": [
+      "discovery or compiler executable",
+      "GCC program query as"
+    ]
+  },
+  {
+    "path": "/usr/bin/awk",
+    "resolved_path": "/usr/bin/gawk",
+    "size": 714976,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100590,
+    "mtime_ns": 1645036574000000000,
+    "sha256": "b374177d6c91dad7eafe4d89ecfc414aa8e2bafb06b1f94d6f6d1d41dfad10ff",
+    "symlinks": [
+      {
+        "path": "/usr/bin/awk",
+        "target": "gawk",
+        "size": 4,
+        "mode": 511,
+        "device": 33,
+        "inode": 99315,
+        "sha256": "bcf68a1acd997baefcf4102f1821ed2371a09d822b9f49c085817d4edc65e1e2"
+      }
+    ],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/cc",
+    "resolved_path": "/usr/bin/gcc",
+    "size": 1093144,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 622687,
+    "mtime_ns": 1783631230000000000,
+    "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0",
+    "symlinks": [
+      {
+        "path": "/usr/bin/cc",
+        "target": "gcc",
+        "size": 3,
+        "mode": 511,
+        "device": 33,
+        "inode": 622686,
+        "sha256": "94f0fa7f897ccce65856dc5a98bae4bf6957a346766613d79414c976d093aa4a"
+      }
+    ],
+    "roles": [
+      "discovery or compiler executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/diff",
+    "resolved_path": "/usr/bin/diff",
+    "size": 199336,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100542,
+    "mtime_ns": 1628540006000000000,
+    "sha256": "e7c3d87c94da76f9dcca7b78454b9dd52cede61923abf748640db3e0cba3ea4a",
+    "symlinks": [],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/env",
+    "resolved_path": "/usr/bin/env",
+    "size": 45088,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100561,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "1caef498bf8afe1633c37cbe6ec6e10908cfdf032505d85c0b14ce906bae489f",
+    "symlinks": [],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/gcc",
+    "resolved_path": "/usr/bin/gcc",
+    "size": 1093144,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 622687,
+    "mtime_ns": 1783631230000000000,
+    "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0",
+    "symlinks": [],
+    "roles": [
+      "discovery or compiler executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/id",
+    "resolved_path": "/usr/bin/id",
+    "size": 40464,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100657,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "ae74d463430403c4e230ac77078cd2774d9a3df6737860fa0c298c5a94aeb711",
+    "symlinks": [],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/ld",
+    "resolved_path": "/usr/bin/ld.bfd",
+    "size": 1791600,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100701,
+    "mtime_ns": 1769162552000000000,
+    "sha256": "ac6bbc7393b95278ffa294cbdf18c65b5003d4e15dc805ce24a8146a8a154c42",
+    "symlinks": [
+      {
+        "path": "/usr/bin/ld",
+        "target": "/etc/alternatives/ld",
+        "size": 20,
+        "mode": 511,
+        "device": 33,
+        "inode": 99383,
+        "sha256": "1cae8b15693c433f11c8b953223f92c7956e3cf842c2a43f01543ae36d522973"
+      },
+      {
+        "path": "/etc/alternatives/ld",
+        "target": "/usr/bin/ld.bfd",
+        "size": 15,
+        "mode": 511,
+        "device": 33,
+        "inode": 409,
+        "sha256": "705877901d969dcb7012185409deb5b376e896b24f1cc4e9b6db838f04e0b537"
+      }
+    ],
+    "roles": [
+      "discovery or compiler executable",
+      "GCC program query ld"
+    ]
+  },
+  {
+    "path": "/usr/bin/paste",
+    "resolved_path": "/usr/bin/paste",
+    "size": 36240,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100839,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "627b6344d7daeb8d70f6472cf06932cdcd5006ed6434781d3c4438349d02af63",
+    "symlinks": [],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/perl",
+    "resolved_path": "/usr/bin/perl",
+    "size": 15488,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 305806,
+    "mtime_ns": 1752149431000000000,
+    "sha256": "48055d911b2e50ffe9ec139899ed43ad6f322aba40da5fea0491f908feffbd48",
+    "symlinks": [],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/python3",
+    "resolved_path": "/usr/bin/python3.9",
+    "size": 15448,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 22574889,
+    "mtime_ns": 1786714180000000000,
+    "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "symlinks": [
+      {
+        "path": "/usr/bin/python3",
+        "target": "python3.9",
+        "size": 9,
+        "mode": 511,
+        "device": 33,
+        "inode": 22574888,
+        "sha256": "667c754f68a4b27f1c9a4cfb889f43db531c2e6ee70bb06bf75fc7c63d28bdc0"
+      }
+    ],
+    "roles": [
+      "discovery or compiler executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/readelf",
+    "resolved_path": "/usr/bin/readelf",
+    "size": 683296,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 100879,
+    "mtime_ns": 1769162552000000000,
+    "sha256": "51bc80f3a187e54e0b267fe6e64de09129f7761aafe615177d9d0be2229afcff",
+    "symlinks": [],
+    "roles": [
+      "discovery or compiler executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/setpriv",
+    "resolved_path": "/usr/bin/setpriv",
+    "size": 40288,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 22556619,
+    "mtime_ns": 1786617995000000000,
+    "sha256": "8bfd45a11cfa956cd26105a3031b9d464112fb7a83c083b63099bb8e8457f3f6",
+    "symlinks": [],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/timeout",
+    "resolved_path": "/usr/bin/timeout",
+    "size": 36848,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 101023,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "8eb5abb15bad3a1d608c68272412f0d55c9100c64078ae083b4f8b0e746d781c",
+    "symlinks": [],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/bin/wc",
+    "resolved_path": "/usr/bin/wc",
+    "size": 44576,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 101077,
+    "mtime_ns": 1781095363000000000,
+    "sha256": "0f1903f9e064e090cf6d74fe96621aed694c7e345aba553982a034aeda9006be",
+    "symlinks": [],
+    "roles": [
+      "original required guest executable"
+    ]
+  },
+  {
+    "path": "/usr/include/alloca.h",
+    "resolved_path": "/usr/include/alloca.h",
+    "size": 1203,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907968,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "60cc5d81f3771c8954020d27e4d809b4521a5a8fcab8ad306bb24519f38f11e4",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/asm-generic/errno-base.h",
+    "resolved_path": "/usr/include/asm-generic/errno-base.h",
+    "size": 1612,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 593998,
+    "mtime_ns": 1760891161000000000,
+    "sha256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/asm-generic/errno.h",
+    "resolved_path": "/usr/include/asm-generic/errno.h",
+    "size": 5648,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 593999,
+    "mtime_ns": 1760891161000000000,
+    "sha256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/asm/errno.h",
+    "resolved_path": "/usr/include/asm/errno.h",
+    "size": 31,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 594043,
+    "mtime_ns": 1760891161000000000,
+    "sha256": "4ee384515a4325315992e61dd957f0fa91f3858fe7c079de59f56edded51de86",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/asm/unistd.h",
+    "resolved_path": "/usr/include/asm/unistd.h",
+    "size": 623,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 594091,
+    "mtime_ns": 1760891161000000000,
+    "sha256": "a83776c3b064c9d1f04ea0a8228e20eef166508c6c13cd75afbabd3237acc445",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/asm/unistd_64.h",
+    "resolved_path": "/usr/include/asm/unistd_64.h",
+    "size": 10348,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 594093,
+    "mtime_ns": 1760891161000000000,
+    "sha256": "8ad29097ceab4d189473e55179156a32bf5b4b37d579bea59f19c8e637e6ab1a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/atomic_wide_counter.h",
+    "resolved_path": "/usr/include/bits/atomic_wide_counter.h",
+    "size": 1283,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907981,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "0bc1e6923ae6b6f85619d3836fbdf448c8cc976911c6d65fb048d9ef4d773ece",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/byteswap.h",
+    "resolved_path": "/usr/include/bits/byteswap.h",
+    "size": 2450,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907982,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "75cb9f998212f681612d553c2f3000a404189b7fc04b5023d79afc1d3e18b1dd",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/confname.h",
+    "resolved_path": "/usr/include/bits/confname.h",
+    "size": 23828,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907984,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "843897cbda18fac62d2422a1136084a566457e10b2689636a047687ea6b4320f",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/cpu-set.h",
+    "resolved_path": "/usr/include/bits/cpu-set.h",
+    "size": 4516,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907985,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "49939599e8857690fed07b131b3863fc41a5e1dc96d7439fe64a9bf8eea1fff2",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/endian.h",
+    "resolved_path": "/usr/include/bits/endian.h",
+    "size": 1905,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907991,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "e74cb7a57cc668c075c3eee4dec89e9728939467fa12370ee08d0e260a048035",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/endianness.h",
+    "resolved_path": "/usr/include/bits/endianness.h",
+    "size": 273,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907992,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "659a7060004eda113671a38852c4d1e9cb97a35932bcd1d8540f98c09c180747",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/environments.h",
+    "resolved_path": "/usr/include/bits/environments.h",
+    "size": 3791,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907993,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "77c46b972677ccbb4851b4657f9337e344904c4ffef1a3fdc3efcabf55721cf3",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/errno.h",
+    "resolved_path": "/usr/include/bits/errno.h",
+    "size": 1426,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21907996,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "e95220415a3bb9cc9f550e4e2111dd5d91a3e5e10269801ee3fb7fff63088c2c",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/fcntl-linux.h",
+    "resolved_path": "/usr/include/bits/fcntl-linux.h",
+    "size": 14050,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908000,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "c3eb17fe0054100d586fd9fa006d0306a9dbbde8eb8106dcf67d76ab389a40d4",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/fcntl.h",
+    "resolved_path": "/usr/include/bits/fcntl.h",
+    "size": 2246,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908001,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "65c578b1147a0efd79571622d884d0fc67760dab137da1e762458abbb3fcefe4",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/floatn-common.h",
+    "resolved_path": "/usr/include/bits/floatn-common.h",
+    "size": 10325,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908004,
+    "mtime_ns": 1785349939000000000,
+    "sha256": "fc3d99a8e2469c0a83a888092f7ea3539150020ef7ee85fd4896a7b81e8d564b",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/floatn.h",
+    "resolved_path": "/usr/include/bits/floatn.h",
+    "size": 4457,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908005,
+    "mtime_ns": 1785349939000000000,
+    "sha256": "92a49e1447da51a22db5323359655de52b9d01a219a1a7f33eaafae2c2967102",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/getopt_core.h",
+    "resolved_path": "/usr/include/bits/getopt_core.h",
+    "size": 3667,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908009,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "70de2378830527293afdff47bcb8697d9678830d61f4b280baa1a3de38628fd0",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/getopt_posix.h",
+    "resolved_path": "/usr/include/bits/getopt_posix.h",
+    "size": 1810,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908011,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "a94c6712e26d7b8bd8b48c2bcfe2a121e0bd8ea3d126936103461a537de9b95c",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/libc-header-start.h",
+    "resolved_path": "/usr/include/bits/libc-header-start.h",
+    "size": 4286,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908025,
+    "mtime_ns": 1785349937000000000,
+    "sha256": "3484cbc18837e0ad143aafdd83bd82aac0b6e81b392ae3539e144f80b031be48",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/long-double.h",
+    "resolved_path": "/usr/include/bits/long-double.h",
+    "size": 970,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908031,
+    "mtime_ns": 1785349939000000000,
+    "sha256": "4203197edd94aadf2a01c675ff7bcd3fd361139a8a25d4446e954cb12ef0583b",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/posix_opt.h",
+    "resolved_path": "/usr/include/bits/posix_opt.h",
+    "size": 5913,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908052,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "c573c0e5209926907880611e03ec7660820f27df1cc1d831a9b1cb7f13216317",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/pthreadtypes-arch.h",
+    "resolved_path": "/usr/include/bits/pthreadtypes-arch.h",
+    "size": 1838,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908060,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "f618c4775644095b55771a5f30041c565a89e30a9e0a5e112ec9d41744992777",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/pthreadtypes.h",
+    "resolved_path": "/usr/include/bits/pthreadtypes.h",
+    "size": 3072,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908061,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "6d012b8aefbd93cf1cee8f0a2cf99440a908e3fab1dd5afb13b733e07754260c",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/sched.h",
+    "resolved_path": "/usr/include/bits/sched.h",
+    "size": 5673,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908065,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "32c00e5223115d39af90ad1030072fd1aaa418a076ce961cdd7934bf3279504a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/select.h",
+    "resolved_path": "/usr/include/bits/select.h",
+    "size": 1505,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908066,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "38e98b77e152bdbbd314bcfc91fc95d50e94ae485e1479b2332cb68449ae1d21",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/setjmp.h",
+    "resolved_path": "/usr/include/bits/setjmp.h",
+    "size": 1287,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908070,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "e3aa8798f71361cda0f497a5ea78e00917b5f0364b1dd427667d75c1d77acf41",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/sigaction.h",
+    "resolved_path": "/usr/include/bits/sigaction.h",
+    "size": 2935,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908074,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "95b49b2c79f779b726526542454fa1bb8976d8eac20e950cc67ff0a3e5ef74b0",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/sigcontext.h",
+    "resolved_path": "/usr/include/bits/sigcontext.h",
+    "size": 4266,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908075,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "8ebb86a93fc438a92249856d6efdc238fc3794f0fdaba372f25bf8337ebcc86b",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/sigevent-consts.h",
+    "resolved_path": "/usr/include/bits/sigevent-consts.h",
+    "size": 1471,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908076,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "3dca74e1b360801511f78c8ff49b5c6f956c5206a174d3149d1939231158e9e5",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/siginfo-arch.h",
+    "resolved_path": "/usr/include/bits/siginfo-arch.h",
+    "size": 729,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908077,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "0839bdc7af291182ff9822a7b6419659fb26a49af5e4264857a71af4ccb12213",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/siginfo-consts.h",
+    "resolved_path": "/usr/include/bits/siginfo-consts.h",
+    "size": 7036,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908079,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "c99588f612f35c8d2dae31c8a3c23d67f11d21909885264b119be16d60098179",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/signal_ext.h",
+    "resolved_path": "/usr/include/bits/signal_ext.h",
+    "size": 1285,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908080,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "70d997aaac02944e69da7882e6cc457e9c844505e2a091a75d66f4a4d8390b15",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/signum-arch.h",
+    "resolved_path": "/usr/include/bits/signum-arch.h",
+    "size": 2580,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908082,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "2a3e9e9d4d464aca79adb77c832c327e92472388fa002ad9958186aca848c7a2",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/signum-generic.h",
+    "resolved_path": "/usr/include/bits/signum-generic.h",
+    "size": 3313,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908083,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "c71cca01e80cf114c97fb2d3575f1b71c00deab81d367ef31d00176d0ca45267",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/sigstack.h",
+    "resolved_path": "/usr/include/bits/sigstack.h",
+    "size": 1168,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908084,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "69e0664aa6d297ecfdf2996f8e3950becd09819d2599476ff68de6641554b4d7",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/sigstksz.h",
+    "resolved_path": "/usr/include/bits/sigstksz.h",
+    "size": 1278,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908085,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "f9e0e451d48d22a6b5c79d8419bc8bc6aa2f1009ad2d3ad23a58cd9f575b31f8",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/sigthread.h",
+    "resolved_path": "/usr/include/bits/sigthread.h",
+    "size": 1692,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908086,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "a62d67e1128b5f414d5f9799344274d08ff5f208331cead21037e0ba9911c652",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/ss_flags.h",
+    "resolved_path": "/usr/include/bits/ss_flags.h",
+    "size": 1188,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908092,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "8a5953cec99dff9f74d41f303fc1029607f8805e39496299118c652d3b383000",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/stat.h",
+    "resolved_path": "/usr/include/bits/stat.h",
+    "size": 2231,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908094,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "0d0eb36a8344380475953bd7543187ff5f69dfc9db1f02c2f02222b7f1fe20c3",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/stdint-intn.h",
+    "resolved_path": "/usr/include/bits/stdint-intn.h",
+    "size": 1037,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908099,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "50e8230b02341fc86a2a7867531aa5586e533ed52be7eff2c6de054a9c8a3c9f",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/stdint-uintn.h",
+    "resolved_path": "/usr/include/bits/stdint-uintn.h",
+    "size": 1049,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908100,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "bcb422c06c1c8e009aebd50af2a513522ad67cbc22aec6bd30810b0f85ce015a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for cpuid"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/stdio.h",
+    "resolved_path": "/usr/include/bits/stdio.h",
+    "size": 5599,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908102,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "61654bf75686f997793ae9c91c2c5bb8ad922ed8a48118e20d9594c7bd29f1a2",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/stdio_lim.h",
+    "resolved_path": "/usr/include/bits/stdio_lim.h",
+    "size": 1213,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908105,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "d2b2772212736cdade86a7259ea2d7227209b55ac22ca42c490188eb66f1fe57",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/stdlib-float.h",
+    "resolved_path": "/usr/include/bits/stdlib-float.h",
+    "size": 1115,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908107,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "74ee78ddb2a65280cca9471ff9aa30cf039451ec42456aaf499e4672982e9798",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/struct_mutex.h",
+    "resolved_path": "/usr/include/bits/struct_mutex.h",
+    "size": 1810,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908112,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "3a351251dbd08431e5ce82a59aec6745981a3e119ec854d24f249a79f1ba3628",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/struct_rwlock.h",
+    "resolved_path": "/usr/include/bits/struct_rwlock.h",
+    "size": 2027,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908113,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "0132eb8f9ca2e6b1c5fe26c2944f6e550e5d3005172abb53409bc4ee17677238",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/struct_stat.h",
+    "resolved_path": "/usr/include/bits/struct_stat.h",
+    "size": 6190,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908114,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "99112a080abf1261c25ccdf7e07739cc15098e0578135d1c325700ecbe3ee225",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/syscall.h",
+    "resolved_path": "/usr/include/bits/syscall.h",
+    "size": 46524,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908116,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "92048aca896d82f74380b521be0daa6bd5d3b7fbfc8ddeab4be067db42eccbb5",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/thread-shared-types.h",
+    "resolved_path": "/usr/include/bits/thread-shared-types.h",
+    "size": 3927,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908131,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "1b536fd2fbad402392117f8bd093cd52cb6a1f904c9374f6d24560e7307f0470",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/time.h",
+    "resolved_path": "/usr/include/bits/time.h",
+    "size": 3296,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908132,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "e219e8789e1c9e37c19cedebc7a933d80db26364e0e9a7d9d3748523e78be975",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/time64.h",
+    "resolved_path": "/usr/include/bits/time64.h",
+    "size": 1340,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908133,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "2e9214d49c9e6bdd546f8bac3af34a88ae25ce90cf0c608103575d433ebdbd0d",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/timesize.h",
+    "resolved_path": "/usr/include/bits/timesize.h",
+    "size": 1081,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908135,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "c10f5d611d79a39c274ae90bfc89bd88ddab2e3a4f37cae952e14363d53b610a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types.h",
+    "resolved_path": "/usr/include/bits/types.h",
+    "size": 8806,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908137,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "536ec41325b1e96b17c4b897d148495d19387334460179f84446896a3fb5e47c",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/FILE.h",
+    "resolved_path": "/usr/include/bits/types/FILE.h",
+    "size": 180,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908138,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "37515f78be386f2edad4746f2947c928f480728c56d9a94e25302ebbdaef3c96",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/__FILE.h",
+    "resolved_path": "/usr/include/bits/types/__FILE.h",
+    "size": 110,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908139,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "26c909942e8a6bc82725e9c402f393aed9e32d94190257ddf71e1b5f819b4e5e",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/__fpos64_t.h",
+    "resolved_path": "/usr/include/bits/types/__fpos64_t.h",
+    "size": 410,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908140,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "8afae3abf006beb39fd9d4d4bae38745cdf08a91e6217ddf25833c8d4b04751b",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/__fpos_t.h",
+    "resolved_path": "/usr/include/bits/types/__fpos_t.h",
+    "size": 381,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908141,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "603e58ab31ed75b7e0ab09a2ca94e99955f7fbc63310466321ce27c906227eb4",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/__locale_t.h",
+    "resolved_path": "/usr/include/bits/types/__locale_t.h",
+    "size": 1722,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908142,
+    "mtime_ns": 1785349937000000000,
+    "sha256": "53c0f18313e94c2d7b0f43ba871c030f514ba5038c5263b1e85af3c15935cb68",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/__mbstate_t.h",
+    "resolved_path": "/usr/include/bits/types/__mbstate_t.h",
+    "size": 564,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908143,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "c561df72d5b987ccbd022059fdb1bcb6899c3e94b403997a0576ef3e1afb0f94",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/__sigset_t.h",
+    "resolved_path": "/usr/include/bits/types/__sigset_t.h",
+    "size": 206,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908144,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "05291a7d38bb1d0da1ed01c09fe85fa2b1f4d5bc708e06bb930efec672db08d5",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/__sigval_t.h",
+    "resolved_path": "/usr/include/bits/types/__sigval_t.h",
+    "size": 1148,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908145,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "a8bb1479b199aac1e62f12323637de53b25495bad51dd8f36d7f041c42f7ff8e",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/clock_t.h",
+    "resolved_path": "/usr/include/bits/types/clock_t.h",
+    "size": 143,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908146,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "81e60e8a8d99b28bc723c14b156d7f7fc8ff663d98a857a3f5aea90431f577e3",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/clockid_t.h",
+    "resolved_path": "/usr/include/bits/types/clockid_t.h",
+    "size": 174,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908147,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "dcd64d184855b245e5c7acf21910a0aaca590f1faf094e400da5d30551d11eb0",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/cookie_io_functions_t.h",
+    "resolved_path": "/usr/include/bits/types/cookie_io_functions_t.h",
+    "size": 2725,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908148,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "51a5f4b94d8ad5470e68aa1a0fdb6c2b3551677293f551f50b5e93cf2aaaba4c",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/error_t.h",
+    "resolved_path": "/usr/include/bits/types/error_t.h",
+    "size": 894,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908149,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "4e63be18a07ece22d49940de5ae8371b07fde1264a5c5d3aa33b76ec7fd70ba5",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/locale_t.h",
+    "resolved_path": "/usr/include/bits/types/locale_t.h",
+    "size": 983,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908150,
+    "mtime_ns": 1785349937000000000,
+    "sha256": "6b174fafe351950055cdb8bdfbff6f91b5b293fa0270395d45dc65093625eed8",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/sig_atomic_t.h",
+    "resolved_path": "/usr/include/bits/types/sig_atomic_t.h",
+    "size": 272,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908153,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "8c44b91c2eb6e509905e1becec6b98f8ac006709bfa5d85d86e34a46eb9013cc",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/sigevent_t.h",
+    "resolved_path": "/usr/include/bits/types/sigevent_t.h",
+    "size": 1204,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908154,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "7125083b8096dd146e6498a61f38bf3bc7215c1c9237e92469550bb355545bab",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/siginfo_t.h",
+    "resolved_path": "/usr/include/bits/types/siginfo_t.h",
+    "size": 3892,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908155,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "88b1392b88af3a08d908866f4e9c5650c5cddb0c8e021b0a3f8293cef6616feb",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/sigset_t.h",
+    "resolved_path": "/usr/include/bits/types/sigset_t.h",
+    "size": 195,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908156,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "3db5ded9d98a694e8c7196a06690b2e816ec6bb82689940d281f6504533f37e1",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/sigval_t.h",
+    "resolved_path": "/usr/include/bits/types/sigval_t.h",
+    "size": 599,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908157,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "7d94a894bed0b9490967e8dbcd53725c0f2af9559e58d4b19bd14d3707974ee3",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/stack_t.h",
+    "resolved_path": "/usr/include/bits/types/stack_t.h",
+    "size": 1062,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908158,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "c49dd8690d39878759378d8ddddba4dabb3cbabf8f3a0d633a8a64ce885d532d",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct_FILE.h",
+    "resolved_path": "/usr/include/bits/types/struct_FILE.h",
+    "size": 4588,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908159,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "2a5531881328ab34cdb258b5a2c012aff615e9d4f2d7d655010adf0e8300896a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct___jmp_buf_tag.h",
+    "resolved_path": "/usr/include/bits/types/struct___jmp_buf_tag.h",
+    "size": 1467,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908160,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "95ff1cbad685ae299ee3174bbfa6d6896a807986190e72c4986978e228d25265",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct_iovec.h",
+    "resolved_path": "/usr/include/bits/types/struct_iovec.h",
+    "size": 1066,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908161,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "2578b90f6fd1044289fb85f3bf700908bda733e8470ced76dac130d4a18aa301",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct_itimerspec.h",
+    "resolved_path": "/usr/include/bits/types/struct_itimerspec.h",
+    "size": 288,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908162,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "d6299fbc46fc57e7d14635cd5cf69125710ed021ab7305586c84644a03a39f8e",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct_sched_param.h",
+    "resolved_path": "/usr/include/bits/types/struct_sched_param.h",
+    "size": 1073,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908168,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "512953dc4decf648d1acacd4656b4a2bda21dd72868f95790891afc5d759bf94",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct_sigstack.h",
+    "resolved_path": "/usr/include/bits/types/struct_sigstack.h",
+    "size": 1073,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908175,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "43c478026932a661988cab6aafeada322cfa6333f6f3c2b02239da3dc40d793a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct_timespec.h",
+    "resolved_path": "/usr/include/bits/types/struct_timespec.h",
+    "size": 867,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908179,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "8e7e964087b9c7638be2b5fb0fa01ceab43e4af8393b805b54ac2bd8642a1b98",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct_timeval.h",
+    "resolved_path": "/usr/include/bits/types/struct_timeval.h",
+    "size": 411,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908180,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "d2fbcbcb4cc072a11380c826e3c8d58ca08df21e8a2436a3fd9a64ad8b4acd0c",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/struct_tm.h",
+    "resolved_path": "/usr/include/bits/types/struct_tm.h",
+    "size": 760,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908181,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "e7bdda3f42eb0633850ed150fef0a0cf6193cbba8fa740e7505925424a595566",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/time_t.h",
+    "resolved_path": "/usr/include/bits/types/time_t.h",
+    "size": 203,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908182,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "721a557cff3ed308c69719a44ba8f7cd9536f6c602fb8f1b1eea8ed6749ee37d",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/types/timer_t.h",
+    "resolved_path": "/usr/include/bits/types/timer_t.h",
+    "size": 159,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908183,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "d96a2452da0d933941273d11d1048ea525f033306892835b0a7a0999b13853aa",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/typesizes.h",
+    "resolved_path": "/usr/include/bits/typesizes.h",
+    "size": 3737,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908185,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "c4eab974fc3e10e5936a920eafd441c783da6d43a5ff5a65f796c6eecbe67b1b",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/uintn-identity.h",
+    "resolved_path": "/usr/include/bits/uintn-identity.h",
+    "size": 1542,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908186,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "73c777716b1a8d4b2c75aee06667d7864af42d6532193ea5694feabf8640666a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/unistd_ext.h",
+    "resolved_path": "/usr/include/bits/unistd_ext.h",
+    "size": 2538,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908190,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "a0824ebd6f89ff5dbcf45dc84455901e0b90b0769bae4a26f23933e2f1426334",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/waitflags.h",
+    "resolved_path": "/usr/include/bits/waitflags.h",
+    "size": 1697,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908194,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "ced16bd69c58daf55131f1350c7239eaeffe545b978f5461432ff947c88016ac",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/waitstatus.h",
+    "resolved_path": "/usr/include/bits/waitstatus.h",
+    "size": 2287,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908195,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "51960468279bc705a66142e4bd53a279fc6233956916ef08169de5c51c979a63",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/wchar.h",
+    "resolved_path": "/usr/include/bits/wchar.h",
+    "size": 1906,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908197,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "2c014ce2b642d31e97e97b93b2ff7f1c6213a899231ca0fa0303a796062b2a5b",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for cpuid"
+    ]
+  },
+  {
+    "path": "/usr/include/bits/wordsize.h",
+    "resolved_path": "/usr/include/bits/wordsize.h",
+    "size": 442,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908201,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "716d8459074e2a082d65a28192b32eddbfd7587348372395b1c283a723ae4c18",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/endian.h",
+    "resolved_path": "/usr/include/endian.h",
+    "size": 2299,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908210,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "3dc4ddb5150dbfc89a1d8e91986cc73dee0e27325eeafcde8a0201721d20315d",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/errno.h",
+    "resolved_path": "/usr/include/errno.h",
+    "size": 1679,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908213,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "6b69f4e73a44b32735a99a7b3d270cdde7fa0432cca76369aa3e8a4b6992b699",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/fcntl.h",
+    "resolved_path": "/usr/include/fcntl.h",
+    "size": 11442,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908216,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "adc970232c1ad733d29a35efbbf7ce73c87e0cb26282af1ee14ade9ec9a0a5b2",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/features-time64.h",
+    "resolved_path": "/usr/include/features-time64.h",
+    "size": 1404,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908217,
+    "mtime_ns": 1785349937000000000,
+    "sha256": "c732fbea3ea389ec922483346305612c54b71cba429b2c4385628908b8c18aa9",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/features.h",
+    "resolved_path": "/usr/include/features.h",
+    "size": 18116,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908218,
+    "mtime_ns": 1785349937000000000,
+    "sha256": "96c0471c3ef8ecf65f327048afeed611d1a7c8195b26ccb1bcdf5cc5fd0fcb09",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/gnu/stubs-64.h",
+    "resolved_path": "/usr/include/gnu/stubs-64.h",
+    "size": 481,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908433,
+    "mtime_ns": 1785349963000000000,
+    "sha256": "3836bee19ddace5e06e967be88015d8492335daa08ce39a236618f520ccc40db",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/gnu/stubs.h",
+    "resolved_path": "/usr/include/gnu/stubs.h",
+    "size": 384,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908233,
+    "mtime_ns": 1785349937000000000,
+    "sha256": "ef444295a0a9e8f5c40918399a00cc91ba0bd79774110cdf6e652baa6cfadb2e",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/grp.h",
+    "resolved_path": "/usr/include/grp.h",
+    "size": 6687,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908234,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "b046db212ffd2216c1575824a40f5334f6488a5873bf77d2fefa93df6e7e197c",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe"
+    ]
+  },
+  {
+    "path": "/usr/include/linux/close_range.h",
+    "resolved_path": "/usr/include/linux/close_range.h",
+    "size": 377,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 594234,
+    "mtime_ns": 1760891161000000000,
+    "sha256": "54f02dee64fba028529c5265273d23a96629f3217d6abc31574ef7cce5a63f70",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/linux/errno.h",
+    "resolved_path": "/usr/include/linux/errno.h",
+    "size": 23,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 594281,
+    "mtime_ns": 1760891161000000000,
+    "sha256": "a47fb2f49bce0546a1e88805cec954338abb1b2ac87de042166e8e3a74b23261",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/linux/falloc.h",
+    "resolved_path": "/usr/include/linux/falloc.h",
+    "size": 4477,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 594293,
+    "mtime_ns": 1760891161000000000,
+    "sha256": "67210a836eee09c18aa02e4c18d12291f97267d3fbaaf5d6ae215837852cd777",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/pthread.h",
+    "resolved_path": "/usr/include/pthread.h",
+    "size": 48524,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908299,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "ad1317fb0b0e9fa2d44ab8149e37d5adde7d0f82ca727e0f904d71297048e469",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/sched.h",
+    "resolved_path": "/usr/include/sched.h",
+    "size": 5038,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908307,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "d36822b59cdf43eb7a12d95a5a22fdd1c953b14e442f885253547b64658eaeee",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/signal.h",
+    "resolved_path": "/usr/include/signal.h",
+    "size": 13040,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908316,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "ff08a1736da033e5085f0e0927942eb36cc0cb272921a860b94662968bcddd1f",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/stdc-predef.h",
+    "resolved_path": "/usr/include/stdc-predef.h",
+    "size": 2290,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908319,
+    "mtime_ns": 1785349937000000000,
+    "sha256": "38bac01c137da3ec6623c5166d420cd0bdee18e1d6605921f138f74ef902f102",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/stdint.h",
+    "resolved_path": "/usr/include/stdint.h",
+    "size": 8474,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908320,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "b8d73ae9f3e3884c7c544ad41de0e6c235fbccc5aad880f0597207972e78d086",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for cpuid"
+    ]
+  },
+  {
+    "path": "/usr/include/stdio.h",
+    "resolved_path": "/usr/include/stdio.h",
+    "size": 31411,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908321,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "2f9b1bd49f5c077435dbcd5c60495b8e26f1f6f16eee9302f02544885c9b2c7a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/stdlib.h",
+    "resolved_path": "/usr/include/stdlib.h",
+    "size": 36316,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908323,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "16081c94c8dd55b556012883ffa089d6c2fcd409c9620b54608f11c2f89d4d93",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/string.h",
+    "resolved_path": "/usr/include/string.h",
+    "size": 19459,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908324,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "d84903be79edb24ff78a93f9732835b80bcea400a0804045045a652c41663e5a",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/strings.h",
+    "resolved_path": "/usr/include/strings.h",
+    "size": 4753,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908325,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "5201d2f97860ac2b0697be158c3bc1b0197a32ee76e5cd6eeb150112e773ce7e",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/sys/cdefs.h",
+    "resolved_path": "/usr/include/sys/cdefs.h",
+    "size": 26257,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908329,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "846293609ffa9ee7b1ca9ea263da1fe3fa73029ac110561b891c9c5b3c163bb4",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/sys/select.h",
+    "resolved_path": "/usr/include/sys/select.h",
+    "size": 5039,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908370,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "3da7055bf53ea4774b2d05a39b175ec5d5d033294e29512fcf410a2726eaf6aa",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/sys/syscall.h",
+    "resolved_path": "/usr/include/sys/syscall.h",
+    "size": 1256,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908384,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "5da458ee24a80dc02ec23eacdc978db370dd7ddcbd691ce6b22c9e6469859a4b",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/include/sys/types.h",
+    "resolved_path": "/usr/include/sys/types.h",
+    "size": 5713,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908396,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "47fccf574621f99b6ca32a5f3e29f4ecd1fbe5a7d21a4221288e9df384702bec",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/sys/ucontext.h",
+    "resolved_path": "/usr/include/sys/ucontext.h",
+    "size": 5842,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908397,
+    "mtime_ns": 1785349940000000000,
+    "sha256": "39046c4ce6a469d35339e9b1d681e7317116f9888d1b9683a338d30268e39404",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/sys/wait.h",
+    "resolved_path": "/usr/include/sys/wait.h",
+    "size": 6233,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908407,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "fdb8f9c6ba745211f819aef667bf3b0e6b722283b940d6cbe24c88eb55832941",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits"
+    ]
+  },
+  {
+    "path": "/usr/include/time.h",
+    "resolved_path": "/usr/include/time.h",
+    "size": 14848,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908418,
+    "mtime_ns": 1785349941000000000,
+    "sha256": "106230c3d4a0371dd66ec093a9c5509e36d40c1fec0b99f42664f235e258eefd",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for pthread"
+    ]
+  },
+  {
+    "path": "/usr/include/unistd.h",
+    "resolved_path": "/usr/include/unistd.h",
+    "size": 44489,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908423,
+    "mtime_ns": 1785349942000000000,
+    "sha256": "abfb1cb096b39e2494d653f7e8faaa8502decf2935a86ddb125652a775f84494",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/Scrt1.o",
+    "resolved_path": "/usr/lib64/Scrt1.o",
+    "size": 2744,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908435,
+    "mtime_ns": 1785350077000000000,
+    "sha256": "587c0ec25e07b513824d8f345096708d939b0ccbbe35bd6979bb867018e9717a",
+    "symlinks": [],
+    "roles": [
+      "GCC file query Scrt1.o"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o",
+    "resolved_path": "/usr/lib64/crt1.o",
+    "size": 3096,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908436,
+    "mtime_ns": 1785350077000000000,
+    "sha256": "33df84be5c733e1b00a4cdf2f0820d99ff5cd17c59f0c0935f2c67a4d60fa427",
+    "symlinks": [],
+    "roles": [
+      "GCC file query crt1.o"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crti.o",
+    "resolved_path": "/usr/lib64/crti.o",
+    "size": 1800,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908437,
+    "mtime_ns": 1785350077000000000,
+    "sha256": "d0f6f64378800c817f9ba3a5a6f47e4c9ebef89dcdbc77394e661ca8030c9be8",
+    "symlinks": [],
+    "roles": [
+      "GCC file query crti.o"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crtn.o",
+    "resolved_path": "/usr/lib64/crtn.o",
+    "size": 1536,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908438,
+    "mtime_ns": 1785350077000000000,
+    "sha256": "d468c4d1438bb6c14ff3087a0ec364d4ca0b7cdfe71ab493d04c56bbb3c07a5e",
+    "symlinks": [],
+    "roles": [
+      "GCC file query crtn.o"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/libc.so",
+    "resolved_path": "/usr/lib64/libc.so",
+    "size": 253,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908444,
+    "mtime_ns": 1785349937000000000,
+    "sha256": "bc8e2fd8ffcf12e2156395df0a2ea6a0a139937ac835cdc1395b525ded29d7bb",
+    "symlinks": [],
+    "roles": [
+      "GCC file query libc.so"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/libc_nonshared.a",
+    "resolved_path": "/usr/lib64/libc_nonshared.a",
+    "size": 17606,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908445,
+    "mtime_ns": 1785350087000000000,
+    "sha256": "6bf329c85ea56c6020040c22efc612e417753b33fade52313e8fd5183126ede8",
+    "symlinks": [],
+    "roles": [
+      "GCC file query libc_nonshared.a"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/libgcc_s.so.1",
+    "resolved_path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+    "size": 116408,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 110440,
+    "mtime_ns": 1783631229000000000,
+    "sha256": "3d144b557008c93e4e67567d5dc98cb81cf55187a698d1b4872ce84ba8a26bed",
+    "symlinks": [
+      {
+        "path": "/usr/lib64/libgcc_s.so.1",
+        "target": "libgcc_s-11-20240719.so.1",
+        "size": 25,
+        "mode": 511,
+        "device": 33,
+        "inode": 109304,
+        "sha256": "d359192c4c77928fa9d0d5be9e87f9a95cad61eaa2081a46213ae80d18bb2ec9"
+      }
+    ],
+    "roles": [
+      "GCC file query libgcc_s.so.1"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/libpthread.a",
+    "resolved_path": "/usr/lib64/libpthread.a",
+    "size": 8,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908451,
+    "mtime_ns": 1785350087000000000,
+    "sha256": "f0a17a43c74d2fe5474fa2fd29c8f14799e777d7d75a2cc4d11c20a6e7b161c5",
+    "symlinks": [],
+    "roles": [
+      "GCC file query libpthread.a"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtbegin.o",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtbegin.o",
+    "size": 2952,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622742,
+    "mtime_ns": 1783630930000000000,
+    "sha256": "250bfab9298f3ef5c3b9027fd8e674cd30903cf3f91349a56c6bc3b598629d99",
+    "symlinks": [],
+    "roles": [
+      "GCC file query crtbegin.o"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtbeginS.o",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtbeginS.o",
+    "size": 3192,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622743,
+    "mtime_ns": 1783630930000000000,
+    "sha256": "431b524821218bdc741b32338eb3eb0df31c93421e872ec8dafc6dd4285fddab",
+    "symlinks": [],
+    "roles": [
+      "GCC file query crtbeginS.o"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtend.o",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtend.o",
+    "size": 1632,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622745,
+    "mtime_ns": 1783630930000000000,
+    "sha256": "50a9a7f09866b19579485f1bab9a3d94592b7eb954009936fc9ba47c599208a1",
+    "symlinks": [],
+    "roles": [
+      "GCC file query crtend.o"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtendS.o",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/crtendS.o",
+    "size": 1632,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622746,
+    "mtime_ns": 1783630930000000000,
+    "sha256": "50a9a7f09866b19579485f1bab9a3d94592b7eb954009936fc9ba47c599208a1",
+    "symlinks": [],
+    "roles": [
+      "GCC file query crtendS.o"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/cpuid.h",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/cpuid.h",
+    "size": 9849,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622799,
+    "mtime_ns": 1783629536000000000,
+    "sha256": "505fb76f32d09d4e1282b26e4c60a6f0df8613f3e8f897f0431f1fa44881849d",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for cpuid"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stdarg.h",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stdarg.h",
+    "size": 4072,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622845,
+    "mtime_ns": 1783629536000000000,
+    "sha256": "da6cfd69bbbc50d62c6fcc6a722c26b54e17f95cdadb5440c3ec331bda1eebf6",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stddef.h",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stddef.h",
+    "size": 12959,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622848,
+    "mtime_ns": 1783629536000000000,
+    "sha256": "8fe9e3ecaf491fa5fb1c8e7d7caf8fb0c69b13bec84cbf1f8ff7e399fc0c8bc7",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for exact-child-waits",
+      "preprocessor input for cpuid",
+      "preprocessor input for pthread",
+      "preprocessor input for pipe",
+      "preprocessor input for random-device"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stdint.h",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/include/stdint.h",
+    "size": 328,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622851,
+    "mtime_ns": 1783629537000000000,
+    "sha256": "86a7914ab7d6a18465a6fb9a7b54f945cad604fdbf3ca0d10e4e0254e0037911",
+    "symlinks": [],
+    "roles": [
+      "preprocessor input for cpuid"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc.a",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc.a",
+    "size": 3133246,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622877,
+    "mtime_ns": 1783631242000000000,
+    "sha256": "f5118081c7501f5d16d3ea52038c3445e5d7d971bc53a092b5e37b4cf10d9fbb",
+    "symlinks": [],
+    "roles": [
+      "GCC file query libgcc.a"
+    ]
+  },
+  {
+    "path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc_s.so",
+    "resolved_path": "/usr/lib/gcc/x86_64-redhat-linux/11/libgcc_s.so",
+    "size": 195,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 622879,
+    "mtime_ns": 1783630970000000000,
+    "sha256": "1f0e19cc3d3eea1bdcf0a8469f651cd57190ce969e4c6b75c5ad523acdefb459",
+    "symlinks": [],
+    "roles": [
+      "GCC file query libgcc_s.so"
+    ]
+  },
+  {
+    "path": "/usr/lib64/libc_nonshared.a",
+    "resolved_path": "/usr/lib64/libc_nonshared.a",
+    "size": 17606,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 21908445,
+    "mtime_ns": 1785350087000000000,
+    "sha256": "6bf329c85ea56c6020040c22efc612e417753b33fade52313e8fd5183126ede8",
+    "symlinks": [],
+    "roles": [
+      "linker script input"
+    ]
+  },
+  {
+    "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+    "resolved_path": "/usr/libexec/gcc/x86_64-redhat-linux/11/cc1",
+    "size": 28991152,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 592331,
+    "mtime_ns": 1783631231000000000,
+    "sha256": "43d76c430f9bac83a34f06094bd7a8d9d66c1a155cfd978489024afbdaf1faf5",
+    "symlinks": [],
+    "roles": [
+      "GCC program query cc1"
+    ]
+  },
+  {
+    "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+    "resolved_path": "/usr/libexec/gcc/x86_64-redhat-linux/11/collect2",
+    "size": 349536,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 622893,
+    "mtime_ns": 1783631230000000000,
+    "sha256": "9520e6fb1ad7d606c35241a6b4032247a492675fb355687830756a6644912f8e",
+    "symlinks": [],
+    "roles": [
+      "GCC program query collect2"
+    ]
+  },
+  {
+    "path": "/usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+    "resolved_path": "/usr/libexec/gcc/x86_64-redhat-linux/11/lto-wrapper",
+    "size": 919968,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 622895,
+    "mtime_ns": 1783631233000000000,
+    "sha256": "b7d19a0a3a987a58fa277a47ad8819e2adb46e7f08db03555ea1657bcaef2922",
+    "symlinks": [],
+    "roles": [
+      "GCC program query lto-wrapper"
+    ]
+  },
+  {
+    "path": "/usr/sbin/ldconfig",
+    "resolved_path": "/usr/sbin/ldconfig",
+    "size": 1176432,
+    "mode": 493,
+    "mode_octal": "0o755",
+    "device": 33,
+    "inode": 21907936,
+    "mtime_ns": 1785350083000000000,
+    "sha256": "5e025ec7dae9a4caa94db285ec33739ef1e84ba5bdaadf274b1ae9d219329159",
+    "symlinks": [],
+    "roles": [
+      "discovery or compiler executable"
+    ]
+  },
+  {
+    "path": "/usr/share/zoneinfo/UTC",
+    "resolved_path": "/usr/share/zoneinfo/UTC",
+    "size": 114,
+    "mode": 420,
+    "mode_octal": "0o644",
+    "device": 33,
+    "inode": 22557990,
+    "mtime_ns": 1784899922000000000,
+    "sha256": "8b85846791ab2c8a5463c83a5be3c043e2570d7448434d41398969ed47e3e6f2",
+    "symlinks": [],
+    "roles": [
+      "conditional runtime configuration"
+    ]
+  }
+]

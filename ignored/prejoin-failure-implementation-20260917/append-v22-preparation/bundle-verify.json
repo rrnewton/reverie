@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "git",
+    "bundle",
+    "verify",
+    "ignored/prejoin-failure-implementation-20260917/append-v22-preparation/v22-before-forward.bundle"
+  ],
+  "exit": 0
+}

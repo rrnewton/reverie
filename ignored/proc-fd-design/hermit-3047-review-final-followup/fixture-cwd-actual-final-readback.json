@@ -1,0 +1,27 @@
+{
+  "base": "158a89f6217b25db9540237f9c1e256cdbaf785c",
+  "candidate_bytes_match": true,
+  "clean": true,
+  "commit_exit_code": 0,
+  "cpu_seconds": 6.089133,
+  "cumulative_patch_sha256": "3c7c1c84e649880139530f8d658734f08d6e6eb9b8d7862bbbe192ca9a9ffba2",
+  "exact_message_preserved": true,
+  "guard": null,
+  "head": "a88f948021a24c6a1ea808f868516c0691c8819a",
+  "measured_at": "2026-09-17T07:15:37.572352+00:00",
+  "only_expected_file_changed": true,
+  "parent": "4cfbe917fa1131d928a69aea14e28089c9de1d87",
+  "patch_sha256": "0cb27e08f0a57bf6f22c77c52ad02e23500457f13edb3f3e68d0d544ffa2c151",
+  "receipt_sha256": "bde1ec7ff3657e5288bb4312331ca6179974f75709202f6e69e50c0cff69c174",
+  "scope": "hermit-box-run-1891322-1789629276050806160.scope",
+  "scope_inactive_empty": true,
+  "scope_readback": {
+    "ActiveState": "inactive",
+    "ControlGroup": "",
+    "LoadState": "not-found",
+    "SubState": "dead"
+  },
+  "source_snapshots_equal": true,
+  "tree": "cf2185e73d2335ddd70162e336b27440df5bf3d8",
+  "wall_seconds": 2.896670749876648
+}

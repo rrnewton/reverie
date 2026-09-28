@@ -1,0 +1,1064 @@
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_013SsEjUM6jpaYwxAsPEt4dU",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_local.rs",
+    "offset": 520,
+    "limit": 85
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+520	    }
+521	
+522	    fn forget_flock_modes(&self) {
+523	        for detfd in self.file_handles.values() {
+524	            detfd.forget_flock_mode();
+525	        }
+526	    }
+527	
+528	    // TODO-HUMAN-REVIEW(#2373)
+529	    /// Fork the file table for `child`.
+530	    ///
+531	    /// FORGETTING IS DELIBERATELY *NOT* DONE HERE, and the reason is that this
+532	    /// fork does not produce a second copy of the cache. `DetFd` holds its
+533	    /// `OpenFileDescription` behind an `Arc<Mutex<..>>`, so `file_handles
+534	    /// .clone()` below hands the child the *same* description objects the
+535	    /// parent holds. That mirrors the kernel, where `fork(2)` duplicates the
+536	    /// descriptor table while both tables keep pointing at one open file
+537	    /// description, and an `flock(2)` lock belongs to that description. A
+538	    /// `flock` through either task therefore mutates the one shared record and
+539	    /// both sides observe it; there is no second copy that could go stale, so
+540	    /// invalidating here destroys correct information and buys nothing.
+541	    ///
+542	    /// The case that genuinely needs invalidation is a *separately hosted* tool
+543	    /// state — a real process clone under DBT, where the in-process runtime is
+544	    /// copied into a new address space and the `Arc` stops being shared. That
+545	    /// is handled at its own boundary, by
+546	    /// `reverie_dbt_runtime_process_clone_result`, which calls
+547	    /// `forget_flock_modes` only on a clone the kernel reported as successful.
+548	    ///
+549	    /// Forgetting here as well was not merely redundant, it was harmful: it
+550	    /// marked every descriptor unknown on any fork, and
+551	    /// `has_unsafe_vfork_flock_state` refuses `vfork` on unknown as well as on
+552	    /// held. So any guest that forked and later vforked was refused even when
+553	    /// it had never called `flock` at all.
+554	    pub(crate) fn fork_for(&self, child: DetTid) -> Self {
+555	        self.forget_flock_modes();
+556	        Self {
+557	            files_id: FilesId::forked(child),
+558	            next_open_file_sequence: self.next_open_file_sequence,
+559	            next_socket_open_file_sequence: self.next_socket_open_file_sequence,
+560	            file_handles: self.file_handles.clone(),
+561	        }
+562	    }
+563	
+564	    pub(crate) fn for_exec(&self, task: DetTid) -> Self {
+565	        Self {
+566	            files_id: self.files_id.for_exec(task),
+567	            next_open_file_sequence: self.next_open_file_sequence,
+568	            next_socket_open_file_sequence: self.next_socket_open_file_sequence,
+569	            file_handles: self
+570	                .file_handles
+571	                .iter()
+572	                .filter_map(|(&fd, detfd)| (!detfd.is_cloexec()).then_some((fd, detfd.clone())))
+573	                .collect(),
+574	        }
+575	    }
+576	
+577	    pub(crate) fn exec_blocking_overrides(&self) -> ExecFdBlockingOverrides {
+578	        self.file_handles
+579	            .iter()
+580	            .filter_map(|(&fd, detfd)| {
+581	                (!detfd.is_cloexec() && detfd.physically_nonblocking() && !detfd.is_nonblocking())
+582	                    .then_some(fd)
+583	            })
+584	            .collect()
+585	    }
+586	
+587	    pub(crate) fn apply_exec_blocking_overrides(
+588	        &mut self,
+589	        owner: DetTid,
+590	        overrides: ExecFdBlockingOverrides,
+591	    ) {
+592	        for fd in overrides {
+593	            tracing::trace!(
+594	                "[detcore, dtid {}] restoring descriptor {} as logically blocking after exec",
+595	                owner,
+596	                fd,
+597	            );
+598	            match self.discover_fd_from_current_process(owner, fd) {
+599	                Ok(()) => {
+600	                    self.with_detfd(fd, |detfd| detfd.set_logical_nonblocking(false))
+601	                        .expect("a just-discovered descriptor must remain registered");
+602	                }
+603	                Err(error) => {
+604	                    tracing::warn!(
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01GnHJ2jcEBC6yXG5GZjYy3m",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_local.rs",
+    "offset": 2420,
+    "limit": 120
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+2420	        ty: FdType,
+2421	        stat: Option<DetStat>,
+2422	    ) -> Result<(), Errno> {
+2423	        self.metadata().add_fd(
+2424	            self.open_file_creator.unwrap_or(self.dettid),
+2425	            fd,
+2426	            flags,
+2427	            ty,
+2428	            stat,
+2429	        )
+2430	    }
+2431	
+2432	    // AUTONOMOUS-BOT-IMPLEMENTED
+2433	    // TODO-HUMAN-REVIEW(PR-1063): Review backend-supplied open-file creator identity.
+2434	    /// Overrides the task identity embedded in subsequently allocated open-file descriptions.
+2435	    pub fn set_open_file_creator(&mut self, creator: DetTid) {
+2436	        self.open_file_creator = Some(creator);
+2437	    }
+2438	
+2439	    /// Get a mutable reference of `DetFd` from a raw file descriptor, and
+2440	    /// run mutable function `f` on it (`&mut DetFd`).
+2441	    pub fn with_detfd<F, U>(&self, fd: RawFd, f: F) -> Result<U, Errno>
+2442	    where
+2443	        F: FnMut(&mut DetFd) -> U,
+2444	    {
+2445	        let mut metadata = self.metadata();
+2446	        if self.discover_live_file_metadata {
+2447	            metadata.discover_fd_from_current_process(self.dettid, fd)?;
+2448	        }
+2449	        metadata.with_detfd(fd, f)
+2450	    }
+2451	
+2452	    pub(crate) fn count_open_files_at_paths(&self, paths: &[&Path]) -> usize {
+2453	        self.metadata().count_open_files_at_paths(paths)
+2454	    }
+2455	
+2456	    /// Whether this task owns a socket that attempted a loopback connection.
+2457	    pub(crate) fn has_loopback_peer(&self) -> bool {
+2458	        self.metadata().has_loopback_peer()
+2459	    }
+2460	
+2461	    /// Whether any open file description is held or not proven unlocked.
+2462	    pub fn has_unsafe_vfork_flock_state(&self) -> bool {
+2463	        self.metadata().has_unsafe_vfork_flock_state()
+2464	    }
+2465	
+2466	    /// A new process can change every inherited open file description through
+2467	    /// a separately hosted tool state, so neither side may keep treating its
+2468	    /// cached flock mode as authoritative after fork.
+2469	    pub fn forget_flock_modes(&self) {
+2470	        self.metadata().forget_flock_modes();
+2471	    }
+2472	
+2473	    /// remove a rawfd
+2474	    pub fn remove_fd(&self, fd: RawFd) -> Option<OpenFileId> {
+2475	        self.metadata().remove_fd(fd)
+2476	    }
+2477	
+2478	    /// Remove every modeled descriptor in an inclusive close_range interval.
+2479	    pub(crate) fn remove_fd_range(&self, first: u32, last: u32) -> Vec<OpenFileId> {
+2480	        self.metadata().remove_fd_range(first, last)
+2481	    }
+2482	
+2483	    /// dup raw fds.
+2484	    pub fn dup_fd(
+2485	        &mut self,
+2486	        oldfd: RawFd,
+2487	        newfd: RawFd,
+2488	        flags: OFlag,
+2489	    ) -> Result<Option<OpenFileId>, Errno> {
+2490	        let mut metadata = self.metadata();
+2491	        if self.discover_live_file_metadata {
+2492	            metadata.discover_fd_from_current_process(self.dettid, oldfd)?;
+2493	        }
+2494	        metadata.dup_fd(oldfd, newfd, flags)
+2495	    }
+2496	
+2497	    /// Atomically validate a pidfd target and capture its source descriptor.
+2498	    ///
+2499	    /// Both lookups occur under the one descriptor-table mutex. The caller must
+2500	    /// hold the normal serialized Tool turn until the nonblocking kernel call
+2501	    /// returns and the captured alias is installed.
+2502	    pub(crate) fn capture_pidfd_getfd_source(
+2503	        &self,
+2504	        pidfd: RawFd,
+2505	        targetfd: RawFd,
+2506	        current_tgid: DetPid,
+2507	        current_tid: DetTid,
+2508	    ) -> Result<CapturedDetFd, Errno> {
+2509	        let mut metadata = self.metadata();
+2510	        if self.discover_live_file_metadata {
+2511	            metadata.discover_fd_from_current_process(self.dettid, pidfd)?;
+2512	        }
+2513	        let (is_pidfd, target) = metadata.with_detfd(pidfd, |detfd| {
+2514	            (matches!(detfd.ty(), FdType::Pidfd), detfd.pidfd_target())
+2515	        })?;
+2516	        if !is_pidfd {
+2517	            return Err(Errno::EBADF);
+2518	        }
+2519	        if !pidfd_getfd_targets_calling_task(target, current_tgid, current_tid) {
+2520	            return Err(Errno::EOPNOTSUPP);
+2521	        }
+2522	        if self.discover_live_file_metadata {
+2523	            metadata.discover_fd_from_current_process(self.dettid, targetfd)?;
+2524	        }
+2525	        metadata.capture_fd(targetfd)
+2526	    }
+2527	
+2528	    /// Install an alias from a pre-syscall capture without resolving the source
+2529	    /// fd slot a second time.
+2530	    pub(crate) fn install_captured_fd(
+2531	        &mut self,
+2532	        captured: CapturedDetFd,
+2533	        newfd: RawFd,
+2534	        flags: OFlag,
+2535	    ) -> Result<Option<OpenFileId>, CapturedDetFdInstallError> {
+2536	        self.metadata().install_captured_fd(captured, newfd, flags)
+2537	    }
+2538	
+2539	    /// Abandon an uninstalled capture and identify a deferred final-OFD release.
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01XvPZ8jC97tE9FouJZgtfJ4",
+  "name": "Grep",
+  "input": {
+    "pattern": "discover_live_file_metadata",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+detcore-model/src/config.rs:91:    pub discover_live_file_metadata: bool,
+hermit-cli/src/lib.rs:2338:    config.discover_live_file_metadata = backend == Backend::Sabre;
+hermit-cli/src/lib.rs:4168:        assert!(sabre.discover_live_file_metadata);
+hermit-cli/src/lib.rs:4182:        assert!(!ptrace.discover_live_file_metadata);
+detcore/src/tool_local.rs:1770:    pub(crate) discover_live_file_metadata: bool,
+detcore/src/tool_local.rs:2143:        let file_metadata = if cfg.discover_live_file_metadata {
+detcore/src/tool_local.rs:2164:            discover_live_file_metadata: cfg.discover_live_file_metadata,
+detcore/src/tool_local.rs:2446:        if self.discover_live_file_metadata {
+detcore/src/tool_local.rs:2491:        if self.discover_live_file_metadata {
+detcore/src/tool_local.rs:2510:        if self.discover_live_file_metadata {
+detcore/src/tool_local.rs:2522:        if self.discover_live_file_metadata {
+detcore/src/lib.rs:1521:                    discover_live_file_metadata: pts.1.discover_live_file_metadata,
+detcore/src/syscalls/files.rs:1551:                guest.config().discover_live_file_metadata,
+detcore/src/syscalls/files.rs:1993:                guest.config().discover_live_file_metadata,
+detcore/src/syscalls/files.rs:2205:                guest.config().discover_live_file_metadata,
+detcore/src/syscalls/files.rs:2279:                guest.config().discover_live_file_metadata,
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01FZewhwGipdMQeWqt3jsNvs",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_local.rs",
+    "offset": 2130,
+    "limit": 50
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+2130	    /// state of the root thread of the container.
+2131	    pub fn new(pid: DetPid, cfg: &Config, record_or_replay: T) -> Self {
+2132	        detlog!(
+2133	            "USER RAND: seeding PRNG for root thread with seed {}",
+2134	            cfg.rng_seed()
+2135	        );
+2136	        detlog!(
+2137	            "CHAOSRAND: seeding chaos scheduler with seed {}",
+2138	            cfg.sched_seed()
+2139	        );
+2140	        let thread_logical_time = DetTime::new(cfg);
+2141	        let last_accounted_user_time = thread_logical_time.user_cpu_time();
+2142	        let last_accounted_system_time = thread_logical_time.system_cpu_time();
+2143	        let file_metadata = if cfg.discover_live_file_metadata {
+2144	            let mut metadata = FileMetadata::new(pid);
+2145	            for fd in 0..=2 {
+2146	                metadata
+2147	                    .discover_fd_from_current_process(pid, fd)
+2148	                    .expect("SaBRe guest stdio must be open");
+2149	            }
+2150	            metadata
+2151	        } else {
+2152	            FileMetadata::new(pid).setup_stdio(pid.into(), pid)
+2153	        };
+2154	        ThreadState {
+2155	            dettid: pid,
+2156	            detpid: None, // Initialized later.
+2157	            physical_tid: None,
+2158	            open_file_creator: None,
+2159	            mm_id: MmId::initial(pid),
+2160	            memory_metadata: Arc::new(Mutex::new(MemoryMetadata::new())),
+2161	            pedigree: Pedigree::new(), // Root thread.
+2162	            stats: ThreadStats::new(),
+2163	            file_metadata: Arc::new(Mutex::new(file_metadata)),
+2164	            discover_live_file_metadata: cfg.discover_live_file_metadata,
+2165	            timer_slack_ns: DEFAULT_TIMER_SLACK_NS,
+2166	            default_timer_slack_ns: DEFAULT_TIMER_SLACK_NS,
+2167	            posix_timers: Arc::new(Mutex::new(PosixTimers::default())),
+2168	            resource_limits: Arc::new(Mutex::new(ResourceLimits::default())),
+2169	            process_cpu_time: Arc::new(Mutex::new(ProcessCpuTime::default())),
+2170	            guest_clock: Arc::new(Mutex::new(GuestClock::default())),
+2171	            parent_process_cpu_time: None,
+2172	            last_accounted_user_time,
+2173	            last_accounted_system_time,
+2174	            thread_cpu_start_user_time: last_accounted_user_time,
+2175	            thread_cpu_start_system_time: last_accounted_system_time,
+2176	            clone_flags: None,
+2177	            pending_vfork: None,
+2178	            // For the root thread, we initialize from the seed in the config:
+2179	            prng: Pcg64Mcg::seed_from_u64(cfg.rng_seed()),
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01Q6V8PpawT5grzDVxFVnTDa",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/files.rs",
+    "offset": 2620,
+    "limit": 130
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+2620	            Some(inode) => {
+2621	                let nanos = cfg
+2622	                    .epoch
+2623	                    .timestamp_nanos_opt()
+2624	                    .expect("epoch cannot be represented in nanoseconds")
+2625	                    as u64;
+2626	                (inode, LogicalTime::from_nanos(nanos))
+2627	            }
+2628	            None => determinize_inode(guest, stat.inode).await,
+2629	        };
+2630	        stat.inode = d_ino.as_raw(); // Reveal only the deterministic inode.
+2631	
+2632	        // AUTONOMOUS-BOT-IMPLEMENTED
+2633	        // TODO-HUMAN-REVIEW(PR-1056): Deterministic st_dev remapping.
+2634	        // The raw st_dev leaks the kernel's host-wide anonymous block-device
+2635	        // number for procfs/sysfs/tmpfs mounts, which drifts between runs (and
+2636	        // between the two runs of `--verify`). Reveal only a deterministic
+2637	        // device id.
+2638	        stat.dev = determinize_device(guest, stat.dev).await;
+2639	
+2640	        let epoch_tp = Timespec {
+2641	            tv_sec: cfg.epoch.timestamp(),
+2642	            tv_nsec: cfg.epoch.timestamp_subsec_nanos() as i64,
+2643	        };
+2644	
+2645	        let mtime: Timespec = global_mtime.into();
+2646	        stat.atime = epoch_tp;
+2647	        stat.ctime = epoch_tp;
+2648	        stat.btime = epoch_tp;
+2649	
+2650	        stat.mtime = mtime;
+2651	
+2652	        Ok(stat)
+2653	    }
+2654	
+2655	    /// Handles all stat syscalls.
+2656	    pub async fn handle_stat_family<G: Guest<Self>>(
+2657	        &self,
+2658	        guest: &mut G,
+2659	        call: StatFamily,
+2660	    ) -> Result<i64, Error> {
+2661	        if guest.config().virtualize_metadata {
+2662	            // NB: let kernel handle error codes, it's not easy to do so without
+2663	            // kernel because there're many corner cases. i.e.: even access
+2664	            // filepath from tracer may cause tracer to hang under certain fuse
+2665	            // filesystem (squashfs_ll).
+2666	            guest.inject(Syscall::from(call)).await?;
+2667	            let statptr = call.stat().ok_or(Errno::EFAULT)?;
+2668	            let inode_override = match call {
+2669	                StatFamily::Fstat(call) => guest
+2670	                    .thread_state()
+2671	                    .with_detfd(call.fd(), |detfd| {
+2672	                        deterministic_stdio_inode_for_resource(call.fd(), detfd.resource())
+2673	                    })
+2674	                    .ok()
+2675	                    .flatten(),
+2676	                _ => None,
+2677	            };
+2678	            let mut memory = guest.memory();
+2679	            let stat = memory.read_value(statptr.0)?;
+2680	            let stat = self.determinize_stat(guest, stat, inode_override).await?;
+2681	            memory.write_value(statptr.0, &stat.into())?;
+2682	            Ok(0)
+2683	        } else {
+2684	            Ok(self.record_or_replay(guest, call).await?)
+2685	        }
+2686	    }
+2687	
+2688	    /// statx system call
+2689	    pub async fn handle_statx<G: Guest<Self>>(
+2690	        &self,
+2691	        guest: &mut G,
+2692	        call: syscalls::Statx,
+2693	    ) -> Result<i64, Error> {
+2694	        if guest.config().virtualize_metadata {
+2695	            // NB: let kernel handle error codes, it's not easy to do so without kernel
+2696	            // because there're many corner cases. i.e.: even access filepath from tracer
+2697	            // may cause tracer to hang under certain fuse filesystem (squashfs_ll).
+2698	            guest.inject(call).await?;
+2699	            let statptr = call.statx().ok_or(Errno::EFAULT)?;
+2700	            let mut memory = guest.memory();
+2701	            let stat = memory.read_value(statptr.0)?;
+2702	            let stat = self.determinize_stat(guest, stat, None).await?;
+2703	            memory.write_value(statptr.0, &stat.into())?;
+2704	            Ok(0)
+2705	        } else {
+2706	            Ok(self.record_or_replay(guest, call).await?)
+2707	        }
+2708	    }
+2709	
+2710	    /// fcntl system call
+2711	    pub async fn handle_fcntl<G: Guest<Self>>(
+2712	        &self,
+2713	        guest: &mut G,
+2714	        call: syscalls::Fcntl,
+2715	    ) -> Result<i64, Error> {
+2716	        let fd = call.fd();
+2717	        let o_cloexec = match call.cmd() {
+2718	            F_DUPFD_CLOEXEC(_) => OFlag::O_CLOEXEC,
+2719	            _ => OFlag::empty(),
+2720	        };
+2721	        match call.cmd() {
+2722	            F_GETFL => {
+2723	                let physical_flags = self.record_or_replay(guest, call).await?;
+2724	                let logical_nonblocking = guest
+2725	                    .thread_state()
+2726	                    .with_detfd(fd, |detfd| detfd.is_nonblocking())?;
+2727	                let nonblocking = i64::from(OFlag::O_NONBLOCK.bits());
+2728	                if logical_nonblocking {
+2729	                    Ok(physical_flags | nonblocking)
+2730	                } else {
+2731	                    Ok(physical_flags & !nonblocking)
+2732	                }
+2733	            }
+2734	            F_SETFL(flags) => {
+2735	                let fd_type = guest.thread_state().with_detfd(fd, |detfd| detfd.ty())?;
+2736	                let force_nonblocking = self.cfg.use_nonblocking_sockets()
+2737	                    && !self.cfg.recordreplay_modes
+2738	                    && matches!(fd_type, FdType::Socket | FdType::Pipe | FdType::Eventfd);
+2739	                let physical_flags = if force_nonblocking {
+2740	                    flags | OFlag::O_NONBLOCK.bits()
+2741	                } else {
+2742	                    flags
+2743	                };
+2744	                let result = self
+2745	                    .record_or_replay(guest, call.with_cmd(F_SETFL(physical_flags)))
+2746	                    .await?;
+2747	                guest.thread_state().with_detfd(fd, |detfd| {
+2748	                    // Record the guest's *logical* status flags (derives logical
+2749	                    // nonblocking); when we forced O_NONBLOCK physically without the
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01N8yyAVeQKo46BEGYXtHxz1",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/files.rs",
+    "offset": 1180,
+    "limit": 250
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1180	        // so a later intercepted pread cannot snapshot from EOF.
+1181	        //
+1182	        // AUTONOMOUS-BOT-IMPLEMENTED
+1183	        // TODO-HUMAN-REVIEW(#1903): ESPIPE is not a failure here. Several procfs
+1184	        // files are legitimately non-seekable -- `/proc/net/*` single-release
+1185	        // seq_files return ESPIPE from `llseek` on the host, verified natively:
+1186	        // `lseek(fd, 0, SEEK_SET)` on `/proc/net/sockstat` gives ESPIPE while the
+1187	        // subsequent `read(2)` returns data. Propagating that ESPIPE made the
+1188	        // GUEST's `read` fail on a file Linux reads fine (`cat
+1189	        // /proc/net/sockstat` -> "Illegal seek"), which is a deviation from Linux
+1190	        // semantics, not a determinism requirement: the rewind is an internal
+1191	        // correction Detcore performs for its own benefit and the guest never
+1192	        // asked for it. A non-seekable fd also cannot have been advanced behind
+1193	        // our back by a seek, and a freshly opened one is already at offset 0, so
+1194	        // skipping the rewind loses nothing the rewind was protecting.
+1195	        match guest
+1196	            .inject_with_retry(Syscall::Lseek(
+1197	                syscalls::Lseek::new()
+1198	                    .with_fd(call.fd())
+1199	                    .with_offset(0)
+1200	                    .with_whence(Whence::SEEK_SET),
+1201	            ))
+1202	            .await
+1203	        {
+1204	            Ok(_) => {}
+1205	            Err(Errno::ESPIPE) => {}
+1206	            Err(err) => return Err(err.into()),
+1207	        }
+1208	
+1209	        let remote_buf = call.buf().ok_or(Errno::EFAULT)?;
+1210	        let mut contents = Vec::new();
+1211	        loop {
+1212	            let bytes_read = self.record_or_replay(guest, call).await? as usize;
+1213	            if bytes_read == 0 {
+1214	                return Ok(contents);
+1215	            }
+1216	            if contents.len() + bytes_read > MAX_SNAPSHOT_BYTES {
+1217	                return Err(Errno::EFBIG.into());
+1218	            }
+1219	
+1220	            let mut chunk = vec![0; bytes_read];
+1221	            guest.memory().read_exact(remote_buf, &mut chunk)?;
+1222	            contents.extend_from_slice(&chunk);
+1223	        }
+1224	    }
+1225	
+1226	    async fn initialize_procfs_snapshot<G: Guest<Self>>(
+1227	        &self,
+1228	        guest: &mut G,
+1229	        call: syscalls::Read,
+1230	    ) -> Result<(), Error> {
+1231	        let contents = self.snapshot_procfs(guest, call).await?;
+1232	        let virtual_uptime_seconds = self.calculate_uptime(guest).await?;
+1233	        let virtual_realtime_seconds = i64::try_from(thread_observe_time(guest).await.as_secs())
+1234	            .map_err(|_| Errno::EOVERFLOW)?;
+1235	        // TODO-HUMAN-REVIEW(PR-863): Use configured guest memory for meminfo.
+1236	        let virtual_memory_kb = guest.config().memory / 1024;
+1237	        // TODO-HUMAN-REVIEW(PR-723): Review injected identity snapshot reads.
+1238	        let virtual_pid = guest.inject(syscalls::Getpid::new()).await? as i32;
+1239	        let virtual_ppid = guest.inject(syscalls::Getppid::new()).await? as i32;
+1240	        let virtual_pty_count = guest.thread_state().count_open_files_at_paths(&[
+1241	            std::path::Path::new("/dev/ptmx"),
+1242	            std::path::Path::new("/dev/pts/ptmx"),
+1243	        ]);
+1244	        let target_fd = guest
+1245	            .thread_state()
+1246	            .with_detfd(call.fd(), |detfd| detfd.procfs_target_fd())?;
+1247	        let fdinfo_identity = if let Some(target_fd) = target_fd {
+1248	            let (cached_stat, logical_flags, open_file_id, fd_type, inode_override) =
+1249	                guest.thread_state().with_detfd(target_fd, |detfd| {
+1250	                    (
+1251	                        detfd.stat(),
+1252	                        detfd.status_flags(),
+1253	                        detfd.open_file_id(),
+1254	                        detfd.ty(),
+1255	                        deterministic_stdio_inode_for_resource(target_fd, detfd.resource()),
+1256	                    )
+1257	                })?;
+1258	            let raw_inode = match cached_stat {
+1259	                Some(stat) => stat.inode,
+1260	                None => {
+1261	                    let stat = self.inject_fstat(guest, target_fd).await?;
+1262	                    stat.st_ino
+1263	                }
+1264	            };
+1265	            let virtual_inode = match inode_override {
+1266	                Some(inode) => inode,
+1267	                None => determinize_inode(guest, raw_inode).await.0,
+1268	            };
+1269	            let raw_mount_id =
+1270	                detcore_model::procfs::parse_fdinfo_mount_id(&contents).ok_or_else(|| {
+1271	                    Error::Tool(anyhow::anyhow!(
+1272	                        "kernel returned malformed /proc/*/fdinfo without one numeric mnt_id"
+1273	                    ))
+1274	                })?;
+1275	            // CLI container and recording paths provide the exact namespace's
+1276	            // row order. Replay intentionally retains the recording-time raw
+1277	            // IDs because ReadV2 supplies recording-time fdinfo bytes.
+1278	            let has_configured_mount_ids = guest.config().mountinfo_mount_ids_captured;
+1279	            let virtual_mount_id = if raw_mount_id == 0 {
+1280	                // Linux uses zero for anonymous objects such as memfd. Key the
+1281	                // equivalence on the observed value, not our descriptor type.
+1282	                0
+1283	            } else if !has_configured_mount_ids {
+1284	                // Public non-container callers have no pre-captured provenance.
+1285	                // Mount/unshare/setns are refused once Detcore starts, so a
+1286	                // tracer-side snapshot of this task's namespace is immutable.
+1287	                let mountinfo_path = format!("/proc/{}/mountinfo", guest.pid().as_raw());
+1288	                let mountinfo_contents = std::fs::read(&mountinfo_path).map_err(|error| {
+1289	                    Error::Tool(anyhow::anyhow!(
+1290	                        "failed to read {mountinfo_path} while validating fdinfo mnt_id: {error}"
+1291	                    ))
+1292	                })?;
+1293	                let mountinfo_rows =
+1294	                    crate::procfs::parse_mountinfo(&mountinfo_contents).ok_or_else(|| {
+1295	                        Error::Tool(anyhow::anyhow!(
+1296	                            "kernel returned malformed {mountinfo_path} while validating fdinfo mnt_id"
+1297	                        ))
+1298	                    })?;
+1299	                let snapshot = MountInfoSnapshot::new(
+1300	                    mountinfo_rows,
+1301	                    &[],
+1302	                    false,
+1303	                    BTreeMap::new(),
+1304	                    BTreeMap::new(),
+1305	                )
+1306	                .ok_or_else(|| {
+1307	                    Error::Tool(anyhow::anyhow!(
+1308	                        "{mountinfo_path} failed strict identity validation for fdinfo"
+1309	                    ))
+1310	                })?;
+1311	                determinize_mount_id(guest, raw_mount_id, Some(snapshot.raw_mount_id_order()))
+1312	                    .await
+1313	                    .ok_or_else(|| {
+1314	                        Error::Tool(anyhow::anyhow!(
+1315	                            "mountinfo mount-ID order changed after the identity snapshot while resolving fdinfo mnt_id {raw_mount_id} for {fd_type:?} from {mountinfo_path}"
+1316	                        ))
+1317	                    })?
+1318	            } else {
+1319	                determinize_mount_id(guest, raw_mount_id, None)
+1320	                    .await
+1321	                    .ok_or_else(|| {
+1322	                        Error::Tool(anyhow::anyhow!(
+1323	                            "recorded mount identity provenance was invalid while resolving fdinfo mnt_id {raw_mount_id} for {fd_type:?}"
+1324	                        ))
+1325	                    })?
+1326	            };
+1327	            Some((
+1328	                // Determinized immediately above (stdio-special or
+1329	                // `determinize_inode`); lowered to an integer only here, at the
+1330	                // point it is rendered into guest-visible fdinfo text.
+1331	                virtual_inode.as_raw(),
+1332	                logical_flags,
+1333	                open_file_id.deterministic_socket_cookie(),
+1334	                virtual_mount_id,
+1335	            ))
+1336	        } else {
+1337	            None
+1338	        };
+1339	        let needs_random_uuid = guest
+1340	            .thread_state()
+1341	            .with_detfd(call.fd(), |detfd| detfd.procfs_needs_random_uuid())?;
+1342	        // AUTONOMOUS-BOT-IMPLEMENTED
+1343	        // TODO-HUMAN-REVIEW(PR-955): Review deterministic kernel UUID generation.
+1344	        let random_uuid =
+1345	            needs_random_uuid.then(|| guest.thread_state_mut().thread_prng().random::<[u8; 16]>());
+1346	        // ⚠️ DETERMINIZE HERE, IN THE CALLER, THROUGH THE SAME POOLS `stat` USES.
+1347	        //
+1348	        // The sanitizers in `crate::procfs` are pure functions of content and
+1349	        // hold no guest handle, so they cannot reach `InodePool`/`DevicePool`.
+1350	        // Minting an identity down there would make the maps column stable and
+1351	        // STILL DISAGREE with `stat` -- deterministic, reproducible and wrong.
+1352	        // This mirrors how `fdinfo_identity` is built a few lines above:
+1353	        // determinize with `determinize_inode`/`determinize_device`, then hand
+1354	        // the finished values down purely to be rendered.
+1355	        //
+1356	        // BOTH COLUMNS, not just the inode. `determinize_stat` sanitizes
+1357	        // `st_dev` as well, so rewriting only the inode would leave the device
+1358	        // disagreeing -- the same defect with the reported symptom removed.
+1359	        let needs_mapping_identities = guest
+1360	            .thread_state()
+1361	            .with_detfd(call.fd(), |detfd| detfd.procfs_needs_mapping_identities())?;
+1362	        let mut mapping_identities: BTreeMap<(u64, u64), (u64, u64)> = BTreeMap::new();
+1363	        if needs_mapping_identities {
+1364	            // A mapping backed by stdio must report the SAME inode fdinfo
+1365	            // reports for that fd, which is the fixed `deterministic_stdio_inode`
+1366	            // value rather than a pooled one. Matching is by raw inode, read
+1367	            // from the cached stat only: injecting an fstat here would add
+1368	            // syscalls to every maps read and perturb the very traces this
+1369	            // change is meant to keep consistent.
+1370	            let mut stdio_by_raw_inode: BTreeMap<u64, DetInode> = BTreeMap::new();
+1371	            for fd in libc::STDIN_FILENO..=libc::STDERR_FILENO {
+1372	                let cached = guest
+1373	                    .thread_state()
+1374	                    .with_detfd(fd, |detfd| {
+1375	                        let inode = deterministic_stdio_inode_for_resource(fd, detfd.resource())?;
+1376	                        detfd.stat().map(|stat| (stat.inode, inode))
+1377	                    })
+1378	                    .ok()
+1379	                    .flatten();
+1380	                if let Some((raw, det)) = cached {
+1381	                    stdio_by_raw_inode.insert(raw, det);
+1382	                }
+1383	            }
+1384	            let raw_pairs: BTreeSet<(u64, u64)> = String::from_utf8_lossy(&contents)
+1385	                .lines()
+1386	                .filter_map(crate::procfs::mapping_header_identity)
+1387	                .collect();
+1388	            for (raw_dev, raw_inode) in raw_pairs {
+1389	                let det_inode = match stdio_by_raw_inode.get(&raw_inode) {
+1390	                    Some(inode) => *inode,
+1391	                    None => determinize_inode(guest, raw_inode).await.0,
+1392	                };
+1393	                let det_dev = determinize_device(guest, raw_dev).await;
+1394	                mapping_identities.insert((raw_dev, raw_inode), (det_dev, det_inode.as_raw()));
+1395	            }
+1396	        }
+1397	        let mountinfo = if guest
+1398	            .thread_state()
+1399	            .with_detfd(call.fd(), |detfd| detfd.procfs_needs_mountinfo_identities())?
+1400	        {
+1401	            let mut rows = crate::procfs::parse_mountinfo(&contents).ok_or_else(|| {
+1402	                Error::Tool(anyhow::anyhow!(
+1403	                    "kernel returned malformed /proc/*/mountinfo"
+1404	                ))
+1405	            })?;
+1406	            let mut device_rewrites = BTreeMap::new();
+1407	            for &(mountinfo_device, metadata_device) in &guest.config().mountinfo_device_rewrites {
+1408	                if device_rewrites
+1409	                    .insert(mountinfo_device, metadata_device)
+1410	                    .is_some()
+1411	                {
+1412	                    return Err(Error::Tool(anyhow::anyhow!(
+1413	                        "duplicate proven mountinfo device rewrite for raw device {mountinfo_device}"
+1414	                    )));
+1415	                }
+1416	            }
+1417	            for row in &mut rows {
+1418	                if let Some(metadata_device) = device_rewrites.get(&row.raw_device) {
+1419	                    row.raw_device = *metadata_device;
+1420	                }
+1421	            }
+1422	            let mut raw_devices = Vec::new();
+1423	            let mut seen_devices = BTreeSet::new();
+1424	            for row in &rows {
+1425	                if seen_devices.insert(row.raw_device) {
+1426	                    raw_devices.push(row.raw_device);
+1427	                }
+1428	            }
+1429	            let mut devices = BTreeMap::new();
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01E9u5GcpP6ivmoV87gype7n",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/namespace.rs",
+    "offset": 120,
+    "limit": 220
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+120	        .then(|| value.parse().ok())?
+121	}
+122	
+123	fn decimal_fd(component: &OsStr) -> Option<i32> {
+124	    let value = component.to_str()?;
+125	    (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+126	        .then(|| value.parse().ok())?
+127	}
+128	
+129	/// Returns the optional numeric proc subject and the descriptor number.
+130	fn proc_fd_target(path: &Path) -> Option<(Option<u32>, i32)> {
+131	    let parts = normalized_absolute_parts(path)?;
+132	    match parts.as_slice() {
+133	        [dev, fd_dir, fd] if *dev == "dev" && *fd_dir == "fd" => Some((None, decimal_fd(fd)?)),
+134	        [proc, subject, fd_dir, fd] if *proc == "proc" && *fd_dir == "fd" => {
+135	            let subject = match subject.to_str()? {
+136	                "self" | "thread-self" => None,
+137	                _ => Some(decimal_u32(subject)?),
+138	            };
+139	            Some((subject, decimal_fd(fd)?))
+140	        }
+141	        _ => None,
+142	    }
+143	}
+144	
+145	// TODO-HUMAN-REVIEW(PR-1079): Review numeric virtual-self proc-fd path rewriting.
+146	fn host_self_proc_fd_alias(path: &Path, current_pid: i64) -> Option<PathBuf> {
+147	    let (Some(subject), fd) = proc_fd_target(path)? else {
+148	        return None;
+149	    };
+150	    (i64::from(subject) == current_pid).then(|| PathBuf::from(format!("/proc/self/fd/{fd}")))
+151	}
+152	
+153	#[derive(Debug, Eq, PartialEq)]
+154	struct AnonymousProcFdIdentity {
+155	    kind: &'static str,
+156	    raw_inode: RawInode,
+157	}
+158	
+159	// Long enough for `socket:[` + every decimal u64 inode + `]`.
+160	const ANONYMOUS_PROC_FD_TARGET_CAPACITY: usize = 32;
+161	
+162	fn needs_anonymous_proc_fd_scratch(buffer_present: bool, buffer_len: usize) -> bool {
+163	    buffer_present && buffer_len != 0 && buffer_len < ANONYMOUS_PROC_FD_TARGET_CAPACITY
+164	}
+165	
+166	/// Recognize only a complete kernel pipe/socket symlink target.
+167	fn anonymous_proc_fd_identity(target: &[u8]) -> Option<AnonymousProcFdIdentity> {
+168	    for (kind, prefix) in [
+169	        ("pipe", b"pipe:[".as_slice()),
+170	        ("socket", b"socket:[".as_slice()),
+171	    ] {
+172	        let Some(digits) = target
+173	            .strip_prefix(prefix)
+174	            .and_then(|rest| rest.strip_suffix(b"]"))
+175	        else {
+176	            continue;
+177	        };
+178	        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+179	            continue;
+180	        }
+181	        let raw_inode = std::str::from_utf8(digits).ok()?.parse().ok()?;
+182	        return Some(AnonymousProcFdIdentity { kind, raw_inode });
+183	    }
+184	    None
+185	}
+186	
+187	/// Match a raw identity against cached current-process inherited-stdio identities.
+188	/// Callers exclude ordinary replacement objects before filling this array.
+189	///
+190	/// Iterating in fd order deliberately matches the last-insert-wins behavior of
+191	/// the maps sanitizer's `stdio_by_raw_inode` table when stdio descriptors alias.
+192	fn deterministic_stdio_inode_for_raw(
+193	    raw_inode: RawInode,
+194	    stdio_raw_inodes: &[Option<RawInode>; 3],
+195	) -> Option<DetInode> {
+196	    let mut matched = None;
+197	    for (fd, cached) in stdio_raw_inodes.iter().enumerate() {
+198	        if *cached == Some(raw_inode) {
+199	            matched = deterministic_stdio_inode(fd as i32);
+200	        }
+201	    }
+202	    matched
+203	}
+204	
+205	fn canonical_anonymous_proc_fd_target(
+206	    identity: &AnonymousProcFdIdentity,
+207	    inode: DetInode,
+208	    buffer_len: usize,
+209	) -> Vec<u8> {
+210	    let mut target = format!("{}:[{}]", identity.kind, inode.as_raw()).into_bytes();
+211	    target.truncate(buffer_len);
+212	    target
+213	}
+214	
+215	impl<T: RecordOrReplay> Detcore<T> {
+216	    async fn canonicalize_other_proc_fd_target<G>(
+217	        &self,
+218	        guest: &mut G,
+219	        raw_target: &[u8],
+220	        buffer: Option<AddrMut<'_, libc::c_char>>,
+221	        buffer_len: usize,
+222	    ) -> Result<Option<i64>, Error>
+223	    where
+224	        G: Guest<Self>,
+225	    {
+226	        let Some(identity) = anonymous_proc_fd_identity(raw_target) else {
+227	            return Ok(None);
+228	        };
+229	        let mut stdio_raw_inodes = [None; 3];
+230	        for fd in libc::STDIN_FILENO..=libc::STDERR_FILENO {
+231	            stdio_raw_inodes[fd as usize] = guest
+232	                .thread_state()
+233	                .with_detfd(fd, |detfd| {
+234	                    deterministic_stdio_inode_for_resource(fd, detfd.resource())?;
+235	                    detfd.stat().map(|stat| stat.inode)
+236	                })
+237	                .ok()
+238	                .flatten();
+239	        }
+240	        let inode = match deterministic_stdio_inode_for_raw(identity.raw_inode, &stdio_raw_inodes) {
+241	            Some(inode) => inode,
+242	            None => determinize_inode(guest, identity.raw_inode).await.0,
+243	        };
+244	        let target = canonical_anonymous_proc_fd_target(&identity, inode, buffer_len);
+245	        let buffer = buffer.ok_or(Errno::EFAULT)?;
+246	        guest.memory().write_exact(buffer.cast(), &target)?;
+247	        Ok(Some(target.len() as i64))
+248	    }
+249	
+250	    /// Canonicalize a pipe/socket link belonging to another virtual process.
+251	    /// The target descriptor is not in the caller's table, so its raw readlink
+252	    /// bytes are the only safe identity evidence available here.
+253	    async fn canonicalize_other_proc_fd_readlink<G>(
+254	        &self,
+255	        guest: &mut G,
+256	        buffer: Option<AddrMut<'_, libc::c_char>>,
+257	        buffer_len: usize,
+258	        result: i64,
+259	    ) -> Result<i64, Error>
+260	    where
+261	        G: Guest<Self>,
+262	    {
+263	        let buffer = buffer.expect("a successful readlink requires a non-null buffer");
+264	        let observed_len = usize::try_from(result)
+265	            .expect("a positive readlink result must fit usize")
+266	            .min(buffer_len);
+267	        let mut observed = vec![0; observed_len];
+268	        guest.memory().read_exact(buffer.cast(), &mut observed)?;
+269	        Ok(self
+270	            .canonicalize_other_proc_fd_target(guest, &observed, Some(buffer), buffer_len)
+271	            .await?
+272	            .unwrap_or(result))
+273	    }
+274	
+275	    async fn canonicalize_namespace_readlink_result<G>(
+276	        &self,
+277	        guest: &mut G,
+278	        path: PathBuf,
+279	        buffer: Option<AddrMut<'_, libc::c_char>>,
+280	        buffer_len: usize,
+281	        result: i64,
+282	    ) -> Result<i64, Error>
+283	    where
+284	        G: Guest<Self>,
+285	    {
+286	        if result <= 0 {
+287	            return Ok(result);
+288	        }
+289	
+290	        let target = if let Some(target) = canonical_namespace_target(&path) {
+291	            target.to_vec()
+292	        } else if let Some((subject, fd)) = proc_fd_target(&path) {
+293	            if let Some(subject) = subject {
+294	                let current_pid = guest.inject(syscalls::Getpid::new()).await?;
+295	                if current_pid != i64::from(subject) {
+296	                    return self
+297	                        .canonicalize_other_proc_fd_readlink(guest, buffer, buffer_len, result)
+298	                        .await;
+299	                }
+300	            }
+301	
+302	            let stat = self.inject_fstat(guest, fd).await?;
+303	            let kind = match stat.st_mode & libc::S_IFMT {
+304	                libc::S_IFIFO => "pipe",
+305	                libc::S_IFSOCK => "socket",
+306	                _ => return Ok(result),
+307	            };
+308	            let inode_override = guest
+309	                .thread_state()
+310	                .with_detfd(fd, |detfd| {
+311	                    deterministic_stdio_inode_for_resource(fd, detfd.resource())
+312	                })
+313	                .ok()
+314	                .flatten();
+315	            let inode = match inode_override {
+316	                Some(inode) => inode,
+317	                None => determinize_inode(guest, stat.st_ino).await.0,
+318	            };
+319	            format!("{kind}:[{inode}]").into_bytes()
+320	        } else {
+321	            return Ok(result);
+322	        };
+323	
+324	        let written = target.len().min(buffer_len);
+325	        let buffer = buffer.expect("a successful readlink requires a non-null buffer");
+326	        guest
+327	            .memory()
+328	            .write_exact(buffer.cast(), &target[..written])?;
+329	        Ok(written as i64)
+330	    }
+331	    async fn write_other_proc_fd_target<G>(
+332	        &self,
+333	        guest: &mut G,
+334	        raw_target: &[u8],
+335	        buffer: Option<AddrMut<'_, libc::c_char>>,
+336	        buffer_len: usize,
+337	    ) -> Result<i64, Error>
+338	    where
+339	        G: Guest<Self>,
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_014XxmibwuYiioazmH8T3nEA",
+  "name": "Grep",
+  "input": {
+    "pattern": "capture_mountinfo_identity_order|mountinfo_mount_ids_captured|fdinfo_unlisted_mount_ids|mountinfo_root_rewrites|mountinfo_device_rewrites|IdentityGuard",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 120
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+detcore-model/src/config.rs:246:    pub mountinfo_root_rewrites: Vec<MountInfoRootRewrite>,
+detcore-model/src/config.rs:257:    pub mountinfo_device_rewrites: Vec<(u64, u64)>,
+detcore-model/src/config.rs:276:    pub mountinfo_mount_ids_captured: bool,
+detcore-model/src/config.rs:284:    pub fdinfo_unlisted_mount_ids: Vec<u64>,
+detcore-model/src/config.rs:1409:            .remove("mountinfo_root_rewrites");
+detcore-model/src/config.rs:1413:            .remove("mountinfo_device_rewrites");
+detcore-model/src/config.rs:1418:            .remove("mountinfo_mount_ids_captured");
+detcore-model/src/config.rs:1422:            .remove("fdinfo_unlisted_mount_ids");
+detcore-model/src/config.rs:1424:        assert!(restored.mountinfo_root_rewrites.is_empty());
+detcore-model/src/config.rs:1425:        assert!(restored.mountinfo_device_rewrites.is_empty());
+detcore-model/src/config.rs:1427:        assert!(!restored.mountinfo_mount_ids_captured);
+detcore-model/src/config.rs:1428:        assert!(restored.fdinfo_unlisted_mount_ids.is_empty());
+hermit-cli/src/lib.rs:1948:/// The CLI supplies IdentityGuard provenance from the completed container.
+hermit-cli/src/lib.rs:1958:    if !config.mountinfo_mount_ids_captured
+hermit-cli/src/lib.rs:1959:        && (!config.mountinfo_mount_ids.is_empty() || !config.fdinfo_unlisted_mount_ids.is_empty())
+hermit-cli/src/lib.rs:1964:    if config.mountinfo_mount_ids_captured {
+hermit-cli/src/lib.rs:1972:        config.mountinfo_mount_ids_captured = true;
+hermit-cli/src/lib.rs:1977:    config.mountinfo_device_rewrites.clear();
+hermit-cli/src/lib.rs:1990:    prepare_kvm_mountinfo_config(&mut config, capture_mountinfo_identity_order)?;
+hermit-cli/src/lib.rs:3047:        mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3050:        let exit_status = record_to_with_mountinfo(command, data.path(), mountinfo_root_rewrites)?;
+hermit-cli/src/lib.rs:3189:pub fn capture_mountinfo_identity_order() -> Result<Vec<u64>, Error> {
+hermit-cli/src/lib.rs:3236:    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3238:    let mountinfo_mount_ids = capture_mountinfo_identity_order()?;
+hermit-cli/src/lib.rs:3242:        mountinfo_root_rewrites,
+hermit-cli/src/lib.rs:3251:    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3256:        Record::spawn_with_mountinfo(command, dir, mountinfo_root_rewrites, mountinfo_mount_ids)
+hermit-cli/src/lib.rs:3282:    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3284:    let mountinfo_mount_ids = capture_mountinfo_identity_order()?;
+hermit-cli/src/lib.rs:3288:        mountinfo_root_rewrites,
+hermit-cli/src/lib.rs:3297:    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3306:        Record::spawn_with_mountinfo(command, dir, mountinfo_root_rewrites, mountinfo_mount_ids)
+hermit-cli/src/lib.rs:3402:            mountinfo_mount_ids_captured: true,
+hermit-cli/src/lib.rs:3403:            fdinfo_unlisted_mount_ids: vec![700, 701],
+hermit-cli/src/lib.rs:3404:            mountinfo_root_rewrites: vec![rewrite],
+hermit-cli/src/lib.rs:3405:            mountinfo_device_rewrites: vec![(libc::makedev(0, 1), libc::makedev(8, 1))],
+hermit-cli/src/lib.rs:3409:        expected.mountinfo_device_rewrites.clear();
+hermit-cli/src/lib.rs:3430:            mountinfo_mount_ids_captured: true,
+hermit-cli/src/lib.rs:3441:        assert!(empty.mountinfo_mount_ids_captured);
+hermit-cli/src/lib.rs:3454:            stale.mountinfo_device_rewrites = vec![(libc::makedev(0, 1), libc::makedev(8, 1))];
+hermit-cli/src/lib.rs:3481:        expected.mountinfo_mount_ids_captured = true;
+hermit-cli/src/lib.rs:3509:        assert!(empty.mountinfo_mount_ids_captured);
+hermit-cli/src/lib.rs:3518:                mountinfo_mount_ids_captured: captured,
+hermit-cli/src/lib.rs:3519:                fdinfo_unlisted_mount_ids: if captured { vec![700, 701] } else { vec![] },
+hermit-cli/src/lib.rs:3520:                mountinfo_device_rewrites: vec![(libc::makedev(0, 1), libc::makedev(8, 1))],
+hermit-cli/src/lib.rs:3558:                fdinfo_unlisted_mount_ids: unlisted,
+hermit-cli/src/bin/hermit/container.rs:34:use hermit::capture_mountinfo_identity_order;
+hermit-cli/src/bin/hermit/container.rs:232:pub(super) struct IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:239:impl IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:307:    pub(super) fn mountinfo_root_rewrites(&self) -> Result<Vec<MountInfoRootRewrite>, Error> {
+hermit-cli/src/bin/hermit/container.rs:317:        capture_mountinfo_identity_order()
+hermit-cli/src/bin/hermit/container.rs:378:pub(super) fn identity_hardening_mounts() -> Result<(Vec<Mount>, IdentityGuard), Error> {
+hermit-cli/src/bin/hermit/container.rs:409:        IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:465:/// unnecessary here. The returned [`IdentityGuard`] still records an
+hermit-cli/src/bin/hermit/container.rs:477:) -> Result<(Container, IdentityGuard), Error> {
+hermit-cli/src/bin/hermit/container.rs:555:    let mut identity_sources = IdentityGuard::empty();
+hermit-cli/src/bin/hermit/container.rs:565:/// nondeterministic host identity state. The returned [`IdentityGuard`] must be
+hermit-cli/src/bin/hermit/container.rs:567:pub(super) fn deterministic_container() -> Result<(Container, IdentityGuard), Error> {
+hermit-cli/src/bin/hermit/container.rs:1382:        let guard = IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:1389:        let rewrites = guard.mountinfo_root_rewrites().unwrap();
+hermit-cli/src/bin/hermit/container.rs:1453:        let guard = IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:1460:        let error = guard.mountinfo_root_rewrites().unwrap_err().to_string();
+hermit-cli/src/bin/hermit/container.rs:1467:        let mut guard = IdentityGuard::empty();
+hermit-cli/src/bin/hermit/container.rs:1483:        let mut guard = IdentityGuard::empty();
+hermit-cli/src/bin/hermit/container.rs:1501:            let mut guard = IdentityGuard::empty();
+hermit-cli/src/bin/hermit/run.rs:56:use super::container::IdentityGuard;
+hermit-cli/src/bin/hermit/run.rs:317:    identity_sources: IdentityGuard,
+hermit-cli/src/bin/hermit/run.rs:4618:    fn container(&self, tmpfs: &Path) -> Result<(Container, IdentityGuard), Error> {
+hermit-cli/src/bin/hermit/run.rs:4871:        identity_sources: Option<&IdentityGuard>,
+hermit-cli/src/bin/hermit/run.rs:4902:        config.mountinfo_root_rewrites = identity_sources
+hermit-cli/src/bin/hermit/run.rs:4903:            .map(IdentityGuard::mountinfo_root_rewrites)
+hermit-cli/src/bin/hermit/run.rs:4907:            .map(IdentityGuard::mountinfo_identity_order)
+hermit-cli/src/bin/hermit/run.rs:4911:        config.mountinfo_mount_ids_captured = identity_sources.is_some();
+hermit-cli/src/bin/hermit/run.rs:4912:        config.fdinfo_unlisted_mount_ids.clear();
+hermit-cli/src/bin/hermit/run.rs:4948:        identity_sources: Option<&IdentityGuard>,
+hermit-cli/src/bin/hermit/run.rs:4974:        config.mountinfo_root_rewrites = identity_sources
+hermit-cli/src/bin/hermit/run.rs:4975:            .map(IdentityGuard::mountinfo_root_rewrites)
+hermit-cli/src/bin/hermit/run.rs:4979:            .map(IdentityGuard::mountinfo_identity_order)
+hermit-cli/src/bin/hermit/run.rs:4983:        config.mountinfo_mount_ids_captured = identity_sources.is_some();
+hermit-cli/src/bin/hermit/run.rs:4984:        config.fdinfo_unlisted_mount_ids.clear();
+detcore/src/tool_global.rs:573:                cfg.mountinfo_mount_ids_captured,
+detcore/src/tool_global.rs:574:                &cfg.fdinfo_unlisted_mount_ids,
+detcore/src/syscalls/files.rs:1278:            let has_configured_mount_ids = guest.config().mountinfo_mount_ids_captured;
+detcore/src/syscalls/files.rs:1407:            for &(mountinfo_device, metadata_device) in &guest.config().mountinfo_device_rewrites {
+detcore/src/syscalls/files.rs:1442:            for rewrite in &guest.config().mountinfo_root_rewrites {
+detcore/src/syscalls/files.rs:1455:                if guest.config().mountinfo_mount_ids_captured {
+

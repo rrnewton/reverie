@@ -1,0 +1,110 @@
+{
+  "recorded_at": "2026-09-17T07:34:07.113708+00:00",
+  "source_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "source_base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "vm_bytes_identical": true,
+  "sources": [
+    {
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "path": "reverie-kvm/src/vm.rs",
+      "git_blob": "13aeec30c28f15cb96525f342261efde290d792f",
+      "git_mode": "100644",
+      "bytes": 279455,
+      "sha256": "449c3287f9aa6de363292d5aaced5427a834a2dcda58779f0e3fa87b522d322d"
+    },
+    {
+      "revision": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+      "path": "reverie-kvm/src/vm.rs",
+      "git_blob": "13aeec30c28f15cb96525f342261efde290d792f",
+      "git_mode": "100644",
+      "bytes": 279455,
+      "sha256": "449c3287f9aa6de363292d5aaced5427a834a2dcda58779f0e3fa87b522d322d"
+    },
+    {
+      "revision": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+      "path": "reverie-kvm/src/runtime.rs",
+      "git_blob": "b289ec97da382c588ae6ad2a81d845c3f0f35403",
+      "git_mode": "100644",
+      "bytes": 146482,
+      "sha256": "a7be97e32d0b89cf43fcc3b197800d3531b2f6c9ba2b62f02674f9f93c635c3e"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/RESULTS.md",
+      "bytes": 5055,
+      "sha256": "f04c31cabafd691bdd1e627d7cc8c61301901a1b84956ef5e34b1c04b3872158"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/execution-readback.json",
+      "bytes": 570492,
+      "sha256": "9b701e2669aae08de50d4005d6c3b222944609781c9d94ed93f213eea380df56"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native-full-v1/native/stderr",
+      "bytes": 9760,
+      "sha256": "1b538ab47f8b0f5897f8bb2bdb7fc61968161da6050acc337810a0866d406e1d"
+    }
+  ],
+  "actual_binary": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "sha256": "b899a2eec14c966aa64dcadd2064177cd412e3a2e57abe68efbf2e327075a783",
+    "bytes": 106866600,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+      "fresh": false
+    }
+  },
+  "actual_payload": {
+    "binary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "binary_sha256": "b899a2eec14c966aa64dcadd2064177cd412e3a2e57abe68efbf2e327075a783",
+    "arguments": [
+      "--test-threads=1",
+      "--nocapture",
+      "-Z",
+      "unstable-options",
+      "--format=json"
+    ]
+  },
+  "actual_summary": {
+    "type": "suite",
+    "event": "failed",
+    "passed": 426,
+    "failed": 1,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 0,
+    "exec_time": 19.908519288
+  },
+  "reads_only": true,
+  "no_guest_or_test_or_build_or_ref_source_change": true
+}

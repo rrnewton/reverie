@@ -1,0 +1,38 @@
+{
+  "name": "mount-10-identity",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2464082-1789626194180732395.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 0.170914,
+  "wall_seconds": 0.5457510051783174,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "409166e28ded2407f34e868584bc3dd1a6b0777f60d0fdac9c6fa0f956c09d17",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "tool_global::tests::recorded_unlisted_mount_order_rebuilds_the_same_mapping",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 678
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "started_at": "2026-09-17T19:42:51.127411+00:00",
+  "ended_at": "2026-09-17T19:42:51.652190+00:00",
+  "context": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-generator-context.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-generator-context.json",
+    "bytes": 132264,
+    "mode": 420,
+    "sha256": "a6d8f064ba36fe08509168f4bc692d9d5accda716c94b34859b691c0f08d47a3",
+    "device": 48,
+    "inode": 801144395,
+    "mtime_ns": 1789673457395721055,
+    "roles": [
+      "supplied fixed generator context"
+    ],
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/context.json"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v4/tracked-source-manifest.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v4/tracked-source-manifest.json",
+    "bytes": 284935,
+    "mode": 420,
+    "sha256": "0fcb4cdab683e0d69923e7d56916ad3477e3ada4dd1119ec4597f6765fbb7381",
+    "device": 48,
+    "inode": 801144360,
+    "mtime_ns": 1789673452019715853,
+    "roles": [
+      "existing original tracked-source manifest"
+    ]
+  },
+  "dependency_manifests": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/complete-recursive-inputs.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/complete-recursive-inputs.json",
+      "bytes": 6811751,
+      "mode": 420,
+      "sha256": "7aa646c9cbb8cc45c43ac09d833c660aa25760ced14ecd0baa6cafc3fd0ea018",
+      "device": 48,
+      "inode": 800183542,
+      "mtime_ns": 1789671298824826259,
+      "roles": [
+        "existing recursive dependency manifest"
+      ]
+    }
+  ],
+  "context_source_identity": {
+    "head": "9d983d5ff9591696c7361300cabaf5ce8a2cfe13",
+    "tree": "50dfb11cb9cc9e3cc8fcb3e026e508b56b05cf21",
+    "branch": "codex/kvm-prejoin-main-20260917",
+    "index": "53135975c3b3c951d882683a7dc87e74f8ff1695b4a4951b8726530b126e9d52"
+  },
+  "projects": 2,
+  "package_rows": 129,
+  "validate_registry_packages": 122,
+  "missing_registry_versions": 23,
+  "missing_registry_files": 1253,
+  "rust_script_loader_files": 4,
+  "generated_commands": 20,
+  "proc_macro_objects": 7,
+  "depfile_sources": 83,
+  "depfile_sources_not_matching_existing": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/embedded_userguide.md",
+      "source_sha256": "c1186aec4dcf9624e77223c40d19161f0bfb7cbccef5b599b3230d8e7a15c6c9",
+      "existing_binding": null,
+      "matches_existing": false
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/../../../hermit-cli/src/canonical_verdict.rs",
+      "source_sha256": "3e952d654e4466e498e77d11fe4c8ee7918ad5d556f318be2e32c45c8fdc65e1",
+      "existing_binding": null,
+      "matches_existing": false
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/../../../hermit-cli/src/logdiff_report.rs",
+      "source_sha256": "27c48623217d0bab06250928c58672d161a537bee40cb02b138f17873e0b6947",
+      "existing_binding": null,
+      "matches_existing": false
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/../../cargo-guest-binaries.rs",
+      "source_sha256": "c70902ff6d046dcfffc0cc06829cb93527272a105b881b97d4c30b7c2f95a142",
+      "existing_binding": null,
+      "matches_existing": false
+    }
+  ],
+  "read_bytes": 72535843,
+  "read_limit_bytes": 536870912,
+  "scope": "Read-only static cache/source/input comparison. Owner reported generation terminal before final capture. No process/ELF execution, Cargo, test, guest, network, cache/source/ref change."
+}

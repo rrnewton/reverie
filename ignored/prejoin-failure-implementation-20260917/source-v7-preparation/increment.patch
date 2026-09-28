@@ -1,0 +1,15 @@
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -42,10 +42,10 @@
+ use crate::signal::KERNEL_SIGSET_SIZE;
+ use crate::signal::KernelSigaction;
+ use crate::signal::KernelSigset;
+-#[cfg(test)]
++#[cfg(any(test, feature = "native-test-support"))]
+ use crate::signal::ProcessSignalState;
+ use crate::signal::SS_AUTODISARM;
+-#[cfg(test)]
++#[cfg(any(test, feature = "native-test-support"))]
+ use crate::signal::SharedThreadSignalState;
+ use crate::signal::event_for_process;
+ use crate::signal::event_for_thread;

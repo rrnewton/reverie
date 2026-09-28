@@ -1,0 +1,10 @@
+{
+  "status": "source-v3 applied; pre-execution readback passed",
+  "caller_sha256": "bfe6ee22f917a430a37a787c069eca21a35a735cefd3a84d5524c6911026cd4a",
+  "plan_sha256": "8bd40f80e45b437eca831376fb1e0326935c8cc8735dcff00ae96c48f56c9cad",
+  "all_input_count": 38,
+  "all_sources_count": 2550,
+  "six_candidate_files_modes_match": true,
+  "fresh_roots_absent": true,
+  "native_tests_not_yet_run": true
+}

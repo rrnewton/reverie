@@ -1,0 +1,61 @@
+# Frozen validation retention: independent contract review
+
+**Design direction: a separately named, strict current incomplete-retained classification is defensible; no existing applicable recovery command was found that can delete this checkout honestly.** Keep the clone and all evidence, leave the current verdict unchanged, and do not create removal proof or claim completed scorecard writeback. No proposed patch is yet reviewed or approved. This report authorizes no source change, cleanup, execution, or admission.
+
+## Exact scope and evidence
+
+Read parent `0510ee72b3c94f164b62d6a0d24be912b23b490b`, its actual Hermit tool consumer `98d58b9bd6ea722c6d7087d45d5fd81792abfa16`, and agent-utils `2781b1054efc3a9c561dbed35584a6fca1ed8676`. The bound source copies match their immutable objects. The run records launch-parent `4c8588917b738a4d8bded6498b0aee9551e6b5d6` and target `a88f948021a24c6a1ea808f868516c0691c8819a`; these are different provenance fields, not contradictory names for one source. Ledger separately reports fresh AU main `8720799f` retains the same relevant function bodies; this report's independent source binding remains 2781.
+
+Retained actual run handle: `/home/newton/work/dev-hermit/ignored/validate/runs/validate-kvm-closed-stdin-a88f9480-frozen.json`, SHA256 `fee1158194a7cb4d0b7c6163322d22126ab2fb92271ade05f1b7a2c9ba51b1dc`. Sidecar at the same stem plus `.service-result.json`, SHA256 `bf780df553c03a0245e65da75f600d7b7949864b24ff7b620fe0b6bf47e10fce`. The handle records admitted run 1839, current schema 5, completed/no-result/COULD_NOT_RUN, exit 75, executed_nodes 0, executed_tests/passed_tests/writeback null, materialized_target false, and the explicit tool-root refusal. Zero nodes is a typed producer observation here. It does not follow merely from exit 75 or absent result files, and schema 5 has no general pre-DAG phase field.
+
+The clone is `/home/newton/work/.dev-hermit-frozen-validate/validate-fresh-a88f948021a2-3493122-c93d50f4`. I did not perform a new process census, evaluate an admission command, execute its parser, or claim this clone is now removable. Recovery's retained clean source census is useful input, not a substitute for the full current liveness/identity proof.
+
+## Existing paths examined
+
+1. **Typed destructive recovery remains unavailable.** AU `py/wrkslots/cli.py:45–47,1288–1326` requires exactly run-record, service-result, producer-schema and scorecard-handoff roles, with distinct paths and identities. At :1510–1611 the current record must bind the exact checkout, target, typed admission and canonical unit and declare completed scorecard writeback. At :1903–1958 the handoff must itself declare true completed writeback and bind both `SCORECARD.md` and `ci/compat-envelope/cells.json` by size/digest to the run record and retained files. Existing null writeback is not that evidence.
+2. **Reattach is not a completion route for this missing handoff.** Parent `start_unit.py:5760–5825` handles frozen attachment separately and returns before ordinary scorecard recovery. `publish_recorded_scorecard_handoff` at :5253–5280 returns None for materialized_target=false. Its documented ordinary recovery path requires actual retained results at their producing commit and an actual writer completion; it cannot manufacture an absent frozen writeback. A later truthful writer operation, if one were designed, must remain a new recorded operation rather than retroactively changing what this run completed.
+3. **Existing historical nonblocking retention is inapplicable.** AU :17358–17549 accepts only its exact schema-2/3 historical projection, non-materialized shape, completed historical writeback, authenticated sidecar/schema, pristine checkout facts and repeated liveness/file binding. Schema 5 must not be relabelled historical. Existing legacy source-shape recovery is also not this record.
+4. **Current read-only classification still asks for removal proof.** Both `_cmd_classify_ownerless_validate_batch` and the bounded recovery batch call `_frozen_no_proof_disposition`; its current-schema branch validates the terminal record then returns BLOCKS_ENTRY (:17402–17416). Supplying a proof manifest does not evade missing completed writeback. A current terminal result is not presently a supported proofless nonblocking disposition.
+5. **Recordless/coordinator-note recovery is inapplicable.** `_recordless_validation_evidence` refuses when a retained record names the path (:17553–17576). Frozen recovery additionally requires `--completed-record` (:17889). Generic validation/cargo/slot recovery has different exact managed-path and ownership requirements; changing the label or moving the clone merely to enter another branch would bypass its intended binding. Registered-slot salvage is not a supported substitute for this unregistered frozen record.
+
+These are separate failures from the already-established parent wrong-root propagation. Fixing the caller's state root is necessary but does not supply the absent four-artifact proof.
+
+## Minimum sound preservation design and concrete guard gaps
+
+The proposed new outcome should mean only **the exact current incomplete run and its pristine inactive disposable checkout remain retained and do not block an unrelated admission**. It must remain separate from historical retention, terminal success, removal authorization, and qualifying evidence. Keep the original typed counts, null fields, detail, failed run and raw bytes. Neither COULD_NOT_RUN nor zero nodes alone is an eligibility predicate.
+
+Reuse the existing canonical root/checkout/source/target binding, authenticated parser, current schema projection and process-generation checks. Require a deliberately narrow current non-materialized/no-handoff shape, and refuse incomplete/malformed/mismatched evidence. A current record carrying a recorded handoff or writeback file inventory but losing its removal proof remains outside this new path. The old current-with-proof/lost-proof cases must continue blocking. Do not remove the historical completed-writeback requirement to share a branch.
+
+Concrete helper gap: `_validation_checkout_facts` (:17594 onward) is not the stronger pristine predicate proposed for this exception. It passes configured cache exclusions into `_GitVcs.status`; `_ownerless_validation_blocking_status` also discards ignored entries under approved roots. `_GitVcs.status` (:6825) does not inventory ignored content inside every submodule, and ordinary index/history checks (:6906–6936) are root-only. A parent clean status can therefore fail to reveal authored ignored files or hidden index state inside a nested repository.
+
+Supplement only the new path with an uncached, non-refreshing status scan, plus actual initialized-submodule enumeration and per-repository checks. Existing `_GitVcs.initialized_submodules` (:6886) and `_declared_initialized_submodules` (:13094) supply bounded starting points, not the whole proof. Verify each child belongs at its declared path, has the exact committed parent gitlink HEAD, has no unsafe path substitution, no unfinished Git operation, ordinary history and index state, and no modified/untracked/ignored files. Refuse missing or unreadable required state. Do not let local submodule-ignore configuration or an excluded cache path hide these facts. Keep all current HANDOFF/mount/path/registered-slot safeguards.
+
+Perform the source/index/submodule inventory twice around the final fresh census, comparing the declared repository set and actual identities as well as root HEAD. The existing historical final recheck verifies evidence files and root HEAD; it does not itself repeat a recursive pristine inventory. A first clean scan followed by a changed child/index/file must not become nonblocking.
+
+Liveness must retain the existing shared full-host path/mount census, exact dead process generation, and fresh same-UID census. `_OwnerlessValidationBatchContext.assert_unused` (:22419–22464) binds the private 0700 directory identity back to the shared census and preserves explicit cwd checks; do not replace this with an inactive unit or a missing PID alone. Unreadable or changing evidence remains blocking. The current schema's terminal validator permitting null/failed writeback (:17120 onward) establishes terminal result shape, not deletion authority. It cannot be reused as a shortcut past the other checks.
+
+Parser authority must stay with `_canonical_frozen_validation_record` and its authenticated parent→consumer→AU Gitlink chain (:16612–16899), including sealed separate-state-root verification when applicable. Do not execute Python selected from the retained record or treat `parent_checkout_head` equality as phase proof. Independently bind the exact checkout's producer schema to the current typed sidecar and canonical record projection, with repeated file identity/byte checks. The old launch-parent field stays historical provenance when a newer authenticated consumer reads it.
+
+For the parent correction, propagate the canonical state root and exact completed-record handle through immediate, attach and sweep cleanup callers. Keep tool root, state root and source repository distinct. A source slot's parent is not the canonical state root. Refusal must still leave the clone/evidence unchanged; no fallback `rmtree`, alternate-path reinterpretation, or direct recovery bypass is acceptable.
+
+## Controls needed when the actual patch is prepared
+
+Retain existing `test_current_frozen_result_without_removal_proof_blocks_entry`, `test_direct_current_frozen_recovery_requires_removal_proof`, lost/tampered-journal-proof tests, historical exact-shape tests and uncontained-current removal refusal. Their established cases must not be rewritten into positives.
+
+Add a distinct schema-5/current/non-materialized/null-writeback positive through the actual batch/classification entrypoints: no deletion, no journal/removal event/proof, no record or Git metadata change, original no-result retained, and nonblocking only after all strong checks. Exercise dirty tracked/untracked/ignored root and nested files, mismatched child gitlink, assume-unchanged/skip-worktree, unfinished operations, missing/mutated sidecar/schema/record, false field types, substituted source/root/HEAD, live/unknown process use, and mutation during the final census. Preserve a partial or unreadable execution record as blocking; do not infer its execution phase. The parent caller control must use a source slot whose parent differs from state root, asserting the exact delegated root/record/source paths and refusal preservation.
+
+This is a focused design review, not a request for a new whole-DAG receipt. Existing repository validation still applies when a concrete implementation is eventually authorized.
+
+## Goalpost assessment and verdict
+
+No assertions, tolerances, comparators, labels, gates, runtime results or source files were changed in this review. The proposal intentionally changes one admission disposition, so it needs an explicit separate predicate and a named preservation result rather than pretending the old removal bar was met. With the strong recursive/source/liveness checks above, preserving storage can justify allowing unrelated work without lowering deletion or validation evidence. Without them, it is an unjustified exemption.
+
+GOALPOST-MOVING REVIEW RULE
+Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+Treat each of these as an explicit review target:
+- weakening an assertion so a test passes
+- widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+- renaming or relabelling so a failure reads as a pass
+- deleting a check rather than satisfying it
+
+**Verdict:** conditional support for the separate preservation design; exact patch review remains required. No applicable existing destructive recovery was established. The current run remains a retained no-result, with no test pass or cleanup authority added. `SOURCE-BINDING.json` authenticates the ten inspected source/evidence inputs; no new tests, builds, host census, cleanup or public action occurred.

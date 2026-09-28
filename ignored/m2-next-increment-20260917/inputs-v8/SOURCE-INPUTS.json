@@ -1,0 +1,86 @@
+{
+  "scope": "immutable source readback only; no execution",
+  "files": [
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "hermit-cli/src/bin/verification-report.rs",
+      "git_mode": "100644",
+      "git_blob": "b0634d127587eea381c1d3bade6e6967a023800b",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/hermit-cli/src/bin/verification-report.rs",
+      "bytes": 5310,
+      "sha256": "9eb5082f3363fc223330c5404fe98cdfd7d58079d33aa1e51045df1be4d36d46"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "hermit-cli/src/canonical_verdict.rs",
+      "git_mode": "100644",
+      "git_blob": "b41bf71c993e5a6a07c3fb4fe0e2ccbcf7927eea",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/hermit-cli/src/canonical_verdict.rs",
+      "bytes": 58894,
+      "sha256": "3e952d654e4466e498e77d11fe4c8ee7918ad5d556f318be2e32c45c8fdc65e1"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/qemu-boot/strict_l2_test.sh",
+      "git_mode": "100755",
+      "git_blob": "c53deb6ddeb9b8a33c250210fc680e63e2ac66fc",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/tests/qemu-boot/strict_l2_test.sh",
+      "bytes": 6299,
+      "sha256": "73c078b4a0c3fc5113a5dedb8fc5a2d09ebb633d39a71307f4feb4f55ec4195a"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/qemu-boot/strict_l2_network_test.sh",
+      "git_mode": "100755",
+      "git_blob": "ade573870f20a0b5363c899c8dc76a1cdac999f2",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/tests/qemu-boot/strict_l2_network_test.sh",
+      "bytes": 8809,
+      "sha256": "7a6bf01474529aa8da8e6683e580caf0e8529fe1087462dbe5e1dc95bdee0642"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "scripts/lib/validate_cell_results.rs",
+      "git_mode": "100644",
+      "git_blob": "cbb2a8e9f112729e45e3da9b045b198415f608c7",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/scripts/lib/validate_cell_results.rs",
+      "bytes": 78738,
+      "sha256": "9d75d0bc36fa44faa16e700027b831be6db7631cd2ab721e3ce9e7439cf061d6"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "ci/manifest-plan/src/ledger.rs",
+      "git_mode": "100644",
+      "git_blob": "aa0c72d46cd78c913bf62af5ef7ed5b0bc131af7",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/ci/manifest-plan/src/ledger.rs",
+      "bytes": 109180,
+      "sha256": "1b26e135d55edfe20ea4d07fbad9beb56166c3eeff7c2d6dc118b9e423e8910c"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "ci/manifest-plan/src/runner.rs",
+      "git_mode": "100644",
+      "git_blob": "5ccad5d33352e7badf94f6388625c639256ef3ab",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/ci/manifest-plan/src/runner.rs",
+      "bytes": 385788,
+      "sha256": "97fd3a6095f0fc13c165622864d130e2db6c3422694a4f17fe3c57ad89ad55d5"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "tests/backend-parity/run_matrix.py",
+      "git_mode": "100755",
+      "git_blob": "06e87de2267ef2376d235312dc6d0441273234a9",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/tests/backend-parity/run_matrix.py",
+      "bytes": 84430,
+      "sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024"
+    },
+    {
+      "source_commit": "8051335e87104f7cf832204f74920d38416393b2",
+      "source_path": "demos/05-qemu-busybox.sh",
+      "git_mode": "100755",
+      "git_blob": "afec7a395706824934e41125c0053019a1b6531a",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v8/demos/05-qemu-busybox.sh",
+      "bytes": 10473,
+      "sha256": "d9a17e9d9db35f81cce117d3b96c15f891e1abbbeb28849d7e69861bce2da48b"
+    }
+  ]
+}

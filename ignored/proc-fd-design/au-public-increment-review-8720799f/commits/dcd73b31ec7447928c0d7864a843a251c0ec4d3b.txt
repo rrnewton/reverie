@@ -1,0 +1,14 @@
+tree afa0f2c574dcc792638b3121660b5be225b3d407
+parent 522d4c3c7a6df8dace152926c8457a9a84354a52
+author Ryan Newton <rrnewton@gmail.com> 1789595168 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789599082 -0700
+predecessor 49a6ae6148dfb469357531c9dba63ed78cf47a72
+predecessor-op rebase
+
+herdr-run: submit native agent prompts and preserve explicit permission choices
+
+[gpt-6-astra] Use Herdr agent prompt for interactive harness delivery so bracketed paste and encoded Enter are handled correctly. Keep shell execution on pane run and preserve durable delivery uncertainty when lifecycle acknowledgement is unavailable.
+
+New foreign Codex workers inherit native permissions unless explicitly configured otherwise; persist that choice across turns and migration while retaining legacy record behavior. Document Python companion installation and the observed Claude detector limitation.
+
+Validated native Codex goal replacement and Claude prompt execution, focused Python and Rust suites, differential parity, strict typing, and packaged documentation checks.

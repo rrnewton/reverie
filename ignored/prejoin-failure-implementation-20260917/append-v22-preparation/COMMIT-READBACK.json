@@ -1,0 +1,22 @@
+{
+  "head": "9dfffd7ef114c10ede7e092107a36a6da2fb3df0",
+  "tree": "39f689fab20f8672e07134e3553ba8c5ee09b798",
+  "parent": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "all_source_entries_equal": 2586,
+  "changed_paths": [
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/runtime/failure_tests.rs",
+    "reverie-kvm/src/runtime/native_test_support.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie/src/tool.rs"
+  ],
+  "source_binding_sha256": "e8f8b012bb8a570b853f6390d5ad0400eace79233b761e4c284075cd4cb8cea7",
+  "expected_tree_sha256": "7617531976de8d7cc97eeddcbdb3fae98fcfa80d3893490d771fec1d5443f718",
+  "message_sha256": "49f9cea9502d0e78fb2f0c34980646f27278ca230bb9bb7ac5ad605b70192308",
+  "tracked_clean": true,
+  "public_push": false
+}

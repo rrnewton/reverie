@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/hermit/git/ref/heads/main"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-09-17T07:36:56.863836+00:00",
+  "wall_seconds": 0.3654487729072571
+}

@@ -1,0 +1,35 @@
+{
+  "original_observations": [
+    {
+      "name": "liblto_plugin.so",
+      "required": false,
+      "state": "GCC print-file-name returned unresolved name",
+      "query": "cc-file-liblto_plugin.so"
+    },
+    {
+      "name": "libpthread.so",
+      "required": false,
+      "state": "GCC print-file-name returned unresolved name",
+      "query": "cc-file-libpthread.so"
+    },
+    {
+      "name": "specs",
+      "required": false,
+      "state": "GCC print-file-name returned unresolved name",
+      "query": "cc-file-specs"
+    },
+    {
+      "path": "/etc/ld.so.preload",
+      "role": "dynamic loader configuration",
+      "required": false,
+      "state": "absent"
+    }
+  ],
+  "dispositions": {
+    "liblto_plugin.so": "The bare-name GCC query was unresolved, but all five dry runs name the existing bound absolute plugin; this required input is available.",
+    "libpthread.so": "The optional .so name is unresolved. The -pthread dry run uses -lpthread; the existing default-search libpthread.a is bound, as is integrated libc.",
+    "specs": "No external specs file was found. GCC reports built-in specs; the complete -dumpspecs output is retained.",
+    "/etc/ld.so.preload": "Absent; preserve absence during admission instead of treating this as a required file."
+  },
+  "required_unavailable": []
+}

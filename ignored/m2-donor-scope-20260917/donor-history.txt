@@ -1,0 +1,302 @@
+commit d16a0f1c12626ac7991a354b9597b135633ea25c
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Aug 16 20:55:44 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Aug 16 20:55:44 2026 -0700
+
+    [hermit2, sanity-driver, unresolved, devbig014, role=impl] Delay child-exit signal until vfork parent continues
+    
+    Plain Language Summary and Project Impact
+    
+    Keep a deterministic child-exit SIGCHLD queued while the exited child is still named by an active vfork barrier. The existing barrier is removed only after the kernel-blocked parent posts BlockedExternalContinue, so the scheduler cannot admit a parent that has not physically returned from vfork.
+    
+    This fixes the intermittent c-programs/dbt-pid-virtualization ptrace verification stall without changing verification flags, comparison, INFO scope, timeout criteria, or scorecard state.
+    
+    Task: sanity-driver-commit-hermit-then-drive-m2
+    
+    Determinism:
+    - the ChildExit event retains its original logical deadline while the vfork parent remains blocked
+    - the process exit-hook marker is not consumed until both required lifecycle observations exist
+    - no guest turn or virtual-time advance occurs while the existing vfork barrier is active
+    - canonical INFO comparison remains unchanged
+    
+    Linux Semantics:
+    - the vfork parent remains suspended until the child exits or execs
+    - the child still exits through the kernel and produces the kernel wait status
+    - explicit parent continuation, not host callback timing, permits SIGCHLD admission
+    
+    Human Review Required:
+    Core DetCore vfork and child-signal scheduling changed. Review the interaction between step2a barrier removal, timed ChildExit delivery, ptrace parent resumption, and deferred-spawn backends.
+    
+    Validation:
+    - cargo fmt --all -- --check
+    - git diff --cached --check
+    - cargo test -p hermit-detcore --lib (421 passed)
+    - CARGO_INCREMENTAL=0 cargo test -p hermit --test cli run_ptrace_verify_completes_vfork_lifecycle -- --nocapture --test-threads=1 (1 test; 5 canonical iterations passed)
+    - direct release canonical verification: 5/5 matched, each 623/623 INFO
+    - CARGO_INCREMENTAL=0 cargo test -p hermit --test signal_determinism -- --nocapture --test-threads=1 (14 passed)
+    - CARGO_INCREMENTAL=0 cargo test -p hermit --test chaos_sched_yield_progress strict_vfork_child_sched_yield_is_deterministic -- --nocapture --test-threads=1 (passed)
+    - cargo clippy -p hermit-detcore --all-targets -- -D warnings
+    - cargo clippy -p hermit --test cli -- -D warnings
+    - cargo build --release --locked -p hermit --bin hermit
+    
+    Pre-fix exact-base evidence at 8fbad3d2 was intermittent: 2/3 canonical attempts timed out after the non-exec vfork child exit; 1/3 matched 623/623 INFO. The existing DBT identity test was not a product verdict in the default build because DBT support was not compiled.
+
+commit 8fbad3d24c05b0d2948a603598842ccba788c486
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Aug 16 20:39:24 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Aug 16 20:39:24 2026 -0700
+
+    [hermit2, sanity-driver, unresolved, devbig014, role=impl] Gate child-exit signal on final process state
+    
+    Plain Language Summary and Project Impact
+    
+    Delay the deterministic child-exit SIGCHLD until the process leader exit hook has published the child process final state. A parent waiting for a specific child then performs one scheduler-authorized blocking wait4 after logical exit, instead of exposing the host-timed exit-hook-to-waitable gap as a variable number of InternalIOPolling turns.
+    
+    This fixes backend-parity-c/signal-waitstatus-identity without changing verification flags, log selection, comparison, tolerances, or pass criteria.
+    
+    Task: sanity-driver-commit-hermit-then-drive-m2
+    
+    Determinism:
+    - the ChildExit event remains queued until the accepted process-leader exit hook reports
+    - no guest turn or virtual-time advance occurs while that final state is unpublished
+    - the original blocking wait4 bridges only physical teardown after logical child exit
+    - canonical INFO comparison remains unchanged
+    
+    Linux Semantics:
+    - explicit WNOHANG calls remain one-shot and nonblocking
+    - blocking wait4 still returns the kernel-produced child pid and wait status
+    - the final child CPU snapshot is published before SIGCHLD wakes the parent
+    
+    Human Review Required:
+    Core DetCore scheduling and child lifecycle behavior changed. Review the leader-exit publication gate, the blocking wait4 bridge, and behavior on every backend that reports thread exit hooks.
+    
+    Validation:
+    - cargo fmt --all -- --check
+    - git diff --cached --check
+    - cargo test -p hermit-detcore --lib (421 passed)
+    - CARGO_INCREMENTAL=0 cargo test -p hermit --test signal_determinism signal_waitstatus_identity_is_strictly_deterministic -- --nocapture --test-threads=1 (1 test; 5 strict canonical iterations passed)
+    - CARGO_INCREMENTAL=0 cargo test -p hermit --test signal_determinism -- --nocapture --test-threads=1 (14 passed)
+    - cargo clippy -p hermit-detcore --all-targets -- -D warnings
+    - cargo clippy -p hermit --test signal_determinism -- -D warnings
+    - cargo build --release --locked -p hermit --bin hermit
+    - direct release canonical verification: 5/5 matched, each 330/330 INFO
+    
+    Pre-fix exact-base evidence at 90941027: 3/3 canonical runs diverged (423/327, 330/327, and 427/591 INFO). Two initial incremental test builds were blocked by host BPF FILE_OPEN policy; disabling Rust incremental compilation completed the tracked tests.
+
+commit 9094102711fba1285e70253cdc7d5a104ffcf4f8
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Aug 16 12:04:19 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Aug 16 12:04:19 2026 -0700
+
+    [hermit2, sanity-driver, unresolved, devbig014, role=impl] Record M2 sanity-driver handoff
+    
+    Plain Language Summary and Project Impact
+    
+    Preserve the exact M2 dependency chain, unresolved evidence, unlanded-ref decisions, and KVM recovery hazards so another owner-authorized agent can resume without treating unlanded work as complete.
+    
+    Task: sanity-driver-commit-hermit-then-drive-m2
+    
+    Validation: documentation-only; staged path and numstat inspected, git diff --cached --check passed, and an independent read-only review found no remaining required-item omissions.
+
+commit 39829148def0dd3278e607e33c9885e248a605a6
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Aug 16 11:24:35 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Aug 16 11:24:35 2026 -0700
+
+    [hermit2, sanity-driver, unresolved, devbig014, role=impl] Reuse checked scorecard across pressure plans
+    
+    Plain Language Summary and Project Impact
+    
+    Keep the pressure-test self-test inside one checked scorecard boundary after adding the explicit --jobs plan case. The new plan previously called the public entrypoint and forced a second scorecard compilation, causing the full manifest gate to refuse the branch. The self-test now reuses the existing checked scorecard for all eight plans while preserving the four-compilation ceiling.
+    
+    Also remove the stale assumption that replay mode contains exactly one enabled green cell. Mode-filtered results must use batch wording for any population, while the separate --sample 1 bracket still proves that a one-cell partial selection is not described as an exact flaky cell.
+    
+    Task: sanity-driver-commit-hermit-then-drive-m2
+    
+    Validation:
+    - ./ci/compat-envelope/pressure-test.rs self-test (passed)
+    - cargo fmt --all -- --check
+    - bash -n ci/test_harness.sh
+    - git diff --check
+    - static bracket: 0 public write_plan calls and 8 write_plan_after_scorecard_check calls in self_test
+    
+    ./ci/test_harness.sh audit-ci remained a host-policy no-result: BPF denied its forced fresh checker before the target assertion. The canonical full-profile rerun supplies the admitted environment.
+
+commit a9056179d042811df01e642ffe73a499aded1e54
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Aug 16 11:11:48 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Aug 16 11:11:48 2026 -0700
+
+    [hermit2, sanity-driver, unresolved, devbig014, role=impl] Classify rescued record/replay fixtures
+    
+    Plain Language Summary and Project Impact
+    
+    Give the three rescued record/replay C fixtures explicit owners in the fail-closed test inventory. Full validation previously stopped at gate.manifest because the files existed without any disposition; they are now classified as guest fixtures owned by hermit-cli/tests/record_replay.rs, which compiles them and supplies the setup and canonical record/replay assertions that the generic C manifest cannot express.
+    
+    Task: sanity-driver-commit-hermit-then-drive-m2
+    
+    Validation:
+    - jq empty tests/e2e/manifests/inventory/test-files.json
+    - ./ci/test_harness.sh audit-inventory (552 files classified)
+    - git diff --check
+    
+    The broader ./ci/test_harness.sh validate wrapper was a local no-result because safe-ci-dag-runner was absent before any DAG node started. The canonical full-profile rerun will exercise this gate through its admitted environment.
+
+commit 3f71ddc2924888e4a97aa6be97e584f4d3c52efa
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Aug 16 10:59:31 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Aug 16 10:59:31 2026 -0700
+
+    [hermit2, sanity-driver, unresolved, devbig014, role=impl] Order SIGKILL completion before waitpid
+    
+    Plain Language Summary and Project Impact
+    
+    After a successful process-directed SIGKILL, keep the killing thread inside Hermit until the scheduler has removed the target, then publish the existing process-removal diagnostic through the scheduler before returning to the guest. Publish inbound-signal INFO after the scheduler grants delivery. This prevents host callback timing from changing whether waitpid observes SIGCHLD before the kill call returns, and it preserves strict INFO ordering without weakening comparison.
+    
+    The signal determinism fixture now covers fork, SIGKILL, and waitpid with five canonical ptrace strict-verification iterations.
+    
+    Task: sanity-driver-commit-hermit-then-drive-m2
+    
+    Determinism:
+    - the real SIGKILL is still forwarded to the kernel
+    - the guest cannot race ahead of scheduler removal after a successful kill
+    - lifecycle and inbound-signal INFO publication occurs at scheduler-controlled points
+    
+    Linux Semantics:
+    - unsuccessful kill results return without waiting
+    - waitpid observes the kernel-produced SIGKILL status
+    - no synthetic SIGCHLD is added for this path
+    
+    Human Review Required:
+    Core DetCore scheduling and signal-lifecycle behavior changed. Review the post-SIGKILL scheduler barrier and the placement of lifecycle INFO events.
+    
+    Validation:
+    - cargo fmt --all -- --check
+    - git diff --check
+    - env CARGO_BUILD_JOBS=1 cargo test -p hermit-detcore --lib (420 passed)
+    - timeout --kill-after=10s 120s env CARGO_BUILD_JOBS=1 cargo test -p hermit --test signal_determinism -- --nocapture --test-threads=1 (13 passed)
+    - timeout --kill-after=10s 90s env CARGO_BUILD_JOBS=1 cargo test -p hermit --test record_replay record_rs_sched_yield -- --nocapture --test-threads=1 (1 passed)
+    - env CARGO_BUILD_JOBS=1 cargo clippy -p hermit-detcore -p hermit --all-targets -- -D warnings
+    - fork/kill/waitpid bounded strict verify: 11/11 passed before adding the durable five-iteration regression
+    - Node wait4 direct ptrace L2: 2/2 passed on the final implementation
+
+commit 60fbfd612b57b615f152f071a6bbcac09064185e
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Aug 16 10:33:56 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Aug 16 10:33:56 2026 -0700
+
+    [hermit2, sanity-driver, unresolved, devbig014, role=impl] Stabilize terminal scheduler INFO emission
+    
+    Plain Language Summary and Project Impact
+    
+    Emit the existing empty-scheduler INFO diagnostic only when the scheduler has reached its terminal state. Record and replay previously emitted a host-loop-dependent number of copies after identical turns and syscalls; the message is now retained exactly once, restoring canonical INFO parity without weakening comparison.
+    
+    Task: sanity-driver-commit-hermit-then-drive-m2
+    
+    Validation:
+    - env CARGO_BUILD_JOBS=1 cargo test -p hermit-detcore --lib (420 passed)
+    - five bounded rustbin_sched_yield record/replay verifies (5/5 passed; each 188/188 INFO and 173/173 DETLOG plus COMMIT)
+
+commit 79cc84087904bf7069cef9c585a2eac041341d40
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sun Aug 16 09:54:03 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sun Aug 16 09:54:03 2026 -0700
+
+    [hermit2, sanity-driver, unresolved, devbig014, role=impl] Preserve inherited M2 implementation for reconstruction
+    
+    Plain Language Summary and Project Impact
+    
+    Makes the previously uncommitted M2 replay, canonical verification, and DBT consumer work durable before it is reconstructed as the reviewed small commits from a clean origin/main base. This is a rescue snapshot of the inherited implementation, not a landing-ready change and not evidence that M2 is complete.
+    
+    Task: sanity-driver-commit-hermit-then-drive-m2
+    
+    Validation
+    
+    No new tests were run for this durability-only rescue. The inherited handoff records the exact dirty-tree validation receipts and known remaining failures. HANDOFF.md deletion, generated artifacts, Cargo.lock, and the separately dirty Reverie checkout are deliberately excluded.
+
+commit d601651a3a0f4865b72af50a9c5967eaf60c351a
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sat Aug 15 01:21:39 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sat Aug 15 22:32:02 2026 -0700
+
+    [hermit2, codex-overhaul-ultra, unresolved, devbig014, role=impl] Make canonical verification the only verification policy
+    
+    Plain Language Summary and Project Impact
+    
+    Hermit previously kept a lossy verification comparator beside its canonical INFO comparison, allowing tests and documentation to report determinism after numeric values, paths, virtual time, and syscall details had been erased. This change deletes that behavior and makes canonical, non-vacuous verification the only verification policy for run, record/replay, chaos, validation, generated commands, and log comparison. It also makes DBT verification fail closed instead of retaining an untrustworthy fallback while the protected Reverie evidence descriptor remains outstanding. This advances the owner-requested Medium Sanity milestone without tuning away the expected compatibility-score drop.
+    
+    Task: round-2-medium-sanity-strict-verify-default-delete-the-old-behavior
+    
+    Determinism
+    
+    Bare verification now compares canonical INFO evidence, preserving payload whitespace, virtual time, syscall values, counts, flags, and other numeric data while removing only the anchored real wall-clock prefix and canonicalizing host addresses by first appearance. Missing, empty, malformed, output-only, contradictory, or weaker evidence refuses. Replay and chaos retain their behavioral contracts, including allowed deterministic nonzero guest status, but validate the typed receipt before returning that status. The separate strict_compat corpus remains unchanged.
+    
+    Validation
+    
+    Focused checks cover canonical parser discrimination, removed CLI flags, verifier and log-diff units, replay/chaos receipt enforcement, executable generated-command brackets, manifest validation, validation self-tests, non-DBT thread identity, backend-parity contradiction refusal, and DBT fail-closed behavior. Independent adversarial review approved this candidate with DBT protected evidence explicitly outstanding. No compatibility score or full exact-SHA validation is claimed by this commit.
+    
+    Outstanding M2 work
+    
+    The pinned Reverie revision does not expose a descriptor protected from guest enumeration, duplication, writes, truncation, close, or proc-fd aliases in both full and copied-child DBT paths. Direct DBT verification therefore writes no_result and refuses before guest execution. M2 remains incomplete until the reviewed Reverie native-client change lands and Hermit deliberately advances both Reverie pins, after which the combined score must be measured and validated.
+
+commit 8190d0b52adb299220d9a1bcf27392ebadbba6ed
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Sat Aug 15 22:14:20 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sat Aug 15 22:31:48 2026 -0700
+
+    Document sanity milestones for direct implementation
+
+commit 81a603d30e252c17e6d05ed03dae59517d2e7b68
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Fri Aug 14 20:54:48 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sat Aug 15 22:31:48 2026 -0700
+
+    [hermit2, codex-overhaul-ultra, unresolved, devbig014, role=impl] Run pressure checks from the authorized checkout
+    
+    Plain Language Summary and Project Impact
+    
+    BPFJailer permits compilation in the primary Hermit checkout but refuses compiler access inside pressure-test generated nested clones. Clean batch and repeated pressure runs now execute from the already-clean committed checkout, bind every result to its exact HEAD, and refuse evidence if HEAD or tracked source changes before, during, or after execution. Dirty exact-cell iteration remains exploratory and unchanged.
+    
+    Task: resume-basic-sanity-m1-overhaul-with-bounded-slots
+    
+    Tests:
+    - rustfmt --edition 2021 --check ci/compat-envelope/pressure-test.rs
+    - git diff --check
+    - ./ci/compat-envelope/pressure-test.rs self-test
+    
+    Limitations:
+    - Both this commit and its parent 0ac2216f remain local and unpushed pending the owner decision on primary-main publication.
+
+commit 2c0774caf11bcf2cdc2ce48ec93832144cee69f7
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Fri Aug 14 20:38:47 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Sat Aug 15 22:31:47 2026 -0700
+
+    [hermit2, codex-overhaul-ultra, unresolved, devbig014, role=impl] Use the machine for compatibility pressure runs
+    
+    Plain Language Summary and Project Impact
+    
+    Compatibility pressure runs were limited to four cells at a time, repeated manifest planning through Cargo for every cell, serialized otherwise-independent fixture preparation, lost scheduler utilization evidence, and failed when boxed native builds used host /tmp. This change gives each run one read-only manifest snapshot, prepares isolated fixtures concurrently, couples explicit scheduler width to manifest-guest capacity, refuses widths whose declared memory caps exceed the observed outer bound, keeps build temporaries under the generated checkout, and retains per-step CPU and memory measurements. It lets Basic Sanity exercise the selected compatibility cells across the available machine without weakening any product assertion or comparator.
+    
+    Task: resume-basic-sanity-m1-overhaul-with-bounded-slots
+    
+    Tests:
+    - bash -n ci/test_harness.sh
+    - git diff --check
+    - ./ci/compat-envelope/pressure-test.rs self-test
+    - cached-manifest front door: valid read-only data bypasses Cargo; empty, malformed, writable, and symlink inputs refuse
+    
+    Limitations:
+    - The fixed width remains bounded by declared per-node memory caps; it does not dynamically increase after the five privileged repetitions or the LiteInst build finish.

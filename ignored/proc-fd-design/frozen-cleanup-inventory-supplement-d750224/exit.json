@@ -1,0 +1,62 @@
+{
+  "command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "900s",
+    "with-proxy",
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "Read,Grep,Glob",
+    "--strict-mcp-config"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils",
+  "base": "1145835fc804f47ae48b29b89009e6937184175a",
+  "head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "repositories": {
+    "parent": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "base": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "head": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+      "tree": "f127f6563d771eb172980af74e398fed8b6e0edd",
+      "changed": [
+        "ci-hub/validate/start_unit.py",
+        "ci-hub/validate/tests/test_start_unit.py"
+      ],
+      "patch_sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12"
+    },
+    "agent-utils": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "base": "1145835fc804f47ae48b29b89009e6937184175a",
+      "head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+      "changed": [
+        "py/tests/test_packaging_infrastructure.py"
+      ],
+      "patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0"
+    }
+  },
+  "input_binding_sha256": "201bfb00df11bca79a93237a36396cb084c63d9f98673cb7d0f8b6d46598cb96",
+  "source_patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0",
+  "started_at": "2026-09-17T08:54:48.881267+00:00",
+  "wall_seconds": 900,
+  "kill_after_seconds": 10,
+  "per_output_file_bytes": 67108864,
+  "prompt_sha256": "988a96ec3399254177304d40be612bcaf007f63b36c08010bf058f2759f6ed29",
+  "exit_code": 0,
+  "elapsed_seconds": 353.3023191320244,
+  "finished_at": "2026-09-17T09:00:42.183863+00:00",
+  "source_unchanged": true
+}

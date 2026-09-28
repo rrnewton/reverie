@@ -1,0 +1,381 @@
+PUBLIC ASSISTANT TEXT (not a verdict)
+I'll start by reading the review guide, evidence, and policy documents.
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01WwaZNTmsSGoHgUyvFyYh4U",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/.llms/skills/code-review/SKILL.md"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1	---
+2	name: code-review
+3	description: "Review code changes adversarially for correctness and evidence, with an explicit check that tests, assertions, tolerances, comparators, labels, and gates were not weakened to make the change appear successful. Use whenever reviewing a diff, commit, pull request, test change, validation change, or dispatching an adversarial code review."
+4	---
+5	
+6	# Code review
+7	
+8	## Purpose
+9	
+10	Try to refute the change's correctness claims. Inspect the implementation, its
+11	tests, and the evidence together. A passing suite is not sufficient when the
+12	change also weakens what the suite requires.
+13	
+14	This skill owns the substance of adversarial code review. Separate skills may
+15	set reviewer counts, exact-head attestation, validation authority, and landing
+16	policy.
+17	
+18	## Establish the review target
+19	
+20	Before reviewing, identify the repository, base revision, exact head revision,
+21	and intended behavior. Review the complete diff and the relevant surrounding
+22	code and tests. Bind the verdict to the exact head; a changed head requires a
+23	fresh review.
+24	
+25	## Mandatory goalpost-moving check
+26	
+27	The coordinator applies this check before dispatching an adversarial review and
+28	includes this complete block in every adversarial-review prompt, not a pointer
+29	to it:
+30	
+31	> GOALPOST-MOVING REVIEW RULE
+32	>
+33	> Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+34	>
+35	> Treat each of these as an explicit review target:
+36	> - weakening an assertion so a test passes
+37	> - widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+38	> - renaming or relabelling so a failure reads as a pass
+39	> - deleting a check rather than satisfying it
+40	
+41	Compare every changed test, threshold, allowlist, skip, label, classification,
+42	and gate with the base revision. Determine whether the implementation now meets
+43	the original requirement or whether the requirement was changed to admit the
+44	implementation. Call out either result explicitly, including when no lowering
+45	of the bar is present.
+46	
+47	## Review method
+48	
+49	1. Trace the changed behavior through the real execution path. Do not infer
+50	   behavior from names, configuration, or successful exit status alone.
+51	2. Check the claimed evidence against the exact behavior it is supposed to
+52	   prove. Identify missing identity, causation, coverage, or provenance links.
+53	3. Inspect production and test changes together. Require a qualifying case to
+54	   pass and a violating case to be refused when the change introduces or alters
+55	   a guard.
+56	4. Report concrete findings with file and line evidence, impact, and the change
+57	   required to resolve them. Do not substitute a vague procedural objection for
+58	   a technical finding.
+59	5. State a verdict only after resolving the goalpost-moving check and the
+60	   correctness findings against the exact reviewed head.
+61	
+62	## Report structure
+63	
+64	```text
+65	Review target: <repository> <base>..<exact head>
+66	
+67	Findings:
+68	- <severity>: <file:line> — <problem, impact, and required change>
+69	
+70	Goalpost-moving assessment:
+71	- Assertions weakened: yes/no — <evidence>
+72	- Tolerance widened, exemption added, case skipped, or comparator relaxed: yes/no — <evidence>
+73	- Failure renamed or relabelled as a pass: yes/no — <evidence>
+74	- Check deleted instead of satisfied: yes/no — <evidence>
+75	
+76	Verification: <commands or evidence inspected, with limitations>
+77	Verdict: approve / changes requested
+78	```
+79	
+80	Put findings first. If there are no findings, say so explicitly and still
+81	include the goalpost-moving assessment, residual risks, and verification limits.
+82	
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01MEy7xnaEELFyGvNzDcBpVF",
+  "name": "Glob",
+  "input": {
+    "pattern": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/*"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/preparation-refusal.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/prepare-inputs-v1-refused.py
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/prepare-inputs.py
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/complete-hermit.patch
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/complete-hermit-full-index.patch
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/complete-hermit.stat
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/hermit-commits.txt
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/hermit-tree.txt
+Cargo.lock
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/Cargo.lock
+ci/configure-build-jobs.sh
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/ci/configure-build-jobs.sh
+ci/dag/validate.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/ci/dag/validate.json
+ci/manifest-plan/src/validation_dag_static.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/ci/manifest-plan/src/validation_dag_static.rs
+ci/run-with-reverie-dbt-budget.sh
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/ci/run-with-reverie-dbt-budget.sh
+detcore-dbt/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore-dbt/Cargo.toml
+detcore-model/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore-model/Cargo.toml
+detcore-sabre/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore-sabre/Cargo.toml
+detcore/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore/Cargo.toml
+detcore/src/syscalls.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore/src/syscalls.rs
+detcore/src/syscalls/files.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore/src/syscalls/files.rs
+detcore/src/syscalls/namespace.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore/src/syscalls/namespace.rs
+detcore/src/tool_local.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore/src/tool_local.rs
+detcore/tests/testutils/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/detcore/tests/testutils/Cargo.toml
+hermit-cli/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/hermit-cli/Cargo.toml
+hermit-cli/src/lib.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/hermit-cli/src/lib.rs
+hermit-cli/tests/cli.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/hermit-cli/tests/cli.rs
+hermit-install/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/hermit-install/Cargo.toml
+liteinst-runtime-build/Cargo.lock
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/liteinst-runtime-build/Cargo.lock
+liteinst-runtime-build/runtime/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/base/hermit/liteinst-runtime-build/runtime/Cargo.toml
+tests/c/fixtures/stdio_inode_identity.c
+AGENTS.md
+Cargo.toml
+detcore/src/config.rs
+detcore/src/fd.rs
+detcore/src/lib.rs
+detcore/src/procfs.rs
+detcore/src/record_or_replay.rs
+detcore/src/resources.rs
+detcore/src/stat.rs
+detcore/src/tool_global.rs
+detcore-model/src/config.rs
+detcore-model/src/fd.rs
+detcore-model/src/procfs.rs
+hermit-cli/src/bin/hermit/container.rs
+hermit-cli/src/bin/hermit/run.rs
+hermit-cli/src/fd.rs
+scripts/check-reverie-pin.rs
+ci/manifest-plan/src/validation_dag.rs
+ci/publish-hermit-e2e-artifact.sh
+rust-toolchain.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/Cargo.toml
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/elf.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/executor.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/fdinfo.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/lib.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/memory.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/runtime.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/vm.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie/src/guest.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie/src/lib.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie/src/tool.rs
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/landed-reverie.commit
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/landed-reverie-component.patch
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/policy/AGENTS.md
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/policy/.skills/code-review/SKILL.md
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/policy/.skills/deterministic-scheduling-review/SKILL.md
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/FINAL-SOURCE-AND-CALLERS.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/DAG-COMPARISON.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/MOUNT-APPLICATION-READBACK.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/PLAN.md
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-18-generate-dag.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-18-generate-dag.log
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-18-generate-dag-stderr.log
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-18-scope-readback.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-19-dag-check-readback.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-19-dag-check.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-19-dag-check.log
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-19-dag-check-stderr.log
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-01-config-readback.json
+(Showing 100 of 179 matching files; 79 more are not listed. Narrow the pattern or path to see the rest.)
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01LnarYiQUisDLSo5mq1eo97",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/REVIEW-GUIDE.md"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1	This package reviews Hermit 35af18f34a3238117eecac8b439ac20e13316715..aa7ea4827b8328345e715d76518d7f2205e41110 for https://github.com/rrnewton/hermit/pull/3047. The source is an immutable copy of Git objects, not a worktree or execution target. source/hermit is the proposed review cwd; all paths below are package-relative. No external reviewer has been launched from this package.
+2	
+3	Start with complete-hermit.patch (all 21 paths, 67,078 bytes), complete-hermit.stat, EVIDENCE.md and policy/.skills/code-review/SKILL.md. source/hermit/AGENTS.md and policy/AGENTS.md retain applicable instructions. The complete full-index version has identical change content but a different byte hash, preserved separately. snapshot-manifest.json maps copies to exact original Git blobs/revisions or retained evidence paths and hashes.
+4	
+5	The core descriptor repair is in source/hermit/detcore/src/syscalls.rs, syscalls/files.rs, syscalls/namespace.rs and tool_local.rs. Full fd.rs, resources.rs, stat.rs, tool_global.rs, procfs.rs, record_or_replay.rs, lib.rs and detcore-model equivalents provide the real resource, file-description, snapshot and identity-pool callers. Matching base files are under base/hermit for every pre-existing changed path. The C fixture is newly added at tests/c/fixtures/stdio_inode_identity.c; its bytes match the prior reviewed v5 fixture. Read the full run_kvm_preserves_closed_standard_input method and hermit_command helper in hermit-cli/tests/cli.rs to preserve the original cat assertion and actual dispatch route.
+6	
+7	The mount integration is in source/hermit/hermit-cli/src/lib.rs. Trace the completed-container capture through hermit-cli/src/bin/hermit/run.rs and container.rs, then the shared procfs and MountIdPool consumers. Landed linked backend source is under source/reverie: elf.rs/proc_mounts.rs capture, executor.rs/fdinfo.rs expose owned objects, runtime.rs and reverie/src/{guest,tool,lib}.rs connect the Tool. All six changed backend files are present, plus unchanged vm.rs for the actual full-library failure context. Its independent component reviews do not replace this Hermit integration review.
+8	
+9	All ten dependency manifest/lockfile changes and both CI budget scripts are present in full. scripts/check-reverie-pin.rs is included for the maintained pin contract. The generated ci/dag/validate.json is large; the complete patch identifies the two changed expected-count fields. ci/manifest-plan/src/validation_dag_static.rs and validation_dag.rs provide the count/graph definitions. No selection or budget change is intended.
+10	
+11	The most relevant retained reports are evidence/historical-hermit/CLOSED-STDIN-FDINFO-ROUTE-7628.md, its mount-provenance companion, the corrected v5 result, the separate v4 result, and evidence/reverie/reviews/REVIEW.md (the existing Detcore target/rewind boundary). The latter describes old source boundaries; verify the exact current callers rather than blindly carrying line numbers forward. external-review-readback/REPORT.md traces shared Tool normalization. evidence/reverie/reviews/external-original-CHANGES-REQUESTED.md and external-continuation-APPROVE.md retain the actual review chronology.
+12	
+13	Review the complete source change and affected callers. Not every long raw report must be read serially if it is irrelevant to a finding; all completed/pending evidence is indexed in EVIDENCE.md. Do not treat all copied context files as changed, count native methods as Hermit guest measurements, or infer an exact-head passing result from a plan. Return the complete final review through stdout using only Read/Grep/Glob.
+14	
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01KenLiH9yL4nKieACtgXFmY",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/EVIDENCE.md"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1	The target is aa7ea4827b8328345e715d76518d7f2205e41110, tree 40d69bea9282cbcbf161a2736bcb39108a1d53db. This evidence index separates actual measurements by source and execution scope. All listed files are copied and hashed in snapshot-manifest.json; the original files and all historical failures remain untouched.
+2	
+3	| Actual evidence | Source and result | Retained files |
+4	| --- | --- | --- |
+5	| Reverie selected native controls | Source 696f0476, exact six files landed as 596b9ade; 37 pass, zero fail/ignored. Native 1.016615 wall / 0.228809 CPU seconds. | evidence/reverie/cargo-v3/execution-readback.json and raw/native37/cargo-v3/{compile,list,native} |
+6	| Reverie Clippy | Same source, cargo clippy --locked --offline -p reverie-kvm --lib --tests -- -D warnings; pass, 22.047195 wall / 40.807860 CPU seconds. | evidence/reverie/cargo-v3/clippy/execution-readback.json and raw/clippy/cargo-v3/clippy |
+7	| Reverie complete normal native library | Same b899a2ee executable, 427 named terminal outcomes: 426 pass, 1 fail, zero ignored/measured/filtered. Payload 101; 21.283924 wall / 8.260615 CPU seconds. Earlier 37 all pass again. No outer bound, observer, truncation or cleanup error. | evidence/reverie/native-full-v1/{RESULTS.md,execution-readback.json}, raw/native427/native-full-v1/native/{result.json,stdout,stderr,before-exec.json}, evidence/pin-and-main-audit/{FULL-LIBRARY-RESULT.md,full-library-readback.json,full-library-failure.txt} |
+8	| Full-library failure scope | vm::tests::fatal_worker_ro_delayed_waiter_qualifies: reverse waiter requeue expected 1, observed 0 with ETIMEDOUT before the fatal worker starts. vm.rs unchanged from the old component base. No base runtime comparison or established environmental/candidate cause. | source/reverie/reverie-kvm/src/vm.rs and the raw failure above |
+9	| Maintained Hermit stage02 pin compile | df8 plus the twelve pin/carry paths, before mount integration: actual cargo check --locked --workspace --all-targets passed. 50.449443 wall / 98.527255 CPU seconds. First-stage calibration refusal retained. | evidence/pin-and-main-audit/{REPORT.md,stage02-readback.json} |
+10	| Mount generation and commit | Generation after mount patch passed, 73.781 wall / 124.915 CPU seconds. Normal commit initially refused a newly below-tip pin, then explicitly acknowledged the already-landed forward ancestor 596; normal commit passed, 5.454470 wall. No source/pin silently changed. | evidence/hermit-integration/mount-18-* and mount-integration-commit*.json/log; FINAL-SOURCE-AND-CALLERS.json |
+11	| Actual aa7 DAG check | generator --check passed; 3.208491 wall / 3.056024 CPU seconds; exact source unchanged, scope inactive/empty. | evidence/hermit-integration/mount-19-dag-check* |
+12	| Actual aa7 mount config tests | Four exact new methods passed, zero failed/ignored and 338 filtered in this invocation. 47.872592 wall / 92.263617 CPU seconds including compilation. Source identical; scope inactive/empty. This is not the pending third-party-backend nextest inventory. | evidence/hermit-integration/mount-01-config* |
+13	
+14	At the package cutoff, remaining shared native/parser controls, Clippy, the third-party-backend inventory, full CLI build and official artifact publication are pending. FINAL-SOURCE-AND-CALLERS.json is the earlier plan/binding and therefore still says all post-commit checks were pending; the two later completed checks copied above are an explicit evidence addendum, not a rewrite of that historical file. Other results may follow in a separately bound addendum.
+15	
+16	The full native run uses the already compiled 106,866,600-byte Reverie test ELF SHA256 b899a2eec14c966aa64dcadd2064177cd412e3a2e57abe68efbf2e327075a783, with Cargo.lock SHA256 d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469. Its before-exec command, raw results and independent readback are supplied; the executable is not copied or invoked by this review. The 427 normal library identities include existing fixture compilation and VM/child helpers; no conditional helper body is inferred merely from a test name. These are not Hermit canonical guest or parity receipts.
+17	
+18	The mandatory dependent Hermit runtime obligations remain:
+19	
+20	- The unchanged original closed-stdin /bin/cat assertion must still require exit 1 and the bad-file-descriptor diagnostic. Historical loader exit 127 is retained; no source-only result proves its cause or repair.
+21	- The unchanged descriptor-reuse C control must complete on the new integrated native/ptrace/KVM path. Old Hermit e8e failed the ordinary fd0 fstat/AT_EMPTY_PATH comparison after reopening; candidate 7628 with old Reverie a2cc passed that comparison and its alias then failed openat('/proc/self/fdinfo/0') with EACCES. The latter did not reach later fds 1/2 or pipes.
+22	- The unchanged complete-stat-routes mode must independently complete before https://github.com/rrnewton/hermit/pull/3047 lands. Its original old-KVM followed-proc stat failure happened at ordinary fd3 before standard-descriptor replacement. Descriptor-reuse success cannot satisfy this broader mode.
+23	
+24	The earlier full inherited-alias proposal remains deferred work: the narrow main repair preserves prior numeric-slot behavior and does not extend fixed inode identities above descriptor 2. The explicit fixture modes do not delete or relabel the broader failed control; every assertion in a selected mode is mandatory, and both modes remain required as stated above. No comparator, INFO level, errno requirement, selected count or resource bound is weakened in this package. Reviewers must assess that claim independently from the actual diff.
+25	
+26	Land/attribution records: https://github.com/rrnewton/reverie/pull/565 landed at 596b9ade, parent 4866241e, exact 2,562-entry expected union bb2c88a1; required b304 ancestry and all six reviewed files were verified. evidence/reverie/landing-preparation/merge-1/independent-readback/CONTENT-READBACK.json records this. The component external continuation approved only its exact source with the dependent Hermit obligations above. The later full-library failure remains actual and is not superseded by that earlier approval.
+27	
+28	Newer Hermit main b03fd6c16a438060f0013d58948643d8f3d81ab5 is not part of aa7. Its complete eight-path delta and source audit are in evidence/pin-and-main-audit/main-delta.patch and REPORT.md; all incoming paths are disjoint from this 21-path candidate. The audit describes restored LiteInst arguments, parity/current-receipt selftests, and cumulative cell-requalification support, without claiming new passing measurements. A future rebase/composition remains separate work with its own exact source binding.
+29	
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_018tSXqcBBtgDdkEPKPquPDc",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/complete-hermit.stat"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1	 Cargo.lock                                    |  34 ++--
+2	 ci/configure-build-jobs.sh                    |  12 +-
+3	 ci/dag/validate.json                          |   4 +-
+4	 ci/manifest-plan/src/validation_dag_static.rs |   4 +-
+5	 ci/run-with-reverie-dbt-budget.sh             |  10 +-
+6	 detcore-dbt/Cargo.toml                        |   4 +-
+7	 detcore-model/Cargo.toml                      |   2 +-
+8	 detcore-sabre/Cargo.toml                      |  10 +-
+9	 detcore/Cargo.toml                            |   4 +-
+10	 detcore/src/syscalls.rs                       |  45 +++++
+11	 detcore/src/syscalls/files.rs                 |  22 ++-
+12	 detcore/src/syscalls/namespace.rs             |  18 +-
+13	 detcore/src/tool_local.rs                     |  64 ++++++
+14	 detcore/tests/testutils/Cargo.toml            |   4 +-
+15	 hermit-cli/Cargo.toml                         |  12 +-
+16	 hermit-cli/src/lib.rs                         | 256 ++++++++++++++++++++----
+17	 hermit-cli/tests/cli.rs                       |  65 ++++++
+18	 hermit-install/Cargo.toml                     |   2 +-
+19	 liteinst-runtime-build/Cargo.lock             |  18 +-
+20	 liteinst-runtime-build/runtime/Cargo.toml     |   2 +-
+21	 tests/c/fixtures/stdio_inode_identity.c       | 274 ++++++++++++++++++++++++++
+22	 21 files changed, 770 insertions(+), 96 deletions(-)
+23	
+
+SUCCESSFUL PUBLIC TOOL REQUEST
+{
+  "kind": "tool_request",
+  "id": "toolu_vrtx_01Mkm9VzNmbFtuzC3NUqXvpc",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/hermit-commits.txt"
+  }
+}
+PUBLIC TOOL RESULT (exact text)
+1	commit df8f668f9956797ffaeb72a26a938619c0be5df9
+2	Author:     Ryan Newton <rrnewton@gmail.com>
+3	AuthorDate: Wed Sep 16 20:10:31 2026 -0700
+4	Commit:     Ryan Newton <rrnewton@gmail.com>
+5	CommitDate: Wed Sep 16 22:24:13 2026 -0700
+6	
+7	    Preserve ordinary inode identity when standard descriptors are reused
+8	    
+9	    [hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+10	    
+11	    Plain Language Summary and Project Impact
+12	    Files and pipes reopened at descriptors 0 through 2 now use their ordinary
+13	    inode identity. Fixed standard-stream inode values apply only while those
+14	    slots contain inherited container streams. This repairs the measured KVM
+15	    fstat versus empty-path stat disagreement after descriptor reuse.
+16	    
+17	    Task: kvm-lane-to-full-determinism-and-parity
+18	    
+19	    Use the same resource guard for fstat, fdinfo, maps and anonymous proc-fd
+20	    readlink metadata. Preserve inherited-stream slot outcomes and existing alias
+21	    behavior. Extend the existing resource tests and keep the original closed-stdin
+22	    cat assertions first and unchanged, followed by descriptor-reuse controls on
+23	    native Linux, ptrace and KVM.
+24	    
+25	    The fixture retains complete-stat-routes as a separate control. Its broader
+26	    proc-fd failure remains unresolved; this change does not claim to repair that
+27	    route or prove the cause of the historical cat loader failure.
+28	
+29	commit aa7ea4827b8328345e715d76518d7f2205e41110
+30	Author:     Ryan Newton <rrnewton@gmail.com>
+31	AuthorDate: Wed Sep 16 23:16:11 2026 -0700
+32	Commit:     Ryan Newton <rrnewton@gmail.com>
+33	CommitDate: Wed Sep 16 23:16:11 2026 -0700
+34	
+35	    Bind KVM mount identities to the actual backend namespace
+36	    
+37	    [hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+38	    
+39	    Plain Language Summary and Project Impact
+40	    KVM now retains the real completed-container mount identity order and validates
+41	    it against the namespace where the backend opens files. Public library callers
+42	    capture that same order before guest execution. This lets the shared Detcore
+43	    fdinfo and mountinfo normalization use actual descriptor and mount identities.
+44	    
+45	    Task: kvm-lane-to-full-determinism-and-parity
+46	    
+47	    Advance the maintained Reverie pin to landed 596b9adee8473dc0a7e62dce18580eead3d0c5c9,
+48	    which preserves owned proc-fd metadata and fdinfo semantics. Carry the existing
+49	    DBT 1050 effective-job-second threshold and 16-job clamp only after verifying
+50	    all build/vendor/config inputs are unchanged. The first updater invocation
+51	    retained its calibration refusal; the second completed the normal locked
+52	    workspace/all-target compile before applying this mount integration.
+53	    
+54	    Require exact startup mount-order agreement before mutating captured config;
+55	    preserve root rewrites and genuine unlisted mount provenance, and remove the
+56	    obsolete synthetic 0:1 device mapping. Four focused config controls raise only
+57	    the two Hermit unit inventory declarations from 630 to 634. Generated commands,
+58	    selected populations, dependencies and resources stay unchanged.
+59	    
+60	    The existing descriptor-reuse, complete-stat-routes and original closed-stdin
+61	    assertions remain unchanged. Their integrated runtime validation is pending;
+62	    this source change does not assert backend parity or discharge those checks.
+63	
+

@@ -1,0 +1,70 @@
+--- prior-approved/execution-plan.json
++++ prepared-continuation/execution-plan.json
+@@ -1,11 +1,11 @@
+ {
+-  "state": "prepared_only_not_released_or_executed",
++  "state": "prepared_continuation_only_not_released_or_executed",
+   "default_launcher_refuses_without_execution_argument": true,
+   "proposed_released_argv": [
+     "/usr/bin/python3",
+     "-B",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/launch-review.py",
+-    "--execute-reviewed-aa7ea482"
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/launch-review.py",
++    "--execute-reviewed-a9d3b1fa"
+   ],
+   "argument_is_not_authorization": "Root must review the exact prompt/caller/input binding and release the command before use.",
+   "review_command": [
+@@ -30,23 +30,23 @@
+     "Read,Grep,Glob",
+     "--strict-mcp-config"
+   ],
+-  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
++  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/source/hermit",
+   "wall_seconds": 900,
+   "kill_after_seconds": 10,
+   "per_output_file_bytes": 67108864,
+   "outputs": [
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/launch.json",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/stdout.jsonl",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/stderr.log",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/exit.json"
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/launch.json",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/stdout.jsonl",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/stderr.log",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-continuation/exit.json"
+   ],
+   "no_test_or_guest_execution": true,
+   "no_source_or_ref_or_pr_operations": true,
+-  "hermit_base": "35af18f34a3238117eecac8b439ac20e13316715",
+-  "hermit_head": "aa7ea4827b8328345e715d76518d7f2205e41110",
+-  "hermit_tree": "40d69bea9282cbcbf161a2736bcb39108a1d53db",
+-  "candidate_binding_sha256": "f89f0f2777d51cf69681b32f0737b0119a163330f40ae523932dc23b6cfa48d1",
+-  "snapshot_manifest_sha256": "06a6e97e5ade1e74ac56c4c3120a829027ba1ea068102d6d43fcafb0d68fd96f",
++  "hermit_base": "b03fd6c16a438060f0013d58948643d8f3d81ab5",
++  "hermit_head": "a9d3b1faa4502963e33bcb3e7e8a213a4e1a3bb0",
++  "hermit_tree": "340e146bb4e3943f33393cc71792bcc8a3b31079",
++  "candidate_binding_sha256": "561cfd5223be2e601e7e31920288327e275f74c26276e55dde621e17e2c9811d",
++  "snapshot_manifest_sha256": "6b34382614c3653a6010fc37a58d0adea4aaefac0680f86116437f91a73194e4",
+   "tools_current_metadata": [
+     {
+       "entrypoint": "/usr/bin/python3",
+@@ -82,6 +82,16 @@
+     }
+   ],
+   "read_tools_only": true,
+-  "actual_evidence_cutoff": "Four aa7 mount config methods and DAG --check completed; later tests/runtime pending. The complete Reverie library is 426 pass/1 fail.",
+-  "normal_disjoint_future_main": "b03fd6c16a438060f0013d58948643d8f3d81ab5 is preserved context, not this source target."
++  "actual_evidence_cutoff": "aa7 native19/fmt/Clippy634/build and2descriptor+3complete-mode runtime passes; actual a9 source composition; official full-image cat pending; Reverie426/1 unchanged.",
++  "normal_disjoint_future_main": "b03 is now the actual base; a9 source union verified without claiming new runtime evidence.",
++  "public_transcript_bytes": 400919,
++  "decoded_public_tool_result_bytes": 348339,
++  "public_material_parts": 8,
++  "public_material_total_bytes": 380280,
++  "public_material_max_part_bytes": 58440,
++  "public_material_not_embedded_in_prompt": true,
++  "public_tool_pairs": 75,
++  "public_text_blocks": 2,
++  "hidden_thinking_blocks_excluded": 47,
++  "original_attempt": "900.019045436 seconds / exit124 / no terminal verdict; unchanged original files preserved."
+ }

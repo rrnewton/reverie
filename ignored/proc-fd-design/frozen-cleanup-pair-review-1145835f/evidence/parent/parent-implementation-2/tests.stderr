@@ -1,0 +1,9 @@
+test_frozen_receipt_cleanup_routes_preserve_provider_refusal (test_start_unit.StartUnitTest.test_frozen_receipt_cleanup_routes_preserve_provider_refusal) ... ok
+test_frozen_cleanup_refuses_missing_record_and_wrong_roots (test_start_unit.StartUnitTest.test_frozen_cleanup_refuses_missing_record_and_wrong_roots) ... ok
+test_frozen_cleanup_rejects_provider_success_with_retained_path (test_start_unit.StartUnitTest.test_frozen_cleanup_rejects_provider_success_with_retained_path) ... ok
+test_frozen_inner_refusal_threads_actual_record_from_worker_slot (test_start_unit.StartUnitTest.test_frozen_inner_refusal_threads_actual_record_from_worker_slot) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.034s
+
+OK

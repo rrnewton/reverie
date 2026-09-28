@@ -1,0 +1,101 @@
+{
+  "scope": "source declarations only; not emitted inventory or execution counts",
+  "inherited": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/AFFECTED-SOURCE-TEST-NAMES-v8.json",
+    "bytes": 4674,
+    "sha256": "e1c931e809a547cac697f677e2d0f3d4531ba5ba0844b91fb1415858cea725ce"
+  },
+  "files": [
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "v8_or_immutable_base_declarations": [
+        "immutable_artifact_controls_a_real_integration_consumer",
+        "every_named_consumer_delegates_to_the_shared_typed_reader",
+        "current_match_and_a_typed_verdict_mutation_bracket_every_consumer",
+        "current_shape_and_canonical_evidence_fail_by_name",
+        "json_output_retains_failure_evidence_without_satisfying_a_match_requirement",
+        "generated_verification_commands_validate_fresh_evidence_before_guest_status",
+        "application_shell_consumer_uses_the_real_typed_reader",
+        "canonical_reader_rejects_unequal_counts_while_matched_and_inspection_stay_distinct",
+        "reproducible_build_consumer_keeps_artifact_and_typed_verdict_requirements"
+      ],
+      "v9_declarations": [
+        "immutable_artifact_controls_a_real_integration_consumer",
+        "every_named_consumer_delegates_to_the_shared_typed_reader",
+        "current_match_and_a_typed_verdict_mutation_bracket_every_consumer",
+        "current_shape_and_canonical_evidence_fail_by_name",
+        "qemu_boot_consumer_rejects_noncanonical_and_unequal_match_claims",
+        "json_output_retains_failure_evidence_without_satisfying_a_match_requirement",
+        "generated_verification_commands_validate_fresh_evidence_before_guest_status",
+        "application_shell_consumer_uses_the_real_typed_reader",
+        "canonical_reader_rejects_unequal_counts_while_matched_and_inspection_stay_distinct",
+        "reproducible_build_consumer_keeps_artifact_and_typed_verdict_requirements"
+      ],
+      "removed_names": [],
+      "added_names": [
+        "qemu_boot_consumer_rejects_noncanonical_and_unequal_match_claims"
+      ]
+    },
+    {
+      "path": "scripts/lib/validate_cell_results.rs",
+      "v8_or_immutable_base_declarations": [
+        "cumulative_writer_preserves_reference_and_cross_failures_separately",
+        "duplicate_report_fields_cannot_become_compared_cell_evidence",
+        "current_timeout_policy_is_required_without_breaking_legacy_raw_reads",
+        "coverage_separates_selected_from_enabled_but_not_selected",
+        "retains_one_closed_schema7_population",
+        "schema7_refuses_a_missing_comparison_field",
+        "schema7_binds_virtual_time_to_the_comparison_mode",
+        "schema7_refuses_unknown_or_missing_mode_before_publishing_an_artifact",
+        "schema7_names_a_missing_current_verification_field",
+        "schema7_refuses_an_unknown_comparison_field",
+        "schema7_refuses_an_unknown_compared_log_messages_field",
+        "retains_recovered_retry_without_rejecting_preserved_history",
+        "product_failure_remains_red_when_the_retry_has_an_infrastructure_error",
+        "retained_retry_history_refuses_a_missing_first_attempt_by_name",
+        "refuses_mixed_bucket_run_ids",
+        "top_level_failure_cannot_project_a_matched_attempt_as_clean",
+        "unavailable_cell_prefers_exact_attempt_then_row_reason",
+        "infrastructure_error_preserves_its_cause_with_or_without_a_comparison",
+        "earlier_divergence_cannot_be_hidden_by_a_final_match",
+        "missing_sibling_attempt_cannot_erase_a_divergence_in_either_order",
+        "non_info_sibling_attempt_cannot_erase_a_divergence",
+        "non_info_scope_never_becomes_a_clean_leg",
+        "mismatched_report_hash_refuses_the_receipt",
+        "missing_planned_cell_refuses_the_population"
+      ],
+      "v9_declarations": [
+        "cumulative_writer_preserves_reference_and_cross_failures_separately",
+        "duplicate_report_fields_cannot_become_compared_cell_evidence",
+        "current_timeout_policy_is_required_without_breaking_legacy_raw_reads",
+        "coverage_separates_selected_from_enabled_but_not_selected",
+        "retains_one_closed_schema7_population",
+        "schema7_refuses_a_missing_comparison_field",
+        "matched_projection_rejects_unequal_counts_and_retains_sticky_divergence",
+        "schema7_binds_virtual_time_to_the_comparison_mode",
+        "schema7_refuses_unknown_or_missing_mode_before_publishing_an_artifact",
+        "schema7_names_a_missing_current_verification_field",
+        "schema7_refuses_an_unknown_comparison_field",
+        "schema7_refuses_an_unknown_compared_log_messages_field",
+        "retains_recovered_retry_without_rejecting_preserved_history",
+        "product_failure_remains_red_when_the_retry_has_an_infrastructure_error",
+        "retained_retry_history_refuses_a_missing_first_attempt_by_name",
+        "refuses_mixed_bucket_run_ids",
+        "top_level_failure_cannot_project_a_matched_attempt_as_clean",
+        "unavailable_cell_prefers_exact_attempt_then_row_reason",
+        "infrastructure_error_preserves_its_cause_with_or_without_a_comparison",
+        "earlier_divergence_cannot_be_hidden_by_a_final_match",
+        "missing_sibling_attempt_cannot_erase_a_divergence_in_either_order",
+        "non_info_sibling_attempt_cannot_erase_a_divergence",
+        "non_info_scope_never_becomes_a_clean_leg",
+        "mismatched_report_hash_refuses_the_receipt",
+        "missing_planned_cell_refuses_the_population"
+      ],
+      "removed_names": [],
+      "added_names": [
+        "matched_projection_rejects_unequal_counts_and_retains_sticky_divergence"
+      ]
+    }
+  ],
+  "ledger_test_owner": "scripts/validate.rs rust-script test harness via validate_cell_results module; not manifest-plan Cargo tests"
+}

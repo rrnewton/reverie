@@ -1,0 +1,280 @@
+{
+  "head": "aa7ea4827b8328345e715d76518d7f2205e41110",
+  "tree": "40d69bea9282cbcbf161a2736bcb39108a1d53db",
+  "parent": "df8f668f9956797ffaeb72a26a938619c0be5df9",
+  "base": "35af18f34a3238117eecac8b439ac20e13316715",
+  "whole_tree_entries": 1726,
+  "repair_paths": [
+    "detcore/src/syscalls.rs",
+    "detcore/src/syscalls/files.rs",
+    "detcore/src/syscalls/namespace.rs",
+    "detcore/src/tool_local.rs",
+    "hermit-cli/tests/cli.rs",
+    "tests/c/fixtures/stdio_inode_identity.c"
+  ],
+  "integration_paths": [
+    "Cargo.lock",
+    "ci/configure-build-jobs.sh",
+    "ci/dag/validate.json",
+    "ci/manifest-plan/src/validation_dag_static.rs",
+    "ci/run-with-reverie-dbt-budget.sh",
+    "detcore-dbt/Cargo.toml",
+    "detcore-model/Cargo.toml",
+    "detcore-sabre/Cargo.toml",
+    "detcore/Cargo.toml",
+    "detcore/tests/testutils/Cargo.toml",
+    "hermit-cli/Cargo.toml",
+    "hermit-cli/src/lib.rs",
+    "hermit-install/Cargo.toml",
+    "liteinst-runtime-build/Cargo.lock",
+    "liteinst-runtime-build/runtime/Cargo.toml"
+  ],
+  "cumulative_entries": {
+    "Cargo.lock": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "5b056ea694b26d78a29e22ed446957b1279ce65c",
+      "bytes": 74781,
+      "sha256": "7346d2b7080bb74c3a3c7ac1156eb72c3ef65ac5ffe91ffc653c97f0afbe2bac"
+    },
+    "ci/configure-build-jobs.sh": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "ab56754918f3888badf96894970cbe41c428fb8f",
+      "bytes": 49733,
+      "sha256": "5e025a4133df3d640d2ce9e0334e0d9e37286ed62a0c384a551f5c82d6eb4093"
+    },
+    "ci/dag/validate.json": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "953b16e974eda21f26d338818e5510a7a8dbd324",
+      "bytes": 2855212,
+      "sha256": "3e3d6c2e2fe7033a8baf4bf051469f36b934e6ac2ddfecd3e5dee67ddad09de9"
+    },
+    "ci/manifest-plan/src/validation_dag_static.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "862e177839b47edbba97fd78af1b31f2544459fa",
+      "bytes": 347671,
+      "sha256": "6e269f20deaea05d3996fea90f5035d41fe4a602173d1517a6c985ca96e2f674"
+    },
+    "ci/run-with-reverie-dbt-budget.sh": {
+      "mode": "100755",
+      "type": "blob",
+      "blob": "23e5aa7b6dbb97e89dc21303237ebd727114c11f",
+      "bytes": 19494,
+      "sha256": "ca0572c43774416c0f7ec1fab28710635d9cf6f9492a0c8e2e09c8a2018b4913"
+    },
+    "detcore-dbt/Cargo.toml": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "fb6f34e7c0b963bfe09381838fe9eb33f7b490e1",
+      "bytes": 955,
+      "sha256": "48b06e55c64b0719676ce08960f963b032d0bcb0881f0563c2d13acbea030e1f"
+    },
+    "detcore-model/Cargo.toml": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "b2db67753ea827645ffd5c846e72270f9cc04ad1",
+      "bytes": 1434,
+      "sha256": "6d7fecbf56eab3618f01e1e2b63ffcdf6655a45be915aa914bbd6209e49f157b"
+    },
+    "detcore-sabre/Cargo.toml": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "78e30996ca90a9db09b42e6b02e6828f3faf0984",
+      "bytes": 1187,
+      "sha256": "a2a40896ba06a992a9f1dcbcb67b3b38ffc51dbc087cce59c7d5e779474f7d5e"
+    },
+    "detcore/Cargo.toml": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "b9fdf9ccce58adb1ff7f373f22cf2e5b4f21969a",
+      "bytes": 4387,
+      "sha256": "ada3125e2fe5bc015b88e66dff572acd61d88f08738ad8c96f9fa7c5171772c1"
+    },
+    "detcore/src/syscalls.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "5e553d3833c6a1ba1610681adf0bf8c66cea0483",
+      "bytes": 3340,
+      "sha256": "aacabce215d502f58ff902e887daf66102d0f23ca3923d41aa3b6aa8d52764ca"
+    },
+    "detcore/src/syscalls/files.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "1c18603c7d8e6a3f9297936ea9df35814e179163",
+      "bytes": 196186,
+      "sha256": "b4f56303af3eab51be782582d95b8e368a3be7007157c1d6dcaca50ad6a4729a"
+    },
+    "detcore/src/syscalls/namespace.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "b4a61cae412d66e631083b2be0bd8ff0f49ed606",
+      "bytes": 23790,
+      "sha256": "6d684d890f485ee16c0e064e3e483b37ace803becca6929ba401f703a2f326ed"
+    },
+    "detcore/src/tool_local.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "de19b512e9b630aa3fd0d8b66f6902379bd02f3d",
+      "bytes": 147434,
+      "sha256": "43ce15bfcce5e05c5e3b5725a9fc1e0153913e894667af93163d8c30fdc1763e"
+    },
+    "detcore/tests/testutils/Cargo.toml": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "97e8bf741dba8a422ad8f99a1a83b623378d9c18",
+      "bytes": 1282,
+      "sha256": "d90f7e52b9c6b63927c01a275da0030a61646eba9002a0b47136bcc22cfdf803"
+    },
+    "hermit-cli/Cargo.toml": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "2819eb5c52b2691d4b771882aa910f99cea289ae",
+      "bytes": 4122,
+      "sha256": "ff312f2f540a65be0567aa78bf9e0b90290b2f4e29017854c8c4e38b2fb39697"
+    },
+    "hermit-cli/src/lib.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "4b606f33275836489986b9383e6987dcdd9c1259",
+      "bytes": 202202,
+      "sha256": "20d5051c3482701181b3fc8c6eb9a08b2acc3741437386c359e42fc65e98096c"
+    },
+    "hermit-cli/tests/cli.rs": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "23461da54f228caca4a17f2a296ff9e1fe2c5308",
+      "bytes": 267801,
+      "sha256": "7057c2cd5cb6ca5576458f0e6a3904476fb8e047dd7fd40425381f5d83da62ff"
+    },
+    "hermit-install/Cargo.toml": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "7f31a4d473c53184ba4c1ab00d9941038605b9ae",
+      "bytes": 382,
+      "sha256": "2545708092d842c65853fd3089e7c4e38a089e510c9978d55274cbe1ccffa42d"
+    },
+    "liteinst-runtime-build/Cargo.lock": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "5dac3c6d34eaf01c406247592237e852fbc7b82d",
+      "bytes": 45801,
+      "sha256": "6d587e58d6675e5a6fb6287431db0598e422f46d5ca78da2ef31b2db0ff50a98"
+    },
+    "liteinst-runtime-build/runtime/Cargo.toml": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "de9f79169f3ec31dda251d9167dca832bbd3a1a0",
+      "bytes": 321,
+      "sha256": "a5a3356063ca8dd1befd7c6c33bc616cab9d41aa6d363be49eb7c8a937a57ffb"
+    },
+    "tests/c/fixtures/stdio_inode_identity.c": {
+      "mode": "100644",
+      "type": "blob",
+      "blob": "008e0cfcf2ab7c0045dc78d92af9add2ea079467",
+      "bytes": 11218,
+      "sha256": "2981cd8521adc7e9d7be82b7e62c73814a744ad946b60251392be8c4c607bd47"
+    }
+  },
+  "all_other_tree_entries_unchanged": true,
+  "all_original_six_entries_unchanged": true,
+  "mount_expected_source_exact": true,
+  "cargo_revision_only": [
+    {
+      "path": "Cargo.lock",
+      "sha_occurrences": 34,
+      "revision_lines": 17
+    },
+    {
+      "path": "detcore-dbt/Cargo.toml",
+      "sha_occurrences": 2,
+      "revision_lines": 2
+    },
+    {
+      "path": "detcore-model/Cargo.toml",
+      "sha_occurrences": 1,
+      "revision_lines": 1
+    },
+    {
+      "path": "detcore-sabre/Cargo.toml",
+      "sha_occurrences": 5,
+      "revision_lines": 5
+    },
+    {
+      "path": "detcore/Cargo.toml",
+      "sha_occurrences": 2,
+      "revision_lines": 2
+    },
+    {
+      "path": "detcore/tests/testutils/Cargo.toml",
+      "sha_occurrences": 2,
+      "revision_lines": 2
+    },
+    {
+      "path": "hermit-cli/Cargo.toml",
+      "sha_occurrences": 6,
+      "revision_lines": 6
+    },
+    {
+      "path": "hermit-install/Cargo.toml",
+      "sha_occurrences": 1,
+      "revision_lines": 1
+    },
+    {
+      "path": "liteinst-runtime-build/Cargo.lock",
+      "sha_occurrences": 18,
+      "revision_lines": 9
+    },
+    {
+      "path": "liteinst-runtime-build/runtime/Cargo.toml",
+      "sha_occurrences": 1,
+      "revision_lines": 1
+    }
+  ],
+  "total_revision_lines": 46,
+  "total_sha_occurrences": 72,
+  "build_wrapper_executable_delta_is_pin_only": true,
+  "dbt_closure": [
+    {
+      "path": "reverie-dbt",
+      "unchanged_object": "6232257769144e8f63891a5efc8935abc3cd836b"
+    },
+    {
+      "path": "reverie-dbt/build.rs",
+      "unchanged_object": "0ff8ae24b97464044735ba79ea74765ba4ac3ff0"
+    },
+    {
+      "path": "reverie-dbt/vendor",
+      "unchanged_object": "4713c532e73ab9a1b617bc520dd568a863d2ca27"
+    }
+  ],
+  "dag_steps": 1598,
+  "dag_only_differences": [
+    [
+      [
+        "steps",
+        44,
+        "env",
+        "NEXTEST_EXPECTED_EXECUTED"
+      ],
+      "630",
+      "634"
+    ],
+    [
+      [
+        "steps",
+        1377,
+        "env",
+        "NEXTEST_EXPECTED_EXECUTED"
+      ],
+      "630",
+      "634"
+    ]
+  ],
+  "dag_sha256": "3e3d6c2e2fe7033a8baf4bf051469f36b934e6ac2ddfecd3e5dee67ddad09de9",
+  "original_cat_assertion_prefix_unchanged": true,
+  "final_author_binding_sha256": "631e2a457b88da862e1eeec2d9bdef85ad927da3aacea5234a35462f5f07c0f0",
+  "no_tests_builds_or_guests_by_reviewer": true
+}

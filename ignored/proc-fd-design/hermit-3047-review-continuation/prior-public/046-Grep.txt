@@ -1,0 +1,131 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01GLnbujrvteFiMGErh7w9jr",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn append_hermit_args",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/hermit-cli/tests/cli.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-A": 45
+  }
+}
+
+Successful public tool result (exact text below):
+107:fn append_hermit_args_with_execution_root(
+108-    command: &mut Command,
+109-    args: &[&str],
+110-    requested_workdir: Option<&OsStr>,
+111-) -> Result<(), String> {
+112-    let options = command
+113-        .get_args()
+114-        .chain(args.iter().map(OsStr::new))
+115-        .take_while(|arg| *arg != OsStr::new("--"))
+116-        .collect::<Vec<_>>();
+117-    let uses_outer_mount = options.contains(&OsStr::new("--no-namespace"))
+118-        || options.contains(&OsStr::new("--backend=dbt"))
+119-        || options
+120-            .windows(2)
+121-            .any(|pair| pair == [OsStr::new("--backend"), OsStr::new("dbt")]);
+122-    append_hermit_args_with_execution_root_mode(command, args, requested_workdir, !uses_outer_mount)
+123-}
+124-
+125:fn append_hermit_args_with_execution_root_mode(
+126-    command: &mut Command,
+127-    args: &[&str],
+128-    requested_workdir: Option<&OsStr>,
+129-    private_mount: bool,
+130-) -> Result<(), String> {
+131-    let mut execution_root = execution_root_args(requested_workdir)?;
+132-    if execution_root.is_empty() {
+133-        command.args(args);
+134-        return Ok(());
+135-    }
+136-    // These are Hermit options, so they must precede the delimiter rather than
+137-    // becoming arguments to the guest program.
+138-    let Some(guest_separator) = args.iter().position(|arg| *arg == "--") else {
+139-        // Argument-parsing and non-guest subcommand tests have no guest whose
+140-        // working directory can be changed. Preserve their argv so they keep
+141-        // exercising Hermit's parser. The requested value was validated above,
+142-        // so an unsupported marker still fails before Hermit can run.
+143-        command.args(args);
+144-        return Ok(());
+145-    };
+146-    // Several tests append the guest only after adding a Path argument to the
+147-    // command. Classify the complete Hermit prefix, not just that final slice.
+148-    let command_args = command
+149-        .get_args()
+150-        .chain(args[..guest_separator].iter().map(OsStr::new))
+151-        .collect::<Vec<_>>();
+152-    let starts_guest = command_args.contains(&OsStr::new("run"))
+153-        || command_args
+154-            .iter()
+155-            .position(|arg| *arg == OsStr::new("record"))
+156-            .is_some_and(|record| {
+157-                !command_args[record + 1..].iter().any(|arg| {
+158-                    matches!(
+159-                        arg.to_str(),
+160-                        Some("list" | "ls" | "rm" | "remove" | "clean")
+161-                    )
+162-                })
+163-            });
+164-    if !starts_guest {
+165-        command.args(args);
+166-        return Ok(());
+167-    }
+168-    let has_explicit_base_env = command_args.iter().any(|arg| {
+169-        *arg == OsStr::new("--base-env")
+170-            || arg
+--
+194:fn append_hermit_args(command: &mut Command, args: &[&str]) {
+195-    let requested = std::env::var_os(ISOLATED_WORKDIR_ENV);
+196-    append_hermit_args_with_execution_root(command, args, requested.as_deref())
+197-        .unwrap_or_else(|error| panic!("PATH-CONTRACT: {error}"));
+198-}
+199-
+200:fn append_hermit_args_using_outer_mount(command: &mut Command, args: &[&str]) {
+201-    let requested = std::env::var_os(ISOLATED_WORKDIR_ENV);
+202-    append_hermit_args_with_execution_root_mode(command, args, requested.as_deref(), false)
+203-        .unwrap_or_else(|error| panic!("PATH-CONTRACT: {error}"));
+204-}
+205-
+206-fn hermit_command(args: &[&str]) -> Command {
+207-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+208-    append_hermit_args(&mut command, args);
+209-    command
+210-}
+211-
+212-fn hermit(args: &[&str]) -> Output {
+213-    hermit_command(args)
+214-        .output()
+215-        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"))
+216-}
+217-
+218-fn hermit_with_stdin(args: &[&str], input: &[u8]) -> Output {
+219-    let mut command = Command::new(env!("CARGO_BIN_EXE_hermit"));
+220-    append_hermit_args(&mut command, args);
+221-    let mut child = command
+222-        .stdin(Stdio::piped())
+223-        .stdout(Stdio::piped())
+224-        .stderr(Stdio::piped())
+225-        .spawn()
+226-        .unwrap_or_else(|error| panic!("failed to run hermit with {args:?}: {error}"));
+227-    child
+228-        .stdin
+229-        .take()
+230-        .expect("hermit stdin should be piped")
+231-        .write_all(input)
+232-        .expect("failed to write hermit stdin");
+233-    child
+234-        .wait_with_output()
+235-        .unwrap_or_else(|error| panic!("failed to wait for hermit with {args:?}: {error}"))
+236-}
+237-
+238-fn dbt_stderr_guest() -> &'static Path {
+239-    DBT_STDERR_GUEST.get_or_init(|| {
+240-        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+241-            .parent()
+242-            .expect("hermit-cli should be inside the repository");
+243-        let build_root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("dbt-stderr-nostdlib");
+244-        fs::create_dir_all(&build_root).expect("failed to create DBT stderr guest directory");
+245-        let guest = build_root.join("stderr_nostdlib");

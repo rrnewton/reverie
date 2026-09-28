@@ -1,0 +1,112 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_018tp2UaFSfZtQUmVGjJbYoH",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_global.rs",
+    "offset": 100,
+    "limit": 100
+  }
+}
+
+Successful public tool result (exact text below):
+100	            Poll::Pending
+101	        }
+102	    })
+103	    .await;
+104	}
+105	
+106	#[derive(Debug)]
+107	struct InodePool {
+108	    // TODO(T87258449): merge these two maps:
+109	    inodes: HashMap<RawInode, DetInode>,
+110	    detinodes_info: HashMap<DetInode, DetInodeInfo>,
+111	    /// Counter backing the minted [`DetInode`]s. Deliberately a plain integer:
+112	    /// it is the *source* of deterministic inodes, not one itself, and typing
+113	    /// it `RawInode` previously blurred that distinction.
+114	    next_inode: u64,
+115	}
+116	
+117	/// Everything we know (globally) about a DetInode.
+118	#[derive(Debug)]
+119	struct DetInodeInfo {
+120	    raw: RawInode,
+121	    mtime: LogicalTime,
+122	}
+123	
+124	/// Everything the global scheduler needs to register a new child thread. A
+125	/// normal clone is registered by the parent; a `CLONE_VFORK` child registers
+126	/// itself (with `parent_is_kernel_blocked` set) because its parent is blocked
+127	/// inside the kernel until the child execs or exits.
+128	struct ChildRegistration {
+129	    parent_dettid: DetTid,
+130	    parent_detpid: DetPid,
+131	    child_dettid: DetTid,
+132	    child_tid_addr: usize,
+133	    flags: Option<CloneFlags>,
+134	    exit_signal: libc::c_int,
+135	    physical_ids: Option<(i32, i32)>,
+136	    maybe_priority: Option<Priority>,
+137	    parent_is_kernel_blocked: bool,
+138	}
+139	
+140	#[derive(Clone, Debug, PartialEq, Eq)]
+141	struct PendingExecState {
+142	    caller: DetTid,
+143	    process: DetPid,
+144	    mm: MmId,
+145	    fd_blocking: ExecFdBlockingOverrides,
+146	}
+147	
+148	#[derive(Clone, Copy)]
+149	struct RpcIncarnation {
+150	    dettid: DetTid,
+151	    mm: MmId,
+152	}
+153	
+154	impl Default for InodePool {
+155	    fn default() -> Self {
+156	        InodePool::new()
+157	    }
+158	}
+159	
+160	impl InodePool {
+161	    fn new() -> Self {
+162	        InodePool {
+163	            inodes: HashMap::new(),
+164	            detinodes_info: HashMap::new(),
+165	            next_inode: 1,
+166	        }
+167	    }
+168	
+169	    // Allocate the next deterministic inode.  This takes the raw-inode and
+170	    // can return an existing mapping or extend the mapping by creating a
+171	    // new deterministic inode. The returned inode is strictly increasing
+172	    // to avoid inode re-use issue in some filesystem like ext4.
+173	    fn add_inode(&mut self, raw_inode: RawInode, mtime: LogicalTime) -> (DetInode, LogicalTime) {
+174	        match self.inodes.get(&raw_inode) {
+175	            None => {
+176	                // THE determinization boundary: the single place a host inode
+177	                // is deliberately mapped to a deterministic one. The value is
+178	                // minted from a monotonic counter, never derived from the host
+179	                // inode's bits.
+180	                let new = DetInode::mint(self.next_inode);
+181	                self.next_inode += 1;
+182	                assert!(self.inodes.insert(raw_inode, new).is_none());
+183	                let prev = self.detinodes_info.insert(
+184	                    new,
+185	                    DetInodeInfo {
+186	                        raw: raw_inode,
+187	                        mtime,
+188	                    },
+189	                );
+190	                assert!(prev.is_none()); // Should not have been previously used.
+191	                (new, mtime)
+192	            }
+193	            Some(dino) => {
+194	                let info = self
+195	                    .detinodes_info
+196	                    .get(dino)
+197	                    .expect("Internal invariant broken, det_ino missing entry");
+198	                (*dino, info.mtime)
+199	            }

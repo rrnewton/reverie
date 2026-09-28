@@ -1,0 +1,30 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-sigchld-follow-up/REPORT.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-inputs/0-REPORT.md",
+    "bytes": 16244,
+    "sha256": "bbd35ce71d3a2e54c11149747d6121b783ad56aade6edfff530d5ed98bc942cb",
+    "copy_readback_equal": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-sigchld-follow-up/source-bindings.json",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-inputs/1-source-bindings.json",
+    "bytes": 7275,
+    "sha256": "fdac787cb62fcad51c68e72f011f555dd6977c36419349ed0edd9ee3a153b6b0",
+    "copy_readback_equal": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-sigchld-follow-up/prior-evidence-readback.json",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-inputs/2-prior-evidence-readback.json",
+    "bytes": 11347,
+    "sha256": "62173361398cbdad8d85b31e4e23d3901d52f5ec0835933f98267ed3bb49810b",
+    "copy_readback_equal": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/fork-tree-sigchld-20260917/REPORT.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-inputs/3-REPORT.md",
+    "bytes": 10698,
+    "sha256": "42cea2daa62e1c382007f2a8fb92b74bde0139ed13c62d10abe235005c7c438b",
+    "copy_readback_equal": true
+  }
+]

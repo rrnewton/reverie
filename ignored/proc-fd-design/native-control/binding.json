@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "status": "prepared only; not executed",
+  "base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+      "sha256": "c202622d6f5b5255fde87a5fb4b105bdaedc9628dd0681779f4d7f807114e865",
+      "bytes": 10755,
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/launch.py",
+      "sha256": "226c9e81245f5bfbc9dae065184138075ff300a830bd798e5298d639d9bef137",
+      "bytes": 6936,
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/plan.json",
+      "sha256": "5fef719f0b6fcc4f3e3da6731c6506d8349e89ebb1e4b034f74a0df12f0665b8",
+      "bytes": 11678,
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/PREPARATION.md",
+      "sha256": "39945440554bc959480b4eb81b76c8556d7b09a5a5ff73be70f51156b59c1441",
+      "bytes": 3976,
+      "mode": 420
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/LIFECYCLE-ADDENDUM.md",
+      "sha256": "212d040a21a3d69a1e97ffd26204924073a370540ff80d0b9fcbe4707ea564da",
+      "bytes": 2889,
+      "mode": 420
+    }
+  ],
+  "run_root_absent": true
+}

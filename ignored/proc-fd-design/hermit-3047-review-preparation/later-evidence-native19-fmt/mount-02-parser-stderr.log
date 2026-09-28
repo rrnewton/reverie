@@ -1,0 +1,3 @@
+   Compiling detcore-model v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/detcore-model)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.49s
+     Running unittests src/lib.rs (target/debug/build/detcore-model/95d7965e8e5f2dab/out/detcore_model-95d7965e8e5f2dab)

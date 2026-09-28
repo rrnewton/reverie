@@ -1,0 +1,30 @@
+{
+  "candidate.patch": {
+    "sha256": "30e70c65e43d1e320a7c7d9ce8598726a8fd3c1a09eb848c1c77e127be078a92",
+    "bytes": 52541
+  },
+  "REPORT.md": {
+    "sha256": "cf00c56ab2ffde0005c549cfa390c7fac26a8b468e69d3f5a2bfac55d977c70e",
+    "bytes": 11140
+  },
+  "FILES.json": {
+    "sha256": "58b13cc4552a12c3e38e9458d3f04a9b55329f149ef278c430de65a0cd8e04a9",
+    "bytes": 6127
+  },
+  "INPUTS.json": {
+    "sha256": "9e533f2eada7c224ebfe63e5477aeb1119092d5d202cceec3de76e44294e73c1",
+    "bytes": 7392
+  },
+  "READBACK.json": {
+    "sha256": "059eae0479c79a2ddbef3f704c4a45497eb43c66766dc3b5e756f630fb9b843f",
+    "bytes": 450
+  },
+  "GROUNDING.json": {
+    "sha256": "4ccdc52272dbbb10eaaf50dcc7c61187184e4c2d1d50d95e3a74daae0b09b9cb",
+    "bytes": 2048
+  },
+  "bind_proposal.py": {
+    "sha256": "af68e3d6e2ae80bb821b3cd1a4230106f51e96456be238676343b655ee271977",
+    "bytes": 4669
+  }
+}

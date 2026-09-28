@@ -1,0 +1,82 @@
+{
+  "status": "passed",
+  "completed": [
+    {
+      "stage": "vm-01",
+      "test": "vm::tests::fatal_worker_ro_delayed_waiter_qualifies",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "acabd7149ca676f9ed5775712918b57e308dd41f0783e337a076466e38290872",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "7ced28ab120bab1cc67d1baed4944e93b6e67ca8f0a256627eaf14683b1c6e9b",
+      "cpu_nsec": 455962000,
+      "wall_seconds": 7.134291836
+    },
+    {
+      "stage": "vm-02",
+      "test": "vm::tests::fatal_worker_rw_delayed_waiter_qualifies",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "aecf24e038748cfbaa40ef4b262297ed20cca3897796e5628d01ae0f76d242d8",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "0477768b0b387361fd47fbaa451b1fa10ef0152272f10728d24031b5f556e980",
+      "cpu_nsec": 424450000,
+      "wall_seconds": 3.855429346
+    },
+    {
+      "stage": "vm-03",
+      "test": "vm::tests::fatal_worker_ro_failed_store_still_wakes",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "14a87f397be11cf41099712ff3431059c133ae1e9839eacbf22307605d83d8e6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "b32bec1dfd292d62c376a6125e0d3a28fc74c593fd440f2d6bcf9128594f4a92",
+      "cpu_nsec": 281353000,
+      "wall_seconds": 3.231693839
+    },
+    {
+      "stage": "vm-04",
+      "test": "vm::tests::fatal_worker_rw_store_wake_and_slot_release",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "452"
+        ]
+      ],
+      "stdout_sha256": "ec83a5b25a15f5b7c8d755fa412226d466d873881d8d58c8cf484f91452e23b4",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "675c58322e7bb688680146fff4d525367846ba8bbe66544ef9243c1c41d09853",
+      "cpu_nsec": 320440000,
+      "wall_seconds": 4.031627177
+    }
+  ],
+  "scope": "Four unchanged existing fatal-worker futex enrollment/store/wake controls on already emitted source-v23 library ELF at 9db60ab9. One first attempt per method in specified order; stop on any failure. Original full427 remains426passes/1failure regardless of these results. No build, source/ref change, longer deadline, or enrollment-oracle relaxation. This is real VM qualification, not Hermit determinism or parity."
+}

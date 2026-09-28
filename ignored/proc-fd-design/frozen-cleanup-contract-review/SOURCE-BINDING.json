@@ -1,0 +1,99 @@
+{
+  "captured_at": "2026-09-17T07:57:45.302571+00:00",
+  "parent": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+  "hermit_in_current_tool": "98d58b9bd6ea722c6d7087d45d5fd81792abfa16",
+  "agent_utils": "2781b1054efc3a9c561dbed35584a6fca1ed8676",
+  "recorded_launch_parent": "4c8588917b738a4d8bded6498b0aee9551e6b5d6",
+  "recorded_target": "a88f948021a24c6a1ea808f868516c0691c8819a",
+  "scope": "Read-only design review. No cleanup, mutation, runtime, parser invocation, build, or new host liveness census.",
+  "inputs": [
+    {
+      "source_repository": "/home/newton/.local/state/hermit-health-tool/trees/0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "commit": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "path": "ci-hub/validate/start_unit.py",
+      "retained": "source/parent/ci-hub/validate/start_unit.py",
+      "bytes": 290445,
+      "sha256": "cd57ad64e43afd206c21fa1276cfbf7b9ea7b5bbce1603112b4c10254a3ba4a0",
+      "tree_entry": "100644 blob 4774f3d093cd90da912d3672d08cdd853bf1e77b\tci-hub/validate/start_unit.py",
+      "observed_working_bytes_equal_commit": true
+    },
+    {
+      "source_repository": "/home/newton/.local/state/hermit-health-tool/trees/0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "commit": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "path": "ci-hub/validate/run_registry.py",
+      "retained": "source/parent/ci-hub/validate/run_registry.py",
+      "bytes": 75328,
+      "sha256": "cb973cfcbd5b302cb5cc7dd4cee528014c7f9d5a5d54550305be5d9993514045",
+      "tree_entry": "100644 blob b725f317ef8328a8e43f8ac42ef875e32e87885f\tci-hub/validate/run_registry.py",
+      "observed_working_bytes_equal_commit": true
+    },
+    {
+      "source_repository": "/home/newton/.local/state/hermit-health-tool/trees/0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "commit": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "path": "ci-hub/validate/service_result.py",
+      "retained": "source/parent/ci-hub/validate/service_result.py",
+      "bytes": 30350,
+      "sha256": "b62b3cab47a2f3d68e2c1d552208fb02ced6ebcc00c3b5ca972e2b7d8dd8b6f8",
+      "tree_entry": "100644 blob 1f533f633398b20ee0c67f0545fe3309be929ead\tci-hub/validate/service_result.py",
+      "observed_working_bytes_equal_commit": true
+    },
+    {
+      "source_repository": "/home/newton/.local/state/hermit-health-tool/trees/0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "commit": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "path": "ci-hub/validate/final_validate_status.py",
+      "retained": "source/parent/ci-hub/validate/final_validate_status.py",
+      "bytes": 2001,
+      "sha256": "d784565d46330d56b81ace62644c2c4891bffaa561f1d2d756a081ca2c2219c0",
+      "tree_entry": "100644 blob 61bcace2bee27cb1d4699699a432d2e7adb1ea4f\tci-hub/validate/final_validate_status.py",
+      "observed_working_bytes_equal_commit": true
+    },
+    {
+      "source_repository": "/home/newton/.local/state/hermit-health-tool/trees/0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "commit": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "path": "ci-hub/validate/tests/test_start_unit.py",
+      "retained": "source/parent/ci-hub/validate/tests/test_start_unit.py",
+      "bytes": 401134,
+      "sha256": "c56bcd215870479a14d30f2617f9bda0933c4ac487a5bf48db7391a27ed2c3a5",
+      "tree_entry": "100644 blob 2308fcdc56c9b2fe569d9bdf78690e3863f06e4f\tci-hub/validate/tests/test_start_unit.py",
+      "observed_working_bytes_equal_commit": true
+    },
+    {
+      "source_repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/agent-utils",
+      "commit": "2781b1054efc3a9c561dbed35584a6fca1ed8676",
+      "path": "py/wrkslots/cli.py",
+      "retained": "source/agent-utils/py/wrkslots/cli.py",
+      "bytes": 1031105,
+      "sha256": "0edcaa5f5d00ce875cef41518216842609a045e6926a9f6d9c9eb56322ac8745",
+      "tree_entry": "100755 blob bf2c96c5ff1c870e23f12df11e8a9894c3d84e88\tpy/wrkslots/cli.py",
+      "observed_working_bytes_equal_commit": true
+    },
+    {
+      "source_repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/agent-utils",
+      "commit": "2781b1054efc3a9c561dbed35584a6fca1ed8676",
+      "path": "py/wrkslots/tests/test_lifecycle.py",
+      "retained": "source/agent-utils/py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 781677,
+      "sha256": "31d81f4f056e47596e74ed33bea732234d23f6def99839b5edf04d964d6fc6da",
+      "tree_entry": "100644 blob 67d7c0ccd5e25604011496f247e86df21c6862a3\tpy/wrkslots/tests/test_lifecycle.py",
+      "observed_working_bytes_equal_commit": true
+    },
+    {
+      "observed_path": "/home/newton/work/dev-hermit/ignored/validate/runs/validate-kvm-closed-stdin-a88f9480-frozen.json",
+      "retained": "evidence/validate-kvm-closed-stdin-a88f9480-frozen.json",
+      "bytes": 2941,
+      "sha256": "fee1158194a7cb4d0b7c6163322d22126ab2fb92271ade05f1b7a2c9ba51b1dc"
+    },
+    {
+      "observed_path": "/home/newton/work/dev-hermit/ignored/validate/runs/validate-kvm-closed-stdin-a88f9480-frozen.service-result.json",
+      "retained": "evidence/validate-kvm-closed-stdin-a88f9480-frozen.service-result.json",
+      "bytes": 555,
+      "sha256": "bf780df553c03a0245e65da75f600d7b7949864b24ff7b620fe0b6bf47e10fce"
+    },
+    {
+      "observed_path": "/home/newton/work/.dev-hermit-frozen-validate/validate-fresh-a88f948021a2-3493122-c93d50f4/ci/manifest-plan/validation-service-result-schema.json",
+      "retained": "evidence/validation-service-result-schema.json",
+      "bytes": 773,
+      "sha256": "5b278e7185731d45c2fa3bd28109d1a654c145eb7c7afcff4a2480b676e01b69"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "state": "not executable now; not released or run",
+  "argv_after_coherent_pinned_integration": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "90s",
+    "with-proxy",
+    "python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/py/wrkslots/__main__.py",
+    "--project-root",
+    "/home/newton/work/dev-hermit",
+    "classify-ownerless-validate-batch",
+    "--frozen-validate-checkout",
+    "/home/newton/work/.dev-hermit-frozen-validate/validate-fresh-a88f948021a2-3493122-c93d50f4",
+    "--completed-record",
+    "ignored/validate/runs/validate-kvm-closed-stdin-a88f9480-frozen.json",
+    "--repository",
+    "worktrees/slots/kvm-parity-recovery-20260916",
+    "--format",
+    "json"
+  ],
+  "cwd_after_coherent_pinned_integration": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+  "prerequisites": [
+    "A reviewed committed consumer HEAD pins the exact loaded AU d750 or reviewed successor.",
+    "Its reviewed committed outer authority HEAD pins that exact consumer HEAD.",
+    "Both actual nested HEADs and canonical superproject Git identities agree with those committed Gitlinks.",
+    "Pinned canonical parser modules and same-common-repository or existing sealed state-root authority authenticate normally.",
+    "Root binds a fresh output directory and actual source/controller before any further execution."
+  ],
+  "current_blocker": "The existing nested consumer98d pinsAU2781 while loadedAUHEAD isd750; changing only entrypoint would hit the next unchanged guard.",
+  "same_original_state_root_checkout_record_repository_and90s10s_envelope": true,
+  "new_classification_cleanup_recover_admission_or_test_executions": 0
+}

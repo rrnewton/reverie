@@ -1,0 +1,614 @@
+[
+  {
+    "kind": "rust-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/validate_b81ceab65609123303f94190",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/validate_b81ceab65609123303f94190",
+      "bytes": 7476408,
+      "mode": 493,
+      "sha256": "cf909a2c90ddbc060cf423c58ceda7db2b1320fef02a33c64546f2bf2186a1cb",
+      "device": 49,
+      "inode": 397411657,
+      "mtime_ns": 1789673637237888495,
+      "roles": [
+        "generated rust-script executable available for reuse"
+      ]
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/validate.rs",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/validate.rs",
+      "bytes": 1002474,
+      "mode": 493,
+      "sha256": "16128aad4b5f1761713ee595029b6daf5e298d11a7fcd8df3279c8dfca882a26",
+      "device": 48,
+      "inode": 801100137,
+      "mtime_ns": 1789673218201832359,
+      "roles": [
+        "compiler-emitted script dependency input",
+        "original source of generated rust-script package"
+      ],
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/b81ceab65609123303f94190/original-script.rs"
+    },
+    "dependency_file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/validate_b81ceab65609123303f94190.d",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/validate_b81ceab65609123303f94190.d",
+      "bytes": 8841,
+      "mode": 420,
+      "sha256": "9f2b6dfa7f6e5de8ac5be18dbc76da7df028f32161e198d393fa36e506f1c797",
+      "device": 49,
+      "inode": 397411661,
+      "mtime_ns": 1789673850973031227,
+      "roles": [
+        "compiler-emitted source dependency file"
+      ],
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/validate_b81ceab65609123303f94190/executable.d"
+    }
+  },
+  {
+    "kind": "rust-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8",
+      "bytes": 405568,
+      "mode": 493,
+      "sha256": "cbab828a392202f41872f655f867dfa30e87d5b152e734af6df87aaa74e6cfb4",
+      "device": 49,
+      "inode": 397354577,
+      "mtime_ns": 1789673133379422241,
+      "roles": [
+        "generated rust-script executable available for reuse"
+      ]
+    },
+    "source": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/check-nested-lockfiles.rs",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/check-nested-lockfiles.rs",
+      "bytes": 29777,
+      "mode": 493,
+      "sha256": "7d3355260aab61a362fffd5b568867309b741497c3837b9e9f841583ff99b0e0",
+      "device": 48,
+      "inode": 796870982,
+      "mtime_ns": 1789661008274291436,
+      "roles": [
+        "compiler-emitted script dependency input",
+        "original source of generated rust-script package"
+      ],
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/be776c6e0dc0044fb82ec5a8/original-script.rs"
+    },
+    "dependency_file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8.d",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8.d",
+      "bytes": 331,
+      "mode": 420,
+      "sha256": "b4eee261760e5d7a4052282073265cf7ac8ea5dca4fda9e77c6ccfc4b3da1f03",
+      "device": 49,
+      "inode": 397354581,
+      "mtime_ns": 1789673133386422250,
+      "roles": [
+        "compiler-emitted source dependency file"
+      ],
+      "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8/executable.d"
+    }
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build-script-build",
+      "bytes": 440976,
+      "mode": 493,
+      "sha256": "fa642215fad0d73594ef99696dd4a8e6873e2f478d05ddadc4408d6a0f96441f",
+      "device": 49,
+      "inode": 397391231,
+      "mtime_ns": 1789673535135795390,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build_script_build-168875ed329b06d3.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.104/build.rs",
+        "bytes": 6936,
+        "mode": 420,
+        "sha256": "89d1baedcff59822ed692d3a33f131c211a213bdec33c83f68b54110d9c64223"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/anyhow-168875ed329b06d3/build_script_build-168875ed329b06d3"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build-script-build",
+      "bytes": 443720,
+      "mode": 493,
+      "sha256": "c49d9a7ee14845a47cf8814e59ff19156d204b23451b24e27fb0e42d228f940c",
+      "device": 49,
+      "inode": 397390234,
+      "mtime_ns": 1789673527362788038,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build_script_build-a789441236726915.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/generic-array-0.14.7/build.rs",
+        "bytes": 146,
+        "mode": 420,
+        "sha256": "08fa30c4a2c1ad24fe5f987e721dfb20131f45ea5b5dc3e836dcf88a8e33248c"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/generic-array-a789441236726915/build_script_build-a789441236726915"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build-script-build",
+      "bytes": 354864,
+      "mode": 493,
+      "sha256": "a6545bfc72f67b7352ea8d4ab39c8ba8dc578713270e0650f53ea6111e51210d",
+      "device": 49,
+      "inode": 397393541,
+      "mtime_ns": 1789673546157805816,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build_script_build-8a9c7e59243f4229.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/build.rs",
+        "bytes": 446,
+        "mode": 420,
+        "sha256": "662faa06d7b2a9c5bea2c17a127a90e00b9f9b31105b0360da516e47cf816e95"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/getrandom-8a9c7e59243f4229/build_script_build-8a9c7e59243f4229"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build-script-build",
+      "bytes": 454968,
+      "mode": 493,
+      "sha256": "5821faf967b37db37831c823fb476a54a368e8cbb6ecac7c31865fd8fc2e823f",
+      "device": 49,
+      "inode": 397389818,
+      "mtime_ns": 1789673525679786446,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build_script_build-60a4793546b20624.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/build.rs",
+        "bytes": 12792,
+        "mode": 420,
+        "sha256": "e47f4a6762799b6e69cefc7acdb3291df828010e4de20609f7378f9c94ea29e6"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/libc-60a4793546b20624/build_script_build-60a4793546b20624"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build-script-build",
+      "bytes": 520096,
+      "mode": 493,
+      "sha256": "a656e9910d6690095b089b22418467536f3f4d038acb22d5107950f7e3847123",
+      "device": 49,
+      "inode": 397390507,
+      "mtime_ns": 1789673530131790657,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build_script_build-3576ccc6695fae61.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memoffset-0.9.1/build.rs",
+        "bytes": 784,
+        "mode": 420,
+        "sha256": "0ddaae191a4091fe1318177d12244ff0dbabc17a18f25a54059f4badc9a20876"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/memoffset-3576ccc6695fae61/build_script_build-3576ccc6695fae61"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build-script-build",
+      "bytes": 423864,
+      "mode": 493,
+      "sha256": "71b5dbc3f7150444e869d4fdfb24c0528dd7eb18f0cf738e542f2709eaede475",
+      "device": 49,
+      "inode": 397390664,
+      "mtime_ns": 1789673531468791922,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build_script_build-c62d6c2f6782c2b4.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nix-0.30.1/build.rs",
+        "bytes": 1347,
+        "mode": 420,
+        "sha256": "b41a7d4331f46c610c5f2bcb151894b5cf49527677d39174223c634c0d7162ed"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/nix-c62d6c2f6782c2b4/build_script_build-c62d6c2f6782c2b4"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build-script-build",
+      "bytes": 520336,
+      "mode": 493,
+      "sha256": "4d81684c5f38df4f1067f7cffaecd2639957a3e653c71519eb2dbf1dabe34973",
+      "device": 49,
+      "inode": 397390776,
+      "mtime_ns": 1789673532112792531,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build_script_build-94a754cf22ab07d8.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19/build.rs",
+        "bytes": 160,
+        "mode": 420,
+        "sha256": "d3969209fc1c9d201c66ed11820d0b328600d75b3971f8ceebeab04900bc0587"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/num-traits-94a754cf22ab07d8/build_script_build-94a754cf22ab07d8"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build-script-build",
+      "bytes": 406928,
+      "mode": 493,
+      "sha256": "b920d69c8ab74a899d7e69c871bb6d5fbae867e470c72b8be68b33a9f79a177f",
+      "device": 49,
+      "inode": 397390804,
+      "mtime_ns": 1789673532170792586,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build_script_build-94a54ef6dda938bb.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/paste-1.0.15/build.rs",
+        "bytes": 1012,
+        "mode": 420,
+        "sha256": "dba46ae4291317fb644ba2143f44eaf54a8ab946ba1367a33d055d694715f68a"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/paste-94a54ef6dda938bb/build_script_build-94a54ef6dda938bb"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build-script-build",
+      "bytes": 443920,
+      "mode": 493,
+      "sha256": "062be535c789af66a53d6a2b6646617d88f045882bd63907e793b3559be42eb2",
+      "device": 49,
+      "inode": 397389535,
+      "mtime_ns": 1789673523708784581,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build_script_build-42d0306140dba9a7.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.107/build.rs",
+        "bytes": 10277,
+        "mode": 420,
+        "sha256": "baeb20b52f6b536be8657a566591a507bb2e34a45cf8baa42b135510a0c3c729"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/proc-macro2-42d0306140dba9a7/build_script_build-42d0306140dba9a7"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build-script-build",
+      "bytes": 406656,
+      "mode": 493,
+      "sha256": "1f912142b6cfda0162e0453bada005d0a0abd495b31e8084724a4fe5faf537ad",
+      "device": 49,
+      "inode": 397389521,
+      "mtime_ns": 1789673523685784560,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build_script_build-8fd6d312e547734e.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.47/build.rs",
+        "bytes": 882,
+        "mode": 420,
+        "sha256": "cd6808c02e476b09a520105e2c6f6d325cccb1ecd542cbbcc836a0ae6f6fb0f1"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/quote-8fd6d312e547734e/build_script_build-8fd6d312e547734e"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build-script-build",
+      "bytes": 355512,
+      "mode": 493,
+      "sha256": "35fa2bed54efc3ea3344e8acd1c75109cf180ae5b126035d22976038e277af87",
+      "device": 49,
+      "inode": 397390814,
+      "mtime_ns": 1789673532179792594,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build_script_build-ed5f82c473ca7fff.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/radium-0.7.0/build.rs",
+        "bytes": 4372,
+        "mode": 420,
+        "sha256": "198e126042203936db2a99e9440569f3b5ff0f8bd9b3648e3b79807e26a82591"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/radium-ed5f82c473ca7fff/build_script_build-ed5f82c473ca7fff"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build-script-build",
+      "bytes": 445488,
+      "mode": 493,
+      "sha256": "b02e2e03c194dabfbb01223cb27828d668a3947a255ceac4c0f7c9f19953bba0",
+      "device": 49,
+      "inode": 397390161,
+      "mtime_ns": 1789673527187787872,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build_script_build-62f1443b2e640e23.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.5/build.rs",
+        "bytes": 10508,
+        "mode": 420,
+        "sha256": "f7609b919173e7121493266d0f89db724a1e47bb105ebd05397f869639603eec"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/rustix-62f1443b2e640e23/build_script_build-62f1443b2e640e23"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build-script-build",
+      "bytes": 423984,
+      "mode": 493,
+      "sha256": "22784ad1e2f684c55061a45598171a6f01f996dd13b19569c67cc1b72bb4997f",
+      "device": 49,
+      "inode": 397389782,
+      "mtime_ns": 1789673525546411655,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build_script_build-1e172df5c1a329f0.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/build.rs",
+        "bytes": 2471,
+        "mode": 420,
+        "sha256": "e2ea6a7a82f5404c3e28cb055883c737ee7903367a10206fbb47b75c009f0eb3"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde-1e172df5c1a329f0/build_script_build-1e172df5c1a329f0"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build-script-build",
+      "bytes": 426288,
+      "mode": 493,
+      "sha256": "5456f3a78acc83b3a17bb317d0e0fd2007b381cb2f06de390954f6f4675eca8c",
+      "device": 49,
+      "inode": 397389595,
+      "mtime_ns": 1789673523823162339,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build_script_build-13e115e5ce1c7652.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.229/build.rs",
+        "bytes": 4252,
+        "mode": 420,
+        "sha256": "7bc6b1eec8913ff4cd8e4b9b92cd04a82a4f38beb30a0b73a64c1e6e49f07b5f"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_core-13e115e5ce1c7652/build_script_build-13e115e5ce1c7652"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build-script-build",
+      "bytes": 340592,
+      "mode": 493,
+      "sha256": "3f5a53716bf9d069c249052f4c6e2dafe82ec8d440a9b2642e0457838117e5a1",
+      "device": 49,
+      "inode": 397390854,
+      "mtime_ns": 1789673532217792630,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build_script_build-0a15e695e2e140f9.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.151/build.rs",
+        "bytes": 1206,
+        "mode": 420,
+        "sha256": "a681e754be844c7dbef957f5d2d00b01f37c5dca160ef1055a8d8f975697a881"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/serde_json-0a15e695e2e140f9/build_script_build-0a15e695e2e140f9"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build-script-build",
+      "bytes": 332912,
+      "mode": 493,
+      "sha256": "c9ad05dd09478149b519aa6a44bb234450133739ed2b7a37ee97835e1d0a33bc",
+      "device": 49,
+      "inode": 397391248,
+      "mtime_ns": 1789673535177795430,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build_script_build-75c77dda53a01fd4.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/signal-hook-0.4.4/build.rs",
+        "bytes": 327,
+        "mode": 420,
+        "sha256": "e719e68acbead2e04ce90a52a227839020d8c7884c2a6db05f65f89dc28273e2"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/signal-hook-75c77dda53a01fd4/build_script_build-75c77dda53a01fd4"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build-script-build",
+      "bytes": 340544,
+      "mode": 493,
+      "sha256": "82a17fbfc3b17a68b390997c309dfb66238d7a506f47cdf6332c2ef5368ecd44",
+      "device": 49,
+      "inode": 397390572,
+      "mtime_ns": 1789673531022791500,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build_script_build-032901c1b55d7524.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syscalls-0.6.18/build.rs",
+        "bytes": 669,
+        "mode": 420,
+        "sha256": "daaf97b5cbc309b67eb6b43086b1855a8feb5851ec9e4e725a29604102ece5ac"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/syscalls-032901c1b55d7524/build_script_build-032901c1b55d7524"
+    ]
+  },
+  {
+    "kind": "Cargo build-script executable",
+    "file": {
+      "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build-script-build",
+      "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build-script-build",
+      "bytes": 409840,
+      "mode": 493,
+      "sha256": "d1af90569b76850cfa43aae7db4f54920196ca6aa68d7b5216a5561f7166ff43",
+      "device": 49,
+      "inode": 397390604,
+      "mtime_ns": 1789673531119791592,
+      "roles": [
+        "existing Cargo build-script executable or output"
+      ]
+    },
+    "execution_claim": "Existing reusable command; presence is not an exact historical invocation record",
+    "depfile": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build_script_build-858beb93a7e433cc.d",
+    "source_inputs": [
+      {
+        "path": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zmij-1.0.23/build.rs",
+        "bytes": 1362,
+        "mode": 420,
+        "sha256": "ad320bc635887879bdbbf1b9322da4a157ec2c5a4243bd7c2cf9b6884a3b2a41"
+      }
+    ],
+    "same_inode_executable_aliases": [
+      "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build_script_build-858beb93a7e433cc"
+    ]
+  }
+]

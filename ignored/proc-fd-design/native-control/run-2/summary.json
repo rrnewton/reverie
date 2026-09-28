@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "fixture_sha256": "172c00328e9abe39904d946ac990a37e07268eb3786b03833611f5742a2a9a2d",
+  "scope": "Native fdinfo observation control only; no backend implementation or parity claim.",
+  "observed": [
+    {
+      "step": "compile",
+      "exit_code": 0,
+      "cpu_usage_nsec": 159887000,
+      "elapsed_seconds": 0.689587003
+    },
+    {
+      "step": "native",
+      "exit_code": 0,
+      "cpu_usage_nsec": 33236000,
+      "elapsed_seconds": 0.526508659
+    }
+  ]
+}

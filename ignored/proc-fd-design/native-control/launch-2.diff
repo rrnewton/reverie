@@ -1,0 +1,22 @@
+--- launch.py
++++ launch-2.py
+@@ -7,8 +7,8 @@
+ import subprocess
+ 
+ HERE = Path(__file__).resolve().parent
+-PLAN = HERE / 'plan.json'
+-PLAN_SHA256 = '5fef719f0b6fcc4f3e3da6731c6506d8349e89ebb1e4b034f74a0df12f0665b8'
++PLAN = HERE / 'plan-2.json'
++PLAN_SHA256 = 'e2bef0893b6b83e7e14faaafaa9e6c1ea6ba58c3163dde448a5542fd9c29f651'
+ 
+ 
+ def require(condition, message):
+@@ -54,7 +54,7 @@
+     plan = json.loads(PLAN.read_text())
+     check_inputs(plan)
+     root = Path(plan['run_root'])
+-    require(root == HERE / 'run-1', 'unexpected output destination')
++    require(root == HERE / 'run-2', 'unexpected output destination')
+     require(not root.exists() and not root.is_symlink(), 'retain every prior measurement')
+     require([step['name'] for step in plan['steps']] == ['compile', 'native'], 'unexpected stages')
+     root.mkdir(mode=0o700)

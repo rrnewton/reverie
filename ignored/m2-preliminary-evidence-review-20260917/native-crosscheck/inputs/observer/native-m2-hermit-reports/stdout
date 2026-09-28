@@ -1,0 +1,23 @@
+
+running 18 tests
+test canonical_verdict::tests::a_located_record_does_not_require_its_bounding_siblings ... ok
+test canonical_verdict::tests::a_malformed_comparison_object_is_still_refused_at_parse ... ok
+test canonical_verdict::tests::a_missing_comparison_field_is_refused_rather_than_defaulting_to_none ... ok
+test canonical_verdict::tests::a_no_result_report_is_still_inadmissible_and_names_the_real_reason ... ok
+test canonical_verdict::tests::a_real_no_result_report_parses_instead_of_reading_as_unreadable ... ok
+test canonical_verdict::tests::a_report_without_the_divergence_position_still_parses ... ok
+test canonical_verdict::tests::an_earlier_divergence_reports_a_smaller_position ... ok
+test canonical_verdict::tests::brackets_every_canonical_match_requirement ... ok
+test canonical_verdict::tests::canonical_match_rejects_unequal_counts_without_rewriting_history ... ok
+test canonical_verdict::tests::comparison_record_envelope_is_required_and_unknown_values_are_refused ... ok
+test canonical_verdict::tests::current_comparison_requires_every_producer_field_by_name ... ok
+test canonical_verdict::tests::current_raw_reports_reject_duplicates_and_preserve_required_fields ... ok
+test canonical_verdict::tests::divergence_position_survives_the_parse ... ok
+test canonical_verdict::tests::infrastructure_error_is_distinct_from_no_result_and_requires_a_positive_count ... ok
+test canonical_verdict::tests::readable_object_with_unreadable_nested_predicate_is_refused ... ok
+test canonical_verdict::tests::runtime_totals_survive_the_typed_report_parse ... ok
+test canonical_verdict::tests::typed_no_result_reason_round_trips_and_unknown_values_are_refused ... ok
+test canonical_verdict::tests::unknown_verdict_is_refused_by_the_shared_type ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 367 filtered out; finished in 0.01s
+

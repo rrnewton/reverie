@@ -1,0 +1,57 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/execution-plan.json
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/execution-plan.json
+@@ -63,22 +63,22 @@
+     }
+   ],
+   "read_tools_only": true,
+-  "state": "prepared_under_root_source_review_release_not_executed",
++  "state": "prepared_unexecuted_pending_root_release",
+   "proposed_released_argv": [
+     "/usr/bin/python3",
+     "-B",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/launch-review.py",
+-    "--execute-reviewed-1145835f-fba5d50c"
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/launch-review.py",
++    "--execute-reviewed-d750224c-inventory"
+   ],
+-  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/source/parent",
+-  "candidate_binding_sha256": "b331c29f7f48d7ff43612d31bf8bcedaec7bdb0ee193ce0aae7e56d91e322218",
++  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source/agent-utils",
++  "candidate_binding_sha256": "c2d64862726dfe0d0c62c55108c6b17b86593b4294abfb34cdf6ece5fc5e3aea",
+   "outputs": [
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/launch.json",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/stdout.jsonl",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/stderr.log",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-pair-review-1145835f/exit.json"
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/launch.json",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/stdout.jsonl",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/stderr.log",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/exit.json"
+   ],
+-  "source_scope": "Complete committed parent+AU preservation-classification correction, including full changed source/tests and unchanged canonical authority, process census and typed direct-removal context.",
++  "source_scope": "Only the complete AU114..d750 inventory assertion delta and its unchanged composition with approved114/fba5. Prior literal source verdict retained; no duplicate full semantic review.",
+   "raw_private_transcript_not_input": true,
+   "repositories": {
+     "parent": {
+@@ -94,15 +94,14 @@
+     },
+     "agent-utils": {
+       "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+-      "base": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+-      "head": "1145835fc804f47ae48b29b89009e6937184175a",
+-      "tree": "e470a86697cbb9590c23d45ee5fab9ade12aab01",
++      "base": "1145835fc804f47ae48b29b89009e6937184175a",
++      "head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
++      "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+       "changed": [
+-        "py/wrkslots/cli.py",
+-        "py/wrkslots/tests/test_lifecycle.py"
++        "py/tests/test_packaging_infrastructure.py"
+       ],
+-      "patch_sha256": "c7b39cad7b7813514a5d78f74307be5c9814a3586430dfe8f9acc7696bf60940"
++      "patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0"
+     }
+   },
+-  "actual_evidence_cutoff": "AU corrected focused43 and strict mypy13 passed; earlier four initial-window failures preserved. Parent28 passes in first32-method attempt plus corrected4 passes, production identical. Normal AU make validate pending at freeze and excluded from immutable inputs. No real1839 classifier, cleanup, admission or guest performed."
++  "actual_evidence_cutoff": "Prior combined review APPROVE; original114 normal validation exit2/2967pass1fail retained. Direct updated inventory assertion1pass before commit, exact committed bytes. Normald750 validation pending; no full-suite or real-cleanup claim."
+ }

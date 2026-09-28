@@ -1,0 +1,1116 @@
+{
+  "status": "passed",
+  "error": null,
+  "active_stage": null,
+  "accepted_count": 18,
+  "accepted_vm_count": 0,
+  "accepted_static_count": 18,
+  "unexecuted_count": 0,
+  "unexecuted": [],
+  "observed": [
+    {
+      "stage": "static-elf-05",
+      "test": "leader_exit::failed_worker_preserves_execution_and_cleanup_errors",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.982448481,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 382752000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171153Z-635139.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 635871,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824042609783,
+          "CPUUsageNSec": 382752000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-05/result.json",
+      "result_sha256": "10028cb73ca45841359d2e8bb3e5ebf3d0bdd0f9fe546715e254c2c50dd58ffa",
+      "stdout_bytes": 192,
+      "stdout_sha256": "8d39503a0e63e20466ac04394c726449dbf10ec15b499dacb98c3b70e4ce2f0e",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "59d326da871d4df13c053b371a6552947fca258182032be7d875ab95a0349357",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171153Z-635139.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-06",
+      "test": "leader_exit::later_group_exit_preserves_worker_direct",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 2.502865124,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 322817000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171156Z-640207.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 641122,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824045658063,
+          "CPUUsageNSec": 322817000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-06/result.json",
+      "result_sha256": "e42f6942e2bc104fc5acd9706ea36d39035d11dbc7989d21d1dffa9683cf41b6",
+      "stdout_bytes": 180,
+      "stdout_sha256": "d23621ca7e3e11e6dcf17a387a81a97f7af1d386a1586eeecd5b86f0236c9fcc",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "d56db920aafbbfa0750f332e2363e89e06ed52968d747556810e77dc69ab14d4",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171156Z-640207.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-07",
+      "test": "leader_exit::later_group_exit_preserves_worker_tool",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.845704649,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 321437000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171200Z-647364.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 647592,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824049853694,
+          "CPUUsageNSec": 321437000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-07/result.json",
+      "result_sha256": "a4f62a765967a117df33225e0c00b4cbc9b91070a480b96877498a184c190eab",
+      "stdout_bytes": 178,
+      "stdout_sha256": "1ab7d45d6185ffb8961a6dd0151a2409d5f7661c15e5a04cb4addc89ca3289e3",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "db0bcf4fcea0ca26b68763b95cca3c460b92880d38edd40c7865121c65be5601",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171200Z-647364.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-08",
+      "test": "leader_exit::leader_exit_preserves_pending_worker_start_callback",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.824264512,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 323484000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171203Z-650896.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 651352,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824052581835,
+          "CPUUsageNSec": 323484000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-08/result.json",
+      "result_sha256": "02b112383647bea01b6ad173b31e8327d5aeb04bf4c23197d84a743c1d9a4ba4",
+      "stdout_bytes": 191,
+      "stdout_sha256": "9078465acd21639a8f5ef1b0cbf50e63dca0b7097a94eeb257c836356c041e5f",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "835a953478dafcaf512768af9fa7bf6472edb9e2ea4e6dae56518fa7fca85ade",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171203Z-650896.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-09",
+      "test": "leader_exit::panicked_worker_interrupts_natural_join_without_losing_panic",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 1.103983984,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 389774000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171206Z-653788.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 654518,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824055299416,
+          "CPUUsageNSec": 389774000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-09/result.json",
+      "result_sha256": "696b2b0c279e86887929edbcd124834c3f1c5948ec399ee7146939f4ec0e2186",
+      "stdout_bytes": 200,
+      "stdout_sha256": "f798add45969e9af3be08bad2064698d5a2d657f4a4832d6a9f8e454f02b8579",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "3a83f0048ad25622b146e2c2b2ce797a15ef53a5d46a25e2864eafb686ee5814",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171206Z-653788.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-10",
+      "test": "leader_exit::parent_wait_observes_final_worker_status_after_direct_child_completion",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.958228068,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 369892000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171209Z-657570.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 658160,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824058282055,
+          "CPUUsageNSec": 369892000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-10/result.json",
+      "result_sha256": "310de308cf4678fc61cdc88bf5070be059cde040b0ebfad4dc8bb9199b3d216a",
+      "stdout_bytes": 210,
+      "stdout_sha256": "aaa028339c2ef1c8153f7875f9c37aa22259bfcc7d992df576d4997189ab2ed4",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "4e9e2222e6d93513b62c63d102905e0817bbc6ef120bc534b155d0e8c67cd0f5",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171209Z-657570.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-11",
+      "test": "leader_exit::parent_wait_observes_final_worker_status_tool",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 1.403621178,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 387099000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171212Z-660292.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 661648,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824061467223,
+          "CPUUsageNSec": 387099000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-11/result.json",
+      "result_sha256": "068e84691ecf57bf5d98d0586d621da02d6e4d4d99aeca7eb1efc35c69e5dcb5",
+      "stdout_bytes": 185,
+      "stdout_sha256": "80c14722a8ca8f335fe5afc7d11011bf11433c14a82a8fb4225463c45cf6b80b",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "c0bc8288373d8312672efea5f8b3055ca0ad1cd1f6d5958955b8e26ffde34cba",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171212Z-660292.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-12",
+      "test": "leader_exit::process_status_precedes_host_join_order",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.906197222,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 379113000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171215Z-665979.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 666123,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824064401128,
+          "CPUUsageNSec": 379113000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-12/result.json",
+      "result_sha256": "5823df974202509a7fea37bf1596bbfe779864b4be483140c09638105a51d332",
+      "stdout_bytes": 179,
+      "stdout_sha256": "738667a74932fe056244692c4fbb0ad4dd8b2159b62e236f9b3dbe16f08d12a7",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "d3c6f3b552f082a22a28e2a79b8a9b432ff6b74ece4dba09b4fbcb7a783ca22f",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171215Z-665979.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-13",
+      "test": "leader_exit::pthread_exit_preserves_worker_direct",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.909595736,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 368188000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171218Z-668222.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 668421,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824067230625,
+          "CPUUsageNSec": 368188000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-13/result.json",
+      "result_sha256": "1bde5404c3af834cf05c27d70b4413e500f3ba511bc829ab53d8cd1e9175a834",
+      "stdout_bytes": 176,
+      "stdout_sha256": "3fef46ce2420dabe87dad9048e6264ed6f29af83b2436a6d65a981e9c814b623",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "910347e63bac6712b076c7f61e9696cbc3e69cb62d160f3cd668df0ecd6ba129",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171218Z-668222.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-14",
+      "test": "leader_exit::pthread_exit_preserves_worker_tool",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.926362314,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 385007000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171220Z-672109.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 672539,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824070046469,
+          "CPUUsageNSec": 385007000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-14/result.json",
+      "result_sha256": "cb02868c8fbb0124998dbf4d4e4a40aa28956b99feb09e0ce5fe5b48e9f52053",
+      "stdout_bytes": 174,
+      "stdout_sha256": "5ccc92b43c2e57943beba603496b09d43d1a0dc0bd12ae84d6df44bee68e6d32",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "e02b62180dad670924ffa8f2fd08329d5dc7912be196acad163b67d5a7f971c9",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171220Z-672109.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-15",
+      "test": "leader_exit::raw_exit_drains_nested_worker_direct",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.962432482,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 409146000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171223Z-675224.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 675558,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824072832720,
+          "CPUUsageNSec": 409146000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-15/result.json",
+      "result_sha256": "9a16defb51ef7d9892f420b2aaded4888356d9eda62be696976fdd1610fd3542",
+      "stdout_bytes": 176,
+      "stdout_sha256": "e2be4332a4fbf71da6c166948824f5a731a3a4d6cf43ea307130bf2b99764773",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "d7165beaf63076091d358d7ec271ae41cb545d403c4cd95535e0330358867d69",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171223Z-675224.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-16",
+      "test": "leader_exit::raw_exit_drains_nested_worker_tool",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.974184231,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 411004000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171226Z-677902.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 678187,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824075701611,
+          "CPUUsageNSec": 411004000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-16/result.json",
+      "result_sha256": "23cf68adb7c4e240f8356142cd2c1feffecf6db1218b7aa279c31a3317fcfaee",
+      "stdout_bytes": 174,
+      "stdout_sha256": "bd6b80380c18eb28d0f628500bbef7c02b57653b53fc011de5aa44e42336df7d",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "4c802b22bdaef86feeb6619dc63b8178210ab1396311a898934850aed6ce2e5a",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171226Z-677902.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-17",
+      "test": "leader_exit::raw_exit_preserves_worker_direct",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.841527737,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 318575000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171229Z-681574.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 681920,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824078575359,
+          "CPUUsageNSec": 318575000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-17/result.json",
+      "result_sha256": "17b40928bd00344a904d0e8083482044be998b58f54ab876a5a19b78f5db9db1",
+      "stdout_bytes": 172,
+      "stdout_sha256": "ccee4d4b73c0ba76fc7a593ea43cfc8ca6ccec7680c379f190a45b3cc862c7f9",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "70512f7871f6f168c13c90af5285b179d41e6e04da1142b0af1a3ac3eefa712c",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171229Z-681574.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-18",
+      "test": "leader_exit::raw_exit_preserves_worker_tool",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.877145615,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 326551000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171232Z-684557.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 685437,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824081315558,
+          "CPUUsageNSec": 326551000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-18/result.json",
+      "result_sha256": "d995e9b0740e60d91f08f2e1dc22ec69424085ad6e853377bc8a804153532a74",
+      "stdout_bytes": 170,
+      "stdout_sha256": "2e92c70cc8bbbe7987b2484160315b7fc2222296de70c96c8087228cd1697416",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "7882b9050998bd3b6e387e33b4b04f147a2a67cb1a48374bd057e9fe5e4c27e5",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171232Z-684557.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-19",
+      "test": "terminal_fork::backend_exec_failure_joins_live_fork",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 1.020705433,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 369766000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171235Z-689357.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 690067,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824084097934,
+          "CPUUsageNSec": 369766000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-19/result.json",
+      "result_sha256": "c568e2db8910a0057f43ca95a5958cb5d88c45ef68bc0d48affdab8578c9fdd9",
+      "stdout_bytes": 356,
+      "stdout_sha256": "982dcf889b17f6bdbaf5f95f4becefd69d33d82dac78acd6ce1bb13f1963c44d",
+      "stderr_bytes": 954,
+      "stderr_sha256": "eb2614a599e9fe7c94e624f7d32a7cd6d6145dcaa6a0ba6d44fc7cd8ce4f2593",
+      "admission_sha256": "cc32b78bdb839afe2cdb39e10064b981efda9e78a8c8575a0fd8cb55bca83fc8",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171235Z-689357.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-20",
+      "test": "terminal_fork::backend_exec_failure_preserves_child_and_owner_errors",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 1.405312934,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 370343000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171237Z-694340.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 695672,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824087441288,
+          "CPUUsageNSec": 370343000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-20/result.json",
+      "result_sha256": "d3ce33d85ed1c8ddc905380e732b1c48fd19601992985d06e1f3eb173894ed39",
+      "stdout_bytes": 390,
+      "stdout_sha256": "74b11a2406a09d62ffb8af033b13057360920e2ed892063f4c72168f5d263cfa",
+      "stderr_bytes": 1058,
+      "stderr_sha256": "1265bb8e33b6f1f66abdf48ead3925f54ef19d981a2a3678d80e3c70a43deea8",
+      "admission_sha256": "b9753f2339ace896369f6505cd83e8d4bc97c5d83e1366c0ae8fd5661258f55a",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171237Z-694340.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-21",
+      "test": "terminal_fork::injected_exec_failure_joins_live_fork",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 1.011869312,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 369739000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171241Z-699203.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 699409,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824090333213,
+          "CPUUsageNSec": 369739000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-21/result.json",
+      "result_sha256": "8137630023b86b1d3552b510fbe08eda0911f977bbd67ae0df6556a94a9c9243",
+      "stdout_bytes": 358,
+      "stdout_sha256": "042d541e835af8971e9c6bf80530624bcadbc6693b99dc771eea5d17e24d73a1",
+      "stderr_bytes": 954,
+      "stderr_sha256": "4ac1a3362fd7f31bd4580112631e52be2ad31d148bef9fefb6542df768406d4b",
+      "admission_sha256": "f174c1b50cf16a875bec4dbd2e97262ee876c097ba3350053f1198d28ae36681",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171241Z-699203.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "static-elf-22",
+      "test": "terminal_fork::injected_exec_failure_preserves_child_and_owner_errors",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 0.992371212,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 371709000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T171244Z-702713.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 703741,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1824093227900,
+          "CPUUsageNSec": 371709000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-qualification-execution-v5/static-elf-22/result.json",
+      "result_sha256": "71fca4d99f2e990d92637bf1b3ed88c6b7b83241bf6a0c980bdd9bb99356b629",
+      "stdout_bytes": 392,
+      "stdout_sha256": "c6e7ac4979c1a443de1c04650fe7705037f42813ab7acba6cc0c12d5e6bbfdda",
+      "stderr_bytes": 1058,
+      "stderr_sha256": "8db81af11696d170f98a1239f7cee5f175fbf2ddc4004ae6071cbd8d996255e7",
+      "admission_sha256": "890e479984d4f6ffb76fa2db43b263c88d9c940955796f0631c111b2ca7a12e3",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T171244Z-702713.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    }
+  ],
+  "source_binding_sha256": "e8f8b012bb8a570b853f6390d5ad0400eace79233b761e4c284075cd4cb8cea7",
+  "plan_sha256": "c02613357b235659aeb685245207f333c210bf603d0db90749101a81597dc5fc",
+  "caller_sha256": "eadfd1530021f7129282c43a6f7086f59b69df84bbdfb2364de64d69bdb3a184",
+  "launch_sha256": "2e7498839fd081240c67a246dcb18fcaac23344eaf8d15af9099e300bc959d08",
+  "source_and_artifact_checks_after": "Full source/explicit inputs and both compiler-emitted executables still match. Prior record bytes retained.",
+  "scope": "Reverie selected real VM/static execution only; no Hermit strict INFO, determinism or canonical parity claim."
+}

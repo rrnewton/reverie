@@ -1,0 +1,246 @@
+{
+  "source_checks": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/WHATS_WORKING.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/WHATS_WORKING.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/SCORECARD.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/SCORECARD.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/ci/compat-envelope/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/ci/compat-envelope/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/demos/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/demos/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/docs/QEMU_BOOT.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/docs/QEMU_BOOT.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/docs/SABRE_COMPATIBILITY.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/docs/SABRE_COMPATIBILITY.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/docs/E9PATCH_COMPATIBILITY.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/docs/E9PATCH_COMPATIBILITY.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/docs/TESTING_ENVIRONMENTS.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/docs/TESTING_ENVIRONMENTS.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/backend-parity/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/tests/backend-parity/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/bin/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/tests/bin/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/e2e/determinism-stress/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/tests/e2e/determinism-stress/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/e2e/manifests/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/tests/e2e/manifests/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/reproducible-builds/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/tests/reproducible-builds/README.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/demos/05-qemu-busybox.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/demos/05-qemu-busybox.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/docs/USER_GUIDE.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/docs/USER_GUIDE.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/docs/ERROR_CATALOG.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor/docs/ERROR_CATALOG.md",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/scripts/manifest-to-commands.rs",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/e2e/lib/applications/common.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/reproducible-builds/run.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/qemu-boot/strict_l2_test.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/base805/tests/backend-parity/run_matrix.py",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/scripts/manifest-to-commands.rs",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/e2e/lib/applications/common.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/reproducible-builds/run.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/qemu-boot/strict_l2_test.sh",
+      "matched": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donorM2/tests/backend-parity/run_matrix.py",
+      "matched": true
+    }
+  ],
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/CONSUMER-INPUTS.json",
+      "bytes": 5365,
+      "sha256": "e380f1125147b3738a3ab4d61fbaf72c02d845e2fc1a8d8677a9a67a942de2f3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/DOC-HITS.json",
+      "bytes": 20284,
+      "sha256": "80efcc42d2a2376c1c4078721b3b0e4299c9852a1440a5554901eac16743e85e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/DOC-INPUTS.json",
+      "bytes": 14219,
+      "sha256": "cba71e365b65d93ec1c1ffb102ce27890ffb04e13fdf4223fbe4baa86aa245ce"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/REPORT.md",
+      "bytes": 9156,
+      "sha256": "bfdf559d35c8dffdf32504e0f520535edda0547accba7402f192d8bfdf2207f6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/consumer-scripts_manifest-to-commands.rs.patch",
+      "bytes": 9928,
+      "sha256": "ca7f47346cfcf404e6356c12ab5f730b10cb2724bbe02b41ccba824e3c932b7f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/consumer-tests_e2e_lib_applications_common.sh.patch",
+      "bytes": 5096,
+      "sha256": "e4840526745ae16191d71552a52681b321deb6a3359f39540a2e78c462a7579f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/consumer-tests_e2e_lib_applications_test_verdict_discrimination.sh.patch",
+      "bytes": 3493,
+      "sha256": "8a2914942fbc5fe05306d12d501d02bc1144439fdfbf2df197c03fccb6e03220"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/consumer-tests_reproducible-builds_run.sh.patch",
+      "bytes": 1124,
+      "sha256": "8701465c8bfe866149f3197b23c83852710e880482d564188a8592ae7e507fd2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor-M2-commit.txt",
+      "bytes": 2824,
+      "sha256": "70251bc39425b607f657efe7f3ebbe2d867b95637810b64e3b338e5676315662"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor-M2.patch",
+      "bytes": 385371,
+      "sha256": "c57b31a64a6ac9d0ea068a4ce6a5c618d5346b02c75a6043f8f0d9b833526ece"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-donor-scope-20260917/donor-history.txt",
+      "bytes": 19932,
+      "sha256": "0e739bfae382d06a5c8f40b5f296843a690546926a95330cedca126c192f27e1"
+    }
+  ],
+  "scope": "read-only donor disposition; no execution or closure"
+}

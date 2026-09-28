@@ -1,0 +1,100 @@
+{
+  "operations": [
+    {
+      "operation": "hermit-3066-files",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.5732364158611745,
+      "ended_at": "2026-09-17T20:25:25.443422+00:00"
+    },
+    {
+      "operation": "hermit-3066",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.7231021618936211,
+      "ended_at": "2026-09-17T20:25:36.321105+00:00"
+    },
+    {
+      "operation": "hermit-3069-files",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.6221095991786569,
+      "ended_at": "2026-09-17T20:25:25.543560+00:00"
+    },
+    {
+      "operation": "hermit-3069",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.6782422191463411,
+      "ended_at": "2026-09-17T20:25:36.225994+00:00"
+    },
+    {
+      "operation": "hermit-main",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.41662854910828173,
+      "ended_at": "2026-09-17T20:24:47.433956+00:00"
+    },
+    {
+      "operation": "hermit-open",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.6705138948746026,
+      "ended_at": "2026-09-17T20:24:47.772652+00:00"
+    },
+    {
+      "operation": "reverie-578",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.7250927439890802,
+      "ended_at": "2026-09-17T20:24:47.786171+00:00"
+    },
+    {
+      "operation": "reverie-main",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.423294564941898,
+      "ended_at": "2026-09-17T20:24:47.383162+00:00"
+    },
+    {
+      "operation": "reverie-open",
+      "result_hash_and_bound_checks": true,
+      "exit_code": 0,
+      "wall_seconds": 0.4217878708150238,
+      "ended_at": "2026-09-17T20:24:47.434392+00:00"
+    }
+  ],
+  "current_scope": [
+    {
+      "url": "https://github.com/rrnewton/hermit/pull/3066",
+      "head_sha": "6752f558fdc6049326b763bdb63603762b54aa77",
+      "changed_files": 1,
+      "files": [
+        "scripts/lib/validate_classification.rs"
+      ],
+      "scope": "shared validation classification",
+      "source_review_performed": false
+    },
+    {
+      "url": "https://github.com/rrnewton/hermit/pull/3069",
+      "head_sha": "858a65e93d5ffe289bd6a329a67d62d4ecc42989",
+      "changed_files": 4,
+      "files": [
+        "ci/manifest-plan/src/ledger.rs",
+        "ci/manifest-plan/src/ledger/schema10.rs",
+        "ci/manifest-plan/src/ledger/schema10/tests.rs",
+        "scripts/lib/validate_cell_results.rs"
+      ],
+      "scope": "shared validation cell-verdict provenance; relevant to KVM scorecards",
+      "source_review_performed": false
+    }
+  ],
+  "queue_counts": {
+    "hermit": 19,
+    "reverie": 1
+  },
+  "complete_queues": true,
+  "open_own_reverie_prs": 0,
+  "reverie_578_merged": true,
+  "scope": "read-only queue/input authentication; no source review or product execution"
+}

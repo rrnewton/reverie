@@ -1,0 +1,36 @@
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG payload=[0m[1;48;5;52;31mlef[0m[31mt"[0m
+[32m>"INFO detcore: DETLOG payload=[0m[1;48;5;22;32mrigh[0m[32mt"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG payload=[0m[1;48;5;52;31mlef[0m[31mt"[0m
+[32m>"INFO detcore: DETLOG payload=[0m[1;48;5;22;32mrigh[0m[32mt"[0m
+Done processing logs, differences found.
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+REFUSING to compare: the first log was truncated at the configured size bound (the log ends with the bounded writer's truncation marker). The discarded tail was never written, so no comparison of these files can establish that the runs agree past that point. Re-run with a larger HERMIT_LOG_MAX_BYTES, or 0 to disable the bound. This is a NO-RESULT, not a difference and not a match.
+Split into 5 log messages
+LogMessage { index: 1, text: "INFO detcore: [detcore, dtid 2]  finish syscall: close(2) = Ok(0)", event: None }
+LogMessage { index: 2, text: "DEBUG detcore::scheduler: [sched-step3] advancing committed_time from 946684799165300000 to 946684799205300000", event: None }
+LogMessage { index: 3, text: "INFO detcore::scheduler: [scheduler] >>>>>>>\n\n COMMIT turn 5, dettid 2 using resources {Path(\"/proc/2/fd/1\"): W} at time 946684799205300000", event: None }
+LogMessage { index: 4, text: "INFO detcore: registers [dtid 3]. user_regs_struct { r15: 140737354129904, r14: 0, r13: 1, r12: 946684799000118840, rbp: 140737488344736, rbx: 0, r11: 518, r10: 140737488342434, r9: 0, r8: 1, rax: 0, rcx: 0, rdx: 2, rsi: 0, rdi: 140737354052880, orig_rax: 18446744073709551615, rip: 140737351875567, cs: 51, eflags: 66118, rsp: 140737488344064, ss: 43, fs_base: 0, gs_base: 0, ds: 0, es: 0, fs: 0, gs: 0 }", event: None }
+LogMessage { index: 5, text: "TRACE detcore::scheduler: [scheduler] Guest unblocked (<ivar Go>); clear ivars for the next turn on dettid 2", event: None }

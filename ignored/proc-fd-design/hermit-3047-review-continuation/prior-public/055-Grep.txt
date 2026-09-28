@@ -1,0 +1,58 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01WGaXfpJsD5hkeqK8kfRSWY",
+  "name": "Grep",
+  "input": {
+    "pattern": "pub enum ResourceID|FileContents|derive.*Clone|pub enum Device",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/resources.rs",
+    "output_mode": "content",
+    "-n": true,
+    "-C": 3,
+    "head_limit": 60
+  }
+}
+
+Successful public tool result (exact text below):
+41-// AUTONOMOUS-BOT-IMPLEMENTED
+42-// TODO-HUMAN-REVIEW(PR-1151)
+43-/// An exact slowdown-factor transition recorded at a scheduler commit boundary.
+44:#[derive(PartialEq, Debug, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
+45-pub struct ChaosEpochTransition {
+46-    /// Per-thread absolute logical time at which the new epoch begins.
+47-    pub logical_time: LogicalTime,
+--
+184-///
+185-/// Resource requests may also be asking simply for permission to proceed, as with exit or
+186-/// sleep.
+187:#[derive(PartialEq, Debug, Eq, Clone, Serialize, Deserialize, Hash)]
+188:pub enum ResourceID {
+189-    /// File contents identified by inode.
+190:    FileContents(DetInode),
+191-
+192-    /// File and directory Metadata.  These correspond to inodes, because hardlinks to the same file
+193-    /// still share metadata such as modtimes and permissions.
+--
+325-/// Permission to a device, which behaves like a predefined "inode".
+326-/// These correspond to special files under /dev
+327-#[allow(clippy::enum_variant_names)]
+328:#[derive(PartialEq, Debug, Eq, Clone, Serialize, Deserialize, Hash)]
+329:pub enum Device {
+330-    /// The Stdin, not just from the current process, but from the entire sandboxed job. This
+331-    /// functions similar to a special, predefined inode.
+332-    ContainerStdin,
+--
+346-/// `Resources` is a request to lock zero or more resources so that the thread can perform an action.
+347-///
+348-/// There can only be one outstanding request at a time for a given TID.
+349:#[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
+350-pub struct Resources {
+351-    /// The thread ID requesting the resources.
+352-    pub tid: DetTid,
+--
+474-}
+475-
+476-/// Is the resource to be used for writing, reading or both?
+477:#[derive(PartialEq, Debug, Eq, Clone, Serialize, Deserialize, Hash)]
+478-pub enum Permission {
+479-    /// Read permission.
+480-    R,

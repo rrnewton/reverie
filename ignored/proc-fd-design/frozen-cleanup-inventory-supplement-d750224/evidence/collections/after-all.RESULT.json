@@ -1,0 +1,22 @@
+{
+  "revision": "1145835fc804f47ae48b29b89009e6937184175a",
+  "command": [
+    "/usr/local/fbcode/platform010/bin/python3.12",
+    "-m",
+    "pytest",
+    "--collect-only",
+    "-q",
+    "--strict-markers",
+    "-p",
+    "no:cacheprovider",
+    "-c",
+    "pyproject.toml",
+    "--rootdir=.",
+    "wrkslots/tests/test_lifecycle.py"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ignored/frozen-cleanup/au-lifecycle-inventory/after-source/py",
+  "exit_code": 0,
+  "seconds": 2.854550850111991,
+  "stdout_sha256": "cd5d70661d3ced445ff9d4bd0ce9e238b0cf847719610cc1a57627d0e22db38d",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

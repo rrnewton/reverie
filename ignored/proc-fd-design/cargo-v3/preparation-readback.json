@@ -1,0 +1,20 @@
+{
+  "status": "prepared only; source-v3 not applied, caller not executed",
+  "source_v2_live_unchanged": true,
+  "source_v3_changes_only_named_existing_test": true,
+  "candidate_file_and_surrounding_source_count": 2550,
+  "input_count": 38,
+  "all_input_paths_modes_bytes_match": true,
+  "source_binding_sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496",
+  "caller_sha256": "bfe6ee22f917a430a37a787c069eca21a35a735cefd3a84d5524c6911026cd4a",
+  "plan_sha256": "8bd40f80e45b437eca831376fb1e0326935c8cc8735dcff00ae96c48f56c9cad",
+  "actual_v2_executable_preserved": "40767b9ec0aac5ce2b13b7cae24e9b5e23367566194f683b96460a49324fd2be",
+  "new_run_and_observer_roots_absent": true,
+  "selected_count": 37,
+  "old36_preserved": true,
+  "added_existing_method": "executor::tests::proc_executable_link_marks_unlinked_and_replaced_files_deleted",
+  "test_only_delta_sha256": "107d8831058583ac92ad706c8608d8c245b81a08368cde8a06eea321693bb877",
+  "ast_parse": "passed, no caller execution",
+  "artifact_rustfmt_exit": 0,
+  "scope": "source preparation and readback only; no build/test/guest or runtime verdict"
+}

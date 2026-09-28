@@ -1,0 +1,85 @@
+{
+  "scope": "mode-corrected source composition only; uncompiled, unexecuted and unlanded; no live mutation",
+  "base": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+  "expected_composed_tree": "597bad02a2a18bfb159ea65e191c76b88dd22c82",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/5bc8-to-m2-v10.patch",
+      "bytes": 200081,
+      "mode": "0o644",
+      "sha256": "9d880d6be995f55b6d05173284030d3b1959303f5a68cd88843cf86d2b18709a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/READBACK.json",
+      "bytes": 40514,
+      "mode": "0o644",
+      "sha256": "b9aa8e3c6f8d394ebe1652ca5678acbab82edb87944fd45e8320602b2614198e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/FILES.json",
+      "bytes": 27465,
+      "mode": "0o644",
+      "sha256": "e48c048a9b538f11aa369965df332364b967e856983f953086f5b7c6f7d5b556"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/BASE-TREE.json",
+      "bytes": 298970,
+      "mode": "0o644",
+      "sha256": "ecb5159b83e8b7a01c85b28279ea8d0e2f74a609157daa6824cc6ba175bdca6b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/EXPECTED-TREE.json",
+      "bytes": 299262,
+      "mode": "0o644",
+      "sha256": "dbbc5792240fd9d7cebd2c3f799a1b27fa21a4ce2748f96b5ef8918ce7015194"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/PRESERVED-INPUTS.json",
+      "bytes": 9188,
+      "mode": "0o644",
+      "sha256": "b0e3ceaa1f2eb386ac540f6f7edf7d4f7f75477fce95f5c465ae0ea53a9c5da5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/805-to-5bc-integration.patch",
+      "bytes": 60981,
+      "mode": "0o644",
+      "sha256": "08c084e5d7afa7656dfecc37c02a5173227abf5869d0bf198df56a359e643363"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/MODE-AND-TREE-READBACK.json",
+      "bytes": 41049,
+      "mode": "0o644",
+      "sha256": "80b87db090fc632f3ee92480789554b032853b4406e8a9c8dca6a996cde0efaf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v10-5bc8/HANDOFF.md",
+      "bytes": 2841,
+      "mode": "0o644",
+      "sha256": "f272315e0a5926d3dc7c8cf9c49bc2669d08e4c3b5372c710ff8d682e320e9f9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/PACKET-v10.json",
+      "bytes": 3100,
+      "mode": "0o644",
+      "sha256": "b6a893869b922e911260a8620cb983b89a7e6ff6a810d1e0e7b7eddde9f35620"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/compose-v10-5bc8.py",
+      "bytes": 7499,
+      "mode": "0o644",
+      "sha256": "14d12869b84008a284efdf692c51070cad4f3b26ae98fdc6e38c3e036f12103f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/PACKET.json",
+      "bytes": 3243,
+      "mode": "0o644",
+      "sha256": "eadb35e7dccbff3cae119973942e46d8d7098d239f58500b4555157acdb29464"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/composition-v9-5bc8/PIN-PRESERVATION.json",
+      "bytes": 9768,
+      "mode": "0o644",
+      "sha256": "3f1171b12a8fb43157301206b4b648800e736dcb09f42bd46246e1f576937b38"
+    }
+  ]
+}

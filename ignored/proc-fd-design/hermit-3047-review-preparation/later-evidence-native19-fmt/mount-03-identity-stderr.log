@@ -1,0 +1,11 @@
+   Compiling reverie-memory v0.2.0 (https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9ade)
+   Compiling reverie-process v0.2.0 (https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9ade)
+   Compiling reverie-syscalls v0.2.0 (https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9ade)
+   Compiling safeptrace v0.2.0 (https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9ade)
+   Compiling reverie-core v0.2.0 (https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9ade)
+   Compiling detcore-model v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/detcore-model)
+   Compiling reverie-ptrace v0.2.0 (https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9ade)
+   Compiling hermit-detcore v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/detcore)
+   Compiling detcore-testutils v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/detcore/tests/testutils)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.28s
+     Running unittests src/lib.rs (target/debug/build/hermit-detcore/b0915d524b50eaef/out/detcore-b0915d524b50eaef)

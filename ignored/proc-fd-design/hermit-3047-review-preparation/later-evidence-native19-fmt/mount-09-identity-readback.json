@@ -1,0 +1,38 @@
+{
+  "name": "mount-09-identity",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2455799-1789626191306425037.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 0.165396,
+  "wall_seconds": 0.6045664311386645,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "11e7e526eeaace0be91593b1b9d24a2648dc2122b2633e9a96ee232689db42d1",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "tool_global::tests::raw_zero_is_one_mount_identity_without_descriptor_type_partitioning",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 678
+    }
+  ]
+}

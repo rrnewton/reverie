@@ -1,0 +1,21 @@
+--- a/reverie-kvm/src/runtime.rs
++++ b/reverie-kvm/src/runtime.rs
+@@ -1401,13 +1401,11 @@
+             backend.start_pending_tool_children(executor, &pending_child_starts)?;
+             Ok(CallbackOutcome::ThreadCancelled)
+         }
+-        HandlerOutcome::RunFailed => {
+-            Err(backend.cleanup_unstarted_tool_children_after_error(
+-                executor,
+-                &pending_child_starts,
+-                Error::RunAborted,
+-            ))
+-        }
++        HandlerOutcome::RunFailed => Err(backend.cleanup_unstarted_tool_children_after_error(
++            executor,
++            &pending_child_starts,
++            Error::RunAborted,
++        )),
+         HandlerOutcome::RuntimeError(error) => Err(error),
+     }
+ }

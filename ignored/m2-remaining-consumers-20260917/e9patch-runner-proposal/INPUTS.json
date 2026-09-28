@@ -1,0 +1,60 @@
+[
+  {
+    "kind": "current composed source snapshot",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/validation_dag_static.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/current/ci/manifest-plan/src/validation_dag_static.rs",
+    "bytes": 349470,
+    "sha256": "29b449fa36f7eee28a8d264465c8bd8f86b4b4bd1777b46d5d7a179036945d7c",
+    "mode_octal": "0644",
+    "read_twice_identical": true
+  },
+  {
+    "kind": "immutable Git source",
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "ci/manifest-plan/src/validation_dag_static.rs",
+    "git_entry": "100644 blob 7dfc4a7c5945b3f235dc4b13a4befccd651f83e9\tci/manifest-plan/src/validation_dag_static.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/ci/manifest-plan/src/validation_dag_static.rs",
+    "bytes": 349470,
+    "sha256": "29b449fa36f7eee28a8d264465c8bd8f86b4b4bd1777b46d5d7a179036945d7c"
+  },
+  {
+    "kind": "immutable Git source",
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "ci/check-shard-coverage.sh",
+    "git_entry": "100755 blob c8b7e3a353117f01685960fe6d0f6c0f996b1f7d\tci/check-shard-coverage.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/ci/check-shard-coverage.sh",
+    "bytes": 25561,
+    "sha256": "b1936bd633debf15a773d6120e38e85f5e3c579d497fce5f21c59ecd167b218a"
+  },
+  {
+    "kind": "immutable Git source",
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "tests/backend-parity/run_matrix.py",
+    "git_entry": "100755 blob 06e87de2267ef2376d235312dc6d0441273234a9\ttests/backend-parity/run_matrix.py",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/tests/backend-parity/run_matrix.py",
+    "bytes": 84430,
+    "sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024"
+  },
+  {
+    "kind": "immutable Git source",
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": "ci/dag/validate.json",
+    "git_entry": "100644 blob 0f9e66a86c15e816d6da1e7d0964295fe0ed86dd\tci/dag/validate.json",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/ci/dag/validate.json",
+    "bytes": 2858049,
+    "sha256": "c776274a95d165d40cce5212a4331240d55b6e90061962430f449b11ea010983"
+  },
+  {
+    "kind": "immutable Git source",
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "path": ".github/workflows/ci-portable.yml",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-runner-proposal/immutable/.github/workflows/ci-portable.yml",
+    "bytes": 65813,
+    "sha256": "207b1b6c7c7baf399d9a9ef4934129aa879d7e58b27c6b14fb629aa83af113eb"
+  }
+]

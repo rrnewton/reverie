@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/reverie/contents/reverie-rpc-transport/Cargo.toml?ref=4db9ddb68126ce97ff929c7f30b61a633e48513e"
+  ],
+  "started_utc": "2026-09-17T09:46:57.153169+00:00",
+  "ended_utc": "2026-09-17T09:46:57.478082+00:00",
+  "wall_seconds": 0.3249358511529863,
+  "exit_code": 0,
+  "stdout_bytes": 2801,
+  "stderr_bytes": 0,
+  "stdout_sha256": "f257fe868733f3012c4038109c563adbe24dfd933a2fd5a2e59216ab17cec32b"
+}

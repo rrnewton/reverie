@@ -1,0 +1,47 @@
+{
+  "status": "PREPARED_NOT_EXECUTED_EXTERNAL_CHANGES_REQUESTED",
+  "pr": "https://github.com/rrnewton/reverie/pull/565",
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/gh-merge-verified",
+    "565",
+    "--repo",
+    "rrnewton/reverie",
+    "--run-current-main-copy",
+    "--expect-head",
+    "696f0476aa46cf29e31b947a89379d80b4542ce3",
+    "--receipt",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-1/receipt.json",
+    "--",
+    "--rebase",
+    "--match-head-commit",
+    "696f0476aa46cf29e31b947a89379d80b4542ce3"
+  ],
+  "public_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "reviewed_main": "4866241e15c18bdbd717865c504b9facdcaf1ae0",
+  "expected_tree": "bb2c88a1f0b37e264535693f2b72d77b2502dc5f",
+  "expected_entries": 2562,
+  "required_ancestor": "b3049e54c644e28e2894402a36bb65664ab4508b",
+  "output_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-1",
+  "receipt": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-1/receipt.json",
+  "output_root_absent_at_preparation": true,
+  "attempts": 1,
+  "automatic_retry": false,
+  "post_merge_verification": [
+    "Read actual PR merge state and public head; preserve original branch.",
+    "Fetch actual landed main/merge commit, require exact expected whole tree and b304/main ancestry.",
+    "Require original author field/message and one ordered replay commit; preserve new committer/time separately.",
+    "Require verifier receipt resolves and corroborates exact696, all six changed entries arrived and no absent/moved-on entries.",
+    "If main/head or expected union changed, perform a bounded interaction review rather than infer unchanged approval."
+  ],
+  "pre_release_requirements": [
+    "Root reads prepared artifacts and explicitly releases publication/readiness/merge.",
+    "External final review is CHANGES REQUESTED. Resolve actual objections with recorded source/evidence dispositions and obtain actual external clearance at the exact source before release.",
+    "Canonical native and external exact-head comments are published/read back with actual current GitHub actor permission; any true refusal must be resolved.",
+    "Read current PR state/head/base and main to confirm this prepared union still applies; PR must no longer be draft at merge.",
+    "Do not set GH_MERGE_VERIFIED_REMOTE, GH_MERGE_VERIFIED_SELFCHECK or any guard-bypass/fixture option."
+  ],
+  "admission_scope": "Normal current-main verifier admission and --expect-head remain. Installed gh supports --match-head-commit; it is forwarded after --rebase to bind the merge request itself to the same reviewed head. No whole-DAG receipt prerequisite is added.",
+  "external_review": "Actual external source-v3 final verdict is CHANGES REQUESTED; no approval or release is inferred. Resolve dispositions and obtain an actual acceptable final verdict before any publication/readiness/merge."
+}

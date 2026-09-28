@@ -1,0 +1,19 @@
+{
+  "stage": "vm-01",
+  "test": "vm::tests::fatal_worker_ro_delayed_waiter_qualifies",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "452"
+    ]
+  ],
+  "stdout_sha256": "acabd7149ca676f9ed5775712918b57e308dd41f0783e337a076466e38290872",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "7ced28ab120bab1cc67d1baed4944e93b6e67ca8f0a256627eaf14683b1c6e9b",
+  "cpu_nsec": 455962000,
+  "wall_seconds": 7.134291836
+}

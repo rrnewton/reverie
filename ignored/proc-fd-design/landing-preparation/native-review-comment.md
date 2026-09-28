@@ -1,0 +1,7 @@
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=relay]
+
+APPROVED-AT: codex 696f0476aa46cf29e31b947a89379d80b4542ce3
+
+Relaying the independent native review by kvm_parity_ledger_parent for the complete six-file change, tree b86bfdb0703e96d377007c102eccfa57ba362396. Final review SHA256 9231f5a39c8a538085e9d38f7d4e1aade2ec3334ea6a9efaec8008affe6f182b authenticates source binding 03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496, all 37 selected native passes (0 failures or ignored tests), and Clippy with warnings denied. Actual native/Clippy wall times were 1.017/22.047 seconds. The two production boundary findings and the existing test's private/native identity mismatch are resolved; private alias/nonreuse checks and native object agreement are both retained. No assertion, comparator, selection or failure accounting was weakened.
+
+The earlier compile failure and 35-pass/1-fail result remain preserved. No Hermit/KVM guest or parity result is claimed, and downstream mount-provenance integration for https://github.com/rrnewton/hermit/pull/3047 remains pending. Separate composition review 03100c72e8f8af27a3ea4d956e9b40a37eaa2a2b3aa5e754148bcf47f62b2294 approves replay onto main 4866241e15c18bdbd717865c504b9facdcaf1ae0 only if the resulting tree is bb2c88a1f0b37e264535693f2b72d77b2502dc5f, preserving all 2,562 entries, author/message and the landed b3049e54 ancestry. This native approval does not substitute for the pending external full-source verdict.

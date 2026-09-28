@@ -1,0 +1,91 @@
+{
+  "scope": "complete isolated source preview only; uncompiled, unexecuted and unlanded",
+  "base_commit": "8051335e87104f7cf832204f74920d38416393b2",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/candidate-v9.patch",
+      "bytes": 200081,
+      "sha256": "9d880d6be995f55b6d05173284030d3b1959303f5a68cd88843cf86d2b18709a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/v8-to-v9.patch",
+      "bytes": 7088,
+      "sha256": "2696679393a39c157c6ed568b9ee8682375997ba8099d448bb4b76919d23b05a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/PREVIEW-MANIFEST-v9.json",
+      "bytes": 22195,
+      "sha256": "52b0474c8546a0f72632f929371fb85b053517deea17fcc92b12d6bac789ab3f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/BASE-v9.json",
+      "bytes": 9625,
+      "sha256": "2c708a1df1f43e024a27b4d9fa424135594720d7c1470aa73f48b78e190558bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/INTEGRITY-v9.json",
+      "bytes": 2385,
+      "sha256": "cd93754b7848ea6c019f3369ad42ef5ca20bbbed1b5fad98ff79e673641b6c0f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/AFFECTED-SOURCE-TEST-NAMES-v9.json",
+      "bytes": 5812,
+      "sha256": "9b0efd455df8f6152a84feade1716b6d6a0ec2fe3a91e3464289a28c0fe170fc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/REPORT-v9.md",
+      "bytes": 5810,
+      "sha256": "71cc5ade4719bd10e082f0581fb77412cb808e44ae034cdf9232ee441580639e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/OTHER-MATCHED-CONSUMERS-v9.md",
+      "bytes": 3454,
+      "sha256": "2e9205bb52ae594562990a05089412ce0f54b71893fa4d1d48d34c5fcf0fcaaf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/READER-CONTROL-PLAN-v9.md",
+      "bytes": 3663,
+      "sha256": "9706d60b1500e7dc93cccfd61b99eefb07d8cc3e6f6ee113a7d78a1c079a91ae"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/SOURCE-INPUTS.json",
+      "bytes": 5206,
+      "sha256": "389fdabd9e8498b6d9aef2d05fbb7a0c0cefa328faec1626ba821374473748ff"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/RUNNER-INPUTS.json",
+      "bytes": 1316,
+      "sha256": "8de1f6555306c9c995c3b5e31592e99cb51df8212e864f233b88378955bd5826"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/INTEGRATION-COMMENT-INPUTS.json",
+      "bytes": 995,
+      "sha256": "0f4eeb6fcddb61418ddab251a70304d0ace147e84a34fd0db1b6bfcf877c151c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v9/RESULT.json",
+      "bytes": 2911,
+      "sha256": "d8d904672cd47cbca161695c828d2013cca32241238ec1686553e600cecbee05"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/format-v9.py",
+      "bytes": 3247,
+      "sha256": "2d50d1d426b2efdf8454d2dd6d61bc319d92891d1257eeacdb719b361a46783d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/prepare-v9.py",
+      "bytes": 5770,
+      "sha256": "3f1b9da4857d670d2c59231e57da2e8b1b9def76c7858ec0963e5dcc4a37038f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/bind-preview-v9.py",
+      "bytes": 7840,
+      "sha256": "55deb1f6551b0ef0416f1bd49f2e61a231264119a754acd6bef85e6b42204551"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/PACKET-v8.json",
+      "bytes": 4730,
+      "sha256": "c9bbf0fbd7c518bad694431c2a93520e2777c908c7aff79e551ad005edbcd0da"
+    }
+  ]
+}

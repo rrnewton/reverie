@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/hermit/pulls/3058/files?per_page=100"
+  ],
+  "started_utc": "2026-09-17T09:46:57.753705+00:00",
+  "ended_utc": "2026-09-17T09:46:58.222387+00:00",
+  "wall_seconds": 0.46871139109134674,
+  "exit_code": 0,
+  "stdout_bytes": 4043,
+  "stderr_bytes": 0,
+  "stdout_sha256": "eaa229d13d49ffcaf9b9918b1fafa59c5b766eb9ebb6023c2fdc7ce273d53ef2"
+}

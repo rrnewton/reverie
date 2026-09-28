@@ -1,0 +1,39 @@
+{
+  "scope": "format two updated owned preview files only; no build or test",
+  "formatter": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+  "formatter_sha256": "016e3712bb170692190f20ce3356646d6d2c59343b81516de66af7c5fd2e5e7c",
+  "cpu_seconds_per_file": 10,
+  "wall_seconds_per_file": 20,
+  "files": [
+    {
+      "path": "detcore/src/logdiff.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/detcore/src/logdiff.rs"
+      ],
+      "exit_status": 0,
+      "wall_seconds": 0.04455954488366842,
+      "before_sha256": "5adfc7380a8b7919282115b8eb63a17cea7dda353dd8dc4decf578a393bfd95c",
+      "after_sha256": "1c06f7605d5f708e9fe952c1692c0b52f6d323b981b67e70426dc05fd928ed8c"
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "argv": [
+        "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/preview/hermit-cli/src/bin/hermit/verify.rs"
+      ],
+      "exit_status": 0,
+      "wall_seconds": 0.03247987409122288,
+      "before_sha256": "30ccd37d099d04df43485f6acabf9679ea8b0d15946e1c3ba7b8773cd1f449f9",
+      "after_sha256": "30ccd37d099d04df43485f6acabf9679ea8b0d15946e1c3ba7b8773cd1f449f9"
+    }
+  ]
+}

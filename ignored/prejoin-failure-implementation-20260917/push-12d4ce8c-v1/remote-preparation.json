@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "/usr/bin/with-proxy",
+    "/usr/bin/git",
+    "ls-remote",
+    "--heads",
+    "origin",
+    "refs/heads/codex/kvm-fatal-cleanup-20260917",
+    "refs/heads/codex/kvm-proc-fd-identity-20260917",
+    "refs/heads/codex/kvm-prejoin-failure-20260917",
+    "refs/heads/main"
+  ],
+  "exit": 0,
+  "stdout": "9db60ab95587d4cb5e0438dfeca409471eb9baf5\trefs/heads/codex/kvm-prejoin-failure-20260917\n696f0476aa46cf29e31b947a89379d80b4542ce3\trefs/heads/codex/kvm-proc-fd-identity-20260917\nc8f4ca9d2e95460e027678ff23f6dec2529d255d\trefs/heads/main\n",
+  "stderr": ""
+}

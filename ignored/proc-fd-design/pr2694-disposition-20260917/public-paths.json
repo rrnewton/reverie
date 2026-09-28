@@ -1,0 +1,29 @@
+{
+  "base": "dade02611a0988aaa2f234411c16462fdbfb5519",
+  "head": "46670790208e71be0b1aa0e249297c0f4b38663a",
+  "main": "1ef956b6b16a19080c94838ead0c88926f7231ff",
+  "paths": [
+    "ci/dag/validate.json",
+    "ci/manifest-plan/src/validation_dag_static.rs",
+    "detcore-dbt/src/lib.rs",
+    "detcore/src/fd.rs",
+    "detcore/src/lib.rs",
+    "detcore/src/syscalls/files.rs",
+    "detcore/src/syscalls/files/append_tests.rs",
+    "detcore/src/tool_global.rs",
+    "detcore/src/tool_local.rs",
+    "hermit-cli/src/event_stream.rs",
+    "hermit-cli/src/event_stream/append_record_replay_test.rs",
+    "hermit-cli/tests/cli.rs",
+    "scripts/validate.rs",
+    "tests/c/nonblocking_stdin_recv.c",
+    "tests/c/nonstdio_status_flags.c",
+    "tests/c/stdio_append_record_replay.c",
+    "tests/c/stdio_append_write_paths.c",
+    "tests/c/stdio_initial_nonblocking.c",
+    "tests/c/stdio_nonblock_then_append.c",
+    "tests/c/stdio_status_alias.c",
+    "tests/c/stdio_status_flag_containment.c",
+    "tests/c/stdio_unsupported_status_flags.c"
+  ]
+}

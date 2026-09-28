@@ -1,0 +1,19 @@
+{
+  "stage": "vm-03",
+  "test": "vm::tests::real_fork_and_thread_cancel_keep_status_while_terminal_hook_is_returning",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "448"
+    ]
+  ],
+  "stdout_sha256": "359e6fbde560bcebfa54be03e421a95bce4af1718a19c9be381fd29f85cd87f6",
+  "stderr_sha256": "fbe79e2cd5f0effe6dac0e2dc16e803984a79c1331e79dcebab5cd2111781215",
+  "admission_sha256": "c20e89185543114893178e13ad32c458773d0bb2e3dffd73ebc20a1d8077b05d",
+  "cpu_nsec": 276065000,
+  "wall_seconds": 1.05215658
+}

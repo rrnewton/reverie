@@ -1,0 +1,155 @@
+[
+  {
+    "number": 3058,
+    "url": "https://github.com/rrnewton/hermit/pull/3058",
+    "title": "Show the guest's stderr when a backend launch fails its status assertion",
+    "headRefOid": "612d06ab9d047ef0583e5e91d44a3a5e84d3c0f8",
+    "baseRefOid": "231228c010541561a81dcb1353ac200f5c791b1a",
+    "isDraft": false,
+    "updatedAt": "2026-09-17T08:03:13Z"
+  },
+  {
+    "number": 3054,
+    "url": "https://github.com/rrnewton/hermit/pull/3054",
+    "title": "Preserve Detcore random state through SaBRe bootstrap",
+    "headRefOid": "c961f85503dee4629c00981a7707afe39da71a3e",
+    "baseRefOid": "cdf828ddeb381a51e493b65c1f348f0dae2135e3",
+    "isDraft": true,
+    "updatedAt": "2026-09-17T09:42:50Z"
+  },
+  {
+    "number": 3030,
+    "url": "https://github.com/rrnewton/hermit/pull/3030",
+    "title": "Run default compatibility checks in the pinned image",
+    "headRefOid": "934032fab5bcdde908bccdee6fd99effc6f15c35",
+    "baseRefOid": "d0b1468b0964a16052bd32d90b9990aa0c9ace7a",
+    "isDraft": true,
+    "updatedAt": "2026-09-16T14:29:39Z"
+  },
+  {
+    "number": 3027,
+    "url": "https://github.com/rrnewton/hermit/pull/3027",
+    "title": "Classify a never-written test result as infrastructure, not product",
+    "headRefOid": "ec8917a695bc4b436729c98dddb064e0a16c0137",
+    "baseRefOid": "2bd68e12a5a7da9c6e9f0666072df925126af9fc",
+    "isDraft": false,
+    "updatedAt": "2026-09-16T22:28:14Z"
+  },
+  {
+    "number": 3010,
+    "url": "https://github.com/rrnewton/hermit/pull/3010",
+    "title": "Repair full-validation graph prerequisites",
+    "headRefOid": "1f26de2c6a8291076a87019c31fbb1037386282b",
+    "baseRefOid": "0ac76b5e2fc0ec0711a88f78231d6fe1d67858da",
+    "isDraft": false,
+    "updatedAt": "2026-09-14T07:55:49Z"
+  },
+  {
+    "number": 3009,
+    "url": "https://github.com/rrnewton/hermit/pull/3009",
+    "title": "Preserve native diversity evidence",
+    "headRefOid": "e26c832e98e23eff3044c874467c0a991827c20f",
+    "baseRefOid": "0ac76b5e2fc0ec0711a88f78231d6fe1d67858da",
+    "isDraft": false,
+    "updatedAt": "2026-09-15T21:05:29Z"
+  },
+  {
+    "number": 2969,
+    "url": "https://github.com/rrnewton/hermit/pull/2969",
+    "title": "Use harness-managed run evidence for verification",
+    "headRefOid": "e7af5cd8e5a80a0b74be5f44f26b33d4798c2697",
+    "baseRefOid": "3111e75531c175e00dea7f6e1758bd9791019b82",
+    "isDraft": true,
+    "updatedAt": "2026-09-13T10:54:17Z"
+  },
+  {
+    "number": 2958,
+    "url": "https://github.com/rrnewton/hermit/pull/2958",
+    "title": "Prepare harness-managed verify evidence",
+    "headRefOid": "f18b76cc464a3f8f7704f2d7abdbf53baff157e0",
+    "baseRefOid": "500dded1b2c614694ba97bdafe2d196c8ed63eb4",
+    "isDraft": true,
+    "updatedAt": "2026-09-05T10:26:46Z"
+  },
+  {
+    "number": 2922,
+    "url": "https://github.com/rrnewton/hermit/pull/2922",
+    "title": "Retain exact validation test results",
+    "headRefOid": "cefe94340d721d537f7afc9398eaa5a2285740a4",
+    "baseRefOid": "54ea4e3935a86cbb0257fcbe2debf4ba620e5035",
+    "isDraft": false,
+    "updatedAt": "2026-09-16T01:35:31Z"
+  },
+  {
+    "number": 2907,
+    "url": "https://github.com/rrnewton/hermit/pull/2907",
+    "title": "demos: derive Demo 8's crash seed, and make a stale one say so",
+    "headRefOid": "68605f886745a060e0a2a8e24ab933815acc2d22",
+    "baseRefOid": "1eef513dc8a9d97d910206fe3f72bfb28a67ea62",
+    "isDraft": false,
+    "updatedAt": "2026-09-16T02:00:10Z"
+  },
+  {
+    "number": 2904,
+    "url": "https://github.com/rrnewton/hermit/pull/2904",
+    "title": "demos: move the unified suite into Hermit",
+    "headRefOid": "33a8f546deac001a2ae41f1a1706a0c9f9fc9b85",
+    "baseRefOid": "6f2a46ffbf0854f99b10109f34b653ef86594cac",
+    "isDraft": false,
+    "updatedAt": "2026-09-16T23:57:11Z"
+  },
+  {
+    "number": 2836,
+    "url": "https://github.com/rrnewton/hermit/pull/2836",
+    "title": "Apply SaBRe physical-exit reports during scheduler maintenance",
+    "headRefOid": "1948e95fe14cc95687e886704420a9922a1fe1cb",
+    "baseRefOid": "eec5e18affd17229f86b3943520ee2b9821a377d",
+    "isDraft": false,
+    "updatedAt": "2026-09-15T23:35:04Z"
+  },
+  {
+    "number": 2747,
+    "url": "https://github.com/rrnewton/hermit/pull/2747",
+    "title": "Wait for physical thread exit before waking pthread joiners",
+    "headRefOid": "b3901a992c99b99a79e53adc877c8d4324b1e92e",
+    "baseRefOid": "bae4a34fec5bfe45dd8cad00adcd5b6ddb04abcc",
+    "isDraft": false,
+    "updatedAt": "2026-09-16T01:08:58Z"
+  },
+  {
+    "number": 2694,
+    "url": "https://github.com/rrnewton/hermit/pull/2694",
+    "title": "Preserve inherited stdio flags and append writes across run and replay",
+    "headRefOid": "46670790208e71be0b1aa0e249297c0f4b38663a",
+    "baseRefOid": "24e15d63b2e356b878318faa968691ef3d5eb707",
+    "isDraft": false,
+    "updatedAt": "2026-09-16T01:47:32Z"
+  },
+  {
+    "number": 2368,
+    "url": "https://github.com/rrnewton/hermit/pull/2368",
+    "title": "Revive the reproducible OSS Buck2 build",
+    "headRefOid": "26276e2b266e944bc02ff775b4ceb5cb0956019e",
+    "baseRefOid": "d252f99acb2d790cc2f6ad2a2ed8c1c85d9ef7f7",
+    "isDraft": true,
+    "updatedAt": "2026-08-25T20:21:21Z"
+  },
+  {
+    "number": 2302,
+    "url": "https://github.com/rrnewton/hermit/pull/2302",
+    "title": "Land M2 canonical verification and fix remaining measured reds",
+    "headRefOid": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "baseRefOid": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+    "isDraft": true,
+    "updatedAt": "2026-09-13T11:20:36Z"
+  },
+  {
+    "number": 1689,
+    "url": "https://github.com/rrnewton/hermit/pull/1689",
+    "title": "Honor DBT host log files across fork and exec",
+    "headRefOid": "96eeb0d603875e595f36d6ce97fc77a998ea53a2",
+    "baseRefOid": "1a679bf948dabc7a4b4233c921254d70d839e477",
+    "isDraft": true,
+    "updatedAt": "2026-09-16T02:00:09Z"
+  }
+]

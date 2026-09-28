@@ -1,0 +1,243 @@
+{
+  "completed_utc": "2026-09-17T09:20:38.082071+00:00",
+  "files": [
+    {
+      "bytes": 13805,
+      "path": "BINDING.json",
+      "sha256": "9f25fcebe37a10fc665aef54461ad9b641822ec4bbdc982c350c372d9d45dc7b"
+    },
+    {
+      "bytes": 237000,
+      "path": "FUNCTION-COMPARISON.json",
+      "sha256": "d79f8433e8e28ae7cf9042ee3b491a16e74cf10eca6e8564c2bc68af45a458dc"
+    },
+    {
+      "bytes": 15733,
+      "path": "PATHS.json",
+      "sha256": "5b5fc7624c7bfa685357383f6040c76a3f187f7e0a34a3a9cfe7f28df95e48e4"
+    },
+    {
+      "bytes": 4725,
+      "path": "PROTECTED-FUNCTIONS.json",
+      "sha256": "778fd612bd8b4352ac685bf146ffbbf21fafb46ed399f0b9b3f780a63eced92e"
+    },
+    {
+      "bytes": 10430,
+      "path": "REPORT.md",
+      "sha256": "b7f185bd468632e5fa9fd1c1b76a46e6354efdebb496033cdad67e2c024507b6"
+    },
+    {
+      "bytes": 5736,
+      "path": "UNCHANGED-CONSUMER-INPUTS.json",
+      "sha256": "6ac311a1741473e62a61b175fc555edca2064768c25cba61675e2b3424de590b"
+    },
+    {
+      "bytes": 4375,
+      "path": "commits/3bdf5a78570494dcd8d82efae742c73261c07fbb.txt",
+      "sha256": "40b7c39a3a738ee75f1dfbb42db4118d874efba665823475790ce27a512cb0bc"
+    },
+    {
+      "bytes": 994,
+      "path": "commits/522d4c3c7a6df8dace152926c8457a9a84354a52.txt",
+      "sha256": "7a46f21f328e456f03211e1d8bd7d4c376bf7afd57ec1ae73c696fbc0e430814"
+    },
+    {
+      "bytes": 2942,
+      "path": "commits/70f4918f0fa009260a95c2fe08d49e0bf49ff0fe.txt",
+      "sha256": "f9bcf46664cbc719e2373629bd558a63820bd7dc81949cbfb9d5737e876d6de4"
+    },
+    {
+      "bytes": 2274,
+      "path": "commits/86bedda5a899bee8f49f15734ebdfde3dc553a32.txt",
+      "sha256": "102330984f68cb6d84b266b07fe0e49a4c1bbae554fc0719c80a3c60def2acdf"
+    },
+    {
+      "bytes": 748,
+      "path": "commits/8720799f78f8ef56d796723dbc473a9171a4f4eb.txt",
+      "sha256": "d3d68500a1dade197ecfd38b7c03de28d357c62f86074e6b8407e765e0daa5a4"
+    },
+    {
+      "bytes": 903,
+      "path": "commits/ae7b8682d3a2043b19ac44c6511bde9959f29150.txt",
+      "sha256": "3c268d4ff25287d4fc8ab5e6a7d3f22a86d4939b188557e40b630e0f5a9e4ec9"
+    },
+    {
+      "bytes": 780,
+      "path": "commits/c2c2991bf42281936d7e86ce3f7da5a388eb332d.txt",
+      "sha256": "48cbfbbce49d623a86d340ea380854c3e43e0e1e3f6058fa290a455363fc4110"
+    },
+    {
+      "bytes": 1058,
+      "path": "commits/dcd73b31ec7447928c0d7864a843a251c0ec4d3b.txt",
+      "sha256": "164bcd56ea3bfb54785f1b3e8df1e14aa5ae5fcbb0ae2bc3f0887cd480e82de6"
+    },
+    {
+      "bytes": 2117,
+      "path": "consumers/hermit-cdf/Cargo.toml",
+      "sha256": "61fe9f5c4a726beb73ac4117c0ca2a3b6604e115cf8cbdf3bc36889e9265b3b4"
+    },
+    {
+      "bytes": 8653,
+      "path": "consumers/hermit-cdf/ci/run-dag.sh",
+      "sha256": "946b515cfcf952cb6ba321bdf82d17b9e1eff3420ae1f54310c5595d38611654"
+    },
+    {
+      "bytes": 6251,
+      "path": "consumers/hermit-cdf/scripts/check-dagrun-naming.sh",
+      "sha256": "9db6acc8b375dc82349b0867dea3c946ae9cceefd34d59a3ae7015a7e7899613"
+    },
+    {
+      "bytes": 34905,
+      "path": "consumers/hermit-cdf/scripts/lib/validate_plan.rs",
+      "sha256": "1a59d818016e5234be699e1849d9b9d5328e91528c3fb01576a105c5dd7f7e23"
+    },
+    {
+      "bytes": 996482,
+      "path": "consumers/hermit-cdf/scripts/validate.rs",
+      "sha256": "093a91838ec43a0e5490947ed6058142602ad0d59599b08321437e244ff004f3"
+    },
+    {
+      "bytes": 11327,
+      "path": "consumers/parent-55d/ci-hub/bin/wrkslots",
+      "sha256": "56ae5c51026575f4d32b455785e4904b10b60d18ddab028b6337318e654a3c10"
+    },
+    {
+      "bytes": 25670,
+      "path": "consumers/parent-55d/ci-hub/health/unpushed_parent_commits.py",
+      "sha256": "fc8fbaa24ea87a9d237cd983ebf439ec3447f1cc74127cef47a7a9444d790efc"
+    },
+    {
+      "bytes": 14166,
+      "path": "consumers/parent-55d/ci-hub/health/wrkslots_audit_contract.py",
+      "sha256": "94562f0f14faa073a44a8bb52a1cc33eb043a5762ae816fb909735c4aa7dbf7d"
+    },
+    {
+      "bytes": 16669,
+      "path": "consumers/parent-55d/ci-hub/validate/pane_lifecycle.py",
+      "sha256": "57facb123b2e23c54b6515d263e7266ad7331db3406fa1bb493cc6b256885239"
+    },
+    {
+      "bytes": 296894,
+      "path": "consumers/parent-55d/ci-hub/validate/start_unit.py",
+      "sha256": "1307627c184d99fde9e9c5368d3a5a4015ef7fb5bccaee1dc494c29f3b2ffa28"
+    },
+    {
+      "bytes": 2986,
+      "path": "normal-validation/AU-NORMAL-VALIDATION-RECEIPT.json",
+      "sha256": "cbaf099ed420195c5d2749c39471482fc787f9fd213940e28d49f3d6e6ebcfff"
+    },
+    {
+      "bytes": 11167,
+      "path": "normal-validation/AUDIT.json",
+      "sha256": "7eb570869a3924b5f20b8455d8a66aa97e143c19c8a50abfce9e249529705e55"
+    },
+    {
+      "bytes": 580,
+      "path": "normal-validation/INPUT.json",
+      "sha256": "64287f4dbf742be84ef0cde26ba6bb737a315d01bfbdd41348ad108cba656930"
+    },
+    {
+      "bytes": 1107,
+      "path": "normal-validation/RESULT.json",
+      "sha256": "9eae6d6db989909c9c47a46eb9132ad075f86f4c3a0a5b07117c7ba7e42201ef"
+    },
+    {
+      "bytes": 2,
+      "path": "normal-validation/exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "bytes": 97944,
+      "path": "normal-validation/output.txt",
+      "sha256": "d693a268686a199d46a73e70887446e75895608148a7861d80e7ff488806b8a1"
+    },
+    {
+      "bytes": 778,
+      "path": "normal-validation/time.txt",
+      "sha256": "e01ea3acf8ad275128ebd8117acee64e20e252352780196904b6962ef3ff240a"
+    },
+    {
+      "bytes": 640066,
+      "path": "public-eight-commits.patch",
+      "sha256": "015c18da178f5fcd331452ea06fd31f331f3ac540ff1753ad743ad9e52916caf"
+    },
+    {
+      "bytes": 14526,
+      "path": "public-eight-commits.txt",
+      "sha256": "18f4c8684fdd3444152348fc5a65ef8d5383508e15b88eb0ad5386f7b6a77e05"
+    },
+    {
+      "bytes": 3968,
+      "path": "public-eight-stat.txt",
+      "sha256": "a0532ce89ac68fd9d9b96b29467dfbf1bf815fd67f0773ba0f6f4fe33a74f634"
+    },
+    {
+      "bytes": 1031105,
+      "path": "source/2781/py/wrkslots/cli.py",
+      "sha256": "0edcaa5f5d00ce875cef41518216842609a045e6926a9f6d9c9eb56322ac8745"
+    },
+    {
+      "bytes": 41944,
+      "path": "source/8720/cross/herdr_agent_differential.py",
+      "sha256": "988d4461dbdb9562bd406c427ff63e2af89663a42982626933653681ed2c9667"
+    },
+    {
+      "bytes": 30884,
+      "path": "source/8720/py/herdr_run/agent.py",
+      "sha256": "6570e53286c00d96f5f95c04e2918da0b8abcc544acecffbd2b79efec864d5da"
+    },
+    {
+      "bytes": 11769,
+      "path": "source/8720/py/herdr_run/agent_cli.py",
+      "sha256": "ccd1ea1239525bdf3790c975f468c31955c35a25e5f488b31331f72125533169"
+    },
+    {
+      "bytes": 33562,
+      "path": "source/8720/py/herdr_run/client.py",
+      "sha256": "33a839cc851ba3093ee42238e963645f3a2d33c9de32cf94c7ebc5a7a30dce8b"
+    },
+    {
+      "bytes": 1371,
+      "path": "source/8720/py/herdr_run/pyproject.toml",
+      "sha256": "724dfd7ce195bc5406baccde65b14413556125b4a9247549fc258158ee74b350"
+    },
+    {
+      "bytes": 20896,
+      "path": "source/8720/py/tests/test_packaging_infrastructure.py",
+      "sha256": "49fae7da74a5ecb42682352ef4fe656eedddf88d617a0b31bb9c38db0e4ce810"
+    },
+    {
+      "bytes": 1041325,
+      "path": "source/8720/py/wrkslots/cli.py",
+      "sha256": "d7018b96ded39083a6236cfb5140e1c907fdbb0f1c7500bfdbc5e5c04d166d25"
+    },
+    {
+      "bytes": 786856,
+      "path": "source/8720/py/wrkslots/tests/test_lifecycle.py",
+      "sha256": "5c32f4ddebce138685bf330ad467e6f3ef46cebb80790277c944a3184afd20ab"
+    },
+    {
+      "bytes": 15098,
+      "path": "source/8720/py/wrkslots/tests/test_proc_status.py",
+      "sha256": "c38d30b730fa6ca0b588b5be3968fff1ec8a5446ad2470e747bd40f330f652a1"
+    },
+    {
+      "bytes": 78149,
+      "path": "source/8720/rs/herdr-run/src/agent.rs",
+      "sha256": "3fb408c080fe9c95d5529fe73602f73fc033809ff2eced2c233fd1053a411a08"
+    },
+    {
+      "bytes": 66102,
+      "path": "source/8720/rs/herdr-run/src/client.rs",
+      "sha256": "423055b903f84eaa6f026043f85a8ac797f62c1f73b18e63b7d428f0d0c8fedf"
+    },
+    {
+      "bytes": 1054601,
+      "path": "source/d750/py/wrkslots/cli.py",
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6"
+    }
+  ],
+  "new_runtime_or_public_actions": false,
+  "read_only_source_review": true,
+  "verdict": "APPROVE bounded public-increment Hermit/parent pin-consumer scope; limitations in REPORT.md"
+}

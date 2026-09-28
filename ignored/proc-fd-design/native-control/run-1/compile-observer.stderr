@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py", line 571, in <module>
+    raise SystemExit(main())
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py", line 565, in main
+    result = observe(args.out, args.binary, args.arguments, args.cpu_usec, args.wall_seconds, args.log_bytes)
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py", line 318, in observe
+    require(out.is_relative_to(HERE) and not out.exists(), 'observer evidence must be new and under its owned directory')
+  File "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py", line 41, in require
+    raise Refusal(reason)
+__main__.Refusal: observer evidence must be new and under its owned directory

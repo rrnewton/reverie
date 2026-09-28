@@ -1,0 +1,511 @@
+{
+  "time": "2026-09-17T17:16:45.923270+00:00",
+  "head": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "owned": [
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/runtime/failure_tests.rs",
+    "reverie-kvm/src/runtime/native_test_support.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie/src/tool.rs"
+  ],
+  "append_sha256": "7c6490b312123d057164622c08104df18062ea0c34d8f4776e658dcb9ddec229",
+  "source_binding_sha256": "e8f8b012bb8a570b853f6390d5ad0400eace79233b761e4c284075cd4cb8cea7",
+  "expected_tree_sha256": "7617531976de8d7cc97eeddcbdb3fae98fcfa80d3893490d771fec1d5443f718",
+  "target_matches": [],
+  "terminal_readbacks": [
+    {
+      "attempt": "cargo-v16",
+      "unit": "safehermit-20260917T165522Z-3360787.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T165522Z-3360787.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "cargo-v16",
+      "unit": "safehermit-20260917T165529Z-3371133.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T165529Z-3371133.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "cargo-v16",
+      "unit": "safehermit-20260917T165533Z-3377249.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T165533Z-3377249.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "lint-v13",
+      "unit": "safehermit-20260917T165626Z-3437355.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T165626Z-3437355.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "lint-v13",
+      "unit": "safehermit-20260917T165629Z-3440864.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T165629Z-3440864.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-build-v5",
+      "unit": "safehermit-20260917T165819Z-3582476.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T165819Z-3582476.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-build-v5",
+      "unit": "safehermit-20260917T165834Z-3599475.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T165834Z-3599475.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-build-v5",
+      "unit": "safehermit-20260917T165836Z-3603825.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T165836Z-3603825.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170211Z-3980984.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170211Z-3980984.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170214Z-3993975.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170214Z-3993975.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170218Z-4004445.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170218Z-4004445.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170221Z-4015225.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170221Z-4015225.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170225Z-4025170.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170225Z-4025170.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170230Z-4041767.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170230Z-4041767.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170233Z-4049236.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170233Z-4049236.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170236Z-4058417.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170236Z-4058417.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v4",
+      "unit": "safehermit-20260917T170240Z-4067095.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T170240Z-4067095.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171153Z-635139.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171153Z-635139.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171156Z-640207.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171156Z-640207.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171200Z-647364.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171200Z-647364.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171203Z-650896.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171203Z-650896.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171206Z-653788.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171206Z-653788.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171209Z-657570.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171209Z-657570.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171212Z-660292.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171212Z-660292.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171215Z-665979.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171215Z-665979.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171218Z-668222.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171218Z-668222.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171220Z-672109.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171220Z-672109.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171223Z-675224.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171223Z-675224.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171226Z-677902.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171226Z-677902.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171229Z-681574.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171229Z-681574.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171232Z-684557.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171232Z-684557.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171235Z-689357.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171235Z-689357.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171237Z-694340.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171237Z-694340.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171241Z-699203.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171241Z-699203.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    },
+    {
+      "attempt": "qualification-execution-v5",
+      "unit": "safehermit-20260917T171244Z-702713.service",
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T171244Z-702713.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": ""
+    }
+  ],
+  "message_sha256": "af963b1b104d0d73bcc714fc45d8c2670d0d2b68ca1d1f3ff6a728950dfba315"
+}

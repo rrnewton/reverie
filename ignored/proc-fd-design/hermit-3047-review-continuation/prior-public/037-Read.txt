@@ -1,0 +1,162 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_014uytuAK8Lkmb5Ya8L7nmGE",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/run-with-reverie-dbt-budget.sh",
+    "offset": 150,
+    "limit": 160
+  }
+}
+
+Successful public tool result (exact text below):
+150	# change remains build-relevant and requires fresh validation; this carry does
+151	# not reuse a receipt.
+152	# CARRY TO 1f226acd (2026-08-27): all three source_recipe_key repository
+153	# inputs are byte-identical to 4f3fbd50:
+154	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+155	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+156	#     third-party/                  fb49c0ba7a9a -> fb49c0ba7a9a
+157	# so the measured key and conservative threshold carry unchanged.
+158	# CARRY TO af42d9cf (2026-08-28): the same three inputs are byte-identical
+159	# from 1f226acd, checked by tree object rather than by reading the diff:
+160	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+161	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+162	#     third-party/                  fb49c0ba7a9a -> fb49c0ba7a9a
+163	# The intervening Reverie commits are the LiteInst task-creation change (#447),
+164	# which touches only reverie-ptrace/src/{task,tracer,error}.rs,
+165	# reverie-liteinst/src/backend.rs, reverie-liteinst/tests/hybrid.rs and six C
+166	# fixtures, and a documentation commit (#511). Neither can affect the elapsed
+167	# time of a DynamoRIO content-key miss, so the measured key and conservative
+168	# threshold carry unchanged and this is NOT a recalibration.
+169	# CARRY TO bc106a19 (2026-08-28): both repository inputs to the DynamoRIO
+170	# content-key miss are byte-identical to af42d9cf:
+171	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+172	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+173	# The changed Reverie files are confined to reverie-ptrace timer recovery and
+174	# tests. They are build-relevant to Hermit, so this pin still requires fresh
+175	# validation; only the measured DBT build budget carries unchanged.
+176	# CARRY TO c2e2c8fb (2026-09-02): both repository inputs to the DynamoRIO
+177	# content-key miss are byte-identical to bc106a19 by git object id:
+178	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+179	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+180	# The five intervening commits change validation evidence, exhaustive internal
+181	# enum dispatch, and the common Backend output API, but no native DBT recipe
+182	# input. The measured native-build budget therefore carries unchanged; the Rust
+183	# API change still requires a fresh Hermit build and validation.
+184	# CARRY TO 4b18ecf0 (2026-09-05): both repository inputs to the DynamoRIO
+185	# content-key miss are byte-identical to 37e7b727 by git object id:
+186	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+187	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+188	# The intervening commit changes DBT evidence and launcher behavior, not the
+189	# native DBT build recipe. The measured native-build budget carries unchanged;
+190	# fresh Hermit validation is still required for the evidence API change.
+191	# CARRY TO 8c8c0a57 (2026-09-05): both repository inputs to the DynamoRIO
+192	# content-key miss are byte-identical to 4b18ecf0 by git object id:
+193	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+194	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+195	# The intervening commit changes only reverie-kvm runtime behavior and its
+196	# static-ELF tests. The measured native DBT build budget carries unchanged;
+197	# fresh Hermit validation is still required for the KVM runtime change.
+198	# CARRY TO a158914e (2026-09-15): both repository inputs to the DynamoRIO
+199	# content-key miss are byte-identical to 8c8c0a57 by Git object identity:
+200	#     reverie-dbt/vendor/dynamorio  a3c41e5d3630 -> a3c41e5d3630
+201	#     reverie-dbt/build.rs          0ff8ae24b974 -> 0ff8ae24b974
+202	# CMAKE and CMAKE_GENERATOR selection is unchanged. The existing 16-job clamp
+203	# and 1050 effective-job-second threshold carry at recipe key
+204	# c9c1ee55257cbb0635b56f494a75ee1dc6af839ca8e289231f533b0208340463.
+205	# This is source identity, not a new timing sample or a validation receipt;
+206	# fresh Hermit validation is required for the runtime and API changes.
+207	# CARRY TO a2cc1868 (2026-09-17): the private-loader fallback changes
+208	# core/unix/loader.c; build.rs, CMake targets/options and MAX_PARALLEL_JOBS=16
+209	# remain unchanged. The default native recipe key therefore changes to
+210	# 0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4.
+211	# A genuine local content-key MISS built in 27.71s at jobs=4 (110.84 job-seconds)
+212	# under 4 CPU / 8 GiB bounds. This supports retaining the existing 1050
+213	# effective-job-second threshold and 16-job clamp; it is not a replacement
+214	# hosted-runner calibration or a claim of unchanged recipe bytes.
+215	# The same pin also carries stricter RPC partial-header EOF classification;
+216	# it does not select the new mapped transport. Fresh Hermit build and original
+217	# unit assertions remain required; native loader fixtures are not guest evidence.
+218	# CARRY TO b3049e54 (2026-09-17): the landed SaBRe frame ABI repair and
+219	# opt-in mapped-RPC ownership APIs leave the entire reverie-dbt subtree,
+220	# build.rs, vendor tree, native key, and CMAKE/CMAKE_GENERATOR selection unchanged.
+221	# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+222	# This source-identity carry supplies no new timing or Hermit guest evidence.
+223	# CARRY TO 596b9ade (2026-09-17): the complete b3049e54-to-landed
+224	# comparison preserves reverie-dbt tree 6232257769144e8f63891a5efc8935abc3cd836b,
+225	# build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and DynamoRIO vendor
+226	# tree 42dd83f76cef3e730c39d2313c11fdc78d12ae35, including all build/config bytes.
+227	# CMAKE remains the default cmake and CMAKE_GENERATOR remains unset.
+228	# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+229	# Source comparison 89b2eb0abe05008a21974668602c288452108270c85132ea48f87bb325d91ca2 is a carry decision,
+230	# not a new timing sample or Hermit guest receipt.
+231	expected_pin=596b9adee8473dc0a7e62dce18580eead3d0c5c9
+232	
+233	# TAKE THE PIN, NOT WHATEVER ELSE THE PRODUCER PRINTED.
+234	#
+235	# This captured the whole of `--print-pin` and compared it. A later change made
+236	# that command also emit a pin-uniformity report on stdout, so the capture became
+237	# 941 characters over 8 lines and the comparison below COULD NEVER SUCCEED FOR
+238	# ANY PIN, including a correctly calibrated one. Every node behind this wrapper
+239	# then failed closed in about a second, and updating `expected_pin` could not fix
+240	# it because the recorded side was never a sha. The producer is fixed too -- its
+241	# report now goes to stderr -- but a value parsed out of a shared stream should
+242	# be validated by the consumer rather than trusted to stay clean.
+243	recorded_pin=$(
+244	    "$ROOT_DIR/ci/run-reverie-pin-check.sh" --repo "$ROOT_DIR" --print-pin
+245	)
+246	
+247	# ⚠️ A REFUSAL EXITS 75 (EX_TEMPFAIL), NOT 2, AND THE DIFFERENCE IS THE WHOLE
+248	# POINT OF THIS BLOCK.
+249	#
+250	# `scripts/validate.rs` defines NO_RESULT_EXIT_CODE = 75 as "the only nonzero
+251	# code that is not a product failure" -- a completed node saying it COULD NOT
+252	# DETERMINE ITS CONDITION. That is exactly what this wrapper is when it declines:
+253	# it never invoked the command, so it has measured nothing and has no verdict to
+254	# offer about the tree.
+255	#
+256	# Every layer above already distinguishes 75 and needs no change:
+257	#     ledger_gate_result   75 -> "no_result", not "fail"
+258	#     ledger_run_results   no_results>0 -> run result "no_result", NEVER "pass"
+259	#     print_cost_table     renders "NO_RESULT", a distinct status from ok/FAIL
+260	#
+261	# THIS DOES NOT MAKE A REFUSAL QUIETER, and it cannot restore a false green.
+262	# ci-hub/lib/qualifying_receipt.rs refuses a receipt on `result != "pass"` AND
+263	# separately on `executed_tests == 0`; a declining wrapper trips both. no_result
+264	# is strictly LESS green than fail, not more.
+265	#
+266	# WHAT IT STOPS BEING CONFUSED WITH, measured on this repository:
+267	#     a genuine compile failure exits 101 -- cargo's code, passed through by the
+268	#     `exec` below, verified: wrapping `exit 0|2|101` returns 0|2|101 unchanged
+269	#     a refusal exited 2, a code nothing else on these 17 nodes produces
+270	# Both were recorded as gate result "fail" with a bare `exit N` reason, so a node
+271	# that compiled nothing was indistinguishable in the ledger from one that compiled
+272	# and broke. The 2026-08-25 red at 323a87d1da5f was read as two failing builds by
+273	# three separate reports; it was this wrapper declining, because that branch
+274	# declared pin f4152f8f while its wrapper still expected 13cf8bcb.
+275	#
+276	# The `$# == 0` usage error above deliberately KEEPS exit 2: a caller that passed
+277	# no command is a caller bug, not a node that declined, and it should stay loud.
+278	DECLINED_EXIT_CODE=75
+279	
+280	if [[ ! $recorded_pin =~ ^[0-9a-f]{40}$ ]]; then
+281	    echo "run-with-reverie-dbt-budget.sh: --print-pin did not yield a 40-hex revision; got ${#recorded_pin} char(s): ${recorded_pin:0:80}" >&2
+282	    echo "run-with-reverie-dbt-budget.sh: DECLINED (no_result, exit $DECLINED_EXIT_CODE): NOT RUNNING '$*' against an unidentified Reverie pin. Nothing was built or tested, so this node has no verdict about the tree." >&2
+283	    exit "$DECLINED_EXIT_CODE"
+284	fi
+285	if [[ $recorded_pin != "$expected_pin" ]]; then
+286	    echo "run-with-reverie-dbt-budget.sh: no calibrated budget for Reverie pin $recorded_pin (expected $expected_pin)" >&2
+287	    echo "run-with-reverie-dbt-budget.sh: DECLINED (no_result, exit $DECLINED_EXIT_CODE): NOT RUNNING '$*'. Nothing was built or tested, so this node has no verdict about the tree -- it is NOT a build failure. To recalibrate, confirm reverie-dbt/vendor/dynamorio and reverie-dbt/build.rs are unchanged and CMAKE/CMAKE_GENERATOR select the same tooling between the pins, then update expected_pin here." >&2
+288	    exit "$DECLINED_EXIT_CODE"
+289	fi
+290	REVERIE_DBT_BUDGET_BOUND_PIN=$recorded_pin
+291	export REVERIE_DBT_BUDGET_BOUND_PIN
+292	
+293	# shellcheck source=ci/configure-build-jobs.sh
+294	source "$ROOT_DIR/ci/configure-build-jobs.sh" reverie-dbt-budget-child
+295	
+296	echo "run-with-reverie-dbt-budget.sh: reverie-dbt-budget={pin:$REVERIE_DBT_BUDGET_BOUND_PIN,source:$REVERIE_DBT_BUILD_JOBS_SOURCE,raw-build-jobs:$REVERIE_DBT_RAW_BUILD_JOBS,effective-cpus-source:$REVERIE_DBT_EFFECTIVE_CPUS_SOURCE,effective-cpus:$REVERIE_DBT_EFFECTIVE_CPUS,reverie-max-jobs:$REVERIE_DBT_MAX_PARALLEL_JOBS,effective-native-jobs:$REVERIE_DBT_EFFECTIVE_BUILD_JOBS,effective-job-seconds:$REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS,max-elapsed-seconds:$REVERIE_DBT_MAX_BUILD_SECONDS,basis:github-portable-cold-miss-n3-affinity4,carried-to-pin-on-dynamorio-recipe-key:0aa6d84239b5a04b7cda124ebed4c7e3adc8b62f5b4c96011a9b971e90d6b0a4}" >&2
+297	
+298	exec "$@"
+299	

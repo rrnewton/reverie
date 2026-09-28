@@ -1,0 +1,7 @@
+{
+  "failed_tool": "Grep",
+  "requested_path": "prior source/hermit/detcore/src/consts.rs",
+  "error": "Path did not exist in the partial review snapshot",
+  "correction": "Added immutable a9 source/hermit/detcore/src/consts.rs as context; no production mutation",
+  "failed_result_omitted_from_success_transcript": true
+}

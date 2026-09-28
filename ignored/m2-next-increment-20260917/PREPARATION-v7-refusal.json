@@ -1,0 +1,5 @@
+{
+  "scope": "isolated source preparation; no product execution",
+  "exit_status": 1,
+  "cause": "The first append command omitted the owned slot workdir, so its relative ignored/m2-next-increment-20260917/preview-v7/hermit-cli/tests/verification_report_consumers.rs destination did not exist and Bash refused before opening any file. The corrected append used the full owned absolute path. No live source was written."
+}

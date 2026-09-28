@@ -1,0 +1,30 @@
+{
+  "actual_exit": 1,
+  "stage": "before any input copy",
+  "reason": "supplied patch used a different Git diff format; full-index+binary bytes are not the supplied digest",
+  "comparisons": [
+    {
+      "flags": [],
+      "sha256": "96502f9880df67b8423b1ed111c65f1f08feb0eede6c30657db25f281f92083a",
+      "bytes": 67078,
+      "equals_supplied": true
+    },
+    {
+      "flags": [
+        "--binary"
+      ],
+      "sha256": "96502f9880df67b8423b1ed111c65f1f08feb0eede6c30657db25f281f92083a",
+      "bytes": 67078,
+      "equals_supplied": true
+    },
+    {
+      "flags": [
+        "--binary",
+        "--full-index"
+      ],
+      "sha256": "6ba7ae0cefbd3490682d77939d8f6f1e110727218c0e0d24e2e0ca247c416194",
+      "bytes": 68380,
+      "equals_supplied": false
+    }
+  ]
+}

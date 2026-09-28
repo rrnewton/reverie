@@ -1,0 +1,39 @@
+{
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/launch.py",
+    "bytes": 16337,
+    "mode": 420,
+    "sha256": "c08dc3d5dab9ff6ef03ac528cc2bb13e8ee85cfd3369296c124eaa40bcb2ae8a"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/plan.json",
+    "bytes": 31457,
+    "mode": 420,
+    "sha256": "4b8f799d674f2af53f86d319669cf65912a1d6bcc1168bf19def99c11db6e97e"
+  },
+  "delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/caller-v1-v2.diff",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/caller-v1-v2.diff",
+    "bytes": 5924,
+    "mode": 420,
+    "sha256": "a1d66f4c5bf422d1f36788c85f59d5fa4c75abec99aa71f811d4dce9a6677848"
+  },
+  "source_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v2/binding.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v2/binding.json",
+    "bytes": 2988,
+    "mode": 420,
+    "sha256": "3d6c2c0711946558e71e58a8ff63801a7ce9526deb1ef1432129c093fdd15aea"
+  },
+  "source_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v2/delta.patch",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v2/delta.patch",
+    "bytes": 8598,
+    "mode": 420,
+    "sha256": "807d3772cf23bf35767524c5747674e353b7ad9d34a5f26b12fb33100e60a2f7"
+  },
+  "status": "prepared, not executed; live source remains v1 pending root application release",
+  "scope": "one corrected compile/list/36 native controls, no Hermit or KVM guests"
+}

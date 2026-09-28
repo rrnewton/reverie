@@ -1,0 +1,75 @@
+from pathlib import Path
+P=Path(__file__).resolve().parent/'preview'
+def update(rel,old,new):
+ p=P/rel;s=p.read_text();assert s.count(old)==1,(rel,s.count(old));p.write_text(s.replace(old,new))
+update('docs/USER_GUIDE.md','''LiteInst uses the normal Hermit run and verification paths. A successful
+`--strict --verify` run compares status/stdout/stderr exactly and applies the
+`Stripped` comparison to selected Detcore scheduler messages; it is useful
+diagnostic evidence, but it is not strict determinism. Strict verification requires
+`--verify-strict --verify-json REPORT.json`, `bitwise_parity: true`, and nonzero
+compared-message counts. Verification snapshots guest stdin once and supplies''','''LiteInst uses the normal Hermit run and verification paths. `--strict --verify`
+compares status/stdout/stderr exactly and uses the canonical INFO comparison by
+default. `--verify-strict` remains a compatibility spelling. Use
+`--verify-json REPORT.json` to inspect `bitwise_parity`, nonzero compared-message
+counts, and the reported execution policy; selecting verification alone does not
+establish that a workload passes. Verification snapshots guest stdin once and supplies''')
+update('docs/USER_GUIDE.md','''[SaBRe backend compatibility](SABRE_COMPATIBILITY.md) for the measured
+`Stripped` allowlist, build commands, and known gaps. An enabled probe is
+not a blanket support claim for every workload in its subsystem.''','''[SaBRe backend compatibility](SABRE_COMPATIBILITY.md) for historical measurements
+under the `Stripped` policy, build commands, and known gaps. Those measurements
+do not establish success under the current canonical default. An enabled probe
+is not a blanket support claim for every workload in its subsystem.''')
+update('docs/USER_GUIDE.md','''The default log comparison is `Stripped`: it can erase numbers, addresses,
+temporary paths, and time values from selected messages. It is a fast
+diagnostic, not strict determinism. Use
+`--verify-strict --verify-json REPORT.json` when a canonical strict result is
+required.''','''The default log comparison is canonical INFO: it removes real wall-clock
+prefixes, replaces explicitly marked host addresses with first-appearance
+ordinals, and compares every remaining INFO byte exactly. Numeric values,
+virtual time, temporary paths, syscall arguments and results remain compared.
+`--verify-strict` is an accepted compatibility spelling for this same default.
+Use `--verify-json REPORT.json` for the typed verdict and comparison evidence.
+An explicit DEBUG/TRACE log level preserves diagnostics without changing the
+INFO comparison; `--verify-verbose` requests an all-level diagnostic comparison.
+Historical reports naming `Stripped` remain readable, but no active option can
+select that lossy policy.''')
+update('docs/USER_GUIDE.md','''For a two-log comparison, add `--print-logs` to print both selected streams to
+stderr exactly as the comparator receives them. The output names the active
+policy: `Deterministic` for the default DETLOG/scheduler-COMMIT subset,
+`Stripped` when `--unsafe-strip-lines` applies its lossy substitutions, or
+`Canonical` when `--canonical-info` selects the INFO stream and canonicalizes
+marked host addresses. This output is produced by the shared comparator path,
+after wall-clock-prefix removal, line filtering, message selection, and any
+requested substitutions.''','''For a two-log comparison, add `--print-logs` to print both selected streams to
+stderr exactly as the comparator receives them. The active policy is
+`Canonical`, with or without JSON or the compatibility spelling
+`--canonical-info`. Follow mode uses the same policy on the complete common
+prefix. Printed comparison streams reflect the declared record envelope, INFO
+selection, wall-clock-prefix removal and marked host-address canonicalization.
+
+Lossy comparison options are removed: `--unsafe-strip-lines`, `--strip-lines`,
+`--ignore-lines`, `--skip-commit`, `--skip-detlog`, `--include-detlogs`, and
+`--git-diff` are rejected. Diagnose a difference using the retained logs and
+positions rather than discarding differing records. The analysis and
+hermit-verify callers also preserve CHAOSRAND, SCHEDRAND and other INFO records;
+previously filtered differences can therefore become visible.''')
+update('docs/ERROR_CATALOG.md','''| `unknown value ... for DetLogFilter` | Configuration | A log-diff filter was not `syscall`, `syscallresult`, or `other`. | Use one of those values with `--include-detlogs`. |''','''| `unknown value ... for DetLogFilter` | Configuration | An older Hermit build rejected a DETLOG filter value. | Current builds remove DETLOG filtering; compare the complete canonical INFO stream and inspect retained differences. |
+| `unexpected argument '--unsafe-strip-lines'` or another removed comparison option | Configuration | A caller requested stripping, substring filtering, message skipping, DETLOG-class selection, or Git comparison. | Remove the obsolete option. Canonical INFO comparison is the default; `--verify-strict` and `--canonical-info` remain compatibility spellings. |''')
+update('demos/05-qemu-busybox.sh','''  # ⚠️ `--verify-strict` IS LOAD-BEARING FOR THE L2 LABEL PRINTED BELOW.
+  # A plain `--verify` stays on the lossy Stripped comparator on every backend
+  # -- `RunOpts::verification_strictness` returns `Canonical` only under
+  # `--verify-strict`/`--verify-verbose`, and
+  # `comparator_choice_does_not_depend_on_the_backend` pins that. AGENTS.md is
+  # explicit that default `--verify` "cannot establish L2", so requesting it
+  # while printing `level=L2` claimed a tier the run never reached.''','''  # Current --verify uses canonical INFO by default. Retain --verify-strict
+  # for compatibility with older binaries whose default was Stripped.
+  # The typed verdict and positive compared-message counts below still decide
+  # whether this execution qualifies; selecting the policy alone is not proof.''')
+update('demos/05-qemu-busybox.sh','''  # Read the TYPED verdict, not the banner. ":: Success: deterministic.
+  # Determinism verified." is printed by a run whose own --verify-json says
+  # `bitwise_parity: false`, so scraping it cannot tell a stripped match from a
+  # canonical one -- which is precisely how this demo used to certify L2.''','''  # Read the TYPED verdict, not the banner. Historically ":: Success:
+  # deterministic. Determinism verified." was also printed for Stripped
+  # matches with `bitwise_parity: false`. Keep rejecting those old results and
+  # any current comparison that lacks the evidence required below.''')
+print('Updated only the three authorized documentation/comment previews.')

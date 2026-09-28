@@ -1,0 +1,36 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/admit.py",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-plan.json",
+      "2b1562205220740e32d0a1df69243665092d891851d9a4ba6632ac9b30b8936d"
+    ]
+  },
+  "pid": 3404496,
+  "start_ticks": 184534815,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "54cd77835261d61fe82652e51ab4fbb53f0700f940cab608462dd6fe422fba98",
+  "monotonic_ns": 1845348213762069,
+  "note": "Written before exec; this is not proof that the payload started."
+}

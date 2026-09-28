@@ -1,0 +1,39 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v6/build.py
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v7/build.py
+@@ -9,7 +9,7 @@
+ import subprocess
+ 
+ HERE = Path(__file__).resolve().parent
+-PLAN_SHA256 = 'dded5fa1f935a87eafb5454437c5e962a5dcce4da60a1b4a94bc2e3cd103618b'
++PLAN_SHA256 = '1b43c8ab82248ffc2645f1673a22bb7c2fc9c1abffe12296d9862bf71194a2e3'
+ 
+ 
+ def main():
+@@ -56,7 +56,16 @@
+     require(plan['execution'] == ['/usr/bin/python3', '-B', str(HERE / 'build.py')], 'wrong caller')
+     require([step['name'] for step in plan['stages']] ==
+             ['compile', 'list-lib', 'list-static-elf'], 'unexpected execution stage')
+-    require(len(plan['expected_tests']['lib']) == 48 and len(plan['expected_tests']['static-elf']) == 22, 'changed prepared identity counts')
++    previous = {kind: json.loads(read_bounded(path, 1024**2))['names']
++                for kind, path in plan['previous_inventories'].items()}
++    require(len(previous['lib']) == 453 and len(previous['static-elf']) == 288,
++            'previous actual inventories changed')
++    require(plan['new_library_methods'] == [
++        'vm::tests::cancelled_child_cleanup_retains_real_errors_and_ordinary_cancellation'],
++        'changed new control identity')
++    require(plan['expected_tests']['lib'] == previous['lib'] + plan['new_library_methods']
++            and len(plan['expected_tests']['static-elf']) == 22,
++            'changed required population')
+     for step in plan['stages']:
+         payload = step['argv'][step['argv'].index('--log-bytes') + 2:]
+         require(payload == step['payload'], 'stage payload differs from actual argv: ' + step['name'])
+@@ -112,6 +121,9 @@
+                 listed = [line[:-6] for line in raw.decode().splitlines() if line.endswith(': test')]
+                 require(len(listed) == len(set(listed)), 'duplicate listed identity')
+                 require(all(listed.count(name) == 1 for name in plan['expected_tests'][step['artifact']]), 'selected identity absent or duplicated')
++                complete = (previous['lib'] + plan['new_library_methods']
++                            if step['artifact'] == 'lib' else previous['static-elf'])
++                require(set(listed) == set(complete), 'complete actual population changed')
+                 inventories[step['artifact']] = dict(names=listed, count=len(listed),
+                                                      raw_sha256=hashlib.sha256(raw).hexdigest())
+                 write_new(root / (active + '-inventory.json'), inventories[step['artifact']])

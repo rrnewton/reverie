@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "diff",
+    "--exit-code",
+    "HEAD",
+    "--"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": ""
+}

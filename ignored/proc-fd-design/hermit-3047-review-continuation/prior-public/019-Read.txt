@@ -1,0 +1,262 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01N8yyAVeQKo46BEGYXtHxz1",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/files.rs",
+    "offset": 1180,
+    "limit": 250
+  }
+}
+
+Successful public tool result (exact text below):
+1180	        // so a later intercepted pread cannot snapshot from EOF.
+1181	        //
+1182	        // AUTONOMOUS-BOT-IMPLEMENTED
+1183	        // TODO-HUMAN-REVIEW(#1903): ESPIPE is not a failure here. Several procfs
+1184	        // files are legitimately non-seekable -- `/proc/net/*` single-release
+1185	        // seq_files return ESPIPE from `llseek` on the host, verified natively:
+1186	        // `lseek(fd, 0, SEEK_SET)` on `/proc/net/sockstat` gives ESPIPE while the
+1187	        // subsequent `read(2)` returns data. Propagating that ESPIPE made the
+1188	        // GUEST's `read` fail on a file Linux reads fine (`cat
+1189	        // /proc/net/sockstat` -> "Illegal seek"), which is a deviation from Linux
+1190	        // semantics, not a determinism requirement: the rewind is an internal
+1191	        // correction Detcore performs for its own benefit and the guest never
+1192	        // asked for it. A non-seekable fd also cannot have been advanced behind
+1193	        // our back by a seek, and a freshly opened one is already at offset 0, so
+1194	        // skipping the rewind loses nothing the rewind was protecting.
+1195	        match guest
+1196	            .inject_with_retry(Syscall::Lseek(
+1197	                syscalls::Lseek::new()
+1198	                    .with_fd(call.fd())
+1199	                    .with_offset(0)
+1200	                    .with_whence(Whence::SEEK_SET),
+1201	            ))
+1202	            .await
+1203	        {
+1204	            Ok(_) => {}
+1205	            Err(Errno::ESPIPE) => {}
+1206	            Err(err) => return Err(err.into()),
+1207	        }
+1208	
+1209	        let remote_buf = call.buf().ok_or(Errno::EFAULT)?;
+1210	        let mut contents = Vec::new();
+1211	        loop {
+1212	            let bytes_read = self.record_or_replay(guest, call).await? as usize;
+1213	            if bytes_read == 0 {
+1214	                return Ok(contents);
+1215	            }
+1216	            if contents.len() + bytes_read > MAX_SNAPSHOT_BYTES {
+1217	                return Err(Errno::EFBIG.into());
+1218	            }
+1219	
+1220	            let mut chunk = vec![0; bytes_read];
+1221	            guest.memory().read_exact(remote_buf, &mut chunk)?;
+1222	            contents.extend_from_slice(&chunk);
+1223	        }
+1224	    }
+1225	
+1226	    async fn initialize_procfs_snapshot<G: Guest<Self>>(
+1227	        &self,
+1228	        guest: &mut G,
+1229	        call: syscalls::Read,
+1230	    ) -> Result<(), Error> {
+1231	        let contents = self.snapshot_procfs(guest, call).await?;
+1232	        let virtual_uptime_seconds = self.calculate_uptime(guest).await?;
+1233	        let virtual_realtime_seconds = i64::try_from(thread_observe_time(guest).await.as_secs())
+1234	            .map_err(|_| Errno::EOVERFLOW)?;
+1235	        // TODO-HUMAN-REVIEW(PR-863): Use configured guest memory for meminfo.
+1236	        let virtual_memory_kb = guest.config().memory / 1024;
+1237	        // TODO-HUMAN-REVIEW(PR-723): Review injected identity snapshot reads.
+1238	        let virtual_pid = guest.inject(syscalls::Getpid::new()).await? as i32;
+1239	        let virtual_ppid = guest.inject(syscalls::Getppid::new()).await? as i32;
+1240	        let virtual_pty_count = guest.thread_state().count_open_files_at_paths(&[
+1241	            std::path::Path::new("/dev/ptmx"),
+1242	            std::path::Path::new("/dev/pts/ptmx"),
+1243	        ]);
+1244	        let target_fd = guest
+1245	            .thread_state()
+1246	            .with_detfd(call.fd(), |detfd| detfd.procfs_target_fd())?;
+1247	        let fdinfo_identity = if let Some(target_fd) = target_fd {
+1248	            let (cached_stat, logical_flags, open_file_id, fd_type, inode_override) =
+1249	                guest.thread_state().with_detfd(target_fd, |detfd| {
+1250	                    (
+1251	                        detfd.stat(),
+1252	                        detfd.status_flags(),
+1253	                        detfd.open_file_id(),
+1254	                        detfd.ty(),
+1255	                        deterministic_stdio_inode_for_resource(target_fd, detfd.resource()),
+1256	                    )
+1257	                })?;
+1258	            let raw_inode = match cached_stat {
+1259	                Some(stat) => stat.inode,
+1260	                None => {
+1261	                    let stat = self.inject_fstat(guest, target_fd).await?;
+1262	                    stat.st_ino
+1263	                }
+1264	            };
+1265	            let virtual_inode = match inode_override {
+1266	                Some(inode) => inode,
+1267	                None => determinize_inode(guest, raw_inode).await.0,
+1268	            };
+1269	            let raw_mount_id =
+1270	                detcore_model::procfs::parse_fdinfo_mount_id(&contents).ok_or_else(|| {
+1271	                    Error::Tool(anyhow::anyhow!(
+1272	                        "kernel returned malformed /proc/*/fdinfo without one numeric mnt_id"
+1273	                    ))
+1274	                })?;
+1275	            // CLI container and recording paths provide the exact namespace's
+1276	            // row order. Replay intentionally retains the recording-time raw
+1277	            // IDs because ReadV2 supplies recording-time fdinfo bytes.
+1278	            let has_configured_mount_ids = guest.config().mountinfo_mount_ids_captured;
+1279	            let virtual_mount_id = if raw_mount_id == 0 {
+1280	                // Linux uses zero for anonymous objects such as memfd. Key the
+1281	                // equivalence on the observed value, not our descriptor type.
+1282	                0
+1283	            } else if !has_configured_mount_ids {
+1284	                // Public non-container callers have no pre-captured provenance.
+1285	                // Mount/unshare/setns are refused once Detcore starts, so a
+1286	                // tracer-side snapshot of this task's namespace is immutable.
+1287	                let mountinfo_path = format!("/proc/{}/mountinfo", guest.pid().as_raw());
+1288	                let mountinfo_contents = std::fs::read(&mountinfo_path).map_err(|error| {
+1289	                    Error::Tool(anyhow::anyhow!(
+1290	                        "failed to read {mountinfo_path} while validating fdinfo mnt_id: {error}"
+1291	                    ))
+1292	                })?;
+1293	                let mountinfo_rows =
+1294	                    crate::procfs::parse_mountinfo(&mountinfo_contents).ok_or_else(|| {
+1295	                        Error::Tool(anyhow::anyhow!(
+1296	                            "kernel returned malformed {mountinfo_path} while validating fdinfo mnt_id"
+1297	                        ))
+1298	                    })?;
+1299	                let snapshot = MountInfoSnapshot::new(
+1300	                    mountinfo_rows,
+1301	                    &[],
+1302	                    false,
+1303	                    BTreeMap::new(),
+1304	                    BTreeMap::new(),
+1305	                )
+1306	                .ok_or_else(|| {
+1307	                    Error::Tool(anyhow::anyhow!(
+1308	                        "{mountinfo_path} failed strict identity validation for fdinfo"
+1309	                    ))
+1310	                })?;
+1311	                determinize_mount_id(guest, raw_mount_id, Some(snapshot.raw_mount_id_order()))
+1312	                    .await
+1313	                    .ok_or_else(|| {
+1314	                        Error::Tool(anyhow::anyhow!(
+1315	                            "mountinfo mount-ID order changed after the identity snapshot while resolving fdinfo mnt_id {raw_mount_id} for {fd_type:?} from {mountinfo_path}"
+1316	                        ))
+1317	                    })?
+1318	            } else {
+1319	                determinize_mount_id(guest, raw_mount_id, None)
+1320	                    .await
+1321	                    .ok_or_else(|| {
+1322	                        Error::Tool(anyhow::anyhow!(
+1323	                            "recorded mount identity provenance was invalid while resolving fdinfo mnt_id {raw_mount_id} for {fd_type:?}"
+1324	                        ))
+1325	                    })?
+1326	            };
+1327	            Some((
+1328	                // Determinized immediately above (stdio-special or
+1329	                // `determinize_inode`); lowered to an integer only here, at the
+1330	                // point it is rendered into guest-visible fdinfo text.
+1331	                virtual_inode.as_raw(),
+1332	                logical_flags,
+1333	                open_file_id.deterministic_socket_cookie(),
+1334	                virtual_mount_id,
+1335	            ))
+1336	        } else {
+1337	            None
+1338	        };
+1339	        let needs_random_uuid = guest
+1340	            .thread_state()
+1341	            .with_detfd(call.fd(), |detfd| detfd.procfs_needs_random_uuid())?;
+1342	        // AUTONOMOUS-BOT-IMPLEMENTED
+1343	        // TODO-HUMAN-REVIEW(PR-955): Review deterministic kernel UUID generation.
+1344	        let random_uuid =
+1345	            needs_random_uuid.then(|| guest.thread_state_mut().thread_prng().random::<[u8; 16]>());
+1346	        // ⚠️ DETERMINIZE HERE, IN THE CALLER, THROUGH THE SAME POOLS `stat` USES.
+1347	        //
+1348	        // The sanitizers in `crate::procfs` are pure functions of content and
+1349	        // hold no guest handle, so they cannot reach `InodePool`/`DevicePool`.
+1350	        // Minting an identity down there would make the maps column stable and
+1351	        // STILL DISAGREE with `stat` -- deterministic, reproducible and wrong.
+1352	        // This mirrors how `fdinfo_identity` is built a few lines above:
+1353	        // determinize with `determinize_inode`/`determinize_device`, then hand
+1354	        // the finished values down purely to be rendered.
+1355	        //
+1356	        // BOTH COLUMNS, not just the inode. `determinize_stat` sanitizes
+1357	        // `st_dev` as well, so rewriting only the inode would leave the device
+1358	        // disagreeing -- the same defect with the reported symptom removed.
+1359	        let needs_mapping_identities = guest
+1360	            .thread_state()
+1361	            .with_detfd(call.fd(), |detfd| detfd.procfs_needs_mapping_identities())?;
+1362	        let mut mapping_identities: BTreeMap<(u64, u64), (u64, u64)> = BTreeMap::new();
+1363	        if needs_mapping_identities {
+1364	            // A mapping backed by stdio must report the SAME inode fdinfo
+1365	            // reports for that fd, which is the fixed `deterministic_stdio_inode`
+1366	            // value rather than a pooled one. Matching is by raw inode, read
+1367	            // from the cached stat only: injecting an fstat here would add
+1368	            // syscalls to every maps read and perturb the very traces this
+1369	            // change is meant to keep consistent.
+1370	            let mut stdio_by_raw_inode: BTreeMap<u64, DetInode> = BTreeMap::new();
+1371	            for fd in libc::STDIN_FILENO..=libc::STDERR_FILENO {
+1372	                let cached = guest
+1373	                    .thread_state()
+1374	                    .with_detfd(fd, |detfd| {
+1375	                        let inode = deterministic_stdio_inode_for_resource(fd, detfd.resource())?;
+1376	                        detfd.stat().map(|stat| (stat.inode, inode))
+1377	                    })
+1378	                    .ok()
+1379	                    .flatten();
+1380	                if let Some((raw, det)) = cached {
+1381	                    stdio_by_raw_inode.insert(raw, det);
+1382	                }
+1383	            }
+1384	            let raw_pairs: BTreeSet<(u64, u64)> = String::from_utf8_lossy(&contents)
+1385	                .lines()
+1386	                .filter_map(crate::procfs::mapping_header_identity)
+1387	                .collect();
+1388	            for (raw_dev, raw_inode) in raw_pairs {
+1389	                let det_inode = match stdio_by_raw_inode.get(&raw_inode) {
+1390	                    Some(inode) => *inode,
+1391	                    None => determinize_inode(guest, raw_inode).await.0,
+1392	                };
+1393	                let det_dev = determinize_device(guest, raw_dev).await;
+1394	                mapping_identities.insert((raw_dev, raw_inode), (det_dev, det_inode.as_raw()));
+1395	            }
+1396	        }
+1397	        let mountinfo = if guest
+1398	            .thread_state()
+1399	            .with_detfd(call.fd(), |detfd| detfd.procfs_needs_mountinfo_identities())?
+1400	        {
+1401	            let mut rows = crate::procfs::parse_mountinfo(&contents).ok_or_else(|| {
+1402	                Error::Tool(anyhow::anyhow!(
+1403	                    "kernel returned malformed /proc/*/mountinfo"
+1404	                ))
+1405	            })?;
+1406	            let mut device_rewrites = BTreeMap::new();
+1407	            for &(mountinfo_device, metadata_device) in &guest.config().mountinfo_device_rewrites {
+1408	                if device_rewrites
+1409	                    .insert(mountinfo_device, metadata_device)
+1410	                    .is_some()
+1411	                {
+1412	                    return Err(Error::Tool(anyhow::anyhow!(
+1413	                        "duplicate proven mountinfo device rewrite for raw device {mountinfo_device}"
+1414	                    )));
+1415	                }
+1416	            }
+1417	            for row in &mut rows {
+1418	                if let Some(metadata_device) = device_rewrites.get(&row.raw_device) {
+1419	                    row.raw_device = *metadata_device;
+1420	                }
+1421	            }
+1422	            let mut raw_devices = Vec::new();
+1423	            let mut seen_devices = BTreeSet::new();
+1424	            for row in &rows {
+1425	                if seen_devices.insert(row.raw_device) {
+1426	                    raw_devices.push(row.raw_device);
+1427	                }
+1428	            }
+1429	            let mut devices = BTreeMap::new();

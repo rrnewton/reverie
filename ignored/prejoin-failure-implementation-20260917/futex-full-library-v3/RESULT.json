@@ -1,0 +1,135 @@
+{
+  "status": "passed",
+  "source_head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "source_binding_sha256": "aa5fecbfa4360cc8bcc55a6df50c7e2e47e1d0d99e9551a9516c8037d0edd5ff",
+  "plan_sha256": "ce46884d151174f224bc29aa5850f8c65c684329582bafe42b61d4b36a537021",
+  "caller_sha256": "252cca41263bcda357e9668e27452832d73e613ce3cdaff5428cf6fbb80ec845",
+  "launch_sha256": "dae19d885fbb01c8b1b5fbb79f50732443a4ddebe1f76df590d53c5737c61924",
+  "outcome_counts": {
+    "ok": 454,
+    "failed": 0,
+    "ignored": 0
+  },
+  "registered_count": 454,
+  "cpu_seconds": 9.178808,
+  "wall_seconds": 19.010510442,
+  "service": {
+    "unit": "safehermit-20260917T183103Z-1392742.service",
+    "initial_properties": {
+      "Id": "safehermit-20260917T183103Z-1392742.service",
+      "LoadState": "loaded",
+      "ActiveState": "active",
+      "SubState": "running",
+      "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T183103Z-1392742.service",
+      "MainPID": 1393069,
+      "ExecMainPID": 1393069,
+      "ExecMainCode": 0,
+      "ExecMainStatus": 0,
+      "ExecMainStartTimestampMonotonic": 1828792113365,
+      "CPUUsageNSec": 2887000,
+      "RuntimeMaxUSec": 60000000,
+      "MemoryMax": 17179869184,
+      "MemorySwapMax": 0,
+      "IgnoreSIGPIPE": 1,
+      "ExecStart": {
+        "value": {
+          "type": "a(sasbttttuii)",
+          "data": [
+            [
+              "/usr/bin/python3",
+              [
+                "/usr/bin/python3",
+                "-B",
+                "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+                "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-futex-full-library-v3/native-full/before-exec.json",
+                "48f3f0db5cc49b00e4451389a6176873c71e9928f3e4556c54c410346f9eca06"
+              ],
+              false,
+              1789669863355136,
+              1828792113365,
+              0,
+              0,
+              1393069,
+              0,
+              0
+            ]
+          ]
+        },
+        "query_argv": [
+          "/usr/bin/busctl",
+          "--user",
+          "--json=short",
+          "get-property",
+          "org.freedesktop.systemd1",
+          "/org/freedesktop/systemd1/unit/safehermit_2d20260917T183103Z_2d1392742_2eservice",
+          "org.freedesktop.systemd1.Service",
+          "ExecStart"
+        ],
+        "stdout_sha256": "be7c66db3e792baac627a4445b035e1f60ae5d2014dad6565d4f7dd52c50e280",
+        "raw_stdout": "{\"type\":\"a(sasbttttuii)\",\"data\":[[\"/usr/bin/python3\",[\"/usr/bin/python3\",\"-B\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-futex-full-library-v3/native-full/before-exec.json\",\"48f3f0db5cc49b00e4451389a6176873c71e9928f3e4556c54c410346f9eca06\"],false,1789669863355136,1828792113365,0,0,1393069,0,0]]}\n",
+        "returncode": 0
+      }
+    },
+    "main_process": {
+      "pid": 1393069,
+      "start_ticks": 182879211,
+      "parent_pid": 32320,
+      "state": "R",
+      "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T183103Z-1392742.service"
+    },
+    "cgroup_inode": 39590601,
+    "cgroup_device": 27
+  },
+  "result_sha256": "d3cbb23a57a0fd08589cfda18f6e5367ddd0e31d7542a87d66c538438e8e32e5",
+  "stdout_sha256": "c982cfc4b21b4b7b2a7cbbceec16515764863e41ddba21a7454501bd4a9a967e",
+  "stderr_sha256": "7a90ec3cbac1c77b3334db1ba954d3f9798ee12abec022136b6679d8a8303264",
+  "stdout_bytes": 210539,
+  "stderr_bytes": 9812,
+  "outcomes_sha256": "9624e5549f7a202c6eb287caa229d6b9e319b00722459cc609bbf467ebf856db",
+  "summary_sha256": "3c465b2f08f2fc24cb7ab94a089a60ca603d605a54eaec6d71199f1774da34f1",
+  "source_after_sha256": "7ab96fccb35b0387f38dff7c44e03e241e3d3dbf6af8172f02f5beffca00f9e0",
+  "terminal_sha256": "3a241c70cc7a3fa37a8f3a0185a47c5a914a27144762fff0121e36b612c55572",
+  "admission_sha256": "8dff8182cf1c01f88ce09ad82ede82a0494c0e3be3fe9f92eebea77faa46a7e0",
+  "artifact": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+    "sha256": "c4041efdbb201f25ab0a8e1fa771dafba6d23e7bc761fd2bc8cdd11d45534a5a",
+    "bytes": 116339104,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "default"
+      ],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+      "fresh": false
+    }
+  },
+  "input_count": 199,
+  "scope": "First full serial library execution of final committed 12d4ce8c cleanup correction. All 453 prior methods plus the actual one new regression method; original 427 retained. Actual API 12 admission and REVERIE_REQUIRE_KVM=1 required. Same original resource limits and every assertion/deadline. Prior 450/3 and historical 426/1 remain retained. No separate selected-native/four-VM rerun, Hermit execution or canonical parity claim."
+}

@@ -1,0 +1,167 @@
+[
+  {
+    "path": "detcore-dbt/src/lib.rs",
+    "name": "eager_thread_start_alias_error_returns_fatal_without_publishing_state",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore-dbt/src/lib.rs",
+    "name": "lazy_thread_start_alias_error_returns_fatal_without_guest_result",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore-dbt/src/lib.rs",
+    "name": "lazy_thread_start_alias_error_precedes_prlimit_read",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore-dbt/src/lib.rs",
+    "name": "lazy_thread_start_alias_error_precedes_getrandom_write",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/syscalls/files.rs",
+    "name": "inherited_stdio_refuses_status_flags_without_implemented_behavior",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/syscalls/files/append_tests.rs",
+    "name": "inherited_append_waits_for_admission_before_positioning",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/syscalls/files/append_tests.rs",
+    "name": "inherited_append_reads_logical_flags_after_admission",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/syscalls/files/append_tests.rs",
+    "name": "inherited_append_releases_after_scratch_or_descriptor_error",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/syscalls/files/append_tests.rs",
+    "name": "inherited_append_preserves_partial_and_tool_error_results",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/syscalls/files/append_tests.rs",
+    "name": "inherited_append_native_neighbors",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/tool_global.rs",
+    "name": "inherited_stdio_alias_error_refuses_before_any_thread_start_rpc",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/tool_local.rs",
+    "name": "inherited_stdio_compares_descriptions_not_inodes",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/tool_local.rs",
+    "name": "inherited_stdio_late_comparison_error_rejects_partial_table",
+    "in_main_same_path": false
+  },
+  {
+    "path": "detcore/src/tool_local.rs",
+    "name": "inherited_stdio_kernel_errors_leave_empty_state_and_survive_clones",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/src/event_stream/append_record_replay_test.rs",
+    "name": "inherited_append_record_replay_preserves_recorded_offsets_and_ofd",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_guest_pipe_status_hides_scheduler_nonblocking",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_guest_pipe_status_hides_scheduler_nonblocking",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_nonblocking_does_not_unlatch_containment",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_nonblocking_does_not_unlatch_containment",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_nonblocking_stdin_does_not_abort_the_container",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_nonblocking_stdin_does_not_abort_the_container",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_guest_cannot_mutate_hermits_stdout_flags",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_guest_cannot_mutate_hermits_stdout_flags",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_reports_inherited_nonblocking_on_first_getfl",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_reports_inherited_nonblocking_on_first_getfl",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_direct_setfl_preserves_inherited_nonblocking",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_direct_setfl_preserves_inherited_nonblocking",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_inherited_stdio_aliases_share_status_flags",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_inherited_stdio_aliases_share_status_flags",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_inherited_stdio_append_covers_write_like_syscalls",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_inherited_stdio_append_covers_write_like_syscalls",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_ptrace_unimplemented_status_flags_are_refused",
+    "in_main_same_path": false
+  },
+  {
+    "path": "hermit-cli/tests/cli.rs",
+    "name": "run_kvm_unimplemented_status_flags_are_refused",
+    "in_main_same_path": false
+  }
+]

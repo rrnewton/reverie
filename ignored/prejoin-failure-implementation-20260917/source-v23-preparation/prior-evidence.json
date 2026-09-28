@@ -1,0 +1,156 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v16/REPORT.md",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v16/REPORT.md",
+    "bytes": 2115,
+    "mode": 420,
+    "sha256": "14554691c3d5c16c96fa205b2e1826fe566e53b810b42c10bfcb67c8ba683417"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v16/RESULT.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v16/RESULT.json",
+    "bytes": 6704,
+    "mode": 420,
+    "sha256": "b17ee48a57afb8080014c4b580d92890f1552a571e536d7a4e7bc1c125ae99fc"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v16/run-1/retained-elf-v22/binding.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v16/run-1/retained-elf-v22/binding.json",
+    "bytes": 1910,
+    "mode": 420,
+    "sha256": "57413d3766ee5762459b09db2d73cab179a8c6a4e64b2d3e693320c4481f7169"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v13/REPORT.md",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v13/REPORT.md",
+    "bytes": 1099,
+    "mode": 420,
+    "sha256": "60c8c7d92e2ef2e9ff8311c83d2cab27eb9098832a7d02837c4879ce6fef895f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v13/RESULT.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v13/RESULT.json",
+    "bytes": 3690,
+    "mode": 420,
+    "sha256": "b915d606a0ec9e957358165675911629cfa9045ac2b9d70e20f1b29f21ba4202"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v13/run-1/summary.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v13/run-1/summary.json",
+    "bytes": 318,
+    "mode": 420,
+    "sha256": "7f9cf14ebc8d18487ecc46816cd684112edd5d1577c127b0398f4969ce61485c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v5/REPORT.md",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v5/REPORT.md",
+    "bytes": 1211,
+    "mode": 420,
+    "sha256": "f8ee5dc9f392b07e768bf6359594f9038f03a7894449a7059f719b3d159b7165"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v5/RESULT.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v5/RESULT.json",
+    "bytes": 6263,
+    "mode": 420,
+    "sha256": "002926b731704889c77f75bc101bffe22821ffc5f484d089bfc8fb2089442d54"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v5/run-1/retained-elf-v22/binding.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-build-v5/run-1/retained-elf-v22/binding.json",
+    "bytes": 4085,
+    "mode": 420,
+    "sha256": "c7d55e6fb017c47e43e3f05fe5d86500d80b4cb32f80701741a3c9237af10dd8"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/REPORT.md",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/REPORT.md",
+    "bytes": 3082,
+    "mode": 420,
+    "sha256": "7ff14c6471af9c1df36315870ccba9d7ab57df6884c30110e8be13974efa20b5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/RESULT.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/RESULT.json",
+    "bytes": 23360,
+    "mode": 420,
+    "sha256": "c8fdba7c22382a9f3ff116af38b31ecaab59f6467e500e539da7254ea5cf31d2"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/run-1/summary.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v4/run-1/summary.json",
+    "bytes": 5353,
+    "mode": 420,
+    "sha256": "ee4c7cf3945f0bc1000720910b0758267af48a9471711785a77cbd91d251caaf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/REPORT.md",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/REPORT.md",
+    "bytes": 6485,
+    "mode": 420,
+    "sha256": "20a9ca978f6977232fb2984e215bc5c45024ef54e2da7ed21bdddfedfb33ad61"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/RESULT.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/RESULT.json",
+    "bytes": 42566,
+    "mode": 420,
+    "sha256": "0c756d9bab57134eb21143f4f72a227b3d2237968bf23a27eca2f9fe6e635419"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/UNION-RESULT.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/UNION-RESULT.json",
+    "bytes": 17900,
+    "mode": 420,
+    "sha256": "0df23ecacca62bdcb5a2c0add45d92652f6465fb4402c726c6ac07d3c3a648e9"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/run-1/summary.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/run-1/summary.json",
+    "bytes": 18150,
+    "mode": 420,
+    "sha256": "aab93682332ebe8b3ff50eb40d55bc93e7ec861d354b82d5def601d5d6363d40"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/run-1/independent-terminal-union.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/qualification-execution-v5/run-1/independent-terminal-union.json",
+    "bytes": 16814,
+    "mode": 420,
+    "sha256": "06e1c8ec739f3f7f53c5f7deb344e7bcd8438b960055960a25ee7b337e4be502"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/COMMIT-READBACK.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/COMMIT-READBACK.json",
+    "bytes": 898,
+    "mode": 420,
+    "sha256": "2c68af735153c75dc08738bea5fbb1ab5551e39e467530b4234a5754fa38c7c0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/RESCUE-READBACK.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/RESCUE-READBACK.json",
+    "bytes": 558,
+    "mode": 420,
+    "sha256": "8f0304619eed5770c34a1d0ed950f56e1b240c00782c931ca4762588b65d5cc3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/FORWARD-ASSESSMENT.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/FORWARD-ASSESSMENT.json",
+    "bytes": 2590,
+    "mode": 420,
+    "sha256": "0c7f34615489f9e1d15e613ba704e616ebb64bf23f8fad24c136053cbe008717"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/FORWARD-READBACK.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/append-v22-preparation/FORWARD-READBACK.json",
+    "bytes": 2956,
+    "mode": 420,
+    "sha256": "81982aea60c554c2361a6fae0e240309614de6e9e01de40c365715417d9fee23"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/prejoin-claude-review-d99853df/REPORT.md",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/prejoin-claude-review-d99853df/REPORT.md",
+    "bytes": 24096,
+    "mode": 420,
+    "sha256": "3640d542d071297aa8247ee0aa7f6be864065d11acd7548df201862038830969"
+  }
+]

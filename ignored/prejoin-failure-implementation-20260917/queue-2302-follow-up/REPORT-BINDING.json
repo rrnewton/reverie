@@ -1,0 +1,33 @@
+{
+  "report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-2302-follow-up/REPORT.md",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-2302-follow-up/REPORT.md",
+      "bytes": 9196,
+      "sha256": "8745c1ceb5196867954f73639cceaafbf9a7c6040934f174795a2da43bb11654"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-2302-follow-up/SOURCE-READBACK.json",
+      "bytes": 7855,
+      "sha256": "05645b4ccabb90d2840356b2bdb1f67e43bca5ffbb6621a8e1e0ff18716a6042"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-2302-follow-up/main-comparator-usage.txt",
+      "bytes": 18230,
+      "sha256": "5534d8bfb690d044ca68a53d46f32f07e59da38194609b8eb1f0d80bf8acd4e6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-queue-delta-20260917-1157/baseline-queue-report.md",
+      "bytes": 14376,
+      "sha256": "f379531b417d929663c283bba436c79f31bd76d3a0c1964da7b661fe20fc069f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/log-guard-source-continuation/publication/next-group3-files-2302-v2.stdout",
+      "bytes": 8304,
+      "sha256": "06d029cff9892fa0ac58e7f529217998edc4e7636ce8ef82793402afd6878766"
+    }
+  ],
+  "source_copies_verified": 25,
+  "hermit_worktree_head_at_end": "f7e1d3ddecd57168245e60e232146acba5b1d677",
+  "scope": "Read-only immutable Git-object source disposition; no execution or public state claim."
+}

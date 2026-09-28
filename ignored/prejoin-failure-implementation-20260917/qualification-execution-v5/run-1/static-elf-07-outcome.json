@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-07",
+  "test": "leader_exit::later_group_exit_preserves_worker_tool",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "1ab7d45d6185ffb8961a6dd0151a2409d5f7661c15e5a04cb4addc89ca3289e3",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "db0bcf4fcea0ca26b68763b95cca3c460b92880d38edd40c7865121c65be5601",
+  "cpu_nsec": 321437000,
+  "wall_seconds": 0.845704649
+}

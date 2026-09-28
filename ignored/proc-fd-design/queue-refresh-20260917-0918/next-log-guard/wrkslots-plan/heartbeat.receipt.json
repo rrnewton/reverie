@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/bin/wrkslots",
+    "heartbeat",
+    "--help"
+  ],
+  "started_utc": "2026-09-17T10:00:41.693120+00:00",
+  "ended_utc": "2026-09-17T10:00:41.860748+00:00",
+  "exit_code": 0,
+  "wall_seconds": 0.1676708459854126,
+  "stdout_sha256": "023e8ac897270329ba876e42d358ba9cf4ec5e8ad8ae96987d37f3b5cd1d6b0a",
+  "stdout_bytes": 545,
+  "stderr_bytes": 0
+}

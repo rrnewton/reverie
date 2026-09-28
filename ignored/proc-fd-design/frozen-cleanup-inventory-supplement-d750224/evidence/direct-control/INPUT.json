@@ -1,0 +1,12 @@
+{
+  "head": "1145835fc804f47ae48b29b89009e6937184175a",
+  "source_sha256": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b",
+  "patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0",
+  "command": [
+    "python3",
+    "-m",
+    "pytest",
+    "-q",
+    "py/tests/test_packaging_infrastructure.py::test_wrkslots_lifecycle_partitions_are_disjoint_and_complete"
+  ]
+}
