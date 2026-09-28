@@ -1,0 +1,19 @@
+{
+  "absent": [],
+  "arrived": [
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/tests/static_elf.rs"
+  ],
+  "corroborated": true,
+  "corroborated_against": "fb5698fb210f6549c9256ae80ef91cf6e682cfd2",
+  "files": [
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/tests/static_elf.rs"
+  ],
+  "main_sha": "dc7dac97995fee2393d2bcef147116134314781a",
+  "moved_on": [],
+  "pr": "624",
+  "repo": "rrnewton/reverie",
+  "resolved_from": "refs/pull/624/head",
+  "resolved_head": "fb5698fb210f6549c9256ae80ef91cf6e682cfd2"
+}
