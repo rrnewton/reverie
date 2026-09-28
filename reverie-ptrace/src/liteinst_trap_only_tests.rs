@@ -262,6 +262,11 @@ async fn run_parity_guest(trap_only: bool, record_values: bool, identity: Identi
     if let Some(handle) = handle {
         assert_eq!(handle.patching(), SitePatching::Off);
         assert_eq!(handle.patched_sites(), 0, "patching off wrote a site");
+        assert_eq!(
+            handle.table_state(),
+            crate::liteinst_trap_only::TableState::Patchable,
+            "patching off changed its table state"
+        );
     }
     let stop_trace = stats.stop_trace();
     let names = TaskNames::new(identity, &stop_trace);
