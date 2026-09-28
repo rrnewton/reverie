@@ -371,6 +371,24 @@ fn is_expected_breakpoint_trap(
         || (siginfo.si_code == libc::SI_KERNEL && Some(observed_rip) == after_breakpoint))
 }
 
+/// Whether a stop reported as `sig` without a ptrace event is a job-control
+/// group stop rather than a signal-delivery stop. Under `PTRACE_TRACEME` both
+/// look identical in the wait status; only a group stop has no siginfo, so
+/// `PTRACE_GETSIGINFO` fails with `EINVAL` (see ptrace(2), "Group-stop").
+fn is_group_stop(task: &Stopped, sig: Signal) -> Result<bool, TraceError> {
+    if !matches!(
+        sig,
+        Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU
+    ) {
+        return Ok(false);
+    }
+    match task.getsiginfo() {
+        Ok(_) => Ok(false),
+        Err(safeptrace::Error::Errno(Errno::EINVAL)) => Ok(true),
+        Err(err) => Err(err),
+    }
+}
+
 fn is_expected_private_syscall_trap(
     task: &Stopped,
     expected_rip: u64,
@@ -7113,8 +7131,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let wait = self.step_stopped(task, None)?.next_state().await?;
-        self.arm_liteinst_wait(&wait);
+        let wait = self.step_private_syscall(task).await?;
 
         // Get the result of the syscall to return to the caller.
         let result = self
@@ -7122,6 +7139,65 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await?;
         self.observe_liteinst_mapping_result(nr, args, result);
         Ok(result)
+    }
+
+    /// Single-steps the private-page `syscall` and waits for the stop that
+    /// reports its outcome.
+    ///
+    /// Two non-SIGTRAP stops can precede that outcome without describing it:
+    ///
+    /// - A job-control group stop. Under `PTRACE_TRACEME` it is reported as a
+    ///   bare stop signal, distinguishable from a signal-delivery stop only
+    ///   because `PTRACE_GETSIGINFO` fails with `EINVAL`. A restarted ptraced
+    ///   tracee does not honor a group stop, so the step is simply resumed:
+    ///   before the `syscall` this executes it; after it, the kernel next
+    ///   dequeues the step SIGTRAP that syscall exit already queued. Linux
+    ///   checks for a pending group stop before dequeuing any signal, so this
+    ///   stop can arrive after the syscall completed.
+    /// - A genuine signal-delivery stop after the `syscall` completed (RIP past
+    ///   the instruction). Linux dequeues a synchronous-class signal (positive
+    ///   `si_code`) queued before the step SIGTRAP ahead of it. RAX already
+    ///   holds the kernel's result, so the signal is held for delivery at the
+    ///   next resume, as the kernel would deliver it after the syscall
+    ///   returned, and the queued step trap is collected.
+    ///
+    /// A genuine signal-delivery stop before the `syscall` executed is returned
+    /// for `status_to_result` to report as an interrupted syscall. During
+    /// LiteInst activation every stop is returned unchanged so the activation
+    /// signal validation keeps rejecting it.
+    async fn step_private_syscall(&mut self, task: Stopped) -> Result<Wait, TraceError> {
+        let after_syscall = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
+        let mut running = self.step_stopped(task, None)?;
+        loop {
+            let wait = running.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            if self.liteinst_activation_in_progress() {
+                return Ok(wait);
+            }
+            let (stopped, sig) = match wait {
+                Wait::Stopped(stopped, Event::Signal(sig)) if sig != Signal::SIGTRAP => {
+                    (stopped, sig)
+                }
+                wait => return Ok(wait),
+            };
+            if is_group_stop(&stopped, sig)? {
+                tracing::debug!(
+                    "[scheduler/tool] (pid = {}) resuming injected syscall step past {} group stop",
+                    stopped.pid(),
+                    sig
+                );
+            } else if stopped.getregs()?.ip() == after_syscall {
+                tracing::debug!(
+                    "[scheduler/tool] (pid = {}) holding {} delivered after injected syscall completed",
+                    stopped.pid(),
+                    sig
+                );
+                self.pending_signal = Some(sig);
+            } else {
+                return Ok(Wait::Stopped(stopped, Event::Signal(sig)));
+            }
+            running = self.step_stopped(stopped, None)?;
+        }
     }
 
     // Replace an actual, unconverted seccomp entry. The caller must have taken
@@ -7219,9 +7295,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                         regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE
                             || regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET
                     );
-                    // interrupted by signal, return -ERESTARTSYS so that tracee can do a
-                    // restart_syscall.
+                    // Interrupted by a signal before the `syscall` executed:
+                    // return -ERESTARTSYS so that the tracee restarts it once
+                    // the signal is delivered. `step_private_syscall` absorbs
+                    // every non-SIGTRAP stop past the instruction, where the
+                    // syscall already completed and RAX holds the kernel's
+                    // result; overwriting that would execute it twice.
                     if sig != Signal::SIGTRAP {
+                        debug_assert_eq!(regs.ip() as usize, cp::PRIVATE_PAGE_OFFSET);
                         *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
                         self.pending_signal = Some(sig);
                     }
