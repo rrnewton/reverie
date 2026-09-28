@@ -466,6 +466,22 @@ pub enum TrapOnlyFailure {
         /// The accepted instruction pointer(s), rendered.
         expected: String,
     },
+    /// The masked hop deferred a SIGSTOP while the thread group had more
+    /// than one thread. Deciding whether the deferred SIGSTOP is still owed
+    /// (a SIGCONT discards stop signals from every thread's queue) and where
+    /// to raise it again reads only the hopping thread's pending signals, so
+    /// it holds only for a single-threaded group. Sites are retired before a
+    /// second task can share the address space (`MultiTaskLiveSites`), so a
+    /// hop never runs in such a group; the hop refuses rather than rely on it.
+    #[error(
+        "TrapOnlyHopDeferredStopMultiThread: site {site:#x} deferred a SIGSTOP in a thread group of {threads} threads"
+    )]
+    HopDeferredStopMultiThread {
+        /// The patched site.
+        site: u64,
+        /// The `Threads:` count of the hopping thread's group.
+        threads: u64,
+    },
     /// A second executing task appeared in an address space that still had
     /// live sites or still accepted new ones: the restore that must precede
     /// the task-creating syscall did not happen.
@@ -677,19 +693,25 @@ pub(crate) struct TrapOnlyTask {
     /// number (O4 rule 4). The r11 H0 builds does not depend on it: plain
     /// ptrace's timer clears the TF that the stepped `syscall` saved in r11.
     pub(crate) stepped_entry: bool,
-    /// The original siginfo of each SIGSTOP the masked hop dequeued at its
-    /// slot and re-raised at H3 (P2-SPEC O1.4), in delivery order, until the
-    /// re-raised SIGSTOP's delivery stop restores it. Cleared at this task's
-    /// next seccomp stop: a re-raised SIGSTOP is delivered before the thread
-    /// returns to user mode, so one still here when the thread next enters a
-    /// syscall was discarded by a SIGCONT, as the original would have been.
-    /// (Event stops such as an exec's come before the delivery and keep it.)
-    pub(crate) reraised_stops: std::collections::VecDeque<ReraisedStop>,
+    /// The SIGSTOPs the masked hop dequeued at its slot and re-raised at H3
+    /// (P2-SPEC O1.4), at most one per signal queue, until the re-raised
+    /// SIGSTOP's delivery stop, identified by its tag, restores the original
+    /// siginfo. Cleared at this task's next seccomp stop: a re-raised SIGSTOP
+    /// is delivered before the thread returns to user mode, so one still here
+    /// when the thread next enters a syscall was discarded by a SIGCONT, as
+    /// the original would have been. (Event stops such as an exec's come
+    /// before the delivery and keep it.) An entry is only ever applied to a
+    /// delivery stop carrying its own tag, so one that outlives its SIGSTOP
+    /// cannot rewrite another SIGSTOP's siginfo.
+    pub(crate) reraised_stops: Vec<ReraisedStop>,
 }
 
 /// A SIGSTOP the masked hop suppressed at its slot stop and re-raised.
 #[derive(Clone, Copy)]
 pub(crate) struct ReraisedStop {
+    /// The tag the re-raised SIGSTOP carries as its `si_value` (it is sent
+    /// with `si_code` `SI_QUEUE` and the tracer's pid).
+    pub(crate) tag: u64,
     /// The siginfo of the original SIGSTOP's delivery stop.
     pub(crate) info: libc::siginfo_t,
 }
@@ -697,6 +719,7 @@ pub(crate) struct ReraisedStop {
 impl std::fmt::Debug for ReraisedStop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReraisedStop")
+            .field("tag", &self.tag)
             .field("si_signo", &self.info.si_signo)
             .field("si_code", &self.info.si_code)
             .finish()
@@ -713,7 +736,7 @@ impl TrapOnlyTask {
             in_hop: false,
             pending_clone_flags: None,
             stepped_entry: false,
-            reraised_stops: std::collections::VecDeque::new(),
+            reraised_stops: Vec::new(),
         }
     }
 
