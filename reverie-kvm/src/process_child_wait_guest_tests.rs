@@ -101,15 +101,71 @@ mod blocking_wait_guest_tests {
         }
     }
 
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    struct WaitCall {
+        tid: i32,
+        syscall: i64,
+        which: Option<i32>,
+        pid: i32,
+        options: i32,
+    }
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    enum WaitCallback {
+        Entered(WaitCall),
+        Returned(WaitCall, Result<i64, i32>),
+    }
+    #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+    struct WaitThreadState {
+        started: bool,
+        callbacks: Vec<WaitCallback>,
+    }
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    enum WaitEvent {
+        Exit(u8, i32, ExitStatus),
+        Callbacks(i32, Vec<WaitCallback>),
+    }
     #[derive(Debug, Default)]
-    struct WaitLog(Mutex<Vec<(u8, i32, ExitStatus)>>);
+    struct WaitLog {
+        exits: Mutex<Vec<(u8, i32, ExitStatus)>>,
+        callbacks: Mutex<std::collections::BTreeMap<i32, Vec<WaitCallback>>>,
+    }
     #[reverie::global_tool]
     impl GlobalTool for WaitLog {
-        type Request = (u8, i32, ExitStatus);
+        type Request = WaitEvent;
         type Response = ();
         type Config = bool;
         async fn receive_rpc(&self, _: Pid, event: Self::Request) {
-            self.0.lock().unwrap().push(event);
+            match event {
+                WaitEvent::Exit(kind, tid, status) => {
+                    self.exits.lock().unwrap().push((kind, tid, status));
+                }
+                WaitEvent::Callbacks(tid, callbacks) => {
+                    assert!(
+                        self.callbacks
+                            .lock()
+                            .unwrap()
+                            .insert(tid, callbacks)
+                            .is_none(),
+                        "duplicate callback-state retirement for tid {tid}"
+                    );
+                }
+            }
         }
     }
     #[derive(Debug, Default)]
@@ -117,7 +173,7 @@ mod blocking_wait_guest_tests {
     #[reverie::tool]
     impl Tool for WaitTool {
         type GlobalState = WaitLog;
-        type ThreadState = bool;
+        type ThreadState = WaitThreadState;
         fn subscriptions(subscribe_waits: &bool) -> Subscription {
             let mut subscriptions = Subscription::none();
             if *subscribe_waits {
@@ -129,8 +185,8 @@ mod blocking_wait_guest_tests {
             &self,
             guest: &mut G,
         ) -> Result<(), reverie::Error> {
-            assert!(!guest.thread_state());
-            *guest.thread_state_mut() = true;
+            assert!(!guest.thread_state().started);
+            guest.thread_state_mut().started = true;
             Ok(())
         }
         async fn handle_syscall_event<G: Guest<Self>>(
@@ -142,19 +198,55 @@ mod blocking_wait_guest_tests {
                 *guest.config(),
                 "unsubscribed Tool received a syscall callback"
             );
-            // Subscribed cases exercise the injected-wait callback; the same
-            // lifecycle Tool with no subscriptions exercises checked dispatch.
-            Ok(guest.inject(call).await?)
+            let witness = match &call {
+                Syscall::Wait4(wait) => WaitCall {
+                    tid: guest.tid().as_raw(),
+                    syscall: libc::SYS_wait4,
+                    which: None,
+                    pid: wait.pid(),
+                    options: wait.options().bits(),
+                },
+                Syscall::Waitid(wait) => WaitCall {
+                    tid: guest.tid().as_raw(),
+                    syscall: libc::SYS_waitid,
+                    which: Some(wait.which()),
+                    pid: wait.pid(),
+                    options: wait.options(),
+                },
+                other => panic!("unexpected subscribed syscall: {other:?}"),
+            };
+            // Owned per-thread state survives cancellation of this callback.
+            // No ordinary RPC admission can suppress either local observation.
+            guest
+                .thread_state_mut()
+                .callbacks
+                .push(WaitCallback::Entered(witness));
+            let result = guest.inject(call).await;
+            let observed = match &result {
+                Ok(value) => Ok(*value),
+                Err(error) => Err(error.into_raw()),
+            };
+            guest
+                .thread_state_mut()
+                .callbacks
+                .push(WaitCallback::Returned(witness, observed));
+            Ok(result?)
         }
         async fn on_exit_thread<G: GlobalRPC<WaitLog>>(
             &self,
             tid: Pid,
             global: &G,
-            started: bool,
+            state: WaitThreadState,
             status: ExitStatus,
         ) -> Result<(), reverie::Error> {
-            assert!(started);
-            global.send_rpc((0, tid.as_raw(), status)).await;
+            assert!(state.started);
+            // Consuming-hook RPC remains available after clean group termination.
+            global
+                .send_rpc(WaitEvent::Callbacks(tid.as_raw(), state.callbacks))
+                .await;
+            global
+                .send_rpc(WaitEvent::Exit(0, tid.as_raw(), status))
+                .await;
             Ok(())
         }
         async fn on_exit_process<G: GlobalRPC<WaitLog>>(
@@ -163,7 +255,9 @@ mod blocking_wait_guest_tests {
             global: &G,
             status: ExitStatus,
         ) -> Result<(), reverie::Error> {
-            global.send_rpc((1, pid.as_raw(), status)).await;
+            global
+                .send_rpc(WaitEvent::Exit(1, pid.as_raw(), status))
+                .await;
             Ok(())
         }
     }
@@ -368,6 +462,93 @@ mod blocking_wait_guest_tests {
             assert!(index(0, tid) < index(1, 3));
         }
     }
+    fn wait_callbacks(
+        actual: std::collections::BTreeMap<i32, Vec<WaitCallback>>,
+        worker_creator: bool,
+        cancel: bool,
+        syscall: &str,
+        subscribe_waits: bool,
+    ) {
+        // Same exact four guest thread identities already required by hooks().
+        // Compare per-thread order, not the host order of exit-hook delivery.
+        let mut expected = std::collections::BTreeMap::from([
+            (3, Vec::new()),
+            (4, Vec::new()),
+            (5, Vec::new()),
+            (6, Vec::new()),
+        ]);
+        if !subscribe_waits {
+            assert_eq!(
+                actual, expected,
+                "unsubscribed Tool must have zero callbacks"
+            );
+            return;
+        }
+        let waiter = if worker_creator { 3 } else { 5 };
+        let creator = if worker_creator { 5 } else { 3 };
+        let wait4 = |tid, options| WaitCall {
+            tid,
+            syscall: libc::SYS_wait4,
+            which: None,
+            pid: 6,
+            options,
+        };
+        let waitid = |tid, which, pid, options| WaitCall {
+            tid,
+            syscall: libc::SYS_waitid,
+            which: Some(which),
+            pid,
+            options,
+        };
+        let first = match syscall {
+            "wait4" => wait4(waiter, 0),
+            "waitid" => waitid(waiter, libc::P_PID as i32, 6, libc::WEXITED | libc::WNOWAIT),
+            other => panic!("unknown wait case: {other}"),
+        };
+        if cancel {
+            expected
+                .get_mut(&waiter)
+                .unwrap()
+                .push(WaitCallback::Entered(first));
+            assert_eq!(
+                actual, expected,
+                "cancelled wait must enter its exact callback and never return"
+            );
+            return;
+        }
+        fn returned(events: &mut Vec<WaitCallback>, call: WaitCall, result: Result<i64, i32>) {
+            events.push(WaitCallback::Entered(call));
+            events.push(WaitCallback::Returned(call, result));
+        }
+        let waiter_events = expected.get_mut(&waiter).unwrap();
+        if syscall == "wait4" {
+            returned(waiter_events, first, Ok(6));
+        } else {
+            returned(waiter_events, first, Ok(0));
+            returned(waiter_events, first, Ok(0));
+            returned(
+                waiter_events,
+                waitid(waiter, libc::P_PID as i32, 6, libc::WEXITED),
+                Ok(0),
+            );
+        }
+        // The unchanged guest sends its creator acknowledgment only after the
+        // waiter's final ECHILD. That pipe gives the cross-thread causal edge;
+        // no ordering is inferred from independent consuming-hook scheduling.
+        for tid in [waiter, creator] {
+            let events = expected.get_mut(&tid).unwrap();
+            returned(events, wait4(tid, libc::WNOHANG), Err(libc::ECHILD));
+            returned(
+                events,
+                waitid(tid, libc::P_ALL as i32, 0, libc::WEXITED | libc::WNOHANG),
+                Err(libc::ECHILD),
+            );
+        }
+        assert_eq!(
+            actual, expected,
+            "exact per-TID injected wait entry/result sequence"
+        );
+    }
     fn run(name: &str, worker_creator: bool, cancel: bool, tool: bool) {
         run_with_subscriptions(name, worker_creator, cancel, tool, true);
     }
@@ -438,7 +619,15 @@ mod blocking_wait_guest_tests {
                         backend.run_static_elf_with_tool::<WaitTool>(subscribe_waits, true),
                     )
                     .map(|(log, code, stdout, stderr)| {
-                        (Some(log.0.into_inner().unwrap()), code, stdout, stderr)
+                        (
+                            Some((
+                                log.exits.into_inner().unwrap(),
+                                log.callbacks.into_inner().unwrap(),
+                            )),
+                            code,
+                            stdout,
+                            stderr,
+                        )
                     })
                 } else {
                     backend
@@ -446,13 +635,16 @@ mod blocking_wait_guest_tests {
                         .map(|(code, stdout, stderr)| (None, code, stdout, stderr))
                 };
                 let observation = observer.join().unwrap();
+                // Preserve both facts before either assertion can hide the other.
+                eprintln!("{arguments:?}: observer={observation:?}; backend={result:?}");
                 assert_eq!(observation, Ok(()), "{arguments:?}");
                 let (events, code, stdout, stderr) = result.unwrap();
                 assert_eq!(code, group_status, "{arguments:?}");
                 assert_eq!(stdout, expected(cancel), "{arguments:?}");
                 assert!(stderr.is_empty(), "{arguments:?}: {stderr:?}");
-                if let Some(events) = events {
+                if let Some((events, callbacks)) = events {
                     hooks(events, group_status);
+                    wait_callbacks(callbacks, worker_creator, cancel, syscall, subscribe_waits);
                 }
             }
         }

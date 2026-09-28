@@ -2271,10 +2271,12 @@ impl KvmBackend {
         let (fs_base, gs_base) = child_executor.segment_bases();
         set_user_segment_base(&child.vcpu, SegmentBase::Fs, fs_base)?;
         set_user_segment_base(&child.vcpu, SegmentBase::Gs, gs_base)?;
+        // The child uses root transport for future syscalls, but its initial
+        // return belongs to the issuing thread's frame in the private snapshot.
         configure_process_syscall_return(
             &child.memory,
             &child.vcpu,
-            child.syscall_frame_address,
+            self.syscall_frame_address,
             0,
             child_stack,
         )?;
@@ -7096,6 +7098,133 @@ mod tests {
             ),
             false,
         )
+    }
+
+    // Exercise the real fork preparation with different leader/worker frames.
+    // No guest runs: register readback isolates the initial return from all
+    // later wait/publication behavior, while the guest tests cover that path.
+    #[test]
+    fn fork_child_restores_issuing_thread_frame_from_private_snapshot() {
+        for from_worker in [false, true] {
+            for child_stack in [None, Some(0xde_0000)] {
+                let mut parent =
+                    KvmBackend::new(16 * 1024 * 1024).expect("fork transport control requires KVM");
+                parent
+                    .install_static_elf(&minimal_test_elf(&[HLT]), "/bin/fork-transport")
+                    .unwrap();
+                let leader = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
+                let sibling = leader.thread_child(2).unwrap();
+                let initial = parent.vcpu.get_regs().unwrap();
+                let mut worker = KvmBackend::from_thread_state(
+                    parent.memory.clone(),
+                    initial,
+                    parent.vcpu.get_xsave().unwrap(),
+                    None,
+                    parent.cpuid_policy,
+                    2,
+                    parent.thread_group.clone(),
+                )
+                .unwrap();
+                assert_ne!(parent.syscall_frame_address, worker.syscall_frame_address);
+                assert_eq!(parent.memory.host_address(), worker.memory.host_address());
+                let user_registers = |seed, stack, flags| kvm_regs {
+                    rax: seed,
+                    rbx: seed + 1,
+                    rcx: initial.rip + seed,
+                    rdx: seed + 2,
+                    rsi: seed + 3,
+                    rdi: seed + 4,
+                    rsp: stack,
+                    rbp: seed + 5,
+                    r8: seed + 6,
+                    r9: seed + 7,
+                    r10: seed + 8,
+                    r11: flags,
+                    r12: seed + 9,
+                    r13: seed + 10,
+                    r14: seed + 11,
+                    r15: seed + 12,
+                    rip: initial.rip + seed,
+                    rflags: flags,
+                };
+                let leader_user = user_registers(0x10, 0xe0_0000, 0x202);
+                let worker_user = user_registers(0x80, 0xdf_0000, 0x246);
+                stage_process_syscall_return(
+                    &mut parent.memory,
+                    &parent.vcpu,
+                    parent.syscall_frame_address,
+                    leader_user,
+                )
+                .unwrap();
+                stage_process_syscall_return(
+                    &mut worker.memory,
+                    &worker.vcpu,
+                    worker.syscall_frame_address,
+                    worker_user,
+                )
+                .unwrap();
+                let read_frame = |memory: &GuestMemory, address| {
+                    let mut frame = [0; FRAME_SIZE];
+                    memory.read_raw(address, &mut frame).unwrap();
+                    frame
+                };
+                let leader_frame = read_frame(&parent.memory, parent.syscall_frame_address);
+                let worker_frame = read_frame(&worker.memory, worker.syscall_frame_address);
+                assert_ne!(leader_frame, worker_frame);
+                let leader_before = parent.vcpu.get_regs().unwrap();
+                let worker_before = worker.vcpu.get_regs().unwrap();
+                let (issuer, executor, mut expected) = if from_worker {
+                    (&mut worker, &sibling, worker_user)
+                } else {
+                    (&mut parent, &leader, leader_user)
+                };
+                let child = issuer
+                    .prepare_forked_process(
+                        executor,
+                        3,
+                        child_stack,
+                        None,
+                        None,
+                        None,
+                        false,
+                        false,
+                        false,
+                        None,
+                    )
+                    .unwrap();
+                expected.rax = 0;
+                if let Some(stack) = child_stack {
+                    expected.rsp = stack;
+                }
+                assert_eq!(child.backend.vcpu.get_regs().unwrap(), expected);
+                assert_ne!(
+                    child.backend.memory.host_address(),
+                    parent.memory.host_address()
+                );
+                assert_eq!(
+                    child.backend.syscall_trampoline_address,
+                    SYSCALL_TRAMPOLINE_ADDRESS
+                );
+                assert_eq!(child.backend.syscall_frame_address, SYSCALL_FRAME_ADDRESS);
+                // IA32_LSTAR must still select the new process's root transport.
+                let mut msrs = kvm_bindings::Msrs::from_entries(&[kvm_bindings::kvm_msr_entry {
+                    index: 0xc000_0082,
+                    ..Default::default()
+                }])
+                .unwrap();
+                assert_eq!(child.backend.vcpu.get_msrs(&mut msrs).unwrap(), 1);
+                assert_eq!(msrs.as_slice()[0].data, SYSCALL_TRAMPOLINE_ADDRESS);
+                for (address, frame) in [
+                    (parent.syscall_frame_address, leader_frame),
+                    (worker.syscall_frame_address, worker_frame),
+                ] {
+                    assert_eq!(read_frame(&parent.memory, address), frame);
+                    assert_eq!(read_frame(&child.backend.memory, address), frame);
+                }
+                assert_eq!(parent.vcpu.get_regs().unwrap(), leader_before);
+                assert_eq!(worker.vcpu.get_regs().unwrap(), worker_before);
+            }
+        }
     }
 
     // Exercise real sibling dispatch and the production private-fork snapshot
