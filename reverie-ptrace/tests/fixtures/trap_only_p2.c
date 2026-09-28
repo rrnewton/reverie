@@ -836,12 +836,24 @@ static struct sock_fprog guest_filter = {
 static int tsync_pipe[2];
 static long tsync_thread_getppid;
 
+/* Test-only ordering knob: spins without syscalls (a few hundred
+ * milliseconds) when TP_ORDER equals `when`, so that the other thread or
+ * process almost surely finishes first. The runs must be equal either way. */
+static void order_delay(const char *when) {
+  const char *order = getenv("TP_ORDER");
+  if (!order || strcmp(order, when))
+    return;
+  for (volatile long i = 0; i < 300L * 1000 * 1000; i++)
+    ;
+}
+
 static void *tsync_thread_entry(void *arg) {
   (void)arg;
   char c;
   if (read(tsync_pipe[0], &c, 1) != 1)
     _exit(97);
   tsync_thread_getppid = SITE(SYS_getppid, 0, 0, 0, 0, 0);
+  order_delay("late");
   return NULL;
 }
 
@@ -874,22 +886,42 @@ static void guest_seccomp(const char *how) {
   if (!strcmp(how, "tsync")) {
     if (write(tsync_pipe[1], "x", 1) != 1)
       die("write");
-    pthread_join(thread, NULL);
+    /* Join without syscalls. pthread_join's futex wait is skipped, returns
+     * 0, or returns EAGAIN depending on whether the thread's exit (the
+     * kernel clearing its tid) came before the tid load, after the futex
+     * call, or between them: host scheduling that changed the Tool-visible
+     * stream. pthread_tryjoin_np returns EBUSY without a syscall while the
+     * tid is set, and once it is clear it joins without a futex call. */
+    order_delay("early");
+    while (pthread_tryjoin_np(thread, NULL) == EBUSY)
+      __builtin_ia32_pause();
     say("thread getppid ret=%ld\n", tsync_thread_getppid);
   }
+  /* SIGCHLD stays blocked (and is inherited blocked) across the fork and the
+   * wait, so its one delivery lands at the unblock below instead of wherever
+   * the child's exit happens to overtake the parent's wait4. */
+  sigset_t chld;
+  sigemptyset(&chld);
+  sigaddset(&chld, SIGCHLD);
+  if (sigprocmask(SIG_BLOCK, &chld, NULL) != 0)
+    die("block SIGCHLD");
   /* A fork child calls the site, then execs: the new image inherits the
    * filter, so its table must start disabled as well. */
   pid_t child = fork();
   if (child == 0) {
     for (int i = 0; i < 3; i++)
       say("child getpid %d pid=%d\n", i, SITE(SYS_getpid, 0, 0, 0, 0, 0) == getpid());
+    order_delay("late");
     exec_self("exec_image");
   }
+  order_delay("early");
   int status;
   if (waitpid(child, &status, 0) != child)
     die("wait child");
   say("child exited=%d code=%d signaled=%d sig=%d\n", WIFEXITED(status), WEXITSTATUS(status),
       WIFSIGNALED(status), WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+  if (sigprocmask(SIG_UNBLOCK, &chld, NULL) != 0)
+    die("unblock SIGCHLD");
   say("sigsys handled=%d\n", nrec);
 }
 

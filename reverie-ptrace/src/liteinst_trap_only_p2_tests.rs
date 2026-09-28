@@ -427,9 +427,24 @@ async fn run_p2_with(
     tail: bool,
     skip_patch_write: bool,
 ) -> Result<P2Run, Error> {
+    run_p2_env(mode, patching, tail, skip_patch_write, None).await
+}
+
+/// `run_p2_with`, with `TP_ORDER` set in the guest's environment (see the
+/// fixture's `order_delay`).
+async fn run_p2_env(
+    mode: &str,
+    patching: Option<SitePatching>,
+    tail: bool,
+    skip_patch_write: bool,
+    order: Option<&str>,
+) -> Result<P2Run, Error> {
     let report_path = tempfile_path(&format!("trap-only-p2-{mode}"));
     let mut command = Command::new(p2_guest());
     command.arg(mode).arg(&report_path);
+    if let Some(order) = order {
+        command.env("TP_ORDER", order);
+    }
     let mut builder = TracerBuilder::<P2Tool>::new(command)
         .config(tail)
         .backend_stats(BackendStatsRequest::ENABLED)
@@ -1352,4 +1367,35 @@ async fn trap_only_p2_untraced_thread_starts_on_restored_text() {
             );
         }
     }
+}
+
+/// T7a's guest has two host-timed interleavings: the TSYNC thread's exit
+/// against the leader's join, and the fork child's exit (SIGCHLD) against
+/// the parent's wait4. Neither may reach the Tool. `TP_ORDER=early` makes
+/// the thread and the child almost surely finish first (the leader spins
+/// before the join and before the wait); `TP_ORDER=late` makes them almost
+/// surely finish last (the thread spins before it returns, the child before
+/// it execs). The spins make no syscalls, so all four runs must be equal.
+/// Before the fixture joined without syscalls and blocked SIGCHLD, the two
+/// plain ptrace runs differed at the join's futex (present under `late`,
+/// absent under `early`) and, with only the join fixed, at SIGCHLD (after
+/// wait4 under `late`, before it under `early`).
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t7a_thread_and_child_order_do_not_reach_the_tool() {
+    let run = |patching, order| async move {
+        run_p2_env("guest_seccomp_tsync", patching, false, false, Some(order))
+            .await
+            .unwrap_or_else(|error| panic!("{patching:?} TP_ORDER={order} failed: {error}"))
+    };
+    let ptrace_early = run(None, "early").await;
+    let ptrace_late = run(None, "late").await;
+    assert_equal_runs(&ptrace_late, &ptrace_early);
+    let trap_only_early = run(Some(SitePatching::On), "early").await;
+    let trap_only_late = run(Some(SitePatching::On), "late").await;
+    assert_equal_runs(&trap_only_early, &ptrace_late);
+    assert_equal_runs(&trap_only_late, &ptrace_early);
+    assert_report_has(
+        &ptrace_early,
+        &["thread getppid ret=-1", "sigsys handled=0"],
+    );
 }
