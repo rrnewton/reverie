@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "git",
+    "commit",
+    "--only",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/ignored/gdb-vfile-20260916/commit-message.txt",
+    "--",
+    "reverie-ptrace/src/gdbstub/commands/base/_vFile.rs",
+    "reverie-ptrace/src/gdbstub/server.rs",
+    "reverie-ptrace/src/gdbstub/session.rs"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.1987371479626745
+}

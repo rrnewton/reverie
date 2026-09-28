@@ -1,0 +1,22 @@
+[
+  {
+    "attempt": 1,
+    "actual_exit": 1,
+    "error": "Failed to find executable /usr/local/bin/with-proxy; no command launched"
+  },
+  {
+    "attempt": 2,
+    "actual_exit": 3,
+    "error": "systemd service reparenting removed coordinator2162531 from ancestry; slot create refused",
+    "runtime_seconds": 0.164
+  },
+  {
+    "attempt": 3,
+    "exec": 20274,
+    "unit": "gdb-vfile-slot-create-3-20260916.scope",
+    "status": "canonical slot creation and recursive submodule hook completed; exec20274 closed",
+    "owner_pid": 2162531,
+    "owner_start": 166139008,
+    "actual_exit": 0
+  }
+]

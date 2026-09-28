@@ -1,0 +1,34 @@
+{
+  "base": "f83b6d8f45b5092676d9ffa1d99a742660eac661",
+  "head": "17982ed4903b8097f6e0451fc02338595c89f3d7",
+  "tree": "9060a20530863fbc69991722a60cfb02749622a2",
+  "branch": "dev-hermit/gdb-vfile-unsupported-20260916",
+  "patch_sha256": "f2885cec0ac104a6381d5f0d7e2188ca850b2251b62de5c9fb20f137b8c3d922",
+  "tracked_status": "",
+  "status": "?? HANDOFF.md\n?? ignored/\n",
+  "files": {
+    "reverie-ptrace/src/gdbstub/commands/base/_vFile.rs": {
+      "mode": "100644",
+      "kind": "blob",
+      "oid": "70781e580bc2ac42d30d3701eda235d9a8c5e962",
+      "sha256": "1ed4fcf8f56a90a17c2ebf334b205fa810617afadfdf83c7ea4c8eb09d16cb63"
+    },
+    "reverie-ptrace/src/gdbstub/server.rs": {
+      "mode": "100644",
+      "kind": "blob",
+      "oid": "956de8dc64523e5607bb60be8ee3531028c48135",
+      "sha256": "f2f8060f6a8eda945162413fccaf40dd78caab0a9ba6d1c9871ede70c105cc02"
+    },
+    "reverie-ptrace/src/gdbstub/session.rs": {
+      "mode": "100644",
+      "kind": "blob",
+      "oid": "ea0373be5820e68199bd1346d6bd0befb349a27e",
+      "sha256": "f8315ae142032435006277e668454f8f620c8a21e69c8776b176e72c72dba602"
+    }
+  },
+  "all_other_tree_entries_identical_base": true,
+  "tracked_entry_count": 2528,
+  "tested_candidate_bytes_equal": true,
+  "tag": "[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]",
+  "commit_actual_exit": 0
+}

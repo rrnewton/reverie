@@ -1,0 +1,72 @@
+[
+  {
+    "name": "compile",
+    "argv": [
+      "/home/newton/.cargo/bin/cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "-p",
+      "reverie-ptrace",
+      "--lib",
+      "--no-run",
+      "--jobs",
+      "4",
+      "--message-format=json"
+    ],
+    "actual_exit": 0,
+    "seconds": 34.39587352890521
+  },
+  {
+    "name": "gdbstub-tests",
+    "argv": [
+      "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/ignored/gdb-vfile-20260916/target-new-1/debug/deps/reverie_ptrace-070b2c24c15c84a0",
+      "gdbstub::",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "actual_exit": 0,
+    "seconds": 0.12016670708544552
+  },
+  {
+    "name": "inventory",
+    "argv": [
+      "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/ignored/gdb-vfile-20260916/target-new-1/debug/deps/reverie_ptrace-070b2c24c15c84a0",
+      "gdbstub::",
+      "--list"
+    ],
+    "actual_exit": 0,
+    "seconds": 0.002211801940575242
+  },
+  {
+    "name": "clippy",
+    "argv": [
+      "/home/newton/.cargo/bin/cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "reverie-ptrace",
+      "--lib",
+      "--tests",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "actual_exit": 0,
+    "seconds": 16.13199983118102
+  },
+  {
+    "name": "format",
+    "argv": [
+      "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustfmt",
+      "--check",
+      "--edition",
+      "2024",
+      "reverie-ptrace/src/gdbstub/commands/base/_vFile.rs",
+      "reverie-ptrace/src/gdbstub/session.rs",
+      "reverie-ptrace/src/gdbstub/server.rs"
+    ],
+    "actual_exit": 0,
+    "seconds": 0.029101108899340034
+  }
+]

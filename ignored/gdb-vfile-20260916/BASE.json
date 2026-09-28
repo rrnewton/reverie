@@ -1,0 +1,9 @@
+{
+  "head": "f83b6d8f45b5092676d9ffa1d99a742660eac661",
+  "tree": "eed8507ba7818309e933a160f9a1af89a49dd851",
+  "files": {
+    "reverie-ptrace/src/gdbstub/commands/base/_vFile.rs": "db8a5e42695048ee6fb68cecec952e11b0e35821a671a9d90a057120aa0c3fb5",
+    "reverie-ptrace/src/gdbstub/session.rs": "f0fc01539dd6ec3e9e7e0a1bf8e6b4693bdb4d01ecf521eb9280a18f7465ae9d",
+    "reverie-ptrace/src/gdbstub/server.rs": "89ae21b7890dfa08d692c2cab4acafe12c8b289bdbf076ac96db2a707fb2cad5"
+  }
+}

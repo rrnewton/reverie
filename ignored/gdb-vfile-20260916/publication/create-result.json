@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "/usr/bin/with-proxy",
+    "gh",
+    "pr",
+    "create",
+    "--repo",
+    "rrnewton/reverie",
+    "--base",
+    "main",
+    "--head",
+    "dev-hermit/gdb-vfile-unsupported-20260916",
+    "--title",
+    "Keep GDB sessions open for unsupported vFile probes",
+    "--body-file",
+    "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/ignored/gdb-vfile-20260916/publication/PR-BODY.md"
+  ],
+  "actual_exit": 0,
+  "seconds": 2.5444178259931505,
+  "stdout": "https://github.com/rrnewton/reverie/pull/559\n",
+  "stderr": ""
+}

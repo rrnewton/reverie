@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/ci-hub/bin/git-push-verified",
+    "origin",
+    "HEAD:refs/heads/dev-hermit/gdb-vfile-unsupported-20260916"
+  ],
+  "actual_exit": 0,
+  "seconds": 4.508074497105554,
+  "head_after": "17982ed4903b8097f6e0451fc02338595c89f3d7",
+  "tracked_status_after": ""
+}

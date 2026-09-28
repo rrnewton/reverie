@@ -1,0 +1,70 @@
+{
+  "REPORT.md": {
+    "size": 8046,
+    "sha256": "7f4f816a2a8767a00e1bd009d4a651c473d27f276bf8af76fd997b70397d322f"
+  },
+  "COMMITTED.json": {
+    "size": 1350,
+    "sha256": "bc9f4545759c54429045fac6bae150b4b63e3fef45b6f2b52771ac51f4a68a3a"
+  },
+  "committed.patch": {
+    "size": 9705,
+    "sha256": "f2885cec0ac104a6381d5f0d7e2188ca850b2251b62de5c9fb20f137b8c3d922"
+  },
+  "PLAN.md": {
+    "size": 2868,
+    "sha256": "d628e5334d1b5f6bd78facbc8b89cd1c54eb2bb8524f7070caa3a2e88a97eed1"
+  },
+  "old-1/READBACK.json": {
+    "size": 803,
+    "sha256": "5ba2808226b0aeffe6d6d2674ae4c8d5767edff023e44f907193f2985c3ee853"
+  },
+  "old-1/result.json": {
+    "size": 1195,
+    "sha256": "f01c449d17d416a5540015c325388dc8c5c39f70913b7719464b087fdeb32ebf"
+  },
+  "old-1/compiled-executable.json": {
+    "size": 1303,
+    "sha256": "d9faeaf41b1e5abfdeb788c3debe6771f8d6dd4fced11294992624d5f6dd9064"
+  },
+  "new-1/READBACK.json": {
+    "size": 1038,
+    "sha256": "30df01d20b750daea71b1d390d3a0d841204358bb57d4ea99036f58785906f87"
+  },
+  "new-1/result.json": {
+    "size": 1991,
+    "sha256": "e62818e0897e27fc2448644e630a5b0abb8f85ea7b05d683c57439c84557b890"
+  },
+  "new-1/compiled-executable.json": {
+    "size": 1303,
+    "sha256": "0f19a482847cc23acc0f47207aa916059d6d94d37522e7dfad5723dd4e7a37d6"
+  },
+  "gdb-host-io-protocol.html": {
+    "size": 12313,
+    "sha256": "9bb00c2eef22f9dbe6d973fee957d05186dab0d866661fd235899938e3827353"
+  },
+  "gdb-host-io-protocol-fetch.json": {
+    "size": 311,
+    "sha256": "2e212d069e65040383dbc59ac0785d0aa791f29c5e50bceee0e4429b41ed3c6e"
+  },
+  "cache-seed.json": {
+    "size": 1558,
+    "sha256": "6fe8e91162700edbc06e575ca60f82a44c2b80ca9fc9acf3d7e653686233cda2"
+  },
+  "resolved-Cargo.lock": {
+    "size": 67047,
+    "sha256": "537569ebbb0b298f6a386f4e5cc57fe2d3c33280b470752b519a410a1ef32675"
+  },
+  "who-am-i.json": {
+    "size": 2824,
+    "sha256": "a15794bcb14052cb3bbe5f8c25863bdb4a79f0f8741a8f7581a65c256fe0d942"
+  },
+  "who-am-i-tag.txt": {
+    "size": 65,
+    "sha256": "b245bd70c1fb64c48ff6bae5e82cd324b04305867a21bb1a66fb3b9512c41b00"
+  },
+  "git-commit.json": {
+    "size": 406,
+    "sha256": "0c5c6866ded7dfe9e6f5a6a7432bcc14071538282ac42194399f7d3f4a9155ed"
+  }
+}

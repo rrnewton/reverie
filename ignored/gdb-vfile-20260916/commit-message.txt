@@ -1,0 +1,11 @@
+Reply safely to unsupported GDB vFile operations
+
+[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+GDB may probe unsupported Host-I/O operations such as vFile:lstat while loading replay symbols. Return the protocol's empty unsupported reply and keep the connection usable, instead of treating that complete unknown operation as a malformed packet and closing the stream. Existing supported operations keep their argument parsing and filesystem behavior.
+
+Four focused tests cover parser boundaries and the real framed server/session exchange. The identical tests on the base compile successfully and expose the intended lstat parser failure and connection EOF; all 39 GDB-stub tests pass with this repair. Targeted Clippy with warnings denied and formatting pass. The existing empty-path hex-decoder panic remains outside this narrow change. No Hermit guest rerun or main-green claim.
+
+Task: vision-ci-signal-is-trustworthy-end-to-end

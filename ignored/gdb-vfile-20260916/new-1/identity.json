@@ -1,0 +1,6 @@
+{
+  "pid": 3858736,
+  "start": "175791742",
+  "cgroup": "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/app.slice/reverie-gdb-vfile-new-1-20260916.scope",
+  "inode": 37991213
+}

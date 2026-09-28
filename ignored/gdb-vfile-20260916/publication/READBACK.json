@@ -1,0 +1,44 @@
+{
+  "pr": {
+    "baseRefName": "main",
+    "baseRefOid": "f83b6d8f45b5092676d9ffa1d99a742660eac661",
+    "body": "[hermit2, degraded-dev-hermit, gpt-6-astra, devbig014, role=impl]\n\n## Plain Language Summary and Project Impact\n\nGDB can probe `vFile:lstat` while loading replay symbols. Reverie currently treats that unsupported operation as malformed and closes the connection. Return the protocol-required empty reply so GDB can continue negotiating; this addresses the disconnect observed in the retained failing Hermit CLI run.\n\n## Summary\n\nMatch the complete Host-I/O operation name through its second colon. Unknown nonempty operations get an empty response; existing supported operations keep their parser failures and filesystem behavior. No `lstat` filesystem access or invented successful Host-I/O result is added.\n\nFour focused tests exercise parser boundaries and the real framed reader, relay and session over a duplex connection. They require the exact empty reply followed by a successful `!` request on that same connection, while malformed supported operations still close it.\n\n## Validation\n\n- Original production plus identical added tests: compilation passed, then 37 passed and two intentionally failed\u2014the `lstat` parser assertion and the real connection's `UnexpectedEof`.\n- Repaired source: all 39 GDB-stub tests passed in 0.120 seconds, with zero ignored. The other 138 library tests were filtered out of this focused run.\n- Separate old/new targets and executable hashes bind the actual production variant. Targeted `cargo clippy --locked -p reverie-ptrace --lib --tests -- -D warnings` passed in 16.132 seconds; formatting passed.\n- Native controls used 4 CPU, 8 GiB memory, zero swap, 1024 tasks and a 900-second backstop. Both scopes are terminal and memory/pids events were zero.\n\nNo existing assertions, bounds, checksum checks or comparators were relaxed. The pre-existing empty-path hex-decoder panic remains outside this narrow repair. These are native protocol results; the Hermit CLI guest failure has not been rerun and no full-main-green result is claimed.\n\nTask: vision-ci-signal-is-trustworthy-end-to-end\n",
+    "headRefName": "dev-hermit/gdb-vfile-unsupported-20260916",
+    "headRefOid": "17982ed4903b8097f6e0451fc02338595c89f3d7",
+    "isDraft": false,
+    "state": "OPEN",
+    "title": "Keep GDB sessions open for unsupported vFile probes",
+    "url": "https://github.com/rrnewton/reverie/pull/559"
+  },
+  "body_exact_bytes_equal_including_final_newline": true,
+  "body_sha256": "f06116e585deca98c35bb5b1144718d5dd0bcd7941398cf38a54ec6efd94efec",
+  "remote_ref_equal": true,
+  "remote_files": {
+    "reverie-ptrace/src/gdbstub/commands/base/_vFile.rs": {
+      "remote_blob": "70781e580bc2ac42d30d3701eda235d9a8c5e962",
+      "sha256": "1ed4fcf8f56a90a17c2ebf334b205fa810617afadfdf83c7ea4c8eb09d16cb63",
+      "size": 7994,
+      "bytes_equal": true
+    },
+    "reverie-ptrace/src/gdbstub/server.rs": {
+      "remote_blob": "956de8dc64523e5607bb60be8ee3531028c48135",
+      "sha256": "f2f8060f6a8eda945162413fccaf40dd78caab0a9ba6d1c9871ede70c105cc02",
+      "size": 43127,
+      "bytes_equal": true
+    },
+    "reverie-ptrace/src/gdbstub/session.rs": {
+      "remote_blob": "ea0373be5820e68199bd1346d6bd0befb349a27e",
+      "sha256": "f8315ae142032435006277e668454f8f620c8a21e69c8776b176e72c72dba602",
+      "size": 39127,
+      "bytes_equal": true
+    }
+  },
+  "push_actual_exit": 0,
+  "push_seconds": 4.508074497105554,
+  "create_actual_exit": 0,
+  "create_seconds": 2.5444178259931505,
+  "push_unit_after": "LoadState=not-found\nActiveState=inactive\nSubState=dead\n",
+  "push_cgroup_absent": true,
+  "tracked_status": "",
+  "prior_readback_refusal": "readback-1-refusal.json; corrected byte-for-byte body expectation, no runtime or publication retry"
+}

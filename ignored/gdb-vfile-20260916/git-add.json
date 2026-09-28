@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "add",
+    "--",
+    "reverie-ptrace/src/gdbstub/commands/base/_vFile.rs",
+    "reverie-ptrace/src/gdbstub/server.rs",
+    "reverie-ptrace/src/gdbstub/session.rs"
+  ],
+  "actual_exit": 0,
+  "seconds": 0.04037950886413455
+}
