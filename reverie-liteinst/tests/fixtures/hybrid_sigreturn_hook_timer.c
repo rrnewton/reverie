@@ -64,17 +64,25 @@ struct kernel_sigaction {
 static unsigned long before;
 static unsigned long leads = 1;
 static unsigned long stride;
+static unsigned long observe_at;
 static volatile unsigned long round_index;
 static volatile unsigned long wrong;
 static volatile unsigned long handled;
 
 /* Requests the timer for the current round `i`, and returns
-   `before + (i % leads) * stride` branches later. */
+   `before + (i % leads) * stride` branches later. With `observe_at`
+   nonzero, and less than that, it makes a getpid that the Tool sees but
+   that requests nothing `observe_at` branches after the request. */
 static void handler(int signal) {
   (void)signal;
   unsigned long i = round_index;
   unsigned long lead = before + (i % leads) * stride;
   long pid = reverie_liteinst_getpid(1, i);
+  if (observe_at != 0) {
+    branches(observe_at);
+    wrong += reverie_liteinst_getpid(0, 0) != ANSWER;
+    lead -= observe_at;
+  }
   branches(lead);
   wrong += pid != ANSWER;
   ++handled;
@@ -84,9 +92,12 @@ static void handler(int signal) {
    number of signals, and the branches after each; optionally then `leads`
    and `stride`, to add `(i % leads) * stride` branches before round `i`'s
    return, and then a flag that, if nonzero, blocks the timer's signal,
-   SIGSTKFLT, for the whole run, so that no notification delivers an event. */
+   SIGSTKFLT, for the whole run, so that no notification delivers an event;
+   and optionally then `observe_at` (see `handler`, 0 for none), and a flag
+   that, if nonzero, makes a getpid that the Tool sees but that requests
+   nothing after each signal's handler has returned. */
 int main(int argc, char **argv) {
-  if (argc != 4 && argc != 6 && argc != 7) {
+  if (argc != 4 && argc != 6 && argc != 7 && argc != 9) {
     return 2;
   }
   before = strtoul(argv[1], NULL, 0);
@@ -96,6 +107,14 @@ int main(int argc, char **argv) {
     leads = strtoul(argv[4], NULL, 0);
     stride = strtoul(argv[5], NULL, 0);
     if (leads == 0) {
+      return 2;
+    }
+  }
+  unsigned long observe_after = 0;
+  if (argc == 9) {
+    observe_at = strtoul(argv[7], NULL, 0);
+    observe_after = strtoul(argv[8], NULL, 0);
+    if (observe_at != 0 && observe_at >= before) {
       return 2;
     }
   }
@@ -112,7 +131,7 @@ int main(int argc, char **argv) {
   if (syscall(SYS_rt_sigaction, SIGUSR1, &action, NULL, sizeof(action.mask))) {
     return 3;
   }
-  if (argc == 7 && strtoul(argv[6], NULL, 0) != 0) {
+  if (argc >= 7 && strtoul(argv[6], NULL, 0) != 0) {
     sigset_t timer;
     sigemptyset(&timer);
     sigaddset(&timer, SIGSTKFLT);
@@ -126,6 +145,9 @@ int main(int argc, char **argv) {
     round_index = i;
     if (syscall(SYS_tkill, tid, SIGUSR1)) {
       return 4;
+    }
+    if (observe_after != 0) {
+      wrong += reverie_liteinst_getpid(0, 0) != ANSWER;
     }
     branches(after);
   }

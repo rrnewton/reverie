@@ -3457,12 +3457,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             // the resume itself, with no stop and no Tool callback. Its
             // handler must run before the guest's next instruction, so the
             // steps cannot come first, and stepping into the handler is not
-            // implemented: the event is cancelled, and the Tool loses that
-            // preemption. This is a policy, not a stop's cancellation. The
-            // held signal can be one whose arrival host timing decides, such
-            // as SIGCHLD or a signal from another process, so the event's
-            // fate here can depend on it, as it does at the base, where the
-            // stop of any such signal that arrives first cancels the event.
+            // implemented: if there is anything to finish, the event is
+            // cancelled, and the Tool loses that preemption; otherwise the
+            // event is left as it was. This is a policy, not a stop's
+            // cancellation. Only a signal that Linux dequeues ahead of the
+            // step's SIGTRAP is held: a synchronous one with a positive
+            // si_code, such as the SIGSYS of a seccomp filter that traps the
+            // injected syscall. An asynchronous signal, such as SIGCHLD or
+            // one from another process, comes after the step's SIGTRAP, and
+            // is reported at a later stop.
             let task = match disregarded.or_else(|| self.timer.take_notification()) {
                 Some(_) if self.pending_signal.is_some() => {
                     self.timer.retire()?;
