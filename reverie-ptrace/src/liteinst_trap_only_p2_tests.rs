@@ -23,6 +23,10 @@ use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::os::fd::RawFd;
 
+use reverie::TimerSchedule;
+use serde::Deserialize;
+use serde::Serialize;
+
 use super::*;
 use crate::liteinst_trap_only::DisabledReason;
 use crate::liteinst_trap_only::RetiredReason;
@@ -44,15 +48,25 @@ const SEND_SIGWINCH: u64 = 0x200;
 const SEND_QUEUE: u64 = 0x400;
 /// The tracer leaves SIGUSR1 pending for its final resume of the stop.
 const SEND_RESUME: u64 = 0x800;
+/// The Tool requests a precise timer of r8 (the fifth argument) branches.
+const ARM_TIMER: u64 = 0x1000;
+
+/// The P2 Tool's configuration.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+struct P2Config {
+    /// Resumes untagged syscalls through `tail_inject`; otherwise runs them
+    /// through `inject` and records each return value.
+    tail: bool,
+    /// Leaves getuid unsubscribed, so the subscription is partial.
+    partial: bool,
+}
 
 #[derive(Default)]
 struct P2Log(Mutex<Vec<(Pid, String)>>);
 
 #[reverie::global_tool]
 impl GlobalTool for P2Log {
-    /// `true` resumes untagged syscalls through `tail_inject`; `false` runs
-    /// them through `inject` and records each return value.
-    type Config = bool;
+    type Config = P2Config;
     type Request = String;
     type Response = ();
 
@@ -176,8 +190,12 @@ impl Tool for P2Tool {
     type GlobalState = P2Log;
     type ThreadState = ();
 
-    fn subscriptions(_config: &bool) -> Subscription {
-        Subscription::all()
+    fn subscriptions(config: &P2Config) -> Subscription {
+        let mut subscription = Subscription::all();
+        if config.partial {
+            subscription.disable_syscall(reverie::syscalls::Sysno::getuid);
+        }
+        subscription
     }
 
     async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
@@ -215,10 +233,12 @@ impl Tool for P2Tool {
         let name = call.number();
         guest
             .send_rpc(format!(
-                "entry {name} steps={} rcx=rip:{} r11=rflags:{}",
+                "entry {name} steps={} rcx=rip:{} r11=rflags:{} rip={} orig_rax={}",
                 steps(tid),
                 regs.rcx == regs.rip,
                 regs.r11 == regs.eflags,
+                code(regs.rip),
+                regs.orig_rax as i64,
             ))
             .await;
         let tagged = regs.r9 & TP_MAGIC_MASK == TP_MAGIC;
@@ -230,7 +250,7 @@ impl Tool for P2Tool {
             SHAPE_TAIL
         } else if tagged {
             regs.r9 & 0xff
-        } else if *guest.config() {
+        } else if guest.config().tail {
             SHAPE_TAIL
         } else {
             SHAPE_INJECT
@@ -248,6 +268,11 @@ impl Tool for P2Tool {
             let first = ACTED.lock().unwrap().insert(tid.as_raw(), sequence) != Some(sequence);
             if first {
                 send_signals(pid, tid, regs.r9 & 0xff00);
+            }
+            if regs.r9 & ARM_TIMER != 0 {
+                guest
+                    .set_timer_precise(TimerSchedule::Rcbs(regs.r8))
+                    .expect("arm the precise timer");
             }
         }
         match shape {
@@ -301,8 +326,9 @@ impl Tool for P2Tool {
                 let after = guest.regs().await;
                 guest
                     .send_rpc(format!(
-                        "exit {name} rip={} rcx={} r11=rflags:{} steps={}",
+                        "exit {name} rip={} rax={} rcx={} r11=rflags:{} steps={}",
                         code(after.rip),
+                        value(after.rax, pid),
                         code(after.rcx),
                         after.r11 == after.eflags,
                         steps(tid)
@@ -311,6 +337,19 @@ impl Tool for P2Tool {
                 Ok(result?)
             }
         }
+    }
+
+    async fn handle_timer_event<G: Guest<Self>>(&self, guest: &mut G) {
+        let regs = guest.regs().await;
+        let clock = guest.read_clock().expect("read the timer clock");
+        guest
+            .send_rpc(format!(
+                "timer rip={} clock={clock} rax={} steps={}",
+                code(regs.rip),
+                value(regs.rax, guest.pid()),
+                steps(guest.tid())
+            ))
+            .await;
     }
 
     async fn handle_signal_event<G: Guest<Self>>(
@@ -371,6 +410,12 @@ struct P2Run {
     stops: BTreeMap<String, Vec<String>>,
     tool_events: BTreeMap<String, Vec<String>>,
     counts: PtraceBackendStatsSnapshot,
+    /// The registers at every final resume of a Tool-visible syscall stop:
+    /// rip, rax (the result, unless the Tool tail-injected) and orig_rax.
+    resumes: BTreeMap<String, Vec<String>>,
+    /// Trap-only only: run-loop stops the backend marked internal (the
+    /// seccomp stop of an invisible allowed-class hop), removed from `stops`.
+    internal_stops: BTreeMap<String, Vec<String>>,
     report: String,
     /// Trap-only only: the root address space's table at the end of the run.
     patched_sites: usize,
@@ -421,6 +466,19 @@ async fn run_p2(mode: &str, patching: Option<SitePatching>, tail: bool) -> P2Run
         })
 }
 
+/// Test-only perturbations of a P2 run.
+#[derive(Clone, Copy, Debug, Default)]
+struct P2Options {
+    tail: bool,
+    partial: bool,
+    skip_patch_write: bool,
+    displace_hop_exit_rip: bool,
+    forget_clone_flags: bool,
+    /// `TP_ORDER` in the guest's environment (see the fixture's
+    /// `order_delay`).
+    order: Option<&'static str>,
+}
+
 async fn run_p2_with(
     mode: &str,
     patching: Option<SitePatching>,
@@ -452,28 +510,47 @@ async fn run_p2_env(
     patching: Option<SitePatching>,
     tail: bool,
     hook: P2Hook,
-    order: Option<&str>,
+    order: Option<&'static str>,
+) -> Result<P2Run, Error> {
+    let options = P2Options {
+        tail,
+        skip_patch_write: hook == P2Hook::SkipPatchWrite,
+        forget_clone_flags: hook == P2Hook::ForgetCloneFlags,
+        order,
+        ..Default::default()
+    };
+    run_p2_options(mode, patching, options).await
+}
+
+async fn run_p2_options(
+    mode: &str,
+    patching: Option<SitePatching>,
+    options: P2Options,
 ) -> Result<P2Run, Error> {
     let report_path = tempfile_path(&format!("trap-only-p2-{mode}"));
     let mut command = Command::new(p2_guest());
     command.arg(mode).arg(&report_path);
-    if let Some(order) = order {
+    if let Some(order) = options.order {
         command.env("TP_ORDER", order);
     }
+    let resumes = std::sync::Arc::new(Mutex::new(Vec::new()));
     let mut builder = TracerBuilder::<P2Tool>::new(command)
-        .config(tail)
+        .config(P2Config {
+            tail: options.tail,
+            partial: options.partial,
+        })
         .backend_stats(BackendStatsRequest::ENABLED)
-        .final_resume_signal_for_test(resume_signal_hook());
+        .final_resume_signal_for_test(resume_signal_hook(resumes.clone()));
     if let Some(patching) = patching {
         builder = builder.liteinst_trap_only(patching);
-        match hook {
-            P2Hook::None => {}
-            P2Hook::SkipPatchWrite => {
-                builder = builder.liteinst_trap_only_skip_patch_write_for_test();
-            }
-            P2Hook::ForgetCloneFlags => {
-                builder = builder.liteinst_trap_only_forget_clone_flags_for_test();
-            }
+        if options.skip_patch_write {
+            builder = builder.liteinst_trap_only_skip_patch_write_for_test();
+        }
+        if options.forget_clone_flags {
+            builder = builder.liteinst_trap_only_forget_clone_flags_for_test();
+        }
+        if options.displace_hop_exit_rip {
+            builder = builder.liteinst_trap_only_displace_hop_exit_rip_for_test();
         }
     }
     let tracer = builder.spawn().await?;
@@ -500,11 +577,33 @@ async fn run_p2_env(
             .or_default()
             .push(rename_event(&names, &event));
     }
+    let mut resume_events = BTreeMap::<String, Vec<String>>::new();
+    for (pid, event) in std::mem::take(&mut *resumes.lock().unwrap()) {
+        resume_events
+            .entry(names.name(pid))
+            .or_default()
+            .push(rename_event(&names, &event));
+    }
+    let mut stops = names.per_task(stop_trace);
+    let mut internal_stops = BTreeMap::<String, Vec<String>>::new();
+    for (task, events) in stops.iter_mut() {
+        let internal: Vec<String> = events
+            .iter()
+            .filter_map(|event| event.strip_prefix(crate::stats::INTERNAL_STOP_PREFIX))
+            .map(str::to_owned)
+            .collect();
+        if !internal.is_empty() {
+            events.retain(|event| !event.starts_with(crate::stats::INTERNAL_STOP_PREFIX));
+            internal_stops.insert(task.clone(), internal);
+        }
+    }
     Ok(P2Run {
         status,
-        stops: names.per_task(stop_trace),
+        stops,
         tool_events,
         counts: reverie::BackendStatsSource::backend_stats(&stats),
+        resumes: resume_events,
+        internal_stops,
         report,
         patched_sites: handle.as_ref().map_or(0, |handle| handle.patched_sites()),
         table_state: handle.as_ref().map(|handle| handle.table_state()),
@@ -626,11 +725,30 @@ fn kill_remaining_tracees(stats: &crate::PtraceBackendStatsSource) {
     }
 }
 
-/// Leaves SIGUSR1 pending for the final resume of each `SEND_RESUME` call,
-/// once per call.
-fn resume_signal_hook() -> crate::task::FinalResumeSignalForTest {
+/// Records the registers at every final resume of a Tool-visible syscall
+/// stop in `log`, and leaves SIGUSR1 pending for the final resume of each
+/// `SEND_RESUME` call, once per call.
+fn resume_signal_hook(
+    log: std::sync::Arc<Mutex<Vec<(Pid, String)>>>,
+) -> crate::task::FinalResumeSignalForTest {
     let fired = std::sync::Arc::new(Mutex::new(std::collections::BTreeSet::<(i32, u64)>::new()));
     std::sync::Arc::new(move |tid: Pid, regs: &libc::user_regs_struct| {
+        // The guest's pid is the thread-group id, which the hook does not
+        // see; a result equal to the tid is the common case (getpid in the
+        // root thread) and is rendered as `<pid>` too.
+        log.lock().unwrap().push((
+            tid,
+            format!(
+                "resume rip={} rax={} orig_rax={} rcx={} r11=rflags:{}",
+                code(regs.rip),
+                value(regs.rax, tid),
+                regs.orig_rax as i64,
+                code(regs.rcx),
+                // The raw flags depend on guest arithmetic on its own pid,
+                // which differs per run.
+                regs.r11 == regs.eflags
+            ),
+        ));
         if regs.r9 & TP_MAGIC_MASK != TP_MAGIC || regs.r9 & SEND_RESUME == 0 {
             return None;
         }
@@ -676,19 +794,85 @@ fn first_divergence(
 }
 
 fn assert_equal_runs(trap_only: &P2Run, ptrace: &P2Run) {
+    assert_equal_runs_with_internal(trap_only, ptrace, &[]);
+}
+
+/// Like `assert_equal_runs`, except that the trap-only run also has exactly
+/// the `internal` run-loop stops (all in `task#0`, in order): each is the
+/// seccomp stop of an invisible allowed-class hop, and is counted as one
+/// seccomp stop and one stop event that plain ptrace does not have.
+fn assert_equal_runs_with_internal(trap_only: &P2Run, ptrace: &P2Run, internal: &[&str]) {
     assert_eq!(trap_only.status, ptrace.status, "exit status diverged");
     assert_eq!(trap_only.report, ptrace.report, "guest reports diverged");
+    assert_equal_runs_except_report(trap_only, ptrace, internal);
+}
+
+/// Every comparison of `assert_equal_runs_with_internal` except the guest's
+/// report, so that a mutation test can show the other comparisons catch a
+/// defect on their own.
+fn assert_equal_runs_except_report(trap_only: &P2Run, ptrace: &P2Run, internal: &[&str]) {
+    assert_eq!(trap_only.status, ptrace.status, "exit status diverged");
     assert!(
         trap_only.tool_events == ptrace.tool_events,
         "Tool-visible events diverged: {}",
         first_divergence(&trap_only.tool_events, &ptrace.tool_events)
     );
     assert!(
+        trap_only.resumes == ptrace.resumes,
+        "final-resume registers diverged: {}",
+        first_divergence(&trap_only.resumes, &ptrace.resumes)
+    );
+    assert!(
         trap_only.stops == ptrace.stops,
         "stop sequences diverged: {}",
         first_divergence(&trap_only.stops, &ptrace.stops)
     );
-    assert_eq!(trap_only.counts, ptrace.counts, "stop counts diverged");
+    assert!(
+        ptrace.internal_stops.is_empty(),
+        "{:#?}",
+        ptrace.internal_stops
+    );
+    let expected: BTreeMap<String, Vec<String>> = if internal.is_empty() {
+        BTreeMap::new()
+    } else {
+        BTreeMap::from([(
+            "task#0".to_owned(),
+            internal.iter().map(|stop| (*stop).to_owned()).collect(),
+        )])
+    };
+    assert_eq!(
+        trap_only.internal_stops, expected,
+        "internal (invisible) trap-only stops"
+    );
+    let extra = internal.len() as u64;
+    let (t, p) = (&trap_only.counts, &ptrace.counts);
+    assert_eq!(
+        t.seccomp_stops(),
+        p.seccomp_stops() + extra,
+        "seccomp stops"
+    );
+    assert_eq!(t.stop_events(), p.stop_events() + extra, "stop events");
+    assert_eq!(
+        counts_except_seccomp(t),
+        counts_except_seccomp(p),
+        "stop counts diverged"
+    );
+    if extra == 0 {
+        assert_eq!(trap_only.counts, ptrace.counts, "stop counts diverged");
+    }
+}
+
+fn counts_except_seccomp(counts: &PtraceBackendStatsSnapshot) -> [u64; 8] {
+    [
+        counts.tracees_started(),
+        counts.exited_tracees(),
+        counts.signal_stops(),
+        counts.exec_stops(),
+        counts.fork_stops(),
+        counts.vfork_stops(),
+        counts.clone_stops(),
+        counts.vfork_done_stops(),
+    ]
 }
 
 /// The trap-only run patched the shared site, and its tagged calls reached
@@ -813,6 +997,41 @@ async fn trap_only_p2_t1f_self_raised_signals() {
 async fn trap_only_p2_t2_forced_sigtrap_profile_per_shape() {
     let [ptrace, trap_only, _, _] = compare_mode("sigtrap_profile").await;
     assert_patched(&trap_only, SiteState::Live);
+    eprintln!("T2 ptrace report:\n{}", ptrace.report);
+    // The guest-visible state after each shape, measured under ptrace (the
+    // comparator already requires trap-only's report to be identical): a
+    // shape that single-steps resets SIGTRAP to its default and unblocks it,
+    // and the last trap the SIGUSR1 frame records is the step's debug trap
+    // (1) instead of the syscall's (13).
+    let mut guest_visible = Vec::new();
+    for (shape, result, stepped) in [
+        ("inject", "ppid", false),
+        ("tail", "ppid", false),
+        ("emulate", "4242", true),
+        ("private", "pid", true),
+        ("two-injects", "ppid", true),
+        ("two-private", "pid", true),
+    ] {
+        let (disposition, blocked, trapno) = if stepped {
+            ("dfl", 0, 1)
+        } else {
+            ("ign", 1, 13)
+        };
+        guest_visible.push(format!("{shape} getppid={result}"));
+        guest_visible.push(format!("{shape} sigtrap={disposition} blocked={blocked}"));
+        guest_visible.push(format!(
+            "{shape} 0: sig=10 code=-6 value=-1 rip=other rax=0 rcx=other r11=0x246 \
+             trapno={trapno} err=0"
+        ));
+    }
+    for run in [&ptrace, &trap_only] {
+        let lines: Vec<&str> = run
+            .report
+            .lines()
+            .filter(|line| !line.starts_with("mode ") && *line != "done")
+            .collect();
+        assert_eq!(lines, guest_visible, "{}", run.report);
+    }
     // Order of the fixture's shapes: tail, exact inject, emulate, private
     // inject, two injects, two private injects.
     let expected = [0, 0, 1, 2, 1, 3];
@@ -956,6 +1175,8 @@ fn clone_run(run: &P2Run) -> P2Run {
         stops: run.stops.clone(),
         tool_events: run.tool_events.clone(),
         counts: run.counts.clone(),
+        resumes: run.resumes.clone(),
+        internal_stops: run.internal_stops.clone(),
         report: run.report.clone(),
         patched_sites: run.patched_sites,
         table_state: run.table_state,
@@ -1137,8 +1358,18 @@ fn lifecycle_has(run: &P2Run, prefix: &str) -> Option<usize> {
         .max()
 }
 
-/// Masks the host TID an untraced clone returns, which no traced task names.
+/// Masks the host TID an untraced clone returns, which no traced task names,
+/// wherever it appears: the Tool's return value, and the rax of the exit
+/// event and of the resume that follow it.
 fn mask_untraced_tid(run: &P2Run) -> P2Run {
+    let tids: Vec<String> = run
+        .tool_events
+        .values()
+        .flatten()
+        .filter_map(|event| event.split_once("syscall clone = "))
+        .map(|(_, tid)| tid.to_string())
+        .filter(|tid| tid.parse::<i64>().is_ok_and(|tid| tid > 0))
+        .collect();
     let mask = |events: &BTreeMap<String, Vec<String>>| {
         events
             .iter()
@@ -1147,7 +1378,9 @@ fn mask_untraced_tid(run: &P2Run) -> P2Run {
                     .iter()
                     .map(|event| match event.split_once("syscall clone = ") {
                         Some((head, _)) => format!("{head}syscall clone = <untraced>"),
-                        None => event.clone(),
+                        None => tids.iter().fold(event.clone(), |event, tid| {
+                            event.replace(&format!(" rax={tid} "), " rax=<untraced> ")
+                        }),
                     })
                     .collect();
                 (task.clone(), events)
@@ -1156,6 +1389,7 @@ fn mask_untraced_tid(run: &P2Run) -> P2Run {
     };
     P2Run {
         tool_events: mask(&run.tool_events),
+        resumes: mask(&run.resumes),
         ..clone_run(run)
     }
 }
@@ -1640,4 +1874,390 @@ async fn trap_only_p2_t7a_thread_and_child_order_do_not_reach_the_tool() {
         &ptrace_early,
         &["thread getppid ret=-1", "sigsys handled=0"],
     );
+}
+
+/// Like `compare_mode`, except that each trap-only run also has exactly the
+/// `internal` (invisible allowed-class) run-loop stops.
+async fn compare_mode_with_internal(mode: &str, internal: &[&str]) -> [P2Run; 4] {
+    let ptrace_inject = run_p2(mode, None, false).await;
+    let trap_only_inject = run_p2(mode, Some(SitePatching::On), false).await;
+    assert_equal_runs_with_internal(&trap_only_inject, &ptrace_inject, internal);
+    let ptrace_tail = run_p2(mode, None, true).await;
+    let trap_only_tail = run_p2(mode, Some(SitePatching::On), true).await;
+    assert_equal_runs_with_internal(&trap_only_tail, &ptrace_tail, internal);
+    for run in [&ptrace_inject, &ptrace_tail] {
+        assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+        assert!(run.report.ends_with("done\n"), "{}", run.report);
+    }
+    [ptrace_inject, trap_only_inject, ptrace_tail, trap_only_tail]
+}
+
+/// The Tool's timer events of a run, in order.
+fn timer_events(run: &P2Run) -> Vec<&String> {
+    run.all_events()
+        .into_iter()
+        .filter(|event| event.starts_with("timer "))
+        .collect()
+}
+
+/// T1b: a child exits while the parent sleeps in a patched nanosleep. With
+/// SIGCHLD ignored by default the sleep restarts; with a handler it returns
+/// EINTR at S+2. Both equal ptrace.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t1b_sigchld_during_a_patched_nanosleep() {
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("sigchld_nanosleep").await;
+    assert_patched(&trap_only, SiteState::Live);
+    assert_patched(&trap_only_tail, SiteState::Live);
+    eprintln!("T1b ptrace report:\n{}", ptrace.report);
+    assert_report_has(
+        &ptrace,
+        &[
+            "sigchld-dfl ret=0 errno=0 rcx=tp_site_end r11=0x246",
+            "sigchld-dfl slept-full=1 rem-set=1",
+            "sigchld-dfl child exited=1 code=5",
+            "sigchld-handled ret=-4 errno=4 rcx=tp_site_end r11=0x246",
+            "sigchld-handled slept-full=0 rem-set=1",
+            "sigchld-handled 0: sig=17 code=1 value=-1 rip=tp_site_end rax=-4 rcx=tp_site_end r11=0x246 ",
+            "sigchld-handled child exited=1 code=5",
+        ],
+    );
+}
+
+/// T4: a precise timer armed at a patched getppid, k = 1..9 branches out,
+/// fires at the same place with the same clock as under ptrace. Measured on
+/// both backends: only k = 1 and 2 fire (23 iterations each); for k >= 3 the
+/// timer's single-steps reach the traced getpid first, which cancels the
+/// timer, and that getpid is entered by a single-step. Such a stepped entry
+/// shows r11 with TF set (so r11 != the reported rflags, which hide TF) under
+/// ptrace, and trap-only must give the Tool the same r11 (O4 item G).
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t4_timer_loop() {
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("timer_loop").await;
+    assert_patched(&trap_only, SiteState::Live);
+    assert_patched(&trap_only_tail, SiteState::Live);
+    let timers = timer_events(&ptrace);
+    eprintln!("T4 ptrace timer events: {}", timers.len());
+    assert_eq!(timers.len(), 46, "{timers:#?}");
+    for run in [&ptrace, &trap_only, &trap_only_tail] {
+        let stepped = run.tool_events["task#0"]
+            .iter()
+            .filter(|event| {
+                event.starts_with("entry getpid ") && event.contains(" r11=rflags:false ")
+            })
+            .count();
+        assert_eq!(
+            stepped, 154,
+            "stepped getpid entries: {:#?}",
+            run.tool_events
+        );
+    }
+    assert!(
+        ptrace.report.contains("timer loop sum=400\n"),
+        "{}",
+        ptrace.report
+    );
+    // The guest sees the stepped getpid's r11 too: TF set, on exactly the
+    // iterations whose timer was cancelled by the step reaching it.
+    let expected: Vec<String> = (0..200)
+        .map(|i| (i, i % 9 + 1))
+        .filter(|&(_, k)| k >= 3)
+        .map(|(i, k)| format!("iter {i} k={k} r11=0x346 rcx=tp_site_end"))
+        .collect();
+    let iters: Vec<&str> = ptrace
+        .report
+        .lines()
+        .filter(|line| line.starts_with("iter "))
+        .collect();
+    assert_eq!(iters, expected, "{}", ptrace.report);
+}
+
+/// T1d: a timer far enough out that perf's own overflow signal starts the
+/// single-steps, targeted at branch counts that land before, at and after the
+/// patched getpid that follows a long loop.
+///
+/// Measured on an AMD EPYC 9D85 under parallel load: the perf-overflow path
+/// itself is not exact there. Plain ptrace, run against itself, occasionally
+/// drops a timer or fires it one branch late (1 of 48 runs each), so this
+/// test can fail on a loaded host without any trap-only defect.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t1d_perf_marker_steps_across_a_patched_site() {
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let [ptrace, trap_only, _, trap_only_tail] = compare_mode("perf_marker").await;
+    assert_patched(&trap_only, SiteState::Live);
+    assert_patched(&trap_only_tail, SiteState::Live);
+    let timers = timer_events(&ptrace);
+    eprintln!("T1d ptrace timer events: {timers:#?}");
+    // Measured: the targets before the site (inside the loop, and at its
+    // exit) fire; the targets at and after the site are cancelled when the
+    // steps reach the traced getpid, which the guest then sees entered by a
+    // single-step (r11 with TF).
+    assert_eq!(timers.len(), 2, "{timers:#?}");
+    for (c, r11) in [(0, "0x246"), (1, "0x246"), (2, "0x346"), (3, "0x346")] {
+        assert!(
+            ptrace
+                .report
+                .contains(&format!("marker {c} getpid=1 r11={r11}\n")),
+            "{}",
+            ptrace.report
+        );
+    }
+}
+
+/// T4b: with getuid unsubscribed, trap-only does not patch at all and the
+/// run is exactly plain ptrace's, stop for stop.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t4b_partial_subscription_patches_nothing() {
+    for tail in [false, true] {
+        let options = P2Options {
+            tail,
+            partial: true,
+            ..Default::default()
+        };
+        let ptrace = run_p2_options("partial", None, options).await.unwrap();
+        let trap_only = run_p2_options("partial", Some(SitePatching::On), options)
+            .await
+            .unwrap();
+        assert_equal_runs(&trap_only, &ptrace);
+        assert_eq!(
+            trap_only.table_state,
+            Some(TableState::Disabled(DisabledReason::PartialSubscription))
+        );
+        assert_eq!(trap_only.patched_sites, 0);
+        assert_eq!(trap_only.site_state, None);
+        assert_report_has(
+            &ptrace,
+            &[
+                "getuid ok=1",
+                "getpid after pid=1",
+                "partial site bytes 0f 05",
+            ],
+        );
+        assert_eq!(ptrace.status, ExitStatus::Exited(0));
+        assert!(
+            !ptrace
+                .all_events()
+                .iter()
+                .any(|e| e.starts_with("entry getuid")),
+            "getuid is unsubscribed"
+        );
+    }
+}
+
+/// T4c: rt_sigreturn through the warmed shared site (from the guest's own
+/// restorer) is invisible to the Tool, restores the frame's registers and
+/// mask (the handler's added SIGUSR2 wins), and retires the site as
+/// allowed-class.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t4c_rt_sigreturn_through_a_patched_site() {
+    let [ptrace, trap_only, _, trap_only_tail] =
+        compare_mode_with_internal("sigreturn", &["seccomp 15"]).await;
+    for run in [&trap_only, &trap_only_tail] {
+        assert_patched(run, SiteState::Retired(RetiredReason::AllowClass));
+        assert!(
+            run.lifecycle
+                .iter()
+                .any(|entry| entry.starts_with("allow-class site=") && entry.ends_with(" nr=15")),
+            "{:#?}",
+            run.lifecycle
+        );
+    }
+    eprintln!("T4c ptrace report:\n{}", ptrace.report);
+    assert_report_has(
+        &ptrace,
+        &[
+            "sigreturn 0: sig=10 code=-6 value=-1 ",
+            "after sigreturn usr1-blocked=0 usr2-blocked=1",
+            "getpid after sigreturn pid=1 rcx=tp_site_end r11=0x246",
+            "after sigreturn site bytes 0f 05",
+            "sigreturn again 0: sig=10 code=-6 value=-1 ",
+        ],
+    );
+}
+
+/// T4d: a timer single-step that reaches a patched site carrying an allowed
+/// number fails closed with `TrapOnlyAllowClassInTimerStep` (plain ptrace
+/// steps over the unknown syscall and fires the timer).
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_t4d_timer_step_onto_an_allowed_number_fails_closed() {
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let ptrace = run_p2("timer_allow", None, false).await;
+    assert_eq!(ptrace.status, ExitStatus::Exited(0), "{}", ptrace.report);
+    assert_report_has(&ptrace, &["timer allow ret=-38 errno=38 "]);
+    assert_eq!(timer_events(&ptrace).len(), 1, "{:#?}", ptrace.all_events());
+    let error = run_p2_with("timer_allow", Some(SitePatching::On), false, false)
+        .await
+        .expect_err("a timer step onto an allowed number must end the run");
+    let text = format!("{error:#} {error:?}");
+    assert!(text.contains("TrapOnlyAllowClassInTimerStep"), "{text}");
+    assert!(text.contains("allowed syscall 500"), "{text}");
+}
+
+/// The hop fails closed with `TrapOnlyHopExitRip` when the slot's syscall
+/// leaves any rip other than the slot's return at its exit stop.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_hop_exit_rip_mismatch_fails_closed() {
+    let options = P2Options {
+        displace_hop_exit_rip: true,
+        ..Default::default()
+    };
+    let error = run_p2_options("sig_pending", Some(SitePatching::On), options)
+        .await
+        .expect_err("a displaced hop exit rip must end the run");
+    let text = format!("{error:#} {error:?}");
+    assert!(text.contains("TrapOnlyHopExitRip"), "{text}");
+}
+
+/// Unknown and out-of-range syscall numbers through warmed generic sites
+/// return -ENOSYS without any Tool event, as under ptrace, and retire their
+/// site. A number with high bits set runs as its low 32 bits on both
+/// backends; the one difference is the disclosed residual that the Tool (and
+/// the stop trace) sees the full orig_rax under ptrace and the low 32 bits
+/// under trap-only, because `int 0x80` truncates it.
+#[tokio::test(flavor = "current_thread")]
+async fn trap_only_p2_unknown_numbers_behave_as_under_ptrace() {
+    let internal = [
+        "seccomp 500",
+        "seccomp 4294967295",
+        "seccomp 337",
+        "seccomp 500",
+    ];
+    let high = 0x1_0000_0027u64;
+    for tail in [false, true] {
+        let ptrace = run_p2("unknown", None, tail).await;
+        let trap_only = run_p2("unknown", Some(SitePatching::On), tail).await;
+        eprintln!("unknown ptrace report:\n{}", ptrace.report);
+        // The residual, exactly: ptrace shows the full number where
+        // trap-only shows 39.
+        let unmask = |events: &BTreeMap<String, Vec<String>>, from: &str, to: &str| {
+            let mut changed = 0;
+            let mut events = events.clone();
+            for event in events.values_mut().flatten() {
+                if event.contains(from) {
+                    changed += 1;
+                    *event = event.replace(from, to);
+                }
+            }
+            (events, changed)
+        };
+        let (tool_events, tool_changed) = unmask(
+            &ptrace.tool_events,
+            &format!("orig_rax={high}"),
+            "orig_rax=39",
+        );
+        let (stops, stops_changed) =
+            unmask(&ptrace.stops, &format!("seccomp {high}"), "seccomp 39");
+        let (resumes, resumes_changed) =
+            unmask(&ptrace.resumes, &format!("orig_rax={high}"), "orig_rax=39");
+        assert_eq!(tool_changed, 1, "one Tool entry shows the full number");
+        assert_eq!(stops_changed, 1, "one stop shows the full number");
+        assert_eq!(resumes_changed, 1, "one resume shows the full number");
+        let masked = P2Run {
+            tool_events,
+            stops,
+            resumes,
+            ..clone_run(&ptrace)
+        };
+        assert_equal_runs_with_internal(&trap_only, &masked, &internal);
+        assert_eq!(ptrace.status, ExitStatus::Exited(0), "{}", ptrace.report);
+        assert_report_has(
+            &ptrace,
+            &[
+                "nr500 ret=-38 rcx-next=1 r11=0x246",
+                "nr500 getpid after=1",
+                "nr500 bytes after 0f 05",
+                "nr-1 ret=-38 rcx-next=1 r11=0x246",
+                "nr-1 bytes after 0f 05",
+                "gap337 ret=-38 rcx-next=1 r11=0x246",
+                "gap337 bytes after 0f 05",
+                "high-getpid ret=<pid> rcx-next=1 r11=0x246",
+                "high-getpid getpid after=1",
+                "high500 ret=-38 rcx-next=1 r11=0x246",
+                "high500 bytes after 0f 05",
+            ],
+        );
+        assert!(
+            !ptrace
+                .all_events()
+                .iter()
+                .any(|event| event.contains("orig_rax=500") || event.contains("orig_rax=-1")),
+            "an unknown number reached the Tool: {:#?}",
+            ptrace.all_events()
+        );
+    }
+}
+
+/// T5: the text residual of a patched site is exactly its two bytes, read
+/// directly or through /proc/self/mem, until the guest makes the page
+/// writable (which restores them), plus one page of smaps accounting that the
+/// restore does not undo (measured; the spec expected every read after the
+/// mprotect to equal ptrace's).
+#[tokio::test(flavor = "current_thread")]
+async fn traponly_text_residual_is_exactly_the_site_bytes() {
+    let ptrace = run_p2("text_residual", None, false).await;
+    let trap_only = run_p2("text_residual", Some(SitePatching::On), false).await;
+    eprintln!("T5 ptrace report:\n{}", ptrace.report);
+    eprintln!("T5 trap-only report:\n{}", trap_only.report);
+    let differing: Vec<(&str, &str)> = ptrace
+        .report
+        .lines()
+        .zip(trap_only.report.lines())
+        .filter(|(p, t)| p != t)
+        .collect();
+    assert_eq!(
+        ptrace.report.lines().count(),
+        trap_only.report.lines().count()
+    );
+    let (smaps, bytes): (Vec<_>, Vec<_>) = differing
+        .into_iter()
+        .partition(|(p, _)| p.contains(" smaps "));
+    assert_eq!(
+        bytes,
+        [
+            ("before direct 0f 05", "before direct cd 80"),
+            ("before procmem 0f 05", "before procmem cd 80"),
+        ],
+        "the only differing bytes"
+    );
+    // The patched page is a private copy of the file page, and restoring its
+    // bytes (on the guest's mprotect) does not make it a file page again: one
+    // page moves from clean file-backed memory to anonymous dirty memory,
+    // before and after. Which of Shared_Clean and Private_Clean it leaves
+    // depends on whether another process maps the fixture, so it is compared
+    // as their sum.
+    eprintln!("T5 smaps differences: {smaps:?}");
+    let field = |report: &str, tag: &str, name: &str| -> i64 {
+        let prefix = format!("{tag} smaps {name}: ");
+        report
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix.as_str()))
+            .unwrap_or_else(|| panic!("no {prefix:?} in {report}"))
+            .parse()
+            .expect("a kB count")
+    };
+    for tag in ["before", "after"] {
+        let get = |run: &P2Run, name| field(&run.report, tag, name);
+        let clean = |run: &P2Run| get(run, "Shared_Clean") + get(run, "Private_Clean");
+        assert_eq!(get(&trap_only, "Rss"), get(&ptrace, "Rss"), "{tag} Rss");
+        assert_eq!(clean(&trap_only), clean(&ptrace) - 4, "{tag} clean");
+        for name in ["Private_Dirty", "Anonymous"] {
+            assert_eq!(
+                get(&trap_only, name),
+                get(&ptrace, name) + 4,
+                "{tag} {name}"
+            );
+        }
+        for name in ["Shared_Dirty", "AnonHugePages"] {
+            assert_eq!(get(&trap_only, name), get(&ptrace, name), "{tag} {name}");
+        }
+    }
 }
