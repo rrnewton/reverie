@@ -12,7 +12,7 @@
 //! The Narf kernel calls its syscall interceptor on the trapping task's own
 //! kernel stack, in the one address space it shares with every other task and
 //! with the Tool. This crate turns that call into a Reverie callback without
-//! any IPC, ptrace emulation, signal, binary rewriting or polling:
+//! any IPC, ptrace emulation, signal or binary rewriting:
 //!
 //! * the kernel implements [`KernelServices`], a narrow view of the current
 //!   task and of the kernel-owned native transition for this one syscall;
@@ -21,12 +21,17 @@
 //!   `ThreadState` per thread;
 //! * [`NarfToolHost::handle_syscall`] builds a [`NarfGuest`], which implements
 //!   [`reverie::Guest`] on top of [`KernelServices`], and polls the Tool's
-//!   `handle_syscall_event` future once per interceptor entry, with a waker
-//!   that does nothing. A future pending in a non-tail `inject` whose
-//!   syscall parked the task is kept and polled again, with the syscall's
-//!   value, when the kernel re-executes it; any other future that is still
-//!   pending without having made a terminal transition fails closed with
-//!   [`NarfFatal::ToolSuspended`] and is never polled again;
+//!   `handle_syscall_event` future with a waker that does nothing. A future
+//!   pending in a non-tail `inject` whose syscall parked the task is kept
+//!   and polled again, with the syscall's value, when the kernel
+//!   re-executes it. Any other future that is still pending without having
+//!   made a terminal transition is waiting for another task: the kernel
+//!   lets other tasks run ([`KernelServices::wait_for_repoll`]) and the
+//!   core polls it again, within the same interceptor entry, until it
+//!   finishes or the task is killed. Where the kernel cannot wait, such a
+//!   future fails closed with [`NarfFatal::ToolSuspended`] and is never
+//!   polled again, and so does one pending in thread start, post-exec, an
+//!   exit hook or an interrupted inject, which are polled once;
 //! * global RPC is a direct call of [`reverie::GlobalTool::receive_rpc`] on the
 //!   singleton;
 //! * [`NarfToolHost::task_exited`] runs `on_exit_thread` exactly once per
@@ -58,6 +63,7 @@ pub use host::TaskTable;
 pub use services::CreatedTask;
 pub use services::CreatedTaskKind;
 pub use services::KernelServices;
+pub use services::RepollWait;
 pub use stack::NarfStack;
 pub use stack::NarfStackGuard;
 

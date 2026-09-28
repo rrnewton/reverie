@@ -46,6 +46,7 @@ use crate::guest::interrupted;
 use crate::services::CreatedTask;
 use crate::services::CreatedTaskKind;
 use crate::services::KernelServices;
+use crate::services::RepollWait;
 
 type Config<T> = <<T as Tool>::GlobalState as GlobalTool>::Config;
 
@@ -55,9 +56,11 @@ type Config<T> = <<T as Tool>::GlobalState as GlobalTool>::Config;
 /// tree rather than resume the task.
 pub enum NarfFatal {
     /// The Tool's future was pending without having made a terminal
-    /// transition and without awaiting a parked inject: it waits for
-    /// something the core will never deliver, so the core never polls it
-    /// again.
+    /// transition and without awaiting a parked inject, where the core
+    /// cannot poll it again: the kernel could not let other tasks run
+    /// ([`KernelServices::wait_for_repoll`]), or the future belongs to a
+    /// hook that is polled once. So it waits for something the core will
+    /// never deliver, and the core never polls it again.
     ToolSuspended,
     /// The Tool failed with a non-errno error.
     Tool(Error),
@@ -394,8 +397,9 @@ impl<T: Tool> TaskTable<T> {
 
 /// Polls `future` exactly once with a waker that does nothing.
 ///
-/// Nothing in the core ever wakes a Tool future, so a `Pending` result means
-/// the future is waiting for something that will not arrive in this callback.
+/// Nothing ever wakes a Tool future. The core polls one again only when the
+/// kernel re-executes the syscall a parked inject awaits, or after the kernel
+/// let other tasks run while it waited for one of them ([`poll_repolling`]).
 fn poll_once<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
 }
@@ -588,10 +592,19 @@ where
     /// tasks are still registered. A park re-execution re-issues the parked
     /// transition without calling the Tool again.
     ///
-    /// The Tool's future is polled once per entry and nothing wakes it. It
-    /// may stay pending across entries in exactly one case: a non-tail
-    /// `inject` whose syscall parked the task. The host keeps the future,
-    /// returns [`Disposition::ContextManaged`], and at the kernel's
+    /// The Tool's future is polled with a waker that does nothing. While it
+    /// is pending without a terminal transition, a parked inject or a
+    /// failure, it is waiting for another task (through the global state):
+    /// the host asks the kernel to let other tasks run
+    /// ([`KernelServices::wait_for_repoll`]) and polls it again, within this
+    /// entry, until it finishes, makes its terminal transition, parks, or the
+    /// task is killed. A killed task's future is dropped and the entry
+    /// returns [`Disposition::ContextManaged`]. If the kernel cannot wait,
+    /// the future fails closed with [`NarfFatal::ToolSuspended`].
+    ///
+    /// The future may stay pending across entries in exactly one case: a
+    /// non-tail `inject` whose syscall parked the task. The host keeps the
+    /// future, returns [`Disposition::ContextManaged`], and at the kernel's
     /// re-execution of the parked syscall re-issues it and polls the future
     /// again with its value. If the task's next entry is not that
     /// re-execution (a signal handler ran instead), the inject returns
@@ -702,8 +715,10 @@ where
             let mut guest = guest;
             tool.handle_syscall_event(&mut guest, syscall).await
         });
-        let poll = slot.enter(&mut frame, || poll_once(future.as_mut()));
-        finish(frame, poll, future, slot)
+        match poll_repolling(&mut frame, &slot, &mut future) {
+            Some(poll) => finish(frame, poll, future, slot),
+            None => killed(frame, future, slot),
+        }
     }
 
     /// Resumes a Tool suspended in a parked inject at the kernel's
@@ -734,7 +749,10 @@ where
             call,
         };
         let poll = if frame.resume_awaited(reexecuted) {
-            slot.enter(&mut frame, || poll_once(future.as_mut()))
+            match poll_repolling(&mut frame, &slot, &mut future) {
+                Some(poll) => poll,
+                None => return killed(frame, future, slot),
+            }
         } else {
             Poll::Pending
         };
@@ -923,6 +941,57 @@ fn exit_result(poll: Poll<Result<(), Error>>) -> Result<(), NarfFatal> {
         Poll::Ready(Err(error)) => Err(NarfFatal::Tool(error)),
         Poll::Pending => Err(NarfFatal::ToolSuspended),
     }
+}
+
+/// Polls a new or resumed Tool future, and polls it again each time the
+/// kernel let other tasks run.
+///
+/// A future pending without a terminal transition, a parked inject or a
+/// failure is waiting for another task, so the core asks the kernel to wait
+/// ([`KernelServices::wait_for_repoll`]) and polls it again. The wait runs
+/// outside [`FrameSlot::enter`], so no frame is published while the task is
+/// switched out. Returns the last poll, or `None` if the task was killed
+/// during a wait.
+fn poll_repolling<T: Tool, L, M: MemoryAccess + Send>(
+    frame: &mut Frame<'_, T, L, M>,
+    slot: &FrameSlot,
+    future: &mut ToolFuture,
+) -> Option<Poll<Result<i64, Error>>> {
+    loop {
+        let poll = slot.enter(frame, || poll_once(future.as_mut()));
+        let call = &frame.call;
+        if poll.is_ready()
+            || call.fatal.is_some()
+            || call.awaiting.is_some()
+            || call.terminal.is_some()
+        {
+            return Some(poll);
+        }
+        match frame.kernel.wait_for_repoll() {
+            RepollWait::Yielded => {}
+            RepollWait::Killed => return None,
+            RepollWait::Unsupported => return Some(poll),
+        }
+    }
+}
+
+/// Ends a callback whose task was killed while its Tool future waited: the
+/// kernel owns the task's context, the future is dropped, and the entry
+/// returns [`Disposition::ContextManaged`].
+///
+/// The terminal is recorded before the drop, so [`Frame::execute`] refuses
+/// any transition from then on.
+fn killed<T: Tool, L, M>(
+    mut frame: Frame<'_, T, L, M>,
+    future: ToolFuture,
+    slot: Arc<FrameSlot>,
+) -> (Result<Disposition, NarfFatal>, Option<Suspended>) {
+    frame.call.terminal = Some(Terminal {
+        outcome: NarfSyscallOutcome::ContextManaged,
+        parked: None,
+    });
+    slot.enter(&mut frame, move || drop(future));
+    settle(frame.call, Poll::Pending)
 }
 
 /// Keeps a Tool future that awaits a parked inject, or drops it under the

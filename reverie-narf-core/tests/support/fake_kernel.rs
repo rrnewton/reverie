@@ -21,7 +21,12 @@
 //! * a created task is reported once, and exits are reported to the host after
 //!   the interceptor returns, as Narf's teardown would;
 //! * each process has its own fake address space, so memory read through the
-//!   wrong task's accessor faults.
+//!   wrong task's accessor faults;
+//! * `wait_for_repoll` answers from a script the test sets, and is
+//!   `Unsupported` once the script is used up; a `Yielded` answer first runs
+//!   whatever the test gave as the other tasks' work, and a `Killed` answer
+//!   ends the task's process with SIGKILL, as a pending SIGKILL ends Narf's
+//!   wait, and nothing may execute after it.
 
 #![allow(dead_code)]
 
@@ -35,6 +40,7 @@ use core::sync::atomic::Ordering;
 use reverie::Auxv;
 use reverie::ExitStatus;
 use reverie::Pid;
+use reverie::Signal;
 use reverie::Tool;
 use reverie::syscalls::Errno;
 use reverie::syscalls::IoSlice;
@@ -52,6 +58,7 @@ use reverie_narf_core::NarfSyscallOutcome;
 use reverie_narf_core::NarfSyscallRequest;
 use reverie_narf_core::NarfToolHost;
 use reverie_narf_core::OriginalSyscallError;
+use reverie_narf_core::RepollWait;
 use reverie_narf_core::SyscallEntry;
 use reverie_narf_core::TaskExit;
 use reverie_narf_core::TaskLock;
@@ -106,7 +113,8 @@ pub type FakeHost<T> = NarfToolHost<T, SpinLock<TaskTable<T>>>;
 pub enum Violation {
     /// The original syscall was requested again in one interceptor call.
     SecondOriginal { tid: i32 },
-    /// A transition was requested after one reported `ContextManaged`.
+    /// A transition, or a repoll wait, was requested after one reported
+    /// `ContextManaged`.
     AfterContextManaged { tid: i32 },
     /// The original was requested from a lifecycle callback, which has none.
     OriginalOutsideSyscall { tid: i32 },
@@ -177,6 +185,12 @@ struct World {
     /// With none, Linux reports the last thread's own status.
     group_status: BTreeMap<i32, ExitStatus>,
     teardowns: Vec<(i32, Result<TaskExit, NarfFatal>)>,
+    /// The answers to the next `wait_for_repoll` calls, front first.
+    repoll_script: Vec<RepollWait>,
+    /// The task of every `wait_for_repoll` call, in order.
+    repoll_waits: Vec<i32>,
+    /// The error `daemonize` fails with, if it is to fail.
+    daemonize_refusal: Option<Errno>,
 }
 
 /// The fake kernel: tasks, address spaces and a log of what ran.
@@ -214,6 +228,9 @@ impl FakeKernel {
                 pending_exits: Vec::new(),
                 group_status: BTreeMap::new(),
                 teardowns: Vec::new(),
+                repoll_script: Vec::new(),
+                repoll_waits: Vec::new(),
+                daemonize_refusal: None,
             })),
         }
     }
@@ -263,6 +280,7 @@ impl FakeKernel {
             original_executed: false,
             context_managed: false,
             created: None,
+            others: None,
         }
     }
 
@@ -309,6 +327,25 @@ impl FakeKernel {
         result
     }
 
+    /// Like [`syscall`](Self::syscall), but every wait of this callback
+    /// answered `Yielded` first runs `others`, as other tasks run while Narf
+    /// has the waiting task switched out.
+    pub fn syscall_with_others<T: Tool + 'static>(
+        &self,
+        host: &FakeHost<T>,
+        tid: Pid,
+        request: NarfSyscallRequest,
+        others: &mut (dyn FnMut() + Send + Sync),
+    ) -> Result<Disposition, NarfFatal> {
+        let result = {
+            let mut services = self.services(tid, Some(request));
+            services.others = Some(others);
+            host.handle_syscall(&mut services, SyscallEntry::new(request))
+        };
+        self.report_exits(host);
+        result
+    }
+
     /// Runs `tid`'s thread-start callback.
     pub fn thread_start<T: Tool + 'static>(
         &self,
@@ -333,6 +370,22 @@ impl FakeKernel {
             let result = host.task_exited(Pid::from_raw(tid), status, process_status);
             self.with(|world| world.teardowns.push((tid, result)));
         }
+    }
+
+    /// Answers the next `wait_for_repoll` calls with `answers`, in order;
+    /// once they are used up, a wait is `Unsupported`.
+    pub fn script_repoll(&self, answers: &[RepollWait]) {
+        self.with(|world| world.repoll_script = answers.to_vec());
+    }
+
+    /// The task of every `wait_for_repoll` call so far, in order.
+    pub fn repoll_waits(&self) -> Vec<i32> {
+        self.with(|world| world.repoll_waits.clone())
+    }
+
+    /// Makes every later `daemonize` fail with `errno`.
+    pub fn refuse_daemonize(&self, errno: Errno) {
+        self.with(|world| world.daemonize_refusal = Some(errno));
     }
 
     /// Queues bytes on the pipe that `read(PIPE_FD, ..)` drains.
@@ -452,6 +505,8 @@ pub struct FakeServices<'k> {
     original_executed: bool,
     context_managed: bool,
     created: Option<CreatedTask>,
+    /// The other tasks' work, run at each wait answered `Yielded`.
+    others: Option<&'k mut (dyn FnMut() + Send + Sync)>,
 }
 
 impl FakeServices<'_> {
@@ -476,17 +531,30 @@ impl FakeServices<'_> {
     }
 }
 
-fn exit_task(world: &mut World, tid: i32, code: i32, group: bool) {
+fn exit_task(world: &mut World, tid: i32, status: ExitStatus, group: bool) {
     if let Some(task) = world.tasks.get_mut(&tid)
         && !task.exited
     {
         task.exited = true;
         let pid = task.pid;
-        let status = ExitStatus::Exited(code);
         world.pending_exits.push((tid, status));
         if group {
             world.group_status.entry(pid).or_insert(status);
         }
+    }
+}
+
+/// Ends every live thread of process `pid` with `status`, as `exit_group`
+/// or a fatal signal does.
+fn exit_process(world: &mut World, pid: i32, status: ExitStatus) {
+    let threads: Vec<i32> = world
+        .tasks
+        .iter()
+        .filter(|(_, task)| task.pid == pid && !task.exited)
+        .map(|(tid, _)| *tid)
+        .collect();
+    for thread in threads {
+        exit_task(world, thread, status, true);
     }
 }
 
@@ -575,19 +643,11 @@ fn run_native(
             (Returned(child as i64), Some(created))
         }
         Some(Sysno::exit) => {
-            exit_task(world, tid, a0 as i32, false);
+            exit_task(world, tid, ExitStatus::Exited(a0 as i32), false);
             (ContextManaged, None)
         }
         Some(Sysno::exit_group) => {
-            let threads: Vec<i32> = world
-                .tasks
-                .iter()
-                .filter(|(_, task)| task.pid == pid && !task.exited)
-                .map(|(tid, _)| *tid)
-                .collect();
-            for thread in threads {
-                exit_task(world, thread, a0 as i32, true);
-            }
+            exit_process(world, pid, ExitStatus::Exited(a0 as i32));
             (ContextManaged, None)
         }
         // A NULL filename fails as Linux fails it, before anything is
@@ -678,9 +738,44 @@ impl<'k> KernelServices for FakeServices<'k> {
     fn daemonize(&mut self) -> Result<(), Errno> {
         let tid = self.tid;
         self.kernel.with(|world| {
+            if let Some(errno) = world.daemonize_refusal {
+                return Err(errno);
+            }
             world.tasks.get_mut(&tid).expect("task").daemon = true;
+            Ok(())
+        })
+    }
+
+    fn wait_for_repoll(&mut self) -> RepollWait {
+        let tid = self.tid;
+        if self.context_managed {
+            self.violate(Violation::AfterContextManaged { tid });
+            return RepollWait::Unsupported;
+        }
+        let answer = self.kernel.with(|world| {
+            world.repoll_waits.push(tid);
+            if world.repoll_script.is_empty() {
+                RepollWait::Unsupported
+            } else {
+                world.repoll_script.remove(0)
+            }
         });
-        Ok(())
+        match answer {
+            RepollWait::Yielded => {
+                if let Some(others) = self.others.as_mut() {
+                    others();
+                }
+            }
+            RepollWait::Killed => {
+                self.context_managed = true;
+                self.kernel.with(|world| {
+                    let pid = world.tasks[&tid].pid;
+                    exit_process(world, pid, ExitStatus::Signaled(Signal::SIGKILL, false));
+                });
+            }
+            RepollWait::Unsupported => {}
+        }
+        answer
     }
 }
 
