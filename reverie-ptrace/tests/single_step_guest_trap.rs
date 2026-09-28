@@ -59,18 +59,28 @@ const PERF_RCBS: u64 = 30_000;
 /// instruction from there to the target is stepped.
 const LESS_RCBS: u64 = 15;
 
-/// The clock from the request to each timer event.
+/// The clock from the request to each timer event, and where each timer
+/// event found the guest.
 #[derive(Debug, Default)]
-struct TimerEvents(Mutex<Vec<u64>>);
+struct TimerEvents(Mutex<Vec<u64>>, Mutex<Vec<Place>>);
+
+/// The guest's instruction pointer at a timer event, and the address of the
+/// branch at which the guests that `between_loops!` runs expect it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct Place {
+    rip: u64,
+    second_loop_branch: u64,
+}
 
 #[reverie::global_tool]
 impl GlobalTool for TimerEvents {
-    type Request = u64;
+    type Request = (u64, Place);
     type Response = ();
     type Config = Schedule;
 
-    async fn receive_rpc(&self, _from: Pid, clock: u64) {
+    async fn receive_rpc(&self, _from: Pid, (clock, place): (u64, Place)) {
         self.0.lock().unwrap().push(clock);
+        self.1.lock().unwrap().push(place);
     }
 }
 
@@ -97,8 +107,10 @@ struct PreciseTimerTool;
 #[reverie::tool]
 impl Tool for PreciseTimerTool {
     type GlobalState = TimerEvents;
-    /// The clock at the request.
-    type ThreadState = u64;
+    /// The clock at the request, and the request's second argument, which a
+    /// guest that `between_loops!` runs sets to the address of its second
+    /// loop's branch.
+    type ThreadState = (u64, u64);
 
     /// The Tool also observes `getppid`, which the guests that test
     /// cancellation make.
@@ -115,7 +127,8 @@ impl Tool for PreciseTimerTool {
     ) -> Result<i64, Error> {
         match syscall.number() {
             Sysno::clock_getres => {
-                *guest.thread_state_mut() = guest.read_clock().unwrap();
+                let (_, args) = syscall.into_parts();
+                *guest.thread_state_mut() = (guest.read_clock().unwrap(), args.arg1 as u64);
                 let schedule = match guest.config().instructions {
                     None => TimerSchedule::Rcbs(guest.config().rcbs),
                     Some(instructions) => {
@@ -130,8 +143,18 @@ impl Tool for PreciseTimerTool {
     }
 
     async fn handle_timer_event<T: Guest<Self>>(&self, guest: &mut T) {
-        let clock = guest.read_clock().unwrap() - *guest.thread_state();
-        guest.send_rpc(clock).await;
+        let (request_clock, second_loop_branch) = *guest.thread_state();
+        let clock = guest.read_clock().unwrap() - request_clock;
+        let rip = guest.regs().await.rip;
+        guest
+            .send_rpc((
+                clock,
+                Place {
+                    rip,
+                    second_loop_branch,
+                },
+            ))
+            .await;
     }
 }
 
@@ -168,11 +191,13 @@ enum Between {
 /// `$before` rounds of a loop with one conditional branch each, then the
 /// given instructions, then `$after` more rounds. There is no conditional
 /// branch between the syscall and the loop, so the loop's branches are the
-/// first after the request.
+/// first after the request. The syscall's second argument is the address of
+/// the second loop's branch, which the Tool emulating it does not read.
 macro_rules! between_loops {
     ($before:expr, $after:expr, [$($instruction:literal),+] $(, $($operand:tt)+)?) => {
         unsafe {
             core::arch::asm!(
+                "lea rsi, [rip + 5f]",
                 "syscall",
                 "2:",
                 "dec {before}",
@@ -180,13 +205,14 @@ macro_rules! between_loops {
                 $($instruction,)+
                 "3:",
                 "dec {after}",
+                "5:",
                 "jnz 3b",
                 before = inout(reg) $before => _,
                 after = inout(reg) $after => _,
                 $($($operand)+,)?
                 inlateout("rax") Sysno::clock_getres as usize => _,
                 inlateout("rdi") 0usize => _,
-                inlateout("rsi") 0usize => _,
+                out("rsi") _,
                 out("rdx") _,
                 out("rcx") _,
                 out("r11") _,
@@ -262,12 +288,24 @@ impl Between {
 /// with twice as many branches in all. Returns the clock from the request to
 /// each timer event.
 fn timer_events(between: Between, schedule: Schedule, before: u64) -> Vec<u64> {
+    timer_events_and_places(between, schedule, before).0
+}
+
+/// As [`timer_events`], and also where each timer event found the guest.
+fn timer_events_and_places(
+    between: Between,
+    schedule: Schedule,
+    before: u64,
+) -> (Vec<u64>, Vec<Place>) {
     let events = check_fn_with_config::<PreciseTimerTool, _>(
         move || between.run(before, 2 * schedule.rcbs - before),
         schedule,
         true,
     );
-    events.0.into_inner().unwrap()
+    (
+        events.0.into_inner().unwrap(),
+        events.1.into_inner().unwrap(),
+    )
 }
 
 // Each guest traps one conditional branch before the target. With an
@@ -342,7 +380,10 @@ fn a_trap_past_the_target_does_not_cancel_the_timer(between: Between) {
 // first loop, which runs the instructions under test and then the `dec` of
 // the second loop, and stops at its `jnz`. A step that the trap's stop
 // interrupted must count once: had it not been counted, the steps would run
-// the `jnz` too, and the clock would be one branch further.
+// the `jnz` too, and the clock would be one branch further. Had it been
+// counted twice, the steps would stop an instruction short, at the `dec`,
+// with the clock unchanged, so the event's instruction pointer is checked
+// too.
 #[test_case(Between::Nop, 2; "nop")]
 #[test_case(Between::Int3, 2; "int3")]
 #[test_case(Between::Icebp, 2; "icebp")]
@@ -353,10 +394,17 @@ fn a_trap_among_the_instructions_past_the_target_counts_once(between: Between, i
         rcbs: LESS_RCBS,
         instructions: Some(instructions),
     };
+    let (clocks, places) = timer_events_and_places(between, schedule, LESS_RCBS);
     assert_eq!(
-        timer_events(between, schedule, LESS_RCBS),
+        clocks,
         [LESS_RCBS],
         "the timer must fire before the second loop's first branch"
+    );
+    assert_eq!(places.len(), 1, "the timer must fire once: {places:?}");
+    assert_ne!(places[0].second_loop_branch, 0);
+    assert_eq!(
+        places[0].rip, places[0].second_loop_branch,
+        "the timer must fire at the second loop's first branch"
     );
 }
 
