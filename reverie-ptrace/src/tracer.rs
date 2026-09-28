@@ -4237,6 +4237,19 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         self
     }
 
+    /// Makes every trap-only new-child stop forget the clone flags recorded
+    /// at its creating stop, so it takes the undecided path.
+    #[cfg(test)]
+    fn liteinst_trap_only_forget_clone_flags_for_test(self) -> Self {
+        self.liteinst_trap_only
+            .as_ref()
+            .expect("trap-only mode must be selected before forgetting its clone flags")
+            .hooks
+            .forget_clone_flags
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
     #[cfg(test)]
     fn fail_liteinst_preinit_for_test(mut self) -> Self {
         self.liteinst_runtime
