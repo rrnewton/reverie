@@ -168,8 +168,9 @@ existing work first.
 - Do not run a formatter over another agent's dirty worktree.
 - Do not switch branches in or move another agent's worktree.
 - Do not create commits that mix work from different tasks or agents.
-- Post task notes for important findings, decisions, test results, and
-  blockers. Notes must name the branch and slot when work is handed off.
+- Post important findings, decisions, test results, and blockers in the pull
+  request or GitHub issue (under ORC, also on its task). A handoff must name the
+  branch and slot.
 
 Useful Rust checks are:
 
@@ -326,7 +327,8 @@ When a checkout is unexpectedly dirty:
    or recovery branch. Do not stash, reset, clean, or absorb it into another
    task.
 5. Record the recovery SHA, branch provenance, owned paths, and remaining
-   blocker in the parent registry and task notes.
+   blocker in the parent registry and the pull request (under ORC, also on its
+   task).
 6. Keep the slot active until the state is cleanly handed off; only the
    coordinator may release or reclaim it through the registry-aware script.
 
@@ -389,112 +391,113 @@ git fetch origin
 gh pr view -R rrnewton/reverie <number>
 ```
 
-## Task Closure Policy
+## Evidence, Ownership, and Task Closure
 
-**The dev-hermit parent `AGENTS.md` is authoritative for task lifecycle.** This
-section restates it for work done inside this repository and adds the
-Reverie-specific evidence a claim must carry. Where the two could be read
-differently, the parent wins; report the discrepancy rather than following this
-file.
+**The dev-hermit parent `AGENTS.md` is authoritative** (section "Task lists,
+pull-request ownership, and durable records"). This section restates it for work
+done inside this repository and adds the Reverie-specific evidence a claim must
+carry. Where the two could be read differently, the parent wins; report the
+discrepancy rather than following this file. The evidence never changes with the
+bookkeeping: the PR link, the exact SHA, the commands and their results are the
+same under any rule, so never let a question about status delay or degrade the
+evidence.
 
-That reporting rule is not a formality. Two agents independently hit an earlier
-version of this section contradicting the parent — it said agents must not close
-and that a task is finished only once the change is on `main`, while the parent
-says the owning agent closes on publication and that holding an evidenced task
-open is itself a violation. Each document made the other's behaviour a defect,
-so there was no reading that satisfied both, and both agents spent time deriving
-that from scratch before proceeding.
+Where things are recorded:
 
-**When you hit a discrepancy like that, note that the evidence does not change —
-only the bookkeeping does.** The PR link, the exact SHA, the commands and their
-results are identical under either rule. So record the evidence, choose the
-parent's bookkeeping, and flag the conflict; never let an unresolved question
-about *status* delay or degrade the *evidence*.
+- **Product defects** in Reverie (wrong syscall or signal behaviour, crashes,
+  backend gaps) go to a GitHub issue in `rrnewton/reverie`. Search for an
+  existing issue first.
+- **The record for a change is its pull request.** The PR description or a PR
+  comment carries the exact tested 40-hex head SHA, the base SHA, and the
+  validation: exact commands and results, assurance level, and backend. A branch
+  name alone is not evidence.
+- **The owner of a pull request** is the single
+  `Owner: <agent-name> (<harness>, <host>) since <UTC timestamp>` line in its
+  description.
+- **TaskGraph (`tg`) is ORC's short-term to-do list and dispatch memory.** It is
+  not a record, it does not decide who owns a pull request, and agents outside
+  ORC do not use it.
 
-`closed` means **published and evidenced, NOT landed**. Landing debt does not
-ride on the status — it rides on the `implemented` tag, which is what
+The failure to avoid is an **unevidenced claim**: work described as done with no
+PR link, no exact SHA, and no validation. The rules below are mandatory for
+every implementation and review agent.
+
+1. **Record the evidence first.** Commit and push the branch, open the pull
+   request against `rrnewton/reverie:main`, and put the exact SHA and validation
+   in it before describing the work as implemented. A claim that precedes its
+   evidence cannot be audited afterwards, because nobody can tell which SHA it
+   was about.
+2. **Adversarial review confirms the work exists in the PR.** A reviewer checks
+   the claimed diff and exact-SHA validation. A Reverie-only change is floored at
+   L0 and does not establish a determinism guarantee on its own. If the published
+   artifact is missing, superseded, or does not contain the claim, the claim is
+   withdrawn in a PR comment.
+3. **Landed requires freshly fetched ancestry.** A green local run, a GitHub
+   state field, or a label is not landing evidence. The change has landed when
+   its commit is on `main` according to freshly fetched ancestry; record the
+   merge SHA in a PR comment.
+
+### Under ORC: closing a TaskGraph task
+
+When an ORC task tracks the work, `closed` means **published and evidenced, NOT
+landed**. Landing debt rides on the `implemented` tag, which is what
 `drain-implemented-to-landed` and `health-tick` enumerate. Holding an evidenced,
 published task open until its PR merges is itself a defect: it is invisible to
-the drain while still occupying the live queue.
+the drain while still occupying ORC's live queue. Do not invent a status
+TaskGraph does not have.
 
-The failure to avoid is not an agent closing its own task. It is an **unevidenced
-close** — a task marked closed with no PR link, no exact SHA, and no validation.
-Nothing mechanically blocks that, so the note *is* the audit trail. The rules
-below are mandatory for every implementation and review agent.
+- **Add the `implemented` tag and post the PR link** once rule 1 holds.
+  `IMPLEMENTED` is a tag, not a TaskGraph status. Preserve every existing tag
+  because `--tags` replaces the full set:
 
-1. **Record the evidence BEFORE you change status.** The order is load-bearing:
-   commit and push the branch, post the PR link with its exact SHA and
-   validation, add the `implemented` tag — and only then close. A close that
-   precedes its evidence cannot be audited afterwards, because nobody can tell
-   which SHA the claim was ever about.
-2. **Add the `implemented` tag and post the PR
-   link.** `IMPLEMENTED` is a tag, not a TaskGraph status, and it is what
-   carries the landing debt after the task closes. "Complete" means the feature
-   branch is pushed and a pull request is open against `rrnewton/reverie:main`.
-   Preserve every existing tag because `--tags` replaces the
-   full set:
+  ```bash
+  tg update <task> --tags <existing-tags>,implemented
+  tg note <task> "IMPLEMENTED: https://github.com/rrnewton/reverie/pull/<n> \
+    | branch <feature-branch> @ <40-hex SHA> | base origin/main <SHA> \
+    | validation: <exact commands + results, assurance level, backend>"
+  ```
 
-   ```bash
-   tg update <task> --tags <existing-tags>,implemented
-   tg note <task> "IMPLEMENTED: https://github.com/rrnewton/reverie/pull/<n> \
-     | branch <feature-branch> @ <40-hex SHA> | base origin/main <SHA> \
-     | validation: <exact commands + results, assurance level, backend>"
-   ```
+- **Then the owning agent closes its own task** — `tg update <task> --status
+  closed`. No coordinator, no gateway, and no waiting for the merge. A task with
+  no published artifact stays `in_progress` with the blocker and partial SHA
+  recorded, and is never tagged `implemented`. If a claim is withdrawn under
+  rule 2, strip the tag and reopen the task.
+- **After the PR lands, discharge the landing debt.** `./ci-hub/bin/close-task`
+  is the only writer of `CLOSURE-VERIFIED`, the note `health-tick` derives
+  `landed` from. A task closed without it stays counted as owed forever. Once
+  the PR is on `main`:
 
-   The PR link and the exact tested SHA are required, not optional. A branch
-   name alone is not evidence.
-3. **Adversarial review confirms the work exists in the PR.** A reviewer checks
-   the claimed diff and exact-SHA validation. A Reverie-only change is floored
-   at L0 and does not establish a determinism guarantee on its own. If the
-   published artifact is missing, superseded, or does not contain the claim,
-   strip the `implemented` tag and reopen the task. Review normally happens
-   after the close, so the corrective action is reopening, not withholding.
-4. **Then the owning agent closes its own task** — `tg update <task> --status
-   closed`. No coordinator, no gateway. Close once rule 1 is satisfied and the
-   PR is published; do **not** hold it open waiting for the merge. Work that is
-   genuinely blocked is different: a task with no published artifact stays
-   `in_progress` with the blocker and partial SHA recorded, and is never tagged
-   `implemented`. If a published artifact disappears or the implementation claim
-   proves false, strip the tag and reopen; do not invent a status TaskGraph does
-   not have.
-5. **After the PR lands, discharge the landing debt.** `./ci-hub/bin/close-task`
-   is no longer a closure gate, but it is still the only writer of
-   `CLOSURE-VERIFIED`, the note `health-tick` derives `landed` from. A task
-   closed without it stays counted as owed forever. Once the PR is on `main`:
+  ```bash
+  ./ci-hub/bin/close-task <id> --code <PR-or-full-SHA> --repo rrnewton/reverie \
+    --source <checkout>
+  ```
 
-   ```bash
-   ./ci-hub/bin/close-task <id> --code <PR-or-full-SHA> --repo rrnewton/reverie \
-     --source <checkout>
-   ```
-
-   It verifies ancestry before recording. `REFUSED` (rc 1) and `UNVERIFIABLE`
-   (rc 2) never close anything — leave the task closed and fix the evidence. A
-   green local run, a GitHub state field, or a label is not landing evidence.
+  It verifies ancestry before recording. `REFUSED` (rc 1) and `UNVERIFIABLE`
+  (rc 2) never close anything — leave the task closed and fix the evidence.
 
 ### Done vs. Not Done
 
-Use these concrete examples to decide the correct status. When in doubt, choose
-the lower status and say why in a task note.
+Use these concrete examples to decide what you may claim in the pull request
+and, under ORC, which status and tags a task carries. When in doubt, claim the
+weaker state and say why in the pull request.
 
-**`closed` + `implemented` (the owning agent closes, once evidenced):**
+**Implemented, not landed (under ORC: `closed` + `implemented`):**
 
 - Branch pushed, PR open, exact-head validation green, awaiting merge.
-- PR open but validation red, or an exact-head receipt missing/stale — still
-  close it, and report the exact failure in the note. A red PR is published and
-  evidenced; the debt rides on the tag, not on the status.
+- PR open but validation red, or an exact-head receipt missing/stale — report
+  the exact failure in the pull request. A red PR is published and evidenced.
 - Reverie change committed and pushed but the Hermit pin bump that consumes it
-  has not landed — closed with the blocker and dependency SHAs named.
+  has not landed — name the blocker and dependency SHAs in the pull request.
 
-**`closed` + `CLOSURE-VERIFIED` (landing debt discharged):**
+**Landed (under ORC: `closed` + `CLOSURE-VERIFIED`):**
 
-- PR #### is merged into `rrnewton/reverie:main` and `close-task` has verified
-  the merge commit's freshly fetched ancestry. This is a later event than the
-  close, not a precondition for it.
+- PR #### is merged into `rrnewton/reverie:main` and the merge commit's freshly
+  fetched ancestry confirms it.
 - A coordinated Hermit/Reverie change: the Reverie PR merged first, the Hermit
   consumer revalidated against the exact landed SHA, and the parent gitlink
   updated.
 
-**Not done (stays `in_progress`, never tagged `implemented` or closed):**
+**Not done (under ORC: stays `in_progress`, never tagged `implemented` or closed):**
 
 - Code written but uncommitted or not pushed. Never use a stash as a handoff.
 - "It builds/tests pass locally" with no pushed branch and no open PR.
