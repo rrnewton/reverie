@@ -593,3 +593,66 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         "{stdout}"
     );
 }
+
+#[test]
+fn mapped_installed_fork_preserves_parent_config_callbacks_and_child_mapping() {
+    use std::os::unix::process::CommandExt;
+    let temporary = tempfile::tempdir().unwrap();
+    let root = std::env::var_os("LITEINST_MAPPED_FORK_EVIDENCE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| temporary.path().to_owned());
+    std::fs::create_dir_all(&root).unwrap();
+    for case in [
+        "raw",
+        "libc",
+        "clone3",
+        "vfork",
+        "kernel-error",
+        "tail",
+        "unsubscribed",
+        "config-panic",
+        "setup-error",
+    ] {
+        let directory = root.join(case);
+        std::fs::create_dir(&directory).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-mapped-fork-fixture"))
+            .arg("mapped-fork-control")
+            .arg(&directory)
+            .arg(case)
+            .process_group(0)
+            .stdout(std::fs::File::create(directory.join("control.stdout")).unwrap())
+            .stderr(std::fs::File::create(directory.join("control.stderr")).unwrap())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(40);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.wait();
+                panic!(
+                    "mapped {case} control exceeded 40 seconds: {}",
+                    directory.display()
+                );
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.success(),
+            "mapped {case}: {status}; evidence {}",
+            directory.display()
+        );
+        print!(
+            "{}",
+            std::fs::read_to_string(directory.join("control.stdout")).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(directory.join("control.stderr")).unwrap(),
+            b""
+        );
+    }
+}

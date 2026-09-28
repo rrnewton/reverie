@@ -45,3 +45,7 @@ path = "tests/pkeys.rs"
 [[bin]]
 name = "reverie-preload-pkey-buffers"
 path = "src/bin/pkey_buffers.rs"
+
+[[bin]]
+name = "reverie-preload-native-syscall-result"
+path = "src/bin/native_syscall_result.rs"

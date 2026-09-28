@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use liteinst2::trampoline::HookContext;
 use reverie::Error;
@@ -134,6 +135,72 @@ where
     }
 }
 
+/// Install a Tool using an explicitly selected mapped coordinator.
+///
+/// # Safety
+/// All install_tool requirements apply. The trusted coordinator must satisfy
+/// MappedSetupListener::accept's mapping contract, independently own its host
+/// tasks and processes, and service child attachment while a vfork parent waits.
+/// This additive installer does not select or repair an ordinary launcher.
+pub unsafe fn install_tool_with_mapped_coordinator<T>(
+    coordinator: crate::rpc::MappedCoordinator,
+) -> io::Result<()>
+where
+    T: Tool + 'static,
+{
+    crate::syscall_fallback::initialize()?;
+    let rpc = unsafe { CoordinatorRpc::<T::GlobalState>::connect_mapped(coordinator) }?;
+    unsafe {
+        install_connected_tool::<T>(Arc::new(rpc), false, runtime::PatchPublication::Concurrent)
+    }
+}
+
+/// Install the complete mapped RPC, public/private logging and optional
+/// statistics set. Existing socket and single-mapped-RPC installers are unchanged.
+///
+/// # Safety
+/// All install_tool and CoordinatorRpc::connect_installed requirements apply.
+/// The explicit host owns the complete setup/capture/server/process lifetime;
+/// this entry point does not adapt the general Backend or Command launch API.
+/// Only one guest thread may execute, and every admitted fork must pass the
+/// runtime's physical fork transaction before arbitrary child callbacks run.
+pub unsafe fn install_tool_with_mapped_endpoints<T>(
+    coordinator: crate::rpc::InstalledCoordinator,
+    setup_timeout: std::time::Duration,
+    blocked_publication: std::time::Duration,
+) -> io::Result<()>
+where
+    T: Tool + 'static,
+{
+    crate::syscall_fallback::initialize()?;
+    let rpc = unsafe { CoordinatorRpc::<T::GlobalState>::connect_installed(coordinator, setup_timeout, blocked_publication) }?;
+    unsafe { install_connected_tool::<T>(Arc::new(rpc), false, runtime::PatchPublication::Concurrent) }
+}
+
+/// Install a Tool while retaining a caller-owned coordinator connection.
+///
+/// This permits stable shared config borrows and ordinary callback references
+/// to the same RPC. Cloning this outer Arc never exposes or aliases the private
+/// mapped stream. The cached config is not moved or replaced during fork.
+///
+/// # Safety
+/// All install_tool requirements apply. The caller must prevent concurrent or
+/// reentrant use during connection preparation/construction and preserve the
+/// single guest thread and intercepted process-fork contracts. For a mapped
+/// connection, the trusted setup/host lifetime requirements of
+/// install_tool_with_mapped_coordinator also apply. Extra Arc/Weak owners live
+/// in private/COW guest memory; they do not authorize a shared-VM fork.
+pub unsafe fn install_tool_with_rpc<T>(rpc: Arc<CoordinatorRpc<T::GlobalState>>) -> io::Result<()>
+where
+    T: Tool + 'static,
+{
+    crate::syscall_fallback::initialize()?;
+    if rpc.raw_fd() >= 0 {
+        runtime::reserve_coordinator_fd(rpc.raw_fd())?;
+    }
+    unsafe { install_connected_tool::<T>(rpc, false, runtime::PatchPublication::Concurrent) }
+}
+
 unsafe fn install_tool_inner<T>(
     coordinator: &Path,
     remove_legacy_environment: bool,
@@ -145,8 +212,27 @@ where
     crate::syscall_fallback::initialize()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
+    unsafe { install_connected_tool::<T>(Arc::new(rpc), remove_legacy_environment, publication) }
+}
+
+unsafe fn install_connected_tool<T>(
+    rpc: Arc<CoordinatorRpc<T::GlobalState>>,
+    remove_legacy_environment: bool,
+    publication: runtime::PatchPublication,
+) -> io::Result<()>
+where
+    T: Tool + 'static,
+{
     let stats =
-        if let Some(stats_coordinator) = std::env::var_os(crate::backend::STATS_COORDINATOR_ENV) {
+        if let Some(enabled) = rpc.installed_statistics() {
+            // Explicit installed setup owns this selection. Do not open a
+            // legacy statistics socket or alter guest environment variables.
+            if enabled {
+                crate::stats::initialize_mapped_stats(rpc.clone())?
+            } else {
+                crate::stats::GuestStatsHooks::DISABLED
+            }
+        } else if let Some(stats_coordinator) = std::env::var_os(crate::backend::STATS_COORDINATOR_ENV) {
             let stats = crate::stats::initialize_guest_stats(Path::new(&stats_coordinator))?;
             // SAFETY: tool installation runs before application-created threads.
             unsafe { std::env::remove_var(crate::backend::STATS_COORDINATOR_ENV) };
@@ -204,7 +290,7 @@ pub(crate) fn dispatch_instruction(kind: runtime::InstructionEventKind, context:
 
 struct ToolHost<T: Tool> {
     tool: SpinMutex<Option<T>>,
-    rpc: CoordinatorRpc<T::GlobalState>,
+    rpc: Arc<CoordinatorRpc<T::GlobalState>>,
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
     instruction_subscriptions: runtime::InstructionSubscriptions,
@@ -282,7 +368,7 @@ where
             let args = guest.event.args;
             if is_plain_fork(number, args) {
                 guest.prepare_fork_parent_state();
-                let result = forward_plain_fork(number, args);
+                let result = forward_plain_fork(&self.rpc, number, args);
                 if result == 0 {
                     let parent_state = guest.take_fork_parent_state();
                     drop(guest);
@@ -470,13 +556,11 @@ fn finish_fork_child<T: Tool>(
         child_pid,
     } = context;
     runtime::emit_in_guest_stage(b"fork-child-thread-start-begin");
-    // This child inherited the parent's coordinator connection. Flag it before
-    // any child-side callback can issue an RPC (`handle_thread_start` below is
-    // the first such opportunity) so the next `send_rpc` reconnects under the
-    // child's own identity. Doing it here rather than from a `pthread_atfork`
-    // hook also covers forks that never enter libc, such as a raw `SYS_fork` or
-    // a raw plain `SYS_clone`.
-    crate::rpc::note_fork_in_child();
+    // Preserve the existing socket reconnect point before handle_thread_start.
+    // Tool future captures have already been dropped by the common driver.
+    // The mapped path therefore completed its child replacement immediately
+    // after the physical fork and does not set a lazy reconnect flag here.
+    rpc.note_fork_in_child();
     let inherited_parent_state = states
         .remove(&parent_tid.as_raw())
         .unwrap_or_else(|| fatal(126));
@@ -554,6 +638,7 @@ fn finish_tool_exit<T: Tool>(
         {
             tool_fatal(125, &Error::from(error));
         }
+        rpc.finish_installed();
     }
 }
 
@@ -704,7 +789,8 @@ fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
         && fields[8..].iter().all(|field| *field == 0)
 }
 
-fn forward_plain_fork(number: i64, args: [u64; 6]) -> i64 {
+fn forward_plain_fork<G: GlobalTool>(rpc: &CoordinatorRpc<G>, number: i64, args: [u64; 6]) -> i64 {
+    let prepared = rpc.prepare_fork();
     let result = if number == libc::SYS_vfork {
         // A real vfork child would run the instrumentation callback on the
         // parent's shared stack. Use a COW fork and preserve vfork's parent
@@ -714,6 +800,16 @@ fn forward_plain_fork(number: i64, args: [u64; 6]) -> i64 {
     } else {
         unsafe { raw_syscall6(number, args) }
     };
+    if let Some(prepared) = prepared {
+        if result == 0 {
+            // The actual raw result establishes COW child ownership. Complete
+            // before returning to the driver, which can drop Tool captures.
+            unsafe { rpc.complete_fork_child(prepared) };
+        } else {
+            // Restore even on a failed kernel fork, before logging or vfork wait.
+            rpc.restore_fork_parent(prepared, result);
+        }
+    }
     if number == libc::SYS_vfork && result > 0 {
         let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
         loop {
@@ -882,7 +978,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
-            let result = forward_plain_fork(number, raw_args);
+            let result = forward_plain_fork(self.rpc, number, raw_args);
             if result == 0 {
                 let child_tid = raw_pid(libc::SYS_gettid);
                 let child_pid = raw_pid(libc::SYS_getpid);
@@ -950,7 +1046,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
             self.prepare_fork_parent_state();
-            let result = forward_plain_fork(number, args);
+            let result = forward_plain_fork(self.rpc, number, args);
             if result == 0 {
                 self.tail.set_fork_child(
                     parent_tid,
@@ -1086,3 +1182,4 @@ fn fatal(status: i32) -> ! {
         core::hint::spin_loop();
     }
 }
+

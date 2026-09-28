@@ -282,6 +282,23 @@ impl Drop for ToolCallbackGuard {
     }
 }
 
+/// Mapped RPC and capture calls can originate from the safely retained outer
+/// handle before the first guest syscall. Keep their allocator/futex work in
+/// runtime context before taking any endpoint lock; otherwise first-thread
+/// callbacks can recursively acquire that same lock. This retains an existing
+/// callback context and does not fabricate a guest syscall event.
+pub(crate) struct MappedRuntimeIoGuard {
+    _allocation: crate::patch_alloc::DispatchAllocationScope,
+    _callback: ToolCallbackGuard,
+}
+
+pub(crate) fn enter_mapped_runtime_io() -> MappedRuntimeIoGuard {
+    MappedRuntimeIoGuard {
+        _allocation: crate::patch_alloc::enter_dispatch(),
+        _callback: ToolCallbackGuard::enter(),
+    }
+}
+
 struct CurrentEventGuard {
     previous: *mut SyscallEvent,
 }
