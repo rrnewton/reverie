@@ -536,8 +536,36 @@ bitflags::bitflags! {
 
 /// A process that is in a stopped state and allows ptrace operations to be
 /// performed.
-#[derive(Debug, Hash, Eq, PartialEq)]
-pub struct Stopped(Pid, TraceeToken);
+#[derive(Hash, Eq, PartialEq)]
+pub struct Stopped(Pid, TraceeToken, ExitStopMark);
+
+impl fmt::Debug for Stopped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Stopped")
+            .field(&self.0)
+            .field(&self.1)
+            .finish()
+    }
+}
+
+/// Marks the one [`Stopped`] minted by an exit future for a published
+/// `PTRACE_EVENT_EXIT` stop. It is not part of the value's identity: equality
+/// and hashing ignore it.
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(not(feature = "notifier"), allow(dead_code))]
+struct ExitStopMark(bool);
+
+impl PartialEq for ExitStopMark {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ExitStopMark {}
+
+impl std::hash::Hash for ExitStopMark {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
 
 impl Stopped {
     /// Helper for converting from the Errno type.
@@ -629,7 +657,26 @@ impl Stopped {
     }
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
-        Self(pid, token)
+        Self(pid, token, ExitStopMark(false))
+    }
+
+    /// The capability for a published `PTRACE_EVENT_EXIT` stop. When a ptrace
+    /// request succeeds in moving it out of that stop, the statuses queued
+    /// before the exit stop are retired: the tracee had already left each of
+    /// those stops when it entered the exit stop.
+    #[cfg(feature = "notifier")]
+    fn from_exit_token(pid: Pid, token: TraceeToken) -> Self {
+        Self(pid, token, ExitStopMark(true))
+    }
+
+    /// Converts this capability into the running state after a successful
+    /// ptrace request moved the tracee out of its stop.
+    fn into_running(self) -> Running {
+        #[cfg(feature = "notifier")]
+        if self.2.0 {
+            self.1.event().retire_statuses_before_exit_stop();
+        }
+        Running::from_token(self.0, self.1)
     }
 
     /// Returns the process ID of the tracee.
@@ -775,7 +822,7 @@ impl Stopped {
     /// Resumes the process and transitions it back to a running state.
     pub fn resume<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::cont(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        Ok(self.into_running())
     }
 
     /// Attempts to resume while retaining the original capability on error.
@@ -816,7 +863,7 @@ impl Stopped {
         result: Result<(), nix::Error>,
     ) -> Result<Running, (Self, Errno)> {
         match result {
-            Ok(()) => Ok(Running::from_token(self.0, self.1)),
+            Ok(()) => Ok(self.into_running()),
             Err(error) => Err((self, Errno::new(error as i32))),
         }
     }
@@ -825,14 +872,14 @@ impl Stopped {
     /// delivering a signal specified by `sig`.
     pub fn step<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::step(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        Ok(self.into_running())
     }
 
     /// Like `step`, but arranges for the tracee to be stopped at the next
     /// entry to or exit from a system call.
     pub fn syscall<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::syscall(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        Ok(self.into_running())
     }
 
     /// Sets the syscall to be executed. Only available on `aarch64`.
@@ -969,7 +1016,7 @@ impl Stopped {
     /// Detaches from and then resumes the stopped tracee.
     pub fn detach<T: Into<Option<Signal>>>(self, sig: T) -> Result<Running, Error> {
         ptrace::detach(self.0.into(), sig).map_err(|err| self.map_nix_err(err))?;
-        Ok(Running::from_token(self.0, self.1))
+        Ok(self.into_running())
     }
 }
 
