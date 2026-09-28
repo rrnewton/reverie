@@ -139,6 +139,8 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PRESSURE_PROMOTION_REPETITIONS = 10
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PROJECTION_RESULTS_SCHEMA_VERSION = 1
+_WRITE_RESULTS_SCHEMA_VERSION = 1
+QUARANTINE_SCHEMA = "series-quarantine/v1"
 # Built rather than written literally so this module does not itself contain the
 # owner-path needle the portability check greps tracked files for.
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
@@ -241,6 +243,17 @@ def spool_dir(parent: Any) -> Path:
     return shared_parent_root(parent) / "ignored" / "ci-hub" / "series-spool"
 
 
+def quarantine_dir(parent: Any) -> Path:
+    """Retained cell results that no series row could be written for.
+
+    A cell result the writer refuses is kept here verbatim, with the exact
+    reason, instead of being discarded or taking its valid siblings with it.
+    This directory is never read as series evidence: its records are typed
+    ``series-quarantine/v1``, not ``SeriesRow``.
+    """
+    return shared_parent_root(parent) / "ignored" / "ci-hub" / "series-quarantine"
+
+
 def ledger_root(parent: Any) -> Path:
     """Resolve the existing cell ledger; never create or silently replace it."""
     state = shared_parent_root(parent)
@@ -301,6 +314,71 @@ def validate_rows(rows: Iterable[Any], *, strict_paths: bool = True) -> list[dic
 def validate_read_rows(rows: Iterable[Any], *, strict_paths: bool = True) -> list[dict]:
     """Validate stored rows, retaining readable v1 but requiring complete v2."""
     return _validate_rows(rows, strict_paths=strict_paths, read=True)
+
+
+def write_admission(rows: Sequence[Any]) -> list[str | None]:
+    """Return Hermit's write-boundary verdict for each row independently.
+
+    ``None`` admits the row; a string is the exact refusal. Unlike
+    ``validate_rows``, one refused row does not decide the fate of the rows
+    beside it: the shared checker's ``--write-results`` mode judges every row
+    in one invocation. A checker that cannot run, or that returns a result
+    envelope that does not account for exactly these rows, raises
+    ``SeriesError``; that is a tool failure, not a verdict about any row.
+    """
+    verdicts: list[str | None] = [None] * len(rows)
+    candidates: list[tuple[int, dict]] = []
+    for index, row in enumerate(rows):
+        try:
+            copied = _checked_rows([row], strict_paths=True)[0]
+            _canonical_row_json(copied)
+        except MalformedRow as error:
+            verdicts[index] = str(error)
+            continue
+        candidates.append((index, copied))
+    if not candidates:
+        return verdicts
+    checker_input = _checker_input(row for _, row in candidates)
+    expected_sha256 = hashlib.sha256(checker_input.encode()).hexdigest()
+    result = _run_shared_checker(checker_input, ["--write-results"])
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no output"
+        raise SeriesError(f"shared SeriesRow write checker failed: {detail}")
+    try:
+        output = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError, RecursionError) as error:
+        raise SeriesError(
+            f"shared SeriesRow write checker returned malformed JSON: {error}"
+        ) from error
+    if not isinstance(output, dict) or set(output) != {
+        "input_jsonl_sha256", "input_row_count", "results", "schema_version",
+    }:
+        raise SeriesError("shared SeriesRow write checker returned an invalid top-level shape")
+    if (
+        type(output["schema_version"]) is not int
+        or output["schema_version"] != _WRITE_RESULTS_SCHEMA_VERSION
+    ):
+        raise SeriesError("shared SeriesRow write checker returned an unsupported schema_version")
+    if type(output["input_row_count"]) is not int or output["input_row_count"] != len(candidates):
+        raise SeriesError("shared SeriesRow write checker input_row_count disagrees with rows")
+    if output["input_jsonl_sha256"] != expected_sha256:
+        raise SeriesError("shared SeriesRow write checker input_jsonl_sha256 disagrees with rows")
+    results = output["results"]
+    if not isinstance(results, list) or len(results) != len(candidates):
+        raise SeriesError("shared SeriesRow write checker did not return one result per row")
+    for position, ((index, _row), item) in enumerate(zip(candidates, results), 1):
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"line", "result"}
+            or type(item["line"]) is not int
+            or item["line"] != position
+            or not (item["result"] is None or isinstance(item["result"], str))
+        ):
+            raise SeriesError(
+                f"shared SeriesRow write checker result {position} is malformed"
+            )
+        verdicts[index] = item["result"]
+    return verdicts
 
 
 def _validate_rows(
@@ -861,8 +939,17 @@ def append_rows(path: Any, rows: Iterable[dict]) -> int:
     return append_events(path, checked)
 
 
-def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
-    """Append projected cell rows once, refusing a changed repeated identity."""
+def append_cell_rows(
+    parent: Any, path: Any, rows: Iterable[dict], *,
+    conflicts: list[tuple[int, dict, str]] | None = None,
+) -> int:
+    """Append projected cell rows once, refusing a changed repeated identity.
+
+    With ``conflicts``, a row whose event_id repeats within the batch or
+    already records a different body is set aside there as
+    ``(position in rows, row, reason)`` and the remaining rows are still
+    appended. Without it, such a row refuses the whole batch.
+    """
     path = Path(path)
     checked = validate_rows(rows)
     # Read the locally available immutable ledger ref before taking the spool
@@ -881,12 +968,16 @@ def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
         known = {str(row.get("event_id", "")): row for row in existing}
         pending = []
         batch_ids = set()
-        for row in checked:
+        for position, row in enumerate(checked):
             event_id = str(row.get("event_id", ""))
             if event_id in batch_ids:
-                raise SeriesError(
+                reason = (
                     f"cell batch repeats event_id {event_id!r}; run_index must identify one run"
                 )
+                if conflicts is None:
+                    raise SeriesError(reason)
+                conflicts.append((position, row, reason))
+                continue
             batch_ids.add(event_id)
             prior = known.get(event_id)
             if prior is None:
@@ -902,10 +993,119 @@ def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
             if json.dumps(replay, sort_keys=True, separators=(",", ":")) != json.dumps(
                 prior, sort_keys=True, separators=(",", ":")
             ):
-                raise SeriesError(
+                reason = (
                     f"event_id {event_id!r} already records a different row; refusing rewrite"
                 )
+                if conflicts is None:
+                    raise SeriesError(reason)
+                conflicts.append((position, row, reason))
         return append_events(path, pending) if pending else 0
+
+
+def _quarantine_name(run_id: str) -> str:
+    """One quarantine file per run, safe even for a run id the writer refused."""
+    if run_id and "/" not in run_id and run_id not in (".", "..") and "\0" not in run_id:
+        return f"{run_id}.jsonl"
+    return "invalid-run-id-" + hashlib.sha256(run_id.encode()).hexdigest() + ".jsonl"
+
+
+def _quarantine_cell(raw: Any) -> str | None:
+    """Best-effort cell name for a record whose row may be malformed."""
+    if not isinstance(raw, dict):
+        return None
+    payload = raw.get("series")
+    if isinstance(payload, dict) and isinstance(payload.get("cell"), str):
+        return payload["cell"]
+    parts = [raw.get(name) for name in ("test", "mode", "backend")]
+    if all(isinstance(part, str) and part for part in parts):
+        return "/".join(parts)
+    return None
+
+
+def quarantine_record(
+    *, stage: str, run_id: str, producer: str, tree: str, emitted_at: str,
+    reason: str, raw: Any, input_row: int | None = None, event_id: str | None = None,
+) -> dict:
+    """Describe one refused input exactly, keeping its original content.
+
+    ``raw`` is the retained cell result (or series row, for a refusal after
+    projection) exactly as it was received. Its canonical SHA-256 and length
+    identify it; the record identity binds the stage, run, input position,
+    event id, and that digest so replaying the same run is idempotent.
+    """
+    raw_json = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    raw_bytes = raw_json.encode()
+    raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    host = None
+    if isinstance(raw, dict):
+        for name in ("machine_shortname", "host"):
+            if isinstance(raw.get(name), str) and raw[name]:
+                host = raw[name]
+                break
+    identity = json.dumps(
+        {
+            "event_id": event_id,
+            "input_row": input_row,
+            "producer": producer,
+            "raw_sha256": raw_sha256,
+            "run_id": run_id,
+            "stage": stage,
+            "tree": tree,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return {
+        "schema": QUARANTINE_SCHEMA,
+        "quarantine_id": "series-quarantine-" + hashlib.sha256(identity.encode()).hexdigest(),
+        "emitted_at": emitted_at,
+        "stage": stage,
+        "run_id": run_id,
+        "producer": producer,
+        "tree": tree,
+        "host": host,
+        "input_row": input_row,
+        "event_id": event_id,
+        "cell": _quarantine_cell(raw),
+        "reason": reason,
+        "raw_sha256": raw_sha256,
+        "raw_bytes": len(raw_bytes),
+        "raw": raw,
+    }
+
+
+def append_quarantine(parent: Any, run_id: str, records: Sequence[dict]) -> tuple[Path, int]:
+    """Retain refused inputs once per quarantine identity; return (path, written)."""
+    directory = quarantine_dir(parent)
+    path = directory / _quarantine_name(run_id)
+    if not records:
+        return path, 0
+    directory.mkdir(parents=True, exist_ok=True)
+    with series_spool_transition_lock(directory, exclusive=True):
+        known = set()
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    known.add(json.loads(line).get("quarantine_id"))
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+        pending = []
+        for record in records:
+            if record["quarantine_id"] in known:
+                continue
+            known.add(record["quarantine_id"])
+            pending.append(
+                json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                + "\n"
+            )
+        if pending:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write("".join(pending))
+                handle.flush()
+                os.fsync(handle.fileno())
+    return path, len(pending)
 
 
 def store_paths(parent: Any) -> list[Path]:
@@ -2597,8 +2797,149 @@ def _validate_container_failed_report(raw: str, attempt: dict, index: int) -> No
         )
 
 
-def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
-    """Return matched/diverged/no_result/timeout/errored for one typed attempt."""
+def _expected_guest_exit(row: dict) -> tuple[int | None, int | None] | None:
+    """Return a verify cell's declared nonzero guest disposition, if any.
+
+    The Hermit manifest may declare that a verify cell's guest exits with one
+    exact nonzero code or dies from one exact signal. The runner then passes
+    ``--verify-allow=failure`` and passes the attempt only when the canonical
+    report and Hermit's own status both show that disposition, and it copies
+    the declaration onto the result row. The row's declaration is the only
+    authority under which a matched attempt may carry a nonzero status, so
+    its shape is checked here exactly as the manifest loader checks it.
+    Returns ``(code, signal)`` with exactly one member set.
+    """
+    if "expected_guest_exit" not in row:
+        return None
+    declared = row["expected_guest_exit"]
+    if _cell_mode(row) != "verify":
+        raise MalformedRow("expected_guest_exit is valid only on a verify cell result")
+    if not isinstance(declared, dict) or set(declared) != {"code", "signal", "reason"}:
+        raise MalformedRow(
+            "expected_guest_exit must be an object with exactly code, signal and reason"
+        )
+    code = declared["code"]
+    signal = declared["signal"]
+    reason = declared["reason"]
+    if not isinstance(reason, str) or not reason.strip():
+        raise MalformedRow("expected_guest_exit.reason must be substantive")
+    if code is not None and signal is None:
+        if type(code) is not int or not 1 <= code <= 255:
+            raise MalformedRow(
+                "expected_guest_exit.code must be a nonzero exit status in 1..=255, "
+                f"got {code!r}"
+            )
+    elif code is None and signal is not None:
+        if type(signal) is not int or not 1 <= signal <= 64:
+            raise MalformedRow(
+                "expected_guest_exit.signal must be a signal number in 1..=64, "
+                f"got {signal!r}"
+            )
+    else:
+        raise MalformedRow(
+            "expected_guest_exit must name exactly one of code or signal"
+        )
+    return code, signal
+
+
+def _declared_failure_matches(
+    attempt: dict,
+    report: dict,
+    expected_guest_exit: tuple[int | None, int | None],
+) -> bool:
+    """Whether a matched attempt ended exactly as its row declares.
+
+    All of these must hold, mirroring the runner's own pass decision:
+    Hermit ran with ``--verify-allow=failure`` before the guest separator;
+    Hermit's status reports the declared disposition (a signal death either
+    as that signal or as ``128 + signo``); the report's guest disposition
+    names exactly the declared code or signal; and ``compared_outputs`` has
+    Hermit's complete canonical shape (``ComparedOutputs`` in
+    ``hermit-cli/src/canonical_verdict.rs``), with identical left and right
+    outputs, stdout and stderr included, that name the declaration.
+    """
+    code, signal = expected_guest_exit
+    argv = attempt.get("argv")
+    if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
+        return False
+    hermit_args = argv[:argv.index("--")] if "--" in argv else argv
+    if "--verify-allow=failure" not in hermit_args:
+        return False
+    status = attempt.get("status")
+    observed_signal = attempt.get("signal")
+    for value in (status, observed_signal):
+        if value is not None and type(value) is not int:
+            return False
+    if code is not None:
+        hermit_matches = status == code and observed_signal is None
+    else:
+        hermit_matches = (status is None and observed_signal == signal) or (
+            status == 128 + signal and observed_signal is None
+        )
+    if not hermit_matches:
+        return False
+
+    def names_declaration(guest_code: Any, guest_signal: Any) -> bool:
+        return (
+            (guest_code is None or type(guest_code) is int)
+            and (guest_signal is None or type(guest_signal) is int)
+            and guest_code == code
+            and guest_signal == signal
+        )
+
+    if not names_declaration(report.get("guest_exit_code"), report.get("guest_signal")):
+        return False
+    outputs = report.get("compared_outputs")
+    if not isinstance(outputs, dict) or set(outputs) != {"left", "right"}:
+        return False
+    left, right = outputs["left"], outputs["right"]
+    return (
+        _is_canonical_compared_output(left)
+        and left == right
+        and names_declaration(left["exit_code"], left["signal"])
+    )
+
+
+_COMPARED_OUTPUT_FIELDS = frozenset({
+    "exit_code", "signal", "stdout_sha256", "stdout_bytes", "stderr_sha256", "stderr_bytes",
+})
+
+
+def _is_canonical_compared_output(output: Any) -> bool:
+    """Whether one side of ``compared_outputs`` has exactly Hermit's fields.
+
+    ``exit_code`` and ``signal`` are typed by ``names_declaration``, which
+    every caller applies to the same output.
+    """
+    return (
+        isinstance(output, dict)
+        and set(output) == _COMPARED_OUTPUT_FIELDS
+        and all(
+            isinstance(output[field], str)
+            and re.fullmatch(r"[0-9a-f]{64}", output[field]) is not None
+            for field in ("stdout_sha256", "stderr_sha256")
+        )
+        and all(
+            type(output[field]) is int and output[field] >= 0
+            for field in ("stdout_bytes", "stderr_bytes")
+        )
+    )
+
+
+def _typed_comparison_attempt(
+    attempt: Any,
+    *,
+    mode: str,
+    index: int,
+    expected_guest_exit: tuple[int | None, int | None] | None = None,
+) -> str:
+    """Return matched/diverged/no_result/timeout/errored for one typed attempt.
+
+    ``expected_guest_exit`` is the row's validated declaration from
+    ``_expected_guest_exit``. Without one, a matched attempt must have exited
+    0 (any status in chaos) and not by a signal. With one, a matched attempt
+    must end exactly as declared and nothing else.
+    """
     if not isinstance(attempt, dict):
         raise MalformedRow(f"cell attempt {index} must be an object")
     raw = attempt.get("verification_report")
@@ -2623,8 +2964,24 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
     recorded_sha = attempt.get("verification_report_sha256")
     if not isinstance(recorded_sha, str) or hashlib.sha256(raw.encode()).hexdigest() != recorded_sha:
         raise MalformedRow(f"cell attempt {index} verification report hash mismatch")
+    def declared_fields(pairs):
+        fields = {}
+        for name, value in pairs:
+            if name in fields:
+                raise MalformedRow(
+                    f"cell attempt {index} declared report has duplicate field {name!r}"
+                )
+            fields[name] = value
+        return fields
+
     try:
-        report = json.loads(raw)
+        # A declaration is the only authority for a nonzero matched attempt,
+        # so its evidence is read from the original bytes: an ordinary dict
+        # has already collapsed duplicate keys to whichever came last.
+        report = json.loads(
+            raw,
+            object_pairs_hook=declared_fields if expected_guest_exit is not None else None,
+        )
     except json.JSONDecodeError as error:
         raise MalformedRow(
             f"cell attempt {index} verification report is malformed: {error}"
@@ -2721,17 +3078,25 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
             return "no_result"
         if verdict == "matched":
             status = attempt.get("status")
+            if expected_guest_exit is None:
+                disposition_consistent = (
+                    isinstance(status, int)
+                    and not isinstance(status, bool)
+                    and status >= 0
+                    and (mode == "chaos" or status == 0)
+                    and attempt.get("signal") is None
+                )
+            else:
+                disposition_consistent = mode == "verify" and _declared_failure_matches(
+                    attempt, report, expected_guest_exit
+                )
             if (
                 report.get("verified") is not True
                 or report.get("bitwise_parity") is not True
                 or attempt.get("outcome") != "PASS"
                 or attempt.get("timed_out") is not False
                 or attempt.get("error_kind") is not None
-                or not isinstance(status, int)
-                or isinstance(status, bool)
-                or status < 0
-                or (mode != "chaos" and status != 0)
-                or attempt.get("signal") is not None
+                or not disposition_consistent
             ):
                 raise MalformedRow(
                     f"cell attempt {index} matched report is internally inconsistent"
@@ -3144,6 +3509,7 @@ def _typed_backend_parity(row: dict, dispositions: list[str]) -> dict:
 def _cell_outcome(row: dict) -> str:
     """Project the framework's exact result without reconstructing it."""
     mode = _cell_mode(row)
+    expected_guest_exit = _expected_guest_exit(row)
     result = row.get("result")
     failure_class = row.get("failure_class")
     classification = (result, failure_class)
@@ -3187,7 +3553,9 @@ def _cell_outcome(row: dict) -> str:
     # a well-formed terminal classification, but an outer reader must not
     # reconstruct a competing verdict from attempt order.
     dispositions = [
-        _typed_comparison_attempt(attempt, mode=mode, index=index)
+        _typed_comparison_attempt(
+            attempt, mode=mode, index=index, expected_guest_exit=expected_guest_exit
+        )
         for index, attempt in enumerate(attempts, 1)
     ]
     if has_parity:
@@ -3223,10 +3591,18 @@ def _cell_outcome(row: dict) -> str:
 
 def _cell_result_evidence_sha256(row: dict) -> str:
     """Keep ordinary stored identities; bind parity with the scorecard's typed witness."""
+    declared = None
+    if _expected_guest_exit(row) is not None:
+        declared = row["expected_guest_exit"]
     parity = None
     if row.get("backend_parity") is not None:
         parity = _typed_backend_parity(row, [
-            _typed_comparison_attempt(attempt, mode=_cell_mode(row), index=index)
+            _typed_comparison_attempt(
+                attempt,
+                mode=_cell_mode(row),
+                index=index,
+                expected_guest_exit=_expected_guest_exit(row),
+            )
             for index, attempt in enumerate(row.get("attempts", []), 1)
         ])
     row = _normalise_cell_result_for_evidence(row)
@@ -3263,6 +3639,17 @@ def _cell_result_evidence_sha256(row: dict) -> str:
     # witness as null; that preexisting no-parity mismatch remains explicit.
     if parity is not None:
         evidence["backend_parity"] = parity
+    # A declaration authorizes converting a matched nonzero exit from a
+    # refusal into a pass, so the complete checked declaration is part of the
+    # identity: removing or changing it cannot keep the accepted row's hash.
+    # Undeclared rows keep their historical identity, exactly as ResultRow's
+    # Rust identity does.
+    if declared is not None:
+        evidence["expected_guest_exit"] = {
+            "code": declared["code"],
+            "reason": declared["reason"],
+            "signal": declared["signal"],
+        }
     encoded = json.dumps(
         evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
@@ -3453,7 +3840,12 @@ def _pressure_evidence(row: dict) -> dict | None:
             raise MalformedRow(f"pressure inner attempt {index} must be an object")
         comparison = None
         if mode in _COMPARISON_MODES:
-            disposition = _typed_comparison_attempt(attempt, mode=mode, index=index)
+            disposition = _typed_comparison_attempt(
+                attempt,
+                mode=mode,
+                index=index,
+                expected_guest_exit=_expected_guest_exit(row),
+            )
             raw = attempt.get("verification_report")
             if raw is not None:
                 # The existing reader above verifies the report bytes, hash,
@@ -3510,6 +3902,64 @@ def _pressure_evidence(row: dict) -> dict | None:
     }
 
 
+def _declared_guest_exit_evidence(row: dict) -> dict | None:
+    """Retain the declaration a verify cell was judged under, for audit.
+
+    ``expected_guest_exit`` is what lets a matched attempt with a nonzero
+    guest exit pass instead of being refused. A published row must therefore
+    say which declaration applied, bind it to the exact source evidence
+    identity (which includes the declaration), and keep each attempt's
+    process disposition so a reader can see what was admitted.
+    """
+    if _expected_guest_exit(row) is None:
+        return None
+    declared = row["expected_guest_exit"]
+    attempts = row.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        raise _UntypedComparisonCell("comparison cell result has no typed attempts")
+    retained = []
+    for ordinal, attempt in enumerate(attempts, 1):
+        if not isinstance(attempt, dict):
+            raise MalformedRow(f"cell attempt {ordinal} must be an object")
+        index = attempt.get("index")
+        outcome = attempt.get("outcome")
+        timed_out = attempt.get("timed_out")
+        report_sha = attempt.get("verification_report_sha256")
+        if not isinstance(index, str) or not index.strip():
+            raise MalformedRow(f"cell attempt {ordinal} has no nonempty typed index")
+        if not isinstance(outcome, str) or not outcome.strip():
+            raise MalformedRow(f"cell attempt {ordinal} has no nonempty outcome")
+        if not isinstance(timed_out, bool):
+            raise MalformedRow(f"cell attempt {ordinal} timed_out must be a bool")
+        if report_sha is not None and (
+            not isinstance(report_sha, str) or _SHA256_RE.fullmatch(report_sha) is None
+        ):
+            raise MalformedRow(
+                f"cell attempt {ordinal} verification_report_sha256 must be 64-hex or null"
+            )
+        for name in ("status", "signal"):
+            value = attempt.get(name)
+            if value is not None and (type(value) is not int or value < 0):
+                raise MalformedRow(
+                    f"cell attempt {ordinal} {name} has invalid value {value!r}"
+                )
+        retained.append({
+            "index": index,
+            "outcome": outcome,
+            "status": attempt.get("status"),
+            "signal": attempt.get("signal"),
+            "timed_out": timed_out,
+            "verification_report_sha256": report_sha,
+        })
+    return {
+        "code": declared["code"],
+        "signal": declared["signal"],
+        "reason": declared["reason"],
+        "evidence_sha256": _cell_result_evidence_sha256(row),
+        "attempts": retained,
+    }
+
+
 def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
     """Retain typed non-comparison dispositions without reconstructing one."""
     mode = row.get("mode")
@@ -3523,7 +3973,12 @@ def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
 
     dispositions = []
     for ordinal, attempt in enumerate(attempts, 1):
-        kind = _typed_comparison_attempt(attempt, mode=mode, index=ordinal)
+        kind = _typed_comparison_attempt(
+            attempt,
+            mode=mode,
+            index=ordinal,
+            expected_guest_exit=_expected_guest_exit(row),
+        )
         if kind in {"matched", "diverged"}:
             continue
         index = attempt.get("index")
@@ -3789,9 +4244,22 @@ def collapse_rows(rows: Sequence[dict]) -> list[dict]:
 def _rows_from_cell_results(
     cell_results: Sequence[dict], *, parent: Any, producer: str, run_id: str,
     tree: str, emitted_at: str, hermit_checkout: Any | None = None,
-    rejected_untyped: list[dict] | None,
+    quarantine: list[dict] | None, input_numbers: Sequence[int] | None = None,
 ) -> list[dict]:
-    """Convert typed harness results into validated, compressed series rows."""
+    """Convert typed harness results into validated, compressed series rows.
+
+    With ``quarantine=None`` any refused cell result refuses the batch. With a
+    list, each cell result is judged on its own: a refused one is recorded in
+    ``quarantine`` as a typed record with its exact reason and content, and
+    the independent valid results are still returned. Refusals that concern
+    the invocation rather than any one row (producer, run id, tree, source
+    ancestry and depth, the recorded Detcore tree, or a checker that cannot
+    run) still raise, because no row could be written correctly.
+    ``input_numbers`` names each cell result's original input line for the
+    quarantine records; by default it is the 1-based position in the batch.
+    """
+    if input_numbers is not None and len(input_numbers) != len(cell_results):
+        raise SeriesError("input_numbers must name every cell result")
     if producer not in {"validate", "pressure-test", "hermit-repeat"}:
         raise SeriesError(
             "producer must be validate, pressure-test, or hermit-repeat, "
@@ -3812,179 +4280,186 @@ def _rows_from_cell_results(
     pressure_counts: dict[tuple[str, int], int] = {}
     if producer in {"pressure-test", "hermit-repeat"}:
         for cell_result in cell_results:
+            if not isinstance(cell_result, dict):
+                continue
             if cell_result.get("outcome") == "HOST-INAPPLICABLE":
                 continue
             run_index = cell_result.get("run_index")
             if isinstance(run_index, int) and not isinstance(run_index, bool):
-                key = (_cell_name(cell_result), run_index)
+                try:
+                    cell = _cell_name(cell_result)
+                except MalformedRow:
+                    if quarantine is None:
+                        raise
+                    # Quarantined with its exact reason by the loop below.
+                    continue
+                key = (cell, run_index)
                 pressure_counts[key] = pressure_counts.get(key, 0) + 1
-    for input_row, cell_result in enumerate(cell_results, 1):
+    for position, cell_result in enumerate(cell_results, 1):
+        input_row = input_numbers[position - 1] if input_numbers is not None else position
         # An unmet prerequisite is recorded by the validate-level ledger. It
         # produced no execution and therefore produces no cell observation.
-        if cell_result.get("outcome") == "HOST-INAPPLICABLE":
+        if isinstance(cell_result, dict) and cell_result.get("outcome") == "HOST-INAPPLICABLE":
             continue
-        schema = cell_result.get("schema")
-        if not isinstance(schema, int) or isinstance(schema, bool) or schema != 4:
-            raise MalformedRow(f"cell result schema must be 4, got {schema!r}")
-        source_tree_dirty = cell_result.get("source_tree_dirty")
-        if not isinstance(source_tree_dirty, bool):
-            raise MalformedRow(
-                "cell result source_tree_dirty must be a bool, "
-                f"got {source_tree_dirty!r}"
-            )
-        if cell_result.get("hermit_sha") != tree:
-            raise MalformedRow(
-                f"cell result Hermit sha {cell_result.get('hermit_sha')!r} does not match {tree}"
-            )
-        machine_shortname = cell_result.get("machine_shortname")
-        if not isinstance(machine_shortname, str) or not machine_shortname:
-            raise MalformedRow("cell result has no nonempty machine_shortname")
-        kernel_version = cell_result.get("kernel_version")
-        if not isinstance(kernel_version, str) or not kernel_version:
-            raise MalformedRow("cell result has no nonempty kernel_version")
-        host_capabilities = cell_result.get("host_capabilities")
-        if not isinstance(host_capabilities, dict):
-            raise MalformedRow("cell result has no host_capabilities object")
-        if producer == "validate":
-            run_index = cell_result.get("attempt")
-            if (
-                not isinstance(run_index, int)
-                or isinstance(run_index, bool)
-                or run_index < 1
-            ):
-                raise MalformedRow(
-                    "validate cell result attempt must be a positive int, "
-                    f"got {run_index!r}"
-                )
-        else:
-            run_index = cell_result.get("run_index")
-            if (
-                not isinstance(run_index, int)
-                or isinstance(run_index, bool)
-                or run_index < 0
-            ):
-                raise MalformedRow(
-                    "pressure-test cell result run_index must be a non-negative int, "
-                    f"got {run_index!r}"
-                )
-            attempt = cell_result.get("attempt", 1)
-            if (
-                not isinstance(attempt, int)
-                or isinstance(attempt, bool)
-                or attempt < 1
-            ):
-                raise MalformedRow(
-                    "pressure-test cell result attempt must be a positive int, "
-                    f"got {attempt!r}"
-                )
-        detcore_tree = cell_result.get("detcore_tree")
-        if detcore_tree is not None and (
-            not isinstance(detcore_tree, str)
-            or _SHA_RE.fullmatch(detcore_tree) is None
-        ):
-            raise MalformedRow(
-                "cell result detcore_tree must be a 40-hex object id when present, "
-                f"got {detcore_tree!r}"
-            )
-        runtime = _cell_runtime(cell_result)
         try:
-            projected_outcome = _cell_outcome(cell_result)
-        except _UntypedComparisonCell as error:
-            if rejected_untyped is None or producer != "pressure-test":
-                raise
-            # Old retained pressure campaigns can contain one comparison cell
-            # written before typed attempts were mandatory alongside many
-            # current, fully typed cells. That untyped cell cannot qualify as a
-            # measurement, but it must not erase the independent observations.
-            # Keep the original batch in pressure_counts above so the identity
-            # of every accepted row is unchanged by this rejection.
-            rejected_untyped.append({
-                "attempt": cell_result.get("attempt"),
-                "backend": cell_result.get("backend"),
-                "campaign_run_id": run_id,
-                "cell_result_sha256": hashlib.sha256(json.dumps(
-                    cell_result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()).hexdigest(),
-                "cell_result_run_id": cell_result.get("run_id"),
-                "hermit_sha": cell_result.get("hermit_sha"),
-                "input_row": input_row,
-                "mode": cell_result.get("mode"),
-                "reason": str(error),
-                "run_index": cell_result.get("run_index"),
-                "test": cell_result.get("test"),
-                "tree": tree,
-            })
-            continue
-        no_verdict_evidence = _no_verdict_evidence(cell_result, projected_outcome)
-        payload = {
-            "cell": _cell_name(cell_result),
-            "tree": tree,
-            "run_index": run_index,
-            "num_runs": 1,
-            "outcome": projected_outcome,
-            "result": cell_result.get("result"),
-            "failure_class": cell_result.get("failure_class"),
-            "main_ancestry": ancestry,
-            "depth": depth,
-            "runtime": runtime,
-            "source_tree_dirty": source_tree_dirty,
-            "machine_shortname": machine_shortname,
-            "kernel_version": kernel_version,
-            "host_capabilities": host_capabilities,
-        }
-        if no_verdict_evidence is not None:
-            # A validate result's run_index currently carries the outer attempt
-            # ordinal too, but naming it explicitly prevents collapse_rows from
-            # combining two equal retry rows and makes the identity unambiguous
-            # to readers that do not know producer-specific run_index rules.
-            payload["attempt"] = run_index if producer == "validate" else attempt
-            payload["no_verdict_evidence"] = no_verdict_evidence
-        if producer == "pressure-test":
-            pressure_evidence = _pressure_evidence(cell_result)
-            if pressure_evidence is not None:
-                payload["attempt"] = attempt
-                payload["pressure_evidence"] = pressure_evidence
-        if detcore_tree is None and no_verdict_evidence is not None:
-            if recorded_detcore_tree is None:
-                resolved = _git(source, ["rev-parse", "--verify", f"{tree}:detcore"])
-                recorded_detcore_tree = resolved.stdout.strip()
+            if not isinstance(cell_result, dict):
+                raise MalformedRow(
+                    f"cell result must be an object, got {type(cell_result).__name__}"
+                )
+            schema = cell_result.get("schema")
+            if not isinstance(schema, int) or isinstance(schema, bool) or schema != 4:
+                raise MalformedRow(f"cell result schema must be 4, got {schema!r}")
+            source_tree_dirty = cell_result.get("source_tree_dirty")
+            if not isinstance(source_tree_dirty, bool):
+                raise MalformedRow(
+                    "cell result source_tree_dirty must be a bool, "
+                    f"got {source_tree_dirty!r}"
+                )
+            if cell_result.get("hermit_sha") != tree:
+                raise MalformedRow(
+                    f"cell result Hermit sha {cell_result.get('hermit_sha')!r} does not match {tree}"
+                )
+            machine_shortname = cell_result.get("machine_shortname")
+            if not isinstance(machine_shortname, str) or not machine_shortname:
+                raise MalformedRow("cell result has no nonempty machine_shortname")
+            kernel_version = cell_result.get("kernel_version")
+            if not isinstance(kernel_version, str) or not kernel_version:
+                raise MalformedRow("cell result has no nonempty kernel_version")
+            host_capabilities = cell_result.get("host_capabilities")
+            if not isinstance(host_capabilities, dict):
+                raise MalformedRow("cell result has no host_capabilities object")
+            if producer == "validate":
+                run_index = cell_result.get("attempt")
                 if (
-                    resolved.returncode != 0
-                    or _SHA_RE.fullmatch(recorded_detcore_tree) is None
+                    not isinstance(run_index, int)
+                    or isinstance(run_index, bool)
+                    or run_index < 1
                 ):
-                    detail = resolved.stderr.strip() or resolved.stdout.strip() or "no output"
-                    raise SeriesError(
-                        f"cannot resolve Detcore tree recorded by Hermit {tree}: {detail}"
+                    raise MalformedRow(
+                        "validate cell result attempt must be a positive int, "
+                        f"got {run_index!r}"
                     )
-            detcore_tree = recorded_detcore_tree
-        if detcore_tree is not None:
-            payload["detcore_tree"] = detcore_tree
-        if (
-            producer == "pressure-test"
-            and pressure_counts.get((payload["cell"], run_index), 0) > 1
-        ):
-            payload["attempt"] = attempt
-        coordinates = _cell_coordinates(cell_result)
-        if coordinates is not None and payload["outcome"] == "diverged":
-            payload["coordinates"] = coordinates
-        messages = _cell_first_divergent_messages(cell_result)
-        if messages is not None and payload["outcome"] == "diverged":
-            payload["first_divergent_messages"] = messages
-        envelope = {
-            "schema": ENVELOPE_VERSION,
-            "event_id": "",
-            "event_type": "series.observation",
-            "emitted_at": emitted_at,
-            "team": "hermit",
-            "host": machine_shortname,
-            "run_id": run_id,
-            "producer": producer,
-            "series": payload,
-        }
-        rows.append(envelope)
+            else:
+                run_index = cell_result.get("run_index")
+                if (
+                    not isinstance(run_index, int)
+                    or isinstance(run_index, bool)
+                    or run_index < 0
+                ):
+                    raise MalformedRow(
+                        "pressure-test cell result run_index must be a non-negative int, "
+                        f"got {run_index!r}"
+                    )
+                attempt = cell_result.get("attempt", 1)
+                if (
+                    not isinstance(attempt, int)
+                    or isinstance(attempt, bool)
+                    or attempt < 1
+                ):
+                    raise MalformedRow(
+                        "pressure-test cell result attempt must be a positive int, "
+                        f"got {attempt!r}"
+                    )
+            detcore_tree = cell_result.get("detcore_tree")
+            if detcore_tree is not None and (
+                not isinstance(detcore_tree, str)
+                or _SHA_RE.fullmatch(detcore_tree) is None
+            ):
+                raise MalformedRow(
+                    "cell result detcore_tree must be a 40-hex object id when present, "
+                    f"got {detcore_tree!r}"
+                )
+            runtime = _cell_runtime(cell_result)
+            projected_outcome = _cell_outcome(cell_result)
+            no_verdict_evidence = _no_verdict_evidence(cell_result, projected_outcome)
+            payload = {
+                "cell": _cell_name(cell_result),
+                "tree": tree,
+                "run_index": run_index,
+                "num_runs": 1,
+                "outcome": projected_outcome,
+                "result": cell_result.get("result"),
+                "failure_class": cell_result.get("failure_class"),
+                "main_ancestry": ancestry,
+                "depth": depth,
+                "runtime": runtime,
+                "source_tree_dirty": source_tree_dirty,
+                "machine_shortname": machine_shortname,
+                "kernel_version": kernel_version,
+                "host_capabilities": host_capabilities,
+            }
+            if no_verdict_evidence is not None:
+                # A validate result's run_index currently carries the outer attempt
+                # ordinal too, but naming it explicitly prevents collapse_rows from
+                # combining two equal retry rows and makes the identity unambiguous
+                # to readers that do not know producer-specific run_index rules.
+                payload["attempt"] = run_index if producer == "validate" else attempt
+                payload["no_verdict_evidence"] = no_verdict_evidence
+            declared_guest_exit = _declared_guest_exit_evidence(cell_result)
+            if declared_guest_exit is not None:
+                # The audit binds one outer attempt's evidence identity, so the
+                # row names that attempt and is never collapsed with another.
+                payload["attempt"] = run_index if producer == "validate" else attempt
+                payload["declared_guest_exit"] = declared_guest_exit
+            if producer == "pressure-test":
+                pressure_evidence = _pressure_evidence(cell_result)
+                if pressure_evidence is not None:
+                    payload["attempt"] = attempt
+                    payload["pressure_evidence"] = pressure_evidence
+            if detcore_tree is None and no_verdict_evidence is not None:
+                if recorded_detcore_tree is None:
+                    resolved = _git(source, ["rev-parse", "--verify", f"{tree}:detcore"])
+                    recorded_detcore_tree = resolved.stdout.strip()
+                    if (
+                        resolved.returncode != 0
+                        or _SHA_RE.fullmatch(recorded_detcore_tree) is None
+                    ):
+                        detail = resolved.stderr.strip() or resolved.stdout.strip() or "no output"
+                        raise SeriesError(
+                            f"cannot resolve Detcore tree recorded by Hermit {tree}: {detail}"
+                        )
+                detcore_tree = recorded_detcore_tree
+            if detcore_tree is not None:
+                payload["detcore_tree"] = detcore_tree
+            if (
+                producer == "pressure-test"
+                and pressure_counts.get((payload["cell"], run_index), 0) > 1
+            ):
+                payload["attempt"] = attempt
+            coordinates = _cell_coordinates(cell_result)
+            if coordinates is not None and payload["outcome"] == "diverged":
+                payload["coordinates"] = coordinates
+            messages = _cell_first_divergent_messages(cell_result)
+            if messages is not None and payload["outcome"] == "diverged":
+                payload["first_divergent_messages"] = messages
+            envelope = {
+                "schema": ENVELOPE_VERSION,
+                "event_id": "",
+                "event_type": "series.observation",
+                "emitted_at": emitted_at,
+                "team": "hermit",
+                "host": machine_shortname,
+                "run_id": run_id,
+                "producer": producer,
+                "series": payload,
+            }
+            rows.append(envelope)
+        except (MalformedRow, TypeError, AttributeError, KeyError, ValueError) as error:
+            if quarantine is None:
+                raise
+            reason = str(error) if isinstance(error, MalformedRow) else (
+                f"cell result could not be projected: {type(error).__name__}: {error}"
+            )
+            quarantine.append(quarantine_record(
+                stage="projection",
+                run_id=run_id,
+                producer=producer,
+                tree=tree,
+                emitted_at=emitted_at,
+                reason=reason,
+                raw=cell_result,
+                input_row=input_row,
+            ))
 
     collapsed = collapse_rows(rows)
     for row in collapsed:
@@ -4002,8 +4477,25 @@ def _rows_from_cell_results(
             separators=(",", ":"),
         )
         row["event_id"] = "series-" + hashlib.sha256(identity.encode()).hexdigest()
-    validate_rows(collapsed)
-    return collapsed
+    if quarantine is None:
+        validate_rows(collapsed)
+        return collapsed
+    admitted = []
+    for row, verdict in zip(collapsed, write_admission(collapsed)):
+        if verdict is None:
+            admitted.append(row)
+            continue
+        quarantine.append(quarantine_record(
+            stage="shared-checker",
+            run_id=run_id,
+            producer=producer,
+            tree=tree,
+            emitted_at=emitted_at,
+            reason=verdict,
+            raw=row,
+            event_id=str(row.get("event_id", "")),
+        ))
+    return admitted
 
 
 def rows_from_cell_results(
@@ -4019,7 +4511,7 @@ def rows_from_cell_results(
         tree=tree,
         emitted_at=emitted_at,
         hermit_checkout=hermit_checkout,
-        rejected_untyped=None,
+        quarantine=None,
     )
 
 
@@ -4117,6 +4609,35 @@ def _stdin_rows() -> tuple[list[dict] | None, int]:
     return rows, 0
 
 
+def _stdin_cell_results() -> tuple[list[tuple[int, Any]], list[tuple[int, str, str]]]:
+    """Read stdin, separating parsed lines from lines that are not JSON.
+
+    Returns ``(parsed, failures)``: ``parsed`` holds ``(line_number, value)``
+    and ``failures`` holds ``(line_number, raw_line, reason)``. Blank lines
+    are skipped. Nothing is refused here; the caller quarantines failures.
+    """
+    parsed: list[tuple[int, Any]] = []
+    failures: list[tuple[int, str, str]] = []
+    for number, line in enumerate(sys.stdin.read().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            if isinstance(row, dict) and "backend_parity" in row:
+                row = json.loads(line, object_pairs_hook=_parity_unique_fields,
+                                 parse_constant=_parity_nonfinite_constant)
+        except (json.JSONDecodeError, RecursionError, MalformedRow) as error:
+            failures.append((number, line, f"stdin line {number} is not JSON: {error}"))
+            continue
+        parsed.append((number, row))
+    return parsed, failures
+
+
+def _quarantine_summary(record: dict) -> str:
+    summary = {key: value for key, value in record.items() if key != "raw"}
+    return json.dumps(summary, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def _cmd_append(argv: list[str]) -> int:
     parent = None
     i = 0
@@ -4189,76 +4710,130 @@ def _cmd_append_cells(argv: list[str]) -> int:
     ]
     if missing:
         return _usage(f"append-cells requires {', '.join(missing)}")
-    rows, error = _stdin_rows()
-    if rows is None:
-        return error
-    if not rows:
+    producer, run_id, tree = str(producer), str(run_id), str(tree)
+    parsed, failures = _stdin_cell_results()
+    if not parsed and not failures:
         print("series: no cell results on stdin; nothing appended", file=sys.stderr)
         return 1
     emitted_at = emitted_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    rejected_untyped: list[dict] = []
-    try:
-        series_rows = _rows_from_cell_results(
-            rows,
-            parent=parent,
-            producer=str(producer),
-            run_id=str(run_id),
-            tree=str(tree),
-            emitted_at=emitted_at,
-            hermit_checkout=hermit_checkout,
-            rejected_untyped=(
-                rejected_untyped if producer == "pressure-test" else None
-            ),
+    total = len(parsed) + len(failures)
+
+    def record(stage: str, reason: str, raw: Any, *, input_row: int | None = None,
+               event_id: str | None = None) -> dict:
+        return quarantine_record(
+            stage=stage, run_id=run_id, producer=producer, tree=tree,
+            emitted_at=emitted_at, reason=reason, raw=raw,
+            input_row=input_row, event_id=event_id,
         )
-        if not series_rows:
-            if rejected_untyped:
-                for rejection in rejected_untyped:
-                    print(
-                        "series: REJECTED non-qualifying cell "
-                        + json.dumps(rejection, sort_keys=True, separators=(",", ":")),
-                        file=sys.stderr,
-                    )
-                print(
-                    "series: REFUSED "
-                    f"{len(rejected_untyped)} untyped comparison cell result(s); "
-                    "no valid completed cell rows were available to retain",
-                    file=sys.stderr,
-                )
-                return 1
-            print(
-                "series: no completed cell rows; unmet prerequisites remain in the validate record",
-                file=sys.stderr,
+
+    # Each cell result is judged on its own. A refused one is quarantined with
+    # its exact reason and content; the independent valid results beside it
+    # are still appended. Only a refusal about the invocation itself (not any
+    # one row) keeps every row out, and then every row is quarantined too.
+    quarantined = [
+        record("parse", reason, raw_line, input_row=number)
+        for number, raw_line, reason in failures
+    ]
+    series_rows: list[dict] = []
+    written = 0
+    target = None
+    batch_error = None
+    exit_on_error = 1
+    try:
+        if parsed:
+            series_rows = _rows_from_cell_results(
+                [value for _, value in parsed],
+                parent=parent,
+                producer=producer,
+                run_id=run_id,
+                tree=tree,
+                emitted_at=emitted_at,
+                hermit_checkout=hermit_checkout,
+                quarantine=quarantined,
+                input_numbers=[number for number, _ in parsed],
             )
-            return 0
-        target = spool_dir(parent) / _batch_name(series_rows)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        written = append_cell_rows(parent, target, series_rows)
-    except (MalformedEvent, MalformedRow, SeriesError) as error:
-        print(f"series: REFUSED the cell batch, nothing was written: {error}", file=sys.stderr)
-        return 1
+        if series_rows:
+            conflicts: list[tuple[int, dict, str]] = []
+            target = spool_dir(parent) / _batch_name(series_rows)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            written = append_cell_rows(parent, target, series_rows, conflicts=conflicts)
+            conflicted = {position for position, _, _ in conflicts}
+            for _position, row, reason in conflicts:
+                quarantined.append(record(
+                    "spool-conflict", reason, row, event_id=str(row.get("event_id", "")),
+                ))
+            series_rows = [
+                row for position, row in enumerate(series_rows) if position not in conflicted
+            ]
+    except (MalformedEvent, SeriesError) as error:
+        batch_error = f"series: REFUSED the cell batch, nothing was written: {error}"
     except OSError as error:
-        print(f"series: cannot write the spool: {error}", file=sys.stderr)
-        return 2
-    represented = sum(int(row["series"].get("num_runs", 1)) for row in series_rows)
-    print(
-        f"series: appended {written} row(s) representing {represented} run(s) to {target}"
-    )
-    if rejected_untyped:
-        for rejection in rejected_untyped:
-            print(
-                "series: REJECTED non-qualifying cell "
-                + json.dumps(rejection, sort_keys=True, separators=(",", ":")),
-                file=sys.stderr,
-            )
+        batch_error = f"series: cannot write the spool: {error}"
+        exit_on_error = 2
+    if batch_error is not None:
+        series_rows = []
+        written = 0
+        quarantined = [
+            record("parse", reason, raw_line, input_row=number)
+            for number, raw_line, reason in failures
+        ] + [
+            record("batch", batch_error.removeprefix("series: "), value, input_row=number)
+            for number, value in parsed
+        ]
+
+    quarantine_path = None
+    quarantine_error = None
+    if quarantined:
+        try:
+            quarantine_path, _new = append_quarantine(parent, run_id, quarantined)
+        except (OSError, SeriesError) as error:
+            quarantine_error = error
+
+    if batch_error is not None:
+        exit_code = exit_on_error
+    elif quarantine_error is not None:
+        exit_code = 1
+    elif not quarantined:
+        exit_code = 0
+    elif not series_rows:
+        # Nothing independent survived: a batch whose every row was refused
+        # must not read as a successful append.
+        exit_code = 1
+    elif producer == "validate":
+        # The valid rows were appended and every refused row is retained with
+        # its reason. The validate's own verdict stands on its tests.
+        exit_code = 0
+    else:
+        exit_code = 1
+
+    stream = sys.stdout if exit_code == 0 else sys.stderr
+    for item in quarantined:
+        print("series: QUARANTINED " + _quarantine_summary(item), file=stream)
+    if batch_error is not None:
+        print(batch_error, file=sys.stderr)
+    if series_rows:
+        represented = sum(int(row["series"].get("num_runs", 1)) for row in series_rows)
         print(
-            "series: REFUSED "
-            f"{len(rejected_untyped)} untyped comparison cell result(s); "
-            f"retained {len(series_rows)} valid series row(s) representing "
-            f"{represented} run(s)",
+            f"series: appended {written} row(s) representing {represented} run(s) to {target}"
+        )
+    elif batch_error is None and not quarantined:
+        print(
+            "series: no completed cell rows; unmet prerequisites remain in the validate record",
             file=sys.stderr,
         )
-        return 1
-    return 0
+    if quarantined:
+        where = str(quarantine_path) if quarantine_path is not None else "NOWHERE"
+        print(
+            f"series: quarantined {len(quarantined)} of {total} input(s) to {where}",
+            file=stream,
+        )
+    if quarantine_error is not None:
+        print(
+            f"series: FAILED to retain {len(quarantined)} quarantined input(s): "
+            f"{quarantine_error}",
+            file=sys.stderr,
+        )
+    return exit_code
 
 
 def _depth_text(depth: Any) -> str:

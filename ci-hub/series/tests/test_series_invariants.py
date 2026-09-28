@@ -14,6 +14,7 @@ this repository has hit repeatedly.
 """
 
 import contextlib
+import copy
 import errno
 import fcntl
 import hashlib
@@ -3779,6 +3780,341 @@ class CellResultProjection(unittest.TestCase):
         self.assertNotIn("attempt", passing["series"])
         self.assertNotIn("no_verdict_evidence", passing["series"])
 
+    def _expected_exit_cell(
+        self, *, status, signal, guest_exit_code, guest_signal, declared,
+        argv=None,
+    ):
+        """A matched verify cell whose guest ended nonzero, as run 213 wrote it.
+
+        ``declared`` is ``(code, signal)`` for the manifest's
+        ``expected_guest_exit``, or ``None`` for the row shape the runner
+        produced before it carried the declaration.
+        """
+        cell = self._validate_cell(1)
+        attempt = cell["attempts"][0]
+        attempt["argv"] = argv if argv is not None else [
+            "/src/hermit", "--log", "info", "run", "--strict", "--verify-strict",
+            "--verify", "--verify-allow=failure", "--verify-json", "/results/verify-1.json",
+            "--", "/results/fixtures/program",
+        ]
+        attempt["status"] = status
+        attempt["signal"] = signal
+        report = json.loads(attempt["verification_report"])
+        report["guest_exit_code"] = guest_exit_code
+        report["guest_signal"] = guest_signal
+        report["compared_outputs"] = {
+            side: {
+                "exit_code": guest_exit_code,
+                "signal": guest_signal,
+                "stdout_sha256": "a" * 64,
+                "stdout_bytes": 12,
+                "stderr_sha256": "b" * 64,
+                "stderr_bytes": 0,
+            }
+            for side in ("left", "right")
+        }
+        self._replace_comparison_report(attempt, report)
+        if declared is not None:
+            cell["expected_guest_exit"] = {
+                "code": declared[0],
+                "signal": declared[1],
+                "reason": "the fixture guest fails on purpose",
+            }
+        return cell
+
+    def _project_validate(self, cell, label):
+        rows = series.rows_from_cell_results(
+            [cell],
+            parent=self.parent,
+            producer="validate",
+            run_id=f"validate-expected-exit-{label}",
+            tree=self.tree,
+            emitted_at="2026-09-25T12:00:00Z",
+        )
+        series.validate_rows(rows)
+        return rows
+
+    def test_declared_expected_guest_exit_admits_exactly_the_declared_disposition(self):
+        # The three run-213 rows, and the 128 + signo spelling of a signal
+        # death that Hermit uses when it cannot re-raise the guest's signal.
+        for label, status, signal, guest_code, guest_signal, declared in (
+            ("qemu-hello exit 7", 7, None, 7, None, (7, None)),
+            ("pmu-skid exit 3", 3, None, 3, None, (3, None)),
+            ("nanosleep signal 11", None, 11, None, 11, (None, 11)),
+            ("signal 11 as status 139", 139, None, None, 11, (None, 11)),
+        ):
+            with self.subTest(label=label):
+                cell = self._expected_exit_cell(
+                    status=status, signal=signal, guest_exit_code=guest_code,
+                    guest_signal=guest_signal, declared=declared,
+                )
+                row = self._project_validate(cell, label.replace(" ", "-"))[0]
+                self.assertEqual(row["series"]["outcome"], "passed")
+                # The same row without its declaration is the run-213 batch
+                # failure, and must stay refused.
+                cell.pop("expected_guest_exit")
+                with self.assertRaisesRegex(
+                    series.MalformedRow, "matched report is internally inconsistent"
+                ):
+                    self._project_validate(cell, label.replace(" ", "-") + "-undeclared")
+
+    def test_expected_guest_exit_refuses_every_unauthorised_or_contradicted_failure(self):
+        inconsistent = "matched report is internally inconsistent"
+
+        def cell(**overrides):
+            fields = dict(
+                status=7, signal=None, guest_exit_code=7, guest_signal=None,
+                declared=(7, None),
+            )
+            fields.update(overrides)
+            return self._expected_exit_cell(**fields)
+
+        def signal_cell(**overrides):
+            fields = dict(
+                status=None, signal=11, guest_exit_code=None, guest_signal=11,
+                declared=(None, 11),
+            )
+            fields.update(overrides)
+            return self._expected_exit_cell(**fields)
+
+        def report_edit(target, edit):
+            attempt = target["attempts"][0]
+            report = json.loads(attempt["verification_report"])
+            edit(report)
+            self._replace_comparison_report(attempt, report)
+            return target
+
+        def declaration_edit(target, **fields):
+            target["expected_guest_exit"].update(fields)
+            return target
+
+        hermit_argv = [
+            "/src/hermit", "run", "--strict", "--verify-strict", "--verify",
+            "--verify-json", "/results/verify-1.json",
+        ]
+        cases = [
+            ("declared 7, observed 3",
+             cell(status=3, guest_exit_code=3), inconsistent),
+            ("declared signal 6, observed signal 11",
+             signal_cell(declared=(None, 6)), inconsistent),
+            ("report guest_signal disagrees with the attempt",
+             report_edit(signal_cell(), lambda r: r.update(guest_signal=6)), inconsistent),
+            ("report guest_exit_code disagrees with the attempt",
+             report_edit(cell(), lambda r: r.update(guest_exit_code=3)), inconsistent),
+            ("right compared output disagrees",
+             report_edit(signal_cell(), lambda r: r["compared_outputs"]["right"].update(signal=6)),
+             inconsistent),
+            ("left compared output disagrees",
+             report_edit(cell(), lambda r: r["compared_outputs"]["left"].update(exit_code=3)),
+             inconsistent),
+            ("compared outputs absent",
+             report_edit(cell(), lambda r: r.pop("compared_outputs")), inconsistent),
+            ("no --verify-allow=failure, declaration present",
+             cell(argv=[*hermit_argv, "--", "/results/fixtures/program"]), inconsistent),
+            ("--verify-allow=failure only in guest argv",
+             cell(argv=[*hermit_argv, "--", "/results/fixtures/program",
+                        "--verify-allow=failure"]), inconsistent),
+            ("--verify-allow=failure but no declaration",
+             cell(declared=None), inconsistent),
+            ("signal death with --verify-allow=failure but no declaration",
+             signal_cell(declared=None), inconsistent),
+            ("declared failure but the guest succeeded",
+             cell(status=0, guest_exit_code=0), inconsistent),
+            ("declared signal, Hermit exited with an unrelated status",
+             signal_cell(status=11, signal=None), inconsistent),
+            ("boolean status",
+             cell(status=True, guest_exit_code=1, declared=(1, None)), inconsistent),
+            ("declaration names both code and signal",
+             cell(declared=(7, 11)), "exactly one of code or signal"),
+            ("declaration names neither",
+             cell(declared=(None, None)), "exactly one of code or signal"),
+            ("declared code 0", cell(declared=(0, None)), "code must be a nonzero"),
+            ("declared code 256", cell(declared=(256, None)), "code must be a nonzero"),
+            ("declared boolean code", cell(declared=(True, None)), "code must be a nonzero"),
+            ("declared signal 0", signal_cell(declared=(None, 0)), "signal must be a signal"),
+            ("declared signal 65", signal_cell(declared=(None, 65)), "signal must be a signal"),
+            ("blank reason", declaration_edit(cell(), reason="  "), "reason must be substantive"),
+            ("unknown declaration field",
+             declaration_edit(cell(), note="x"), "exactly code, signal and reason"),
+        ]
+        # The complete canonical output shape, and left == right: a declared
+        # failure's outputs must support the match, not only name the exit.
+        def output_edit(side, **fields):
+            return report_edit(cell(), lambda r: r["compared_outputs"][side].update(fields))
+
+        def output_drop(side, field):
+            return report_edit(cell(), lambda r: r["compared_outputs"][side].pop(field))
+
+        for side in ("left", "right"):
+            for stream in ("stdout", "stderr"):
+                cases += [
+                    (f"{side} {stream} hash differs",
+                     output_edit(side, **{f"{stream}_sha256": "c" * 64}), inconsistent),
+                    (f"{side} {stream} byte count differs",
+                     output_edit(side, **{f"{stream}_bytes": 13}), inconsistent),
+                    (f"{side} {stream} hash omitted",
+                     output_drop(side, f"{stream}_sha256"), inconsistent),
+                    (f"{side} {stream} byte count omitted",
+                     output_drop(side, f"{stream}_bytes"), inconsistent),
+                ]
+            cases += [
+                (f"{side} exit_code omitted", output_drop(side, "exit_code"), inconsistent),
+                (f"{side} signal omitted", output_drop(side, "signal"), inconsistent),
+                (f"{side} unknown output field", output_edit(side, note="x"), inconsistent),
+            ]
+        for label, fields in (
+            ("uppercase stdout hash", {"stdout_sha256": "A" * 64}),
+            ("short stderr hash", {"stderr_sha256": "b" * 63}),
+            ("non-hex stdout hash", {"stdout_sha256": "g" * 64}),
+            ("negative stdout byte count", {"stdout_bytes": -1}),
+            ("boolean stderr byte count", {"stderr_bytes": False}),
+            ("string stdout byte count", {"stdout_bytes": "12"}),
+            ("fractional stderr byte count", {"stderr_bytes": 0.0}),
+            ("string exit_code", {"exit_code": "7"}),
+            ("unknown output field", {"note": "x"}),
+        ):
+            cases.append((
+                f"both outputs carry {label}",
+                report_edit(cell(), lambda r, fields=fields: [
+                    r["compared_outputs"][side].update(fields) for side in ("left", "right")
+                ]),
+                inconsistent,
+            ))
+        cases.append((
+            "unknown compared_outputs member",
+            report_edit(cell(), lambda r: r["compared_outputs"].update(
+                middle=r["compared_outputs"]["left"])),
+            inconsistent,
+        ))
+
+        # Duplicate fields in the original report bytes. The last copy is the
+        # consistent one, so only the duplicate refusal can catch each.
+        def duplicated(target, needle, earlier):
+            attempt = target["attempts"][0]
+            raw = attempt["verification_report"]
+            self.assertEqual(raw.count(needle), 1, needle)
+            raw = raw.replace(needle, earlier + "," + needle)
+            attempt["verification_report"] = raw
+            attempt["verification_report_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+            return target
+
+        cases += [
+            ("duplicate guest_exit_code",
+             duplicated(cell(), '"guest_exit_code":7', '"guest_exit_code":3'),
+             "duplicate field 'guest_exit_code'"),
+            ("duplicate verdict",
+             duplicated(cell(), '"verdict":"matched"', '"verdict":"diverged"'),
+             "duplicate field 'verdict'"),
+            ("duplicate compared_outputs",
+             duplicated(cell(), '"compared_outputs":', '"compared_outputs":null'),
+             "duplicate field 'compared_outputs'"),
+        ]
+        dup_output = cell()
+        raw = dup_output["attempts"][0]["verification_report"]
+        right = raw.index('"right":{')
+        stdout = raw.index('"stdout_sha256":', right)
+        raw = raw[:stdout] + '"stdout_sha256":"' + "c" * 64 + '",' + raw[stdout:]
+        dup_output["attempts"][0]["verification_report"] = raw
+        dup_output["attempts"][0]["verification_report_sha256"] = hashlib.sha256(
+            raw.encode()).hexdigest()
+        cases.append(("duplicate right stdout_sha256", dup_output,
+                      "duplicate field 'stdout_sha256'"))
+
+        null_declaration = cell()
+        null_declaration["expected_guest_exit"] = None
+        cases.append(("null declaration", null_declaration, "exactly code, signal and reason"))
+        for mode in ("chaos", "replay", "naked"):
+            other = cell()
+            other["mode"] = mode
+            cases.append((f"declaration in {mode} mode", other, "valid only on a verify cell"))
+        for label, target, message in cases:
+            with self.subTest(label=label), self.assertRaisesRegex(
+                series.MalformedRow, message
+            ):
+                self._project_validate(target, "mutant")
+
+    # Hermit's ci/compat-envelope/scorecard.rs `ordinary()` fixture. Its
+    # Rust ResultRow identities below are pinned by that file's
+    # evidence_identity_tests; equality here is cross-language parity.
+    _SCORECARD_ORDINARY_ROW = r'''{"argv":["hermit","run","--verify","fixture"],"attempt":1,"attempts":[{"argv":["hermit","run","--verify","fixture"],"cwd":"/repo","env":{"LC_ALL":"C"},"error_kind":"incomplete-verification-evidence","guest_argv":["fixture"],"index":"1","outcome":"ERROR","shell_command":"cd /repo && env LC_ALL=C hermit run --verify fixture","signal":null,"status":75,"timed_out":false,"verification_report":"{\"bitwise_parity\":false,\"compared_log_messages\":null,\"comparison\":null,\"first_divergent_left_message\":null,\"first_divergent_record\":null,\"first_divergent_right_message\":null,\"first_divergent_scheduler_turn\":null,\"first_divergent_syscall\":null,\"first_divergent_virtual_nanoseconds\":null,\"guest_exit_code\":null,\"guest_signal\":null,\"infrastructure_error\":null,\"no_result_reason\":{\"kind\":\"not_run\"},\"runtime\":null,\"verdict\":\"no_result\",\"verified\":false}","verification_report_sha256":"0cf756d63a02c73f989586d9f6572c428ce52d55a510ffa4659baab4bdcef405"}],"backend":"ptrace","binary_sha256":"0f533a26257a88f0550ddbabdb318a47f029991cfcf743714ce7f6ee3243105b","category":"fixture","classification":"required","cwd":"/repo","effective_args":["run","--verify","fixture"],"env":{"LC_ALL":"C"},"execution_cpu_timeout_seconds":10,"execution_wall_timeout_seconds":15,"failure_class":"no_result","guest_argv":["fixture"],"hermit_sha":"e6a1657c5cbe966d24f70ae88151471ca3fbd362","lane":"portable","log_level":"info","mode":"verify","outcome":"ERROR","relaxations":[],"result":null,"run_id":"finalized-a","schema":4,"shell_command":"cd /repo && env LC_ALL=C hermit run --verify fixture","source_tree_dirty":false,"test":"fixture/no-result","test_sha256":"f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d","timeout_seconds":15}'''
+    _SCORECARD_ORDINARY = "9bf1be90807ed0c84ae4592759239ad264779bd962a220542cca372d2151f032"
+    _SCORECARD_DECLARED = {
+        (7, None, "the fixture guest fails on purpose"):
+            "0953b8206ec868fc6c4d2466b5877d479eb18a26a75eb4750f032ff11be6ad0b",
+        (None, 11, "the fixture guest fails on purpose"):
+            "330611d0f1cefdc37b2dc6534b4178cf2bc1f73713c2fc2517ad3dc9429ebef6",
+        (7, None, "d\u00e9clar\u00e9 \u2014 on purpose"):
+            "32fab131e58b1532412f050c8a4f48e6bb9e44e0286cc207c55009c1709d5b4c",
+    }
+
+    def test_declaration_is_bound_into_the_rust_and_python_evidence_identity(self):
+        ordinary = json.loads(self._SCORECARD_ORDINARY_ROW)
+        self.assertEqual(
+            series._cell_result_evidence_sha256(ordinary), self._SCORECARD_ORDINARY
+        )
+        for (code, signal, reason), golden in self._SCORECARD_DECLARED.items():
+            with self.subTest(code=code, signal=signal, reason=reason):
+                declared = copy.deepcopy(ordinary)
+                declared["expected_guest_exit"] = {
+                    "code": code, "signal": signal, "reason": reason,
+                }
+                self.assertEqual(series._cell_result_evidence_sha256(declared), golden)
+
+    def test_declaration_removal_or_change_cannot_keep_an_accepted_row_identity(self):
+        for label, status, signal, guest_code, guest_signal, declared in (
+            ("exit 7", 7, None, 7, None, (7, None)),
+            ("signal 11", None, 11, None, 11, (None, 11)),
+            ("signal 11 as status 139", 139, None, None, 11, (None, 11)),
+        ):
+            with self.subTest(label=label):
+                cell = self._expected_exit_cell(
+                    status=status, signal=signal, guest_exit_code=guest_code,
+                    guest_signal=guest_signal, declared=declared,
+                )
+                row = self._project_validate(cell, label.replace(" ", "-"))[0]
+                accepted = series._cell_result_evidence_sha256(cell)
+                audit = row["series"]["declared_guest_exit"]
+                attempt = cell["attempts"][0]
+                self.assertEqual(audit, {
+                    "code": declared[0],
+                    "signal": declared[1],
+                    "reason": "the fixture guest fails on purpose",
+                    "evidence_sha256": accepted,
+                    "attempts": [{
+                        "index": attempt["index"],
+                        "outcome": "PASS",
+                        "status": status,
+                        "signal": signal,
+                        "timed_out": False,
+                        "verification_report_sha256":
+                            attempt["verification_report_sha256"],
+                    }],
+                })
+                self.assertEqual(row["series"]["attempt"], 1)
+                self.assertEqual(row["series"]["outcome"], "passed")
+
+                undeclared = copy.deepcopy(cell)
+                undeclared.pop("expected_guest_exit")
+                self.assertNotEqual(
+                    series._cell_result_evidence_sha256(undeclared), accepted
+                )
+                identities = {accepted}
+                for field, value in (
+                    ("reason", "a different reason"),
+                    *((("code", declared[0] + 1),) if declared[0] else ()),
+                    *((("signal", declared[1] + 1),) if declared[1] else ()),
+                ):
+                    changed = copy.deepcopy(cell)
+                    changed["expected_guest_exit"][field] = value
+                    digest = series._cell_result_evidence_sha256(changed)
+                    self.assertNotIn(digest, identities, field)
+                    identities.add(digest)
+
+    def test_undeclared_rows_carry_no_declared_guest_exit_audit(self):
+        row = self._project_validate(self._validate_cell(1), "undeclared")[0]
+        self.assertNotIn("declared_guest_exit", row["series"])
+
+
     def test_no_verdict_contradiction_refuses_the_batch(self):
         contradictory = self._validate_no_verdict_cell(
             1, timed_out=True, backend="sabre"
@@ -4589,10 +4925,36 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(len(tracked.read_text().splitlines()), 2)
         self.assertEqual(series.union([tracked]), stored)
 
-    def test_append_cells_retains_typed_pressure_rows_when_one_cell_is_untyped(self):
+    def _append_cells(self, lines, *, producer, run_id, emitted_at, tree=None):
+        """Run append-cells on raw stdin lines; return (rc, stdout, stderr)."""
         import contextlib
         import io
 
+        real_stdin = sys.stdin
+        sys.stdin = io.StringIO("".join(line + "\n" for line in lines))
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", producer,
+                    "--run-id", run_id,
+                    "--tree", tree or self.tree,
+                    "--emitted-at", emitted_at,
+                ])
+        finally:
+            sys.stdin = real_stdin
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def _quarantined(self, run_id):
+        path = series.quarantine_dir(self.parent) / f"{run_id}.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_append_cells_retains_typed_pressure_rows_when_one_cell_is_untyped(self):
         thread_output = self._cell(0)
         thread_output["test"] = "applications/thread-output"
         thread_output["backend"] = "kvm"
@@ -4609,6 +4971,7 @@ class CellResultProjection(unittest.TestCase):
         untyped["attempts"] = []
         cells = [thread_output, untyped, thread_output_retry, subprocess_time]
 
+        # The library projection still refuses a batch it cannot write whole.
         with self.assertRaisesRegex(
             series.MalformedRow, "comparison cell result has no typed attempts"
         ):
@@ -4616,40 +4979,41 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
 
         def append(emitted_at):
-            real_stdin = sys.stdin
-            sys.stdin = io.StringIO(
-                "\n".join(json.dumps(cell) for cell in cells) + "\n"
+            return self._append_cells(
+                [json.dumps(cell) for cell in cells],
+                producer="pressure-test",
+                run_id="pressure-mixed-evidence",
+                emitted_at=emitted_at,
             )
-            stdout = io.StringIO()
-            stderr = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    rc = series.main([
-                        "append-cells",
-                        "--parent", str(self.parent),
-                        "--producer", "pressure-test",
-                        "--run-id", "pressure-mixed-evidence",
-                        "--tree", self.tree,
-                        "--emitted-at", emitted_at,
-                    ])
-            finally:
-                sys.stdin = real_stdin
-            return rc, stdout.getvalue(), stderr.getvalue()
 
         rc, stdout, stderr = append("2026-08-26T10:00:00Z")
+        # A pressure campaign reports a refused cell with a nonzero status,
+        # but the independent valid rows are still retained.
         self.assertEqual(rc, 1)
         self.assertIn("appended 3 row(s) representing 3 run(s)", stdout)
-        self.assertIn("REJECTED non-qualifying cell", stderr)
+        self.assertIn("series: QUARANTINED ", stderr)
         self.assertIn('"input_row":2', stderr)
-        self.assertIn('"run_index":0', stderr)
-        self.assertIn('"campaign_run_id":"pressure-mixed-evidence"', stderr)
+        self.assertIn('"stage":"projection"', stderr)
+        self.assertIn('"run_id":"pressure-mixed-evidence"', stderr)
         self.assertIn(f'"tree":"{self.tree}"', stderr)
         self.assertIn(
-            '"test":"applications/invalid-without-typed-attempts"', stderr
+            '"cell":"applications/invalid-without-typed-attempts/verify/kvm"', stderr
         )
         self.assertIn("comparison cell result has no typed attempts", stderr)
-        self.assertRegex(stderr, r'"cell_result_sha256":"[0-9a-f]{64}"')
-        self.assertIn("retained 3 valid series row(s)", stderr)
+        self.assertRegex(stderr, r'"raw_sha256":"[0-9a-f]{64}"')
+        self.assertIn("quarantined 1 of 4 input(s) to ", stderr)
+
+        quarantined = self._quarantined("pressure-mixed-evidence")
+        self.assertEqual(len(quarantined), 1)
+        self.assertEqual(quarantined[0]["schema"], series.QUARANTINE_SCHEMA)
+        # The refused input is retained exactly as it was received.
+        self.assertEqual(quarantined[0]["raw"], untyped)
+        self.assertEqual(
+            quarantined[0]["raw_sha256"],
+            hashlib.sha256(json.dumps(
+                untyped, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            ).encode()).hexdigest(),
+        )
 
         target = series.spool_dir(self.parent) / "pressure-mixed-evidence.jsonl"
         first_bytes = target.read_bytes()
@@ -4690,63 +5054,229 @@ class CellResultProjection(unittest.TestCase):
         self.assertNotIn("invalid-without-typed-attempts", json.dumps(stored))
         series.validate_read_rows(stored)
 
+        # Replaying the same run appends nothing and retains the refusal once.
         rc, stdout, stderr = append("2026-08-27T10:00:00Z")
         self.assertEqual(rc, 1)
         self.assertIn("appended 0 row(s) representing 3 run(s)", stdout)
-        self.assertIn("REJECTED non-qualifying cell", stderr)
+        self.assertIn("series: QUARANTINED ", stderr)
         self.assertEqual(target.read_bytes(), first_bytes)
+        replayed = self._quarantined("pressure-mixed-evidence")
+        self.assertEqual(len(replayed), 1)
+        self.assertEqual(replayed[0]["quarantine_id"], quarantined[0]["quarantine_id"])
 
-    def test_append_cells_rejects_an_all_untyped_pressure_batch_without_a_spool(self):
-        import contextlib
-        import io
-
+    def test_append_cells_quarantines_refused_cells_and_keeps_their_valid_siblings(self):
         untyped = self._cell(0, outcome="ERROR")
         untyped["attempts"] = []
-        real_stdin = sys.stdin
-        sys.stdin = io.StringIO(json.dumps(untyped) + "\n")
-        stderr = io.StringIO()
-        try:
-            with contextlib.redirect_stderr(stderr):
-                rc = series.main([
-                    "append-cells",
-                    "--parent", str(self.parent),
-                    "--producer", "pressure-test",
-                    "--run-id", "pressure-untyped-only",
-                    "--tree", self.tree,
-                    "--emitted-at", "2026-08-26T10:00:00Z",
-                ])
-        finally:
-            sys.stdin = real_stdin
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(untyped)],
+            producer="pressure-test",
+            run_id="pressure-untyped-only",
+            emitted_at="2026-08-26T10:00:00Z",
+        )
+        # Nothing independent survived, so the batch does not read as a success.
         self.assertEqual(rc, 1)
-        self.assertIn("no valid completed cell rows were available", stderr.getvalue())
+        self.assertNotIn("appended", stdout)
+        self.assertIn("quarantined 1 of 1 input(s)", stderr)
         self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
+        self.assertEqual(len(self._quarantined("pressure-untyped-only")), 1)
 
-        # The narrow recovery must not hide another malformed provenance field
-        # on the same untyped result or partially append its valid sibling.
+        # A second malformed provenance field on the refused result is named
+        # in its own refusal, and the valid sibling is still appended.
         untyped["detcore_tree"] = "not-a-sha"
         valid = self._cell(0)
         valid["test"] = "applications/thread-output"
-        real_stdin = sys.stdin
-        sys.stdin = io.StringIO(
-            json.dumps(valid) + "\n" + json.dumps(untyped) + "\n"
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(valid), json.dumps(untyped)],
+            producer="pressure-test",
+            run_id="pressure-untyped-and-malformed",
+            emitted_at="2026-08-26T10:00:00Z",
         )
-        stderr = io.StringIO()
-        try:
-            with contextlib.redirect_stderr(stderr):
-                rc = series.main([
-                    "append-cells",
-                    "--parent", str(self.parent),
-                    "--producer", "pressure-test",
-                    "--run-id", "pressure-untyped-and-malformed",
-                    "--tree", self.tree,
-                    "--emitted-at", "2026-08-26T10:00:00Z",
-                ])
-        finally:
-            sys.stdin = real_stdin
         self.assertEqual(rc, 1)
-        self.assertIn("detcore_tree must be a 40-hex object id", stderr.getvalue())
-        self.assertNotIn("REJECTED non-qualifying cell", stderr.getvalue())
+        self.assertIn("appended 1 row(s) representing 1 run(s)", stdout)
+        self.assertIn("detcore_tree must be a 40-hex object id", stderr)
+        stored = series.union(
+            [series.spool_dir(self.parent) / "pressure-untyped-and-malformed.jsonl"]
+        )
+        self.assertEqual(
+            [row["series"]["cell"] for row in stored],
+            ["applications/thread-output/verify/ptrace"],
+        )
+        quarantined = self._quarantined("pressure-untyped-and-malformed")
+        self.assertEqual(len(quarantined), 1)
+        self.assertEqual(quarantined[0]["input_row"], 2)
+        self.assertEqual(quarantined[0]["raw"], untyped)
+        self.assertIn("detcore_tree must be a 40-hex object id", quarantined[0]["reason"])
+
+    def test_validate_append_cells_keeps_the_batch_when_one_row_is_refused(self):
+        # The run-213 shape: one verify cell whose guest failed on purpose but
+        # whose manifest declaration had not reached the row. Before this, that
+        # one row refused the whole validate batch and every cell was lost.
+        passing = self._validate_cell(1)
+        passing["test"] = "applications/thread-output"
+        undeclared = self._expected_exit_cell(
+            status=7, signal=None, guest_exit_code=7, guest_signal=None, declared=None,
+        )
+        undeclared["test"] = "applications/qemu-hello"
+        not_json = '{"schema": 4, "truncated'
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(passing), not_json, json.dumps(undeclared)],
+            producer="validate",
+            run_id="validate-one-refused",
+            emitted_at="2026-09-28T10:00:00Z",
+        )
+        # A validate's verdict stands on its tests. The valid row is appended,
+        # and each refusal is retained and printed where the validate log
+        # records the writer's successful output.
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("appended 1 row(s) representing 1 run(s)", stdout)
+        self.assertIn("quarantined 2 of 3 input(s) to ", stdout)
+        self.assertEqual(stdout.count("series: QUARANTINED "), 2)
+        stored = series.union(
+            [series.spool_dir(self.parent) / "validate-one-refused.jsonl"]
+        )
+        self.assertEqual(
+            [row["series"]["cell"] for row in stored],
+            ["applications/thread-output/verify/ptrace"],
+        )
+        quarantined = {
+            record["input_row"]: record for record in self._quarantined("validate-one-refused")
+        }
+        self.assertEqual(set(quarantined), {2, 3})
+        self.assertEqual(quarantined[2]["stage"], "parse")
+        self.assertEqual(quarantined[2]["raw"], not_json)
+        self.assertIn("stdin line 2 is not JSON", quarantined[2]["reason"])
+        self.assertEqual(quarantined[3]["raw"], undeclared)
+        self.assertIn("matched report is internally inconsistent", quarantined[3]["reason"])
+        self.assertEqual(quarantined[3]["cell"], "applications/qemu-hello/verify/ptrace")
+
+        # A validate batch whose every row is refused is not a success.
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(undeclared)],
+            producer="validate",
+            run_id="validate-all-refused",
+            emitted_at="2026-09-28T10:00:00Z",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("quarantined 1 of 1 input(s)", stderr)
+        self.assertFalse(
+            (series.spool_dir(self.parent) / "validate-all-refused.jsonl").exists()
+        )
+
+    def test_append_cells_quarantines_every_row_when_the_invocation_is_refused(self):
+        cells = [self._validate_cell(1), self._validate_cell(2)]
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(cell) for cell in cells],
+            producer="validate",
+            run_id="validate-bad-tree",
+            emitted_at="2026-09-28T10:00:00Z",
+            tree="not-a-sha",
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("REFUSED the cell batch, nothing was written", stderr)
+        self.assertIn("tree must be a 40-hex commit sha", stderr)
         self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
+        quarantined = self._quarantined("validate-bad-tree")
+        self.assertEqual([record["stage"] for record in quarantined], ["batch", "batch"])
+        self.assertEqual([record["raw"] for record in quarantined], cells)
+
+    def test_append_cells_quarantines_a_changed_repeat_and_appends_the_rest(self):
+        first = self._validate_cell(1)
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(first)],
+            producer="validate",
+            run_id="validate-repeat",
+            emitted_at="2026-09-28T10:00:00Z",
+        )
+        self.assertEqual(rc, 0, stderr)
+        changed = self._validate_cell(1, duration_ms=250)
+        changed["runtime"]["run1"]["syscalls"] = 613
+        changed["runtime"]["run2"]["syscalls"] = 613
+        other = self._validate_cell(1)
+        other["test"] = "applications/thread-output"
+        rc, stdout, stderr = self._append_cells(
+            [json.dumps(changed), json.dumps(other)],
+            producer="validate",
+            run_id="validate-repeat",
+            emitted_at="2026-09-28T11:00:00Z",
+        )
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("appended 1 row(s) representing 1 run(s)", stdout)
+        quarantined = self._quarantined("validate-repeat")
+        self.assertEqual([record["stage"] for record in quarantined], ["spool-conflict"])
+        self.assertIn("already records a different row", quarantined[0]["reason"])
+        stored = series.union([series.spool_dir(self.parent) / "validate-repeat.jsonl"])
+        self.assertEqual(len(stored), 2)
+
+    def test_write_admission_judges_every_row_in_one_checker_call(self):
+        rows = series.rows_from_cell_results(
+            [self._validate_cell(1)],
+            parent=self.parent,
+            producer="validate",
+            run_id="validate-admission",
+            tree=self.tree,
+            emitted_at="2026-09-28T10:00:00Z",
+        )
+        good = rows[0]
+        unknown = json.loads(json.dumps(good))
+        unknown["series"]["outcome"] = "not-an-outcome"
+        owner = json.loads(json.dumps(good))
+        owner["series"]["cell"] = "/home/" + "newton/leak"
+        calls = []
+        real = series._run_shared_checker
+
+        def counting(checker_input, arguments):
+            calls.append(list(arguments))
+            return real(checker_input, arguments)
+
+        with mock.patch.object(series, "_run_shared_checker", side_effect=counting):
+            verdicts = series.write_admission([good, unknown, owner, good])
+        self.assertEqual(calls, [["--write-results"]])
+        self.assertIsNone(verdicts[0])
+        self.assertIsNone(verdicts[3])
+        self.assertIn("does not match the shared SeriesRow", verdicts[1])
+        self.assertIsInstance(verdicts[2], str)
+
+    def test_write_admission_refuses_a_result_that_does_not_account_for_the_rows(self):
+        good = series.rows_from_cell_results(
+            [self._validate_cell(1)],
+            parent=self.parent,
+            producer="validate",
+            run_id="validate-admission-envelope",
+            tree=self.tree,
+            emitted_at="2026-09-28T10:00:00Z",
+        )[0]
+        checker_input = series._checker_input([good])
+        digest = hashlib.sha256(checker_input.encode()).hexdigest()
+        cases = {
+            "missing result": {
+                "results": [], "input_row_count": 1,
+                "input_jsonl_sha256": digest, "schema_version": 1,
+            },
+            "wrong digest": {
+                "results": [{"line": 1, "result": None}], "input_row_count": 1,
+                "input_jsonl_sha256": "0" * 64, "schema_version": 1,
+            },
+            "wrong line": {
+                "results": [{"line": 2, "result": None}], "input_row_count": 1,
+                "input_jsonl_sha256": digest, "schema_version": 1,
+            },
+            "unknown schema": {
+                "results": [{"line": 1, "result": None}], "input_row_count": 1,
+                "input_jsonl_sha256": digest, "schema_version": 2,
+            },
+        }
+        for label, output in cases.items():
+            with self.subTest(label=label):
+                completed = subprocess.CompletedProcess(
+                    [], 0, stdout=json.dumps(output), stderr="",
+                )
+                with mock.patch.object(series, "_run_shared_checker", return_value=completed):
+                    with self.assertRaises(series.SeriesError):
+                        series.write_admission([good])
+        failed = subprocess.CompletedProcess([], 2, stdout="", stderr="checker broke")
+        with mock.patch.object(series, "_run_shared_checker", return_value=failed):
+            with self.assertRaisesRegex(series.SeriesError, "checker broke"):
+                series.write_admission([good])
 
     def test_append_cells_uses_the_producing_checkout_for_an_off_main_tree(self):
         import contextlib

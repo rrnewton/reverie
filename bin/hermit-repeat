@@ -265,8 +265,11 @@ def append_cell_series(args, run_id: str, results: list[RunResult]) -> str | Non
     )
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
+        # append-cells quarantines each refused run and still appends the
+        # valid ones, so a nonzero status does not mean nothing was written.
         raise RuntimeError(
-            f"series writer refused the {len(rows)} run(s): {detail or 'no detail'}"
+            f"series writer refused one or more of the {len(rows)} run(s); valid "
+            f"runs, if any, were retained: {detail or 'no detail'}"
         )
     return completed.stdout.strip()
 

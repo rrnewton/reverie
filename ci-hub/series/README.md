@@ -352,14 +352,37 @@ Every production consumer of the row shape reaches one of these checks:
   `validate_for_projection`, which additionally refuses v1 and dirty-source
   rows as scorecard evidence.
 
-`append-cells` keeps the same whole-batch refusal for malformed provenance,
-duplicate identities, changed replays, and every other invalid row. One narrow
-historical case is recoverable: in a pressure-test campaign, a comparison cell
-with no typed attempts is rejected as non-qualifying while independent typed
-cells are appended together. The command prints a structured identity and
-SHA-256 of each rejected retained CellResult and exits nonzero. Re-emitting the
-campaign is idempotent, and the rejected raw result is never synthesized into a
-series observation.
+`append-cells` judges each cell result on its own. A cell result that cannot
+be written (not JSON, malformed provenance, an undeclared failing verify
+report, a comparison cell with no typed attempts, or a row the shared type's
+`validate_for_write` refuses) is **quarantined** and the independent valid
+results beside it are still appended. The shared checker's `--write-results`
+mode returns one verdict per row in a single invocation, bound to the input
+row count and SHA-256, so one refused row no longer decides the fate of the
+batch. A repeated identity whose body changed is quarantined the same way; an
+exact replay remains a no-op.
+
+Each quarantined input becomes one `series-quarantine/v1` record in
+`ignored/ci-hub/series-quarantine/<run_id>.jsonl` under the shared parent
+root: the stage (`parse`, `projection`, `shared-checker`, `spool-conflict`, or
+`batch`), the exact refusal, the input line, the cell when it can be named,
+and the retained input itself with its canonical SHA-256. Records are keyed
+by stage, run, input line, event id, and that digest, so re-emitting a run
+retains each refusal once. Each record is also printed as a
+`series: QUARANTINED` line followed by a `quarantined Q of N input(s) to P`
+summary. The quarantine is local; it is not yet published to the ledger.
+
+Only a refusal about the invocation itself (the producer, run id, or tree;
+source ancestry and depth; the recorded Detcore tree; a checker that cannot
+run; or a spool that cannot be written) keeps every row out, and then every
+input is quarantined with stage `batch`. Exit status: `0` when nothing was
+quarantined; `1` when every input was refused, when the invocation was
+refused, or when the quarantine itself could not be written; for `validate`,
+`0` when valid rows were appended beside quarantined ones (the validate's
+verdict stands on its tests, and the quarantine lines reach its log); for
+`pressure-test` and `hermit-repeat`, `1` whenever anything was quarantined.
+The library function `rows_from_cell_results` still refuses a batch it cannot
+write whole.
 
 The canonical Python reader also exposes `projection_results(rows)`. It sends
 the complete read-valid population to the same Rust checker and returns the
