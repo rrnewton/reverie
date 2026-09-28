@@ -703,61 +703,41 @@ reminders:
         component: reverie-pin-lag
       title: "reverie pin has fallen far behind and is blocking landings: {summary}"
 
-  # THE NINE-DAY MISS THIS PAIR EXISTS TO CATCH. On 2026-09-15 the published
-  # compatibility website was found serving a 2026-09-06 snapshot. Nothing had
-  # reported it, and the obvious explanation is the wrong one: the deploy was
-  # never broken. docs.yml last succeeded 2026-09-10 and would have succeeded on
-  # any night in the window. It kept republishing the SAME snapshot because
-  # latest_identity still named the 09-06 identity, while a passing full-path run
-  # from 09-11 sat retained and unpublished.
+  # THE WEBSITE BUILD ALWAYS HAPPENS (owner directive 2026-09-28), and a failed
+  # nightly Actions rebuild warns the coordinator.
   #
-  # So this measures TWO states with different remedies and different costs, and
-  # a single "is the site stale" boolean would have been useless for both:
-  #   PIN LAG     a newer retained full-path run exists that nothing pins. Fixing
-  #               it means an artifact build, a reviewed pin PR, a landing and a
-  #               deploy. The validate run behind such a snapshot measured 4413
-  #               CPU-seconds (record devbig014-1789163515-1449760).
-  #   DEPLOY LAG  main already pins an identity gh-pages is not serving. One
-  #               dispatch, measured 174-224s wall across four runs.
+  # The rebuild is hermit's docs.yml: a `schedule:` trigger (cron "23 8 * * *")
+  # gated on vars.COMPATIBILITY_NIGHTLY_ENABLED, which is 'true'. GitHub runs
+  # scheduled workflows late or not at all -- the five runs before 2026-09-28
+  # started 13:14Z to 16:50Z against an 08:23Z cron -- and nothing here noticed a
+  # failure: scheduled run 36453865612 failed on 2026-09-28 ("validate-status ...
+  # selects unknown cells") and the first reading of this gate was that failure.
   #
-  # DETECT ONLY, under this file's own admission rule and the owner's 2026-08-21
-  # directive that GitHub CI "does not run automatically". Every workflow in both
-  # repositories is workflow_dispatch only; no `schedule:` trigger exists anywhere,
-  # and the Actions switch plus those triggers are one mechanism, so adding one
-  # would break the directive repository-wide and silently. The pin update is also
-  # a reviewed change -- gh-merge-verified exits 6 without an exact-head review
-  # lane -- so an unattended publisher could only exist by removing the gate.
-  # It passes the admission test at the top of this file: gh-pages content and
-  # release state are exactly what ORC cannot observe directly.
+  # This gate FIRES ON STATE CHANGE: a new failed rebuild run, or a site with no
+  # successful rebuild in 30 hours, pages once, not every tick. With --dispatch it
+  # also REBUILDS a site whose last success is 30+ hours old, through the
+  # owner-authorized `gh workflow run docs.yml -f rebuild_compatibility=true`
+  # (no Hermit tests run), skipping while any docs.yml run is in flight and at
+  # most once per 12 hours; a refused dispatch pages. The Actions API is exactly
+  # the external state ORC cannot observe, so it passes the admission test above.
   #
-  # DEPLOY LAG DELIBERATELY FIRES IN BOTH BANDS. --max-age-days stages only the
-  # pin band, so a brand-new run does not page instantly; an identity that is
-  # pinned but unserved is cheap to fix and should never wait out an age window.
-  # An unreadable side exits 2 in both bands rather than reading as a fresh site.
-  - name: site_publication_lag_note
-    cadence_secs: 86400
+  # REPLACES site_publication_lag_note and site_publication_lag_escalation. Both
+  # grepped the live page for "Source validation run"/"Run finished", text the
+  # ledger-rebuilt page no longer carries, so both had exited 75 (NO_RESULT) on
+  # every run since 2026-09-22 and measured nothing.
+  - name: site_rebuild_health
+    cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/health/site_publication_lag.py --gate --max-age-days 1
-      when: failure
-      capture: true
-    emit:
-      kind: note
-      fields:
-        component: site-publication-lag
-      title: "compatibility website is behind the evidence available for it: {summary}"
-
-  - name: site_publication_lag_escalation
-    cadence_secs: 86400
-    gate:
-      cmd: ./ci-hub/health/site_publication_lag.py --gate --max-age-days 5
+      cmd: ./ci-hub/health/site_rebuild_health.py --gate --dispatch --state "$DEV_HERMIT_PARENT/.tick-hub/site-rebuild-health.json"
       when: failure
       capture: true
     emit:
       kind: action
       skill: hard-warn-coordinator
       fields:
-        component: site-publication-lag
-      title: "compatibility website has been stale for days and nobody has published: {summary}"
+        component: site-rebuild
+        outcome: "{outcome_key}"
+      title: "compatibility website rebuild needs attention: {summary}"
 
   - name: github_main_health
     cadence_secs: 3600

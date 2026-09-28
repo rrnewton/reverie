@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Measure how far the PUBLISHED compatibility website trails the evidence available for it.
 
+RETIRED FROM TICK-HUB 2026-09-28. The ledger-rebuilt page no longer carries the
+"Source validation run"/"Run finished" fields `fetch_published` reads, so this
+has returned UNKNOWN (exit 75) on every run since 2026-09-22. docs.yml has also
+had a `schedule:` trigger since then, so constraint 1 below is historical. The
+tick-hub reminder is now ci-hub/health/site_rebuild_health.py, which reads the
+Actions runs of the rebuild itself.
+
 WHY THIS EXISTS. On 2026-09-15 the site at
 https://rrnewton.github.io/hermit/compatibility/latest/ was found serving a
 2026-09-06 snapshot. It had been nine days stale and nothing reported it. The
