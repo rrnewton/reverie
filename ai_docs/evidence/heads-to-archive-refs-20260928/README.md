@@ -16,3 +16,13 @@ fetch it with `git fetch origin 'refs/archive/*:refs/archive/*'`.
 Retained as a branch: `validation-receipts`, the live ci-hub receipt store
 (see `../branch-cleanup-20260928/README.md`). Moving it to a non-branch ref requires a
 ci-hub change first.
+
+## Addendum 2026-09-28T06:45Z: `remove-safe-dev-limits`
+
+An agentcloud agent tagged `[hermit2, unknown-agentname, unknown-model, devbig014,
+role=impl]` pushed branch `remove-safe-dev-limits` at 506c20f21d3e (about 05:26Z),
+after the sweep above. dev-hermit is main-only. The commit removes `safe-dev-limits`
+(-1026 lines) in favour of `wrkslots limits` / `wrkslots run`. It has not been reviewed
+or landed. It is preserved unchanged at `refs/archive/heads/remove-safe-dev-limits`
+(see the last row of `moved-heads.tsv`), and the head is deleted with an expected-SHA
+lease. The owner decides whether it lands.

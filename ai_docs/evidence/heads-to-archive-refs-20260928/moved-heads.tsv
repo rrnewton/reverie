@@ -829,3 +829,4 @@ rrnewton/dev-hermit	rescue/wrkslots-20260831-owner-watch-git-identity-fix	aa1ff9
 rrnewton/dev-hermit	rescue/wrkslots-20260901-rust-script-cache-bound	334d4d0710e63c6ce9398d6867e1da5461bfa371	refs/archive/rescue/wrkslots-20260901-rust-script-cache-bound
 rrnewton/dev-hermit	rescue/wrkslots/devbig014/scorecard-interactive-20260922	0bde0188e4de0c76964970440e890f3c8600ce08	refs/archive/rescue/wrkslots/devbig014/scorecard-interactive-20260922
 rrnewton/dev-hermit	rescue/wrkslots/devbig014/scorecard-interactive-final-20260922	7bea1467ab2f57338801f1ce6a09f9e3ab183a77	refs/archive/rescue/wrkslots/devbig014/scorecard-interactive-final-20260922
+rrnewton/dev-hermit	remove-safe-dev-limits	506c20f21d3e7731a1ff62ccd3ac025646563eb0	refs/archive/heads/remove-safe-dev-limits
