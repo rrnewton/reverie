@@ -108,6 +108,9 @@ use trap_only::TrapOnlyRoute;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use trap_only::step_count_for_test;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use trap_only::stepped_seccomp_count_for_test;
 
 use crate::regs::Reg;
 use crate::regs::RegAccess;
@@ -2419,7 +2422,10 @@ impl<L: Tool> TracedTask<L> {
 
     fn get_syscall(&self, task: &Stopped) -> Result<Syscall, TraceError> {
         let regs = task.getregs()?;
-        let nr = Sysno::from(regs.orig_syscall() as i32);
+        // A checked decode: the filter traces only numbers the syscall table
+        // knows (trap-only H0 routes every other patched-site number before
+        // this), so an unknown number here is an error, never a panic.
+        let nr = Sysno::new(regs.orig_syscall() as i32 as usize).ok_or(Errno::ENOSYS)?;
 
         let args = regs.args();
 
@@ -3164,6 +3170,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(e);
             }
             Err(HandleFailure::Event(wait)) => self.abort(Ok(wait)).await,
+            Err(HandleFailure::SeccompStop(task)) => {
+                // A step onto a traced syscall. Trap-only must first refuse a
+                // patched site carrying an Allow-class number (O4 rule 4)
+                // instead of re-dispatching it; plain ptrace re-dispatches.
+                #[cfg(test)]
+                trap_only::record_stepped_seccomp_for_test(task.pid());
+                self.trap_only_stepped_seccomp(&task)?;
+                self.abort(Ok(Wait::Stopped(task, Event::Seccomp))).await
+            }
             Ok(task) => task,
         };
         #[cfg(test)]

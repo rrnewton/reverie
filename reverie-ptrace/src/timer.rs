@@ -463,6 +463,13 @@ pub enum HandleFailure {
     #[error("Unexpected event while single stepping")]
     Event(Wait),
 
+    /// A single step ended at a seccomp stop: the stepped instruction entered
+    /// a traced syscall. The caller classifies it (trap-only refuses a patched
+    /// site carrying an allowed number, P2 spec O4 rule 4) and otherwise
+    /// dispatches it like [`HandleFailure::Event`].
+    #[error("Single step ended at a seccomp stop")]
+    SeccompStop(Stopped),
+
     /// The timer signal was for a timer event that was otherwise cancelled. The
     /// task is returned unchanged.
     #[error("Timer event was cancelled and should not fire")]
@@ -1587,7 +1594,8 @@ impl TimerImpl {
                 // still have run: a `syscall` stops at its seccomp stop after
                 // loading r11, for example. The stop is passed on even if the
                 // cleanup fails, because it can be an event, such as a new
-                // child, that must be handled.
+                // child, that must be handled. A seccomp stop is passed on
+                // separately, for the caller to classify.
                 #[cfg(target_arch = "x86_64")]
                 Wait::Stopped(mut new_task, event) => {
                     if let Err(err) =
@@ -1598,7 +1606,14 @@ impl TimerImpl {
                             event, err
                         );
                     }
+                    if matches!(event, TraceEvent::Seccomp) {
+                        return Err(HandleFailure::SeccompStop(new_task));
+                    }
                     return Err(HandleFailure::Event(Wait::Stopped(new_task, event)));
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                Wait::Stopped(new_task, TraceEvent::Seccomp) => {
+                    return Err(HandleFailure::SeccompStop(new_task));
                 }
                 wait => return Err(HandleFailure::Event(wait)),
             };
