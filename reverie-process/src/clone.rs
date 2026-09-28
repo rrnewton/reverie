@@ -6,14 +6,99 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::ops::Deref;
+use std::ops::DerefMut;
+use std::ptr::NonNull;
+
 use syscalls::Errno;
 
 use super::Pid;
 
-pub(super) const CHILD_STACK_SIZE: usize = 2 * 1024 * 1024;
+pub(super) const CHILD_STACK_SIZE: usize = 4 * 1024 * 1024;
 
-pub(super) fn child_stack() -> Vec<u8> {
-    vec![0u8; CHILD_STACK_SIZE]
+pub(super) struct ChildStack {
+    mapping: NonNull<u8>,
+    mapping_len: usize,
+    stack: NonNull<u8>,
+}
+
+impl ChildStack {
+    fn new() -> Self {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(page_size > 0, "sysconf(_SC_PAGESIZE) failed");
+        let guard_len = usize::try_from(page_size).expect("page size must fit usize");
+        assert_eq!(CHILD_STACK_SIZE % guard_len, 0);
+        let mapping_len = guard_len
+            .checked_add(CHILD_STACK_SIZE)
+            .expect("child stack mapping length overflow");
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                mapping_len,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK,
+                -1,
+                0,
+            )
+        };
+        if mapping == libc::MAP_FAILED {
+            panic!(
+                "failed to reserve guarded child stack: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        let mapping = NonNull::new(mapping.cast::<u8>()).expect("mmap returned null");
+        let stack = unsafe { NonNull::new_unchecked(mapping.as_ptr().add(guard_len)) };
+        if unsafe {
+            libc::mprotect(
+                stack.as_ptr().cast(),
+                CHILD_STACK_SIZE,
+                libc::PROT_READ | libc::PROT_WRITE,
+            )
+        } != 0
+        {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                libc::munmap(mapping.as_ptr().cast(), mapping_len);
+            }
+            panic!("failed to activate guarded child stack: {error}");
+        }
+        Self {
+            mapping,
+            mapping_len,
+            stack,
+        }
+    }
+
+    #[cfg(test)]
+    fn guard_range(&self) -> std::ops::Range<usize> {
+        self.mapping.as_ptr() as usize..self.stack.as_ptr() as usize
+    }
+}
+
+impl Deref for ChildStack {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { std::slice::from_raw_parts(self.stack.as_ptr(), CHILD_STACK_SIZE) }
+    }
+}
+
+impl DerefMut for ChildStack {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { std::slice::from_raw_parts_mut(self.stack.as_ptr(), CHILD_STACK_SIZE) }
+    }
+}
+
+impl Drop for ChildStack {
+    fn drop(&mut self) {
+        let result = unsafe { libc::munmap(self.mapping.as_ptr().cast(), self.mapping_len) };
+        debug_assert_eq!(result, 0, "guarded child stack munmap failed");
+    }
+}
+
+pub(super) fn child_stack() -> ChildStack {
+    ChildStack::new()
 }
 
 pub fn clone<F>(cb: F, flags: libc::c_int) -> Result<Pid, Errno>
@@ -22,9 +107,9 @@ where
 {
     // The child runs container setup and libc's exec path on this stack. In an
     // optimized build, Mount::mount alone can reserve PATH_MAX bytes in its
-    // frame, so one page cannot hold that call plus its callers. Match the
-    // stack size Container::run provides for the same setup path, and allocate
-    // it before clone so the child remains allocation-free before exec.
+    // frame, while debug builds poll deeply nested tool futures before exec.
+    // Match the stack size Container::run provides for the same setup path,
+    // and allocate it before clone so the child remains allocation-free.
     let mut stack = child_stack();
     clone_with_stack(cb, flags, &mut stack)
 }
@@ -161,9 +246,9 @@ mod tests {
 
     #[test]
     fn default_child_stack_keeps_the_container_run_minimum() {
-        assert!(
-            child_stack().len() >= 2 * 1024 * 1024,
-            "the cloned child runs container setup before exec and needs at least 2 MiB"
-        );
+        let stack = child_stack();
+        assert_eq!(stack.len(), 4 * 1024 * 1024);
+        assert!(!stack.guard_range().is_empty());
+        assert_eq!(stack.guard_range().end, stack.as_ptr() as usize);
     }
 }
