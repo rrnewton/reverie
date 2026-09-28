@@ -1,0 +1,35 @@
+{
+  "artifact": {
+    "reason": "compiler-artifact",
+    "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/reverie-ptrace#0.2.0",
+    "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/reverie-ptrace/Cargo.toml",
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "reverie_ptrace",
+      "src_path": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/reverie-ptrace/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "profile": {
+      "opt_level": "0",
+      "debuginfo": 2,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    },
+    "features": [],
+    "filenames": [
+      "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/ignored/gdb-vfile-20260916/target-old-1/debug/deps/reverie_ptrace-070b2c24c15c84a0"
+    ],
+    "executable": "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/ignored/gdb-vfile-20260916/target-old-1/debug/deps/reverie_ptrace-070b2c24c15c84a0",
+    "fresh": false
+  },
+  "sha256": "b4d7a2eb3f6a6134539886b49e8933543f3124e76fa8440694fbb3bdd4451552"
+}

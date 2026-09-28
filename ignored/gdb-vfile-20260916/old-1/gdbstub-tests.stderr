@@ -1,0 +1,7 @@
+
+thread 'gdbstub::commands::base::_vFile::test::unknown_vfile_operations_are_valid_commands' (3772954) panicked at reverie-ptrace/src/gdbstub/commands/base/_vFile.rs:134:13:
+unsupported operation must reach the empty-response handler: vFile:lstat:2f746573742f6d697373696e67
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'gdbstub::server::tests::unsupported_vfile_operations_keep_session_connected' (3773136) panicked at reverie-ptrace/src/gdbstub/server.rs:466:26:
+unsupported vFile must reply, not close the connection: Custom { kind: UnexpectedEof, error: "early eof" }

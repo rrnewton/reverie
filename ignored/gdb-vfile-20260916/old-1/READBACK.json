@@ -1,0 +1,20 @@
+{
+  "exec6887_actual_exit": 101,
+  "outer_elapsed_seconds": 58.187315054936334,
+  "unit_after": "LoadState=not-found\nActiveState=inactive\nSubState=dead\n",
+  "cgroup_absent": true,
+  "original_pid_absent": true,
+  "source_unchanged": true,
+  "production_prefix_equals_f83": true,
+  "resources": {
+    "memory.max": "8589934592\n",
+    "memory.swap.max": "0\n",
+    "memory.peak": "4103639040\n",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+    "pids.max": "1024\n",
+    "pids.peak": "61\n",
+    "pids.events": "max 0\n",
+    "cpu.max": "400000 100000\n",
+    "cpu.stat": "usage_usec 127053187\nuser_usec 104010275\nsystem_usec 23042912\nnice_usec 0\nnr_periods 561\nnr_throttled 121\nthrottled_usec 6784541\nnr_bursts 0\nburst_usec 0\n"
+  }
+}

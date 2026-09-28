@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "who-am-i",
+    "--role",
+    "impl",
+    "--json",
+    "--task",
+    "vision-ci-signal-is-trustworthy-end-to-end",
+    "--db",
+    "/home/newton/.tg/hermit2.db"
+  ],
+  "actual_exit": 2,
+  "stderr": "--role is only meaningful for tag output"
+}

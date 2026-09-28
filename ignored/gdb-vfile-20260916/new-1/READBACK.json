@@ -1,0 +1,23 @@
+{
+  "exec15189_actual_exit": 0,
+  "unit_after": "LoadState=not-found\nActiveState=inactive\nSubState=dead\n",
+  "cgroup_absent": true,
+  "original_pid_absent": true,
+  "all_tracked_regular_files_unchanged_during_run": true,
+  "candidate_artifact_bytes_equal": true,
+  "old_new_inventory_equal": true,
+  "old_executable_sha256": "b4d7a2eb3f6a6134539886b49e8933543f3124e76fa8440694fbb3bdd4451552",
+  "new_executable_sha256": "75aadc155c801e81b5428ab817cdf2fc705ed76e6fc872f13b97b042b9c1fdfa",
+  "same_new_tests": true,
+  "resources": {
+    "memory.max": "8589934592\n",
+    "memory.swap.max": "0\n",
+    "memory.peak": "2447527936\n",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0\n",
+    "pids.max": "1024\n",
+    "pids.peak": "58\n",
+    "pids.events": "max 0\n",
+    "cpu.max": "400000 100000\n",
+    "cpu.stat": "usage_usec 154523455\nuser_usec 137093894\nsystem_usec 17429561\nnice_usec 0\nnr_periods 517\nnr_throttled 177\nthrottled_usec 6638330\nnr_bursts 0\nburst_usec 0\n"
+  }
+}

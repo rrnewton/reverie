@@ -1,0 +1,44 @@
+{
+  "actual_last_exit": 101,
+  "source_unchanged": true,
+  "commands": [
+    {
+      "name": "compile",
+      "argv": [
+        "/home/newton/.cargo/bin/cargo",
+        "test",
+        "-p",
+        "reverie-ptrace",
+        "--lib",
+        "--no-run",
+        "--jobs",
+        "4",
+        "--message-format=json"
+      ],
+      "actual_exit": 0,
+      "seconds": 37.48576449393295
+    },
+    {
+      "name": "gdbstub-tests",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/ignored/gdb-vfile-20260916/target-old-1/debug/deps/reverie_ptrace-070b2c24c15c84a0",
+        "gdbstub::",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "actual_exit": 101,
+      "seconds": 0.10308750509284437
+    },
+    {
+      "name": "inventory",
+      "argv": [
+        "/home/newton/work/dev-hermit/worktrees/slots/dev-hermit-gdb-vfile-20260916/ignored/gdb-vfile-20260916/target-old-1/debug/deps/reverie_ptrace-070b2c24c15c84a0",
+        "gdbstub::",
+        "--list"
+      ],
+      "actual_exit": 0,
+      "seconds": 0.0024257120676338673
+    }
+  ],
+  "cargo_lock_sha256": "537569ebbb0b298f6a386f4e5cc57fe2d3c33280b470752b519a410a1ef32675"
+}
