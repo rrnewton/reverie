@@ -25,6 +25,7 @@ enum Case {
     CancelAfterClaim,
     TimerDeath,
     RestoreDeath,
+    RestoreRefusal,
     CompetingClaim,
     RevokedClaim,
     UnexpectedStop,
@@ -541,8 +542,15 @@ pub(super) async fn startup_error_case(stopped: Stopped) -> Result<Stopped, Prep
     }
     let id = stopped.pid();
     let cleanup = stopped.terminal_cleanup();
-    kill_to_exit(&cleanup);
-    let claim = stopped.exit_event().await.unwrap();
+    // Register the fixture's sole EXIT waiter before permitting the task to
+    // exit. Waiting only for `exit_stop_observed` leaves a window in which the
+    // production select can claim the just-published stop first.
+    let mut exit = Box::pin(stopped.exit_event());
+    assert!(matches!(futures::poll!(exit.as_mut()), Poll::Pending));
+    cleanup
+        .terminate_bound_task()
+        .expect("signal original held pidfd");
+    let claim = exit.await.unwrap();
     assert!(cleanup.same_generation(&claim.terminal_cleanup()));
     if case == Case::StartupRevokedClaim {
         // The sole claim is transferred to this test-owned cleanup continuation.
@@ -591,6 +599,17 @@ pub(super) async fn before_restore(stopped: &Stopped, timer: &TaskTimer) {
     let _actual_clock = timer.read_clock();
     log.lock().unwrap().restore_entries += 1;
     die_after_stop(stopped).await;
+}
+pub(super) fn restore_result(id: Pid, result: Result<(), TraceError>) -> Result<(), TraceError> {
+    let Some((log, case)) = selected(id) else {
+        return result;
+    };
+    if case != Case::RestoreRefusal {
+        return result;
+    }
+    result.expect("the fixture changes only a successful real restore result");
+    log.lock().unwrap().restore_entries += 1;
+    Err(TraceError::Errno(Errno::EPERM))
 }
 
 pub(super) async fn preparation_result(
@@ -832,7 +851,8 @@ impl Tool for Observer {
                     "actual child write precedes actual leader final"
                 );
             }
-        } else if state.target == Some(tid)
+        } else if state.case == Case::RestoreRefusal
+            || state.target == Some(tid)
             || (state.case == Case::CancelAfterClaim && state.creator == Some(tid))
             || (state.case.daemon() && state.root != Some(tid))
         {
@@ -874,7 +894,7 @@ fn run(case: Case) {
     let log = Arc::new(StdMutex::new(Log::new(case)));
     ACTIVE.with(|slot| assert!(slot.borrow_mut().replace(Arc::clone(&log)).is_none()));
     let _active = Active;
-    let (output, _) = test_fn_with_config::<Observer, _>(
+    let result = test_fn_with_config::<Observer, _>(
         move || unsafe {
             libc::alarm(5);
             let child = libc::syscall(
@@ -950,13 +970,27 @@ fn run(case: Case) {
         },
         (),
         true,
-    )
-    .expect("original native startup fixture");
+    );
+    let output = match (case, result) {
+        (Case::RestoreRefusal, Err(error)) => {
+            assert!(
+                error.to_string().contains("EPERM"),
+                "restore refusal must be the retained fatal error: {error}"
+            );
+            None
+        }
+        (_, Ok((output, _))) => Some(output),
+        (_, Err(error)) => panic!("original native startup fixture: {error}"),
+    };
     let state = log.lock().unwrap();
     if case == Case::CancelAfterClaim {
+        let output = output.as_ref().expect("cancellation publishes output");
         assert_eq!(output.status, ExitStatus::Signaled(Signal::SIGKILL, false));
         assert!(output.stdout.is_empty());
-    } else {
+    } else if case != Case::RestoreRefusal {
+        let output = output
+            .as_ref()
+            .expect("successful fixture publishes output");
         assert_eq!(output.status, ExitStatus::Exited(0));
         if case == Case::LeaderExit {
             assert_eq!(output.stdout, [THREAD_MARKER, MARKER].concat());
@@ -966,7 +1000,10 @@ fn run(case: Case) {
     }
     assert_eq!(
         state.root_barrier_completed,
-        usize::from(case != Case::CancelAfterClaim)
+        usize::from(!matches!(
+            case,
+            Case::CancelAfterClaim | Case::RestoreRefusal
+        ))
     );
     let total = if case.group() { 3 } else { 2 };
     assert_eq!(state.target_starts, usize::from(case == Case::LeaderExit));
@@ -1013,10 +1050,13 @@ fn run(case: Case) {
             assert_eq!(state.timer_esrch, 1);
             assert_eq!(state.test_final_waits, 1);
         }
-        Case::RestoreDeath => {
+        Case::RestoreDeath | Case::RestoreRefusal => {
             assert_eq!(state.timer_attempts, 1);
             assert_eq!(state.restore_entries, 1);
-            assert_eq!(state.test_final_waits, 1);
+            assert_eq!(
+                state.test_final_waits,
+                usize::from(case == Case::RestoreDeath)
+            );
         }
         Case::CompetingClaim | Case::RevokedClaim => {
             assert_eq!(state.refusal, Some(Errno::EALREADY));
@@ -1069,6 +1109,10 @@ fn native_actual_timer_esrch_requires_same_generation_final() {
 #[test]
 fn native_death_before_saved_context_restore_retains_final() {
     run(Case::RestoreDeath);
+}
+#[test]
+fn native_non_esrch_restore_refusal_is_fatal_before_child_start() {
+    run(Case::RestoreRefusal);
 }
 #[test]
 fn native_competing_exit_claim_refuses_without_final() {

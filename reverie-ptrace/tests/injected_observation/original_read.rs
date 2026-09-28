@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicI32;
 
 use reverie::InjectedReadResult;
 use reverie::syscalls::AddrMut;
+use reverie::syscalls::Getpid;
 use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Read;
 
@@ -22,6 +23,7 @@ enum ReadCase {
     AdjustedRestartable,
     PrivateRetryInterrupted,
     PrivateRetryRestartable,
+    InterveningInjection,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 enum ReadRequest {
@@ -135,7 +137,8 @@ impl Tool for ReadObserver {
                 ReadCase::ReadyAtOriginalEntry | ReadCase::AdjustedReady => state.attempts == 1,
                 ReadCase::PriorProgress
                 | ReadCase::PrivateRetryInterrupted
-                | ReadCase::PrivateRetryRestartable => state.attempts == 2,
+                | ReadCase::PrivateRetryRestartable
+                | ReadCase::InterveningInjection => state.attempts == 2,
                 _ => false,
             };
         let entered = event == InjectedSyscallEvent::Entered
@@ -174,7 +177,9 @@ impl Tool for ReadObserver {
         if guest.thread_state().attempts == 0
             && matches!(
                 self.case,
-                ReadCase::PrivateRetryInterrupted | ReadCase::PrivateRetryRestartable
+                ReadCase::PrivateRetryInterrupted
+                    | ReadCase::PrivateRetryRestartable
+                    | ReadCase::InterveningInjection
             )
         {
             // A real completed no-byte attempt consumes the original entry.
@@ -221,6 +226,13 @@ impl Tool for ReadObserver {
                     .read_exact(call.buf().unwrap(), &mut untouched)?;
                 assert_eq!(untouched, vec![0x5a; call.len()]);
                 assert!(guest.send_rpc(ReadRequest::BeforeHandback).await);
+                if self.case == ReadCase::InterveningInjection {
+                    assert_eq!(
+                        guest.inject(Getpid::default()).await,
+                        Err(reverie::Errno::EPROTO),
+                        "retained Read stop must refuse an intervening native effect"
+                    );
+                }
                 guest
                     .finish_interrupted_syscall(ticket.clone(), (total != 0).then_some(total))
                     .await?;
@@ -422,6 +434,39 @@ fn read_signal_at_original_entry_returns_ready_bytes_before_handler_slot_replace
 #[test]
 fn read_signal_before_second_entry_preserves_prior_partial_count_without_retry() {
     slot_replacement_case(ReadCase::PriorProgress);
+}
+#[test]
+fn interrupted_read_refuses_intervening_generic_injection_before_native_effect() {
+    let (output, log) = test_fn_with_config::<ReadObserver, _>(
+        || {
+            install_handler();
+            let (reader, _writer) = pipe();
+            let mut byte = [0x5a];
+            assert_eq!(
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_read,
+                        reader.as_raw_fd(),
+                        byte.as_mut_ptr(),
+                        byte.len(),
+                    )
+                },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EINTR)
+            );
+            assert_eq!(byte, [0x5a]);
+        },
+        ReadCase::InterveningInjection,
+        true,
+    )
+    .expect("retained interrupted Read rejects intervening injection");
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    require_actor(&log);
+    assert!(log.handback.load(Ordering::SeqCst));
+    assert_eq!(log.signal_hooks.load(Ordering::SeqCst), 1);
 }
 fn exit_case(case: ReadCase) {
     let (output, log) = test_fn_with_config::<ReadObserver, _>(

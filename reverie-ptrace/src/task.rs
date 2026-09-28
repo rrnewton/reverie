@@ -6934,7 +6934,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 if event == Event::Signal(Signal::SIGSTOP) {
                     #[cfg(test)]
                     newborn_startup_tests::before_restore(&child, &child_task.timer).await;
-                    match restore_context(&child, context, None, false) {
+                    let restored = restore_context(&child, context, None, false);
+                    #[cfg(test)]
+                    let restored = newborn_startup_tests::restore_result(child.pid(), restored);
+                    match restored {
                         Ok(()) => {}
                         Err(error @ (TraceError::Died(_) | TraceError::Errno(Errno::ESRCH))) => {
                             // Keep construction and the original context order.
@@ -6960,15 +6963,24 @@ impl<L: Tool + 'static> TracedTask<L> {
                                 error = %err,
                                 "failed to restore new tracee register context"
                             );
-                            child_task.global_state.gs_ref.report_backend_failure(
-                                reverie::BackendFailure {
-                                    pid: child_task.pid(),
-                                    tid: id,
-                                    phase: "native child register restoration failed",
-                                },
-                            );
-                            // run() observes that common fatal fence before
-                            // handle_thread_start or resuming this stopped child.
+                            let origin = reverie::BackendFailure {
+                                pid: child_task.pid(),
+                                tid: id,
+                                phase: "native child register restoration failed",
+                            };
+                            if let Some(session) = &ordinary_failure {
+                                // The backend-owned fatal session is the
+                                // mandatory fence. Its publication callback is
+                                // advisory to cleanup, not the owner of this
+                                // failure: the default Tool hook is a no-op.
+                                session.fail_at(origin, anyhow::Error::new(err).into());
+                            } else {
+                                child_task
+                                    .global_state
+                                    .gs_ref
+                                    .report_backend_failure(origin);
+                                return Err(anyhow::Error::new(err).into());
+                            }
                         }
                     }
                 }
@@ -9043,6 +9055,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         syscall: S,
     ) -> Result<i64, Errno> {
+        if self.interrupted_read.is_some() {
+            return Err(Errno::EPROTO);
+        }
         loop {
             let (nr, args) = syscall.into_parts();
             match Box::pin(self.do_inject(nr, args, InjectionOrigin::Backend)).await {
@@ -9059,6 +9074,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         args: SyscallArgs,
         origin: InjectionOrigin,
     ) -> Result<i64, Errno> {
+        // Interrupted Read custody owns the exact kernel stop until the Tool
+        // hands its ticket back and the callback consumes it.  Any injection
+        // would resume or replace that stop before the handback contract can
+        // validate it.  Refuse through the fallible Guest API before emitting
+        // Prepared or performing a native effect.
+        if self.interrupted_read.is_some() {
+            return Err(Errno::EPROTO);
+        }
         match self.inner_inject(nr, args, origin).await {
             Ok(ret) => ret,
             Err(err) => self.abort(Err(err)).await,
@@ -9797,6 +9820,9 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
 
     #[allow(unreachable_code)]
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        if self.interrupted_read.is_some() {
+            return self.abort(Err(TraceError::Errno(Errno::EPROTO))).await;
+        }
         // Call a non-templatized function to reduce code bloat.
         let (nr, args) = syscall.into_parts();
         self.do_tail_inject(nr, args).await

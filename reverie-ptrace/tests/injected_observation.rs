@@ -1127,10 +1127,12 @@ struct RejectionEvidence {
     pending_child: Option<i32>,
 }
 static REJECTION_EVIDENCE: Mutex<Option<RejectionEvidence>> = Mutex::new(None);
+static REJECTION_FIXTURE_OWNER: Mutex<()> = Mutex::new(());
 static REJECTION_CHANGED: Notify = Notify::const_new();
 
 #[test]
 fn late_orphan_parent_completion_rejection_drains_original_actors_and_stays_failed() {
+    let _fixture_owner = REJECTION_FIXTURE_OWNER.lock().unwrap();
     assert!(
         REJECTION_EVIDENCE
             .lock()
@@ -1398,6 +1400,7 @@ fn assert_published_parent_rejection(result: Result<(), String>, threaded: bool)
 
 #[test]
 fn published_process_rejection_cancels_pending_tool_and_drains_all_actors() {
+    let _fixture_owner = REJECTION_FIXTURE_OWNER.lock().unwrap();
     assert!(
         REJECTION_EVIDENCE
             .lock()
@@ -1430,6 +1433,7 @@ extern "C" fn rejection_thread_body(_: *mut libc::c_void) -> libc::c_int {
 
 #[test]
 fn published_thread_rejection_cancels_pending_tool_and_drains_same_group() {
+    let _fixture_owner = REJECTION_FIXTURE_OWNER.lock().unwrap();
     assert!(
         REJECTION_EVIDENCE
             .lock()
