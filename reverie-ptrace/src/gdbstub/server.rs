@@ -324,9 +324,10 @@ mod tests {
         // The relay half: the peer has closed, so it drops its sender as it
         // leaves. Holding it instead -- which is what `self.pkt_tx` did -- is
         // the deadlock.
-        let relay = tokio::spawn(async move {
-            drop(tx);
-        });
+        // MUTANT: the relay does NOT own the sender; `tx` lives outside both
+        // futures for the whole join, exactly as `self.pkt_tx` did before the
+        // fix.
+        let relay = tokio::spawn(async move {});
 
         // ⚠️ BOUNDED, so a regression FAILS rather than wedging the runner. A
         // test for a hang that hangs reports nothing at all.
@@ -336,6 +337,7 @@ mod tests {
         )
         .await;
 
+        drop(tx);
         assert!(
             joined.is_ok(),
             "the session loop did not end after the relay dropped its sender; that is the \
